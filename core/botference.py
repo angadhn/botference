@@ -30,6 +30,7 @@ from room_prompts import (
     caucus_first_turn,
     caucus_turn,
     reviewer_preamble,
+    revision_preamble,
     room_preamble,
     write_preamble,
 )
@@ -513,7 +514,7 @@ class Botference:
             "  /caucus <topic>     — Start a structured discussion between Claude and Codex",
             "  /lead @claude|@codex — Set who writes the plan",
             "  /draft              — Lead drafts a plan (no files written)",
-            "  /finalize           — Draft → review → write files (with approval)",
+            "  /finalize           — Draft → review → revise → review → approve → write",
             "  /relay @claude|@codex — Reset model session with structured handoff",
             "  /status             — Show context %, lead, mode, sessions",
             "  /help               — Show this help",
@@ -1267,7 +1268,7 @@ class Botference:
         ui.set_status(self.status_snapshot())
         ui.add_room_entry(
             "system",
-            "Draft complete. Use /finalize to begin review + write flow.",
+            "Draft complete. Use /finalize to begin review + revise + write flow.",
         )
 
     # ── /finalize ─────────────────────────────────────────
@@ -1298,12 +1299,13 @@ class Botference:
             return
 
         adapter = self.claude if lead == "claude" else self.codex
+        reviewer_cap = reviewer.capitalize()
+        rev_adapter = self.codex if lead == "claude" else self.claude
 
         # Step 1 — lead drafts
         ui.add_room_entry("system", f"{lead_cap} is drafting the plan…")
-        draft_prompt = WRITER_FINAL_PREAMBLE
         try:
-            draft_resp = await adapter.resume(draft_prompt)
+            draft_resp = await adapter.resume(WRITER_FINAL_PREAMBLE)
         except Exception as e:
             ui.add_room_entry("system", f"Error drafting: {e}")
             self.mode = RoomMode.PUBLIC
@@ -1315,17 +1317,14 @@ class Botference:
         self.transcript.add(lead, draft_resp.text, draft_resp.tool_summaries)
         self.transcript.mark_seen(lead)
 
-        # Step 2 — non-lead reviews (reviewer already initialized above)
-        reviewer_cap = reviewer.capitalize()
-        rev_adapter = self.codex if lead == "claude" else self.claude
-
+        # Step 2 — first review
         self.mode = RoomMode.REVIEW
         ui.set_mode(RoomMode.REVIEW)
 
         ui.add_room_entry("system", f"{reviewer_cap} is reviewing the draft…")
-        review_prompt = reviewer_preamble(lead_cap, draft_resp.text)
         try:
-            rev_resp = await rev_adapter.resume(review_prompt)
+            rev_resp = await rev_adapter.resume(
+                reviewer_preamble(lead_cap, draft_resp.text))
         except Exception as e:
             ui.add_room_entry("system", f"Error reviewing: {e}")
             self.mode = RoomMode.PUBLIC
@@ -1337,9 +1336,47 @@ class Botference:
         self.transcript.add(reviewer, rev_resp.text, rev_resp.tool_summaries)
         self.transcript.mark_seen(reviewer)
 
-        # Step 3 — ask user
+        # Step 3 — lead revises based on review
+        self.mode = RoomMode.DRAFT
+        ui.set_mode(RoomMode.DRAFT)
+
+        ui.add_room_entry("system", f"{lead_cap} is revising based on feedback…")
+        try:
+            revised_resp = await adapter.resume(
+                revision_preamble(reviewer_cap, rev_resp.text))
+        except Exception as e:
+            ui.add_room_entry("system", f"Error revising: {e}")
+            self.mode = RoomMode.PUBLIC
+            ui.set_mode(RoomMode.PUBLIC)
+            return
+
+        self._update_pct(lead, revised_resp, ui)
+        ui.add_room_entry(lead, revised_resp.text)
+        self.transcript.add(lead, revised_resp.text, revised_resp.tool_summaries)
+        self.transcript.mark_seen(lead)
+
+        # Step 4 — second review
+        self.mode = RoomMode.REVIEW
+        ui.set_mode(RoomMode.REVIEW)
+
+        ui.add_room_entry("system", f"{reviewer_cap} is reviewing the revision…")
+        try:
+            rev2_resp = await rev_adapter.resume(
+                reviewer_preamble(lead_cap, revised_resp.text))
+        except Exception as e:
+            ui.add_room_entry("system", f"Error reviewing: {e}")
+            self.mode = RoomMode.PUBLIC
+            ui.set_mode(RoomMode.PUBLIC)
+            return
+
+        self._update_pct(reviewer, rev2_resp, ui)
+        ui.add_room_entry(reviewer, rev2_resp.text)
+        self.transcript.add(reviewer, rev2_resp.text, rev2_resp.tool_summaries)
+        self.transcript.mark_seen(reviewer)
+
+        # Step 5 — ask user
         ui.add_room_entry("system", "Write plan? [y/n]")
-        self._pending_draft = draft_resp.text
+        self._pending_draft = revised_resp.text
         self._pending_lead = lead
         ui.set_status(self.status_snapshot())
 
@@ -1356,9 +1393,8 @@ class Botference:
 
         ui.add_room_entry("system", f"Writing plan files ({lead})…")
 
-        write_prompt = write_preamble(draft)
-
         work_prefix = self.paths.work_prefix
+        write_prompt = write_preamble(draft, work_prefix)
 
         try:
             if lead == "codex":

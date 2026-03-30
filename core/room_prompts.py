@@ -114,14 +114,25 @@ def reviewer_preamble(lead_name: str, draft_text: str) -> str:
     )
 
 
+def revision_preamble(reviewer_name: str, review_text: str) -> str:
+    """Instructions for the lead to revise based on review feedback."""
+    return (
+        f"{reviewer_name} reviewed your draft and provided this feedback:\n\n"
+        f"{review_text}\n\n"
+        f"Revise your implementation plan to address this feedback. "
+        f"Incorporate valid points, explain any you disagree with, "
+        f"and produce the updated plan as clean markdown."
+    )
+
+
 # -- Write ------------------------------------------------------------------
 
 
-def write_preamble(draft_text: str) -> str:
+def write_preamble(draft_text: str, work_prefix: str = "") -> str:
     """Instructions for writing approved plan files."""
     return (
         "Write the following plan to these files:\n"
-        "1. implementation-plan.md — the full plan\n"
-        "2. checkpoint.md — a brief checkpoint summary\n\n"
+        f"1. {work_prefix}implementation-plan.md — the full plan\n"
+        f"2. {work_prefix}checkpoint.md — a brief checkpoint summary\n\n"
         f"Plan content:\n\n{draft_text}"
     )
