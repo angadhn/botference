@@ -1,5 +1,9 @@
 build/
+archive/
 work/iteration_count
+work/handoffs/
+work/handoff-claude.md
+work/handoff-codex.md
 .council/
 .DS_Store
 __pycache__/
