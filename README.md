@@ -37,6 +37,8 @@ The council is where decisions get made. The caucus is where the AIs work out
 their disagreements so they can bring you a coherent proposal instead of
 conflicting opinions.
 
+![Caucus complete — Claude and Codex reached agreement, lead auto-set to @codex](docs/images/caucus.png)
+
 ## Quick Start
 
 ```bash
@@ -109,6 +111,8 @@ Messages in the council panel are labelled by speaker:
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
 
+![/help output showing commands, messaging, aliases, and workflow](docs/images/help-commands.png)
+
 **Typical workflow:** discuss → `/caucus` → `/lead` (or let caucus decide) →
 `/finalize` → approve (y/n).
 
@@ -124,10 +128,24 @@ input field at the bottom.
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
 
+![Ink input field and status line — typing @claude while lead is @codex](docs/images/ink-input-status.png)
+
+The status line fields:
+
+| Field | Meaning |
+|-------|---------|
+| **Mode** | Current session state: `public` (normal chat), `caucus` (AIs debating), `draft` (lead writing), `review` (other model reviewing) |
+| **Lead** | Which model will write the plan when you `/draft` or `/finalize`. Set manually with `/lead` or auto-set by caucus consensus. |
+| **Route** | Where your next message goes (`@all`, `@claude`, or `@codex`) |
+| **Claude / Codex** | Context usage as percentage of the model's window |
+| **Observe** | Debug observation mode (off by default) |
+
+Note: `@claude` in the input field is who you're *talking to* — the **Lead** in
+the status bar is who will *write the plan*. These are independent.
+
 > [!WARNING]
-> The status line below the text field shows context usage (tokens / window)
-> for each model. This works reasonably well for Claude but can be glitchy for
-> Codex. Treat the numbers as a rough guide, not a precise measurement.
+> The context percentages work reasonably well for Claude but can be glitchy
+> for Codex. Treat the numbers as a rough guide, not a precise measurement.
 
 ### Interface options
 
@@ -140,6 +158,15 @@ The TUI has two backends:
 
 Both present the same council + caucus interface. Use `--claude` to skip Codex
 and run a solo Claude session (no TUI, just the Claude CLI).
+
+**Ink TUI** — council panel (left), caucus panel (right), input field and
+status line at the bottom:
+
+![Ink UI — council and caucus panels with status line](docs/images/ink-ui.png)
+
+**Textual TUI** — same layout, Python-based (default):
+
+![Textual UI — council and caucus panels with status line](docs/images/textual-ui.png)
 
 ## Overview
 
