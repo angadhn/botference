@@ -19,6 +19,25 @@ part that works well and is ready for use.
 > done, use `./botference plan` and take the resulting plan into your own
 > workflow.
 
+**Ink TUI** — council panel (left), caucus panel (right), input field and
+status line at the bottom:
+
+![Ink UI — council and caucus panels with status line](docs/images/ink-ui.png)
+
+**Textual TUI** — same layout, Python-based (default):
+
+![Textual UI — council and caucus panels with status line](docs/images/textual-ui.png)
+
+The TUI has two backends:
+
+| Flag | Backend | Notes |
+|------|---------|-------|
+| `--textual` | Textual (Python) | Default. No extra install needed. |
+| `--ink` | Ink (Node.js/React) | Requires `npm install` in `ink-ui/`. Supports multiline input (Shift+Enter). |
+
+Both present the same council + caucus interface. Use `--claude` to skip Codex
+and run a solo Claude session (no TUI, just the Claude CLI).
+
 ## Approach
 
 Botference uses two metaphors for multi-LLM collaboration, shown as two panels
@@ -146,27 +165,6 @@ the status bar is who will *write the plan*. These are independent.
 > [!WARNING]
 > The context percentages work reasonably well for Claude but can be glitchy
 > for Codex. Treat the numbers as a rough guide, not a precise measurement.
-
-### Interface options
-
-The TUI has two backends:
-
-| Flag | Backend | Notes |
-|------|---------|-------|
-| `--textual` | Textual (Python) | Default. No extra install needed. |
-| `--ink` | Ink (Node.js/React) | Requires `npm install` in `ink-ui/`. Supports multiline input (Shift+Enter). |
-
-Both present the same council + caucus interface. Use `--claude` to skip Codex
-and run a solo Claude session (no TUI, just the Claude CLI).
-
-**Ink TUI** — council panel (left), caucus panel (right), input field and
-status line at the bottom:
-
-![Ink UI — council and caucus panels with status line](docs/images/ink-ui.png)
-
-**Textual TUI** — same layout, Python-based (default):
-
-![Textual UI — council and caucus panels with status line](docs/images/textual-ui.png)
 
 ## Overview
 
