@@ -1,0 +1,820 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Bootstrap ────────────────────────────────────────────────
+# botference must locate the framework root before any abstraction exists.
+# This is the one intentionally hardcoded path resolution in the system.
+if [ -z "${BOTFERENCE_HOME:-}" ]; then
+  BOTFERENCE_HOME="$(cd "$(dirname "$0")" && pwd)"
+fi
+if [ ! -f "${BOTFERENCE_HOME}/core/botference_agent.py" ]; then
+  echo "Error: BOTFERENCE_HOME (${BOTFERENCE_HOME}) does not contain core/botference_agent.py" >&2
+  exit 1
+fi
+export BOTFERENCE_HOME
+
+BOTFERENCE_PROJECT_ROOT="$(pwd -P)"
+export BOTFERENCE_PROJECT_ROOT
+
+source "${BOTFERENCE_HOME}/lib/config.sh"
+source "${BOTFERENCE_HOME}/lib/detect.sh"
+source "${BOTFERENCE_HOME}/lib/monitor.sh"
+source "${BOTFERENCE_HOME}/lib/post-run.sh"
+source "${BOTFERENCE_HOME}/lib/exec.sh"
+
+init_botference_paths
+
+parse_loop_args "$@"
+
+if $SHOW_HELP; then
+  show_help
+  exit 0
+fi
+
+if [ -n "$CLI_MODEL" ]; then
+  export ANTHROPIC_MODEL="$CLI_MODEL"
+fi
+
+if $PIPE_MODE && { [ "$LOOP_MODE" = "plan" ] || [ "$LOOP_MODE" = "research-plan" ]; }; then
+  echo "Error: $LOOP_MODE mode is interactive only — remove the -p flag."
+  exit 1
+fi
+
+ARCH_MODE=$(resolve_arch_mode_from_plan "$ARCH_MODE" "$BOTFERENCE_PLAN_FILE")
+export ARCH_MODE
+
+if [ -n "$PROMPT_FILE" ]; then
+  PROMPT_FILE="${BOTFERENCE_HOME}/${PROMPT_FILE}"
+  if [ ! -f "$PROMPT_FILE" ]; then
+    echo "Error: $PROMPT_FILE not found"
+    exit 1
+  fi
+fi
+
+if [ "$LOOP_MODE" = "archive" ]; then
+  bash "${BOTFERENCE_HOME}/scripts/archive.sh"
+  exit 0
+fi
+
+CONTEXT_THRESHOLD=45  # default for <1M windows; overridden to 20 for 1M windows below
+CTX_FILE="$BOTFERENCE_RUN/context-pct"
+YIELD_FILE="$BOTFERENCE_RUN/yield"
+BUDGET_FILE="$BOTFERENCE_RUN/budget-info"
+PLAN_AUDIT_FILE="$BOTFERENCE_RUN/plan-audit-failed"
+POLL_INTERVAL=5
+BACKOFF=60
+USAGE_LOG="$BOTFERENCE_LOGS_DIR/usage.jsonl"
+AGENT_MAX_RETRIES=3
+AGENT_RETRY_DELAYS=(5 15 45)
+CB_FILE="$BOTFERENCE_RUN/circuit-breaker"
+CB_THRESHOLD=5
+CB_CONSECUTIVE_FAILURES=0
+COUNTER_FILE="$BOTFERENCE_COUNTER_FILE"
+HEARTBEAT_INTERVAL=90
+
+CLAUDE_PID=""
+MONITOR_PID=""
+JSONL_MONITOR_PID=""
+LAST_CTRL_C=0
+
+restore_circuit_breaker_state
+restore_iteration_counter
+
+ensure_ink_ui_dist() {
+  local ink_dir="${BOTFERENCE_HOME}/ink-ui"
+  local dist_bin="${ink_dir}/dist/bin.js"
+  local rebuild=false
+  local src
+
+  if [ ! -f "$dist_bin" ]; then
+    rebuild=true
+  else
+    for src in \
+      "$ink_dir/build.mjs" \
+      "$ink_dir/package.json" \
+      "$ink_dir/package-lock.json"
+    do
+      if [ "$src" -nt "$dist_bin" ]; then
+        rebuild=true
+        break
+      fi
+    done
+
+    if ! $rebuild; then
+      while IFS= read -r src; do
+        if [ "$src" -nt "$dist_bin" ]; then
+          rebuild=true
+          break
+        fi
+      done < <(find "$ink_dir/src" -type f)
+    fi
+  fi
+
+  if $rebuild; then
+    echo "  Building Ink UI"
+    (
+      cd "$ink_dir"
+      node build.mjs
+    )
+  fi
+}
+
+trap 'handle_interrupt_signal' INT
+
+print_loop_banner
+
+# --- Pre-loop plan validation (safety net) ---
+# Planner commit gates are the primary enforcement point for TDD structure.
+# This build-start check is a safety net: fail fast before wasting an iteration
+# on a plan that would fail commit gates anyway.
+if [ -f "$BOTFERENCE_PLAN_FILE" ]; then
+  if ! validate_plan_tdd_structure "$BOTFERENCE_PLAN_FILE"; then
+    echo "✗ Plan validation failed — fix TDD task structure before running build."
+    exit 1
+  fi
+fi
+
+LOOP_EXIT_CODE=0
+while true; do
+  # --- Circuit breaker check ---
+  if cb_is_open; then
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║  CIRCUIT BREAKER OPEN — $CB_CONSECUTIVE_FAILURES consecutive failures"
+    echo "║  Halting to avoid wasting tokens.                       ║"
+    echo "╠══════════════════════════════════════════════════════════╣"
+    echo "║  To resume:                                             ║"
+    echo "║    rm $CB_FILE && ./botference -p     ║"
+    echo "║  Or investigate logs/usage.jsonl for error patterns.    ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    break
+  fi
+
+  echo "=== Iteration $((ITERATION + 1)) ==="
+  rm -f "$CTX_FILE" "$YIELD_FILE" "$BUDGET_FILE"
+  sleep 3  # let any dying statusline process finish writing, then clear again
+  rm -f "$CTX_FILE"
+
+  # --- Pre-iteration gate check ---
+  if [ -f "$BOTFERENCE_REVIEW_FILE" ]; then
+    _gate_template="${BOTFERENCE_HOME}/templates/HUMAN_REVIEW_NEEDED.md"
+    if ! diff -q "$BOTFERENCE_REVIEW_FILE" "$_gate_template" >/dev/null 2>&1; then
+      echo ""
+      echo "╔══════════════════════════════════════════════════════════╗"
+      echo "║  HUMAN REVIEW STILL PENDING                            ║"
+      echo "╚══════════════════════════════════════════════════════════╝"
+      echo ""
+      cat "$BOTFERENCE_REVIEW_FILE"
+      echo ""
+      echo "To continue: review above, then:"
+      echo "  rm $BOTFERENCE_REVIEW_FILE && ./botference -p"
+      break
+    fi
+  fi
+
+  ITER_START=$(date +%s)
+  IGNORE_UNTIL=$(( ITER_START + 15 ))  # ignore context readings for first 15s (stale cache)
+
+  # --- Reflection trigger (every 5th iteration) ---
+  rm -f "$BOTFERENCE_RUN/reflect"
+  if [ "$ITERATION" -gt 0 ] && [ $(( ITERATION % 5 )) -eq 0 ]; then
+    touch "$BOTFERENCE_RUN/reflect"
+    echo "  Reflection iteration (mod 5)"
+  fi
+
+  # --- Detect thread and agent ---
+  CURRENT_THREAD=$(extract_thread)
+  CURRENT_AGENT=$(detect_agent_from_checkpoint "$BOTFERENCE_CHECKPOINT_FILE" "$BOTFERENCE_PLAN_FILE")
+
+  # --- Plan mode: one-shot interactive session, early exit ---
+  if [ "$LOOP_MODE" = "plan" ] || [ "$LOOP_MODE" = "research-plan" ]; then
+    CURRENT_AGENT="${CURRENT_AGENT:-plan}"
+    echo "  Plan mode"
+
+    # Compute allowed-tools paths (dynamic: bare names or work/ prefix)
+    PLAN_WORK_PREFIX=""
+    if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+      PLAN_WORK_PREFIX="${BOTFERENCE_WORK_DIR#$BOTFERENCE_PROJECT_ROOT/}/"
+    fi
+    PLAN_ALLOWED_TOOLS=(
+      "Read" "Glob" "Grep" "Bash"
+      "Edit(/${PLAN_WORK_PREFIX}checkpoint.md)"
+      "Edit(/${PLAN_WORK_PREFIX}implementation-plan.md)"
+      "Edit(/${PLAN_WORK_PREFIX}implementation-plan-*.md)"
+      "Edit(/${PLAN_WORK_PREFIX}inbox.md)"
+      "Write(/${PLAN_WORK_PREFIX}checkpoint.md)"
+      "Write(/${PLAN_WORK_PREFIX}implementation-plan.md)"
+      "Write(/${PLAN_WORK_PREFIX}implementation-plan-*.md)"
+      "Write(/${PLAN_WORK_PREFIX}inbox.md)"
+    )
+
+    # --- Botference mode: Claude + Codex TUI ---
+    if $BOTFERENCE_MODE; then
+      CLAUDE_MODEL_RESOLVED=$(resolve_model "plan")
+      resolve_model_and_effort "$CLAUDE_MODEL_RESOLVED" "plan"
+      OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.4}"
+
+      if [ -n "$PROMPT_FILE" ]; then
+        PROMPT=$(cat "$PROMPT_FILE")
+      else
+        PROMPT=""
+      fi
+      if [ -s "$BOTFERENCE_INBOX_FILE" ]; then
+        echo "  📬 Absorbing operator notes from inbox.md"
+        PROMPT="[Operator notes]"$'\n'"$(cat "$BOTFERENCE_INBOX_FILE")"$'\n\n'"$PROMPT"
+        : > "$BOTFERENCE_INBOX_FILE"
+      fi
+
+      if [ "$LOOP_MODE" = "research-plan" ]; then
+        PLAN_SYSTEM="$(cat "${BOTFERENCE_HOME}/.claude/agents/plan.md")"
+      else
+        PLAN_SYSTEM=""
+      fi
+
+      PLAN_SNAPSHOT=$(mktemp); PLAN_ALLOWED=$(mktemp); PLAN_VIOLATIONS=$(mktemp)
+      plan_write_state_snapshot "$PLAN_SNAPSHOT"
+
+      # Build debug-panes flag correctly (avoid passing "false" as truthy)
+      DEBUG_FLAG=""
+      if $DEBUG_PANES; then
+        DEBUG_FLAG="--debug-panes"
+      fi
+
+      # Load API keys from .env if not already in environment
+      if [ -f "${BOTFERENCE_HOME}/.env" ]; then
+        if [ -z "${OPENAI_API_KEY:-}" ]; then
+          _val=$(grep -m1 '^OPENAI_API_KEY=' "${BOTFERENCE_HOME}/.env" 2>/dev/null | cut -d= -f2 | tr -d "'" | tr -d '"' || true)
+          [ -n "${_val:-}" ] && export OPENAI_API_KEY="$_val"
+          unset _val
+        fi
+        if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+          _val=$(grep -m1 '^ANTHROPIC_API_KEY=' "${BOTFERENCE_HOME}/.env" 2>/dev/null | cut -d= -f2 | tr -d "'" | tr -d '"' || true)
+          [ -n "${_val:-}" ] && export ANTHROPIC_API_KEY="$_val"
+          unset _val
+        fi
+      fi
+
+      # Ensure codex has API key auth if available
+      if [ -n "${OPENAI_API_KEY:-}" ]; then
+        echo "$OPENAI_API_KEY" | codex login --with-api-key 2>/dev/null && \
+          echo "  Codex: API key auth" || true
+      fi
+
+      echo "  Council: Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE"
+      if [ "$UI_MODE" = "ink" ]; then
+        ensure_ink_ui_dist
+        # Pass large strings via temp files to avoid arg-length/escaping issues
+        _ink_sys=$(mktemp); _ink_task=$(mktemp)
+        printf '%s' "$PLAN_SYSTEM" > "$_ink_sys"
+        printf '%s' "$PROMPT" > "$_ink_task"
+        node "${BOTFERENCE_HOME}/ink-ui/dist/bin.js" \
+          --anthropic-model "$CLI_MODEL" \
+          --openai-model "$OPENAI_MODEL" \
+          ${EFFORT_FLAG:+--claude-effort ${EFFORT_FLAG#--effort }} \
+          --system-prompt-file "$_ink_sys" \
+          --task-file "$_ink_task" \
+          $DEBUG_FLAG
+        rm -f "$_ink_sys" "$_ink_task"
+      else
+        python3 "${BOTFERENCE_HOME}/core/botference.py" \
+          --anthropic-model "$CLI_MODEL" \
+          --openai-model "$OPENAI_MODEL" \
+          ${EFFORT_FLAG:+--claude-effort ${EFFORT_FLAG#--effort }} \
+          --system-prompt "$PLAN_SYSTEM" \
+          --task "$PROMPT" \
+          $DEBUG_FLAG
+      fi
+      EXIT_CODE=$?
+
+      if ! plan_audit_changed_files "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"; then
+        echo ""
+        echo "✗ Plan audit failed — unauthorized files changed:"
+        sed 's/^/  - /' "$PLAN_VIOLATIONS"
+        echo "  Build is blocked until these changes are resolved."
+        EXIT_CODE=1
+      elif [ "$EXIT_CODE" -eq 0 ]; then
+        if ! plan_commit_and_push_changes "$PLAN_ALLOWED"; then
+          EXIT_CODE=1
+        fi
+      fi
+
+      rm -f "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"
+
+      if [ "$EXIT_CODE" -eq 0 ]; then
+        echo ""
+        echo "=== Council session complete. Run 'build' to start executing. ==="
+      fi
+      break
+    fi
+
+    # Build prompt
+    if [ -n "$PROMPT_FILE" ]; then
+      PROMPT=$(cat "$PROMPT_FILE")
+    else
+      PROMPT=""
+    fi
+    if [ -s "$BOTFERENCE_INBOX_FILE" ]; then
+      echo "  📬 Absorbing operator notes from inbox.md"
+      PROMPT="## Operator Notes (read and act on these first)"$'\n\n'"$(cat "$BOTFERENCE_INBOX_FILE")"$'\n\n'"$PROMPT"
+      : > "$BOTFERENCE_INBOX_FILE"
+    fi
+
+    CLAUDE_MODEL=$(resolve_model "$CURRENT_AGENT")
+
+    # Start context monitor
+    monitor_context "$$" "$ITER_START" "$IGNORE_UNTIL" "$CURRENT_AGENT" &
+    MONITOR_PID=$!
+
+    # Archive check: if all tasks done, ask user before launching plan agent
+    CHECKED=$(grep -c '^\- \[x\]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null) || CHECKED=0
+    UNCHECKED=$(grep -c '^\- \[ \]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null) || UNCHECKED=0
+    if [ "$CHECKED" -gt 0 ] && [ "$UNCHECKED" -eq 0 ]; then
+      echo "  All tasks in implementation-plan.md are complete."
+      read -r -p "  Archive this thread and start fresh? (y/n): " answer < /dev/tty
+      if [[ "$answer" =~ ^[Yy] ]]; then
+        bash "${BOTFERENCE_HOME}/scripts/archive.sh"
+        echo "  Archived. Starting fresh."
+      fi
+    fi
+
+    PLAN_SNAPSHOT=$(mktemp)
+    PLAN_ALLOWED=$(mktemp)
+    PLAN_VIOLATIONS=$(mktemp)
+    plan_write_state_snapshot "$PLAN_SNAPSHOT"
+
+    # Run plan agent via claude CLI
+    if [ "$LOOP_MODE" = "research-plan" ]; then
+      PLAN_SYSTEM="$(cat "${BOTFERENCE_HOME}/.claude/agents/plan.md")"
+    else
+      PLAN_SYSTEM=""
+    fi
+    SYS_ARGS=()
+    if [ -n "$PLAN_SYSTEM" ]; then
+      SYS_ARGS=(--append-system-prompt "$PLAN_SYSTEM")
+    fi
+    SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    resolve_model_and_effort "$CLAUDE_MODEL" "plan"
+    echo "  Model: $CLI_MODEL ($LOOP_MODE — claude CLI${EFFORT_FLAG:+, effort: ${EFFORT_FLAG#--effort }})"
+    if [ -n "$PROMPT" ]; then
+      echo "$PROMPT" | claude --model "$CLI_MODEL" \
+        $EFFORT_FLAG \
+        "${SYS_ARGS[@]}" \
+        --session-id "$SESSION_ID" \
+        --permission-mode plan \
+        --name "${CURRENT_THREAD:-botference-plan}" \
+        --allowedTools "${PLAN_ALLOWED_TOOLS[@]}"
+
+    else
+      claude --model "$CLI_MODEL" \
+        $EFFORT_FLAG \
+        "${SYS_ARGS[@]}" \
+        --session-id "$SESSION_ID" \
+        --permission-mode plan \
+        --name "${CURRENT_THREAD:-botference-plan}" \
+        --allowedTools "${PLAN_ALLOWED_TOOLS[@]}"
+
+    fi
+    EXIT_CODE=$?
+
+    cleanup_pid "$MONITOR_PID"; MONITOR_PID=""
+
+    # Log interactive session usage
+    log_interactive_session "$SESSION_ID" "$LOOP_MODE"
+
+    if ! plan_audit_changed_files "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"; then
+      echo ""
+      echo "✗ Plan audit failed — unauthorized files changed:"
+      sed 's/^/  - /' "$PLAN_VIOLATIONS"
+      echo "  Build is blocked until these changes are resolved."
+      EXIT_CODE=1
+    elif [ "$EXIT_CODE" -eq 0 ]; then
+      if ! plan_commit_and_push_changes "$PLAN_ALLOWED"; then
+        EXIT_CODE=1
+      fi
+    fi
+
+    rm -f "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"
+
+    # Plan mode is one-shot — exit after this session
+    if [ "$EXIT_CODE" -eq 0 ]; then
+      echo ""
+      echo "=== Planning session complete. Run 'build' to start executing. ==="
+    fi
+    break
+  fi
+
+  # --- Build mode: increment iteration counter ---
+  ITERATION=$((ITERATION + 1))
+  echo "$ITERATION" > "$COUNTER_FILE"
+
+  if [ -f "$PLAN_AUDIT_FILE" ]; then
+    if DIRTY_VIOLATIONS=$(plan_violation_paths_still_dirty); then
+      echo ""
+      echo "✗ Build blocked — unresolved plan-mode file violations remain:"
+      printf '%s\n' "$DIRTY_VIOLATIONS" | sed 's/^/  - /'
+      echo "  Resolve or discard those changes, then rerun plan/build."
+      break
+    fi
+    rm -f "$PLAN_AUDIT_FILE"
+  fi
+
+  # --- Build mode: detect agent ---
+  if [ -n "$CURRENT_AGENT" ] && [ "$CURRENT_AGENT" != "" ]; then
+    AGENT_PATH=$(resolve_agent_path "$CURRENT_AGENT")
+    if [ -z "$AGENT_PATH" ]; then
+      # Checkpoint has a bad Next Task (agent wrote prose instead of a task line).
+      # Fall back to the implementation plan's first unchecked task.
+      echo "  ⚠  Agent '$CURRENT_AGENT' not found — falling back to implementation plan"
+      CURRENT_AGENT=$(detect_agent_from_checkpoint /dev/null "$BOTFERENCE_PLAN_FILE")
+      if [ -n "$CURRENT_AGENT" ]; then
+        AGENT_PATH=$(resolve_agent_path "$CURRENT_AGENT")
+      fi
+      if [ -z "$AGENT_PATH" ]; then
+        echo "     Could not resolve agent from plan either. Skipping."
+        sleep 5
+        continue
+      fi
+      # Fix the checkpoint so this doesn't repeat
+      plan_next=$(grep '^\- \[ \]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null \
+        | grep -v '<task description>\|<agent>' \
+        | head -1 | sed 's/^- \[ \] //')
+      if [ -n "$plan_next" ]; then
+        awk -v task="$plan_next" '
+          /^## Next Task/ { print; print ""; print task; skip=1; next }
+          skip && /^## / { skip=0 }
+          !skip { print }
+        ' "$BOTFERENCE_CHECKPOINT_FILE" > "$BOTFERENCE_CHECKPOINT_FILE.tmp" && mv "$BOTFERENCE_CHECKPOINT_FILE.tmp" "$BOTFERENCE_CHECKPOINT_FILE"
+        echo "  Fixed checkpoint Next Task → $CURRENT_AGENT"
+      fi
+    fi
+    echo "  Agent detected: $CURRENT_AGENT (${AGENT_PATH})"
+  else
+    # Check if this is a completed plan (all tasks checked off) vs empty template
+    CHECKED=$(grep -c '^\- \[x\]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null) || CHECKED=0
+    UNCHECKED=$(grep -c '^\- \[ \]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null) || UNCHECKED=0
+    if [ "$CHECKED" -gt 0 ] && [ "$UNCHECKED" -eq 0 ]; then
+      echo ""
+      echo "╔══════════════════════════════════════════════════════════╗"
+      echo "║  BUILD COMPLETE — all tasks done                        ║"
+      echo "╠══════════════════════════════════════════════════════════╣"
+      echo "║  To archive this thread, run:                           ║"
+      echo "║    bash scripts/archive.sh                              ║"
+      echo "║                                                         ║"
+      echo "║  This will move to archive/<date>_<thread>/:            ║"
+      echo "║    checkpoint.md, implementation-plan.md,               ║"
+      echo "║    ai-generated-outputs/<thread>/, reflections/,        ║"
+      echo "║    CHANGELOG.md, inbox.md                               ║"
+      echo "║  and restore blank templates.                           ║"
+      echo "╚══════════════════════════════════════════════════════════╝"
+
+      # Auto-compile LaTeX if main.tex exists
+      if [ -f "main.tex" ]; then
+        echo "║  Compiling LaTeX..."
+        compile_result=$(pdflatex -interaction=nonstopmode main.tex 2>&1 && \
+                         bibtex main 2>&1 && \
+                         pdflatex -interaction=nonstopmode main.tex 2>&1 && \
+                         pdflatex -interaction=nonstopmode main.tex 2>&1)
+        if [ -f "main.pdf" ]; then
+          echo "║  PDF generated: main.pdf"
+        else
+          echo "║  WARNING: LaTeX compilation failed"
+          echo "$compile_result" | grep "^!" | head -5
+        fi
+      fi
+    else
+      echo "  No task found in checkpoint.md — nothing to do."
+      echo "  Run './botference plan' to plan next steps,"
+      echo "  or 'bash scripts/archive.sh' to archive."
+    fi
+    break
+  fi
+
+  # --- Orchestrated mode: AI-driven dispatch ---
+  if [ "$ARCH_MODE" = "orchestrated" ]; then
+    ORCH_RC=0
+    run_orchestrated_phase || ORCH_RC=$?
+    if [ "$ORCH_RC" -eq 2 ]; then
+      # Orchestrator says all tasks complete
+      echo ""
+      echo "╔══════════════════════════════════════════════════════════╗"
+      echo "║  BUILD COMPLETE — orchestrator confirmed all tasks done ║"
+      echo "╚══════════════════════════════════════════════════════════╝"
+      break
+    elif [ "$ORCH_RC" -eq 0 ] && [ -n "$CURRENT_AGENT" ]; then
+      # Orchestrator set CURRENT_AGENT for serial dispatch — fall through to build prompt
+      echo "  Agent dispatched by orchestrator: $CURRENT_AGENT"
+    elif [ "$ORCH_RC" -eq 0 ]; then
+      # Orchestrator handled everything (parallel dispatch or adaptation)
+      capture_eval_metrics || true
+      echo ""
+      echo "=== Iteration $ITERATION complete (orchestrated). Fresh context in 3s... ==="
+      sleep 3
+      if [ -n "${MAX_ITERATIONS:-}" ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
+        echo "=== Max iterations ($MAX_ITERATIONS) reached. Exiting. ==="
+        break
+      fi
+      continue
+    else
+      # Orchestrator failed — fall through to plan-driven logic
+      echo "  Falling back to plan-driven execution"
+    fi
+  fi
+
+  # --- Parallel mode: run all tasks in current phase concurrently ---
+  if [ "$ARCH_MODE" = "parallel" ]; then
+    CURRENT_PHASE=$(detect_current_phase "$BOTFERENCE_PLAN_FILE")
+    if [ -n "$CURRENT_PHASE" ] && is_parallel_phase "$CURRENT_PHASE"; then
+      # Validate dependencies before running in parallel
+      if ! validate_phase_dependencies "$BOTFERENCE_PLAN_FILE" "$CURRENT_PHASE"; then
+        echo "  ⚠  Dependency check failed — falling back to serial execution"
+      else
+        run_parallel_phase "$CURRENT_PHASE"
+        PARALLEL_RC=$?
+
+        capture_eval_metrics || true
+
+        echo ""
+        echo "=== Iteration $ITERATION complete (parallel phase). Fresh context in 3s... ==="
+        sleep 3
+
+        if [ -n "${MAX_ITERATIONS:-}" ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
+          echo "=== Max iterations ($MAX_ITERATIONS) reached. Exiting. ==="
+          break
+        fi
+        continue
+      fi
+    fi
+    # Not a parallel phase — fall through to serial execution
+    echo "  Phase not marked (parallel) — running serially"
+  fi
+
+  # --- Snapshot plan for single-task enforcement ---
+  PLAN_BEFORE_SNAPSHOT="$BOTFERENCE_RUN/plan-before-${ITERATION}.md"
+  cp "$BOTFERENCE_PLAN_FILE" "$PLAN_BEFORE_SNAPSHOT"
+
+  # --- Build prompt ---
+  PROMPT=$(cat "$PROMPT_FILE")
+
+  # Inbox: absorb operator notes if present
+  if [ -s "$BOTFERENCE_INBOX_FILE" ]; then
+    echo "  📬 Absorbing operator notes from inbox.md"
+    PROMPT="## Operator Notes (read and act on these first)"$'\n\n'"$(cat "$BOTFERENCE_INBOX_FILE")"$'\n\n'"$PROMPT"
+    : > "$BOTFERENCE_INBOX_FILE"
+  fi
+
+  if $PIPE_MODE; then
+    # Non-interactive: pipe prompt, background claude, poll for context via JSONL monitor
+    CLAUDE_MODEL=$(resolve_model "$CURRENT_AGENT")
+    echo "  Model: $(resolve_cli_model "$CLAUDE_MODEL")"
+
+    # Create start marker for JSONL monitor (before launching claude)
+    touch "$BOTFERENCE_RUN/monitor-start"
+
+    # Launch JSONL context monitor in background
+    # Search: BOTFERENCE_HOME first (framework), then GITHUB_WORKSPACE, then CWD
+    MONITOR_SCRIPT=""
+    for _s in "${BOTFERENCE_HOME}/.github/scripts/botference-monitor.sh" \
+              "${GITHUB_WORKSPACE:-.}/.github/scripts/botference-monitor.sh" \
+              ".github/scripts/botference-monitor.sh"; do
+      if [ -x "$_s" ]; then MONITOR_SCRIPT="$_s"; break; fi
+    done
+    if [ -n "$MONITOR_SCRIPT" ]; then
+      CONTEXT_WINDOW=$(resolve_context_window "$CLAUDE_MODEL")
+      # 1M windows yield earlier; smaller windows use a 45% threshold.
+      if [ "$CONTEXT_WINDOW" -ge 1000000 ] 2>/dev/null; then
+        CONTEXT_THRESHOLD=20
+      else
+        CONTEXT_THRESHOLD=45
+      fi
+      bash "$MONITOR_SCRIPT" "$CONTEXT_THRESHOLD" "$CONTEXT_WINDOW" &
+      JSONL_MONITOR_PID=$!
+      echo "  JSONL context monitor started (pid $JSONL_MONITOR_PID)"
+    fi
+
+    # Auth-detection: Anthropic model but no API key → use claude -p fallback (OAuth/Max plan)
+    USE_CLAUDE_FALLBACK=false
+    AGENT_SYSTEM_PROMPT=""
+    if is_anthropic_model "$CLAUDE_MODEL" && ! has_anthropic_api_key; then
+      USE_CLAUDE_FALLBACK=true
+      echo "  No API key detected — using claude -p fallback (OAuth/Max plan)"
+      AGENT_SYSTEM_PROMPT=$(build_claude_system_prompt "$CURRENT_AGENT")
+    fi
+
+    # Launch agent runner with bash-level retries for transient failures
+    AGENT_ATTEMPT=0
+    while true; do
+      rm -f $BOTFERENCE_RUN/output.json
+
+      if $USE_CLAUDE_FALLBACK; then
+        MCP_CONFIG=$(build_mcp_config "$CURRENT_AGENT")
+        resolve_model_and_effort "$CLAUDE_MODEL" "$CURRENT_AGENT"
+        echo "$PROMPT" | claude --model "$CLI_MODEL" \
+          $EFFORT_FLAG \
+          --tools "" \
+          --mcp-config "$MCP_CONFIG" \
+          --append-system-prompt "$AGENT_SYSTEM_PROMPT" \
+          --output-format stream-json \
+          --verbose \
+          --dangerously-skip-permissions \
+          | python3 "${BOTFERENCE_HOME}/lib/stream-filter.py" "$BOTFERENCE_RUN/output.json" &
+        CLAUDE_PID=$!
+      else
+        echo "$PROMPT" | python3 "${BOTFERENCE_HOME}/core/botference_agent.py" --agent "$CURRENT_AGENT" --task - --model "$CLAUDE_MODEL" --output-json $BOTFERENCE_RUN/output.json &
+        CLAUDE_PID=$!
+      fi
+
+      # Wait for first context reading (after ignore window) and print it
+      for i in $(seq 1 30); do
+        now=$(date +%s)
+        if [ "$now" -ge "$IGNORE_UNTIL" ] && [ -f "$CTX_FILE" ]; then
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            file_time=$(stat -f %m "$CTX_FILE" 2>/dev/null || echo 0)
+          else
+            file_time=$(stat -c %Y "$CTX_FILE" 2>/dev/null || echo 0)
+          fi
+          if [ "$file_time" -ge "$IGNORE_UNTIL" ]; then
+            start_pct=$(cat "$CTX_FILE" 2>/dev/null | tr -d '[:space:]')
+            if [ -n "$start_pct" ] 2>/dev/null; then
+              echo "  Starting context: ${start_pct}%"
+              break
+            fi
+          fi
+        fi
+        sleep 2
+      done
+
+      monitor_context "$CLAUDE_PID" "$ITER_START" "$IGNORE_UNTIL" "$CURRENT_AGENT" &
+      MONITOR_PID=$!
+
+      wait "$CLAUDE_PID" 2>/dev/null
+      EXIT_CODE=$?
+      CLAUDE_PID=""
+
+      cleanup_pid "$MONITOR_PID"; MONITOR_PID=""
+
+      # Success — break out of retry loop
+      if [ "$EXIT_CODE" -eq 0 ]; then
+        break
+      fi
+
+      # Check if the failure looks transient (no output JSON = crash before any work)
+      AGENT_ATTEMPT=$((AGENT_ATTEMPT + 1))
+      if [ "$AGENT_ATTEMPT" -ge "$AGENT_MAX_RETRIES" ]; then
+        echo "  Agent $CURRENT_AGENT failed after $((AGENT_ATTEMPT + 1)) attempts (exit $EXIT_CODE)"
+        break
+      fi
+
+      delay=${AGENT_RETRY_DELAYS[$((AGENT_ATTEMPT - 1))]:-45}
+      echo "  [agent retry] $CURRENT_AGENT exited $EXIT_CODE, attempt $((AGENT_ATTEMPT + 1))/$((AGENT_MAX_RETRIES + 1)), waiting ${delay}s..."
+      sleep "$delay"
+    done
+
+    # Stop JSONL monitor if running
+    cleanup_pid "$JSONL_MONITOR_PID"; JSONL_MONITOR_PID=""
+
+    # Log post-run usage summary from --output-format json
+    if [ -f $BOTFERENCE_RUN/output.json ]; then
+      print_output_json_summary $BOTFERENCE_RUN/output.json
+
+      # Persist usage data to logs/usage.jsonl
+      # Extract agent name from checkpoint.md "**Last agent:**" field
+      AGENT_NAME=$(extract_agent_name)
+      log_usage_from_output_json $BOTFERENCE_RUN/output.json "$ITERATION" "$AGENT_NAME" "$LOOP_MODE" "$CURRENT_THREAD" \
+        && echo "  Usage logged to $USAGE_LOG" \
+        || echo "  (could not log usage data)"
+    fi
+    # --- Eval capture ---
+    post_iteration
+  else
+    # Interactive: monitor runs in background, agent gets the terminal
+    monitor_context "$$" "$ITER_START" "$IGNORE_UNTIL" "$CURRENT_AGENT" &
+    MONITOR_PID=$!
+
+    CLAUDE_MODEL=$(resolve_model "$CURRENT_AGENT")
+
+    if is_openai_model "$CLAUDE_MODEL"; then
+      # OpenAI models: use codex CLI for interactive TUI (uses codex's own tools),
+      # fall back to botference_agent.py (uses botference's per-agent tool registry)
+      rm -f $BOTFERENCE_RUN/output.json
+      if command -v codex >/dev/null 2>&1; then
+        echo "  Model: $CLAUDE_MODEL (OpenAI — using codex CLI)"
+        codex --model "$CLAUDE_MODEL" --full-auto "$PROMPT"
+        EXIT_CODE=$?
+      else
+        echo "  Model: $CLAUDE_MODEL (OpenAI — codex CLI not found, using botference_agent.py)"
+        echo "$PROMPT" | python3 "${BOTFERENCE_HOME}/core/botference_agent.py" --agent "$CURRENT_AGENT" --task - --model "$CLAUDE_MODEL" --output-json $BOTFERENCE_RUN/output.json
+        EXIT_CODE=$?
+      fi
+
+      cleanup_pid "$MONITOR_PID"; MONITOR_PID=""
+
+      # Log usage
+      AGENT_NAME=$(extract_agent_name)
+      if [ -f $BOTFERENCE_RUN/output.json ]; then
+        print_output_json_summary $BOTFERENCE_RUN/output.json
+        log_usage_from_output_json $BOTFERENCE_RUN/output.json "$ITERATION" "$AGENT_NAME" "$LOOP_MODE" "$CURRENT_THREAD" \
+          && echo "  Usage logged to $USAGE_LOG" \
+          || echo "  (could not log usage data)"
+      else
+        echo "  (codex interactive — usage not logged)"
+      fi
+    else
+      # Anthropic models: use claude CLI for interactive TUI
+      AGENT_SYSTEM_PROMPT=$(build_claude_system_prompt "$CURRENT_AGENT")
+      SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+      resolve_model_and_effort "$CLAUDE_MODEL" "$CURRENT_AGENT"
+      echo "  Model: $CLI_MODEL (interactive build — claude CLI${EFFORT_FLAG:+, effort: ${EFFORT_FLAG#--effort }})"
+      echo "$PROMPT" | claude --model "$CLI_MODEL" $EFFORT_FLAG \
+        --append-system-prompt "$AGENT_SYSTEM_PROMPT" \
+        --session-id "$SESSION_ID" --dangerously-skip-permissions
+      EXIT_CODE=$?
+
+      cleanup_pid "$MONITOR_PID"; MONITOR_PID=""
+
+      # Log interactive session usage
+      log_interactive_session "$SESSION_ID" "$(extract_agent_name)"
+    fi
+    # --- Eval capture ---
+    post_iteration
+  fi
+
+  # --- Error recovery with exponential backoff ---
+  if [ "$EXIT_CODE" -ne 0 ]; then
+    RATE_LIMITED=false
+    if $PIPE_MODE && [ -f $BOTFERENCE_RUN/output.json ]; then
+      if grep -q "You've hit your limit\|rate_limit\|overloaded" $BOTFERENCE_RUN/output.json 2>/dev/null; then
+        RATE_LIMITED=true
+      fi
+    fi
+
+    if $RATE_LIMITED; then
+      echo "  ⚠  Rate limit hit. Backing off ${BACKOFF}s ..."
+    else
+      echo "  ⚠  Claude exited $EXIT_CODE. Backing off ${BACKOFF}s ..."
+    fi
+    cb_record_failure
+    sleep "$BACKOFF"
+    BACKOFF=$((BACKOFF * 2))
+    [ "$BACKOFF" -gt 3600 ] && BACKOFF=3600
+    # Rewind counter so the retry keeps the same iteration number
+    ITERATION=$((ITERATION - 1))
+    echo "$ITERATION" > "$COUNTER_FILE"
+    continue
+  fi
+
+  # Reset backoff and circuit breaker after success
+  BACKOFF=60
+  cb_record_success
+
+  # --- Single-task enforcement (serial only) ---
+  if [ -f "$PLAN_BEFORE_SNAPSHOT" ]; then
+    if ! validate_single_task_completion "$PLAN_BEFORE_SNAPSHOT" "$BOTFERENCE_PLAN_FILE"; then
+      cb_record_failure
+      echo "  Build halted — agent completed multiple tasks in one iteration."
+      rm -f "$PLAN_BEFORE_SNAPSHOT"
+      halt_loop_with_error; break
+    fi
+    rm -f "$PLAN_BEFORE_SNAPSHOT"
+  fi
+
+  restore_truncated_files
+  append_changelog_entry
+
+  # Read final context %
+  final_pct=""
+  if [ -f "$CTX_FILE" ]; then
+    final_pct=$(cat "$CTX_FILE" 2>/dev/null | tr -d '[:space:]')
+  fi
+
+  # --- Task progress summary ---
+  if [ -f "$BOTFERENCE_PLAN_FILE" ]; then
+    _done=$(grep -c '^\- \[x\]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null) || _done=0
+    _todo=$(grep -c '^\- \[ \]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null) || _todo=0
+    _total=$((_done + _todo))
+    # Last completed task (most recent [x] line)
+    _last_task=$(grep '^\- \[x\]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null | tail -1 \
+      | sed 's/^- \[x\] //' | sed 's/ — \*\*.*$//' | head -c 80)
+    # Next task (first [ ] line)
+    _next_task=$(grep '^\- \[ \]' "$BOTFERENCE_PLAN_FILE" 2>/dev/null | head -1 \
+      | sed 's/^- \[ \] //' | sed 's/ — \*\*.*$//' | head -c 80)
+    echo "  --- Task progress: ${_done}/${_total} done ---"
+    [ -n "$_last_task" ] && echo "  Done: $_last_task"
+    [ -n "$_next_task" ] && echo "  Next: $_next_task"
+    [ "$_todo" -eq 0 ] && [ "$_done" -gt 0 ] && echo "  All tasks complete."
+  fi
+
+  echo ""
+  echo "=== Iteration $ITERATION complete (exit code: $EXIT_CODE${final_pct:+, context: ${final_pct}%}). Fresh context in 3s... ==="
+  sleep 3
+
+  # Max-iteration guard (for CI safety caps)
+  if [ -n "${MAX_ITERATIONS:-}" ] && [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
+    echo "=== Max iterations ($MAX_ITERATIONS) reached. Exiting. ==="
+    break
+  fi
+done
+
+# Clean up staged image attachments
+rm -rf "${BOTFERENCE_HOME}/.botference/tmp"
+
+exit ${LOOP_EXIT_CODE:-0}

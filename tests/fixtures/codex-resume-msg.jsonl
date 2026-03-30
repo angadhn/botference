@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"019d2f82-4db4-7830-b8a0-e3722820b54c"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Say only 'hello world'"}}
+{"type":"turn.completed","usage":{"input_tokens":32387,"cached_input_tokens":19456,"output_tokens":99}}

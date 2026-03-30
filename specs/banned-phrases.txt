@@ -1,0 +1,20 @@
+# Banned phrases — one per line, case-insensitive exact match.
+# Lines starting with # are comments. Blank lines are ignored.
+# Add new phrases freely; check_language.py reads this file on every run.
+
+# Academic LLM tics (content-style)
+real power
+wake-up call
+fundamentally changes
+key benefit
+cut through the noise
+key insight
+the irony
+the good news
+the reality
+it's kind of like
+here's the thing
+hard truth
+uncomfortable truth
+smoking gun
+game changer

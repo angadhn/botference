@@ -1,0 +1,25 @@
+{
+  "name": "botference-ink-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": "dist/bin.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && node dist/bin.js",
+    "test": "npx tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "ink": "^6.8.0",
+    "react": "^19.2.0",
+    "string-width": "^8.2.0",
+    "wrap-ansi": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.0.0",
+    "esbuild": "^0.27.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}

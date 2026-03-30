@@ -1,0 +1,14 @@
+build/
+work/iteration_count
+.council/
+.DS_Store
+__pycache__/
+.env
+.env.local
+
+# Unreferenced design specs (kept locally, not tracked)
+specs/evaluation-metrics.md
+specs/evidence-format.md
+specs/open-design-gaps.md
+specs/parallel-evolution-design.md
+specs/editor-output-format.md
