@@ -176,8 +176,9 @@ Note: `@claude` in the input field is who you're *talking to* — the **Lead** i
 the status bar is who will *write the plan*. These are independent.
 
 > [!WARNING]
-> The context percentages work reasonably well for Claude but can be glitchy
-> for Codex. Treat the numbers as a rough guide, not a precise measurement.
+> Claude reports a point-in-time occupancy snapshot. Codex uses a last-turn
+> prompt-footprint proxy derived from cumulative counters, so the first Codex
+> turn has no trusted baseline and will show as unavailable.
 
 ## Overview
 

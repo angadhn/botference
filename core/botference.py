@@ -620,8 +620,8 @@ class Botference:
             "",
             "Workflow: discuss → /caucus → /lead → /draft [rounds] → /finalize",
             "",
-            "Context shows current prompt occupancy / context window size.",
-            "Based on the model's last turn.",
+            "Claude context shows prompt occupancy / context window size.",
+            "Codex shows a last-turn prompt-footprint proxy once it has a baseline.",
         ]))
 
     # ── /status ───────────────────────────────────────────
@@ -1187,7 +1187,7 @@ class Botference:
         yield_pct = adapter.context_percent(resp)
         tokens = adapter.context_tokens(resp)
         window = resp.context_window or 200_000
-        raw_pct = (tokens / window * 100) if window else 0.0
+        raw_pct = (tokens / window * 100) if (tokens is not None and window) else 0.0
 
         self._yield_pressure[model] = yield_pct if yield_pct is not None else 0.0
 
@@ -1201,6 +1201,7 @@ class Botference:
             self._codex_window = window
 
         if (ui is not None and yield_pct is not None and yield_pct > 100
+                and tokens is not None
                 and model not in self._warned_overlimit_models):
             self._warned_overlimit_models.add(model)
             ui.add_room_entry(

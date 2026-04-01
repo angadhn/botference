@@ -323,11 +323,13 @@ class TestCodexSessionIsolation:
             assert first.turn_input_tokens == 12715
             assert first.turn_cached_input_tokens == 0
             assert first.turn_output_tokens == 33
+            assert first.context_tokens_reliable is False
 
             assert second.input_tokens == 25470  # cumulative
             assert second.turn_input_tokens == 12755
             assert second.turn_cached_input_tokens == 12672
             assert second.turn_output_tokens == 64
+            assert second.context_tokens_reliable is True
 
         asyncio.run(_test())
 
@@ -386,8 +388,9 @@ class TestContextPercent:
 
         Fixture: first turn cumulative input_tokens=100000, output_tokens=22400,
         aggregated_output=9600 chars → tool_result_tokens_estimate=2400.
-        Since this is the first turn, last-turn input equals 100000.
-        output_tokens and tool_result_tokens_estimate must not inflate it."""
+        Since this is the first turn, there is no trusted baseline yet.
+        output_tokens and tool-result estimates must not force a fake
+        context percentage from the raw cumulative total."""
 
         async def _test():
             adapter = CodexAdapter(model="gpt-5.4")
@@ -406,9 +409,8 @@ class TestContextPercent:
 
             assert resp.tool_result_tokens_estimate == 2400
             assert resp.turn_input_tokens == 100000
-            assert adapter.context_percent(resp) == pytest.approx(
-                (100000 / (272000 * 0.45)) * 100
-            )
+            assert resp.context_tokens_reliable is False
+            assert adapter.context_percent(resp) == 0.0
 
         asyncio.run(_test())
 
@@ -1043,16 +1045,17 @@ class TestContextTokens:
         assert adapter.context_tokens(resp) == 12_755
 
     def test_codex_fallback_to_input_tokens(self):
-        """When turn_input_tokens is 0 (first turn), falls back to input_tokens."""
+        """Without a prior baseline, Codex context display is unavailable."""
         adapter = CodexAdapter(model="gpt-5.4")
         resp = AdapterResponse(
             text="",
             input_tokens=12_715,
             turn_input_tokens=0,
+            context_tokens_reliable=False,
             output_tokens=33,
             context_window=272_000,
         )
-        assert adapter.context_tokens(resp) == 12_715
+        assert adapter.context_tokens(resp) is None
 
 
 class TestCodexStdinDevnull:

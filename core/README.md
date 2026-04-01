@@ -77,13 +77,18 @@ event when available, with a fallback to the `_CONTEXT_WINDOWS` table.
 
 Codex CLI `turn.completed.usage` is treated as cumulative session usage in
 `codex exec --json`, not current-turn context occupancy. The adapter therefore
-derives explicit last-turn deltas:
+derives explicit last-turn deltas once it has a prior cumulative sample:
 
 - `turn_input_tokens = cumulative_input_tokens - previous_cumulative_input_tokens`
 - `turn_cached_input_tokens = cumulative_cached_input_tokens - previous_cumulative_cached_input_tokens`
 - `turn_output_tokens = cumulative_output_tokens - previous_cumulative_output_tokens`
 
-The Codex context percentage uses **last-turn input only**:
+On the first Codex turn there is no previous cumulative baseline, so botference
+now treats the context display as unavailable instead of showing the raw
+cumulative total as if it were comparable to later deltas.
+
+When a baseline exists, the Codex context percentage uses **last-turn input
+only**:
 
 - `projected_tokens = turn_input_tokens`
 

@@ -48,6 +48,7 @@ class AdapterResponse:
     turn_input_tokens: int = 0  # last-turn prompt footprint (Codex delta of cumulative usage)
     turn_cached_input_tokens: int = 0  # last-turn cached input component for debugging/UI
     turn_output_tokens: int = 0  # last-turn output tokens for debugging/UI
+    context_tokens_reliable: bool = True  # false when usage lacks a stable baseline
     session_id: str = ""  # session/thread ID for resume
 
 
@@ -499,6 +500,11 @@ class CodexAdapter:
                     cumulative_input = usage.get("input_tokens", 0)
                     cumulative_output = usage.get("output_tokens", 0)
                     cumulative_cached = usage.get("cached_input_tokens", 0)
+                    baseline_available = any((
+                        prev_cumulative_input,
+                        prev_cumulative_output,
+                        prev_cumulative_cached,
+                    ))
 
                     response.input_tokens = cumulative_input
                     response.output_tokens = cumulative_output
@@ -512,6 +518,7 @@ class CodexAdapter:
                     response.turn_cached_input_tokens = _delta_from_cumulative(
                         cumulative_cached, prev_cumulative_cached
                     )
+                    response.context_tokens_reliable = baseline_available
                     response.context_window = _CONTEXT_WINDOWS.get(
                         self.model, 200_000
                     )
@@ -581,10 +588,14 @@ class CodexAdapter:
 
     def context_percent(self, resp: AdapterResponse) -> float:
         """Projected next-turn usage as % of yield limit. 100 = yield now."""
+        if not resp.context_tokens_reliable:
+            return 0.0
         window = resp.context_window or _CONTEXT_WINDOWS.get(self.model, 200_000)
         turn_input = resp.turn_input_tokens or resp.input_tokens
         return percent_of_limit(turn_input, 0, 0, window)
 
-    def context_tokens(self, resp: AdapterResponse) -> int:
+    def context_tokens(self, resp: AdapterResponse) -> Optional[int]:
         """Current context occupancy in tokens (for display)."""
+        if not resp.context_tokens_reliable:
+            return None
         return resp.turn_input_tokens or resp.input_tokens
