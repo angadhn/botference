@@ -316,6 +316,13 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
     def _extract_arg(preview: str, key: str) -> str:
         if not preview:
             return ""
+        try:
+            parsed = json.loads(preview)
+            if isinstance(parsed, dict):
+                value = parsed.get(key, "")
+                return str(value).strip()
+        except Exception:
+            pass
         match = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]+)"', preview)
         return match.group(1).strip() if match else ""
 
@@ -326,7 +333,7 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
             cmd = shell_match.group(1).strip()
         if len(cmd) >= 2 and cmd[0] == cmd[-1] and cmd[0] in ("'", '"'):
             cmd = cmd[1:-1]
-        return _truncate(cmd, 72)
+        return cmd if len(cmd) <= 72 else cmd[:72] + "..."
 
     def _display_path(path_str: str) -> str:
         if not path_str:
@@ -1233,11 +1240,11 @@ class Botference:
                 ui.add_room_entry("system", f"Error from {model}: {e}")
                 return None
 
-        if resp.text:
-            ui.add_room_entry(model, resp.text)
         tool_display = _tool_summary_display_text(resp.tool_summaries)
         if tool_display:
             ui.add_room_entry(model, tool_display)
+        if resp.text:
+            ui.add_room_entry(model, resp.text)
         if resp.exit_code == -1:
             ui.add_room_entry(
                 "system",

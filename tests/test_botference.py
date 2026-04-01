@@ -565,6 +565,22 @@ class TestBotferenceMessageRouting:
         assert len(tool_entries) == 1
         assert tool_entries[0] == "Explored\n└ Search pattern in src"
         assert "3 matches" not in tool_entries[0]
+        room_texts = [t for _, t in ui.room_entries]
+        assert room_texts.index("Explored\n└ Search pattern in src") < room_texts.index("Found it")
+
+    async def test_tool_summaries_handle_bash_commands(self):
+        resp = _ok("Checked it", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Bash",
+                input_preview='{"command":"/bin/zsh -lc \\"pwd\\""}',
+            ),
+        ])
+        c, _, _, ui = _make_botference(claude_responses=[resp])
+        await c.handle_input("@claude inspect", ui)
+        tool_entries = [t for _, t in ui.room_entries if "Explored" in t]
+        assert len(tool_entries) == 1
+        assert tool_entries[0] == "Explored\n└ Shell pwd"
 
 
 @pytest.mark.asyncio

@@ -76,10 +76,43 @@ const THEME = {
   ready: "green",
 };
 
+const BUSY_FRAMES = [".", "..", "..."];
+
+type BusyTarget = "claude" | "codex" | "all" | "system" | null;
+
+function resolveBusyTarget(input: string, currentRoute: string, mode: string): BusyTarget {
+  const trimmed = input.trim();
+  if (mode === "caucus") return "all";
+  if (trimmed.startsWith("@claude")) return "claude";
+  if (trimmed.startsWith("@codex")) return "codex";
+  if (trimmed.startsWith("@all")) return "all";
+  if (trimmed.startsWith("/")) return "system";
+  if (currentRoute === "@claude") return "claude";
+  if (currentRoute === "@codex") return "codex";
+  return "all";
+}
+
+function busyLabel(target: BusyTarget, mode: string): string {
+  if (mode === "caucus") return "Claude and Codex are caucusing";
+  switch (target) {
+    case "claude":
+      return "Claude is thinking";
+    case "codex":
+      return "Codex is thinking";
+    case "all":
+      return "Claude and Codex are thinking";
+    case "system":
+      return "Botference is working";
+    default:
+      return "Working";
+  }
+}
+
 // ── Sub-components ─────────────────────────────────────────
 
 function Pane({
   title,
+  activityText,
   entries,
   focused,
   height,
@@ -89,6 +122,7 @@ function Pane({
   hasNewMessages,
 }: {
   title: string;
+  activityText?: string;
   entries: Entry[];
   focused: boolean;
   height: number;
@@ -130,6 +164,11 @@ function Pane({
       <Text bold color={focused ? THEME.accentBright : THEME.textMuted}>
         {displayTitle}
       </Text>
+      {activityText ? (
+        <Text color={focused ? THEME.statusMuted : THEME.chromeMuted}>
+          {activityText}
+        </Text>
+      ) : null}
       {visibleLines.map((line) => (
         <Box key={line.key} width="100%">
           <Text
@@ -272,7 +311,17 @@ function InputRenderer({
   );
 }
 
-function StatusBar({ status }: { status: StatusData }) {
+function StatusBar({
+  status,
+  busy,
+  busyText,
+  busyFrame,
+}: {
+  status: StatusData;
+  busy: boolean;
+  busyText: string;
+  busyFrame: string;
+}) {
   return (
     <Box height={1} paddingX={1}>
       <Text color={THEME.textMuted}>
@@ -281,6 +330,7 @@ function StatusBar({ status }: { status: StatusData }) {
         {" | Codex: "}
         <ContextPercent pct={status.codex_pct} />
         {" | Observe: "}{status.observe ? "on" : "off"}
+        {busy ? ` | Busy: ${busyText} ${busyFrame}` : ""}
       </Text>
     </Box>
   );
@@ -308,6 +358,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [cursor, setCursor] = useState(0);
   const [hint, setHint] = useState("");
   const [ready, setReady] = useState(false);
+  const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
+  const [busyFrameIndex, setBusyFrameIndex] = useState(0);
   const [roomScroll, setRoomScroll] = useState(0);
   const [caucusScroll, setCaucusScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
@@ -448,6 +500,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   const roomHasNew = roomScroll > 0 && roomEntries.length > lastSeenRoomCount;
   const caucusHasNew = caucusScroll > 0 && caucusEntries.length > lastSeenCaucusCount;
+  const activeBusyLabel = busyLabel(busyTarget, status.mode);
+  const activeBusyFrame = BUSY_FRAMES[busyFrameIndex] ?? BUSY_FRAMES[0]!;
+
+  useEffect(() => {
+    if (ready) {
+      setBusyFrameIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setBusyFrameIndex((prev) => (prev + 1) % BUSY_FRAMES.length);
+    }, 120);
+    return () => clearInterval(interval);
+  }, [ready]);
 
   // ── Ghost text (autocomplete) ──────────────────────────
 
@@ -553,6 +618,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "ready":
           setReady(true);
+          setBusyTarget(null);
           break;
         case "exit":
           cleanup();
@@ -608,6 +674,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     setReady(false);
+    setBusyTarget(resolveBusyTarget(stripped, status.route, status.mode));
     setHint("");
     setInputText("");
     setCursor(0);
@@ -814,6 +881,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
+  const inputStatusText = hint || " ";
+  const councilTitle = !ready && status.mode !== "caucus"
+    ? `COUNCIL ${activeBusyFrame}`
+    : "COUNCIL";
+  const caucusTitle = !ready && status.mode === "caucus"
+    ? `CAUCUS ${activeBusyFrame}`
+    : "CAUCUS";
+  const councilActivityText = !ready && status.mode !== "caucus"
+    ? `${activeBusyLabel}${activeBusyFrame}`
+    : undefined;
+  const caucusActivityText = !ready && status.mode === "caucus"
+    ? `${activeBusyLabel}${activeBusyFrame}`
+    : undefined;
 
   // ── Render ─────────────────────────────────────────────
 
@@ -822,7 +902,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       {/* Panes */}
       <Box flexDirection="row" flexGrow={1} marginBottom={1}>
         <Pane
-          title="COUNCIL"
+          title={councilTitle}
+          activityText={councilActivityText}
           entries={roomEntries}
           focused={focusedPane === "room"}
           height={paneHeight}
@@ -832,7 +913,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           hasNewMessages={roomHasNew}
         />
         <Pane
-          title="CAUCUS"
+          title={caucusTitle}
+          activityText={caucusActivityText}
           entries={caucusEntries}
           focused={focusedPane === "caucus"}
           height={paneHeight}
@@ -864,12 +946,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             maxVisibleLines={visibleInputLines}
             showTrailingCursorLine={showTrailingCursorLine}
           />
-          <Text color={hint ? THEME.textMuted : THEME.statusMuted}>{hint || " "}</Text>
+          <Text color={hint ? THEME.textMuted : THEME.statusMuted}>{inputStatusText}</Text>
         </Box>
       </Box>
 
       {/* Status bar */}
-      <StatusBar status={status} />
+      <StatusBar
+        status={status}
+        busy={!ready}
+        busyText={activeBusyLabel}
+        busyFrame={activeBusyFrame}
+      />
     </Box>
   );
 }
