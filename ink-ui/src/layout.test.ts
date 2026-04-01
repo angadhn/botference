@@ -121,6 +121,15 @@ describe("preRenderLines", () => {
     assert.equal(lines[3]!.bodyColor, "green");
   });
 
+  it("renders explored summaries as a muted tree block", () => {
+    const entries = [{ speaker: "claude", text: "Explored\n├ Read botference\n└ Search ctrl+o in src" }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines[0]!.bodyColor, "grayBright");
+    assert.equal(lines[0]!.bodyBold, true);
+    assert.equal(lines[1]!.bodyColor, "gray");
+    assert.equal(lines[2]!.bodyColor, "gray");
+  });
+
   it("classifies patch summary and diff lines", () => {
     const entries = [{
       speaker: "codex",

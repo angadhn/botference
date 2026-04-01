@@ -138,7 +138,9 @@ ensure_ink_ui_dist() {
 
 trap 'handle_interrupt_signal' INT
 
-print_loop_banner
+if ! is_interactive_plan_mode; then
+  print_loop_banner
+fi
 
 # --- Pre-loop plan validation (safety net) ---
 # Planner commit gates are the primary enforcement point for TDD structure.
@@ -167,10 +169,14 @@ while true; do
     break
   fi
 
-  echo "=== Iteration $((ITERATION + 1)) ==="
+  if ! is_interactive_plan_mode; then
+    echo "=== Iteration $((ITERATION + 1)) ==="
+  fi
   rm -f "$CTX_FILE" "$YIELD_FILE" "$BUDGET_FILE"
-  sleep 3  # let any dying statusline process finish writing, then clear again
-  rm -f "$CTX_FILE"
+  if ! is_interactive_plan_mode; then
+    sleep 3  # let any dying statusline process finish writing, then clear again
+    rm -f "$CTX_FILE"
+  fi
 
   # --- Pre-iteration gate check ---
   if [ -f "$BOTFERENCE_REVIEW_FILE" ]; then
@@ -206,8 +212,6 @@ while true; do
   # --- Plan mode: one-shot interactive session, early exit ---
   if [ "$LOOP_MODE" = "plan" ] || [ "$LOOP_MODE" = "research-plan" ]; then
     CURRENT_AGENT="${CURRENT_AGENT:-plan}"
-    echo "  Plan mode"
-
     # Compute allowed-tools paths (dynamic: bare names or work/ prefix)
     PLAN_WORK_PREFIX=""
     if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
@@ -273,11 +277,10 @@ while true; do
 
       # Ensure codex has API key auth if available
       if [ -n "${OPENAI_API_KEY:-}" ]; then
-        echo "$OPENAI_API_KEY" | codex login --with-api-key 2>/dev/null && \
-          echo "  Codex: API key auth" || true
+        echo "$OPENAI_API_KEY" | codex login --with-api-key 2>/dev/null || true
       fi
 
-      echo "  Council: Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE"
+      echo "Launching Botference Council - Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE"
       if [ "$UI_MODE" = "ink" ]; then
         ensure_ink_ui_dist
         # Pass large strings via temp files to avoid arg-length/escaping issues

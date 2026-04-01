@@ -551,16 +551,19 @@ class TestBotferenceMessageRouting:
         assert c.transcript.entries[0].speaker == "user"
         assert c.transcript.entries[1].speaker == "claude"
 
-    async def test_tool_summaries_displayed_as_folded_bullets(self):
+    async def test_tool_summaries_displayed_as_folded_tree(self):
         resp = _ok("Found it", tool_summaries=[
-            ToolSummary(id="t1", name="Grep", input_preview="pattern",
+            ToolSummary(
+                id="t1",
+                name="Grep",
+                input_preview='{"pattern":"pattern","path":"/tmp/src"}',
                         output_preview="3 matches"),
         ])
         c, _, _, ui = _make_botference(claude_responses=[resp])
         await c.handle_input("@claude search", ui)
         tool_entries = [t for _, t in ui.room_entries if "Explored" in t]
         assert len(tool_entries) == 1
-        assert "  - Grep pattern" in tool_entries[0]
+        assert tool_entries[0] == "Explored\n└ Search pattern in src"
         assert "3 matches" not in tool_entries[0]
 
 
@@ -1263,6 +1266,26 @@ def _shell_parse_loop_args(*args: str) -> dict[str, str]:
     return out
 
 
+def _shell_eval_config(*args: str) -> dict[str, str]:
+    """Source lib/config.sh, parse args, and inspect shell helper outputs."""
+    script_dir = Path(__file__).resolve().parent.parent / "lib"
+    cmd = (
+        f'source "{script_dir}/config.sh" && '
+        f'parse_loop_args {" ".join(args)} && '
+        'echo "INTERACTIVE_PLAN=$(is_interactive_plan_mode && echo true || echo false)"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, f"Shell failed: {result.stderr}"
+    out = {}
+    for line in result.stdout.strip().splitlines():
+        k, _, v = line.partition("=")
+        out[k] = v
+    return out
+
+
 class TestPlanningModeRouting:
     def test_parse_loop_args_splits_plan_and_research_plan(self):
         # bare plan → freeform: no prompt file, botference mode on
@@ -1282,6 +1305,12 @@ class TestPlanningModeRouting:
         assert archive["LOOP_MODE"] == "archive"
         assert archive["PROMPT_FILE"] == ""
         assert archive["BOTFERENCE_MODE"] == "false"
+
+    def test_interactive_plan_mode_helper(self):
+        assert _shell_eval_config("plan")["INTERACTIVE_PLAN"] == "true"
+        assert _shell_eval_config("research-plan")["INTERACTIVE_PLAN"] == "true"
+        assert _shell_eval_config("-p", "plan")["INTERACTIVE_PLAN"] == "false"
+        assert _shell_eval_config("build")["INTERACTIVE_PLAN"] == "false"
 
 
 class TestArchiveModeLauncher:

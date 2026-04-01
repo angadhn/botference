@@ -313,13 +313,71 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
     if not tool_summaries:
         return ""
 
-    lines = ["• Explored"]
-    for ts in tool_summaries:
-        preview = ts.input_preview.strip() if ts.input_preview else ""
-        if preview:
-            lines.append(f"  - {ts.name} {preview}")
-        else:
-            lines.append(f"  - {ts.name}")
+    def _extract_arg(preview: str, key: str) -> str:
+        if not preview:
+            return ""
+        match = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]+)"', preview)
+        return match.group(1).strip() if match else ""
+
+    def _clean_shell_command(command: str) -> str:
+        cmd = command.strip()
+        shell_match = re.match(r"^(?:/bin/\S+|\S+)\s+-lc\s+(.+)$", cmd)
+        if shell_match:
+            cmd = shell_match.group(1).strip()
+        if len(cmd) >= 2 and cmd[0] == cmd[-1] and cmd[0] in ("'", '"'):
+            cmd = cmd[1:-1]
+        return _truncate(cmd, 72)
+
+    def _display_path(path_str: str) -> str:
+        if not path_str:
+            return ""
+        try:
+            return Path(path_str).name or path_str
+        except Exception:
+            return path_str
+
+    def _summarize_tool(ts: ToolSummary) -> str:
+        name = ts.name.strip()
+        preview = ts.input_preview.strip()
+
+        if name == "Read":
+            file_path = _extract_arg(preview, "file_path")
+            return f"Read {_display_path(file_path)}" if file_path else "Read file"
+
+        if name == "Glob":
+            pattern = _extract_arg(preview, "pattern")
+            return f"Glob {pattern}" if pattern else "Glob files"
+
+        if name == "Grep":
+            pattern = _extract_arg(preview, "pattern")
+            path_str = _extract_arg(preview, "path")
+            if pattern and path_str:
+                return f"Search {pattern} in {_display_path(path_str)}"
+            if pattern:
+                return f"Search {pattern}"
+            return "Search files"
+
+        if name == "WebSearch":
+            query = _extract_arg(preview, "query")
+            return f"Search web for {query}" if query else "Search web"
+
+        if name == "WebFetch":
+            url = _extract_arg(preview, "url")
+            return f"Fetch {url}" if url else "Fetch page"
+
+        if name == "Bash":
+            command = _extract_arg(preview, "command")
+            return f"Shell {_clean_shell_command(command)}" if command else "Shell command"
+
+        if preview and preview != "(running)":
+            return f"{name} {preview}"
+
+        return f"Shell {_clean_shell_command(name)}"
+
+    lines = ["Explored"]
+    for idx, ts in enumerate(tool_summaries):
+        branch = "└" if idx == len(tool_summaries) - 1 else "├"
+        lines.append(f"{branch} {_summarize_tool(ts)}")
     return "\n".join(lines)
 
 

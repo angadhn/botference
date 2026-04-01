@@ -217,3 +217,7 @@ print_loop_banner() {
   echo "Double Ctrl+C to stop"
   echo ""
 }
+
+is_interactive_plan_mode() {
+  [[ "$LOOP_MODE" == "plan" || "$LOOP_MODE" == "research-plan" ]] && ! $PIPE_MODE
+}

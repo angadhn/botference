@@ -695,6 +695,8 @@ function classifyEntryLine(
   const isDiffMeta = /^(diff --git|index\b|--- |\+\+\+ |@@)/.test(trimmed);
   const isDiffLine = /^[+-]/.test(rawLine) && !/^(--- |\+\+\+ )/.test(rawLine);
   const isToolInvocation = /^> /.test(trimmed);
+  const isToolSummaryHeader = trimmed === "Explored";
+  const isToolSummaryLine = /^[├└│]/.test(trimmed);
 
   if (isFence) {
     return {
@@ -718,9 +720,16 @@ function classifyEntryLine(
     return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
   }
 
+  if (isToolSummaryHeader) {
+    return { bodyColor: "grayBright", bodyBold: true, startsToolBlock: true };
+  }
+
   if (inToolBlock) {
     if (trimmed.length === 0) {
       return { bodyColor: defaultColor, bodyBold: false, endsToolBlock: true };
+    }
+    if (isToolSummaryLine) {
+      return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
     }
     return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
   }
