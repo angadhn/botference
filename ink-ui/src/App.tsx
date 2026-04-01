@@ -4,14 +4,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import stringWidth from "string-width";
 import {
   computeLayoutBudget,
   computeViewportSlice,
   truncateTitle,
   preRenderLines,
   shouldAutoScroll,
-  cursorToLineCol,
-  lineColToCursor,
+  cursorToWrappedLineCol,
+  wrappedLineColToCursor,
+  wrapInputLines,
 } from "./layout.js";
 import { onMouseScroll, onPaste, onShiftEnter } from "./index.js";
 
@@ -61,6 +63,19 @@ const COMPLETIONS = [
   "@all ",
 ];
 
+const THEME = {
+  chrome: "gray",
+  chromeMuted: "gray",
+  accent: "cyan",
+  accentBright: "cyanBright",
+  warning: "yellow",
+  danger: "red",
+  text: "white",
+  textMuted: "grayBright",
+  statusMuted: "gray",
+  ready: "green",
+};
+
 // ── Sub-components ─────────────────────────────────────────
 
 function Pane({
@@ -107,19 +122,25 @@ function Pane({
       flexBasis="50%"
       flexDirection="column"
       borderStyle={focused ? "bold" : "single"}
-      borderColor={focused ? "blue" : "gray"}
+      borderColor={focused ? THEME.accent : THEME.chrome}
       overflow="hidden"
       height={height}
+      paddingX={1}
     >
-      <Text bold color={focused ? "blueBright" : "gray"}>
+      <Text bold color={focused ? THEME.accentBright : THEME.textMuted}>
         {displayTitle}
       </Text>
       {visibleLines.map((line) => (
         <Box key={line.key}>
-          <Text bold color={dimmed ? "gray" : line.speakerColor}>
+          <Text bold color={dimmed ? THEME.textMuted : line.speakerColor}>
             {line.label}
           </Text>
-          <Text color={dimmed ? "gray" : line.bodyColor}>{line.text}</Text>
+          <Text
+            bold={line.bodyBold && !dimmed}
+            color={dimmed ? THEME.chromeMuted : line.bodyColor}
+          >
+            {line.text}
+          </Text>
         </Box>
       ))}
     </Box>
@@ -130,73 +151,89 @@ function ContextPercent({ pct }: {
   pct: number | null;
 }) {
   if (pct == null) {
-    return <Text>{"-- "}</Text>;
+    return <Text color={THEME.textMuted}>{"-- "}</Text>;
   }
   const label = `~${Math.round(pct)}%`;
-  if (pct != null && pct >= 90) return <Text bold color="red">{label}</Text>;
-  if (pct != null && pct >= 75) return <Text bold color="yellow">{label}</Text>;
-  return <Text>{label}</Text>;
+  if (pct != null && pct >= 90) return <Text bold color={THEME.danger}>{label}</Text>;
+  if (pct != null && pct >= 75) return <Text bold color={THEME.warning}>{label}</Text>;
+  return <Text color={THEME.text}>{label}</Text>;
 }
 
-const MAX_VISIBLE_INPUT_LINES = 3;
+const MIN_VISIBLE_INPUT_LINES = 1;
 
 function InputRenderer({
   text,
   cursor,
   ghostText,
   cursorColor,
+  textWidth,
+  maxVisibleLines,
+  showTrailingCursorLine,
 }: {
   text: string;
   cursor: number;
   ghostText: string;
   cursorColor: string;
+  textWidth: number;
+  maxVisibleLines: number;
+  showTrailingCursorLine: boolean;
 }) {
-  // Split text into lines (multi-line support via Shift+Enter)
-  const before = text.slice(0, cursor);
-  const after = text.slice(cursor);
-  const cursorChar = (after[0] === "\n" ? " " : after[0]) ?? " ";
-  const afterCursor = after.slice(1);
-
-  // For multi-line: split around cursor and render each line
-  const allLines = (before + cursorChar + afterCursor).split("\n");
-  const beforeLines = before.split("\n");
-  const cursorLine = beforeLines.length - 1;
-  const cursorCol = beforeLines[cursorLine]!.length;
+  const wrappedLines = wrapInputLines(text, Math.max(1, textWidth));
+  const displayLines = showTrailingCursorLine
+    ? [...wrappedLines, { text: "", start: text.length, end: text.length }]
+    : wrappedLines;
+  const { line: baseCursorLine } = cursorToWrappedLineCol(
+    text,
+    cursor,
+    Math.max(1, textWidth),
+  );
+  const cursorLine =
+    showTrailingCursorLine && cursor === text.length
+      ? displayLines.length - 1
+      : baseCursorLine;
 
   // Scroll the visible window to keep the cursor line in view
   let startLine = 0;
-  if (allLines.length > MAX_VISIBLE_INPUT_LINES) {
+  if (displayLines.length > maxVisibleLines) {
     // Center cursor in the visible window, clamped to bounds
     startLine = Math.min(
-      Math.max(0, cursorLine - Math.floor(MAX_VISIBLE_INPUT_LINES / 2)),
-      allLines.length - MAX_VISIBLE_INPUT_LINES,
+      Math.max(0, cursorLine - Math.floor(maxVisibleLines / 2)),
+      displayLines.length - maxVisibleLines,
     );
   }
-  const endLine = startLine + Math.min(allLines.length, MAX_VISIBLE_INPUT_LINES);
-  const visibleLines = allLines.slice(startLine, endLine);
+  const endLine = startLine + Math.min(displayLines.length, maxVisibleLines);
+  const visibleLines = displayLines.slice(startLine, endLine);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       {visibleLines.map((line, vi) => {
         const i = startLine + vi; // actual line index
         if (i === cursorLine) {
           // This line contains the cursor
-          const pre = line.slice(0, cursorCol);
-          const cur = line[cursorCol] ?? " ";
-          const post = line.slice(cursorCol + 1);
-          const isLastLine = i === allLines.length - 1;
+          const localCursor = Math.max(0, Math.min(cursor - line.start, line.text.length));
+          const pre = line.text.slice(0, localCursor);
+          const charUnderCursor = line.text.slice(localCursor, localCursor + 1);
+          const cur = charUnderCursor || " ";
+          const post = line.text.slice(localCursor + (charUnderCursor ? 1 : 0));
+          const isLastLine = i === displayLines.length - 1;
           return (
-            <Box key={i}>
-              <Text>{pre}</Text>
-              <Text inverse color={cursorColor}>{cur}</Text>
-              <Text>{post}</Text>
-              {isLastLine && ghostText ? <Text dimColor>{ghostText}</Text> : null}
+            <Box key={i} width="100%">
+              <Text color={THEME.text} wrap="truncate-end">
+                {pre}
+                <Text inverse color={cursorColor}>{cur}</Text>
+                {post}
+                {isLastLine && cursor === text.length && ghostText
+                  ? <Text color={THEME.textMuted}>{ghostText}</Text>
+                  : null}
+              </Text>
             </Box>
           );
         }
         return (
-          <Box key={i}>
-            <Text>{line}</Text>
+          <Box key={i} width="100%">
+            <Text color={THEME.text} wrap="truncate-end">
+              {line.text.length > 0 ? line.text : " "}
+            </Text>
           </Box>
         );
       })}
@@ -207,7 +244,7 @@ function InputRenderer({
 function StatusBar({ status }: { status: StatusData }) {
   return (
     <Box height={1} paddingX={1}>
-      <Text dimColor>
+      <Text color={THEME.textMuted}>
         {"Mode: "}{status.mode}{" | Lead: "}{status.lead}{" | Route: "}{status.route}{" | Claude: "}
         <ContextPercent pct={status.claude_pct} />
         {" | Codex: "}
@@ -255,19 +292,71 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const { stdout } = useStdout();
   const rows = stdout?.rows ?? 24;
   const cols = stdout?.columns ?? 80;
+  const inputTextWidth = Math.max(8, cols - 4);
+  const wrappedInputLines = useMemo(
+    () => wrapInputLines(inputText, inputTextWidth),
+    [inputText, inputTextWidth],
+  );
+  const showTrailingCursorLine = useMemo(() => {
+    const lastLine = wrappedInputLines[wrappedInputLines.length - 1];
+    return (
+      cursor === inputText.length &&
+      !!lastLine &&
+      stringWidth(lastLine.text) >= inputTextWidth
+    );
+  }, [cursor, inputText.length, inputTextWidth, wrappedInputLines]);
+  const maxVisibleInputLines = Math.max(
+    MIN_VISIBLE_INPUT_LINES,
+    Math.min(12, Math.floor(rows * 0.35)),
+  );
+  const visibleInputLines = Math.max(
+    MIN_VISIBLE_INPUT_LINES,
+    Math.min(
+      wrappedInputLines.length + (showTrailingCursorLine ? 1 : 0),
+      maxVisibleInputLines,
+    ),
+  );
 
   // Parent-owned layout budget — single source of truth for all dimensions
-  const inputLineCount = inputText.split("\n").length;
   const { paneHeight, paneContentHeight, leftTextWidth, rightTextWidth } =
-    computeLayoutBudget(rows, cols, inputLineCount);
+    computeLayoutBudget(rows, cols, visibleInputLines);
+  const roomFlatLineCount = useMemo(
+    () => preRenderLines(roomEntries, leftTextWidth).length,
+    [roomEntries, leftTextWidth],
+  );
+  const caucusFlatLineCount = useMemo(
+    () => preRenderLines(caucusEntries, rightTextWidth).length,
+    [caucusEntries, rightTextWidth],
+  );
+  const roomMaxScroll = Math.max(0, roomFlatLineCount - paneContentHeight);
+  const caucusMaxScroll = Math.max(0, caucusFlatLineCount - paneContentHeight);
 
   // ── Mouse scroll — dispatch to focused pane ──────────────
   useEffect(() => {
     return onMouseScroll((dir) => {
-      const setter = focusedPane === "room" ? setRoomScroll : setCaucusScroll;
-      setter((prev) => (dir === "up" ? prev + 1 : Math.max(0, prev - 1)));
+      if (focusedPane === "room") {
+        setRoomScroll((prev) => (
+          dir === "up"
+            ? Math.min(roomMaxScroll, prev + 1)
+            : Math.max(0, prev - 1)
+        ));
+      } else {
+        setCaucusScroll((prev) => (
+          dir === "up"
+            ? Math.min(caucusMaxScroll, prev + 1)
+            : Math.max(0, prev - 1)
+        ));
+      }
     });
-  }, [focusedPane]);
+  }, [focusedPane, roomMaxScroll, caucusMaxScroll]);
+
+  useEffect(() => {
+    setRoomScroll((prev) => Math.min(prev, roomMaxScroll));
+  }, [roomMaxScroll]);
+
+  useEffect(() => {
+    setCaucusScroll((prev) => Math.min(prev, caucusMaxScroll));
+  }, [caucusMaxScroll]);
 
   // ── Shift+Enter — insert newline (intercepted at stdin filter level) ──
   useEffect(() => {
@@ -283,14 +372,20 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   useEffect(() => {
     return onPaste((pasted) => {
       const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
-      const lines = pasted.split(/[\r\n]+/).filter(Boolean);
-
+      const parts = pasted.split(/(\r\n|\r|\n)/);
+      const insertAt = cursorRef.current;
       let insertion = "";
       const newAttachments = new Map(imageAttachments);
 
-      for (const line of lines) {
-        const trimmed = line.trim();
+      for (const part of parts) {
+        if (part === "\r\n" || part === "\r" || part === "\n") {
+          insertion += "\n";
+          continue;
+        }
+
+        const trimmed = part.trim();
         if (
+          trimmed &&
           (trimmed.startsWith("/") || trimmed.startsWith("~")) &&
           IMAGE_EXTS.test(trimmed)
         ) {
@@ -298,18 +393,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           newAttachments.set(id, trimmed);
           insertion += `[image ${id}]`;
         } else {
-          insertion += trimmed;
+          insertion += part;
         }
       }
 
       if (insertion) {
-        setInputText((prev) => prev.slice(0, cursor) + insertion + prev.slice(cursor));
-        setCursor((c) => c + insertion.length);
+        setInputText((prev) => prev.slice(0, insertAt) + insertion + prev.slice(insertAt));
+        setCursor(insertAt + insertion.length);
         setImageAttachments(newAttachments);
         setDesiredCol(null);
       }
     });
-  }, [cursor, imageAttachments]);
+  }, [imageAttachments]);
 
   // Track last-seen entry count per pane (updates when scroll returns to bottom)
   useEffect(() => {
@@ -631,10 +726,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Up arrow — move cursor to previous line in multi-line input
     if (key.upArrow && !key.meta) {
-      const { line, col } = cursorToLineCol(inputText, cursor);
+      const { line, col } = cursorToWrappedLineCol(inputText, cursor, inputTextWidth);
       if (line > 0) {
         const targetCol = desiredCol ?? col;
-        setCursor(lineColToCursor(inputText, line - 1, targetCol));
+        setCursor(wrappedLineColToCursor(inputText, inputTextWidth, line - 1, targetCol));
         if (desiredCol === null) setDesiredCol(col);
       }
       return;
@@ -642,11 +737,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Down arrow — move cursor to next line in multi-line input
     if (key.downArrow && !key.meta) {
-      const { line, col } = cursorToLineCol(inputText, cursor);
-      const lineCount = inputText.split("\n").length;
+      const { line, col } = cursorToWrappedLineCol(inputText, cursor, inputTextWidth);
+      const lineCount = wrapInputLines(inputText, inputTextWidth).length;
       if (line < lineCount - 1) {
         const targetCol = desiredCol ?? col;
-        setCursor(lineColToCursor(inputText, line + 1, targetCol));
+        setCursor(wrappedLineColToCursor(inputText, inputTextWidth, line + 1, targetCol));
         if (desiredCol === null) setDesiredCol(col);
       }
       return;
@@ -687,14 +782,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       ? "Slash commands still work here:"
       : "You (@claude/@codex/@all, /help):";
 
-  const cursorColor = ready ? "green" : "yellow";
+  const cursorColor = ready ? THEME.ready : THEME.warning;
 
   // ── Render ─────────────────────────────────────────────
 
   return (
     <Box flexDirection="column" height={rows}>
       {/* Panes */}
-      <Box flexDirection="row" flexGrow={1}>
+      <Box flexDirection="row" flexGrow={1} marginBottom={1}>
         <Pane
           title="COUNCIL"
           entries={roomEntries}
@@ -718,20 +813,28 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       </Box>
 
       {/* Input area */}
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={ready ? "green" : "yellow"}
-        paddingX={1}
-      >
-        <Text dimColor>{inputLabel}</Text>
-        <InputRenderer
-          text={inputText}
-          cursor={cursor}
-          ghostText={ghostText}
-          cursorColor={cursorColor}
-        />
-        <Text dimColor>{hint || " "}</Text>
+      <Box flexDirection="column" marginBottom={1} width="100%">
+        <Text color={THEME.text}>{inputLabel}</Text>
+        <Box
+          flexDirection="column"
+          paddingX={1}
+          paddingTop={1}
+          paddingY={0}
+          backgroundColor="black"
+          width="100%"
+          overflow="hidden"
+        >
+          <InputRenderer
+            text={inputText}
+            cursor={cursor}
+            ghostText={ghostText}
+            cursorColor={cursorColor}
+            textWidth={inputTextWidth}
+            maxVisibleLines={visibleInputLines}
+            showTrailingCursorLine={showTrailingCursorLine}
+          />
+          <Text color={hint ? THEME.textMuted : THEME.statusMuted}>{hint || " "}</Text>
+        </Box>
       </Box>
 
       {/* Status bar */}

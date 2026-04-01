@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
@@ -114,6 +115,7 @@ class InputKind(Enum):
     DRAFT = "draft"
     FINALIZE = "finalize"
     STATUS = "status"
+    AUTH = "auth"
     HELP = "help"
     QUIT = "quit"
     RELAY = "relay"
@@ -133,6 +135,7 @@ _SLASH_COMMANDS = {
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
     "/status": InputKind.STATUS,
+    "/auth": InputKind.AUTH,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -467,6 +470,10 @@ class Botference:
             self._show_status(ui)
             return
 
+        if parsed.kind is InputKind.AUTH:
+            self._show_auth_status(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.LEAD:
             self._set_lead(parsed.body, ui)
             return
@@ -517,6 +524,7 @@ class Botference:
             "  /finalize           — Draft → review → revise → review → approve → write",
             "  /relay @claude|@codex — Reset model session with structured handoff",
             "  /status             — Show context %, lead, mode, sessions",
+            "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /help               — Show this help",
             "  /quit | /exit       — Exit without writing files",
             "",
@@ -551,6 +559,75 @@ class Botference:
             f"Turns: {len(self.transcript.entries)}",
         ]
         ui.add_room_entry("system", "\n".join(lines))
+
+    def _show_auth_status(self, arg: str, ui: UIPort) -> None:
+        target = arg.strip().lower().lstrip("@")
+        if target in ("", "all", "both"):
+            targets = ["claude", "codex"]
+        elif target in ("claude", "codex"):
+            targets = [target]
+        else:
+            ui.add_room_entry("system", "Usage: /auth [claude|codex|all]")
+            return
+
+        lines = ["Auth diagnostics:"]
+        for model in targets:
+            lines.extend(self._auth_status_lines(model))
+        ui.add_room_entry("system", "\n".join(lines))
+
+    def _auth_status_lines(self, model: str) -> list[str]:
+        if model == "codex":
+            cmd = ["codex", "login", "status"]
+            session = self.codex.thread_id or "-"
+            label = "Codex"
+        else:
+            cmd = ["claude", "auth", "status"]
+            session = self.claude.session_id or "-"
+            label = "Claude"
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            return [
+                f"{label}: CLI not found",
+                f"  Session: {session}",
+            ]
+        except subprocess.TimeoutExpired:
+            return [
+                f"{label}: auth status check timed out",
+                f"  Session: {session}",
+            ]
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        if model == "claude":
+            try:
+                payload = json.loads(stdout or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            logged_in = bool(payload.get("loggedIn"))
+            auth_method = payload.get("authMethod", "unknown")
+            provider = payload.get("apiProvider", "unknown")
+            summary = (
+                f"{label}: logged in via {auth_method} ({provider})"
+                if logged_in
+                else f"{label}: not logged in ({auth_method})"
+            )
+        else:
+            summary = stdout or stderr or f"{label}: auth status unavailable"
+
+        lines = [summary, f"  Session: {session}"]
+        if result.returncode != 0 and stderr and stderr != stdout:
+            lines.append(f"  Detail: {stderr}")
+        if model in ("claude", "codex"):
+            lines.append(f"  After reauth: /relay @{model}")
+        return lines
 
     # ── /lead ─────────────────────────────────────────────
 
@@ -983,6 +1060,12 @@ class Botference:
         for ts in resp.tool_summaries:
             out = f" → {ts.output_preview}" if ts.output_preview else ""
             ui.add_room_entry(model, f"  > {ts.name}({ts.input_preview}){out}")
+        if resp.exit_code == -1:
+            ui.add_room_entry(
+                "system",
+                f"{model.capitalize()} CLI timed out. Run /auth {model} to check login state. "
+                f"If auth looks fine, /relay @{model} will reset the session.",
+            )
         if resp.exit_code not in (0, -1):
             ui.add_room_entry("system",
                               f"{model} exited with code {resp.exit_code}")

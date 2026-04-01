@@ -6,20 +6,20 @@ import { computeLayoutBudget, computeViewportSlice, truncateTitle, preRenderLine
 describe("computeLayoutBudget", () => {
   it("returns correct dimensions for standard terminal", () => {
     const b = computeLayoutBudget(24, 80, 1);
-    assert.equal(b.paneContentHeight, 12);
+    assert.equal(b.paneContentHeight, 14);
     assert.equal(b.leftPaneWidth, 40);
     assert.equal(b.rightPaneWidth, 40);
     assert.equal(b.leftTextWidth, 38);
     assert.equal(b.rightTextWidth, 38);
   });
 
-  it("input height is fixed — panes never resize", () => {
+  it("grows the input viewport and shrinks panes accordingly", () => {
     const single = computeLayoutBudget(24, 80, 1);
     const triple = computeLayoutBudget(24, 80, 3);
-    const over = computeLayoutBudget(24, 80, 10);
-    assert.equal(single.paneContentHeight, 12);
+    const tall = computeLayoutBudget(24, 80, 10);
+    assert.equal(single.paneContentHeight, 14);
     assert.equal(triple.paneContentHeight, 12);
-    assert.equal(over.paneContentHeight, 12);
+    assert.equal(tall.paneContentHeight, 5);
   });
 
   it("handles odd terminal width", () => {
@@ -110,6 +110,37 @@ describe("preRenderLines", () => {
     const expectedIndent = " ".repeat(stringWidth(label));
     assert.equal(expectedIndent.length, 7, "indent should be 7 spaces (display width), not 5 (.length)");
     assert.equal(lines[1]!.label, expectedIndent);
+  });
+
+  it("classifies tool call lines distinctly from plain body text", () => {
+    const entries = [{ speaker: "codex", text: "  > Read(file)\nplain text" }];
+    const lines = preRenderLines(entries, 40);
+    assert.equal(lines[0]!.bodyColor, "cyan");
+    assert.equal(lines[0]!.bodyBold, true);
+    assert.equal(lines[1]!.bodyColor, "green");
+  });
+
+  it("classifies patch summary and diff lines", () => {
+    const entries = [{
+      speaker: "codex",
+      text: "Edited in src/App.tsx (+4 -2)\n+ added line\n- removed line\n@@ hunk",
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines[0]!.bodyColor, "cyanBright");
+    assert.equal(lines[0]!.bodyBold, true);
+    assert.equal(lines[1]!.bodyColor, "green");
+    assert.equal(lines[2]!.bodyColor, "red");
+    assert.equal(lines[3]!.bodyColor, "yellow");
+  });
+
+  it("does not color ordinary bullet lists as diff lines", () => {
+    const entries = [{
+      speaker: "claude",
+      text: "- first bullet\n+ second bullet",
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines[0]!.bodyColor, "blue");
+    assert.equal(lines[1]!.bodyColor, "blue");
   });
 });
 

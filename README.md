@@ -90,6 +90,13 @@ conflicting opinions.
 > ```
 > Botference will auto-load keys from `.env` when they are not already in
 > your environment. Do **not** commit `.env` to version control.
+>
+> > Warning
+> > If `OPENAI_API_KEY` is present in `.env` or your shell environment,
+> > Botference will prefer API-key auth for Codex and re-run `codex login
+> > --with-api-key` on startup. That overrides a subscription/device login for
+> > the local Codex CLI. If you want Codex to use your subscription login
+> > instead, remove `OPENAI_API_KEY` before launching Botference.
 
 ## Using the Chat
 
@@ -316,4 +323,4 @@ botference/
 | `ANTHROPIC_MODEL` | Global model override (e.g. `claude-sonnet-4-6`) |
 | `OPENAI_MODEL` | Codex participant model (default: `gpt-5.4`) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
-| `OPENAI_API_KEY` | API key for OpenAI models (only if not using subscription) |
+| `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |

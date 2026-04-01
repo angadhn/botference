@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { cursorToLineCol, lineColToCursor } from "./layout.js";
+import {
+  cursorToLineCol,
+  lineColToCursor,
+  cursorToWrappedLineCol,
+  wrappedLineColToCursor,
+  wrapInputLines,
+} from "./layout.js";
 
 describe("cursorToLineCol", () => {
   it("single line, cursor at start", () => {
@@ -101,6 +107,58 @@ describe("lineColToCursor", () => {
     for (let i = 0; i <= text.length; i++) {
       const { line, col } = cursorToLineCol(text, i);
       assert.strictEqual(lineColToCursor(text, line, col), i);
+    }
+  });
+});
+
+describe("wrapInputLines", () => {
+  it("wraps a long logical line into multiple visual lines", () => {
+    assert.deepStrictEqual(
+      wrapInputLines("abcdef", 3).map((line) => line.text),
+      ["abc", "def"],
+    );
+  });
+
+  it("prefers wrapping on spaces before splitting a word", () => {
+    assert.deepStrictEqual(
+      wrapInputLines("hello world", 7).map((line) => line.text),
+      ["hello ", "world"],
+    );
+  });
+
+  it("preserves explicit empty lines", () => {
+    assert.deepStrictEqual(
+      wrapInputLines("a\n\nb", 10).map((line) => line.text),
+      ["a", "", "b"],
+    );
+  });
+});
+
+describe("wrapped cursor helpers", () => {
+  it("maps cursor to wrapped visual line/col", () => {
+    assert.deepStrictEqual(cursorToWrappedLineCol("abcdef", 4, 3), {
+      line: 1,
+      col: 1,
+    });
+  });
+
+  it("maps a soft-wrap boundary cursor to the next visual line", () => {
+    assert.deepStrictEqual(cursorToWrappedLineCol("abcdef", 3, 3), {
+      line: 1,
+      col: 0,
+    });
+  });
+
+  it("maps wrapped visual line/col back to cursor", () => {
+    assert.strictEqual(wrappedLineColToCursor("abcdef", 3, 1, 1), 4);
+  });
+
+  it("roundtrips visual positions across wrapped lines", () => {
+    const text = "abc\ndefghi";
+    const width = 3;
+    for (let i = 0; i <= text.length; i++) {
+      const { line, col } = cursorToWrappedLineCol(text, i, width);
+      assert.strictEqual(wrappedLineColToCursor(text, width, line, col), i);
     }
   });
 });
