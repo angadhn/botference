@@ -34,7 +34,12 @@ botference (shell)
                                       └─ tools/ (tool execution)
 ```
 
-The `/relay` command tears down one model's session, generates a handoff document, and bootstraps a fresh session for that model from the handoff.
+The `/relay` command tears down one model's session, generates a handoff
+document, and restarts that model immediately in the same running controller.
+Successful relays keep only a timestamped history copy in
+`work/handoffs/<model>/`. Persisted live handoff files
+(`work/handoff-claude.md`, `work/handoff-codex.md`) are now failure-only
+artifacts and are not auto-loaded on a fresh CLI startup.
 
 ## Context Display
 

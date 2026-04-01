@@ -1,5 +1,7 @@
 # Botference
 
+[![Tracked code LOC](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/angadhn/botference/main/docs/badges/loc.json)](#tracked-code-loc)
+
 > [!NOTE]
 > This README was AI-generated. I (Angadh) have skimmed and supervised its creation.
 
@@ -138,7 +140,7 @@ Messages in the council panel are labelled by speaker:
 | `/lead @claude\|@codex` | Manually set which model writes the plan. You can also use `/lead auto` to let a future caucus decide. |
 | `/draft [rounds]` | Update `work/implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved as `work/AI-reviewer_comments_round-N.md`. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites `work/implementation-plan.md` if needed, creates `work/checkpoint.md`, and moves reviewer comment files into `archive/reviewer-comments/<thread>/`. |
-| `/relay @claude\|@codex` | Tear down a model's session and bootstrap a fresh one with a structured handoff. Useful when context is getting long. |
+| `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
@@ -147,6 +149,16 @@ Messages in the council panel are labelled by speaker:
 
 **Typical workflow:** discuss → `/caucus` → `/lead` (or let caucus decide) →
 `/draft [rounds]` → iterate with human comments as needed → `/finalize`.
+
+### Relay Semantics
+
+`/relay` is now eager. When you relay `@claude` or `@codex`, botference
+generates the handoff, tears down that model's old session, and immediately
+starts a fresh session in the same running controller.
+
+- Successful relays keep only a timestamped history copy under `work/handoffs/<model>/`.
+- Fresh `./botference plan` launches do not auto-load persisted handoff notes.
+- `work/handoff-claude.md` and `work/handoff-codex.md` are failure-only artifacts used to preserve a retry payload if the immediate restart fails.
 
 ### Navigation and input
 
@@ -323,9 +335,26 @@ botference/
 
 ### Directory Roles
 
-- **`work/`** — Active thread state: `checkpoint.md`, `implementation-plan.md`, `AI-reviewer_comments_round-*.md`, `inbox.md`, `HUMAN_REVIEW_NEEDED.md`, `iteration_count`.
+- **`work/`** — Active thread state: `checkpoint.md`, `implementation-plan.md`, `AI-reviewer_comments_round-*.md`, `inbox.md`, `HUMAN_REVIEW_NEEDED.md`, `iteration_count`, plus relay history under `handoffs/<model>/`.
 - **`build/`** — Generated and runtime artifacts: `AI-generated-outputs/`, `logs/`, `run/`. Fully gitignored.
 - **`archive/`** — Completed threads archived by `./botference archive`, plus staged reviewer comments under `archive/reviewer-comments/<thread>/` after `/finalize`.
+
+## Tracked Code LOC
+
+The header badge is generated from `docs/badges/loc.json`, which is refreshed by
+`.github/workflows/update-loc-badge.yml` on pushes to `main`.
+
+It measures tracked source lines in the repo's own code, not docs or runtime
+artifacts. The counter includes shell, Python, and TypeScript/JavaScript source
+files that are tracked by git, and excludes generated or vendored paths such as
+`build/`, `archive/`, `work/`, `docs/`, `templates/`, `specs/`, `ink-ui/dist/`,
+and `ink-ui/node_modules/`.
+
+If you want to refresh it locally, run:
+
+```bash
+python3 scripts/update_loc_badge.py
+```
 
 ## Environment Variables
 

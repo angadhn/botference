@@ -1859,10 +1859,10 @@ class TestRelayGeneration:
     """Task 5: relay generation with tier selection, file writes, teardown."""
 
     async def test_self_authored_relay_success(self, tmp_path):
-        """Self-authored relay writes files and tears down session."""
+        """Self-authored relay immediately restarts and keeps only history."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         # Initialize claude
         await c.handle_input("@claude hello", ui)
@@ -1875,14 +1875,11 @@ class TestRelayGeneration:
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("relayed claude" in t.lower() for t in system_msgs)
         assert any("tier: self" in t.lower() for t in system_msgs)
+        assert any("started a fresh session" in t.lower() for t in system_msgs)
 
-        # Live file written
+        # No success-path live file remains
         live_file = work_dir / "handoff-claude.md"
-        assert live_file.exists()
-        content = live_file.read_text()
-        assert "model: claude" in content
-        assert "generation_tier: self" in content
-        assert "## Objective" in content
+        assert not live_file.exists()
 
         # History file written
         history_dir = work_dir / "handoffs" / "claude"
@@ -1890,12 +1887,20 @@ class TestRelayGeneration:
         history_files = list(history_dir.iterdir())
         assert len(history_files) == 1
         assert history_files[0].name.endswith("_handoff.md")
+        content = history_files[0].read_text()
+        assert "model: claude" in content
+        assert "generation_tier: self" in content
+        assert "## Objective" in content
+
+        # Relay restarts immediately
+        assert len(claude.send_calls) == 2
+        assert "claude" in c._models_initialized
 
     async def test_self_authored_relay_codex(self, tmp_path):
         """Self-authored relay works for codex too."""
         c, _, codex, ui, work_dir = _make_relay_botference(
             tmp_path,
-            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         await c.handle_input("@codex hello", ui)
         ui.room_entries.clear()
@@ -1904,7 +1909,10 @@ class TestRelayGeneration:
 
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("relayed codex" in t.lower() for t in system_msgs)
-        assert (work_dir / "handoff-codex.md").exists()
+        assert not (work_dir / "handoff-codex.md").exists()
+        assert (work_dir / "handoffs" / "codex").exists()
+        assert len(codex.send_calls) == 2
+        assert "codex" in c._models_initialized
 
     async def test_cross_authored_relay(self, tmp_path):
         """Cross-authored tier used when yield pressure is moderate."""
@@ -1972,7 +1980,7 @@ class TestRelayGeneration:
         """Self-authored fails; mechanical fallback succeeds."""
         c, claude, codex, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok("bad body")],
+            claude_responses=[_ok("init"), _ok("bad body"), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         ui.room_entries.clear()
@@ -1984,40 +1992,33 @@ class TestRelayGeneration:
         assert any("relayed claude" in t.lower() for t in system_msgs)
         assert any("tier: mechanical" in t.lower() for t in system_msgs)
 
-        # Files written
-        assert (work_dir / "handoff-claude.md").exists()
+        # Only history remains on success
+        assert not (work_dir / "handoff-claude.md").exists()
+        assert (work_dir / "handoffs" / "claude").exists()
 
-    async def test_teardown_claude_session(self, tmp_path):
-        """Teardown clears claude session_id and stats."""
+    async def test_relay_immediately_reinitializes_claude(self, tmp_path):
+        """Relay tears down the old session and immediately starts a new one."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         await c.handle_input("/relay @claude", ui)
 
-        assert claude.session_id == ""
-        assert "claude" not in c._models_initialized
-        assert c._claude_pct is None
-        assert c._claude_tokens is None
-        assert c._claude_window is None
-        assert c.yield_pressure("claude") == 0.0
+        assert len(claude.send_calls) == 2
+        assert "claude" in c._models_initialized
 
-    async def test_teardown_codex_session(self, tmp_path):
-        """Teardown clears codex thread_id, stats, and yield pressure."""
+    async def test_relay_immediately_reinitializes_codex(self, tmp_path):
+        """Relay tears down the old Codex session and immediately starts a new one."""
         c, _, codex, ui, work_dir = _make_relay_botference(
             tmp_path,
-            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         await c.handle_input("@codex hello", ui)
         await c.handle_input("/relay @codex", ui)
 
-        assert codex.thread_id == ""
-        assert "codex" not in c._models_initialized
-        assert c._codex_pct is None
-        assert c._codex_tokens is None
-        assert c._codex_window is None
-        assert c.yield_pressure("codex") == 0.0
+        assert len(codex.send_calls) == 2
+        assert "codex" in c._models_initialized
 
     async def test_relay_boundary_recorded(self, tmp_path):
         """Relay records the transcript boundary index."""
@@ -2078,12 +2079,12 @@ class TestRelayGeneration:
         """Generated handoff document has correct frontmatter fields."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         await c.handle_input("/relay @claude", ui)
 
-        content = (work_dir / "handoff-claude.md").read_text()
+        content = next((work_dir / "handoffs" / "claude").iterdir()).read_text()
         assert "model: claude" in content
         assert "session_id: mock-session" in content
         assert "room_mode: public" in content
@@ -2098,12 +2099,12 @@ class TestRelayGeneration:
         )
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(body_with_fm)],
+            claude_responses=[_ok("init"), _ok(body_with_fm), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         await c.handle_input("/relay @claude", ui)
 
-        content = (work_dir / "handoff-claude.md").read_text()
+        content = next((work_dir / "handoffs" / "claude").iterdir()).read_text()
         # Should have controller's frontmatter, not model's
         assert "session_id: mock-session" in content
         assert "session_id: bad" not in content
@@ -2134,26 +2135,26 @@ class TestRelayGeneration:
         assert any("relayed claude" in t.lower() for t in system_msgs)
         assert any("tier: cross" in t.lower() for t in system_msgs)
 
-    async def test_history_and_live_have_same_content(self, tmp_path):
-        """Live file and history file contain identical content."""
+    async def test_successful_relay_keeps_history_only(self, tmp_path):
+        """Successful relay keeps the archived handoff but not a live file."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         await c.handle_input("/relay @claude", ui)
 
-        live = (work_dir / "handoff-claude.md").read_text()
+        assert not (work_dir / "handoff-claude.md").exists()
         history_dir = work_dir / "handoffs" / "claude"
         history_file = list(history_dir.iterdir())[0]
-        assert history_file.read_text() == live
+        assert "generation_tier: self" in history_file.read_text()
 
     async def test_sequential_relay_both_models(self, tmp_path):
-        """Relay claude then codex — second relay cannot use cross tier."""
+        """Relay claude then codex — both restart immediately and keep history only."""
         c, claude, codex, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
-            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
+            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
         )
         # Initialize both models
         await c.handle_input("@claude hello", ui)
@@ -2164,26 +2165,32 @@ class TestRelayGeneration:
         await c.handle_input("/relay @claude", ui)
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("relayed claude" in t.lower() for t in system_msgs)
-        assert "claude" not in c._models_initialized
+        assert "claude" in c._models_initialized
 
-        # Now relay codex — claude is torn down, so cross tier unavailable;
-        # codex pressure is low so self tier is tried first, which should work
+        # Now relay codex — both models should still end up initialized
         ui.room_entries.clear()
         await c.handle_input("/relay @codex", ui)
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("relayed codex" in t.lower() for t in system_msgs)
-        assert "codex" not in c._models_initialized
+        assert "codex" in c._models_initialized
 
-        # Both live handoff files should exist
-        assert (work_dir / "handoff-claude.md").exists()
-        assert (work_dir / "handoff-codex.md").exists()
+        # Only history files should remain
+        assert not (work_dir / "handoff-claude.md").exists()
+        assert not (work_dir / "handoff-codex.md").exists()
+        assert (work_dir / "handoffs" / "claude").exists()
+        assert (work_dir / "handoffs" / "codex").exists()
 
-    async def test_sequential_relay_second_skips_cross(self, tmp_path):
-        """After relaying claude, relaying codex at cross pressure falls to mechanical."""
+    async def test_sequential_relay_second_can_use_cross(self, tmp_path):
+        """After relaying claude, codex can still use cross tier because claude restarted."""
         c, claude, codex, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
-            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
+            claude_responses=[
+                _ok("init"),
+                _ok(_VALID_HANDOFF_BODY),
+                _ok("fresh claude"),
+                _ok(_VALID_HANDOFF_BODY),
+            ],
+            codex_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh codex")],
         )
         await c.handle_input("@claude hello", ui)
         await c.handle_input("@codex hello", ui)
@@ -2195,12 +2202,11 @@ class TestRelayGeneration:
         c._yield_pressure["codex"] = 75.0
         ui.room_entries.clear()
 
-        # Relay codex — cross tier needs claude but claude is torn down,
-        # so it must fall through to mechanical
+        # Relay codex — cross tier should be available because claude restarted
         await c.handle_input("/relay @codex", ui)
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("relayed codex" in t.lower() for t in system_msgs)
-        assert any("tier: mechanical" in t.lower() for t in system_msgs)
+        assert any("tier: cross" in t.lower() for t in system_msgs)
 
 
 # ── Task 6: Mechanical handoff generation ─────────────────
@@ -2394,7 +2400,7 @@ class TestMechanicalHandoff:
         """Full relay using mechanical tier writes valid files."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[_ok("init")],
+            claude_responses=[_ok("init"), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         # Set pressure to mechanical range
@@ -2408,19 +2414,20 @@ class TestMechanicalHandoff:
         assert any("relayed claude" in t.lower() for t in system_msgs)
         assert any("tier: mechanical" in t.lower() for t in system_msgs)
 
-        # Live file exists and is valid
+        # History file exists and is valid
         from handoff import validate_handoff
-        live = (work_dir / "handoff-claude.md").read_text()
-        result = validate_handoff(live)
+        history = next((work_dir / "handoffs" / "claude").iterdir()).read_text()
+        result = validate_handoff(history)
         assert result.valid is True, f"Validation errors: {result.errors}"
-        assert "generation_tier: mechanical" in live
+        assert "generation_tier: mechanical" in history
+        assert not (work_dir / "handoff-claude.md").exists()
 
     async def test_mechanical_fallback_from_failed_self(self, tmp_path):
         """When self tier fails, mechanical fallback succeeds."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             # init OK, self-authored returns bad body
-            claude_responses=[_ok("init"), _ok("garbage with no headings")],
+            claude_responses=[_ok("init"), _ok("garbage with no headings"), _ok("fresh")],
         )
         await c.handle_input("@claude hello", ui)
         ui.room_entries.clear()
@@ -2433,8 +2440,9 @@ class TestMechanicalHandoff:
         assert any("tier: mechanical" in t.lower() for t in system_msgs)
 
         from handoff import validate_handoff
-        live = (work_dir / "handoff-claude.md").read_text()
-        assert validate_handoff(live).valid is True
+        history = next((work_dir / "handoffs" / "claude").iterdir()).read_text()
+        assert validate_handoff(history).valid is True
+        assert not (work_dir / "handoff-claude.md").exists()
 
     def test_mechanical_tail_entries_limited(self):
         """Mechanical handoff uses tail of transcript, not entire history."""
@@ -2497,65 +2505,54 @@ class TestContextAfter:
 
 @pytest.mark.asyncio
 class TestBootstrapFromHandoff:
-    """Task 7: bootstrap from handoff safely — atomic consumption."""
+    """Task 7: relay bootstrap is immediate and in-process only."""
 
-    async def test_bootstrap_consumes_handoff_on_success(self, tmp_path):
-        """Live handoff file is deleted after successful adapter.send()."""
+    async def test_relay_immediately_bootstraps_on_success(self, tmp_path):
+        """Successful relay immediately starts the fresh session and keeps only history."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
                 _ok("init"),
-                _ok(_VALID_HANDOFF_BODY),  # relay self-authored
-                _ok("fresh session response"),  # bootstrap send
+                _ok(_VALID_HANDOFF_BODY),
+                _ok("fresh session response"),
             ],
         )
-        # Initialize and relay claude
         await c.handle_input("@claude hello", ui)
         await c.handle_input("/relay @claude", ui)
 
-        live_file = work_dir / "handoff-claude.md"
-        assert live_file.exists(), "handoff file should exist before bootstrap"
-
-        # Next message to claude triggers bootstrap
-        ui.room_entries.clear()
-        await c.handle_input("@claude continue", ui)
-
-        assert not live_file.exists(), "handoff file should be consumed after bootstrap"
-
-        # History copy should still exist
+        assert len(claude.send_calls) == 2
+        assert "claude" in c._models_initialized
+        assert not (work_dir / "handoff-claude.md").exists()
         history_dir = work_dir / "handoffs" / "claude"
         assert any(history_dir.iterdir()), "history copy should be preserved"
 
-    async def test_bootstrap_retains_handoff_on_failure(self, tmp_path):
-        """Live handoff file survives when adapter.send() fails."""
+    async def test_failed_immediate_bootstrap_persists_diagnostic_handoff(self, tmp_path):
+        """If the immediate restart fails, relay leaves a diagnostic live handoff."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
                 _ok("init"),
-                _ok(_VALID_HANDOFF_BODY),  # relay self-authored
+                _ok(_VALID_HANDOFF_BODY),
             ],
         )
-        # Initialize and relay claude
         await c.handle_input("@claude hello", ui)
+
+        original_send = claude.send
+
+        async def fail_second_send(prompt):
+            if len(claude.send_calls) >= 1:
+                raise RuntimeError("connection failed")
+            return await original_send(prompt)
+
+        claude.send = fail_second_send
         await c.handle_input("/relay @claude", ui)
 
         live_file = work_dir / "handoff-claude.md"
-        assert live_file.exists()
-
-        # Make the next send fail
-        async def fail_send(prompt):
-            raise RuntimeError("connection failed")
-        claude.send = fail_send
-
-        ui.room_entries.clear()
-        await c.handle_input("@claude continue", ui)
-
-        assert live_file.exists(), "handoff file must survive failed bootstrap"
-        # Model should not be marked as initialized
+        assert live_file.exists(), "failure should preserve a diagnostic handoff"
         assert "claude" not in c._models_initialized
 
-    async def test_bootstrap_prompt_includes_handoff(self, tmp_path):
-        """Bootstrap prompt contains the handoff document."""
+    async def test_retry_after_failed_relay_uses_pending_handoff(self, tmp_path):
+        """A retry in the same process consumes pending relay state, not the file."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
@@ -2565,18 +2562,49 @@ class TestBootstrapFromHandoff:
             ],
         )
         await c.handle_input("@claude hello", ui)
+
+        original_send = claude.send
+
+        async def fail_second_send(prompt):
+            if len(claude.send_calls) >= 1:
+                raise RuntimeError("connection failed")
+            return await original_send(prompt)
+
+        claude.send = fail_second_send
         await c.handle_input("/relay @claude", ui)
 
-        claude.send_calls.clear()
+        live_file = work_dir / "handoff-claude.md"
+        assert live_file.exists()
+
+        claude.send = original_send
+        ui.room_entries.clear()
         await c.handle_input("@claude continue", ui)
+
+        assert "--- Handoff ---" in claude.send_calls[-1]
+        assert not live_file.exists(), "successful retry clears the diagnostic handoff"
+        assert "claude" in c._models_initialized
+
+    async def test_relay_prompt_includes_handoff(self, tmp_path):
+        """Immediate relay restart prompt contains the handoff document."""
+        c, claude, _, ui, work_dir = _make_relay_botference(
+            tmp_path,
+            claude_responses=[
+                _ok("init"),
+                _ok(_VALID_HANDOFF_BODY),
+                _ok("fresh response"),
+            ],
+        )
+        await c.handle_input("@claude hello", ui)
+        claude.send_calls.clear()
+        await c.handle_input("/relay @claude", ui)
 
         assert len(claude.send_calls) >= 1
         prompt = claude.send_calls[-1]
         assert "--- Handoff ---" in prompt
         assert "## Objective" in prompt
 
-    async def test_bootstrap_excludes_pre_relay_history(self, tmp_path):
-        """Post-relay bootstrap does not include pre-relay transcript entries."""
+    async def test_relay_excludes_pre_relay_history(self, tmp_path):
+        """Immediate relay restart does not include pre-relay transcript entries."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
@@ -2586,41 +2614,33 @@ class TestBootstrapFromHandoff:
             ],
         )
         await c.handle_input("@claude tell me about unicorns", ui)
-        await c.handle_input("/relay @claude", ui)
-
-        # Post-relay message
         claude.send_calls.clear()
-        await c.handle_input("@claude continue the work", ui)
+        await c.handle_input("/relay @claude", ui)
 
         prompt = claude.send_calls[-1]
         assert "unicorns" not in prompt, "pre-relay history must be excluded"
 
-    async def test_bootstrap_includes_post_relay_history(self, tmp_path):
-        """Post-relay bootstrap includes messages sent after the relay."""
-        c, claude, codex, ui, work_dir = _make_relay_botference(
+    async def test_post_relay_message_uses_resume_not_send(self, tmp_path):
+        """After a successful relay, the next user message continues the fresh session."""
+        c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
                 _ok("init"),
                 _ok(_VALID_HANDOFF_BODY),
                 _ok("fresh response"),
-            ],
-            codex_responses=[
-                _ok("codex init"),
-                _ok("codex says something post-relay"),
+                _ok("follow-up"),
             ],
         )
         await c.handle_input("@claude hello", ui)
         await c.handle_input("/relay @claude", ui)
 
-        # Send a message to codex (which gets a post-relay transcript entry)
-        await c.handle_input("@codex what do you think about zebras", ui)
-
-        # Now bootstrap claude
         claude.send_calls.clear()
+        claude.resume_calls.clear()
         await c.handle_input("@claude continue", ui)
 
-        prompt = claude.send_calls[-1]
-        assert "zebras" in prompt, "post-relay history must be included"
+        assert claude.send_calls == []
+        assert len(claude.resume_calls) == 2 or len(claude.resume_calls) == 1
+        assert "claude" in c._models_initialized
 
     async def test_bootstrap_without_handoff_works_normally(self, tmp_path):
         """First bootstrap without any relay/handoff works as before."""
@@ -2639,8 +2659,8 @@ class TestBootstrapFromHandoff:
         assert "--- Handoff ---" not in claude.send_calls[0]
         assert "claude" in c._models_initialized
 
-    async def test_bootstrap_shows_resuming_label(self, tmp_path):
-        """UI says 'Resuming' when bootstrapping with handoff, not 'Starting'."""
+    async def test_relay_shows_restarting_label(self, tmp_path):
+        """Immediate relay restart should say 'Restarting', not 'Resuming'."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
@@ -2650,55 +2670,40 @@ class TestBootstrapFromHandoff:
             ],
         )
         await c.handle_input("@claude hello", ui)
+        ui.room_entries.clear()
         await c.handle_input("/relay @claude", ui)
 
-        ui.room_entries.clear()
-        await c.handle_input("@claude continue", ui)
-
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
-        assert any("Resuming claude" in t for t in system_msgs)
+        assert any("Restarting claude" in t for t in system_msgs)
 
-    async def test_ensure_initialized_consumes_handoff(self, tmp_path):
-        """_ensure_initialized also handles handoff consumption atomically."""
+    async def test_fresh_start_ignores_persisted_live_handoff_file(self, tmp_path):
+        """A new controller instance must not auto-load a persisted handoff file."""
         c, claude, codex, ui, work_dir = _make_relay_botference(
             tmp_path,
             claude_responses=[
-                _ok("init"),
-                _ok(_VALID_HANDOFF_BODY),
                 _ok("fresh response"),
             ],
             codex_responses=[_ok("codex init")],
         )
-        await c.handle_input("@claude hello", ui)
-        await c.handle_input("/relay @claude", ui)
-
         live_file = work_dir / "handoff-claude.md"
-        assert live_file.exists()
+        live_file.write_text("---\nmodel: claude\n---\n\n## Objective\nstale\n", encoding="utf-8")
 
-        # _ensure_initialized is called by caucus — trigger it directly
-        result = await c._ensure_initialized("claude", ui)
-        assert result is True
-        assert not live_file.exists(), "handoff consumed via _ensure_initialized"
+        await c.handle_input("@claude hello", ui)
 
-    async def test_ensure_initialized_retains_handoff_on_failure(self, tmp_path):
-        """_ensure_initialized retains handoff if send fails."""
+        assert len(claude.send_calls) == 1
+        assert "--- Handoff ---" not in claude.send_calls[0]
+        assert live_file.exists(), "fresh sessions should ignore persisted handoff files"
+
+    async def test_ensure_initialized_ignores_persisted_live_handoff_file(self, tmp_path):
+        """_ensure_initialized should also ignore persisted live handoff files."""
         c, claude, _, ui, work_dir = _make_relay_botference(
             tmp_path,
-            claude_responses=[
-                _ok("init"),
-                _ok(_VALID_HANDOFF_BODY),
-            ],
+            claude_responses=[_ok("fresh response")],
         )
-        await c.handle_input("@claude hello", ui)
-        await c.handle_input("/relay @claude", ui)
-
         live_file = work_dir / "handoff-claude.md"
-        assert live_file.exists()
-
-        async def fail_send(prompt):
-            raise RuntimeError("boom")
-        claude.send = fail_send
+        live_file.write_text("---\nmodel: claude\n---\n\n## Objective\nstale\n", encoding="utf-8")
 
         result = await c._ensure_initialized("claude", ui)
-        assert result is False
-        assert live_file.exists(), "handoff must survive failed _ensure_initialized"
+        assert result is True
+        assert "--- Handoff ---" not in claude.send_calls[0]
+        assert live_file.exists()

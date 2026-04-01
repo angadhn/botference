@@ -428,6 +428,7 @@ class Botference:
         self._warned_overlimit_models: set[str] = set()
         self._yield_pressure: dict[str, float] = {}   # model → normalized yield pressure (100 = yield now)
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
+        self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
         self._quit_requested: bool = False
 
     @property
@@ -726,7 +727,7 @@ class Botference:
     # ── /relay ────────────────────────────────────────────
 
     async def _relay_model(self, model: str, ui: UIPort) -> None:
-        """Relay a model's session: create handoff, tear down, arm bootstrap."""
+        """Relay a model's session: create handoff, tear down, restart immediately."""
         if model not in ("claude", "codex"):
             ui.add_room_entry("system", _RELAY_USAGE)
             return
@@ -785,11 +786,6 @@ class Botference:
             )
             return
 
-        # Write live handoff file
-        live_path = self.paths.handoff_live_file(model)
-        live_path.parent.mkdir(parents=True, exist_ok=True)
-        live_path.write_text(handoff_doc, encoding="utf-8")
-
         # Write timestamped history copy
         ts_filename = now.strftime("%Y-%m-%dT%H-%M-%SZ")
         history_dir = self.paths.handoff_model_history_dir(model)
@@ -804,12 +800,26 @@ class Botference:
         # Tear down session state
         self._teardown_model_session(model, ui)
 
+        # Relay bootstrap is in-process only. Clear any prior failure artifact,
+        # then keep the handoff in memory for the immediate restart attempt.
+        live_path = self.paths.handoff_live_file(model)
+        live_path.unlink(missing_ok=True)
+        self._pending_relay_handoffs[model] = handoff_doc
+
+        restarted = await self._ensure_initialized(model, ui)
+
         # Confirmation
-        ui.add_room_entry(
-            "system",
-            f"Relayed {model} (tier: {used_tier}). "
-            f"Next message to {model} starts a fresh session.",
-        )
+        if restarted:
+            ui.add_room_entry(
+                "system",
+                f"Relayed {model} (tier: {used_tier}) and started a fresh session.",
+            )
+        else:
+            ui.add_room_entry(
+                "system",
+                f"Relayed {model} (tier: {used_tier}), but fresh-session startup failed. "
+                f"Retry by messaging {model}.",
+            )
         ui.set_status(self.status_snapshot())
 
     def _relay_tier_sequence(self, model: str, pct: float) -> list[str]:
@@ -820,21 +830,54 @@ class Botference:
             return ["cross", "mechanical"]
         return ["mechanical"]
 
-    def _read_handoff_if_present(
-        self, model: str,
-    ) -> tuple[str | None, Path | None]:
-        """Return (content, path) if a live handoff file exists, else (None, None)."""
-        path = self.paths.handoff_live_file(model)
-        if path.is_file():
-            return path.read_text(encoding="utf-8"), path
-        return None, None
-
     def _read_relay_prompt(self) -> Optional[str]:
         """Read the relay generation prompt from disk."""
         path = self.paths.relay_prompt
         if not path.is_file():
             return None
         return path.read_text(encoding="utf-8")
+
+    def _persist_failed_relay_handoff(self, model: str) -> None:
+        """Persist an in-process relay handoff as a failure artifact."""
+        handoff_doc = self._pending_relay_handoffs.get(model)
+        if not handoff_doc:
+            return
+        live_path = self.paths.handoff_live_file(model)
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        live_path.write_text(handoff_doc, encoding="utf-8")
+
+    async def _start_model_session(
+        self,
+        model: str,
+        ui: UIPort,
+        *,
+        handoff_doc: str | None = None,
+        after_turn: int | None = None,
+    ) -> Optional[AdapterResponse]:
+        """Start a fresh model session, optionally from an in-process relay handoff."""
+        adapter = self.claude if model == "claude" else self.codex
+        prompt = self._build_initial_prompt(
+            model,
+            handoff_doc=handoff_doc,
+            after_turn=after_turn,
+        )
+        self._models_initialized.add(model)
+        label = "Restarting" if handoff_doc else "Starting"
+        ui.add_room_entry("system", f"{label} {model} session…")
+        try:
+            resp = await adapter.send(prompt)
+        except Exception as e:
+            ui.add_room_entry("system", f"Error starting {model}: {e}")
+            self._models_initialized.discard(model)
+            if handoff_doc:
+                self._persist_failed_relay_handoff(model)
+            return None
+
+        if handoff_doc:
+            self._pending_relay_handoffs.pop(model, None)
+            self.paths.handoff_live_file(model).unlink(missing_ok=True)
+
+        return resp
 
     async def _relay_generate_self(
         self, model: str, relay_prompt: str, ui: UIPort,
@@ -1095,27 +1138,16 @@ class Botference:
         adapter = self.claude if model == "claude" else self.codex
 
         if model not in self._models_initialized:
-            # Check for a live handoff file (post-relay bootstrap)
-            handoff_doc, handoff_path = self._read_handoff_if_present(model)
-            relay_turn = self.relay_boundary(model)
-
-            prompt = self._build_initial_prompt(
+            handoff_doc = self._pending_relay_handoffs.get(model)
+            relay_turn = self.relay_boundary(model) if handoff_doc else None
+            resp = await self._start_model_session(
                 model,
+                ui,
                 handoff_doc=handoff_doc,
                 after_turn=relay_turn,
             )
-            self._models_initialized.add(model)
-            label = "Resuming" if handoff_doc else "Starting"
-            ui.add_room_entry("system", f"{label} {model} session…")
-            try:
-                resp = await adapter.send(prompt)
-            except Exception as e:
-                ui.add_room_entry("system", f"Error starting {model}: {e}")
-                self._models_initialized.discard(model)
+            if resp is None:
                 return None
-            # Consume handoff only after successful send
-            if handoff_path is not None:
-                handoff_path.unlink(missing_ok=True)
             self.transcript.mark_seen(model)
         else:
             # Resume — the user entry is already in the transcript (added
@@ -1218,33 +1250,22 @@ class Botference:
 
         Returns True if the model is ready, False on init failure.
         The initial prompt includes transcript backfill so late-joining
-        models see prior discussion.  After relay, consumes the live
-        handoff file atomically (deleted only after successful send).
+        models see prior discussion. Relay handoffs are consumed only from
+        in-process controller state, never from persisted live files.
         """
         if model in self._models_initialized:
             return True
-        adapter = self.claude if model == "claude" else self.codex
 
-        handoff_doc, handoff_path = self._read_handoff_if_present(model)
-        relay_turn = self.relay_boundary(model)
-
-        prompt = self._build_initial_prompt(
+        handoff_doc = self._pending_relay_handoffs.get(model)
+        relay_turn = self.relay_boundary(model) if handoff_doc else None
+        resp = await self._start_model_session(
             model,
+            ui,
             handoff_doc=handoff_doc,
             after_turn=relay_turn,
         )
-        self._models_initialized.add(model)
-        label = "Resuming" if handoff_doc else "Starting"
-        ui.add_room_entry("system", f"{label} {model} session…")
-        try:
-            resp = await adapter.send(prompt)
-        except Exception as e:
-            ui.add_room_entry("system", f"Error starting {model}: {e}")
-            self._models_initialized.discard(model)
+        if resp is None:
             return False
-        # Consume handoff only after successful send
-        if handoff_path is not None:
-            handoff_path.unlink(missing_ok=True)
         self._update_pct(model, resp, ui)
         self.transcript.mark_seen(model)
         ui.set_status(self.status_snapshot())

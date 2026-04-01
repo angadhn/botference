@@ -1,0 +1,39 @@
+name: Update LOC Badge
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/badges/loc.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-loc-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Regenerate badge payload
+        run: python3 scripts/update_loc_badge.py
+
+      - name: Commit badge update if needed
+        run: |
+          if git diff --quiet -- docs/badges/loc.json; then
+            echo "LOC badge already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/badges/loc.json
+          git commit -m "chore: update LOC badge"
+          git push
