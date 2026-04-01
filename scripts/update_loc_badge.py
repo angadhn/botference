@@ -68,6 +68,7 @@ def format_loc(lines: int) -> str:
 
 
 def build_payload(total_lines: int, file_count: int) -> dict[str, object]:
+    del file_count
     return {
         "schemaVersion": 1,
         "label": "tracked code loc",
@@ -77,8 +78,6 @@ def build_payload(total_lines: int, file_count: int) -> dict[str, object]:
         "namedLogo": "github",
         "labelColor": "1f2937",
         "isError": False,
-        "fileCount": file_count,
-        "totalLines": total_lines,
     }
 
 

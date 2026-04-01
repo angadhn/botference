@@ -6,7 +6,5 @@
   "cacheSeconds": 86400,
   "namedLogo": "github",
   "labelColor": "1f2937",
-  "isError": false,
-  "fileCount": 55,
-  "totalLines": 19366
+  "isError": false
 }

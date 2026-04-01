@@ -1,11 +1,11 @@
 name: Update LOC Badge
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "docs/badges/loc.json"
+  schedule:
+    # GitHub Actions cron is UTC. Run at both candidate UTC hours and gate
+    # inside the job so the workflow updates exactly once at 18:00 Europe/London.
+    - cron: "0 17 * * *"
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 permissions:
@@ -15,18 +15,37 @@ jobs:
   update-loc-badge:
     runs-on: ubuntu-latest
     steps:
+      - name: Gate scheduled run to 18:00 Europe/London
+        id: schedule_gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          london_hour=$(TZ=Europe/London date +%H)
+          if [ "$london_hour" = "18" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping: local London time is $(TZ=Europe/London date '+%Y-%m-%d %H:%M %Z')."
+          fi
+
       - name: Check out repository
+        if: steps.schedule_gate.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.schedule_gate.outputs.should_run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Regenerate badge payload
+        if: steps.schedule_gate.outputs.should_run == 'true'
         run: python3 scripts/update_loc_badge.py
 
       - name: Commit badge update if needed
+        if: steps.schedule_gate.outputs.should_run == 'true'
         run: |
           if git diff --quiet -- docs/badges/loc.json; then
             echo "LOC badge already up to date."
