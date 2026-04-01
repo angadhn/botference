@@ -113,6 +113,7 @@ async def main() -> None:
     claude = ClaudeAdapter(
         model=args.anthropic_model,
         effort=args.claude_effort,
+        tools=["Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"],
         debug_log_path=claude_log,
     )
     codex = CodexAdapter(
