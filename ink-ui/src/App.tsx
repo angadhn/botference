@@ -139,34 +139,39 @@ function Pane({
           >
             {line.label}
           </Text>
-          {line.gutter ? (
+          <Box
+            flexGrow={1}
+            backgroundColor={dimmed ? undefined : (line.bodyBackgroundColor ?? line.gutterBackgroundColor)}
+          >
+            {line.gutter ? (
+              <Text
+                color={dimmed ? THEME.chromeMuted : (line.gutterColor ?? THEME.textMuted)}
+                backgroundColor={dimmed ? undefined : (line.gutterBackgroundColor ?? line.bodyBackgroundColor)}
+                wrap="truncate-end"
+              >
+                {line.gutter}
+              </Text>
+            ) : null}
             <Text
-              color={dimmed ? THEME.chromeMuted : (line.gutterColor ?? THEME.textMuted)}
-              backgroundColor={dimmed ? undefined : line.gutterBackgroundColor}
+              bold={line.bodyBold && !dimmed}
+              color={dimmed ? THEME.chromeMuted : line.bodyColor}
+              backgroundColor={dimmed ? undefined : line.bodyBackgroundColor}
               wrap="truncate-end"
             >
-              {line.gutter}
+              {line.segments
+                ? line.segments.map((segment, index) => (
+                  <Text
+                    key={`${line.key}-${index}`}
+                    color={dimmed ? THEME.chromeMuted : (segment.color ?? line.bodyColor)}
+                    backgroundColor={dimmed ? undefined : (segment.backgroundColor ?? line.bodyBackgroundColor)}
+                    bold={!dimmed && segment.bold}
+                  >
+                    {segment.text}
+                  </Text>
+                ))
+                : line.text}
             </Text>
-          ) : null}
-          <Text
-            bold={line.bodyBold && !dimmed}
-            color={dimmed ? THEME.chromeMuted : line.bodyColor}
-            backgroundColor={dimmed ? undefined : line.bodyBackgroundColor}
-            wrap="truncate-end"
-          >
-            {line.segments
-              ? line.segments.map((segment, index) => (
-                <Text
-                  key={`${line.key}-${index}`}
-                  color={dimmed ? THEME.chromeMuted : (segment.color ?? line.bodyColor)}
-                  backgroundColor={dimmed ? undefined : (segment.backgroundColor ?? line.bodyBackgroundColor)}
-                  bold={!dimmed && segment.bold}
-                >
-                  {segment.text}
-                </Text>
-              ))
-              : line.text}
-          </Text>
+          </Box>
         </Box>
       ))}
     </Box>

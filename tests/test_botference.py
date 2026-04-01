@@ -551,15 +551,17 @@ class TestBotferenceMessageRouting:
         assert c.transcript.entries[0].speaker == "user"
         assert c.transcript.entries[1].speaker == "claude"
 
-    async def test_tool_summaries_displayed(self):
+    async def test_tool_summaries_displayed_as_folded_bullets(self):
         resp = _ok("Found it", tool_summaries=[
             ToolSummary(id="t1", name="Grep", input_preview="pattern",
                         output_preview="3 matches"),
         ])
         c, _, _, ui = _make_botference(claude_responses=[resp])
         await c.handle_input("@claude search", ui)
-        tool_entries = [t for _, t in ui.room_entries if "Grep" in t]
+        tool_entries = [t for _, t in ui.room_entries if "Explored" in t]
         assert len(tool_entries) == 1
+        assert "  - Grep pattern" in tool_entries[0]
+        assert "3 matches" not in tool_entries[0]
 
 
 @pytest.mark.asyncio

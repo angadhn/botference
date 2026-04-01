@@ -308,6 +308,21 @@ class Transcript:
         return '\n'.join(parts)
 
 
+def _tool_summary_display_text(tool_summaries: list) -> str:
+    """Collapse a tool run into a short human-readable summary block."""
+    if not tool_summaries:
+        return ""
+
+    lines = ["• Explored"]
+    for ts in tool_summaries:
+        preview = ts.input_preview.strip() if ts.input_preview else ""
+        if preview:
+            lines.append(f"  - {ts.name} {preview}")
+        else:
+            lines.append(f"  - {ts.name}")
+    return "\n".join(lines)
+
+
 # ── Caucus footer parsing ──────────────────────────────────
 
 _TERMINAL_STATUSES = frozenset(
@@ -1162,9 +1177,9 @@ class Botference:
 
         if resp.text:
             ui.add_room_entry(model, resp.text)
-        for ts in resp.tool_summaries:
-            out = f" → {ts.output_preview}" if ts.output_preview else ""
-            ui.add_room_entry(model, f"  > {ts.name}({ts.input_preview}){out}")
+        tool_display = _tool_summary_display_text(resp.tool_summaries)
+        if tool_display:
+            ui.add_room_entry(model, tool_display)
         if resp.exit_code == -1:
             ui.add_room_entry(
                 "system",

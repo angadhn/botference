@@ -132,6 +132,10 @@ Messages in the council panel are labelled by speaker:
   - Command feedback (lead set, usage info)
   - Deterministic file-write feedback (`implementation-plan.md`, reviewer comments, `checkpoint.md`)
 
+Tool activity in the council is shown as a short folded summary under the
+model response rather than a raw command/output transcript. Deliberate code
+excerpts still render as code blocks.
+
 ### Commands
 
 | Command | What it does |
