@@ -76,8 +76,6 @@ const THEME = {
   ready: "green",
 };
 
-const BUSY_FRAMES = [".", "..", "..."];
-
 type BusyTarget = "claude" | "codex" | "all" | "system" | null;
 type BusySegment = { text: string; color: string; bold?: boolean };
 
@@ -113,16 +111,19 @@ function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
   const chars = Array.from(text);
   if (chars.length === 0) return [{ text: "", color: THEME.statusMuted }];
 
-  const pulseWidth = Math.max(3, Math.floor(chars.length / 7));
-  const cycle = chars.length + pulseWidth;
-  const highlightStart = frameIndex % cycle - pulseWidth;
+  const cyclePadding = 10;
+  const cycleLength = chars.length + cyclePadding * 2;
+  const glimmerIndex = (frameIndex % cycleLength) - cyclePadding;
 
   return chars.map((char, index) => {
-    const distance = Math.abs(index - highlightStart);
+    const distance = Math.abs(index - glimmerIndex);
     if (distance === 0) {
       return { text: char, color: "white", bold: true };
     }
     if (distance <= 1) {
+      return { text: char, color: "grayBright" };
+    }
+    if (distance <= 2) {
       return { text: char, color: THEME.textMuted };
     }
     return { text: char, color: THEME.statusMuted };
@@ -508,8 +509,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const roomHasNew = roomScroll > 0 && roomEntries.length > lastSeenRoomCount;
   const caucusHasNew = caucusScroll > 0 && caucusEntries.length > lastSeenCaucusCount;
   const activeBusyLabel = busyLabel(busyTarget, status.mode);
-  const activeBusyFrame = BUSY_FRAMES[busyFrameIndex] ?? BUSY_FRAMES[0]!;
-
   useEffect(() => {
     if (ready) {
       setBusyFrameIndex(0);
@@ -517,7 +516,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
     const interval = setInterval(() => {
       setBusyFrameIndex((prev) => prev + 1);
-    }, 90);
+    }, 70);
     return () => clearInterval(interval);
   }, [ready]);
 
@@ -888,9 +887,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
-  const busyText = `${activeBusyLabel}${activeBusyFrame}`;
+  const busyText = activeBusyLabel;
   const busySegments = buildBusySegments(busyText, busyFrameIndex);
-  const inputStatusText = hint || (!ready ? busyText : " ");
+  const statusText = hint || (!ready ? busyText : " ");
 
   // ── Render ─────────────────────────────────────────────
 
@@ -922,6 +921,16 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">
+        <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
+        <Text color={hint ? THEME.textMuted : THEME.statusMuted}>
+          {hint || ready
+            ? statusText
+            : busySegments.map((segment, index) => (
+                <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
+                  {segment.text}
+                </Text>
+              ))}
+        </Text>
         <Text color={THEME.text}>{inputLabel}</Text>
         <Box
           flexDirection="column"
@@ -941,15 +950,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             maxVisibleLines={visibleInputLines}
             showTrailingCursorLine={showTrailingCursorLine}
           />
-          <Text color={hint ? THEME.textMuted : THEME.statusMuted}>
-            {hint || ready
-              ? inputStatusText
-              : busySegments.map((segment, index) => (
-                <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
-                  {segment.text}
-                </Text>
-              ))}
-          </Text>
         </Box>
       </Box>
 

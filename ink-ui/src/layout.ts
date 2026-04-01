@@ -2,10 +2,10 @@ import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
 
 // Layout budget constants — derived from Ink's rendered chrome.
-// INPUT_CHROME: label(1) + top inset(1) + hint(1) + field spacing(2) = 5
+// INPUT_CHROME: divider(1) + status(1) + label(1) + top inset(1) + field spacing(2) = 6
 // PANE_CHROME:  border(2) + title(1) = 3
 // STATUS_HEIGHT: 1
-const INPUT_CHROME = 5;
+const INPUT_CHROME = 6;
 const STATUS_HEIGHT = 1;
 const PANE_CHROME = 3;
 const PANE_HORIZONTAL_BORDER = 2;
