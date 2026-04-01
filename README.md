@@ -33,7 +33,7 @@ The TUI has two backends:
 | Flag | Backend | Notes |
 |------|---------|-------|
 | `--textual` | Textual (Python) | Default. No extra install needed. |
-| `--ink` | Ink (Node.js/React) | Requires `npm install` in `ink-ui/`. Supports multiline input (Shift+Enter). |
+| `--ink` | Ink (Node.js/React) | First use after clone: `cd ink-ui && npm install`. Supports multiline input (Shift+Enter). |
 
 Both present the same council + caucus interface. Use `--claude` to skip Codex
 and run a solo Claude session (no TUI, just the Claude CLI).
@@ -73,6 +73,12 @@ conflicting opinions.
 ./botference -p build --parallel           # Phase-level parallelism
 
 ./botference --help                        # Full usage + supported models
+```
+
+For a fresh clone, install Ink's Node dependencies once before using `--ink`:
+
+```bash
+cd ink-ui && npm install
 ```
 
 > **API keys:** If your terminal already has Claude Code and Codex configured

@@ -83,6 +83,7 @@ restore_iteration_counter
 ensure_ink_ui_dist() {
   local ink_dir="${BOTFERENCE_HOME}/ink-ui"
   local dist_bin="${ink_dir}/dist/bin.js"
+  local install_cmd="cd ink-ui && npm install"
   local rebuild=false
   local src
 
@@ -111,6 +112,22 @@ ensure_ink_ui_dist() {
   fi
 
   if $rebuild; then
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+      echo "Error: Ink UI requires Node.js and npm." >&2
+      echo "Run this once after cloning:" >&2
+      echo "  ${install_cmd}" >&2
+      exit 1
+    fi
+    if [ ! -d "$ink_dir/node_modules" ] || [ ! -e "$ink_dir/node_modules/esbuild" ]; then
+      echo "Error: Ink UI dependencies are not installed." >&2
+      echo "Run this once after cloning:" >&2
+      echo "  ${install_cmd}" >&2
+      if [ -f "$ink_dir/package-lock.json" ]; then
+        echo "If you want the lockfile-pinned install instead, run:" >&2
+        echo "  cd ink-ui && npm ci" >&2
+      fi
+      exit 1
+    fi
     echo "  Building Ink UI"
     (
       cd "$ink_dir"
