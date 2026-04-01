@@ -278,7 +278,7 @@ class TestCodexDedup:
         assert len(deduped) == 2
 
 
-# ── Session isolation (send_writable) ────────────────────────
+# ── Session isolation ────────────────────────────────────────
 
 
 class TestCodexSessionIsolation:
@@ -331,81 +331,6 @@ class TestCodexSessionIsolation:
 
         asyncio.run(_test())
 
-    def test_send_writable_does_not_overwrite_thread_id(self):
-        """send_writable should NOT clobber the main botference thread_id."""
-
-        async def _test():
-            adapter = CodexAdapter(model="gpt-5.4")
-
-            # Simulate a normal send that sets thread_id
-            botference_thread = "botference-thread-123"
-            adapter.thread_id = botference_thread
-
-            # Mock subprocess for send_writable
-            mock_proc = AsyncMock()
-            mock_proc.returncode = 0
-            # JSONL output: write session gets its own thread
-            write_jsonl = (
-                '{"type":"thread.started","thread_id":"write-thread-456"}\n'
-                '{"type":"turn.started"}\n'
-                '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"wrote files"}}\n'
-                '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10}}\n'
-            )
-            mock_proc.stdout = _make_reader(write_jsonl)
-            mock_proc.stderr = _make_reader("")
-            mock_proc.wait = AsyncMock(return_value=0)
-            mock_proc.kill = MagicMock()
-
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-                resp = await adapter.send_writable("write the plan")
-
-            # The response should carry the write session's thread_id
-            assert resp.session_id == "write-thread-456"
-            # But the adapter's main thread_id should be unchanged
-            assert adapter.thread_id == botference_thread
-            assert resp.text == "wrote files"
-
-        asyncio.run(_test())
-
-    def test_send_writable_timeout_reports_write_thread(self):
-        """If timeout occurs after thread.started in an isolated write session,
-        the timeout response should carry the write thread_id, not the botference one."""
-
-        async def _test():
-            adapter = CodexAdapter(model="gpt-5.4", timeout=1)
-            adapter.thread_id = "botference-thread-123"
-
-            mock_proc = AsyncMock()
-            mock_proc.returncode = None
-            mock_proc.kill = MagicMock()
-            mock_proc.wait = AsyncMock(return_value=-9)
-
-            # Stdout: thread.started arrives, then hangs (no EOF/turn.completed)
-            class _HangingReader:
-                def __init__(self):
-                    self._sent = False
-
-                async def read(self, n=-1):
-                    if not self._sent:
-                        self._sent = True
-                        return b'{"type":"thread.started","thread_id":"write-thread-789"}\n'
-                    # Hang until cancelled
-                    await asyncio.sleep(999)
-                    return b""
-
-            mock_proc.stdout = _HangingReader()
-            mock_proc.stderr = _make_reader("")
-
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-                resp = await adapter.send_writable("finalize")
-
-            assert resp.exit_code == -1  # timeout
-            # Should report the write session's thread, not botference
-            assert resp.session_id == "write-thread-789"
-            # Botference thread should be untouched
-            assert adapter.thread_id == "botference-thread-123"
-
-        asyncio.run(_test())
 
 
 # ── Context percent ──────────────────────────────────────────
@@ -723,13 +648,6 @@ class TestCommandConstruction:
         assert cmd[2] == "resume"
         assert cmd[3] == "tid-abc"
         assert cmd[-1] == "follow up"
-
-    def test_codex_write_cmd_uses_full_auto(self):
-        x = CodexAdapter(model="gpt-5.4")
-        cmd = x._build_write_cmd("finalize")
-        assert "--full-auto" in cmd
-        assert "--sandbox" not in cmd
-
 
 # ── Error paths ──────────────────────────────────────────────
 

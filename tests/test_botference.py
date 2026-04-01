@@ -384,10 +384,6 @@ class MockAdapter:
         self.resume_calls.append(message)
         return self._next()
 
-    async def send_writable(self, prompt: str) -> AdapterResponse:
-        self.send_calls.append(prompt)
-        return self._next()
-
     def context_percent(self, resp=None) -> float:
         return 10.0
 
@@ -2035,24 +2031,6 @@ class TestRelayGeneration:
         await c.handle_input("/relay @claude", ui)
         assert c.relay_boundary("claude") is not None
         assert c.relay_boundary("claude") >= 0
-
-    async def test_relay_pending_draft_warning(self, tmp_path):
-        """Relaying the lead model discards pending draft and warns."""
-        c, claude, _, ui, work_dir = _make_relay_botference(
-            tmp_path,
-            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY)],
-        )
-        await c.handle_input("@claude hello", ui)
-        c._pending_draft = "some draft text"
-        c._pending_lead = "claude"
-        ui.room_entries.clear()
-
-        await c.handle_input("/relay @claude", ui)
-
-        system_msgs = [t for s, t in ui.room_entries if s == "system"]
-        assert any("pending draft" in t.lower() for t in system_msgs)
-        assert c._pending_draft is None
-        assert c._pending_lead is None
 
     async def test_relay_warned_overlimit_cleared(self, tmp_path):
         """Teardown clears over-limit warning state."""

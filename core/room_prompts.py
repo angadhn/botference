@@ -93,17 +93,6 @@ WRITER_PREAMBLE = (
     "no files will be written yet."
 )
 
-WRITER_FINAL_PREAMBLE = (
-    "You are the designated plan writer. Produce a final "
-    "implementation plan as a markdown document. This will be "
-    "written to implementation-plan.md and checkpoint.md after "
-    "user approval.\n\nInclude all decisions from the discussion. "
-    "Be thorough and specific."
-)
-
-# -- Reviewer ---------------------------------------------------------------
-
-
 def reviewer_preamble(lead_name: str, draft_text: str) -> str:
     """Review/critique instructions for the non-lead model."""
     return (
@@ -113,19 +102,6 @@ def reviewer_preamble(lead_name: str, draft_text: str) -> str:
         f"Be constructive and specific. Do not rewrite the plan. "
         f"Return review comments only as markdown."
     )
-
-
-def revision_preamble(reviewer_name: str, review_text: str) -> str:
-    """Instructions for the lead to revise based on review feedback."""
-    return (
-        f"{reviewer_name} reviewed your draft and provided this feedback:\n\n"
-        f"{review_text}\n\n"
-        f"Revise your implementation plan to address this feedback. "
-        f"Incorporate valid points, explain any you disagree with, "
-        f"and produce the updated plan as clean markdown."
-    )
-
-
 def revision_from_plan_preamble(current_plan: str, reviewer_name: str,
                                 review_text: str, round_number: int) -> str:
     """Revise an existing plan using reviewer feedback."""
@@ -166,17 +142,4 @@ def checkpoint_preamble(final_plan_text: str) -> str:
         "- Last Reflection\n"
         "- Next Task\n"
         "Be concise and derive the next task from the current plan."
-    )
-
-
-# -- Write ------------------------------------------------------------------
-
-
-def write_preamble(draft_text: str, work_prefix: str = "") -> str:
-    """Instructions for writing approved plan files."""
-    return (
-        "Write the following plan to these files:\n"
-        f"1. {work_prefix}implementation-plan.md — the full plan\n"
-        f"2. {work_prefix}checkpoint.md — a brief checkpoint summary\n\n"
-        f"Plan content:\n\n{draft_text}"
     )

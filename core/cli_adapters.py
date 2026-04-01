@@ -402,17 +402,6 @@ class CodexAdapter:
             message,
         ]
 
-    def _build_write_cmd(self, prompt: str) -> list:
-        """Separate write-capable session for finalize."""
-        cmd = ["codex", "exec",
-               "--full-auto",
-               "--skip-git-repo-check",
-               "--json"]
-        if self.model:
-            cmd += ["-m", self.model]
-        cmd.append(prompt)
-        return cmd
-
     async def send(self, prompt: str) -> AdapterResponse:
         """First message — creates a new thread."""
         self.thread_id = ""
@@ -426,14 +415,6 @@ class CodexAdapter:
         if not self.thread_id:
             raise RuntimeError("No thread to resume — call send() first")
         return await self._run(self._build_resume_cmd(message))
-
-    async def send_writable(self, prompt: str) -> AdapterResponse:
-        """Separate write-capable session for finalize flow.
-
-        Does NOT update self.thread_id — the botference discussion session
-        remains resumable after finalize completes.
-        """
-        return await self._run(self._build_write_cmd(prompt), isolated=True)
 
     def _make_env(self):
         """Build subprocess env. Injects OPENAI_API_KEY when available."""

@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 from room_prompts import (
     FOOTER_SCHEMA,
     ROOM_ROLE_SUFFIX,
-    WRITER_FINAL_PREAMBLE,
     WRITER_PREAMBLE,
     caucus_first_turn,
     caucus_preamble,
@@ -20,7 +19,6 @@ from room_prompts import (
     reviewer_preamble,
     revision_from_plan_preamble,
     room_preamble,
-    write_preamble,
 )
 
 
@@ -145,21 +143,6 @@ class TestWriterPreamble:
         assert "no files" in WRITER_PREAMBLE.lower()
 
 
-# -- WRITER_FINAL_PREAMBLE --------------------------------------------------
-
-
-class TestWriterFinalPreamble:
-    def test_final_instructions(self):
-        assert "designated plan writer" in WRITER_FINAL_PREAMBLE
-
-    def test_mentions_target_files(self):
-        assert "implementation-plan.md" in WRITER_FINAL_PREAMBLE
-        assert "checkpoint.md" in WRITER_FINAL_PREAMBLE
-
-    def test_thorough(self):
-        assert "thorough" in WRITER_FINAL_PREAMBLE.lower()
-
-
 # -- reviewer_preamble ------------------------------------------------------
 
 
@@ -219,22 +202,3 @@ class TestCheckpointPreamble:
         result = checkpoint_preamble("# Plan")
         assert "Knowledge State" in result
         assert "Next Task" in result
-
-
-# -- write_preamble ---------------------------------------------------------
-
-
-class TestWritePreamble:
-    def test_includes_file_names(self):
-        result = write_preamble("# Plan content")
-        assert "implementation-plan.md" in result
-        assert "checkpoint.md" in result
-
-    def test_includes_draft_content(self):
-        result = write_preamble("# Plan\n\n## Steps\n1. Do stuff")
-        assert "# Plan" in result
-        assert "Do stuff" in result
-
-    def test_plan_content_label(self):
-        result = write_preamble("content")
-        assert "Plan content:" in result

@@ -429,8 +429,6 @@ class Botference:
         self._yield_pressure: dict[str, float] = {}   # model → normalized yield pressure (100 = yield now)
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
         self._quit_requested: bool = False
-        self._pending_draft: Optional[str] = None
-        self._pending_lead: Optional[str] = None
 
     @property
     def quit_requested(self) -> bool:
@@ -1055,15 +1053,6 @@ class Botference:
         # Clear yield pressure
         self._yield_pressure.pop(model, None)
 
-        # Warn if relayed model was lead with pending draft
-        if self._pending_lead == model:
-            ui.add_room_entry(
-                "system",
-                f"Warning: {model} was the lead — pending draft discarded.",
-            )
-            self._pending_draft = None
-            self._pending_lead = None
-
     # ── message routing ───────────────────────────────────
 
     async def _send_message(
@@ -1628,8 +1617,6 @@ class Botference:
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
-        self._pending_draft = None
-        self._pending_lead = None
         ui.add_room_entry(
             "system",
             "Finalize complete. implementation-plan.md and checkpoint.md are up to date.",
