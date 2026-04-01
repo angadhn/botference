@@ -131,15 +131,41 @@ function Pane({
         {displayTitle}
       </Text>
       {visibleLines.map((line) => (
-        <Box key={line.key}>
-          <Text bold color={dimmed ? THEME.textMuted : line.speakerColor}>
+        <Box key={line.key} width="100%">
+          <Text
+            bold
+            color={dimmed ? THEME.textMuted : line.speakerColor}
+            wrap="truncate-end"
+          >
             {line.label}
           </Text>
+          {line.gutter ? (
+            <Text
+              color={dimmed ? THEME.chromeMuted : (line.gutterColor ?? THEME.textMuted)}
+              backgroundColor={dimmed ? undefined : line.gutterBackgroundColor}
+              wrap="truncate-end"
+            >
+              {line.gutter}
+            </Text>
+          ) : null}
           <Text
             bold={line.bodyBold && !dimmed}
             color={dimmed ? THEME.chromeMuted : line.bodyColor}
+            backgroundColor={dimmed ? undefined : line.bodyBackgroundColor}
+            wrap="truncate-end"
           >
-            {line.text}
+            {line.segments
+              ? line.segments.map((segment, index) => (
+                <Text
+                  key={`${line.key}-${index}`}
+                  color={dimmed ? THEME.chromeMuted : (segment.color ?? line.bodyColor)}
+                  backgroundColor={dimmed ? undefined : (segment.backgroundColor ?? line.bodyBackgroundColor)}
+                  bold={!dimmed && segment.bold}
+                >
+                  {segment.text}
+                </Text>
+              ))
+              : line.text}
           </Text>
         </Box>
       ))}

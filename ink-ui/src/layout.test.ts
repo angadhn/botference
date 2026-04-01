@@ -9,8 +9,8 @@ describe("computeLayoutBudget", () => {
     assert.equal(b.paneContentHeight, 14);
     assert.equal(b.leftPaneWidth, 40);
     assert.equal(b.rightPaneWidth, 40);
-    assert.equal(b.leftTextWidth, 38);
-    assert.equal(b.rightTextWidth, 38);
+    assert.equal(b.leftTextWidth, 36);
+    assert.equal(b.rightTextWidth, 36);
   });
 
   it("grows the input viewport and shrinks panes accordingly", () => {
@@ -26,7 +26,7 @@ describe("computeLayoutBudget", () => {
     const b = computeLayoutBudget(24, 81, 1);
     assert.equal(b.leftPaneWidth, 40);
     assert.equal(b.rightPaneWidth, 41);
-    assert.equal(b.rightTextWidth, 39);
+    assert.equal(b.rightTextWidth, 37);
   });
 });
 
@@ -112,25 +112,29 @@ describe("preRenderLines", () => {
     assert.equal(lines[1]!.label, expectedIndent);
   });
 
-  it("classifies tool call lines distinctly from plain body text", () => {
-    const entries = [{ speaker: "codex", text: "  > Read(file)\nplain text" }];
+  it("mutes tool transcript blocks and resumes speaker body styling after a blank line", () => {
+    const entries = [{ speaker: "codex", text: "  > Read(file)\noutput line\n\nplain text" }];
     const lines = preRenderLines(entries, 40);
-    assert.equal(lines[0]!.bodyColor, "cyan");
-    assert.equal(lines[0]!.bodyBold, true);
-    assert.equal(lines[1]!.bodyColor, "green");
+    assert.equal(lines[0]!.bodyColor, "gray");
+    assert.equal(lines[0]!.bodyBold, false);
+    assert.equal(lines[1]!.bodyColor, "gray");
+    assert.equal(lines[3]!.bodyColor, "green");
   });
 
   it("classifies patch summary and diff lines", () => {
     const entries = [{
       speaker: "codex",
-      text: "Edited in src/App.tsx (+4 -2)\n+ added line\n- removed line\n@@ hunk",
+      text: "Edited in src/App.tsx (+4 -2)\n@@ -10,2 +10,3 @@\n old line\n+ added line\n- removed line",
     }];
     const lines = preRenderLines(entries, 60);
     assert.equal(lines[0]!.bodyColor, "cyanBright");
     assert.equal(lines[0]!.bodyBold, true);
-    assert.equal(lines[1]!.bodyColor, "green");
-    assert.equal(lines[2]!.bodyColor, "red");
-    assert.equal(lines[3]!.bodyColor, "yellow");
+    assert.equal(lines[1]!.bodyColor, "yellow");
+    assert.equal(lines[2]!.gutter, "  10   10   ");
+    assert.equal(lines[3]!.bodyColor, "green");
+    assert.equal(lines[3]!.gutter, "       11 + ");
+    assert.equal(lines[4]!.bodyColor, "red");
+    assert.equal(lines[4]!.gutter, "  11      - ");
   });
 
   it("does not color ordinary bullet lists as diff lines", () => {
@@ -141,6 +145,25 @@ describe("preRenderLines", () => {
     const lines = preRenderLines(entries, 60);
     assert.equal(lines[0]!.bodyColor, "blue");
     assert.equal(lines[1]!.bodyColor, "blue");
+  });
+
+  it("renders fenced python snippets with shared code formatting", () => {
+    const entries = [{
+      speaker: "claude",
+      text: "'core/botference.py' lines 400-402:\n\n```python\ndef parse_input(raw: str):\n    return raw\n```",
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.deepEqual(
+      lines[0]!.segments?.map((segment) => segment.text),
+      ["core/botference.py", "  ", "lines 400-402", "  ", "python"],
+    );
+    assert.equal(lines[1]!.text, "");
+    assert.equal(lines[2]!.gutter, " 400  ");
+    assert.equal(lines[2]!.segments?.[0]?.text, "def");
+    assert.equal(lines[2]!.segments?.[0]?.color, "magenta");
+    assert.equal(lines[2]!.segments?.[2]?.text, "parse_input");
+    assert.equal(lines[2]!.segments?.[2]?.color, "green");
+    assert.equal(lines[3]!.gutter, " 401  ");
   });
 });
 
