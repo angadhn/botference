@@ -72,6 +72,26 @@ if [ -f "$BOTFERENCE_COUNTER_FILE" ]; then
   cp "$BOTFERENCE_COUNTER_FILE" "$ARCHIVE_DIR/"
 fi
 
+# Archive active reviewer comments from work/
+REVIEWER_COMMENT_FILES=$(find "$BOTFERENCE_WORK_DIR" -maxdepth 1 -name 'AI-reviewer_comments_round-*.md' 2>/dev/null || true)
+if [ -n "$REVIEWER_COMMENT_FILES" ]; then
+  mkdir -p "$ARCHIVE_DIR/reviewer-comments"
+  for f in $REVIEWER_COMMENT_FILES; do
+    mv "$f" "$ARCHIVE_DIR/reviewer-comments/"
+  done
+  echo "Archived active reviewer comments"
+fi
+
+# Archive reviewer comments previously staged by /finalize
+STAGED_REVIEWER_DIR="${BOTFERENCE_ARCHIVE_DIR}/reviewer-comments/${THREAD}"
+if [ -d "$STAGED_REVIEWER_DIR" ]; then
+  mkdir -p "$ARCHIVE_DIR/reviewer-comments"
+  find "$STAGED_REVIEWER_DIR" -maxdepth 1 -type f -name 'AI-reviewer_comments_round-*.md' -exec mv {} "$ARCHIVE_DIR/reviewer-comments/" \;
+  rmdir "$STAGED_REVIEWER_DIR" 2>/dev/null || true
+  rmdir "${BOTFERENCE_ARCHIVE_DIR}/reviewer-comments" 2>/dev/null || true
+  echo "Archived staged reviewer comments"
+fi
+
 # Archive per-thread agent outputs (ai-generated-outputs/<thread>/)
 # Note: the outputs directory may be a symlink to ../ai-generated-outputs in
 # split-layout mode. mv and find resolve through symlinks transparently.

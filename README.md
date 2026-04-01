@@ -122,7 +122,7 @@ Messages in the council panel are labelled by speaker:
   - Mode changes (caucus started, draft complete)
   - Errors and warnings
   - Command feedback (lead set, usage info)
-  - Approval prompts ("Write plan? [y/n]")
+  - Deterministic file-write feedback (`implementation-plan.md`, reviewer comments, `checkpoint.md`)
 
 ### Commands
 
@@ -130,8 +130,8 @@ Messages in the council panel are labelled by speaker:
 |---------|-------------|
 | `/caucus <topic>` | Start a caucus — Claude and Codex debate the topic privately (3-5 rounds) and return a summary with a recommendation. If they agree on a writer, the lead is set automatically. |
 | `/lead @claude\|@codex` | Manually set which model writes the plan. You can also use `/lead auto` to let a future caucus decide. |
-| `/draft` | The lead model drafts a plan based on the conversation so far. No files are written yet. Requires a lead (set one manually or let `/caucus` pick). |
-| `/finalize` | The lead drafts, the other model reviews, then plan files (`implementation-plan.md`, `checkpoint.md`) are written after your approval. |
+| `/draft [rounds]` | Update `work/implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved as `work/AI-reviewer_comments_round-N.md`. |
+| `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites `work/implementation-plan.md` if needed, creates `work/checkpoint.md`, and moves reviewer comment files into `archive/reviewer-comments/<thread>/`. |
 | `/relay @claude\|@codex` | Tear down a model's session and bootstrap a fresh one with a structured handoff. Useful when context is getting long. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/help` | Show the command reference. |
@@ -140,7 +140,7 @@ Messages in the council panel are labelled by speaker:
 ![/help output showing commands, messaging, aliases, and workflow](docs/images/help-commands.png)
 
 **Typical workflow:** discuss → `/caucus` → `/lead` (or let caucus decide) →
-`/finalize` → approve (y/n).
+`/draft [rounds]` → iterate with human comments as needed → `/finalize`.
 
 ### Navigation and input
 
@@ -185,15 +185,20 @@ There are two options for planning:
 (Claude + Codex TUI) is the default; use `--claude` for solo Claude. No
 structured prompts or system instructions are injected.
 
-Plan mode is read-only during the conversation — the models cannot write files
-while you're discussing. Only when you `/finalize` and approve does it write,
-and even then it is restricted to exactly two files:
+Plan mode is read-only during the conversation from the models' point of view.
+The controller, not the LLMs, owns all plan-file writes. `/draft [rounds]`
+updates only:
+
+- `work/implementation-plan.md`
+- `work/AI-reviewer_comments_round-N.md`
+
+Then `/finalize` updates:
 
 - `work/implementation-plan.md`
 - `work/checkpoint.md`
 
-These permissions are enforced at the adapter level (the writer session's
-`allowed_tools` whitelist). Nothing else in your repo is touched.
+and archives active reviewer comments to `archive/reviewer-comments/<thread>/`.
+Nothing else in your repo is touched by this draft/finalize workflow.
 
 **Research-plan mode** (`./botference research-plan`) — ⚠️ *Experimental.*
 Structured planning with `prompts/plan.md` and `.claude/agents/plan.md`,
@@ -311,9 +316,9 @@ botference/
 
 ### Directory Roles
 
-- **`work/`** — Thread state files: `checkpoint.md`, `implementation-plan.md`, `inbox.md`, `HUMAN_REVIEW_NEEDED.md`, `iteration_count`. Tracked in git (except `iteration_count`).
+- **`work/`** — Active thread state: `checkpoint.md`, `implementation-plan.md`, `AI-reviewer_comments_round-*.md`, `inbox.md`, `HUMAN_REVIEW_NEEDED.md`, `iteration_count`.
 - **`build/`** — Generated and runtime artifacts: `AI-generated-outputs/`, `logs/`, `run/`. Fully gitignored.
-- **`archive/`** — Completed threads archived by `./botference archive`. Each subdirectory is a flat snapshot of one thread.
+- **`archive/`** — Completed threads archived by `./botference archive`, plus staged reviewer comments under `archive/reviewer-comments/<thread>/` after `/finalize`.
 
 ## Environment Variables
 

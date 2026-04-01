@@ -26,14 +26,14 @@ from paths import BotferencePaths
 from botference_ui import RoomMode, StatusSnapshot
 from room_prompts import (
     ROOM_ROLE_SUFFIX,
-    WRITER_FINAL_PREAMBLE,
     WRITER_PREAMBLE,
     caucus_first_turn,
     caucus_turn,
+    checkpoint_preamble,
+    finalize_plan_preamble,
     reviewer_preamble,
-    revision_preamble,
+    revision_from_plan_preamble,
     room_preamble,
-    write_preamble,
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
@@ -450,6 +450,104 @@ class Botference:
             observe_enabled=self.observe,
         )
 
+    @property
+    def _plan_path(self) -> Path:
+        return self.paths.work_dir / "implementation-plan.md"
+
+    @property
+    def _checkpoint_path(self) -> Path:
+        return self.paths.work_dir / "checkpoint.md"
+
+    @property
+    def _archive_root(self) -> Path:
+        env_dir = os.environ.get("BOTFERENCE_ARCHIVE_DIR")
+        return Path(env_dir) if env_dir else (self.paths.project_root / "archive")
+
+    def _read_work_file(self, path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return ""
+
+    def _write_work_file(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cleaned = _strip_response_frontmatter(text).strip()
+        path.write_text(cleaned + ("\n" if cleaned else ""), encoding="utf-8")
+
+    def _looks_like_template(self, text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return True
+        placeholders = (
+            "<thread name>",
+            "<thread-name>",
+            "<task description>",
+            "<current status>",
+            "<next task from implementation plan>",
+        )
+        return any(token in stripped for token in placeholders)
+
+    def _current_plan_text(self) -> str:
+        text = self._read_work_file(self._plan_path)
+        return "" if self._looks_like_template(text) else text
+
+    def _thread_slug(self) -> str:
+        candidates = [self._current_plan_text(), self._read_work_file(self._checkpoint_path)]
+        for text in candidates:
+            if not text:
+                continue
+            m = re.search(r"^\*\*Thread:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+            if m:
+                return re.sub(r"\s+", "", m.group(1).strip())
+        return "unknown-thread"
+
+    def _reviewer_comments_name(self, round_number: int) -> str:
+        return f"AI-reviewer_comments_round-{round_number}.md"
+
+    def _reviewer_comments_path(self, round_number: int) -> Path:
+        return self.paths.work_dir / self._reviewer_comments_name(round_number)
+
+    def _active_reviewer_comments_paths(self) -> list[Path]:
+        return sorted(
+            self.paths.work_dir.glob("AI-reviewer_comments_round-*.md"),
+            key=lambda p: self._extract_round_number(p.name),
+        )
+
+    def _archived_reviewer_comments_dir(self) -> Path:
+        return self._archive_root / "reviewer-comments" / self._thread_slug()
+
+    def _extract_round_number(self, name: str) -> int:
+        m = re.search(r"round-(\d+)\.md$", name)
+        return int(m.group(1)) if m else 0
+
+    def _next_reviewer_round(self) -> int:
+        highest = 0
+        for path in self._active_reviewer_comments_paths():
+            highest = max(highest, self._extract_round_number(path.name))
+        archived_dir = self._archived_reviewer_comments_dir()
+        if archived_dir.is_dir():
+            for path in archived_dir.glob("AI-reviewer_comments_round-*.md"):
+                highest = max(highest, self._extract_round_number(path.name))
+        return highest + 1
+
+    def _review_bundle(self) -> str:
+        parts: list[str] = []
+        for path in self._active_reviewer_comments_paths():
+            parts.append(f"[{path.name}]\n{self._read_work_file(path).strip()}")
+        return "\n\n".join(parts).strip()
+
+    def _archive_reviewer_comments(self) -> int:
+        moved = 0
+        active = self._active_reviewer_comments_paths()
+        if not active:
+            return moved
+        target_dir = self._archived_reviewer_comments_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for path in active:
+            shutil.move(str(path), str(target_dir / path.name))
+            moved += 1
+        return moved
+
     # ── dispatch ──────────────────────────────────────────
 
     async def handle_input(
@@ -490,26 +588,12 @@ class Botference:
             return
 
         if parsed.kind is InputKind.DRAFT:
-            await self._run_draft(ui)
+            await self._run_draft(ui, parsed.body)
             return
 
         if parsed.kind is InputKind.FINALIZE:
             await self._run_finalize(ui)
             return
-
-        # Regular message — check review-mode approval first
-        if self.mode is RoomMode.REVIEW:
-            answer = parsed.body.strip().lower()
-            if answer in ("y", "yes"):
-                await self._execute_finalize(ui)
-                return
-            if answer in ("n", "no"):
-                ui.add_room_entry("system",
-                                  "Plan not written. Returning to room.")
-                self.mode = RoomMode.PUBLIC
-                ui.set_mode(RoomMode.PUBLIC)
-                ui.set_status(self.status_snapshot())
-                return
 
         await self._send_message(parsed, ui, attachments=attachments)
 
@@ -520,8 +604,8 @@ class Botference:
             "Commands:",
             "  /caucus <topic>     — Start a structured discussion between Claude and Codex",
             "  /lead @claude|@codex — Set who writes the plan",
-            "  /draft              — Lead drafts a plan (no files written)",
-            "  /finalize           — Draft → review → revise → review → approve → write",
+            "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
+            "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
             "  /status             — Show context %, lead, mode, sessions",
             "  /auth [claude|codex|all] — Check local CLI auth status",
@@ -536,7 +620,7 @@ class Botference:
             "",
             "Aliases: /relay-claude, /relay-codex, /tag @claude, /tag @codex",
             "",
-            "Workflow: discuss → /caucus → /lead → /finalize → y/n",
+            "Workflow: discuss → /caucus → /lead → /draft [rounds] → /finalize",
             "",
             "Context shows current prompt occupancy / context window size.",
             "Based on the model's last turn.",
@@ -1312,7 +1396,7 @@ class Botference:
 
     # ── /draft ────────────────────────────────────────────
 
-    async def _run_draft(self, ui: UIPort) -> None:
+    async def _run_draft(self, ui: UIPort, draft_arg: str = "") -> None:
         lead = self._resolve_lead()
         if not lead:
             ui.add_room_entry(
@@ -1321,17 +1405,50 @@ class Botference:
             )
             return
 
+        arg = draft_arg.strip()
+        if not arg:
+            rounds = 2
+        elif re.fullmatch(r"\d+", arg):
+            rounds = int(arg)
+        else:
+            ui.add_room_entry(
+                "system",
+                "Usage: /draft [rounds]  where rounds is 0, 1, 2, ...",
+            )
+            return
+
         self.mode = RoomMode.DRAFT
         ui.set_mode(RoomMode.DRAFT)
-        ui.add_room_entry("system", f"Drafting plan ({lead})…")
+        ui.add_room_entry(
+            "system",
+            f"Drafting implementation-plan.md ({lead}, {rounds} AI review round(s))…",
+        )
 
         if not await self._ensure_initialized(lead, ui):
             self.mode = RoomMode.PUBLIC
             ui.set_mode(RoomMode.PUBLIC)
             return
 
+        reviewer = "codex" if lead == "claude" else "claude"
+        if rounds > 0 and not await self._ensure_initialized(reviewer, ui):
+            self.mode = RoomMode.PUBLIC
+            ui.set_mode(RoomMode.PUBLIC)
+            return
+
         adapter = self.claude if lead == "claude" else self.codex
-        prompt = WRITER_PREAMBLE
+        rev_adapter = self.codex if lead == "claude" else self.claude
+        lead_cap = lead.capitalize()
+        reviewer_cap = reviewer.capitalize()
+
+        current_plan = self._current_plan_text()
+        if current_plan:
+            prompt = (
+                "Update the current implementation plan based on the discussion so far.\n\n"
+                f"Current implementation plan:\n\n{current_plan}\n\n"
+                "Return the full updated implementation plan as clean markdown."
+            )
+        else:
+            prompt = WRITER_PREAMBLE
 
         try:
             resp = await adapter.resume(prompt)
@@ -1345,13 +1462,82 @@ class Botference:
         ui.add_room_entry(lead, resp.text)
         self.transcript.add(lead, resp.text, resp.tool_summaries)
         self.transcript.mark_seen(lead)
+        current_plan = resp.text
+        self._write_work_file(self._plan_path, current_plan)
+        ui.add_room_entry(
+            "system",
+            f"Updated {self.paths.work_prefix}implementation-plan.md",
+        )
+
+        next_round = self._next_reviewer_round()
+        for round_number in range(next_round, next_round + rounds):
+            self.mode = RoomMode.REVIEW
+            ui.set_mode(RoomMode.REVIEW)
+            ui.add_room_entry(
+                "system",
+                f"{reviewer_cap} is reviewing draft round {round_number}…",
+            )
+            try:
+                rev_resp = await rev_adapter.resume(
+                    reviewer_preamble(lead_cap, current_plan)
+                )
+            except Exception as e:
+                ui.add_room_entry("system", f"Error reviewing: {e}")
+                self.mode = RoomMode.PUBLIC
+                ui.set_mode(RoomMode.PUBLIC)
+                return
+
+            self._update_pct(reviewer, rev_resp, ui)
+            ui.add_room_entry(reviewer, rev_resp.text)
+            self.transcript.add(reviewer, rev_resp.text, rev_resp.tool_summaries)
+            self.transcript.mark_seen(reviewer)
+
+            review_path = self._reviewer_comments_path(round_number)
+            self._write_work_file(review_path, rev_resp.text)
+            ui.add_room_entry(
+                "system",
+                f"Saved reviewer comments to {self.paths.work_prefix}{review_path.name}",
+            )
+
+            self.mode = RoomMode.DRAFT
+            ui.set_mode(RoomMode.DRAFT)
+            ui.add_room_entry(
+                "system",
+                f"{lead_cap} is revising implementation-plan.md for round {round_number}…",
+            )
+            try:
+                revised_resp = await adapter.resume(
+                    revision_from_plan_preamble(
+                        current_plan, reviewer_cap, rev_resp.text, round_number
+                    )
+                )
+            except Exception as e:
+                ui.add_room_entry("system", f"Error revising: {e}")
+                self.mode = RoomMode.PUBLIC
+                ui.set_mode(RoomMode.PUBLIC)
+                return
+
+            self._update_pct(lead, revised_resp, ui)
+            ui.add_room_entry(lead, revised_resp.text)
+            self.transcript.add(lead, revised_resp.text, revised_resp.tool_summaries)
+            self.transcript.mark_seen(lead)
+            current_plan = revised_resp.text
+            self._write_work_file(self._plan_path, current_plan)
+            ui.add_room_entry(
+                "system",
+                f"Updated {self.paths.work_prefix}implementation-plan.md",
+            )
 
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
         ui.add_room_entry(
             "system",
-            "Draft complete. Use /finalize to begin review + revise + write flow.",
+            (
+                "Draft complete. "
+                f"{self.paths.work_prefix}implementation-plan.md now reflects "
+                f"{rounds} AI review round(s)."
+            ),
         )
 
     # ── /finalize ─────────────────────────────────────────
@@ -1365,158 +1551,89 @@ class Botference:
             )
             return
 
-        self.mode = RoomMode.DRAFT
-        ui.set_mode(RoomMode.DRAFT)
-
         lead_cap = lead.capitalize()
-
-        # Ensure both models have sessions before draft+review
         if not await self._ensure_initialized(lead, ui):
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
-            return
-        reviewer = "codex" if lead == "claude" else "claude"
-        if not await self._ensure_initialized(reviewer, ui):
             self.mode = RoomMode.PUBLIC
             ui.set_mode(RoomMode.PUBLIC)
             return
 
         adapter = self.claude if lead == "claude" else self.codex
-        reviewer_cap = reviewer.capitalize()
-        rev_adapter = self.codex if lead == "claude" else self.claude
-
-        # Step 1 — lead drafts
-        ui.add_room_entry("system", f"{lead_cap} is drafting the plan…")
-        try:
-            draft_resp = await adapter.resume(WRITER_FINAL_PREAMBLE)
-        except Exception as e:
-            ui.add_room_entry("system", f"Error drafting: {e}")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
-            return
-
-        self._update_pct(lead, draft_resp, ui)
-        ui.add_room_entry(lead, draft_resp.text)
-        self.transcript.add(lead, draft_resp.text, draft_resp.tool_summaries)
-        self.transcript.mark_seen(lead)
-
-        # Step 2 — first review
-        self.mode = RoomMode.REVIEW
-        ui.set_mode(RoomMode.REVIEW)
-
-        ui.add_room_entry("system", f"{reviewer_cap} is reviewing the draft…")
-        try:
-            rev_resp = await rev_adapter.resume(
-                reviewer_preamble(lead_cap, draft_resp.text))
-        except Exception as e:
-            ui.add_room_entry("system", f"Error reviewing: {e}")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
-            return
-
-        self._update_pct(reviewer, rev_resp, ui)
-        ui.add_room_entry(reviewer, rev_resp.text)
-        self.transcript.add(reviewer, rev_resp.text, rev_resp.tool_summaries)
-        self.transcript.mark_seen(reviewer)
-
-        # Step 3 — lead revises based on review
         self.mode = RoomMode.DRAFT
         ui.set_mode(RoomMode.DRAFT)
-
-        ui.add_room_entry("system", f"{lead_cap} is revising based on feedback…")
-        try:
-            revised_resp = await adapter.resume(
-                revision_preamble(reviewer_cap, rev_resp.text))
-        except Exception as e:
-            ui.add_room_entry("system", f"Error revising: {e}")
+        current_plan = self._current_plan_text()
+        if not current_plan:
+            ui.add_room_entry(
+                "system",
+                f"No drafted plan found at {self.paths.work_prefix}implementation-plan.md. "
+                "Run /draft first.",
+            )
             self.mode = RoomMode.PUBLIC
             ui.set_mode(RoomMode.PUBLIC)
             return
 
-        self._update_pct(lead, revised_resp, ui)
-        ui.add_room_entry(lead, revised_resp.text)
-        self.transcript.add(lead, revised_resp.text, revised_resp.tool_summaries)
-        self.transcript.mark_seen(lead)
-
-        # Step 4 — second review
-        self.mode = RoomMode.REVIEW
-        ui.set_mode(RoomMode.REVIEW)
-
-        ui.add_room_entry("system", f"{reviewer_cap} is reviewing the revision…")
-        try:
-            rev2_resp = await rev_adapter.resume(
-                reviewer_preamble(lead_cap, revised_resp.text))
-        except Exception as e:
-            ui.add_room_entry("system", f"Error reviewing: {e}")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
-            return
-
-        self._update_pct(reviewer, rev2_resp, ui)
-        ui.add_room_entry(reviewer, rev2_resp.text)
-        self.transcript.add(reviewer, rev2_resp.text, rev2_resp.tool_summaries)
-        self.transcript.mark_seen(reviewer)
-
-        # Step 5 — ask user
-        ui.add_room_entry("system", "Write plan? [y/n]")
-        self._pending_draft = revised_resp.text
-        self._pending_lead = lead
-        ui.set_status(self.status_snapshot())
-
-    async def _execute_finalize(self, ui: UIPort) -> None:
-        """Write approved plan files via a separate write-capable session."""
-        lead = self._pending_lead
-        draft = self._pending_draft
-        if not lead or not draft:
-            ui.add_room_entry("system",
-                              "No pending draft. Run /finalize first.")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
-            return
-
-        ui.add_room_entry("system", f"Writing plan files ({lead})…")
-
-        work_prefix = self.paths.work_prefix
-        write_prompt = write_preamble(draft, work_prefix)
-
-        try:
-            if lead == "codex":
-                resp = await self.codex.send_writable(write_prompt)
-            else:
-                # Fresh adapter with write tools — does not touch the
-                # botference discussion session.  Permissions are restricted
-                # to only the plan files (user already approved via y/n).
-                writer = ClaudeAdapter(
-                    model=self.claude.model,
-                    tools=["Read", "Write", "Bash", "Glob", "Grep"],
-                    effort=self.claude.effort,
-                    allowed_tools=[
-                        "Read", "Glob", "Grep",
-                        f"Write(/{work_prefix}implementation-plan.md)",
-                        f"Write(/{work_prefix}checkpoint.md)",
-                        f"Edit(/{work_prefix}implementation-plan.md)",
-                        f"Edit(/{work_prefix}checkpoint.md)",
-                    ],
+        review_bundle = self._review_bundle()
+        final_plan = current_plan
+        if review_bundle:
+            ui.add_room_entry(
+                "system",
+                f"{lead_cap} is finalizing implementation-plan.md and addressing all reviewer comments…",
+            )
+            try:
+                final_resp = await adapter.resume(
+                    finalize_plan_preamble(current_plan, review_bundle)
                 )
-                resp = await writer.send(write_prompt)
+            except Exception as e:
+                ui.add_room_entry("system", f"Error finalizing plan: {e}")
+                self.mode = RoomMode.PUBLIC
+                ui.set_mode(RoomMode.PUBLIC)
+                return
+
+            self._update_pct(lead, final_resp, ui)
+            ui.add_room_entry(lead, final_resp.text)
+            self.transcript.add(lead, final_resp.text, final_resp.tool_summaries)
+            self.transcript.mark_seen(lead)
+            final_plan = final_resp.text
+            self._write_work_file(self._plan_path, final_plan)
+            ui.add_room_entry(
+                "system",
+                f"Updated {self.paths.work_prefix}implementation-plan.md",
+            )
+
+        ui.add_room_entry("system", f"{lead_cap} is creating checkpoint.md…")
+        try:
+            checkpoint_resp = await adapter.resume(checkpoint_preamble(final_plan))
         except Exception as e:
-            ui.add_room_entry("system", f"Error writing files: {e}")
+            ui.add_room_entry("system", f"Error generating checkpoint: {e}")
             self.mode = RoomMode.PUBLIC
             ui.set_mode(RoomMode.PUBLIC)
             return
 
-        if resp.text:
-            ui.add_room_entry(lead, resp.text)
-
+        self._update_pct(lead, checkpoint_resp, ui)
+        ui.add_room_entry(lead, checkpoint_resp.text)
+        self.transcript.add(lead, checkpoint_resp.text, checkpoint_resp.tool_summaries)
+        self.transcript.mark_seen(lead)
+        self._write_work_file(self._checkpoint_path, checkpoint_resp.text)
         ui.add_room_entry(
             "system",
-            "Plan files written. Control returns to the council.",
+            f"Updated {self.paths.work_prefix}checkpoint.md",
         )
-        self._pending_draft = None
-        self._pending_lead = None
+
+        archived_comments = self._archive_reviewer_comments()
+        if archived_comments:
+            ui.add_room_entry(
+                "system",
+                f"Archived {archived_comments} reviewer comment file(s) to archive/reviewer-comments/{self._thread_slug()}/",
+            )
+
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
+        self._pending_draft = None
+        self._pending_lead = None
+        ui.add_room_entry(
+            "system",
+            "Finalize complete. implementation-plan.md and checkpoint.md are up to date.",
+        )
 
     # ── helpers ───────────────────────────────────────────
 

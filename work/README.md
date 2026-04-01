@@ -7,6 +7,7 @@ Working-state files for the active botference thread. Templates are restored on 
 |------|---------|
 | `checkpoint.md` | Tracks task status, knowledge state, and next task for the build loop |
 | `implementation-plan.md` | Dependency-ordered task list with agent assignments |
+| `AI-reviewer_comments_round-*.md` | Reviewer feedback captured during `/draft [rounds]`; archived on `/finalize` or full thread archive |
 | `inbox.md` | Scratch pad for capturing items during work sessions |
 | `HUMAN_REVIEW_NEEDED.md` | Flag file for items pending human review |
 | `iteration_count` | Integer counter for the current build loop iteration |

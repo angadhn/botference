@@ -15,7 +15,10 @@ from room_prompts import (
     caucus_first_turn,
     caucus_preamble,
     caucus_turn,
+    checkpoint_preamble,
+    finalize_plan_preamble,
     reviewer_preamble,
+    revision_from_plan_preamble,
     room_preamble,
     write_preamble,
 )
@@ -175,6 +178,47 @@ class TestReviewerPreamble:
         assert "gaps" in result.lower()
         assert "risks" in result.lower()
         assert "constructive" in result.lower()
+
+    def test_tells_reviewer_not_to_rewrite_plan(self):
+        result = reviewer_preamble("Claude", "draft")
+        assert "do not rewrite the plan" in result.lower()
+
+
+# -- revision_from_plan_preamble --------------------------------------------
+
+
+class TestRevisionFromPlanPreamble:
+    def test_includes_current_plan(self):
+        result = revision_from_plan_preamble("# Plan", "Codex", "Needs more detail", 2)
+        assert "# Plan" in result
+
+    def test_includes_round_number(self):
+        result = revision_from_plan_preamble("plan", "Codex", "review", 2)
+        assert "round 2" in result.lower()
+
+
+# -- finalize_plan_preamble -------------------------------------------------
+
+
+class TestFinalizePlanPreamble:
+    def test_includes_plan_and_review_bundle(self):
+        result = finalize_plan_preamble("# Plan", "[AI-reviewer_comments_round-1.md]\nreview")
+        assert "# Plan" in result
+        assert "AI-reviewer_comments_round-1.md" in result
+
+    def test_mentions_addressing_comments(self):
+        result = finalize_plan_preamble("plan", "review")
+        assert "addressed" in result.lower()
+
+
+# -- checkpoint_preamble ----------------------------------------------------
+
+
+class TestCheckpointPreamble:
+    def test_mentions_checkpoint_sections(self):
+        result = checkpoint_preamble("# Plan")
+        assert "Knowledge State" in result
+        assert "Next Task" in result
 
 
 # -- write_preamble ---------------------------------------------------------

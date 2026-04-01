@@ -31,6 +31,7 @@ from botference import (
     parse_input,
 )
 from botference_ui import RoomMode, StatusSnapshot
+from paths import BotferencePaths
 
 
 # ── parse_input ───────────────────────────────────────────
@@ -94,6 +95,11 @@ class TestParseInput:
         p = parse_input("/draft")
         assert p.kind is InputKind.DRAFT
         assert p.body == ""
+
+    def test_slash_draft_with_rounds(self):
+        p = parse_input("/draft 2")
+        assert p.kind is InputKind.DRAFT
+        assert p.body == "2"
 
     def test_slash_finalize(self):
         p = parse_input("/finalize")
@@ -417,13 +423,26 @@ def _ok(text: str = "OK", **kw) -> AdapterResponse:
 def _make_botference(
     claude_responses: list[AdapterResponse] | None = None,
     codex_responses: list[AdapterResponse] | None = None,
+    tmp_path: Path | None = None,
 ) -> tuple[Botference, MockAdapter, MockAdapter, MockUI]:
     claude = MockAdapter(claude_responses or [_ok("Claude says hi")])
     codex = MockAdapter(codex_responses or [_ok("Codex says hi")])
     ui = MockUI()
+    kwargs = {}
+    if tmp_path is not None:
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        repo_root = Path(__file__).resolve().parent.parent
+        kwargs["paths"] = BotferencePaths(
+            botference_home=repo_root,
+            project_root=tmp_path,
+            work_dir=work_dir,
+            build_dir=tmp_path,
+        )
     c = Botference(
         claude=claude, codex=codex,
         system_prompt="Plan an app", task="Build a thing",
+        **kwargs,
     )
     return c, claude, codex, ui
 
@@ -724,16 +743,57 @@ class TestBotferenceDraft:
         await c.handle_input("/draft", ui)
         assert any("No lead" in t for _, t in ui.room_entries)
 
-    async def test_draft_produces_output(self):
-        c, _, _, ui = _make_botference(
-            claude_responses=[_ok("init"), _ok("# Draft Plan\n\nSteps...")],
+    async def test_draft_default_two_rounds_writes_plan_and_comments(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** demo\n\n# Draft Plan v1"),
+                _ok("**Thread:** demo\n\n# Draft Plan v2"),
+                _ok("**Thread:** demo\n\n# Draft Plan v3"),
+            ],
+            codex_responses=[
+                _ok("codex init"),
+                _ok("# Review 1\n\nNeeds more detail."),
+                _ok("# Review 2\n\nLooks good now."),
+            ],
+            tmp_path=tmp_path,
         )
-        # Initialise claude first, then draft
-        await c.handle_input("@claude start", ui)
         c.lead = "@claude"
         await c.handle_input("/draft", ui)
-        assert any("Draft Plan" in t for _, t in ui.room_entries)
+        plan_path = tmp_path / "work" / "implementation-plan.md"
+        assert plan_path.read_text() == "**Thread:** demo\n\n# Draft Plan v3\n"
+        assert (tmp_path / "work" / "AI-reviewer_comments_round-1.md").read_text() == (
+            "# Review 1\n\nNeeds more detail.\n"
+        )
+        assert (tmp_path / "work" / "AI-reviewer_comments_round-2.md").read_text() == (
+            "# Review 2\n\nLooks good now.\n"
+        )
+        assert len(claude.send_calls) == 1
+        assert len(codex.send_calls) == 1
         assert any("Draft complete" in t for _, t in ui.room_entries)
+
+    async def test_draft_zero_rounds_writes_plan_only(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** demo\n\n# Draft Plan v1"),
+            ],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/draft 0", ui)
+        assert (tmp_path / "work" / "implementation-plan.md").read_text() == (
+            "**Thread:** demo\n\n# Draft Plan v1\n"
+        )
+        assert list((tmp_path / "work").glob("AI-reviewer_comments_round-*.md")) == []
+        assert len(claude.send_calls) == 1
+        assert len(codex.send_calls) == 0
+
+    async def test_draft_invalid_rounds_rejected(self):
+        c, _, _, ui = _make_botference()
+        c.lead = "@claude"
+        await c.handle_input("/draft nope", ui)
+        assert any("Usage: /draft [rounds]" in t for _, t in ui.room_entries)
 
 
 @pytest.mark.asyncio
@@ -743,86 +803,141 @@ class TestBotferenceFinalize:
         await c.handle_input("/finalize", ui)
         assert any("No lead" in t for _, t in ui.room_entries)
 
-    async def test_finalize_draft_review_approval_flow(self):
+    async def test_finalize_revises_plan_writes_checkpoint_and_archives_comments(self, tmp_path):
         c, claude, codex, ui = _make_botference(
             claude_responses=[
-                _ok("init"),                # send (@claude start)
-                _ok("# The Plan\n..."),     # resume (draft)
-                _ok("Files written."),      # send (write session)
+                _ok("claude init"),
+                _ok("**Thread:** demo\n\n# Final Plan"),
+                _ok(
+                    "Checkpoint - Demo\n\n"
+                    "**Thread:** demo\n"
+                    "**Last updated:** 2026-04-01\n"
+                    "**Last agent:** claude\n"
+                    "**Status:** ready\n\n"
+                    "## Knowledge State\n\n"
+                    "| Task | Status | Notes |\n"
+                    "|------|--------|-------|\n\n"
+                    "## Last Reflection\n\n"
+                    "none\n\n"
+                    "## Next Task\n\n"
+                    "1. Start implementation\n"
+                ),
             ],
-            codex_responses=[
-                _ok("codex bootstrapped"),  # send (ensure_initialized)
-                _ok("LGTM, minor nit."),    # resume (review)
-            ],
+            tmp_path=tmp_path,
         )
-        await c.handle_input("@claude start planning", ui)
         c.lead = "@claude"
-        # codex NOT manually initialized — _ensure_initialized will send()
+        work = tmp_path / "work"
+        work.joinpath("implementation-plan.md").write_text(
+            "**Thread:** demo\n\n# Draft Plan v3\n", encoding="utf-8"
+        )
+        work.joinpath("AI-reviewer_comments_round-1.md").write_text(
+            "# Review 1\n\nNeeds more detail.\n", encoding="utf-8"
+        )
+        work.joinpath("AI-reviewer_comments_round-2.md").write_text(
+            "# Review 2\n\nLooks good now.\n", encoding="utf-8"
+        )
 
         await c.handle_input("/finalize", ui)
-        assert c.mode is RoomMode.REVIEW
-        assert any("Write plan? [y/n]" in t for _, t in ui.room_entries)
-        # Verify codex was bootstrapped via send(), not resume()
-        assert len(codex.send_calls) == 1
-
-        # User approves
-        await c.handle_input("y", ui)
         assert c.mode is RoomMode.PUBLIC
-        assert any("Plan files written" in t for _, t in ui.room_entries)
-
-    async def test_finalize_user_rejects(self):
-        c, claude, codex, ui = _make_botference(
-            claude_responses=[_ok("init"), _ok("draft")],
-            codex_responses=[
-                _ok("codex bootstrapped"),  # send (ensure_initialized)
-                _ok("review ok"),           # resume (review)
-            ],
+        assert work.joinpath("implementation-plan.md").read_text() == (
+            "**Thread:** demo\n\n# Final Plan\n"
         )
-        await c.handle_input("@claude go", ui)
+        assert "Checkpoint - Demo" in work.joinpath("checkpoint.md").read_text()
+        assert list(work.glob("AI-reviewer_comments_round-*.md")) == []
+        archived_dir = tmp_path / "archive" / "reviewer-comments" / "demo"
+        assert archived_dir.joinpath("AI-reviewer_comments_round-1.md").is_file()
+        assert archived_dir.joinpath("AI-reviewer_comments_round-2.md").is_file()
+        assert any("Finalize complete" in t for _, t in ui.room_entries)
+
+    async def test_finalize_without_reviewer_comments_only_creates_checkpoint(self, tmp_path):
+        c, claude, _, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok(
+                    "Checkpoint - Demo\n\n"
+                    "**Thread:** demo\n"
+                    "**Last updated:** 2026-04-01\n"
+                    "**Last agent:** claude\n"
+                    "**Status:** ready\n\n"
+                    "## Knowledge State\n\n"
+                    "| Task | Status | Notes |\n"
+                    "|------|--------|-------|\n\n"
+                    "## Last Reflection\n\n"
+                    "none\n\n"
+                    "## Next Task\n\n"
+                    "1. Start implementation\n"
+                ),
+            ],
+            tmp_path=tmp_path,
+        )
         c.lead = "@claude"
-        # codex NOT manually initialized — exercises the real path
-
+        work = tmp_path / "work"
+        work.joinpath("implementation-plan.md").write_text(
+            "**Thread:** demo\n\n# Draft Plan v3\n", encoding="utf-8"
+        )
         await c.handle_input("/finalize", ui)
-        assert c.mode is RoomMode.REVIEW
-
-        await c.handle_input("n", ui)
         assert c.mode is RoomMode.PUBLIC
-        assert any("not written" in t.lower() for _, t in ui.room_entries)
+        assert work.joinpath("implementation-plan.md").read_text() == (
+            "**Thread:** demo\n\n# Draft Plan v3\n"
+        )
+        assert work.joinpath("checkpoint.md").is_file()
+        assert len(claude.resume_calls) == 1
 
-    async def test_finalize_without_prior_sessions(self):
-        """Bug 1 regression: /lead @claude → /finalize with no prior @claude messages."""
+    async def test_finalize_without_prior_sessions(self, tmp_path):
+        """Bootstraps the lead session before finalizing."""
         c, claude, codex, ui = _make_botference(
             claude_responses=[
-                _ok("claude bootstrapped"),  # send (ensure_initialized for lead)
-                _ok("# Plan content"),       # resume (draft)
-                _ok("Written."),             # send (write session)
+                _ok("claude bootstrapped"),
+                _ok(
+                    "Checkpoint - Demo\n\n"
+                    "**Thread:** demo\n"
+                    "**Last updated:** 2026-04-01\n"
+                    "**Last agent:** claude\n"
+                    "**Status:** ready\n\n"
+                    "## Knowledge State\n\n"
+                    "| Task | Status | Notes |\n"
+                    "|------|--------|-------|\n\n"
+                    "## Last Reflection\n\n"
+                    "none\n\n"
+                    "## Next Task\n\n"
+                    "1. Start implementation\n"
+                ),
             ],
-            codex_responses=[
-                _ok("codex bootstrapped"),   # send (ensure_initialized for reviewer)
-                _ok("Looks good."),          # resume (review)
-            ],
+            tmp_path=tmp_path,
         )
         c.lead = "@claude"
-        # Neither model initialized — both should be bootstrapped
+        work = tmp_path / "work"
+        work.joinpath("implementation-plan.md").write_text(
+            "**Thread:** demo\n\n# Plan content\n", encoding="utf-8"
+        )
         await c.handle_input("/finalize", ui)
-        assert c.mode is RoomMode.REVIEW
-        assert len(claude.send_calls) == 1  # bootstrapped
-        assert len(codex.send_calls) == 1   # bootstrapped
-        assert any("Write plan? [y/n]" in t for _, t in ui.room_entries)
+        assert c.mode is RoomMode.PUBLIC
+        assert len(claude.send_calls) == 1
+        assert len(codex.send_calls) == 0
+        assert work.joinpath("checkpoint.md").is_file()
 
-    async def test_draft_without_prior_session(self):
-        """Bug 1 regression: /lead @codex → /draft with no prior @codex messages."""
+    async def test_draft_without_prior_session(self, tmp_path):
+        """Bootstraps lead and reviewer sessions before drafting."""
         c, claude, codex, ui = _make_botference(
             codex_responses=[
-                _ok("codex bootstrapped"),  # send (ensure_initialized)
-                _ok("# Draft here"),        # resume (draft prompt)
+                _ok("codex bootstrapped"),
+                _ok("**Thread:** demo\n\n# Draft here"),
+                _ok("**Thread:** demo\n\n# Draft revised"),
             ],
+            claude_responses=[
+                _ok("claude bootstrapped"),
+                _ok("# Review\n\nNeeds one tweak."),
+            ],
+            tmp_path=tmp_path,
         )
         c.lead = "@codex"
-        await c.handle_input("/draft", ui)
+        await c.handle_input("/draft 1", ui)
         assert len(codex.send_calls) == 1
-        assert len(codex.resume_calls) == 1
-        assert any("Draft here" in t for _, t in ui.room_entries)
+        assert len(claude.send_calls) == 1
+        assert len(codex.resume_calls) == 2
+        assert (tmp_path / "work" / "implementation-plan.md").read_text() == (
+            "**Thread:** demo\n\n# Draft revised\n"
+        )
 
 
 # ── Caucus summary generation ─────────────────────────────

@@ -110,7 +110,8 @@ def reviewer_preamble(lead_name: str, draft_text: str) -> str:
         f"Review this implementation plan draft from {lead_name}:\n\n"
         f"{draft_text}\n\n"
         f"Identify gaps, risks, or misalignments with the discussion. "
-        f"Be constructive and specific."
+        f"Be constructive and specific. Do not rewrite the plan. "
+        f"Return review comments only as markdown."
     )
 
 
@@ -122,6 +123,49 @@ def revision_preamble(reviewer_name: str, review_text: str) -> str:
         f"Revise your implementation plan to address this feedback. "
         f"Incorporate valid points, explain any you disagree with, "
         f"and produce the updated plan as clean markdown."
+    )
+
+
+def revision_from_plan_preamble(current_plan: str, reviewer_name: str,
+                                review_text: str, round_number: int) -> str:
+    """Revise an existing plan using reviewer feedback."""
+    return (
+        f"You are revising round {round_number} of the implementation plan.\n\n"
+        f"Current implementation plan:\n\n{current_plan}\n\n"
+        f"{reviewer_name} left these review comments:\n\n{review_text}\n\n"
+        "Rewrite the implementation plan as a complete markdown document. "
+        "Address all valid reviewer comments, preserve good existing structure, "
+        "and keep the thread metadata and task list coherent."
+    )
+
+
+def finalize_plan_preamble(current_plan: str, review_bundle: str) -> str:
+    """Finalize the plan after draft rounds and reviewer comments."""
+    return (
+        "Produce the final implementation plan as a complete markdown document.\n\n"
+        f"Current implementation plan:\n\n{current_plan}\n\n"
+        "Reviewer comments collected during draft rounds:\n\n"
+        f"{review_bundle}\n\n"
+        "Ensure every reviewer comment is either addressed in the plan or "
+        "explicitly resolved by the plan structure. Return only the final "
+        "implementation plan markdown."
+    )
+
+
+def checkpoint_preamble(final_plan_text: str) -> str:
+    """Generate checkpoint markdown from the finalized plan."""
+    return (
+        "Generate checkpoint.md for the finalized implementation plan below.\n\n"
+        f"{final_plan_text}\n\n"
+        "Return clean markdown matching the checkpoint template structure:\n"
+        "- Thread\n"
+        "- Last updated\n"
+        "- Last agent\n"
+        "- Status\n"
+        "- Knowledge State table\n"
+        "- Last Reflection\n"
+        "- Next Task\n"
+        "Be concise and derive the next task from the current plan."
     )
 
 
