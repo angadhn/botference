@@ -65,6 +65,28 @@ _CONTEXT_WINDOWS = {
 _DEFAULT_TIMEOUT = 300  # seconds
 
 
+def _timeout_from_env(*names: str, default: int = _DEFAULT_TIMEOUT) -> int:
+    for name in names:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            log.warning("Ignoring invalid %s=%r; expected integer seconds", name, raw)
+            continue
+        if value > 0:
+            return value
+        log.warning("Ignoring non-positive %s=%r; expected integer seconds", name, raw)
+    return default
+
+
+def _tail_excerpt(raw_lines: list[str], limit: int = 8) -> str:
+    if not raw_lines:
+        return ""
+    return "\n".join(raw_lines[-limit:])
+
+
 def _truncate(s: str, limit: int = 120) -> str:
     return s if len(s) <= limit else s[:limit] + "..."
 
@@ -135,13 +157,16 @@ class ClaudeAdapter:
     def __init__(self, model: str = "claude-sonnet-4-6",
                  tools: Optional[list] = None,
                  effort: str = "",
-                 timeout: int = _DEFAULT_TIMEOUT,
+                 timeout: Optional[int] = None,
                  debug_log_path: str = "",
                  allowed_tools: Optional[list] = None):
         self.model = model
         self.tools = tools or ["Read", "Glob", "Grep", "Bash"]
         self.effort = effort
-        self.timeout = timeout
+        self.timeout = timeout or _timeout_from_env(
+            "BOTFERENCE_CLAUDE_TIMEOUT",
+            "BOTFERENCE_CLI_TIMEOUT",
+        )
         self.debug_log_path = debug_log_path
         self.allowed_tools = allowed_tools  # path-restricted tool permissions
         self.session_id: str = ""
@@ -283,8 +308,12 @@ class ClaudeAdapter:
             proc.kill()
             if debug_file:
                 debug_file.close()
+            tail = _tail_excerpt(raw_lines)
+            message = "Error: Claude CLI timed out after %ds" % self.timeout
+            if tail:
+                message += "\nRecent CLI output:\n" + tail
             return AdapterResponse(
-                text="Error: Claude CLI timed out after %ds" % self.timeout,
+                text=message,
                 raw_output="\n".join(raw_lines),
                 exit_code=-1,
                 session_id=self.session_id,
@@ -338,12 +367,15 @@ class CodexAdapter:
 
     def __init__(self, model: str = "gpt-5.4",
                  sandbox: str = "read-only",
-                 timeout: int = _DEFAULT_TIMEOUT,
+                 timeout: Optional[int] = None,
                  debug_log_path: str = "",
                  fallback_api_key: str = ""):
         self.model = model
         self.sandbox = sandbox
-        self.timeout = timeout
+        self.timeout = timeout or _timeout_from_env(
+            "BOTFERENCE_CODEX_TIMEOUT",
+            "BOTFERENCE_CLI_TIMEOUT",
+        )
         self.debug_log_path = debug_log_path
         self.fallback_api_key = fallback_api_key
         self._using_api_key: bool = False
@@ -517,8 +549,12 @@ class CodexAdapter:
             proc.kill()
             if debug_file:
                 debug_file.close()
+            tail = _tail_excerpt(raw_lines)
+            message = "Error: Codex CLI timed out after %ds" % self.timeout
+            if tail:
+                message += "\nRecent CLI output:\n" + tail
             return AdapterResponse(
-                text="Error: Codex CLI timed out after %ds" % self.timeout,
+                text=message,
                 raw_output="\n".join(raw_lines),
                 exit_code=-1,
                 session_id=response.session_id,

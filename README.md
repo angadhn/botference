@@ -324,3 +324,6 @@ botference/
 | `OPENAI_MODEL` | Codex participant model (default: `gpt-5.4`) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
 | `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |
+| `BOTFERENCE_CLI_TIMEOUT` | Timeout in seconds for both CLI adapters unless a model-specific override is set |
+| `BOTFERENCE_CLAUDE_TIMEOUT` | Timeout in seconds for Claude CLI turns (default: `300`) |
+| `BOTFERENCE_CODEX_TIMEOUT` | Timeout in seconds for Codex CLI turns (default: `600`) |
