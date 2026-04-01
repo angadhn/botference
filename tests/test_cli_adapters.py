@@ -1135,3 +1135,37 @@ class TestContextTokens:
             context_window=272_000,
         )
         assert adapter.context_tokens(resp) == 12_715
+
+
+class TestCodexStdinDevnull:
+    """Codex subprocess must use stdin=DEVNULL to prevent Ink bridge deadlock.
+
+    Without this, codex exec inherits a pipe stdin from the Ink bridge
+    and blocks waiting for EOF, causing a 300s timeout.
+    """
+
+    def test_codex_send_uses_devnull_stdin(self):
+        async def _test():
+            adapter = CodexAdapter()
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+            jsonl = (
+                '{"type":"thread.started","thread_id":"t1"}\n'
+                '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"ok"}}\n'
+                '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}\n'
+            )
+            mock_proc.stdout = _make_reader(jsonl)
+            mock_proc.stderr = _make_reader("")
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_proc.kill = MagicMock()
+
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+                await adapter.send("test prompt")
+
+            _args, kwargs = mock_exec.call_args
+            assert kwargs.get("stdin") == asyncio.subprocess.DEVNULL, (
+                "Codex must use stdin=DEVNULL to prevent Ink bridge deadlock"
+            )
+
+        asyncio.run(_test())
