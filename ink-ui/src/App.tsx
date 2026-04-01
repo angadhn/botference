@@ -79,6 +79,7 @@ const THEME = {
 const BUSY_FRAMES = [".", "..", "..."];
 
 type BusyTarget = "claude" | "codex" | "all" | "system" | null;
+type BusySegment = { text: string; color: string; bold?: boolean };
 
 function resolveBusyTarget(input: string, currentRoute: string, mode: string): BusyTarget {
   const trimmed = input.trim();
@@ -108,11 +109,30 @@ function busyLabel(target: BusyTarget, mode: string): string {
   }
 }
 
+function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
+  const chars = Array.from(text);
+  if (chars.length === 0) return [{ text: "", color: THEME.statusMuted }];
+
+  const pulseWidth = Math.max(3, Math.floor(chars.length / 7));
+  const cycle = chars.length + pulseWidth;
+  const highlightStart = frameIndex % cycle - pulseWidth;
+
+  return chars.map((char, index) => {
+    const distance = Math.abs(index - highlightStart);
+    if (distance === 0) {
+      return { text: char, color: "white", bold: true };
+    }
+    if (distance <= 1) {
+      return { text: char, color: THEME.textMuted };
+    }
+    return { text: char, color: THEME.statusMuted };
+  });
+}
+
 // ── Sub-components ─────────────────────────────────────────
 
 function Pane({
   title,
-  activityText,
   entries,
   focused,
   height,
@@ -122,7 +142,6 @@ function Pane({
   hasNewMessages,
 }: {
   title: string;
-  activityText?: string;
   entries: Entry[];
   focused: boolean;
   height: number;
@@ -164,11 +183,6 @@ function Pane({
       <Text bold color={focused ? THEME.accentBright : THEME.textMuted}>
         {displayTitle}
       </Text>
-      {activityText ? (
-        <Text color={focused ? THEME.statusMuted : THEME.chromeMuted}>
-          {activityText}
-        </Text>
-      ) : null}
       {visibleLines.map((line) => (
         <Box key={line.key} width="100%">
           <Text
@@ -313,14 +327,8 @@ function InputRenderer({
 
 function StatusBar({
   status,
-  busy,
-  busyText,
-  busyFrame,
 }: {
   status: StatusData;
-  busy: boolean;
-  busyText: string;
-  busyFrame: string;
 }) {
   return (
     <Box height={1} paddingX={1}>
@@ -330,7 +338,6 @@ function StatusBar({
         {" | Codex: "}
         <ContextPercent pct={status.codex_pct} />
         {" | Observe: "}{status.observe ? "on" : "off"}
-        {busy ? ` | Busy: ${busyText} ${busyFrame}` : ""}
       </Text>
     </Box>
   );
@@ -509,8 +516,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
     const interval = setInterval(() => {
-      setBusyFrameIndex((prev) => (prev + 1) % BUSY_FRAMES.length);
-    }, 120);
+      setBusyFrameIndex((prev) => prev + 1);
+    }, 90);
     return () => clearInterval(interval);
   }, [ready]);
 
@@ -881,19 +888,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
-  const inputStatusText = hint || " ";
-  const councilTitle = !ready && status.mode !== "caucus"
-    ? `COUNCIL ${activeBusyFrame}`
-    : "COUNCIL";
-  const caucusTitle = !ready && status.mode === "caucus"
-    ? `CAUCUS ${activeBusyFrame}`
-    : "CAUCUS";
-  const councilActivityText = !ready && status.mode !== "caucus"
-    ? `${activeBusyLabel}${activeBusyFrame}`
-    : undefined;
-  const caucusActivityText = !ready && status.mode === "caucus"
-    ? `${activeBusyLabel}${activeBusyFrame}`
-    : undefined;
+  const busyText = `${activeBusyLabel}${activeBusyFrame}`;
+  const busySegments = buildBusySegments(busyText, busyFrameIndex);
+  const inputStatusText = hint || (!ready ? busyText : " ");
 
   // ── Render ─────────────────────────────────────────────
 
@@ -902,8 +899,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       {/* Panes */}
       <Box flexDirection="row" flexGrow={1} marginBottom={1}>
         <Pane
-          title={councilTitle}
-          activityText={councilActivityText}
+          title="COUNCIL"
           entries={roomEntries}
           focused={focusedPane === "room"}
           height={paneHeight}
@@ -913,8 +909,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           hasNewMessages={roomHasNew}
         />
         <Pane
-          title={caucusTitle}
-          activityText={caucusActivityText}
+          title="CAUCUS"
           entries={caucusEntries}
           focused={focusedPane === "caucus"}
           height={paneHeight}
@@ -946,17 +941,20 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             maxVisibleLines={visibleInputLines}
             showTrailingCursorLine={showTrailingCursorLine}
           />
-          <Text color={hint ? THEME.textMuted : THEME.statusMuted}>{inputStatusText}</Text>
+          <Text color={hint ? THEME.textMuted : THEME.statusMuted}>
+            {hint || ready
+              ? inputStatusText
+              : busySegments.map((segment, index) => (
+                <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
+                  {segment.text}
+                </Text>
+              ))}
+          </Text>
         </Box>
       </Box>
 
       {/* Status bar */}
-      <StatusBar
-        status={status}
-        busy={!ready}
-        busyText={activeBusyLabel}
-        busyFrame={activeBusyFrame}
-      />
+      <StatusBar status={status} />
     </Box>
   );
 }
