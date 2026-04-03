@@ -8,6 +8,7 @@ mock adapters and UI.
 
 from __future__ import annotations
 
+import json
 import sys
 import os
 from dataclasses import dataclass, field
@@ -428,12 +429,16 @@ def _make_botference(
     if tmp_path is not None:
         work_dir = tmp_path / "work"
         work_dir.mkdir()
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
         repo_root = Path(__file__).resolve().parent.parent
         kwargs["paths"] = BotferencePaths(
             botference_home=repo_root,
             project_root=tmp_path,
+            project_dir=tmp_path,
             work_dir=work_dir,
             build_dir=tmp_path,
+            archive_dir=archive_dir,
         )
     c = Botference(
         claude=claude, codex=codex,
@@ -1268,7 +1273,8 @@ def _shell_parse_loop_args(*args: str) -> dict[str, str]:
         f'parse_loop_args {" ".join(args)} && '
         'echo "LOOP_MODE=$LOOP_MODE" && '
         'echo "PROMPT_FILE=$PROMPT_FILE" && '
-        'echo "BOTFERENCE_MODE=$BOTFERENCE_MODE"'
+        'echo "BOTFERENCE_MODE=$BOTFERENCE_MODE" && '
+        'echo "INIT_PROFILE=$INIT_PROFILE"'
     )
     result = subprocess.run(
         ["bash", "-c", cmd],
@@ -1322,11 +1328,52 @@ class TestPlanningModeRouting:
         assert archive["PROMPT_FILE"] == ""
         assert archive["BOTFERENCE_MODE"] == "false"
 
+    def test_parse_loop_args_supports_init_mode(self):
+        init = _shell_parse_loop_args("init", "--profile=greenfield-app")
+        assert init["LOOP_MODE"] == "init"
+        assert init["PROMPT_FILE"] == ""
+        assert init["BOTFERENCE_MODE"] == "false"
+        assert init["INIT_PROFILE"] == "greenfield-app"
+
     def test_interactive_plan_mode_helper(self):
         assert _shell_eval_config("plan")["INTERACTIVE_PLAN"] == "true"
         assert _shell_eval_config("research-plan")["INTERACTIVE_PLAN"] == "true"
         assert _shell_eval_config("-p", "plan")["INTERACTIVE_PLAN"] == "false"
         assert _shell_eval_config("build")["INTERACTIVE_PLAN"] == "false"
+
+
+class TestInitModeLauncher:
+    def test_botference_init_creates_project_local_state(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+
+        result = subprocess.run(
+            [str(repo_root / "botference"), "init", "--profile=greenfield-app"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "BOTFERENCE_HOME": str(repo_root),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        project_dir = tmp_path / "botference"
+        assert project_dir.is_dir()
+        assert (project_dir / "README.md").is_file()
+        assert (project_dir / "project.json").is_file()
+        assert (project_dir / "implementation-plan.md").is_file()
+        assert (project_dir / "checkpoint.md").is_file()
+        assert (project_dir / "build" / "AI-generated-outputs").is_dir()
+        assert (project_dir / "archive").is_dir()
+        assert not (tmp_path / "run").exists()
+        assert not (tmp_path / "implementation-plan.md").exists()
+
+        project_json = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
+        assert project_json["profile"] == "greenfield-app"
+        assert project_json["modes"]["build"] is True
+        assert project_json["write_roots"]["build"] == ["botference/build"]
 
 
 class TestArchiveModeLauncher:
@@ -1505,6 +1552,191 @@ class TestArchiveModeLauncher:
         assert archive_dir.is_dir()
         assert not (archive_dir / "handoffs").exists()
         assert "Archived handoff history" not in result.stdout
+
+    def test_archive_supports_project_local_botference_dir(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        build = project_dir / "build"
+        project_dir.mkdir()
+        build.mkdir()
+        (project_dir / "checkpoint.md").write_text(
+            "**Thread:** demo-thread\n"
+            "**Last updated:** 2026-03-29\n",
+            encoding="utf-8",
+        )
+        (project_dir / "implementation-plan.md").write_text(
+            "- [ ] 1. Demo task **coder**\n",
+            encoding="utf-8",
+        )
+        (project_dir / "HUMAN_REVIEW_NEEDED.md").write_text(
+            "# HUMAN REVIEW NEEDED\n",
+            encoding="utf-8",
+        )
+        (project_dir / "inbox.md").write_text("operator note\n", encoding="utf-8")
+        (project_dir / "CHANGELOG.md").write_text("# CHANGELOG\n\nentry\n", encoding="utf-8")
+        (project_dir / "iteration_count").write_text("7\n", encoding="utf-8")
+        (build / "logs").mkdir()
+        (build / "logs" / "usage.jsonl").write_text("", encoding="utf-8")
+
+        result = subprocess.run(
+            [str(repo_root / "botference"), "archive"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "BOTFERENCE_HOME": str(repo_root),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        archive_dir = tmp_path / "botference" / "archive" / "2026-03-29_demo-thread"
+        assert archive_dir.is_dir()
+        assert (archive_dir / "checkpoint.md").is_file()
+        assert (archive_dir / "implementation-plan.md").is_file()
+        assert (archive_dir / "CHANGELOG.md").is_file()
+        assert (project_dir / "checkpoint.md").is_file()
+        assert (project_dir / "implementation-plan.md").is_file()
+        assert (project_dir / "iteration_count").read_text(encoding="utf-8").strip() == "0"
+
+
+class TestProjectLocalPolicy:
+    def test_build_mode_can_be_disabled_per_project(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        project_dir.mkdir()
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "vault-drafter",
+                    "modes": {"plan": True, "research_plan": True, "build": False},
+                    "write_roots": {"plan": [], "build": ["botference/build"]},
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [str(repo_root / "botference"), "build"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "BOTFERENCE_HOME": str(repo_root),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 1
+        assert "disabled by" in result.stderr
+        assert "project.json" in result.stderr
+
+    def test_reserved_project_agent_requires_explicit_override(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        agents_dir = project_dir / "agents"
+        agents_dir.mkdir(parents=True)
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "vault-drafter",
+                    "modes": {"plan": True, "research_plan": True, "build": True},
+                    "write_roots": {"plan": [], "build": ["botference/build"]},
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "coder.md").write_text("# coder\n", encoding="utf-8")
+
+        result = subprocess.run(
+            [str(repo_root / "botference"), "archive"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "BOTFERENCE_HOME": str(repo_root),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 1
+        assert "shadows a built-in agent" in result.stderr
+        assert "agent_overrides" in result.stderr
+
+    def test_non_git_snapshot_scopes_to_owned_paths(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        build_dir = project_dir / "build"
+        wiki_dir = project_dir / "wiki"
+        project_dir.mkdir()
+        build_dir.mkdir()
+        wiki_dir.mkdir()
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "vault-drafter",
+                    "modes": {"plan": True, "research_plan": True, "build": True},
+                    "write_roots": {
+                        "plan": [],
+                        "build": ["botference/build", "botference/wiki"],
+                    },
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (project_dir / "checkpoint.md").write_text("checkpoint\n", encoding="utf-8")
+        (build_dir / "draft.md").write_text("draft\n", encoding="utf-8")
+        (wiki_dir / "entry.md").write_text("entry\n", encoding="utf-8")
+        (tmp_path / "large-note.md").write_text("outside scope\n", encoding="utf-8")
+
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+source "{repo_root / "lib" / "post-run.sh"}"
+export BOTFERENCE_HOME="{repo_root}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+init_botference_paths
+snapshot=$(mktemp)
+plan_write_state_snapshot "$snapshot" build
+cut -f2 "$snapshot"
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        paths = set(filter(None, result.stdout.splitlines()))
+        assert "botference/checkpoint.md" in paths
+        assert "botference/build/draft.md" in paths
+        assert "botference/wiki/entry.md" in paths
+        assert "large-note.md" not in paths
+
+
+class TestPlanningPromptPolicy:
+    def test_plan_dispatcher_is_lazy_and_shell_free(self):
+        text = (Path(__file__).resolve().parent.parent / "prompts" / "plan.md").read_text(encoding="utf-8")
+        assert "inspect only the files and paths needed" in text
+        assert "scan the whole workspace up front" not in text
+        assert "Scan the workspace first" not in text
+        assert "`Bash`" not in text
+
+    def test_plan_agent_prompt_is_lazy_and_shell_free(self):
+        text = (Path(__file__).resolve().parent.parent / ".claude" / "agents" / "plan.md").read_text(encoding="utf-8")
+        assert "inspect only the files and paths needed" in text
+        assert "Read / Glob / Grep / WebSearch / WebFetch" in text
+        assert "`Bash`" not in text
 
 
 # ── Relay command parsing ─────────────────────────────────
@@ -1882,13 +2114,17 @@ def _make_relay_botference(
     """Create a Botference with paths pointing to tmp_path for file-write tests."""
     work_dir = tmp_path / "work"
     work_dir.mkdir()
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
     # botference_home must point to the repo root so prompts/relay.md is found
     repo_root = Path(__file__).resolve().parent.parent
     paths = BotferencePaths(
         botference_home=repo_root,
         project_root=tmp_path,
+        project_dir=tmp_path,
         work_dir=work_dir,
         build_dir=tmp_path,
+        archive_dir=archive_dir,
     )
     claude = MockAdapter(claude_responses or [_ok("init")])
     codex = MockAdapter(codex_responses or [_ok("init")])

@@ -22,13 +22,27 @@ source "${BOTFERENCE_HOME}/lib/monitor.sh"
 source "${BOTFERENCE_HOME}/lib/post-run.sh"
 source "${BOTFERENCE_HOME}/lib/exec.sh"
 
-init_botference_paths
-
 parse_loop_args "$@"
 
 if $SHOW_HELP; then
   show_help
   exit 0
+fi
+
+if [ "$LOOP_MODE" = "init" ]; then
+  python3 "${BOTFERENCE_HOME}/scripts/init_project.py" --profile "$INIT_PROFILE"
+  exit 0
+fi
+
+init_botference_paths
+
+if ! validate_project_agents; then
+  exit 1
+fi
+
+if ! mode_is_allowed "$LOOP_MODE"; then
+  echo "Error: $LOOP_MODE is disabled by ${BOTFERENCE_PROJECT_CONFIG_FILE}." >&2
+  exit 1
 fi
 
 if [ -n "$CLI_MODEL" ]; then
@@ -136,6 +150,40 @@ ensure_ink_ui_dist() {
   fi
 }
 
+BUILD_AUDIT_SNAPSHOT=""
+BUILD_AUDIT_ALLOWED=""
+BUILD_AUDIT_VIOLATIONS=""
+
+begin_build_audit() {
+  if [ -d "${BOTFERENCE_PROJECT_DIR:-}" ]; then
+    BUILD_AUDIT_SNAPSHOT=$(mktemp)
+    BUILD_AUDIT_ALLOWED=$(mktemp)
+    BUILD_AUDIT_VIOLATIONS=$(mktemp)
+    plan_write_state_snapshot "$BUILD_AUDIT_SNAPSHOT"
+  fi
+}
+
+cleanup_build_audit() {
+  rm -f "${BUILD_AUDIT_SNAPSHOT:-}" "${BUILD_AUDIT_ALLOWED:-}" "${BUILD_AUDIT_VIOLATIONS:-}"
+  BUILD_AUDIT_SNAPSHOT=""
+  BUILD_AUDIT_ALLOWED=""
+  BUILD_AUDIT_VIOLATIONS=""
+}
+
+enforce_build_audit() {
+  [ -n "${BUILD_AUDIT_SNAPSHOT:-}" ] || return 0
+
+  if ! audit_mode_changed_files "build" "$BUILD_AUDIT_SNAPSHOT" "$BUILD_AUDIT_ALLOWED" "$BUILD_AUDIT_VIOLATIONS"; then
+    echo ""
+    echo "✗ Build audit failed — unauthorized files changed:"
+    sed 's/^/  - /' "$BUILD_AUDIT_VIOLATIONS"
+    cleanup_build_audit
+    return 1
+  fi
+  cleanup_build_audit
+  return 0
+}
+
 trap 'handle_interrupt_signal' INT
 
 if ! is_interactive_plan_mode; then
@@ -163,7 +211,7 @@ while true; do
     echo "║  Halting to avoid wasting tokens.                       ║"
     echo "╠══════════════════════════════════════════════════════════╣"
     echo "║  To resume:                                             ║"
-    echo "║    rm $CB_FILE && ./botference -p     ║"
+    echo "║    rm $CB_FILE && botference -p       ║"
     echo "║  Or investigate logs/usage.jsonl for error patterns.    ║"
     echo "╚══════════════════════════════════════════════════════════╝"
     break
@@ -190,7 +238,7 @@ while true; do
       cat "$BOTFERENCE_REVIEW_FILE"
       echo ""
       echo "To continue: review above, then:"
-      echo "  rm $BOTFERENCE_REVIEW_FILE && ./botference -p"
+      echo "  rm $BOTFERENCE_REVIEW_FILE && botference -p"
       break
     fi
   fi
@@ -208,6 +256,10 @@ while true; do
   # --- Detect thread and agent ---
   CURRENT_THREAD=$(extract_thread)
   CURRENT_AGENT=$(detect_agent_from_checkpoint "$BOTFERENCE_CHECKPOINT_FILE" "$BOTFERENCE_PLAN_FILE")
+  if [ "$LOOP_MODE" = "build" ]; then
+    cleanup_build_audit
+    begin_build_audit
+  fi
 
   # --- Plan mode: one-shot interactive session, early exit ---
   if [ "$LOOP_MODE" = "plan" ] || [ "$LOOP_MODE" = "research-plan" ]; then
@@ -218,7 +270,7 @@ while true; do
       PLAN_WORK_PREFIX="${BOTFERENCE_WORK_DIR#$BOTFERENCE_PROJECT_ROOT/}/"
     fi
     PLAN_ALLOWED_TOOLS=(
-      "Read" "Glob" "Grep" "Bash"
+      "Read" "Glob" "Grep" "WebSearch" "WebFetch"
       "Edit(/${PLAN_WORK_PREFIX}checkpoint.md)"
       "Edit(/${PLAN_WORK_PREFIX}implementation-plan.md)"
       "Edit(/${PLAN_WORK_PREFIX}implementation-plan-*.md)"
@@ -247,13 +299,14 @@ while true; do
       fi
 
       if [ "$LOOP_MODE" = "research-plan" ]; then
-        PLAN_SYSTEM="$(cat "${BOTFERENCE_HOME}/.claude/agents/plan.md")"
+        PLAN_AGENT_PATH=$(resolve_agent_path "plan")
+        PLAN_SYSTEM="$(cat "${PLAN_AGENT_PATH:-${BOTFERENCE_HOME}/.claude/agents/plan.md}")"
       else
         PLAN_SYSTEM=""
       fi
 
       PLAN_SNAPSHOT=$(mktemp); PLAN_ALLOWED=$(mktemp); PLAN_VIOLATIONS=$(mktemp)
-      plan_write_state_snapshot "$PLAN_SNAPSHOT"
+      plan_write_state_snapshot "$PLAN_SNAPSHOT" "plan"
 
       # Build debug-panes flag correctly (avoid passing "false" as truthy)
       DEBUG_FLAG=""
@@ -360,11 +413,12 @@ while true; do
     PLAN_SNAPSHOT=$(mktemp)
     PLAN_ALLOWED=$(mktemp)
     PLAN_VIOLATIONS=$(mktemp)
-    plan_write_state_snapshot "$PLAN_SNAPSHOT"
+    plan_write_state_snapshot "$PLAN_SNAPSHOT" "plan"
 
     # Run plan agent via claude CLI
     if [ "$LOOP_MODE" = "research-plan" ]; then
-      PLAN_SYSTEM="$(cat "${BOTFERENCE_HOME}/.claude/agents/plan.md")"
+      PLAN_AGENT_PATH=$(resolve_agent_path "plan")
+      PLAN_SYSTEM="$(cat "${PLAN_AGENT_PATH:-${BOTFERENCE_HOME}/.claude/agents/plan.md}")"
     else
       PLAN_SYSTEM=""
     fi
@@ -480,10 +534,10 @@ while true; do
       echo "║  To archive this thread, run:                           ║"
       echo "║    bash scripts/archive.sh                              ║"
       echo "║                                                         ║"
-      echo "║  This will move to archive/<date>_<thread>/:            ║"
+      echo "║  This will move to ${BOTFERENCE_ARCHIVE_DIR}/<date>_<thread>/: ║"
       echo "║    checkpoint.md, implementation-plan.md,               ║"
       echo "║    ai-generated-outputs/<thread>/, reflections/,        ║"
-      echo "║    CHANGELOG.md, inbox.md                               ║"
+      echo "║    ${BOTFERENCE_CHANGELOG_FILE##*/}, inbox.md           ║"
       echo "║  and restore blank templates.                           ║"
       echo "╚══════════════════════════════════════════════════════════╝"
 
@@ -503,7 +557,7 @@ while true; do
       fi
     else
       echo "  No task found in checkpoint.md — nothing to do."
-      echo "  Run './botference plan' to plan next steps,"
+      echo "  Run 'botference plan' to plan next steps,"
       echo "  or 'bash scripts/archive.sh' to archive."
     fi
     break
@@ -525,6 +579,9 @@ while true; do
       echo "  Agent dispatched by orchestrator: $CURRENT_AGENT"
     elif [ "$ORCH_RC" -eq 0 ]; then
       # Orchestrator handled everything (parallel dispatch or adaptation)
+      if ! enforce_build_audit; then
+        break
+      fi
       capture_eval_metrics || true
       echo ""
       echo "=== Iteration $ITERATION complete (orchestrated). Fresh context in 3s... ==="
@@ -550,6 +607,9 @@ while true; do
       else
         run_parallel_phase "$CURRENT_PHASE"
         PARALLEL_RC=$?
+        if ! enforce_build_audit; then
+          break
+        fi
 
         capture_eval_metrics || true
 
@@ -705,6 +765,9 @@ while true; do
     fi
     # --- Eval capture ---
     post_iteration
+    if ! enforce_build_audit; then
+      EXIT_CODE=1
+    fi
   else
     # Interactive: monitor runs in background, agent gets the terminal
     monitor_context "$$" "$ITER_START" "$IGNORE_UNTIL" "$CURRENT_AGENT" &
@@ -756,6 +819,9 @@ while true; do
     fi
     # --- Eval capture ---
     post_iteration
+    if ! enforce_build_audit; then
+      EXIT_CODE=1
+    fi
   fi
 
   # --- Error recovery with exponential backoff ---

@@ -935,8 +935,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         <Box
           flexDirection="column"
           paddingX={1}
-          paddingTop={1}
-          paddingY={0}
+          paddingY={1}
           backgroundColor="black"
           width="100%"
           overflow="hidden"

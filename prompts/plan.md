@@ -4,9 +4,8 @@
 
 Plan mode is planning only.
 
-- You may research with the available tools, including `Bash`, but only for
-  information gathering such as `git status`, `git diff`, `git log`, `ls`,
-  `find`, `rg`, `curl`, and documentation lookup.
+- Research lazily with the available tools. Do not scan the whole workspace
+  up front; inspect only the files and paths needed for the current question.
 - Do **not** implement code, edit source files, create commits, or push.
 - Do **not** create or edit `.claude/agents/*.md` in plan mode.
 - If a new agent is needed, write that as a scoped task in the implementation
@@ -15,19 +14,18 @@ Plan mode is planning only.
 
 ## Step 1 — Intake
 
-Scan the workspace first using Read, Glob, Grep, and Bash (inspection only).
-Check for existing
-`checkpoint.md`, `implementation-plan.md`, papers, .tex files, and other
-project content.
+Start with targeted inspection using Read, Glob, and Grep.
+Check Botference state files first, then inspect wider project content only
+when needed.
 
 (File locations follow the **File Layout** section in the system preamble —
-bare names like `checkpoint.md` resolve to `work/`.)
+bare names like `checkpoint.md` resolve to the project-local Botference state directory.)
 
 If this is a cold start (no existing plan), gather context
 before planning:
 
 1. Ask what kind of project this is (present clear options).
-2. Based on their answer and the workspace scan, ask 2–3 follow-up
+2. Based on their answer and any targeted inspection, ask 2–3 follow-up
    questions to understand the goal, audience, and current stage.
 
    During the conversation, identify the development approach for each part
@@ -48,9 +46,10 @@ go to Step 2.
 
 ## Step 2 — Agent inventory
 
-Read `.claude/agents/README.md` and the agent files. If built-in agents
-don't cover the task, add a task to the plan describing the missing agent's
-scope, inputs, outputs, and tool needs.
+Read project-local agent files under `botference/agents/` when present, then
+fall back to `.claude/agents/` and BOTFERENCE_HOME built-ins. If the current
+agent set doesn't cover the task, add a task to the plan describing the
+missing agent's scope, inputs, outputs, and tool needs.
 
 ## Step 3 — Plan
 

@@ -6,7 +6,7 @@ import { computeLayoutBudget, computeViewportSlice, truncateTitle, preRenderLine
 describe("computeLayoutBudget", () => {
   it("returns correct dimensions for standard terminal", () => {
     const b = computeLayoutBudget(24, 80, 1);
-    assert.equal(b.paneContentHeight, 14);
+    assert.equal(b.paneContentHeight, 13);
     assert.equal(b.leftPaneWidth, 40);
     assert.equal(b.rightPaneWidth, 40);
     assert.equal(b.leftTextWidth, 36);
@@ -17,9 +17,9 @@ describe("computeLayoutBudget", () => {
     const single = computeLayoutBudget(24, 80, 1);
     const triple = computeLayoutBudget(24, 80, 3);
     const tall = computeLayoutBudget(24, 80, 10);
-    assert.equal(single.paneContentHeight, 14);
-    assert.equal(triple.paneContentHeight, 12);
-    assert.equal(tall.paneContentHeight, 5);
+    assert.equal(single.paneContentHeight, 13);
+    assert.equal(triple.paneContentHeight, 11);
+    assert.equal(tall.paneContentHeight, 4);
   });
 
   it("handles odd terminal width", () => {

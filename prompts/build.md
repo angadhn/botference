@@ -4,10 +4,11 @@ Study checkpoint.md and implementation-plan.md.
 Pick the highest-priority task to do.
 
 (File locations follow the **File Layout** section in the system preamble —
-bare names like `checkpoint.md` resolve to `work/`.)
+bare names like `checkpoint.md` resolve to the project-local Botference state directory.)
 
 The last word in the task name is the agent.
-Read the agent prompt at `.claude/agents/{agent}.md` (resolves workspace-first, then BOTFERENCE_HOME) and follow its Workflow.
+Read the agent prompt at `botference/agents/{agent}.md` (falls back to
+project `.claude/agents/{agent}.md`, then BOTFERENCE_HOME built-ins) and follow its Workflow.
 
 If the task has a mode prefix (STYLE-CHECK critic,
 GAP-FILL scout), the agent is still the last word.

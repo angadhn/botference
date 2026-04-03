@@ -65,6 +65,7 @@ DEFAULT_TOOLS = _ESSENTIALS
 
 # All known tool names (for validating agent file declarations)
 ALL_TOOL_NAMES = set(TOOLS.keys()) | set(SERVER_TOOLS.keys())
+RESERVED_AGENT_NAMES = set(AGENT_TOOLS.keys()) | {"plan", "orchestrator"}
 
 
 # ── Tool dispatch ─────────────────────────────────────────────
@@ -82,6 +83,53 @@ def execute_tool(name: str, tool_input: dict):
     return tool["function"](tool_input)
 
 
+def _project_agent_roots() -> list[Path]:
+    project_root = Path.cwd()
+    roots = []
+    project_agent_dir = os.environ.get("BOTFERENCE_PROJECT_AGENT_DIR", "")
+    if project_agent_dir:
+        roots.append(Path(project_agent_dir))
+    roots.append(project_root / ".claude" / "agents")
+    return roots
+
+
+def _framework_agent_root() -> Path:
+    botference_home = Path(os.environ.get("BOTFERENCE_HOME", "."))
+    return botference_home / ".claude" / "agents"
+
+
+def _override_names() -> set[str]:
+    raw = os.environ.get("BOTFERENCE_AGENT_OVERRIDES", "")
+    return {name for name in raw.split(",") if name}
+
+
+def _reserved_override_allowed(agent_name: str) -> bool:
+    return agent_name in _override_names()
+
+
+def resolve_agent_file(agent_name: str) -> Path | None:
+    """Resolve an agent prompt file with project-local precedence.
+
+    Reserved built-in names use the framework agent by default unless the
+    project explicitly opts into overriding that name.
+    """
+    framework_path = _framework_agent_root() / f"{agent_name}.md"
+    project_candidates = [
+        root / f"{agent_name}.md"
+        for root in _project_agent_roots()
+    ]
+
+    if agent_name in RESERVED_AGENT_NAMES and not _reserved_override_allowed(agent_name):
+        return framework_path if framework_path.exists() else None
+
+    for path in project_candidates:
+        if path.exists():
+            return path
+    if framework_path.exists():
+        return framework_path
+    return None
+
+
 def parse_tools_from_agent_file(agent_name: str):
     """Parse tool names from an agent's .md file ## Tools section.
 
@@ -93,12 +141,9 @@ def parse_tools_from_agent_file(agent_name: str):
         - `web_search` — search the web
         - `check_language` — style check
     """
-    # Resolve agent file: workspace-first, then BOTFERENCE_HOME
-    botference_home = Path(os.environ.get("BOTFERENCE_HOME", "."))
-    workspace_path = Path.cwd() / ".claude" / "agents" / f"{agent_name}.md"
-    framework_path = botference_home / ".claude" / "agents" / f"{agent_name}.md"
-
-    agent_path = workspace_path if workspace_path.exists() else framework_path
+    agent_path = resolve_agent_file(agent_name)
+    if agent_path is None:
+        return None
     if not agent_path.exists():
         return None
 
@@ -137,8 +182,12 @@ def get_tools_for_agent(agent_name: str) -> tuple[list[str], list[dict]]:
     Server-side tools (e.g. web_search) use their raw definition directly.
     Client-side tools use api_schema() to strip the handler function.
     """
-    # 1. Check hardcoded registry
-    tool_names = AGENT_TOOLS.get(agent_name)
+    tool_names = None
+
+    # Built-ins remain authoritative unless the project explicitly overrides
+    # that reserved agent name.
+    if agent_name in AGENT_TOOLS and not _reserved_override_allowed(agent_name):
+        tool_names = AGENT_TOOLS.get(agent_name)
 
     # 2. Parse from agent .md file
     if tool_names is None:

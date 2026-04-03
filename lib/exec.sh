@@ -6,7 +6,7 @@ resolve_model() {
   local model=""
 
   # ANTHROPIC_MODEL is a global override — when set, it wins over per-agent config.
-  # This lets `ANTHROPIC_MODEL=gpt-5.4 ./botference -p build` run ALL agents on GPT-5.4.
+  # This lets `ANTHROPIC_MODEL=gpt-5.4 botference -p build` run all agents on GPT-5.4.
   if [ -n "${ANTHROPIC_MODEL:-}" ]; then
     echo "$ANTHROPIC_MODEL"
     return
@@ -81,12 +81,23 @@ is_anthropic_model() {
 build_claude_system_prompt() {
   local agent_name="${1:-}"
 
-  # Resolve agent file (workspace-first, same as botference_agent.py)
-  local agent_file=""
-  local workspace_path=".claude/agents/${agent_name}.md"
+  local project_agent_path="${BOTFERENCE_PROJECT_AGENT_DIR}/${agent_name}.md"
+  local compat_path=".claude/agents/${agent_name}.md"
   local framework_path="${BOTFERENCE_HOME}/.claude/agents/${agent_name}.md"
-  if [ -f "$workspace_path" ]; then
-    agent_file="$workspace_path"
+
+  local is_reserved=false
+  if reserved_agent_names | grep -qx "$agent_name"; then
+    is_reserved=true
+  fi
+
+  # Resolve agent file with the same precedence as botference_agent.py/tools/__init__.py
+  local agent_file=""
+  if $is_reserved && ! project_agent_override_allowed "$agent_name"; then
+    agent_file="$framework_path"
+  elif [ -f "$project_agent_path" ]; then
+    agent_file="$project_agent_path"
+  elif [ -f "$compat_path" ]; then
+    agent_file="$compat_path"
   elif [ -f "$framework_path" ]; then
     agent_file="$framework_path"
   else
@@ -110,12 +121,30 @@ File paths in this prompt use short names. Resolve them as follows:
 - **Framework files** — prefix with BOTFERENCE_HOME:
   \`specs/*\`, \`templates/*\`, \`prompt-*.md\`
   Example: \`specs/writing-style.md\` → \`${rh}/specs/writing-style.md\`
-- **Agent files** — workspace-first: \`.claude/agents/{name}.md\` checks
-  project dir first, then BOTFERENCE_HOME
+- **Agent files** — project-local first: \`botference/agents/{name}.md\`,
+  then \`.claude/agents/{name}.md\`, then BOTFERENCE_HOME built-ins
 - **Project files** — relative to working directory
 
 PREAMBLE_EOF
   fi
+
+  local work_rel build_rel
+  work_rel=$(python3 - <<'PY'
+import os
+from pathlib import Path
+project = Path(os.environ["BOTFERENCE_PROJECT_ROOT"]).resolve()
+work = Path(os.environ["BOTFERENCE_WORK_DIR"]).resolve()
+print(os.path.relpath(work, project))
+PY
+)
+  build_rel=$(python3 - <<'PY'
+import os
+from pathlib import Path
+project = Path(os.environ["BOTFERENCE_PROJECT_ROOT"]).resolve()
+build = Path(os.environ["BOTFERENCE_BUILD_DIR"]).resolve()
+print(os.path.relpath(build, project))
+PY
+)
 
   # File layout preamble — always emitted (mirrors _build_file_layout_preamble)
   cat <<LAYOUT_EOF
@@ -127,10 +156,10 @@ Use bare names in conversation and plans — the mapping is:
 
 - **Thread files** (\`checkpoint.md\`, \`implementation-plan.md\`, \`inbox.md\`,
   \`HUMAN_REVIEW_NEEDED.md\`, \`iteration_count\`):
-  Under \`work/\`.
+  Under \`${work_rel}/\`.
 
 - **Generated outputs** (\`AI-generated-outputs/\`, \`logs/\`, \`run/\`):
-  Under \`build/\`.
+  Under \`${build_rel}/\`.
 
 LAYOUT_EOF
 
@@ -509,7 +538,7 @@ Determine which tasks to dispatch next and output ONLY a JSON dispatch instructi
 Do NOT do any work yourself. Do NOT scrape, write, or edit files.
 Your ONLY job is to decide what agents to run and output JSON.
 
-See your full instructions in your agent prompt (.claude/agents/orchestrator.md)."
+See your full instructions in your agent prompt (botference/agents/orchestrator.md, .claude/agents/orchestrator.md, or BOTFERENCE_HOME built-ins)."
 
   echo "  🎯 Running orchestrator..." >&2
 
@@ -792,7 +821,7 @@ run_parallel_phase() {
     agent_path=$(resolve_agent_path "$agent_name")
     if [ -z "$agent_path" ]; then
       echo "  ⚠  Skipping parallel task (agent not found): $agent_name"
-      echo "     Checked: .claude/agents/${agent_name}.md, ${BOTFERENCE_HOME}/.claude/agents/${agent_name}.md"
+      echo "     Checked: ${BOTFERENCE_PROJECT_AGENT_DIR}/${agent_name}.md, .claude/agents/${agent_name}.md, ${BOTFERENCE_HOME}/.claude/agents/${agent_name}.md"
       continue
     fi
 

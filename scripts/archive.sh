@@ -29,7 +29,7 @@ LAST_UPDATED=$(grep '^\*\*Last updated:\*\*' "$BOTFERENCE_CHECKPOINT_FILE" | sed
 
 if [ -z "$THREAD" ] || echo "$THREAD" | grep -q '<.*>'; then
   echo "Error: checkpoint has no real thread name (still a template placeholder)" >&2
-  echo "  Run './botference plan' first to create a thread." >&2
+  echo "  Run 'botference plan' first to create a thread." >&2
   exit 1
 fi
 
@@ -129,9 +129,9 @@ fi
 > "$BOTFERENCE_INBOX_FILE"
 
 # Archive CHANGELOG.md (accumulates per-iteration entries across all threads)
-if [ -f CHANGELOG.md ]; then
-  mv CHANGELOG.md "$ARCHIVE_DIR/"
-  echo "# CHANGELOG" > CHANGELOG.md
+if [ -f "$BOTFERENCE_CHANGELOG_FILE" ]; then
+  mv "$BOTFERENCE_CHANGELOG_FILE" "$ARCHIVE_DIR/"
+  echo "# CHANGELOG" > "$BOTFERENCE_CHANGELOG_FILE"
   echo "Archived and reset CHANGELOG.md"
 fi
 

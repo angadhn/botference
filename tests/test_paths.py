@@ -16,12 +16,31 @@ from paths import BotferencePaths
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Remove botference env vars so tests use overrides / filesystem detection."""
-    for var in ("BOTFERENCE_WORK_DIR", "BOTFERENCE_BUILD_DIR",
-                "BOTFERENCE_HOME", "BOTFERENCE_PROJECT_ROOT"):
+    for var in (
+        "BOTFERENCE_WORK_DIR",
+        "BOTFERENCE_BUILD_DIR",
+        "BOTFERENCE_ARCHIVE_DIR",
+        "BOTFERENCE_PROJECT_DIR",
+        "BOTFERENCE_HOME",
+        "BOTFERENCE_PROJECT_ROOT",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
 class TestBotferencePathsResolve:
+    def test_resolve_with_project_dir(self, tmp_path):
+        """botference/ project dir takes precedence over legacy layout detection."""
+        (tmp_path / "botference" / "build").mkdir(parents=True)
+        (tmp_path / "botference" / "archive").mkdir()
+        p = BotferencePaths.resolve(
+            botference_home=tmp_path, project_root=tmp_path,
+        )
+        assert p.project_dir == tmp_path / "botference"
+        assert p.work_dir == tmp_path / "botference"
+        assert p.build_dir == tmp_path / "botference" / "build"
+        assert p.archive_dir == tmp_path / "botference" / "archive"
+        assert p.work_prefix == "botference/"
+
     def test_resolve_with_work_dir(self, tmp_path):
         """work/ subdir detected → work_dir points there."""
         (tmp_path / "work").mkdir()
@@ -81,6 +100,14 @@ class TestBotferencePathsResolve:
 
 
 class TestHandoffPaths:
+    def test_handoff_live_files_with_project_dir(self, tmp_path):
+        (tmp_path / "botference" / "build").mkdir(parents=True)
+        p = BotferencePaths.resolve(
+            botference_home=tmp_path, project_root=tmp_path,
+        )
+        assert p.handoff_live_file("claude") == tmp_path / "botference" / "handoff-claude.md"
+        assert p.handoff_history_dir == tmp_path / "botference" / "handoffs"
+
     def test_handoff_live_files(self, tmp_path):
         p = BotferencePaths.resolve(
             botference_home=tmp_path, project_root=tmp_path,
@@ -123,6 +150,13 @@ class TestHandoffPaths:
 
 
 class TestWorkPrefix:
+    def test_work_prefix_with_project_dir(self, tmp_path):
+        (tmp_path / "botference" / "build").mkdir(parents=True)
+        p = BotferencePaths.resolve(
+            botference_home=tmp_path, project_root=tmp_path,
+        )
+        assert p.work_prefix == "botference/"
+
     def test_work_prefix_with_work_dir(self, tmp_path):
         (tmp_path / "work").mkdir()
         p = BotferencePaths.resolve(

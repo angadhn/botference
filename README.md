@@ -18,7 +18,7 @@ part that works well and is ready for use.
 > This is vibe-coded. Use at your own risk. Research-plan mode and build mode
 > are deeply experimental — under active development, will change without
 > notice, and not recommended for general use. If you are here to get things
-> done, use `./botference plan` and take the resulting plan into your own
+> done, use `botference plan` and take the resulting plan into your own
 > workflow.
 
 **Ink TUI** — council panel (left), caucus panel (right), input field and
@@ -39,6 +39,15 @@ The TUI has two backends:
 
 Both present the same council + caucus interface. Use `--claude` to skip Codex
 and run a solo Claude session (no TUI, just the Claude CLI).
+
+Project-local runtime behavior and the long-term packaging direction are
+documented in [`docs/project-model.md`](docs/project-model.md) and
+[`docs/distribution-roadmap.md`](docs/distribution-roadmap.md).
+
+Default planning behavior in project-local mode is intentionally lazy: `plan`
+and `research-plan` do not scan the whole project up front, and vault-style
+projects keep writes confined to Botference-owned paths unless you explicitly
+expand them in `botference/project.json`.
 
 ## Approach
 
@@ -63,19 +72,62 @@ conflicting opinions.
 ## Quick Start
 
 ```bash
-# Planning (the main event)
-./botference plan                          # Council: you + Claude + Codex
-./botference plan --claude                 # Solo Claude (no Codex)
-./botference plan --ink                    # Use Ink TUI instead of Textual
+# In a target project
+botference init                            # Create project-local botference/ state
+botference plan                            # Council: you + Claude + Codex
+botference plan --claude                   # Solo Claude (no Codex)
+botference plan --ink                      # Use Ink TUI instead of Textual
 
 # Building (experimental)
-./botference build                         # Interactive build loop
-./botference -p build                      # Headless build loop
-./botference -p build 10                   # Headless, max 10 iterations
-./botference -p build --parallel           # Phase-level parallelism
+botference build                           # Interactive build loop
+botference -p build                        # Headless build loop
+botference -p build 10                     # Headless, max 10 iterations
+botference -p build --parallel             # Phase-level parallelism
 
-./botference --help                        # Full usage + supported models
+botference --help                          # Full usage + supported models
 ```
+
+When you are running directly from this repo checkout instead of an installed
+command, invoke the local launcher as `./botference`.
+
+## Project Scoping
+
+In a project initialized with `botference init`, the local policy lives in
+`botference/project.json`.
+
+Default write scope:
+
+```json
+{
+  "write_roots": {
+    "plan": [],
+    "build": ["botference/build"]
+  }
+}
+```
+
+This means:
+
+- `plan` and `research-plan` write only Botference state such as
+  `botference/implementation-plan.md`, `botference/checkpoint.md`, and
+  `botference/inbox.md`
+- `build` may also write generated artifacts under `botference/build/`
+- the rest of the project stays read-only by default
+
+If you want to opt into another Botference-owned writable area later, add it
+explicitly. For example:
+
+```json
+{
+  "write_roots": {
+    "plan": [],
+    "build": ["botference/build", "botference/wiki"]
+  }
+}
+```
+
+That keeps the default safety boundary narrow while still allowing project-local
+owned outputs when you choose to expand them.
 
 For a fresh clone, install Ink's Node dependencies once before using `--ink`:
 
@@ -142,8 +194,8 @@ excerpts still render as code blocks.
 |---------|-------------|
 | `/caucus <topic>` | Start a caucus — Claude and Codex debate the topic privately (3-5 rounds) and return a summary with a recommendation. If they agree on a writer, the lead is set automatically. |
 | `/lead @claude\|@codex` | Manually set which model writes the plan. You can also use `/lead auto` to let a future caucus decide. |
-| `/draft [rounds]` | Update `work/implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved as `work/AI-reviewer_comments_round-N.md`. |
-| `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites `work/implementation-plan.md` if needed, creates `work/checkpoint.md`, and moves reviewer comment files into `archive/reviewer-comments/<thread>/`. |
+| `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved beside the plan in the Botference state directory. |
+| `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/help` | Show the command reference. |
@@ -160,9 +212,9 @@ excerpts still render as code blocks.
 generates the handoff, tears down that model's old session, and immediately
 starts a fresh session in the same running controller.
 
-- Successful relays keep only a timestamped history copy under `work/handoffs/<model>/`.
+- Successful relays keep only a timestamped history copy under the project-local Botference handoff history directory.
 - Fresh `./botference plan` launches do not auto-load persisted handoff notes.
-- `work/handoff-claude.md` and `work/handoff-codex.md` are failure-only artifacts used to preserve a retry payload if the immediate restart fails.
+- The live `handoff-claude.md` and `handoff-codex.md` files are failure-only artifacts used to preserve a retry payload if the immediate restart fails.
 
 ### Navigation and input
 
@@ -212,15 +264,15 @@ Plan mode is read-only during the conversation from the models' point of view.
 The controller, not the LLMs, owns all plan-file writes. `/draft [rounds]`
 updates only:
 
-- `work/implementation-plan.md`
-- `work/AI-reviewer_comments_round-N.md`
+- the project-local `implementation-plan.md`
+- reviewer comment files beside the plan in the Botference state directory
 
 Then `/finalize` updates:
 
-- `work/implementation-plan.md`
-- `work/checkpoint.md`
+- the project-local `implementation-plan.md`
+- the project-local `checkpoint.md`
 
-and archives active reviewer comments to `archive/reviewer-comments/<thread>/`.
+and archives active reviewer comments under the Botference archive directory.
 Nothing else in your repo is touched by this draft/finalize workflow.
 
 **Research-plan mode** (`./botference research-plan`) — ⚠️ *Experimental.*
@@ -339,9 +391,9 @@ botference/
 
 ### Directory Roles
 
-- **`work/`** — Active thread state: `checkpoint.md`, `implementation-plan.md`, `AI-reviewer_comments_round-*.md`, `inbox.md`, `HUMAN_REVIEW_NEEDED.md`, `iteration_count`, plus relay history under `handoffs/<model>/`.
+- **`work/`** — Legacy active thread state for the self-hosted repo layout. In project-local mode these files live under `botference/`.
 - **`build/`** — Generated and runtime artifacts: `AI-generated-outputs/`, `logs/`, `run/`. Fully gitignored.
-- **`archive/`** — Completed threads archived by `./botference archive`, plus staged reviewer comments under `archive/reviewer-comments/<thread>/` after `/finalize`.
+- **`archive/`** — Legacy archive path for the self-hosted repo layout. In project-local mode archives live under `botference/archive/`.
 
 ## Tracked Code LOC
 

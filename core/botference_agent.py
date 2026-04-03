@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.redact import preview_text, redact_text
 from tools.fmt import fmt_banner, fmt_tool_call, fmt_tool_result, fmt_separator
-from tools import execute_tool, get_tools_for_agent
+from tools import execute_tool, get_tools_for_agent, resolve_agent_file
 from tools._pricing import PRICING
 from providers import (
     detect_provider, create_client, call_model,
@@ -140,7 +140,12 @@ load_env()
 # ── Path context ───────────────────────────────────────────────
 
 def _build_file_layout_preamble() -> str:
-    """Build the file layout preamble explaining work/ and build/ layout."""
+    """Build the file layout preamble explaining state/build layout."""
+    project_root = Path(os.environ.get("BOTFERENCE_PROJECT_ROOT", os.getcwd())).resolve()
+    work_dir = Path(os.environ.get("BOTFERENCE_WORK_DIR", str(project_root))).resolve()
+    build_dir = Path(os.environ.get("BOTFERENCE_BUILD_DIR", str(project_root))).resolve()
+    work_rel = os.path.relpath(work_dir, project_root)
+    build_rel = os.path.relpath(build_dir, project_root)
     return (
         "## File Layout\n"
         "\n"
@@ -150,10 +155,10 @@ def _build_file_layout_preamble() -> str:
         "\n"
         "- **Thread files** (`checkpoint.md`, `implementation-plan.md`, `inbox.md`,\n"
         "  `HUMAN_REVIEW_NEEDED.md`, `iteration_count`):\n"
-        "  Under `work/`.\n"
+        f"  Under `{work_rel}/`.\n"
         "\n"
         "- **Generated outputs** (`AI-generated-outputs/`, `logs/`, `run/`):\n"
-        "  Under `build/`.\n"
+        f"  Under `{build_rel}/`.\n"
         "\n"
     )
 
@@ -184,8 +189,8 @@ def build_path_preamble(botference_home: Path) -> str:
         "- **Framework files** — prefix with BOTFERENCE_HOME:\n"
         "  `specs/*`, `templates/*`, `prompt-*.md`\n"
         f"  Example: `specs/writing-style.md` → `{rh}/specs/writing-style.md`\n"
-        "- **Agent files** — workspace-first: `.claude/agents/{{name}}.md` checks\n"
-        "  project dir first, then BOTFERENCE_HOME\n"
+        "- **Agent files** — project-local first: `botference/agents/{name}.md`,\n"
+        "  then `.claude/agents/{name}.md`, then BOTFERENCE_HOME built-ins\n"
         "- **Project files** — relative to working directory\n"
         "\n"
         + file_layout
@@ -359,7 +364,10 @@ def main():
                         help="Model to use (auto-detects provider from name)")
     parser.add_argument("--max-tokens", type=int, default=None, help="Max output tokens (default: from context-budgets.json or 8096)")
     parser.add_argument("--output-json", help="Write usage JSON to this path (compatible with botference)")
-    parser.add_argument("--system-prompt-file", help="Use this file as system prompt instead of .claude/agents/{agent}.md")
+    parser.add_argument(
+        "--system-prompt-file",
+        help="Use this file as system prompt instead of botference/agents/{agent}.md or the built-in agent prompt",
+    )
     args = parser.parse_args()
 
     # Resolve BOTFERENCE_HOME: env var > script directory
@@ -384,15 +392,16 @@ def main():
     if args.system_prompt_file:
         prompt_path = args.system_prompt_file
     else:
-        workspace_path = Path.cwd() / ".claude" / "agents" / f"{args.agent}.md"
+        resolved = resolve_agent_file(args.agent)
         framework_path = botference_home / ".claude" / "agents" / f"{args.agent}.md"
-        if workspace_path.exists():
-            prompt_path = str(workspace_path)
-        elif framework_path.exists():
-            prompt_path = str(framework_path)
+        project_agent_dir = Path(os.environ.get("BOTFERENCE_PROJECT_AGENT_DIR", str(Path.cwd() / "botference" / "agents")))
+        compat_path = Path.cwd() / ".claude" / "agents" / f"{args.agent}.md"
+        if resolved is not None:
+            prompt_path = str(resolved)
         else:
             print(f"Error: agent '{args.agent}' not found in:", file=sys.stderr)
-            print(f"  workspace: {workspace_path}", file=sys.stderr)
+            print(f"  project: {project_agent_dir / f'{args.agent}.md'}", file=sys.stderr)
+            print(f"  compatibility: {compat_path}", file=sys.stderr)
             print(f"  framework: {framework_path}", file=sys.stderr)
             sys.exit(1)
     with open(prompt_path) as f:

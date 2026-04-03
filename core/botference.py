@@ -1807,7 +1807,7 @@ def main() -> None:
         print()
 
     claude = ClaudeAdapter(model=args.anthropic_model, effort=args.claude_effort,
-                           tools=["Read", "Glob", "Grep", "Bash",
+                           tools=["Read", "Glob", "Grep",
                                   "WebSearch", "WebFetch"],
                            debug_log_path=claude_log)
     codex = CodexAdapter(model=args.openai_model, debug_log_path=codex_log,

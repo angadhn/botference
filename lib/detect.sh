@@ -208,10 +208,23 @@ collect_phase_tasks_raw() {
 
 resolve_agent_path() {
   local agent_name=$1
-  if [ -f ".claude/agents/${agent_name}.md" ]; then
-    echo ".claude/agents/${agent_name}.md"
+  local project_agent_path="${BOTFERENCE_PROJECT_AGENT_DIR}/${agent_name}.md"
+  local compat_path=".claude/agents/${agent_name}.md"
+  local framework_path="${BOTFERENCE_HOME}/.claude/agents/${agent_name}.md"
+
+  if reserved_agent_names | grep -qx "$agent_name" && ! project_agent_override_allowed "$agent_name"; then
+    if [ -f "$framework_path" ]; then
+      echo "$framework_path"
+    fi
+    return
+  fi
+
+  if [ -f "$project_agent_path" ]; then
+    echo "$project_agent_path"
+  elif [ -f "$compat_path" ]; then
+    echo "$compat_path"
   elif [ -f "${BOTFERENCE_HOME}/.claude/agents/${agent_name}.md" ]; then
-    echo "${BOTFERENCE_HOME}/.claude/agents/${agent_name}.md"
+    echo "$framework_path"
   fi
 }
 

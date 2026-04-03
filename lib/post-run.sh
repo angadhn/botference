@@ -113,21 +113,65 @@ cleanup_loop_processes() {
 }
 
 plan_is_allowed_file() {
-  case "$(basename "$1")" in
-    checkpoint.md|implementation-plan.md|implementation-plan-*.md|inbox.md)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
+  policy_path_allowed "$1" "plan"
+}
+
+_snapshot_sig_for_path() {
+  local abs_path=$1
+  if [ -f "$abs_path" ]; then
+    cksum < "$abs_path" | awk '{print $1 ":" $2}'
+  else
+    printf '__missing__'
+  fi
+}
+
+snapshot_roots_for_mode() {
+  local mode=${1:-plan}
+
+  if [ "$BOTFERENCE_WORK_DIR" = "$BOTFERENCE_PROJECT_ROOT" ] && [ ! -d "${BOTFERENCE_PROJECT_DIR}" ]; then
+    printf '.\n'
+    return 0
+  fi
+
+  printf '%s\n' "${BOTFERENCE_PROJECT_DIR_NAME}"
+
+  local roots=""
+  case "$mode" in
+    plan) roots="$BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" ;;
+    build) roots="$BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS" ;;
   esac
+
+  printf '%s' "$roots" | tr ',' '\n' | awk 'NF' | sort -u
 }
 
 plan_write_state_snapshot() {
   local snapshot_file=$1
+  local mode=${2:-plan}
   : > "$snapshot_file"
 
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    while IFS= read -r root; do
+      [ -n "$root" ] || continue
+      local abs_root="$BOTFERENCE_PROJECT_ROOT/$root"
+
+      if [ -f "$abs_root" ]; then
+        printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_root")" "$root" >> "$snapshot_file"
+        continue
+      fi
+      if [ ! -d "$abs_root" ]; then
+        continue
+      fi
+
+      (
+        cd "$BOTFERENCE_PROJECT_ROOT"
+        find "$root" -type f | sort
+      ) | while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        local abs_path="$BOTFERENCE_PROJECT_ROOT/$path"
+        printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_path")" "$path" >> "$snapshot_file"
+      done
+    done < <(snapshot_roots_for_mode "$mode")
+    sort -u "$snapshot_file" -o "$snapshot_file"
     return 0
   fi
 
@@ -177,19 +221,20 @@ for name in sorted(set(before) | set(after)):
 PY
 }
 
-plan_audit_changed_files() {
-  local before_snapshot=$1
-  local allowed_out=$2
-  local violations_out=$3
+audit_mode_changed_files() {
+  local mode=$1
+  local before_snapshot=$2
+  local allowed_out=$3
+  local violations_out=$4
   local after_snapshot
   after_snapshot=$(mktemp)
   : > "$allowed_out"
   : > "$violations_out"
 
-  plan_write_state_snapshot "$after_snapshot"
+  plan_write_state_snapshot "$after_snapshot" "$mode"
   while IFS= read -r path; do
     [ -z "$path" ] && continue
-    if plan_is_allowed_file "$path"; then
+    if policy_path_allowed "$path" "$mode"; then
       printf '%s\n' "$path" >> "$allowed_out"
     else
       printf '%s\n' "$path" >> "$violations_out"
@@ -205,6 +250,10 @@ plan_audit_changed_files() {
 
   rm -f "$PLAN_AUDIT_FILE"
   return 0
+}
+
+plan_audit_changed_files() {
+  audit_mode_changed_files "plan" "$@"
 }
 
 plan_commit_and_push_changes() {
@@ -425,7 +474,7 @@ handle_human_review_gate() {
     cat "${BOTFERENCE_REVIEW_FILE:-HUMAN_REVIEW_NEEDED.md}"
     echo ""
     echo "To continue: review above, edit checkpoint.md if needed, then:"
-    echo "  rm ${BOTFERENCE_REVIEW_FILE:-HUMAN_REVIEW_NEEDED.md} && ./botference -p"
+    echo "  rm ${BOTFERENCE_REVIEW_FILE:-HUMAN_REVIEW_NEEDED.md} && botference -p"
     return 0
   fi
   return 1
@@ -445,9 +494,9 @@ restore_truncated_files() {
 }
 
 append_changelog_entry() {
-  if [ -f "CHANGELOG.md" ] || [ "$ITERATION" -eq 1 ]; then
+  if [ -f "$BOTFERENCE_CHANGELOG_FILE" ] || [ "$ITERATION" -eq 1 ]; then
     local last_msg
     last_msg=$(git log -1 --format='%s' 2>/dev/null || echo "no commit")
-    printf "\n## Iteration %d — %s\n- %s\n" "$ITERATION" "$(date +%Y-%m-%d)" "$last_msg" >> CHANGELOG.md
+    printf "\n## Iteration %d — %s\n- %s\n" "$ITERATION" "$(date +%Y-%m-%d)" "$last_msg" >> "$BOTFERENCE_CHANGELOG_FILE"
   fi
 }
