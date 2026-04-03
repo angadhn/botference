@@ -296,9 +296,10 @@ There are two options for planning:
 (Claude + Codex TUI) is the default; use `--claude` for solo Claude. No
 structured prompts or system instructions are injected.
 
-Plan mode is read-only during the conversation from the models' point of view.
-The controller, not the LLMs, owns all plan-file writes. `/draft [rounds]`
-updates only:
+Plan mode keeps the project tree read-only, but the models may write inside the
+Botference work directory (`botference/` in project-local mode, `work/` in the
+self-hosted layout). `/draft [rounds]` still drives the main plan-writing flow
+and updates:
 
 - the project-local `implementation-plan.md`
 - reviewer comment files beside the plan in the Botference state directory

@@ -27,6 +27,7 @@ from cli_adapters import (
     _read_jsonl_lines,
     _truncate,
     _CONTEXT_WINDOWS,
+    plan_allowed_tools_for_work_dir,
 )
 
 SPIKE_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -650,6 +651,26 @@ class TestCommandConstruction:
         assert cmd[2] == "resume"
         assert cmd[3] == "tid-abc"
         assert cmd[-1] == "follow up"
+
+    def test_plan_allowed_tools_cover_work_tree(self):
+        allowed = plan_allowed_tools_for_work_dir(
+            "/repo",
+            "/repo/botference",
+        )
+        assert "Bash" in allowed
+        assert "Edit(/botference/*)" in allowed
+        assert "Edit(/botference/**)" in allowed
+        assert "Write(/botference/*)" in allowed
+        assert "MultiEdit(/botference/**)" in allowed
+
+    def test_plan_allowed_tools_keep_root_fallback_narrow(self):
+        allowed = plan_allowed_tools_for_work_dir(
+            "/repo",
+            "/repo",
+        )
+        assert "Edit(/implementation-plan.md)" in allowed
+        assert "Write(/inbox.md)" in allowed
+        assert "Edit(/repo/**)" not in allowed
 
 # ── Error paths ──────────────────────────────────────────────
 

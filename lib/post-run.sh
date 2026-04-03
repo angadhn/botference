@@ -133,7 +133,11 @@ snapshot_roots_for_mode() {
     return 0
   fi
 
-  printf '%s\n' "${BOTFERENCE_PROJECT_DIR_NAME}"
+  if [ ! -d "${BOTFERENCE_PROJECT_DIR}" ] && [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+    project_relative_path "$BOTFERENCE_WORK_DIR"
+  else
+    printf '%s\n' "${BOTFERENCE_PROJECT_DIR_NAME}"
+  fi
 
   local roots=""
   case "$mode" in

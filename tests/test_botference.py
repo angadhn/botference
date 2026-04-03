@@ -1814,6 +1814,51 @@ cut -f2 "$snapshot"
         assert "botference/wiki/entry.md" in paths
         assert "large-note.md" not in paths
 
+    def test_project_local_plan_policy_allows_any_work_file(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        exports_dir = project_dir / "exports"
+        project_dir.mkdir()
+        exports_dir.mkdir()
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "vault-drafter",
+                    "modes": {"plan": True, "research_plan": True, "build": True},
+                    "write_roots": {"plan": [], "build": ["botference/build"]},
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        work_file = exports_dir / "caucus.md"
+        outside_file = tmp_path / "notes.md"
+        work_file.write_text("export\n", encoding="utf-8")
+        outside_file.write_text("outside\n", encoding="utf-8")
+
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+export BOTFERENCE_HOME="{repo_root}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+init_botference_paths
+policy_path_allowed "{work_file}" plan && echo work-ok
+policy_path_allowed "{outside_file}" plan && echo outside-ok
+true
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        lines = set(filter(None, result.stdout.splitlines()))
+        assert "work-ok" in lines
+        assert "outside-ok" not in lines
+
 
 class TestPlanningPromptPolicy:
     def test_plan_dispatcher_is_lazy_and_shell_limited(self):

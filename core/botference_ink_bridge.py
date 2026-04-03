@@ -14,7 +14,8 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-from cli_adapters import ClaudeAdapter, CodexAdapter
+from cli_adapters import ClaudeAdapter, CodexAdapter, plan_allowed_tools_for_work_dir
+from paths import BotferencePaths
 from botference import Botference
 from botference_ui import RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
@@ -125,20 +126,36 @@ async def main() -> None:
             with open(p, "w") as f:
                 f.write("")
 
+    paths = BotferencePaths.resolve()
     claude = ClaudeAdapter(
         model=args.anthropic_model,
         effort=args.claude_effort,
-        tools=["Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"],
+        tools=[
+            "Read",
+            "Glob",
+            "Grep",
+            "Bash",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "WebSearch",
+            "WebFetch",
+        ],
         debug_log_path=claude_log,
+        allowed_tools=plan_allowed_tools_for_work_dir(
+            paths.project_root, paths.work_dir
+        ),
     )
     codex = CodexAdapter(
         model=args.openai_model,
+        sandbox="workspace-write",
         debug_log_path=codex_log,
         fallback_api_key=fallback_api_key,
     )
     botference = Botference(
         claude=claude, codex=codex,
         system_prompt=system_prompt, task=task,
+        paths=paths,
     )
     botference.observe = args.debug_panes
 

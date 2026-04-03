@@ -269,17 +269,28 @@ while true; do
     if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
       PLAN_WORK_PREFIX="${BOTFERENCE_WORK_DIR#$BOTFERENCE_PROJECT_ROOT/}/"
     fi
-    PLAN_ALLOWED_TOOLS=(
-      "Read" "Glob" "Grep" "WebSearch" "WebFetch"
-      "Edit(/${PLAN_WORK_PREFIX}checkpoint.md)"
-      "Edit(/${PLAN_WORK_PREFIX}implementation-plan.md)"
-      "Edit(/${PLAN_WORK_PREFIX}implementation-plan-*.md)"
-      "Edit(/${PLAN_WORK_PREFIX}inbox.md)"
-      "Write(/${PLAN_WORK_PREFIX}checkpoint.md)"
-      "Write(/${PLAN_WORK_PREFIX}implementation-plan.md)"
-      "Write(/${PLAN_WORK_PREFIX}implementation-plan-*.md)"
-      "Write(/${PLAN_WORK_PREFIX}inbox.md)"
-    )
+    PLAN_ALLOWED_TOOLS=("Read" "Glob" "Grep" "Bash" "WebSearch" "WebFetch")
+    if [ -n "$PLAN_WORK_PREFIX" ]; then
+      PLAN_ALLOWED_TOOLS+=(
+        "Edit(/${PLAN_WORK_PREFIX}*)"
+        "Edit(/${PLAN_WORK_PREFIX}**)"
+        "Write(/${PLAN_WORK_PREFIX}*)"
+        "Write(/${PLAN_WORK_PREFIX}**)"
+        "MultiEdit(/${PLAN_WORK_PREFIX}*)"
+        "MultiEdit(/${PLAN_WORK_PREFIX}**)"
+      )
+    else
+      PLAN_ALLOWED_TOOLS+=(
+        "Edit(/checkpoint.md)"
+        "Edit(/implementation-plan.md)"
+        "Edit(/implementation-plan-*.md)"
+        "Edit(/inbox.md)"
+        "Write(/checkpoint.md)"
+        "Write(/implementation-plan.md)"
+        "Write(/implementation-plan-*.md)"
+        "Write(/inbox.md)"
+      )
+    fi
 
     # --- Botference mode: Claude + Codex TUI ---
     if $BOTFERENCE_MODE; then

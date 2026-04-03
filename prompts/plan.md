@@ -6,7 +6,8 @@ Plan mode is planning only.
 
 - Research lazily with the available tools. Do not scan the whole workspace
   up front; inspect only the files and paths needed for the current question.
-- Do **not** implement code, edit source files, create commits, or push.
+- Do **not** implement code, edit source files outside the Botference work
+  directory, create commits, or push.
 - Do **not** create or edit `.claude/agents/*.md` in plan mode.
 - If a new agent is needed, write that as a scoped task in the implementation
   plan instead of creating the agent directly.

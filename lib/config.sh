@@ -220,6 +220,18 @@ policy_path_allowed() {
   local mode=$2
   local rel
   rel=$(project_relative_path "$path")
+  local work_rel=""
+  if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+    work_rel=$(project_relative_path "$BOTFERENCE_WORK_DIR")
+  fi
+
+  if [ "$mode" = "plan" ] && [ -n "$work_rel" ]; then
+    case "$rel" in
+      "$work_rel"|"$work_rel/"*)
+        return 0
+        ;;
+    esac
+  fi
 
   # Legacy/self-hosted mode keeps the old behavior.
   if [ "$BOTFERENCE_WORK_DIR" = "$BOTFERENCE_PROJECT_ROOT" ] && [ ! -d "${BOTFERENCE_PROJECT_DIR}" ]; then

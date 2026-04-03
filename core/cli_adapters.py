@@ -15,12 +15,49 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from providers import percent_of_limit
 from render_blocks import build_tool_use_blocks, parse_render_blocks
 
 log = logging.getLogger(__name__)
+
+
+def plan_allowed_tools_for_work_dir(
+    project_root: str | Path, work_dir: str | Path
+) -> list[str]:
+    """Allowed Claude plan-mode tools for the Botference work area.
+
+    When the work dir is a dedicated subdirectory (`botference/` or `work/`),
+    grant Write/Edit/MultiEdit across that tree. If the resolved work dir
+    collapses to the project root, keep the older narrow allowlist rather than
+    silently opening the whole repo to writes.
+    """
+
+    base_tools = ["Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
+    project_root_path = Path(project_root).resolve()
+    work_dir_path = Path(work_dir).resolve()
+
+    if work_dir_path == project_root_path:
+        return base_tools + [
+            "Edit(/checkpoint.md)",
+            "Edit(/implementation-plan.md)",
+            "Edit(/implementation-plan-*.md)",
+            "Edit(/inbox.md)",
+            "Write(/checkpoint.md)",
+            "Write(/implementation-plan.md)",
+            "Write(/implementation-plan-*.md)",
+            "Write(/inbox.md)",
+        ]
+
+    work_rel = os.path.relpath(work_dir_path, project_root_path).replace(os.sep, "/")
+    patterns = [f"/{work_rel}/*", f"/{work_rel}/**"]
+    allowed = list(base_tools)
+    for tool in ("Edit", "Write", "MultiEdit"):
+        for pattern in patterns:
+            allowed.append(f"{tool}({pattern})")
+    return allowed
 
 # ── Response types ───────────────────────────────────────────
 
