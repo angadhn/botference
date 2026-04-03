@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import stringWidth from "string-width";
-import { computeLayoutBudget, computeViewportSlice, truncateTitle, preRenderLines, shouldAutoScroll } from "./layout.js";
+import { computeLayoutBudget, computeViewportSlice, truncateTitle, preRenderLines, parseRenderBlocks, shouldAutoScroll } from "./layout.js";
 
 describe("computeLayoutBudget", () => {
   it("returns correct dimensions for standard terminal", () => {
@@ -90,6 +90,28 @@ describe("truncateTitle", () => {
 });
 
 describe("preRenderLines", () => {
+  it("parses snippet headers and fenced code into explicit render blocks", () => {
+    const blocks = parseRenderBlocks("'core/botference.py' lines 400-402:\n\n```python\ndef parse_input(raw: str):\n    return raw\n```");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "code");
+    if (blocks[0]!.type !== "code") return;
+    assert.equal(blocks[0]!.header?.filePath, "core/botference.py");
+    assert.equal(blocks[0]!.leadingBlankLines, 1);
+    assert.equal(blocks[0]!.language, "python");
+    assert.deepEqual(blocks[0]!.lines, [
+      "def parse_input(raw: str):",
+      "    return raw",
+    ]);
+  });
+
+  it("normalizes common fence language aliases", () => {
+    const blocks = parseRenderBlocks("```typescriptreact\nconst value = 1;\n```");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "code");
+    if (blocks[0]!.type !== "code") return;
+    assert.equal(blocks[0]!.language, "tsx");
+  });
+
   it("uses display width for label indent with ASCII speaker", () => {
     // Speaker "test" falls back to "[test] " (7 chars, 7 display-width)
     const entries = [{ speaker: "test", text: "first line that is long enough to wrap onto a second visual line for testing" }];
@@ -138,12 +160,37 @@ describe("preRenderLines", () => {
     const lines = preRenderLines(entries, 60);
     assert.equal(lines[0]!.bodyColor, "cyanBright");
     assert.equal(lines[0]!.bodyBold, true);
+    assert.equal(lines[0]!.gutter, "src/App.tsx");
+    assert.equal(lines[0]!.bodyBackgroundColor, "blackBright");
     assert.equal(lines[1]!.bodyColor, "yellow");
+    assert.equal(lines[1]!.gutter, "src/App.tsx");
     assert.equal(lines[2]!.gutter, "  10   10   ");
+    assert.equal(lines[2]!.bodyBackgroundColor, "black");
     assert.equal(lines[3]!.bodyColor, "green");
     assert.equal(lines[3]!.gutter, "       11 + ");
+    assert.equal(lines[3]!.gutterBackgroundColor, "green");
     assert.equal(lines[4]!.bodyColor, "red");
     assert.equal(lines[4]!.gutter, "  11      - ");
+    assert.equal(lines[4]!.gutterBackgroundColor, "red");
+  });
+
+  it("applies syntax highlighting and intraline backgrounds inside diff hunks", () => {
+    const entries = [{
+      speaker: "codex",
+      text: "Edited in src/app.py (+1 -1)\n- def old_name(value):\n+ def new_name(value):",
+    }];
+    const lines = preRenderLines(entries, 80);
+    assert.equal(lines[1]!.segments?.[0]?.text, "def");
+    assert.equal(lines[1]!.segments?.[0]?.color, "magenta");
+    assert.equal(lines[2]!.segments?.[0]?.text, "def");
+    assert.equal(lines[2]!.segments?.[0]?.color, "magenta");
+
+    const removedChanged = lines[1]!.segments?.find((segment) => segment.text.includes("old_name"));
+    const addedChanged = lines[2]!.segments?.find((segment) => segment.text.includes("new_name"));
+    assert.equal(removedChanged?.color, "greenBright");
+    assert.equal(addedChanged?.color, "greenBright");
+    assert.equal(removedChanged?.backgroundColor, "red");
+    assert.equal(addedChanged?.backgroundColor, "green");
   });
 
   it("does not color ordinary bullet lists as diff lines", () => {
@@ -171,8 +218,48 @@ describe("preRenderLines", () => {
     assert.equal(lines[2]!.segments?.[0]?.text, "def");
     assert.equal(lines[2]!.segments?.[0]?.color, "magenta");
     assert.equal(lines[2]!.segments?.[2]?.text, "parse_input");
-    assert.equal(lines[2]!.segments?.[2]?.color, "green");
+    assert.equal(lines[2]!.segments?.[2]?.color, "greenBright");
     assert.equal(lines[3]!.gutter, " 401  ");
+  });
+
+  it("highlights JS/TS declaration names more strongly", () => {
+    const entries = [{
+      speaker: "codex",
+      text: "```tsx\nexport async function renderDiffBlock(): void {\n  return;\n}\n```",
+    }];
+    const lines = preRenderLines(entries, 80);
+    const functionName = lines[1]!.segments?.find((segment) => segment.text.includes("renderDiffBlock"));
+    assert.equal(functionName?.color, "cyanBright");
+    assert.equal(functionName?.bold, true);
+  });
+
+  it("uses structured blocks from the bridge when present", () => {
+    const entries = [{
+      speaker: "claude",
+      text: "plain text fallback",
+      blocks: [{
+        type: "code" as const,
+        header: {
+          filePath: "src/example.py",
+          startLine: 12,
+          endLine: 13,
+        },
+        language: "python",
+        leadingBlankLines: 0,
+        lines: [
+          "def parse_input(raw: str):",
+          "    return raw",
+        ],
+      }],
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.deepEqual(
+      lines[0]!.segments?.map((segment) => segment.text),
+      ["src/example.py", "  ", "lines 12-13", "  ", "python"],
+    );
+    assert.equal(lines[1]!.gutter, "  12  ");
+    assert.equal(lines[1]!.segments?.[0]?.text, "def");
+    assert.equal(lines[2]!.gutter, "  13  ");
   });
 });
 

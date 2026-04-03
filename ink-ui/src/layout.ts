@@ -362,9 +362,10 @@ export interface LineSegment {
   backgroundColor?: string;
 }
 
-interface Entry {
+export interface Entry {
   speaker: string;
   text: string;
+  blocks?: RenderBlock[];
 }
 
 interface DiffContext {
@@ -376,7 +377,21 @@ interface DiffContext {
 const DIFF_GUTTER_WIDTH = 11;
 const CODE_GUTTER_WIDTH = 6;
 const CODE_BACKGROUND_COLOR = "blackBright";
+const DIFF_BACKGROUND_COLOR = "black";
+const DIFF_HEADER_BACKGROUND_COLOR = "blackBright";
 const SNIPPET_HEADER_RE = /^['`"]?([^'"`]+?\.[A-Za-z0-9_.-]+)['`"]?\s+lines?\s+(\d+)(?:-(\d+))?:?\s*$/;
+const LANGUAGE_ALIASES: Record<string, string> = {
+  py: "python",
+  python3: "python",
+  node: "javascript",
+  shellsession: "shell",
+  "shell-session": "shell",
+  console: "shell",
+  typescriptreact: "tsx",
+  "typescript-react": "tsx",
+  javascriptreact: "jsx",
+  "javascript-react": "jsx",
+};
 
 interface SnippetHeader {
   filePath: string;
@@ -554,11 +569,167 @@ function fallbackLanguageFromPath(filePath: string): string | null {
   return ext;
 }
 
+function normalizeLanguageName(language: string | null): string | null {
+  if (!language) return null;
+  const lowered = language.toLowerCase();
+  return LANGUAGE_ALIASES[lowered] ?? lowered;
+}
+
 function normalizeFenceLanguage(rawFence: string, header: SnippetHeader | null): string | null {
   const trimmed = rawFence.trim();
   const match = /^```([\w.+-]+)?/.exec(trimmed);
-  const explicit = match?.[1]?.toLowerCase() ?? null;
-  return explicit || (header ? fallbackLanguageFromPath(header.filePath) : null);
+  const explicit = normalizeLanguageName(match?.[1] ?? null);
+  return explicit || (header ? normalizeLanguageName(fallbackLanguageFromPath(header.filePath)) : null);
+}
+
+export type RenderBlock =
+  | TextBlock
+  | CodeBlock
+  | DiffBlock;
+
+export interface TextBlock {
+  type: "text";
+  lines: string[];
+}
+
+export interface CodeBlock {
+  type: "code";
+  header: SnippetHeader | null;
+  language: string | null;
+  leadingBlankLines: number;
+  lines: string[];
+}
+
+export interface DiffBlock {
+  type: "diff";
+  filePath: string | null;
+  language: string | null;
+  lines: string[];
+}
+
+function isDiffStartLine(rawLine: string): boolean {
+  const trimmed = rawLine.trimStart();
+  return (
+    /^(Edited|Updated|Added|Deleted)\b/.test(trimmed)
+    || /^\*\*\* (Update|Add|Delete|Move to):/.test(trimmed)
+    || /^(diff --git|index\b|--- |\+\+\+ |@@)/.test(trimmed)
+  );
+}
+
+function isDiffContinuationLine(rawLine: string, inDiffBlock: boolean): boolean {
+  if (!inDiffBlock) return isDiffStartLine(rawLine);
+  if (rawLine.length === 0) return false;
+  if (isDiffStartLine(rawLine)) return true;
+  if (rawLine.startsWith(" ") || rawLine.startsWith("+") || rawLine.startsWith("-")) {
+    return !/^(--- |\+\+\+ )/.test(rawLine) || rawLine.startsWith(" ");
+  }
+  return false;
+}
+
+export function parseRenderBlocks(text: string): RenderBlock[] {
+  const rawLines = text.split("\n");
+  const blocks: RenderBlock[] = [];
+  let textLines: string[] = [];
+  let pendingHeader: SnippetHeader | null = null;
+  let pendingHeaderBlankLines = 0;
+
+  const flushTextBlock = () => {
+    if (textLines.length === 0) return;
+    blocks.push({ type: "text", lines: textLines });
+    textLines = [];
+  };
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const rawLine = rawLines[i]!;
+    const trimmed = rawLine.trimStart();
+    const snippetHeader = parseSnippetHeader(rawLine);
+
+    if (snippetHeader) {
+      flushTextBlock();
+      pendingHeader = snippetHeader;
+      pendingHeaderBlankLines = 0;
+      continue;
+    }
+
+    if (pendingHeader && rawLine.trim().length === 0) {
+      pendingHeaderBlankLines += 1;
+      continue;
+    }
+
+    if (/^```/.test(trimmed)) {
+      flushTextBlock();
+      const language = normalizeFenceLanguage(rawLine, pendingHeader);
+      const codeLines: string[] = [];
+      for (i += 1; i < rawLines.length; i++) {
+        const codeLine = rawLines[i]!;
+        if (/^```/.test(codeLine.trimStart())) break;
+        codeLines.push(codeLine);
+      }
+      blocks.push({
+        type: "code",
+        header: pendingHeader,
+        language,
+        leadingBlankLines: pendingHeaderBlankLines,
+        lines: codeLines,
+      });
+      pendingHeader = null;
+      pendingHeaderBlankLines = 0;
+      continue;
+    }
+
+    if (isDiffStartLine(rawLine)) {
+      flushTextBlock();
+      const diffLines: string[] = [];
+      let ctx: DiffContext = {
+        filePath: null,
+        oldLine: null,
+        newLine: null,
+      };
+
+      for (; i < rawLines.length; i++) {
+        const diffLine = rawLines[i]!;
+        if (!isDiffContinuationLine(diffLine, diffLines.length > 0)) break;
+        diffLines.push(diffLine);
+        ctx = nextDiffContext(ctx, diffLine);
+      }
+      i -= 1;
+      blocks.push({
+        type: "diff",
+        filePath: ctx.filePath,
+        language: ctx.filePath ? fallbackLanguageFromPath(ctx.filePath) : null,
+        lines: diffLines,
+      });
+      pendingHeader = null;
+      pendingHeaderBlankLines = 0;
+      continue;
+    }
+
+    if (pendingHeader) {
+      blocks.push({
+        type: "code",
+        header: pendingHeader,
+        language: fallbackLanguageFromPath(pendingHeader.filePath),
+        leadingBlankLines: 0,
+        lines: [],
+      });
+      pendingHeader = null;
+      pendingHeaderBlankLines = 0;
+    }
+
+    textLines.push(rawLine);
+  }
+
+  if (pendingHeader) {
+    blocks.push({
+      type: "code",
+      header: pendingHeader,
+      language: fallbackLanguageFromPath(pendingHeader.filePath),
+      leadingBlankLines: 0,
+      lines: [],
+    });
+  }
+  flushTextBlock();
+  return blocks;
 }
 
 function tokenizeWithRegex(
@@ -607,65 +778,156 @@ const SHELL_TOKEN_RE = /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(^|\s)(-[A-
 const JSON_TOKEN_RE = /("(?:[^"\\]|\\.)*")|(-?\d+(?:\.\d+)?)|\b(true|false|null)\b/g;
 const YAML_TOKEN_RE = /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(^\s*[A-Za-z0-9_.-]+:)|(-?\d+(?:\.\d+)?)|\b(true|false|null)\b/g;
 
+function makeSegment(
+  text: string,
+  color: string,
+  baseBackgroundColor?: string,
+  bold?: boolean,
+): LineSegment {
+  return {
+    text,
+    color,
+    ...(bold ? { bold: true } : {}),
+    ...(baseBackgroundColor == null ? {} : { backgroundColor: baseBackgroundColor }),
+  };
+}
+
+function highlightPythonGeneric(line: string, baseBackgroundColor?: string): LineSegment[] {
+  return tokenizeWithRegex(line, PYTHON_TOKEN_RE, (token) => {
+    if (token.startsWith("@")) return makeSegment(token, "cyan", baseBackgroundColor, true);
+    if (token === "self") return makeSegment(token, "white", baseBackgroundColor);
+    if (token.startsWith("\"") || token.startsWith("'")) return makeSegment(token, "yellow", baseBackgroundColor);
+    if (token.startsWith("#")) return makeSegment(token, "gray", baseBackgroundColor);
+    if (/^\d/.test(token)) return makeSegment(token, "cyan", baseBackgroundColor);
+    if (PYTHON_KEYWORDS.has(token)) return makeSegment(token, "magenta", baseBackgroundColor, true);
+    return makeSegment(token, "green", baseBackgroundColor);
+  }, "white");
+}
+
+function highlightPythonStructured(line: string, baseBackgroundColor?: string): LineSegment[] | null {
+  const declaration = /^(\s*)(async\s+def|def|class)(\s+)([A-Za-z_]\w*)(.*)$/.exec(line);
+  if (declaration) {
+    const [, indent, keyword, spacing, name, rest] = declaration;
+    return [
+      makeSegment(indent!, "white", baseBackgroundColor),
+      ...highlightPythonGeneric(keyword!, baseBackgroundColor),
+      makeSegment(spacing!, "white", baseBackgroundColor),
+      makeSegment(name!, keyword === "class" ? "cyanBright" : "greenBright", baseBackgroundColor, true),
+      ...highlightPythonGeneric(rest!, baseBackgroundColor),
+    ];
+  }
+
+  const fromImport = /^(\s*)(from)(\s+)([A-Za-z_][\w.]*)(\s+)(import)(\s+)(.*)$/.exec(line);
+  if (fromImport) {
+    const [, indent, fromKw, gap1, modulePath, gap2, importKw, gap3, rest] = fromImport;
+    return [
+      makeSegment(indent!, "white", baseBackgroundColor),
+      makeSegment(fromKw!, "magenta", baseBackgroundColor, true),
+      makeSegment(gap1!, "white", baseBackgroundColor),
+      makeSegment(modulePath!, "cyanBright", baseBackgroundColor),
+      makeSegment(gap2!, "white", baseBackgroundColor),
+      makeSegment(importKw!, "magenta", baseBackgroundColor, true),
+      makeSegment(gap3!, "white", baseBackgroundColor),
+      ...highlightPythonGeneric(rest!, baseBackgroundColor),
+    ];
+  }
+
+  return null;
+}
+
+function highlightJsGeneric(line: string, baseBackgroundColor?: string): LineSegment[] {
+  return tokenizeWithRegex(line, JS_TOKEN_RE, (token) => {
+    if (token.startsWith("//")) return makeSegment(token, "gray", baseBackgroundColor);
+    if (token.startsWith("\"") || token.startsWith("'") || token.startsWith("`")) return makeSegment(token, "yellow", baseBackgroundColor);
+    if (/^\d/.test(token)) return makeSegment(token, "cyan", baseBackgroundColor);
+    if (JS_KEYWORDS.has(token)) return makeSegment(token, "magenta", baseBackgroundColor, true);
+    if (/^[A-Z][A-Za-z0-9_$]*$/.test(token)) return makeSegment(token, "cyanBright", baseBackgroundColor);
+    return makeSegment(token, "blue", baseBackgroundColor);
+  }, "white");
+}
+
+function highlightJsStructured(line: string, baseBackgroundColor?: string): LineSegment[] | null {
+  const declaration = /^(\s*)((?:(?:export|default|async)\s+)*)(function|class|interface|type)(\s+)([A-Za-z_$][\w$]*)(.*)$/.exec(line);
+  if (declaration) {
+    const [, indent, modifiers, keyword, spacing, name, rest] = declaration;
+    return [
+      makeSegment(indent!, "white", baseBackgroundColor),
+      ...highlightJsGeneric(modifiers!, baseBackgroundColor),
+      makeSegment(keyword!, "magenta", baseBackgroundColor, true),
+      makeSegment(spacing!, "white", baseBackgroundColor),
+      makeSegment(name!, "cyanBright", baseBackgroundColor, true),
+      ...highlightJsGeneric(rest!, baseBackgroundColor),
+    ];
+  }
+
+  const binding = /^(\s*)((?:export\s+)?)(const|let|var)(\s+)([A-Za-z_$][\w$]*)(.*)$/.exec(line);
+  if (binding) {
+    const [, indent, exportKw, keyword, spacing, name, rest] = binding;
+    return [
+      makeSegment(indent!, "white", baseBackgroundColor),
+      ...highlightJsGeneric(exportKw!, baseBackgroundColor),
+      makeSegment(keyword!, "magenta", baseBackgroundColor, true),
+      makeSegment(spacing!, "white", baseBackgroundColor),
+      makeSegment(name!, "cyanBright", baseBackgroundColor, true),
+      ...highlightJsGeneric(rest!, baseBackgroundColor),
+    ];
+  }
+
+  return null;
+}
+
+function highlightShellGeneric(line: string, baseBackgroundColor?: string): LineSegment[] {
+  return tokenizeWithRegex(line, SHELL_TOKEN_RE, (token) => {
+    const trimmed = token.trimStart();
+    if (trimmed.startsWith("#")) return makeSegment(token, "gray", baseBackgroundColor);
+    if (trimmed.startsWith("\"") || trimmed.startsWith("'")) return makeSegment(token, "yellow", baseBackgroundColor);
+    if (trimmed.startsWith("-")) return makeSegment(token, "cyan", baseBackgroundColor, true);
+    if (/^\d/.test(trimmed)) return makeSegment(token, "cyan", baseBackgroundColor);
+    if (SHELL_KEYWORDS.has(trimmed)) return makeSegment(token, "magenta", baseBackgroundColor, true);
+    return makeSegment(token, "green", baseBackgroundColor);
+  }, "white");
+}
+
 function highlightCodeLine(
   line: string,
   language: string | null,
+  baseBackgroundColor?: string,
 ): LineSegment[] {
-  const lang = language?.toLowerCase() ?? "";
+  const lang = normalizeLanguageName(language) ?? "";
 
   if (lang === "python") {
-    return tokenizeWithRegex(line, PYTHON_TOKEN_RE, (token) => {
-      if (token.startsWith("@")) return { color: "cyan", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
-      if (token === "self") return { color: "white", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (token.startsWith("\"") || token.startsWith("'")) return { color: "yellow" };
-      if (token.startsWith("#")) return { color: "gray" };
-      if (/^\d/.test(token)) return { color: "cyan" };
-      if (PYTHON_KEYWORDS.has(token)) return { color: "magenta", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
-      return { color: "green", backgroundColor: CODE_BACKGROUND_COLOR };
-    }, "white");
+    return highlightPythonStructured(line, baseBackgroundColor)
+      ?? highlightPythonGeneric(line, baseBackgroundColor);
   }
 
   if (["ts", "tsx", "js", "jsx", "mjs", "cjs", "typescript", "javascript"].includes(lang)) {
-    return tokenizeWithRegex(line, JS_TOKEN_RE, (token) => {
-      if (token.startsWith("//")) return { color: "gray", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (token.startsWith("\"") || token.startsWith("'") || token.startsWith("`")) return { color: "yellow", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (/^\d/.test(token)) return { color: "cyan", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (JS_KEYWORDS.has(token)) return { color: "magenta", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
-      return { color: "blue", backgroundColor: CODE_BACKGROUND_COLOR };
-    }, "white");
+    return highlightJsStructured(line, baseBackgroundColor)
+      ?? highlightJsGeneric(line, baseBackgroundColor);
   }
 
   if (["bash", "sh", "zsh", "shell"].includes(lang)) {
-    return tokenizeWithRegex(line, SHELL_TOKEN_RE, (token) => {
-      const trimmed = token.trimStart();
-      if (trimmed.startsWith("#")) return { color: "gray", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (trimmed.startsWith("\"") || trimmed.startsWith("'")) return { color: "yellow", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (trimmed.startsWith("-")) return { color: "cyan", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
-      if (/^\d/.test(trimmed)) return { color: "cyan", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (SHELL_KEYWORDS.has(trimmed)) return { color: "magenta", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
-      return { color: "green", backgroundColor: CODE_BACKGROUND_COLOR };
-    }, "white");
+    return highlightShellGeneric(line, baseBackgroundColor);
   }
 
   if (lang === "json") {
     return tokenizeWithRegex(line, JSON_TOKEN_RE, (token) => {
-      if (token.startsWith("\"")) return { color: "yellow", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (/^-?\d/.test(token)) return { color: "cyan", backgroundColor: CODE_BACKGROUND_COLOR };
-      return { color: "magenta", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
+      if (token.startsWith("\"")) return makeSegment(token, "yellow", baseBackgroundColor);
+      if (/^-?\d/.test(token)) return makeSegment(token, "cyan", baseBackgroundColor);
+      return makeSegment(token, "magenta", baseBackgroundColor, true);
     }, "white");
   }
 
   if (["yaml", "yml"].includes(lang)) {
     return tokenizeWithRegex(line, YAML_TOKEN_RE, (token) => {
-      if (token.startsWith("#")) return { color: "gray", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (token.startsWith("\"") || token.startsWith("'")) return { color: "yellow", backgroundColor: CODE_BACKGROUND_COLOR };
-      if (token.trimEnd().endsWith(":")) return { color: "blue", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
-      if (/^-?\d/.test(token)) return { color: "cyan", backgroundColor: CODE_BACKGROUND_COLOR };
-      return { color: "magenta", bold: true, backgroundColor: CODE_BACKGROUND_COLOR };
+      if (token.startsWith("#")) return makeSegment(token, "gray", baseBackgroundColor);
+      if (token.startsWith("\"") || token.startsWith("'")) return makeSegment(token, "yellow", baseBackgroundColor);
+      if (token.trimEnd().endsWith(":")) return makeSegment(token, "blue", baseBackgroundColor, true);
+      if (/^-?\d/.test(token)) return makeSegment(token, "cyan", baseBackgroundColor);
+      return makeSegment(token, "magenta", baseBackgroundColor, true);
     }, "white");
   }
 
-  return [{ text: line, color: "white", backgroundColor: CODE_BACKGROUND_COLOR }];
+  return [makeSegment(line, "white", baseBackgroundColor)];
 }
 
 function wrapText(text: string, width: number): string[] {
@@ -674,48 +936,20 @@ function wrapText(text: string, width: number): string[] {
   return wrapped.split("\n");
 }
 
-function classifyEntryLine(
+function classifyTextLine(
   rawLine: string,
   defaultColor: string,
-  inCodeFence: boolean,
-  inDiffBlock: boolean,
   inToolBlock: boolean,
 ): {
   bodyColor: string;
   bodyBold?: boolean;
-  startsDiffBlock?: boolean;
-  endsDiffBlock?: boolean;
   startsToolBlock?: boolean;
   endsToolBlock?: boolean;
 } {
   const trimmed = rawLine.trimStart();
-  const isPatchSummary = /^(Edited|Updated|Added|Deleted)\b/.test(trimmed);
-  const isPatchHeader = /^\*\*\* (Update|Add|Delete|Move to):/.test(trimmed);
-  const isDiffFence = /^```(?:diff|patch)?\s*$/i.test(trimmed);
-  const isFence = /^```/.test(trimmed);
-  const isDiffMeta = /^(diff --git|index\b|--- |\+\+\+ |@@)/.test(trimmed);
-  const isDiffLine = /^[+-]/.test(rawLine) && !/^(--- |\+\+\+ )/.test(rawLine);
   const isToolInvocation = /^> /.test(trimmed);
   const isToolSummaryHeader = trimmed === "Explored";
   const isToolSummaryLine = /^[├└│]/.test(trimmed);
-
-  if (isFence) {
-    return {
-      bodyColor: "gray",
-      bodyBold: false,
-      startsDiffBlock: isDiffFence,
-      endsDiffBlock: inCodeFence,
-    };
-  }
-
-  if (isPatchSummary || isPatchHeader) {
-    return {
-      bodyColor: "cyanBright",
-      bodyBold: true,
-      startsDiffBlock: true,
-      endsToolBlock: inToolBlock,
-    };
-  }
 
   if (isToolInvocation) {
     return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
@@ -735,39 +969,375 @@ function classifyEntryLine(
     return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
   }
 
-  if (isDiffMeta && (inDiffBlock || /^@@/.test(trimmed) || /^(diff --git|--- |\+\+\+ )/.test(trimmed))) {
-    return {
-      bodyColor: "yellow",
-      bodyBold: true,
-      startsDiffBlock: true,
-    };
-  }
-
-  if (inDiffBlock && isDiffLine && /^\+/.test(rawLine)) {
-    return { bodyColor: "green", bodyBold: false, startsDiffBlock: true };
-  }
-
-  if (inDiffBlock && isDiffLine && /^-/.test(rawLine)) {
-    return { bodyColor: "red", bodyBold: false, startsDiffBlock: true };
-  }
-
   if (/^\d+\s+[|:]/.test(trimmed) || /^\[\+?\-?\d+\]/.test(trimmed)) {
     return { bodyColor: "gray", bodyBold: false };
-  }
-
-  if (inCodeFence) {
-    return { bodyColor: defaultColor, bodyBold: false };
   }
 
   return {
     bodyColor: defaultColor,
     bodyBold: false,
-    endsDiffBlock: inDiffBlock,
   };
+}
+
+type PushFlatLine = (line: Omit<FlatLine, "key" | "label" | "speakerColor">) => void;
+
+interface ParsedDiffLine {
+  raw: string;
+  kind: "summary" | "meta" | "context" | "add" | "remove";
+  gutter?: string;
+  gutterColor?: string;
+  filePath: string | null;
+}
+
+interface IntralineRange {
+  start: number;
+  end: number;
+  backgroundColor: string;
+}
+
+function parseDiffLineKind(rawLine: string): ParsedDiffLine["kind"] {
+  const trimmed = rawLine.trimStart();
+  if (/^(Edited|Updated|Added|Deleted)\b/.test(trimmed) || /^\*\*\* (Update|Add|Delete|Move to):/.test(trimmed)) {
+    return "summary";
+  }
+  if (/^(diff --git|index\b|--- |\+\+\+ |@@)/.test(trimmed)) {
+    return "meta";
+  }
+  if (rawLine.startsWith("+") && !rawLine.startsWith("+++ ")) return "add";
+  if (rawLine.startsWith("-") && !rawLine.startsWith("--- ")) return "remove";
+  return "context";
+}
+
+function parseDiffLines(block: DiffBlock): ParsedDiffLine[] {
+  const parsed: ParsedDiffLine[] = [];
+  let ctx: DiffContext = {
+    filePath: block.filePath,
+    oldLine: null,
+    newLine: null,
+  };
+  for (const rawLine of block.lines) {
+    const display = diffDisplayForLine(rawLine, ctx);
+    parsed.push({
+      raw: rawLine,
+      kind: parseDiffLineKind(rawLine),
+      gutter: display.gutter,
+      gutterColor: display.gutterColor,
+      filePath: ctx.filePath,
+    });
+    ctx = nextDiffContext(ctx, rawLine);
+  }
+  return parsed;
+}
+
+function computeChangedRanges(before: string, after: string): {
+  beforeRange: IntralineRange | null;
+  afterRange: IntralineRange | null;
+} {
+  if (before === after) {
+    return { beforeRange: null, afterRange: null };
+  }
+
+  let prefix = 0;
+  const maxPrefix = Math.min(before.length, after.length);
+  while (prefix < maxPrefix && before[prefix] === after[prefix]) prefix += 1;
+
+  let beforeEnd = before.length;
+  let afterEnd = after.length;
+  while (
+    beforeEnd > prefix
+    && afterEnd > prefix
+    && before[beforeEnd - 1] === after[afterEnd - 1]
+  ) {
+    beforeEnd -= 1;
+    afterEnd -= 1;
+  }
+
+  return {
+    beforeRange: {
+      start: prefix,
+      end: beforeEnd,
+      backgroundColor: "red",
+    },
+    afterRange: {
+      start: prefix,
+      end: afterEnd,
+      backgroundColor: "green",
+    },
+  };
+}
+
+function buildIntralineHighlights(lines: ParsedDiffLine[]): Map<number, IntralineRange> {
+  const highlights = new Map<number, IntralineRange>();
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]?.kind !== "remove") continue;
+
+    const removeIndexes: number[] = [];
+    let j = i;
+    while (lines[j]?.kind === "remove") {
+      removeIndexes.push(j);
+      j += 1;
+    }
+
+    const addIndexes: number[] = [];
+    while (lines[j]?.kind === "add") {
+      addIndexes.push(j);
+      j += 1;
+    }
+
+    const pairCount = Math.min(removeIndexes.length, addIndexes.length);
+    for (let k = 0; k < pairCount; k++) {
+      const removeIndex = removeIndexes[k]!;
+      const addIndex = addIndexes[k]!;
+      const removeLine = lines[removeIndex]!.raw.slice(1);
+      const addLine = lines[addIndex]!.raw.slice(1);
+      const { beforeRange, afterRange } = computeChangedRanges(removeLine, addLine);
+      if (beforeRange && beforeRange.start < beforeRange.end) {
+        highlights.set(removeIndex, beforeRange);
+      }
+      if (afterRange && afterRange.start < afterRange.end) {
+        highlights.set(addIndex, afterRange);
+      }
+    }
+
+    i = j - 1;
+  }
+
+  return highlights;
+}
+
+function applyIntralineBackground(
+  segments: LineSegment[],
+  range: IntralineRange | null,
+): LineSegment[] {
+  if (!range || range.start >= range.end) return segments;
+
+  const result: LineSegment[] = [];
+  let offset = 0;
+
+  for (const segment of segments) {
+    const segmentStart = offset;
+    const segmentEnd = offset + segment.text.length;
+
+    if (range.end <= segmentStart || range.start >= segmentEnd) {
+      result.push(segment);
+      offset = segmentEnd;
+      continue;
+    }
+
+    const localStart = Math.max(0, range.start - segmentStart);
+    const localEnd = Math.min(segment.text.length, range.end - segmentStart);
+
+    if (localStart > 0) {
+      result.push({ ...segment, text: segment.text.slice(0, localStart) });
+    }
+    if (localEnd > localStart) {
+      result.push({
+        ...segment,
+        text: segment.text.slice(localStart, localEnd),
+        backgroundColor: range.backgroundColor,
+      });
+    }
+    if (localEnd < segment.text.length) {
+      result.push({ ...segment, text: segment.text.slice(localEnd) });
+    }
+
+    offset = segmentEnd;
+  }
+
+  return result.filter((segment) => segment.text.length > 0);
+}
+
+function renderTextBlock(
+  block: TextBlock,
+  options: {
+    textWidth: number;
+    labelWidth: number;
+    defaultColor: string;
+    pushLine: PushFlatLine;
+  },
+): void {
+  const { textWidth, labelWidth, defaultColor, pushLine } = options;
+  let inToolBlock = false;
+
+  for (const rawLine of block.lines) {
+    const {
+      bodyColor,
+      bodyBold,
+      startsToolBlock,
+      endsToolBlock,
+    } = classifyTextLine(rawLine, defaultColor, inToolBlock);
+    const contentWidth = Math.max(4, textWidth - labelWidth);
+    const wrapped = wrapText(rawLine, contentWidth);
+
+    for (const wrappedLine of wrapped) {
+      pushLine({
+        text: wrappedLine,
+        bodyColor,
+        bodyBold,
+      });
+    }
+
+    if (startsToolBlock) {
+      inToolBlock = true;
+    } else if (endsToolBlock) {
+      inToolBlock = false;
+    }
+  }
+}
+
+function renderCodeBlock(
+  block: CodeBlock,
+  options: {
+    textWidth: number;
+    labelWidth: number;
+    pushLine: PushFlatLine;
+  },
+): void {
+  const { textWidth, labelWidth, pushLine } = options;
+  if (block.header) {
+    pushLine({
+      text: "",
+      segments: snippetHeaderSegments(block.header, block.language),
+      bodyColor: "white",
+      bodyBackgroundColor: CODE_BACKGROUND_COLOR,
+      bodyBold: true,
+    });
+  } else {
+    pushLine({
+      text: "",
+      segments: [{
+        text: block.language ?? "code",
+        color: "yellow",
+        backgroundColor: CODE_BACKGROUND_COLOR,
+      }],
+      bodyColor: "white",
+      bodyBackgroundColor: CODE_BACKGROUND_COLOR,
+    });
+  }
+
+  for (let blank = 0; blank < block.leadingBlankLines; blank++) {
+    pushLine({
+      text: "",
+      bodyColor: "white",
+      bodyBackgroundColor: CODE_BACKGROUND_COLOR,
+    });
+  }
+
+  let nextLine = block.header?.startLine ?? null;
+  for (const rawLine of block.lines) {
+    const codeGutter = formatCodeGutter(nextLine);
+    const gutterWidth = codeGutter ? stringWidth(codeGutter) : 0;
+    const contentWidth = Math.max(4, textWidth - labelWidth - gutterWidth);
+    const wrapped = wrapText(rawLine, contentWidth);
+
+    for (let index = 0; index < wrapped.length; index++) {
+      pushLine({
+        gutter: index === 0
+          ? codeGutter
+          : codeGutter
+            ? " ".repeat(CODE_GUTTER_WIDTH)
+            : undefined,
+        gutterColor: "gray",
+        gutterBackgroundColor: CODE_BACKGROUND_COLOR,
+        text: wrapped[index]!,
+        segments: highlightCodeLine(wrapped[index]!, block.language, CODE_BACKGROUND_COLOR),
+        bodyColor: "white",
+        bodyBackgroundColor: CODE_BACKGROUND_COLOR,
+      });
+    }
+
+    if (nextLine != null) nextLine += 1;
+  }
+}
+
+function renderDiffBlock(
+  block: DiffBlock,
+  options: {
+    textWidth: number;
+    labelWidth: number;
+    pushLine: PushFlatLine;
+  },
+): void {
+  const { textWidth, labelWidth, pushLine } = options;
+  const parsedLines = parseDiffLines(block);
+  const intralineHighlights = buildIntralineHighlights(parsedLines);
+
+  for (let index = 0; index < parsedLines.length; index++) {
+    const line = parsedLines[index]!;
+    const lineLanguage = line.filePath ? fallbackLanguageFromPath(line.filePath) : block.language;
+
+    if (line.kind === "summary" || line.kind === "meta") {
+      const gutterWidth = line.gutter ? stringWidth(line.gutter) : 0;
+      const contentWidth = Math.max(4, textWidth - labelWidth - gutterWidth);
+      const wrapped = wrapText(line.raw, contentWidth);
+      const bodyColor = line.kind === "summary" ? "cyanBright" : "yellow";
+      for (let wrappedIndex = 0; wrappedIndex < wrapped.length; wrappedIndex++) {
+        pushLine({
+          gutter: wrappedIndex === 0
+            ? line.gutter
+            : line.gutter
+              ? " ".repeat(DIFF_GUTTER_WIDTH)
+              : undefined,
+          gutterColor: line.gutterColor,
+          gutterBackgroundColor: DIFF_HEADER_BACKGROUND_COLOR,
+          text: wrapped[wrappedIndex]!,
+          bodyColor,
+          bodyBold: true,
+          bodyBackgroundColor: DIFF_HEADER_BACKGROUND_COLOR,
+        });
+      }
+      continue;
+    }
+
+    const code = line.raw.slice(1);
+    const gutterWidth = line.gutter ? stringWidth(line.gutter) : 0;
+    const contentWidth = Math.max(4, textWidth - labelWidth - gutterWidth);
+    const wrapped = wrapText(code, contentWidth);
+    const rowBackgroundColor = DIFF_BACKGROUND_COLOR;
+    const gutterBackgroundColor = line.kind === "add"
+      ? "green"
+      : line.kind === "remove"
+        ? "red"
+        : DIFF_HEADER_BACKGROUND_COLOR;
+
+    for (let wrappedIndex = 0; wrappedIndex < wrapped.length; wrappedIndex++) {
+      let segments = highlightCodeLine(
+        wrapped[wrappedIndex]!,
+        lineLanguage,
+        rowBackgroundColor,
+      );
+      if (wrapped.length === 1) {
+        segments = applyIntralineBackground(
+          segments,
+          intralineHighlights.get(index) ?? null,
+        );
+      }
+
+      pushLine({
+        gutter: wrappedIndex === 0
+          ? line.gutter
+          : line.gutter
+            ? formatDiffGutter("continuation", null, null)
+            : undefined,
+        gutterColor: line.gutterColor,
+        gutterBackgroundColor,
+        text: wrapped[wrappedIndex]!,
+        segments,
+        bodyColor: line.kind === "add"
+          ? "green"
+          : line.kind === "remove"
+            ? "red"
+            : "white",
+        bodyBackgroundColor: rowBackgroundColor,
+      });
+    }
+  }
 }
 
 export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] {
   const lines: FlatLine[] = [];
+
   for (let ei = 0; ei < entries.length; ei++) {
     const entry = entries[ei]!;
     const s = entry.speaker.toLowerCase();
@@ -776,144 +1346,45 @@ export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] 
     const body = SPEAKER_BODY_COLORS[s] ?? "white";
     const labelWidth = stringWidth(label);
     const indent = " ".repeat(labelWidth);
-    const rawLines = entry.text.split("\n");
-    let inCodeFence = false;
-    let inDiffBlock = false;
-    let inToolBlock = false;
     let visualLineIndex = 0;
-    let recentSnippetHeader: SnippetHeader | null = null;
-    let codeCtx: CodeContext = {
-      language: null,
-      nextLine: null,
-      activeHeader: null,
+
+    const pushLine: PushFlatLine = (line) => {
+      lines.push({
+        key: `${ei}-${visualLineIndex}`,
+        label: visualLineIndex === 0 ? label : indent,
+        speakerColor: color,
+        ...line,
+      });
+      visualLineIndex += 1;
     };
-    let diffCtx: DiffContext = {
-      filePath: null,
-      oldLine: null,
-      newLine: null,
-    };
 
-    for (const rawLine of rawLines) {
-      const trimmed = rawLine.trimStart();
-      const snippetHeader = !inCodeFence ? parseSnippetHeader(rawLine) : null;
-      const wasInCodeFence = inCodeFence;
-      const isFenceLine = /^```/.test(trimmed);
+    const blocks = entry.blocks && entry.blocks.length > 0
+      ? entry.blocks
+      : parseRenderBlocks(entry.text);
 
-      if (!inCodeFence && snippetHeader) {
-        recentSnippetHeader = snippetHeader;
-        lines.push({
-          key: `${ei}-${visualLineIndex}`,
-          label: visualLineIndex === 0 ? label : indent,
-          text: "",
-          segments: snippetHeaderSegments(
-            snippetHeader,
-            fallbackLanguageFromPath(snippetHeader.filePath),
-          ),
-          speakerColor: color,
-          bodyColor: "white",
-          bodyBackgroundColor: CODE_BACKGROUND_COLOR,
-          bodyBold: true,
+    for (const block of blocks) {
+      if (block.type === "text") {
+        renderTextBlock(block, {
+          textWidth,
+          labelWidth,
+          defaultColor: body,
+          pushLine,
         });
-        visualLineIndex += 1;
-        continue;
-      }
-
-      if (!inCodeFence && isFenceLine) {
-        inCodeFence = true;
-        codeCtx = {
-          language: normalizeFenceLanguage(rawLine, recentSnippetHeader),
-          nextLine: recentSnippetHeader?.startLine ?? null,
-          activeHeader: recentSnippetHeader,
-        };
-        if (!recentSnippetHeader) {
-          lines.push({
-            key: `${ei}-${visualLineIndex}`,
-            label: visualLineIndex === 0 ? label : indent,
-            text: "",
-            segments: [{
-              text: codeCtx.language ?? "code",
-              color: "yellow",
-              bold: false,
-              backgroundColor: CODE_BACKGROUND_COLOR,
-            }],
-            speakerColor: color,
-            bodyColor: "white",
-            bodyBackgroundColor: CODE_BACKGROUND_COLOR,
-          });
-          visualLineIndex += 1;
-        }
-        recentSnippetHeader = null;
-        continue;
-      }
-
-      if (inCodeFence && isFenceLine) {
-        inCodeFence = false;
-        inDiffBlock = false;
-        codeCtx = { language: null, nextLine: null, activeHeader: null };
-        continue;
-      }
-
-      const {
-        bodyColor,
-        bodyBold,
-        startsDiffBlock,
-        endsDiffBlock,
-        startsToolBlock,
-        endsToolBlock,
-      } = classifyEntryLine(rawLine, body, inCodeFence, inDiffBlock, inToolBlock);
-      const diffDisplay = diffDisplayForLine(rawLine, diffCtx);
-      const codeGutter = inCodeFence ? formatCodeGutter(codeCtx.nextLine) : undefined;
-      const gutter = codeGutter ?? diffDisplay.gutter;
-      const gutterWidth = gutter ? stringWidth(gutter) : 0;
-      const contentWidth = Math.max(4, textWidth - labelWidth - gutterWidth);
-      const wrapped = wrapText(rawLine, contentWidth);
-
-      for (let li = 0; li < wrapped.length; li++) {
-        const codeSegments = inCodeFence ? highlightCodeLine(wrapped[li]!, codeCtx.language) : undefined;
-        lines.push({
-          key: `${ei}-${visualLineIndex}`,
-          label: visualLineIndex === 0 ? label : indent,
-          gutter: li === 0
-            ? gutter
-            : codeGutter
-              ? " ".repeat(CODE_GUTTER_WIDTH)
-              : gutter
-                ? formatDiffGutter("continuation", null, null)
-                : undefined,
-          gutterColor: codeGutter ? "gray" : diffDisplay.gutterColor,
-          gutterBackgroundColor: codeGutter ? CODE_BACKGROUND_COLOR : undefined,
-          text: wrapped[li]!,
-          segments: codeSegments,
-          speakerColor: color,
-          bodyColor: inCodeFence ? "white" : bodyColor,
-          bodyBackgroundColor: inCodeFence ? CODE_BACKGROUND_COLOR : undefined,
-          bodyBold: inCodeFence ? false : bodyBold,
+      } else if (block.type === "code") {
+        renderCodeBlock(block, {
+          textWidth,
+          labelWidth,
+          pushLine,
         });
-        visualLineIndex += 1;
+      } else {
+        renderDiffBlock(block, {
+          textWidth,
+          labelWidth,
+          pushLine,
+        });
       }
-
-      if (inCodeFence) {
-        codeCtx = {
-          ...codeCtx,
-          nextLine: codeCtx.nextLine == null ? null : codeCtx.nextLine + 1,
-        };
-      } else if (startsDiffBlock) {
-        inDiffBlock = true;
-      } else if (endsDiffBlock) {
-        inDiffBlock = false;
-        recentSnippetHeader = null;
-      } else if (trimmed.length > 0) {
-        recentSnippetHeader = null;
-      }
-
-      if (startsToolBlock) {
-        inToolBlock = true;
-      } else if (endsToolBlock) {
-        inToolBlock = false;
-      }
-
-      diffCtx = nextDiffContext(diffCtx, rawLine);
     }
   }
+
   return lines;
 }

@@ -866,6 +866,121 @@ class TestToolResultTokenEstimate:
 
         asyncio.run(_test())
 
+    def test_claude_edit_tool_result_uses_structured_diff_blocks(self):
+        """Claude Edit tool uses the invocation payload to build a diff block."""
+
+        async def _test():
+            adapter = ClaudeAdapter(model="claude-sonnet-4-6")
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+
+            jsonl = "\n".join([
+                json.dumps({
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_edit",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "src/app.py",
+                            "old_string": "old_name = 1\n",
+                            "new_string": "new_name = 1\n",
+                        },
+                    }]},
+                }),
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_edit",
+                        "content": "Updated src/app.py successfully.",
+                    }]},
+                }),
+                json.dumps({
+                    "type": "result",
+                    "result": "Done.",
+                    "usage": {"input_tokens": 5000, "output_tokens": 200},
+                }),
+            ]) + "\n"
+
+            mock_proc.stdout = _make_reader(jsonl)
+            mock_proc.stderr = _make_reader("")
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin.write = MagicMock()
+            mock_proc.stdin.drain = AsyncMock()
+            mock_proc.stdin.close = MagicMock()
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_proc.kill = MagicMock()
+
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                resp = await adapter.send("test")
+
+            assert len(resp.tool_summaries) == 1
+            assert any(
+                block["type"] == "diff"
+                for block in resp.tool_summaries[0].output_blocks
+            )
+
+        asyncio.run(_test())
+
+    def test_claude_write_tool_result_uses_structured_code_blocks(self):
+        """Claude Write tool uses the invocation payload to build a code block."""
+
+        async def _test():
+            adapter = ClaudeAdapter(model="claude-sonnet-4-6")
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+
+            jsonl = "\n".join([
+                json.dumps({
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_write",
+                        "name": "Write",
+                        "input": {
+                            "file_path": "src/app.py",
+                            "content": "def parse_input(raw: str):\n    return raw\n",
+                        },
+                    }]},
+                }),
+                json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_write",
+                        "content": "Wrote src/app.py successfully.",
+                    }]},
+                }),
+                json.dumps({
+                    "type": "result",
+                    "result": "Done.",
+                    "usage": {"input_tokens": 5000, "output_tokens": 200},
+                }),
+            ]) + "\n"
+
+            mock_proc.stdout = _make_reader(jsonl)
+            mock_proc.stderr = _make_reader("")
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin.write = MagicMock()
+            mock_proc.stdin.drain = AsyncMock()
+            mock_proc.stdin.close = MagicMock()
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_proc.kill = MagicMock()
+
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                resp = await adapter.send("test")
+
+            assert len(resp.tool_summaries) == 1
+            assert any(
+                block["type"] == "code"
+                for block in resp.tool_summaries[0].output_blocks
+            )
+
+        asyncio.run(_test())
+
     def test_codex_tool_result_estimate(self):
         """Codex adapter should estimate tokens from command_execution aggregated_output."""
 
@@ -919,6 +1034,56 @@ class TestToolResultTokenEstimate:
         """Response without tool usage should have zero estimate."""
         resp = AdapterResponse(text="hello")
         assert resp.tool_result_tokens_estimate == 0
+
+    def test_codex_diff_output_populates_structured_blocks(self):
+        """Diff-like command output should keep structured blocks for the UI."""
+
+        async def _test():
+            adapter = CodexAdapter(model="gpt-5.4")
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+
+            diff_output = "@@ -1,1 +1,1 @@\n-old_name = 1\n+new_name = 1"
+
+            jsonl = "\n".join([
+                json.dumps({"type": "thread.started", "thread_id": "t1"}),
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item_1",
+                        "type": "command_execution",
+                        "command": "git diff -- src/app.py",
+                        "aggregated_output": diff_output,
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                }),
+                json.dumps({
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 5000,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 200,
+                    },
+                }),
+            ]) + "\n"
+
+            mock_proc.stdout = _make_reader(jsonl)
+            mock_proc.stderr = _make_reader("")
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_proc.kill = MagicMock()
+
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                resp = await adapter.send("test")
+
+            assert len(resp.tool_summaries) == 1
+            assert any(
+                block["type"] == "diff"
+                for block in resp.tool_summaries[0].output_blocks
+            )
+
+        asyncio.run(_test())
 
 
 # ── Normalized context percent (Task 2) ─────────────────────

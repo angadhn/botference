@@ -15,6 +15,8 @@ Plan mode is planning only.
 ## Step 1 — Intake
 
 Start with targeted inspection using Read, Glob, and Grep.
+Use Bash only when a shell command is the right inspection tool, such as
+`git diff`, `git status`, `git log`, `rg`, or `ls`.
 Check Botference state files first, then inspect wider project content only
 when needed.
 

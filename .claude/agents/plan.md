@@ -20,10 +20,12 @@ Plan mode is planning only.
 
 You are running inside Claude Code's TUI. Use its built-in tools:
 
-- **Read / Glob / Grep / WebSearch / WebFetch** — gather context lazily.
+- **Read / Glob / Grep / Bash / WebSearch / WebFetch** — gather context lazily.
   Prefer targeted lookups over broad scans. Start with Botference state files
   and inspect wider project content only when needed to answer the user's
-  question or understand an active plan.
+  question or understand an active plan. Use `Bash` only for inspection
+  commands that need the shell, such as `git diff`, `git status`, `git log`,
+  `rg`, or `ls`.
 - **Write / Edit** — create `implementation-plan.md`, optional
   `implementation-plan-*.md`, seed `checkpoint.md`, and update `inbox.md`
   when needed.

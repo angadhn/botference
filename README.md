@@ -72,8 +72,41 @@ conflicting opinions.
 
 ## Quick Start
 
+### Prerequisites
+
+- Claude Code CLI installed and authenticated
+- Codex CLI installed and authenticated
+- Python 3 available on your `PATH`
+- Node.js + npm only if you want the Ink UI (`--ink`)
+
+### Running From This Repo Checkout
+
+If you cloned **this** repository and want to try Botference immediately, run
+it from the repo root with the local launcher:
+
 ```bash
-# In a target project
+./botference plan                          # Textual TUI
+./botference plan --ink                    # Ink TUI
+./botference plan --claude                 # Solo Claude
+./botference research-plan --ink           # Structured planning (experimental)
+./botference --help
+```
+
+Do **not** run `botference init` in the Botference source repo. This checkout
+uses the legacy self-hosted layout (`work/`, `build/`, `archive/`) rather than
+a top-level `botference/` state directory.
+
+Before the first `--ink` run from a fresh clone:
+
+```bash
+cd ink-ui && npm install
+```
+
+### Using Botference In Another Project
+
+From a target project root:
+
+```bash
 botference init                            # Create project-local botference/ state
 botference plan                            # Council: you + Claude + Codex
 botference plan --claude                   # Solo Claude (no Codex)
@@ -88,8 +121,9 @@ botference -p build --parallel             # Phase-level parallelism
 botference --help                          # Full usage + supported models
 ```
 
-When you are running directly from this repo checkout instead of an installed
-command, invoke the local launcher as `./botference`.
+After `botference init`, Botference stores its state inside `./botference/` in
+that target project. This is the right workflow for brownfield or greenfield
+projects outside the Botference engine repo.
 
 ## Project Scoping
 

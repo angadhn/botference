@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from rich.text import Text
+from render_blocks import parse_render_blocks
 
 
 class RoomMode(str, Enum):
@@ -58,6 +59,7 @@ class PaneVisualState:
 class TranscriptEntry:
     speaker: str
     text: str
+    blocks: Optional[list[dict]] = None
 
 
 def cycle_pane_focus(
@@ -194,13 +196,153 @@ def render_transcript_entry(
     if dimmed:
         label_style = "bold bright_black"
         body_style = "bright_black"
-    else:
-        label_style = f"bold {label_colors.get(speaker, 'white')}"
-        body_style = body_colors.get(speaker, "white")
-    text = Text()
-    text.append(label, style=label_style)
-    text.append(entry.text, style=body_style)
-    return text
+        text = Text()
+        text.append(label, style=label_style)
+        text.append(entry.text, style=body_style)
+        return text
+
+    label_style = f"bold {label_colors.get(speaker, 'white')}"
+    body_style = body_colors.get(speaker, "white")
+    indent = " " * len(label)
+    blocks = entry.blocks if entry.blocks else parse_render_blocks(entry.text)
+    rendered = Text()
+    is_first_line = True
+
+    def append_line(parts: list[tuple[str, str]]) -> None:
+        nonlocal is_first_line
+        rendered.append(label if is_first_line else indent, style=label_style)
+        for chunk, style in parts:
+            rendered.append(chunk, style=style)
+        rendered.append("\n")
+        is_first_line = False
+
+    for block in blocks:
+        if block["type"] == "text":
+            for raw_line in block["lines"]:
+                append_line([(raw_line, body_style)])
+            continue
+
+        if block["type"] == "code":
+            header = block.get("header")
+            if header:
+                line_range = (
+                    f"lines {header['startLine']}"
+                    if header.get("endLine") is None
+                    else f"lines {header['startLine']}-{header['endLine']}"
+                )
+                parts = [
+                    (header["filePath"], "bold cyan"),
+                    ("  ", body_style),
+                    (line_range, "bright_black"),
+                ]
+                if block.get("language"):
+                    parts.extend([
+                        ("  ", body_style),
+                        (str(block["language"]), "yellow"),
+                    ])
+                append_line(parts)
+            else:
+                append_line([(str(block.get("language") or "code"), "yellow")])
+
+            for _ in range(int(block.get("leadingBlankLines", 0))):
+                append_line([("", body_style)])
+
+            next_line = header["startLine"] if header else None
+            for raw_line in block["lines"]:
+                gutter = f"{next_line:>4}  " if next_line is not None else ""
+                parts = []
+                if gutter:
+                    parts.append((gutter, "bright_black"))
+                parts.append((raw_line, "white"))
+                append_line(parts)
+                if next_line is not None:
+                    next_line += 1
+            continue
+
+        file_path = block.get("filePath")
+        old_line = None
+        new_line = None
+        for raw_line in block["lines"]:
+            trimmed = raw_line.lstrip()
+            if trimmed.startswith(("Edited in ", "Updated in ", "Added in ", "Deleted in ")):
+                gutter = _diff_header_gutter(file_path)
+                append_line([
+                    (gutter, "cyan"),
+                    (raw_line, "bold cyan"),
+                ])
+                if " in " in trimmed:
+                    maybe_path = trimmed.split(" in ", 1)[1].split(" (", 1)[0]
+                    file_path = maybe_path or file_path
+                continue
+            if trimmed.startswith(("diff --git", "index", "--- ", "+++ ", "@@")):
+                if trimmed.startswith("+++ b/"):
+                    file_path = trimmed[len("+++ b/") :]
+                hunk = _parse_hunk_header(trimmed)
+                if hunk:
+                    old_line, new_line = hunk
+                append_line([
+                    (_diff_header_gutter(file_path), "cyan"),
+                    (raw_line, "yellow"),
+                ])
+                continue
+
+            if raw_line.startswith("+") and not raw_line.startswith("+++ "):
+                append_line([
+                    (_format_diff_gutter(None, new_line, "+"), "green"),
+                    (raw_line[1:], "green"),
+                ])
+                if new_line is not None:
+                    new_line += 1
+                continue
+
+            if raw_line.startswith("-") and not raw_line.startswith("--- "):
+                append_line([
+                    (_format_diff_gutter(old_line, None, "-"), "red"),
+                    (raw_line[1:], "red"),
+                ])
+                if old_line is not None:
+                    old_line += 1
+                continue
+
+            append_line([
+                (_format_diff_gutter(old_line, new_line, " "), "bright_black"),
+                (raw_line[1:] if raw_line.startswith(" ") else raw_line, "white"),
+            ])
+            if old_line is not None:
+                old_line += 1
+            if new_line is not None:
+                new_line += 1
+
+    if rendered.plain.endswith("\n"):
+        rendered.rstrip()
+    return rendered
+
+
+def _diff_header_gutter(file_path: Optional[str]) -> str:
+    if not file_path:
+        return ""
+    return f"{file_path} "[:11].ljust(11)
+
+
+def _format_diff_line_number(line_number: Optional[int]) -> str:
+    if line_number is None:
+        return "    "
+    return str(line_number).rjust(4)
+
+
+def _format_diff_gutter(
+    old_line: Optional[int], new_line: Optional[int], marker: str
+) -> str:
+    return f"{_format_diff_line_number(old_line)} {_format_diff_line_number(new_line)} {marker} "
+
+
+def _parse_hunk_header(line: str) -> Optional[tuple[int, int]]:
+    import re
+
+    match = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 TEXTUAL_IMPORT_ERROR: Optional[ModuleNotFoundError] = None
@@ -504,14 +646,18 @@ if TEXTUAL_AVAILABLE:
             self._focused_log().scroll_down(animate=False)
             event.stop()
 
-        def add_room_entry(self, speaker: str, text: str) -> None:
+        def add_room_entry(
+            self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
+        ) -> None:
             self.query_one(RoomPane).append_entry(
-                TranscriptEntry(speaker=speaker, text=text)
+                TranscriptEntry(speaker=speaker, text=text, blocks=blocks)
             )
 
-        def add_caucus_entry(self, speaker: str, text: str) -> None:
+        def add_caucus_entry(
+            self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
+        ) -> None:
             self.query_one(CaucusPane).append_entry(
-                TranscriptEntry(speaker=speaker, text=text)
+                TranscriptEntry(speaker=speaker, text=text, blocks=blocks)
             )
 
         def set_status(self, status: StatusSnapshot) -> None:

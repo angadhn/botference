@@ -14,6 +14,7 @@ import {
   cursorToWrappedLineCol,
   wrappedLineColToCursor,
   wrapInputLines,
+  type RenderBlock,
 } from "./layout.js";
 import { onMouseScroll, onPaste, onShiftEnter } from "./index.js";
 
@@ -22,6 +23,7 @@ import { onMouseScroll, onPaste, onShiftEnter } from "./index.js";
 interface Entry {
   speaker: string;
   text: string;
+  blocks?: RenderBlock[];
 }
 
 interface StatusData {
@@ -589,14 +591,22 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         case "room":
           setRoomEntries((prev) => [
             ...prev,
-            { speaker: msg.speaker as string, text: msg.text as string },
+            {
+              speaker: msg.speaker as string,
+              text: msg.text as string,
+              blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
+            },
           ]);
           setRoomScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
           break;
         case "caucus":
           setCaucusEntries((prev) => [
             ...prev,
-            { speaker: msg.speaker as string, text: msg.text as string },
+            {
+              speaker: msg.speaker as string,
+              text: msg.text as string,
+              blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
+            },
           ]);
           setCaucusScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
           break;

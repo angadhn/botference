@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scaffold a project-local botference/ directory."""
+"""Scaffold a project-local Botference state directory."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-README_TEXT = """# botference/
+README_TEMPLATE = """# {project_dir_name}/
 
 Project-local Botference state and configuration.
 
@@ -44,7 +44,7 @@ CHANGELOG.md
 """
 
 
-def build_project_json(profile: str) -> dict:
+def build_project_json(profile: str, project_dir_name: str) -> dict:
     return {
         "version": 1,
         "profile": profile,
@@ -55,7 +55,7 @@ def build_project_json(profile: str) -> dict:
         },
         "write_roots": {
             "plan": [],
-            "build": ["botference/build"],
+            "build": [f"{project_dir_name}/build"],
         },
         "agent_overrides": [],
     }
@@ -72,15 +72,28 @@ def ensure_copy(src: Path, dst: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Initialize project-local botference state.")
+    parser = argparse.ArgumentParser(description="Initialize project-local Botference state.")
     parser.add_argument("--profile", default="vault-drafter")
     args = parser.parse_args()
 
     botference_home = Path(os.environ["BOTFERENCE_HOME"]).resolve()
     project_root = Path(os.environ.get("BOTFERENCE_PROJECT_ROOT", os.getcwd())).resolve()
-    project_dir = project_root / "botference"
+    project_dir_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+    project_dir = project_root / project_dir_name
 
     if project_dir.exists() and not project_dir.is_dir():
+        if project_root == botference_home and project_dir_name == "botference":
+            print(
+                "Error: the Botference source repo uses the legacy self-hosted layout "
+                "(work/, build/, archive/) instead of a top-level botference/ directory.",
+                file=sys.stderr,
+            )
+            print(
+                "Run ./botference plan --ink directly from the repo root, or set "
+                "BOTFERENCE_PROJECT_DIR_NAME to scaffold a different project-local directory.",
+                file=sys.stderr,
+            )
+            return 1
         print(f"Error: {project_dir} exists but is not a directory.", file=sys.stderr)
         return 1
 
@@ -97,7 +110,7 @@ def main() -> int:
     ensure_copy(templates / "checkpoint.md", project_dir / "checkpoint.md")
     ensure_copy(templates / "HUMAN_REVIEW_NEEDED.md", project_dir / "HUMAN_REVIEW_NEEDED.md")
 
-    ensure_text(project_dir / "README.md", README_TEXT)
+    ensure_text(project_dir / "README.md", README_TEMPLATE.format(project_dir_name=project_dir_name))
     ensure_text(project_dir / ".gitignore", GITIGNORE_TEXT)
     ensure_text(project_dir / "inbox.md", "")
     ensure_text(project_dir / "iteration_count", "0\n")
@@ -106,7 +119,7 @@ def main() -> int:
     project_json = project_dir / "project.json"
     if not project_json.exists():
         project_json.write_text(
-            json.dumps(build_project_json(args.profile), indent=2) + "\n",
+            json.dumps(build_project_json(args.profile, project_dir_name), indent=2) + "\n",
             encoding="utf-8",
         )
 

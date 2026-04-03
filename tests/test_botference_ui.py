@@ -171,6 +171,30 @@ class TestTranscriptRendering:
         ]
         assert any("bright_black" in style for _, style in styled_texts)
 
+    def test_renders_structured_diff_with_line_number_gutters(self):
+        rendered = render_transcript_entry(
+            TranscriptEntry(
+                speaker="codex",
+                text="Edited in src/app.py (+1 -1)\n@@ -1,1 +1,1 @@\n- old_name = 1\n+ new_name = 1",
+            )
+        )
+        assert "[Codex] " in rendered.plain
+        assert "src/app.py" in rendered.plain
+        assert "       1 + " in rendered.plain
+        assert "   1      - " in rendered.plain
+
+    def test_renders_structured_code_with_header_and_line_numbers(self):
+        rendered = render_transcript_entry(
+            TranscriptEntry(
+                speaker="claude",
+                text="'core/botference.py' lines 10-11:\n\n```python\ndef parse_input(raw: str):\n    return raw\n```",
+            )
+        )
+        assert "core/botference.py" in rendered.plain
+        assert "lines 10-11" in rendered.plain
+        assert "  10  def parse_input(raw: str):" in rendered.plain
+        assert "  11      return raw" in rendered.plain
+
 
 # ── Textual widget tests (async, require textual installed) ─────────
 

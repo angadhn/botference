@@ -37,6 +37,7 @@ from room_prompts import (
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
+from render_blocks import parse_render_blocks
 
 log = logging.getLogger(__name__)
 
@@ -376,6 +377,14 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
             command = _extract_arg(preview, "command")
             return f"Shell {_clean_shell_command(command)}" if command else "Shell command"
 
+        if name in {"Edit", "MultiEdit"}:
+            file_path = _extract_arg(preview, "file_path")
+            return f"Edit {_display_path(file_path)}" if file_path else "Edit file"
+
+        if name == "Write":
+            file_path = _extract_arg(preview, "file_path")
+            return f"Write {_display_path(file_path)}" if file_path else "Write file"
+
         if preview and preview != "(running)":
             return f"{name} {preview}"
 
@@ -386,6 +395,14 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
         branch = "└" if idx == len(tool_summaries) - 1 else "├"
         lines.append(f"{branch} {_summarize_tool(ts)}")
     return "\n".join(lines)
+
+
+def _tool_summary_display_blocks(tool_summaries: list) -> list[dict]:
+    text_blocks = parse_render_blocks(_tool_summary_display_text(tool_summaries))
+    output_blocks: list[dict] = []
+    for ts in tool_summaries:
+        output_blocks.extend(getattr(ts, "output_blocks", []) or [])
+    return text_blocks + output_blocks
 
 
 # ── Caucus footer parsing ──────────────────────────────────
@@ -447,8 +464,12 @@ class CaucusFooter:
 
 class UIPort(Protocol):
     """Minimal interface the controller needs from the TUI."""
-    def add_room_entry(self, speaker: str, text: str) -> None: ...
-    def add_caucus_entry(self, speaker: str, text: str) -> None: ...
+    def add_room_entry(
+        self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
+    ) -> None: ...
+    def add_caucus_entry(
+        self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
+    ) -> None: ...
     def set_status(self, status: StatusSnapshot) -> None: ...
     def set_mode(self, mode: RoomMode) -> None: ...
 
@@ -1178,6 +1199,15 @@ class Botference:
 
     # ── message routing ───────────────────────────────────
 
+    def _structured_blocks(self, text: str) -> list[dict]:
+        return parse_render_blocks(text)
+
+    def _add_room_entry(self, ui: UIPort, speaker: str, text: str) -> None:
+        ui.add_room_entry(speaker, text, self._structured_blocks(text))
+
+    def _add_caucus_entry(self, ui: UIPort, speaker: str, text: str) -> None:
+        ui.add_caucus_entry(speaker, text, self._structured_blocks(text))
+
     async def _send_message(
         self, parsed: ParsedInput, ui: UIPort,
         *, attachments: list | None = None,
@@ -1185,7 +1215,7 @@ class Botference:
         route = self.router.resolve(parsed)
 
         prefix = f"{route} " if parsed.target else f"(→{route}) "
-        ui.add_room_entry("user", prefix + parsed.body)
+        self._add_room_entry(ui, "user", prefix + parsed.body)
 
         # Stage image attachments to repo-local tmp dir so agents
         # can read them as normal files — no --file flag or tokens needed.
@@ -1237,28 +1267,32 @@ class Botference:
             try:
                 resp = await adapter.resume(context)
             except Exception as e:
-                ui.add_room_entry("system", f"Error from {model}: {e}")
+                self._add_room_entry(ui, "system", f"Error from {model}: {e}")
                 return None
 
         tool_display = _tool_summary_display_text(resp.tool_summaries)
         if tool_display:
-            ui.add_room_entry(model, tool_display)
-        if resp.text:
-            ui.add_room_entry(model, resp.text)
-        if resp.exit_code == -1:
             ui.add_room_entry(
+                model,
+                tool_display,
+                _tool_summary_display_blocks(resp.tool_summaries),
+            )
+        if resp.text:
+            self._add_room_entry(ui, model, resp.text)
+        if resp.exit_code == -1:
+            self._add_room_entry(
                 "system",
                 f"{model.capitalize()} CLI timed out. Run /auth {model} to check login state. "
                 f"If auth looks fine, /relay @{model} will reset the session.",
             )
         if resp.exit_code not in (0, -1):
-            ui.add_room_entry("system",
-                              f"{model} exited with code {resp.exit_code}")
+            self._add_room_entry(ui, "system", f"{model} exited with code {resp.exit_code}")
             # Detect subscription rate limit and suggest API key fallback
             if "usage limit" in resp.text.lower():
                 key_name = ("OPENAI_API_KEY" if model == "codex"
                             else "ANTHROPIC_API_KEY")
-                ui.add_room_entry(
+                self._add_room_entry(
+                    ui,
                     "system",
                     f"Tip: Add {key_name}=... to .botference/.env to use API "
                     f"key auth as a fallback. See .env.example for details.",
@@ -1355,19 +1389,18 @@ class Botference:
 
     async def _run_caucus(self, topic: str, ui: UIPort) -> None:
         if not topic:
-            ui.add_room_entry("system", "Usage: /caucus <topic>")
+            self._add_room_entry(ui, "system", "Usage: /caucus <topic>")
             return
 
         self.mode = RoomMode.CAUCUS
         ui.set_mode(RoomMode.CAUCUS)
-        ui.add_caucus_entry("system", f"--- caucus: {topic} ---")
-        ui.add_room_entry("system", f"Caucus started: {topic}")
+        self._add_caucus_entry(ui, "system", f"--- caucus: {topic} ---")
+        self._add_room_entry(ui, "system", f"Caucus started: {topic}")
 
         # Ensure both models are initialised (with transcript backfill)
         for model in ("claude", "codex"):
             if not await self._ensure_initialized(model, ui):
-                ui.add_room_entry("system",
-                                  f"Caucus aborted — failed to start {model}.")
+                self._add_room_entry(ui, "system", f"Caucus aborted — failed to start {model}.")
                 self.mode = RoomMode.PUBLIC
                 ui.set_mode(RoomMode.PUBLIC)
                 ui.set_status(self.status_snapshot())
@@ -1405,7 +1438,7 @@ class Botference:
                 try:
                     resp = await adapter.resume(turn)
                 except Exception as e:
-                    ui.add_caucus_entry("system", f"Error from {speaker}: {e}")
+                    self._add_caucus_entry(ui, "system", f"Error from {speaker}: {e}")
                     final_footer = CaucusFooter(
                         status="blocked", handoff_to="user",
                         writer_vote="none",
@@ -1420,7 +1453,7 @@ class Botference:
                 footer = CaucusFooter.parse(resp.text)
                 display = (CaucusFooter.strip_footer(resp.text)
                            if footer else resp.text)
-                ui.add_caucus_entry(speaker, display)
+                self._add_caucus_entry(ui, speaker, display)
                 last_resp_text = resp.text
 
                 if footer:
@@ -1446,8 +1479,8 @@ class Botference:
 
         # Summary
         summary = self._caucus_summary(topic, final_footer, writer_votes)
-        ui.add_caucus_entry("system", "--- caucus ended ---")
-        ui.add_room_entry("summary", summary)
+        self._add_caucus_entry(ui, "system", "--- caucus ended ---")
+        self._add_room_entry(ui, "summary", summary)
         self.transcript.add("system", f"[Caucus summary: {summary}]")
 
         # Auto-lead from consensus votes
@@ -1455,9 +1488,7 @@ class Botference:
             votes = list(writer_votes.values())
             if len(set(votes)) == 1:
                 self.lead = f"@{votes[0]}"
-                ui.add_room_entry(
-                    "system", f"Writer consensus → lead set to {self.lead}"
-                )
+                self._add_room_entry(ui, "system", f"Writer consensus → lead set to {self.lead}")
 
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
@@ -1490,8 +1521,8 @@ class Botference:
     async def _run_draft(self, ui: UIPort, draft_arg: str = "") -> None:
         lead = self._resolve_lead()
         if not lead:
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 "No lead set. Use /lead @claude|@codex or run /caucus first.",
             )
             return
@@ -1502,16 +1533,16 @@ class Botference:
         elif re.fullmatch(r"\d+", arg):
             rounds = int(arg)
         else:
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 "Usage: /draft [rounds]  where rounds is 0, 1, 2, ...",
             )
             return
 
         self.mode = RoomMode.DRAFT
         ui.set_mode(RoomMode.DRAFT)
-        ui.add_room_entry(
-            "system",
+        self._add_room_entry(
+            ui, "system",
             f"Drafting implementation-plan.md ({lead}, {rounds} AI review round(s))…",
         )
 
@@ -1544,19 +1575,19 @@ class Botference:
         try:
             resp = await adapter.resume(prompt)
         except Exception as e:
-            ui.add_room_entry("system", f"Error drafting: {e}")
+            self._add_room_entry(ui, "system", f"Error drafting: {e}")
             self.mode = RoomMode.PUBLIC
             ui.set_mode(RoomMode.PUBLIC)
             return
 
         self._update_pct(lead, resp, ui)
-        ui.add_room_entry(lead, resp.text)
+        self._add_room_entry(ui, lead, resp.text)
         self.transcript.add(lead, resp.text, resp.tool_summaries)
         self.transcript.mark_seen(lead)
         current_plan = resp.text
         self._write_work_file(self._plan_path, current_plan)
-        ui.add_room_entry(
-            "system",
+        self._add_room_entry(
+            ui, "system",
             f"Updated {self.paths.work_prefix}implementation-plan.md",
         )
 
@@ -1564,8 +1595,8 @@ class Botference:
         for round_number in range(next_round, next_round + rounds):
             self.mode = RoomMode.REVIEW
             ui.set_mode(RoomMode.REVIEW)
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"{reviewer_cap} is reviewing draft round {round_number}…",
             )
             try:
@@ -1573,27 +1604,27 @@ class Botference:
                     reviewer_preamble(lead_cap, current_plan)
                 )
             except Exception as e:
-                ui.add_room_entry("system", f"Error reviewing: {e}")
+                self._add_room_entry(ui, "system", f"Error reviewing: {e}")
                 self.mode = RoomMode.PUBLIC
                 ui.set_mode(RoomMode.PUBLIC)
                 return
 
             self._update_pct(reviewer, rev_resp, ui)
-            ui.add_room_entry(reviewer, rev_resp.text)
+            self._add_room_entry(ui, reviewer, rev_resp.text)
             self.transcript.add(reviewer, rev_resp.text, rev_resp.tool_summaries)
             self.transcript.mark_seen(reviewer)
 
             review_path = self._reviewer_comments_path(round_number)
             self._write_work_file(review_path, rev_resp.text)
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"Saved reviewer comments to {self.paths.work_prefix}{review_path.name}",
             )
 
             self.mode = RoomMode.DRAFT
             ui.set_mode(RoomMode.DRAFT)
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"{lead_cap} is revising implementation-plan.md for round {round_number}…",
             )
             try:
@@ -1603,27 +1634,27 @@ class Botference:
                     )
                 )
             except Exception as e:
-                ui.add_room_entry("system", f"Error revising: {e}")
+                self._add_room_entry(ui, "system", f"Error revising: {e}")
                 self.mode = RoomMode.PUBLIC
                 ui.set_mode(RoomMode.PUBLIC)
                 return
 
             self._update_pct(lead, revised_resp, ui)
-            ui.add_room_entry(lead, revised_resp.text)
+            self._add_room_entry(ui, lead, revised_resp.text)
             self.transcript.add(lead, revised_resp.text, revised_resp.tool_summaries)
             self.transcript.mark_seen(lead)
             current_plan = revised_resp.text
             self._write_work_file(self._plan_path, current_plan)
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"Updated {self.paths.work_prefix}implementation-plan.md",
             )
 
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
-        ui.add_room_entry(
-            "system",
+        self._add_room_entry(
+            ui, "system",
             (
                 "Draft complete. "
                 f"{self.paths.work_prefix}implementation-plan.md now reflects "
@@ -1636,8 +1667,8 @@ class Botference:
     async def _run_finalize(self, ui: UIPort) -> None:
         lead = self._resolve_lead()
         if not lead:
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 "No lead set. Use /lead @claude|@codex or run /caucus first.",
             )
             return
@@ -1653,8 +1684,8 @@ class Botference:
         ui.set_mode(RoomMode.DRAFT)
         current_plan = self._current_plan_text()
         if not current_plan:
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"No drafted plan found at {self.paths.work_prefix}implementation-plan.md. "
                 "Run /draft first.",
             )
@@ -1665,8 +1696,8 @@ class Botference:
         review_bundle = self._review_bundle()
         final_plan = current_plan
         if review_bundle:
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"{lead_cap} is finalizing implementation-plan.md and addressing all reviewer comments…",
             )
             try:
@@ -1674,53 +1705,53 @@ class Botference:
                     finalize_plan_preamble(current_plan, review_bundle)
                 )
             except Exception as e:
-                ui.add_room_entry("system", f"Error finalizing plan: {e}")
+                self._add_room_entry(ui, "system", f"Error finalizing plan: {e}")
                 self.mode = RoomMode.PUBLIC
                 ui.set_mode(RoomMode.PUBLIC)
                 return
 
             self._update_pct(lead, final_resp, ui)
-            ui.add_room_entry(lead, final_resp.text)
+            self._add_room_entry(ui, lead, final_resp.text)
             self.transcript.add(lead, final_resp.text, final_resp.tool_summaries)
             self.transcript.mark_seen(lead)
             final_plan = final_resp.text
             self._write_work_file(self._plan_path, final_plan)
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"Updated {self.paths.work_prefix}implementation-plan.md",
             )
 
-        ui.add_room_entry("system", f"{lead_cap} is creating checkpoint.md…")
+        self._add_room_entry(ui, "system", f"{lead_cap} is creating checkpoint.md…")
         try:
             checkpoint_resp = await adapter.resume(checkpoint_preamble(final_plan))
         except Exception as e:
-            ui.add_room_entry("system", f"Error generating checkpoint: {e}")
+            self._add_room_entry(ui, "system", f"Error generating checkpoint: {e}")
             self.mode = RoomMode.PUBLIC
             ui.set_mode(RoomMode.PUBLIC)
             return
 
         self._update_pct(lead, checkpoint_resp, ui)
-        ui.add_room_entry(lead, checkpoint_resp.text)
+        self._add_room_entry(ui, lead, checkpoint_resp.text)
         self.transcript.add(lead, checkpoint_resp.text, checkpoint_resp.tool_summaries)
         self.transcript.mark_seen(lead)
         self._write_work_file(self._checkpoint_path, checkpoint_resp.text)
-        ui.add_room_entry(
-            "system",
+        self._add_room_entry(
+            ui, "system",
             f"Updated {self.paths.work_prefix}checkpoint.md",
         )
 
         archived_comments = self._archive_reviewer_comments()
         if archived_comments:
-            ui.add_room_entry(
-                "system",
+            self._add_room_entry(
+                ui, "system",
                 f"Archived {archived_comments} reviewer comment file(s) to archive/reviewer-comments/{self._thread_slug()}/",
             )
 
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
-        ui.add_room_entry(
-            "system",
+        self._add_room_entry(
+            ui, "system",
             "Finalize complete. implementation-plan.md and checkpoint.md are up to date.",
         )
 
@@ -1807,7 +1838,7 @@ def main() -> None:
         print()
 
     claude = ClaudeAdapter(model=args.anthropic_model, effort=args.claude_effort,
-                           tools=["Read", "Glob", "Grep",
+                           tools=["Read", "Glob", "Grep", "Bash",
                                   "WebSearch", "WebFetch"],
                            debug_log_path=claude_log)
     codex = CodexAdapter(model=args.openai_model, debug_log_path=codex_log,

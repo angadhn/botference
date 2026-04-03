@@ -156,6 +156,14 @@ reserved_agent_names() {
   fi
 }
 
+canonical_dir() {
+  local dir=$1
+  [ -d "$dir" ] || return 1
+  (
+    cd "$dir" >/dev/null 2>&1 && pwd -P
+  )
+}
+
 project_agent_override_allowed() {
   local agent_name=$1
   local overrides=",${BOTFERENCE_AGENT_OVERRIDES},"
@@ -165,8 +173,22 @@ project_agent_override_allowed() {
 validate_project_agents() {
   local had_error=false
   local agent_file agent_name
+  local built_in_dir="${BOTFERENCE_HOME}/.claude/agents"
+  local built_in_real=""
+  local base base_real
+
+  if [ -d "$built_in_dir" ]; then
+    built_in_real=$(canonical_dir "$built_in_dir")
+  fi
+
   for base in "$BOTFERENCE_PROJECT_AGENT_DIR" "${BOTFERENCE_PROJECT_ROOT}/.claude/agents"; do
     [ -d "$base" ] || continue
+    if [ -n "$built_in_real" ]; then
+      base_real=$(canonical_dir "$base" || true)
+      if [ "$base_real" = "$built_in_real" ]; then
+        continue
+      fi
+    fi
     while IFS= read -r agent_file; do
       [ -z "$agent_file" ] && continue
       agent_name=$(basename "$agent_file" .md)

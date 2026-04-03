@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from providers import percent_of_limit
+from render_blocks import build_tool_use_blocks, parse_render_blocks
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ class ToolSummary:
     name: str
     input_preview: str  # truncated input for TUI display
     output_preview: str = ""  # filled when tool_result arrives
+    output_blocks: list[dict] = field(default_factory=list)
+    pending_output_blocks: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -99,6 +102,31 @@ def _delta_from_cumulative(current: int, previous: int) -> int:
     if previous <= 0 or current < previous:
         return current
     return current - previous
+
+
+def _structured_output_blocks(text: str, limit: int = 8000) -> list[dict]:
+    if not text:
+        return []
+    blocks = parse_render_blocks(text[:limit])
+    if all(block.get("type") == "text" for block in blocks):
+        return []
+    return blocks
+
+
+def _tool_result_failed(text: str) -> bool:
+    lowered = text.lower()
+    failure_markers = (
+        "error",
+        "failed",
+        "could not",
+        "couldn't",
+        "cannot",
+        "not found",
+        "no changes",
+        "did not match",
+        "unable to",
+    )
+    return any(marker in lowered for marker in failure_markers)
 
 
 # ── Shared JSONL reader ─────────────────────────────────────
@@ -251,6 +279,10 @@ class ClaudeAdapter:
                                 input_preview=_truncate(
                                     json.dumps(block.get("input", {}))
                                 ),
+                                pending_output_blocks=build_tool_use_blocks(
+                                    block.get("name", ""),
+                                    block.get("input", {}),
+                                ),
                             )
                             pending_tools[tool_id] = ts
                             tool_summaries.append(ts)
@@ -275,9 +307,19 @@ class ClaudeAdapter:
                             content_str = str(content)
                             response.tool_result_tokens_estimate += len(content_str) // 4
                             if tid in pending_tools:
+                                structured_blocks = _structured_output_blocks(content_str)
                                 pending_tools[tid].output_preview = _truncate(
                                     content_str, 200
                                 )
+                                if structured_blocks:
+                                    pending_tools[tid].output_blocks = structured_blocks
+                                elif (
+                                    pending_tools[tid].pending_output_blocks
+                                    and not _tool_result_failed(content_str)
+                                ):
+                                    pending_tools[tid].output_blocks = (
+                                        pending_tools[tid].pending_output_blocks
+                                    )
 
                 elif etype == "result":
                     result_text = event.get("result", "")
@@ -484,6 +526,7 @@ class CodexAdapter:
                             name=item.get("command", "")[:80],
                             input_preview="",
                             output_preview=_truncate(agg_output, 200),
+                            output_blocks=_structured_output_blocks(agg_output),
                         ))
 
                 elif etype == "item.started":
@@ -573,6 +616,7 @@ class CodexAdapter:
             if ts.id and ts.id in seen:
                 existing = seen[ts.id]
                 existing.output_preview = ts.output_preview or existing.output_preview
+                existing.output_blocks = ts.output_blocks or existing.output_blocks
                 if ts.input_preview != "(running)":
                     existing.input_preview = ts.input_preview
             else:

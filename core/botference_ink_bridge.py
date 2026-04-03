@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from cli_adapters import ClaudeAdapter, CodexAdapter
 from botference import Botference
 from botference_ui import RoomMode, StatusSnapshot
+from render_blocks import parse_render_blocks
 
 log = logging.getLogger(__name__)
 
@@ -32,11 +33,25 @@ def emit(obj: dict) -> None:
 class InkBridge:
     """UIPort implementation that emits JSON-lines to stdout."""
 
-    def add_room_entry(self, speaker: str, text: str) -> None:
-        emit({"type": "room", "speaker": speaker, "text": text})
+    def add_room_entry(
+        self, speaker: str, text: str, blocks: list[dict] | None = None,
+    ) -> None:
+        emit({
+            "type": "room",
+            "speaker": speaker,
+            "text": text,
+            "blocks": blocks if blocks is not None else parse_render_blocks(text),
+        })
 
-    def add_caucus_entry(self, speaker: str, text: str) -> None:
-        emit({"type": "caucus", "speaker": speaker, "text": text})
+    def add_caucus_entry(
+        self, speaker: str, text: str, blocks: list[dict] | None = None,
+    ) -> None:
+        emit({
+            "type": "caucus",
+            "speaker": speaker,
+            "text": text,
+            "blocks": blocks if blocks is not None else parse_render_blocks(text),
+        })
 
     def set_status(self, status: StatusSnapshot) -> None:
         emit({
@@ -113,7 +128,7 @@ async def main() -> None:
     claude = ClaudeAdapter(
         model=args.anthropic_model,
         effort=args.claude_effort,
-        tools=["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
+        tools=["Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"],
         debug_log_path=claude_log,
     )
     codex = CodexAdapter(

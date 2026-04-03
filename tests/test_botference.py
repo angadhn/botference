@@ -33,6 +33,7 @@ from botference import (
 )
 from botference_ui import RoomMode, StatusSnapshot
 from paths import BotferencePaths
+from render_blocks import parse_render_blocks
 
 
 # ── parse_input ───────────────────────────────────────────
@@ -397,14 +398,22 @@ class MockUI:
     """Collects all UI calls for assertions."""
     room_entries: list[tuple[str, str]] = field(default_factory=list)
     caucus_entries: list[tuple[str, str]] = field(default_factory=list)
+    room_blocks: list[list[dict] | None] = field(default_factory=list)
+    caucus_blocks: list[list[dict] | None] = field(default_factory=list)
     statuses: list[StatusSnapshot] = field(default_factory=list)
     modes: list[RoomMode] = field(default_factory=list)
 
-    def add_room_entry(self, speaker: str, text: str) -> None:
+    def add_room_entry(
+        self, speaker: str, text: str, blocks: list[dict] | None = None,
+    ) -> None:
         self.room_entries.append((speaker, text))
+        self.room_blocks.append(blocks)
 
-    def add_caucus_entry(self, speaker: str, text: str) -> None:
+    def add_caucus_entry(
+        self, speaker: str, text: str, blocks: list[dict] | None = None,
+    ) -> None:
         self.caucus_entries.append((speaker, text))
+        self.caucus_blocks.append(blocks)
 
     def set_status(self, status: StatusSnapshot) -> None:
         self.statuses.append(status)
@@ -586,6 +595,40 @@ class TestBotferenceMessageRouting:
         tool_entries = [t for _, t in ui.room_entries if "Explored" in t]
         assert len(tool_entries) == 1
         assert tool_entries[0] == "Explored\n└ Shell pwd"
+
+    async def test_tool_summaries_handle_edit_tools(self):
+        resp = _ok("Updated it", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Edit",
+                input_preview='{"file_path":"src/app.py","old_string":"old","new_string":"new"}',
+            ),
+        ])
+        c, _, _, ui = _make_botference(claude_responses=[resp])
+        await c.handle_input("@claude update", ui)
+        tool_entries = [t for _, t in ui.room_entries if "Explored" in t]
+        assert len(tool_entries) == 1
+        assert tool_entries[0] == "Explored\n└ Edit app.py"
+
+    async def test_tool_summaries_preserve_structured_diff_blocks(self):
+        diff_text = "@@ -1,1 +1,1 @@\n-old_name = 1\n+new_name = 1"
+        resp = _ok("Checked it", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Bash",
+                input_preview='{"command":"git diff -- src/app.py"}',
+                output_preview="@@ -1,1 +1,1 @@ ...",
+                output_blocks=parse_render_blocks(diff_text),
+            ),
+        ])
+        c, _, _, ui = _make_botference(claude_responses=[resp])
+        await c.handle_input("@claude inspect", ui)
+        explored_index = next(
+            i for i, (_, text) in enumerate(ui.room_entries) if text.startswith("Explored")
+        )
+        explored_blocks = ui.room_blocks[explored_index]
+        assert explored_blocks is not None
+        assert any(block["type"] == "diff" for block in explored_blocks)
 
 
 @pytest.mark.asyncio
@@ -1602,6 +1645,30 @@ class TestArchiveModeLauncher:
 
 
 class TestProjectLocalPolicy:
+    def test_framework_agents_are_not_treated_as_project_overrides_in_self_hosted_layout(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        built_in_agents = tmp_path / ".claude" / "agents"
+        built_in_agents.mkdir(parents=True)
+        (built_in_agents / "coder.md").write_text("# coder\n", encoding="utf-8")
+
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+export BOTFERENCE_HOME="{tmp_path}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+init_botference_paths
+validate_project_agents
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == ""
+
     def test_build_mode_can_be_disabled_per_project(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
         project_dir = tmp_path / "botference"
@@ -1670,6 +1737,30 @@ class TestProjectLocalPolicy:
         assert "shadows a built-in agent" in result.stderr
         assert "agent_overrides" in result.stderr
 
+    def test_init_project_uses_custom_project_dir_name(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        custom_dir = "state"
+
+        result = subprocess.run(
+            [sys.executable, str(repo_root / "scripts" / "init_project.py"), "--profile", "vault-drafter"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "BOTFERENCE_HOME": str(repo_root),
+                "BOTFERENCE_PROJECT_ROOT": str(tmp_path),
+                "BOTFERENCE_PROJECT_DIR_NAME": custom_dir,
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        project_dir = tmp_path / custom_dir
+        assert project_dir.is_dir()
+        policy = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
+        assert policy["write_roots"]["build"] == [f"{custom_dir}/build"]
+
     def test_non_git_snapshot_scopes_to_owned_paths(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
         project_dir = tmp_path / "botference"
@@ -1725,18 +1816,18 @@ cut -f2 "$snapshot"
 
 
 class TestPlanningPromptPolicy:
-    def test_plan_dispatcher_is_lazy_and_shell_free(self):
+    def test_plan_dispatcher_is_lazy_and_shell_limited(self):
         text = (Path(__file__).resolve().parent.parent / "prompts" / "plan.md").read_text(encoding="utf-8")
         assert "inspect only the files and paths needed" in text
         assert "scan the whole workspace up front" not in text
         assert "Scan the workspace first" not in text
-        assert "`Bash`" not in text
+        assert "`git diff`" in text
 
-    def test_plan_agent_prompt_is_lazy_and_shell_free(self):
+    def test_plan_agent_prompt_is_lazy_and_shell_limited(self):
         text = (Path(__file__).resolve().parent.parent / ".claude" / "agents" / "plan.md").read_text(encoding="utf-8")
         assert "inspect only the files and paths needed" in text
-        assert "Read / Glob / Grep / WebSearch / WebFetch" in text
-        assert "`Bash`" not in text
+        assert "Read / Glob / Grep / Bash / WebSearch / WebFetch" in text
+        assert "`git diff`" in text
 
 
 # ── Relay command parsing ─────────────────────────────────
