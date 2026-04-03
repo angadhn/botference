@@ -195,16 +195,18 @@ def render_transcript_entry(
 
     speaker = entry.speaker.lower()
     label = label_map.get(speaker, f"[{entry.speaker}] ")
-    if dimmed:
-        label_style = "bold bright_black"
-        body_style = "bright_black"
-        text = Text()
-        text.append(label, style=label_style)
-        text.append(entry.text, style=body_style)
-        return text
-
-    label_style = f"bold {label_colors.get(speaker, 'white')}"
-    body_style = body_colors.get(speaker, "white")
+    label_style = "bold bright_black" if dimmed else f"bold {label_colors.get(speaker, 'white')}"
+    body_style = "bright_black" if dimmed else body_colors.get(speaker, "white")
+    code_header_style = "bright_black" if dimmed else "bold cyan"
+    line_range_style = "bright_black"
+    language_style = "bright_black" if dimmed else "yellow"
+    code_gutter_style = "bright_black"
+    diff_meta_style = "bright_black" if dimmed else "yellow"
+    diff_hunk_style = "bright_black" if dimmed else "magenta"
+    diff_header_style = "bright_black" if dimmed else "bold cyan"
+    add_gutter_style = "bright_black" if dimmed else "green"
+    remove_gutter_style = "bright_black" if dimmed else "red"
+    context_gutter_style = "bright_black"
     indent = " " * len(label)
     blocks = entry.blocks if entry.blocks else parse_render_blocks(entry.text)
     rendered = Text()
@@ -230,22 +232,15 @@ def render_transcript_entry(
         for chunk, style in prefix_parts:
             line.append(chunk, style=style)
         if highlighted is not None:
-            line.append_text(highlighted.copy())
+            highlighted_text = highlighted.copy()
+            if dimmed:
+                highlighted_text.stylize("dim")
+            line.append_text(highlighted_text)
         else:
             line.append(fallback_text, style=fallback_style)
         line.append("\n")
         rendered.append_text(line)
         is_first_line = False
-
-    @lru_cache(maxsize=64)
-    def _syntax_for_language(language: str) -> Syntax:
-        return Syntax(
-            "",
-            language,
-            theme="monokai",
-            line_numbers=False,
-            word_wrap=False,
-        )
 
     def highlight_code_text(raw_text: str, language: Optional[str]) -> Optional[Text]:
         if not language:
@@ -270,33 +265,43 @@ def render_transcript_entry(
                     else f"lines {header['startLine']}-{header['endLine']}"
                 )
                 parts = [
-                    (header["filePath"], "bold cyan"),
+                    ("FILE | ", diff_header_style),
+                    (header["filePath"], code_header_style),
                     ("  ", body_style),
-                    (line_range, "bright_black"),
+                    (line_range, line_range_style),
                 ]
                 if block.get("language"):
                     parts.extend([
                         ("  ", body_style),
-                        (str(block["language"]), "yellow"),
+                        ("[", body_style),
+                        (str(block["language"]), language_style),
+                        ("]", body_style),
                     ])
                 append_line(parts)
             else:
-                append_line([(str(block.get("language") or "code"), "yellow")])
+                parts = [("CODE | ", diff_header_style)]
+                if block.get("language"):
+                    parts.extend([
+                        (str(block["language"]), language_style),
+                    ])
+                else:
+                    parts.append(("code", language_style))
+                append_line(parts)
 
             for _ in range(int(block.get("leadingBlankLines", 0))):
                 append_line([("", body_style)])
 
             next_line = header["startLine"] if header else None
             for raw_line in block["lines"]:
-                gutter = f"{next_line:>4}  " if next_line is not None else ""
+                gutter = f"{next_line:>4} | " if next_line is not None else ""
                 parts = []
                 if gutter:
-                    parts.append((gutter, "bright_black"))
+                    parts.append((gutter, code_gutter_style))
                 append_highlighted_line(
                     parts,
                     highlight_code_text(raw_line, block.get("language")),
                     fallback_text=raw_line,
-                    fallback_style="white",
+                    fallback_style=body_style if dimmed else "white",
                 )
                 if next_line is not None:
                     next_line += 1
@@ -308,10 +313,9 @@ def render_transcript_entry(
         for raw_line in block["lines"]:
             trimmed = raw_line.lstrip()
             if trimmed.startswith(("Edited in ", "Updated in ", "Added in ", "Deleted in ")):
-                gutter = _diff_header_gutter(file_path)
                 append_line([
-                    (gutter, "cyan"),
-                    (raw_line, "bold cyan"),
+                    ("FILE | ", diff_header_style),
+                    (raw_line, diff_header_style),
                 ])
                 if " in " in trimmed:
                     maybe_path = trimmed.split(" in ", 1)[1].split(" (", 1)[0]
@@ -323,18 +327,17 @@ def render_transcript_entry(
                 hunk = _parse_hunk_header(trimmed)
                 if hunk:
                     old_line, new_line = hunk
-                append_line([
-                    (_diff_header_gutter(file_path), "cyan"),
-                    (raw_line, "yellow"),
-                ])
+                prefix = "HUNK | " if trimmed.startswith("@@") else "DIFF | "
+                prefix_style = diff_hunk_style if trimmed.startswith("@@") else diff_meta_style
+                append_line([(prefix, prefix_style), (raw_line, prefix_style)])
                 continue
 
             if raw_line.startswith("+") and not raw_line.startswith("+++ "):
                 append_highlighted_line(
-                    [(_format_diff_gutter(None, new_line, "+"), "green")],
+                    [(_format_diff_gutter(None, new_line, "+"), add_gutter_style)],
                     highlight_code_text(raw_line[1:], block.get("language")),
                     fallback_text=raw_line[1:],
-                    fallback_style="green",
+                    fallback_style=add_gutter_style,
                 )
                 if new_line is not None:
                     new_line += 1
@@ -342,10 +345,10 @@ def render_transcript_entry(
 
             if raw_line.startswith("-") and not raw_line.startswith("--- "):
                 append_highlighted_line(
-                    [(_format_diff_gutter(old_line, None, "-"), "red")],
+                    [(_format_diff_gutter(old_line, None, "-"), remove_gutter_style)],
                     highlight_code_text(raw_line[1:], block.get("language")),
                     fallback_text=raw_line[1:],
-                    fallback_style="red",
+                    fallback_style=remove_gutter_style,
                 )
                 if old_line is not None:
                     old_line += 1
@@ -353,10 +356,10 @@ def render_transcript_entry(
 
             context_text = raw_line[1:] if raw_line.startswith(" ") else raw_line
             append_highlighted_line(
-                [(_format_diff_gutter(old_line, new_line, " "), "bright_black")],
+                [(_format_diff_gutter(old_line, new_line, " "), context_gutter_style)],
                 highlight_code_text(context_text, block.get("language")),
                 fallback_text=context_text,
-                fallback_style="white",
+                fallback_style=body_style if dimmed else "white",
             )
             if old_line is not None:
                 old_line += 1
@@ -368,12 +371,6 @@ def render_transcript_entry(
     return rendered
 
 
-def _diff_header_gutter(file_path: Optional[str]) -> str:
-    if not file_path:
-        return ""
-    return f"{file_path} "[:11].ljust(11)
-
-
 def _format_diff_line_number(line_number: Optional[int]) -> str:
     if line_number is None:
         return "    "
@@ -383,7 +380,11 @@ def _format_diff_line_number(line_number: Optional[int]) -> str:
 def _format_diff_gutter(
     old_line: Optional[int], new_line: Optional[int], marker: str
 ) -> str:
-    return f"{_format_diff_line_number(old_line)} {_format_diff_line_number(new_line)} {marker} "
+    return (
+        f"{_format_diff_line_number(old_line)}"
+        f" | {_format_diff_line_number(new_line)}"
+        f" | {marker} | "
+    )
 
 
 def _parse_hunk_header(line: str) -> Optional[tuple[int, int]]:
@@ -393,6 +394,17 @@ def _parse_hunk_header(line: str) -> Optional[tuple[int, int]]:
     if not match:
         return None
     return int(match.group(1)), int(match.group(2))
+
+
+@lru_cache(maxsize=64)
+def _syntax_for_language(language: str) -> Syntax:
+    return Syntax(
+        "",
+        language,
+        theme="monokai",
+        line_numbers=False,
+        word_wrap=False,
+    )
 
 
 TEXTUAL_IMPORT_ERROR: Optional[ModuleNotFoundError] = None
