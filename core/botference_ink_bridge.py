@@ -14,7 +14,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-from cli_adapters import ClaudeAdapter, CodexAdapter, plan_allowed_tools_for_work_dir
+from cli_adapters import ClaudeAdapter, CodexAdapter, claude_plan_settings_for_work_dir
 from paths import BotferencePaths
 from botference import Botference
 from botference_ui import RoomMode, StatusSnapshot
@@ -142,7 +142,10 @@ async def main() -> None:
             "WebFetch",
         ],
         debug_log_path=claude_log,
-        allowed_tools=plan_allowed_tools_for_work_dir(
+        cwd=str(paths.work_dir),
+        add_dirs=([str(paths.project_root)]
+                  if paths.work_dir != paths.project_root else []),
+        settings=claude_plan_settings_for_work_dir(
             paths.project_root, paths.work_dir
         ),
     )

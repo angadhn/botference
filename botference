@@ -264,33 +264,6 @@ while true; do
   # --- Plan mode: one-shot interactive session, early exit ---
   if [ "$LOOP_MODE" = "plan" ] || [ "$LOOP_MODE" = "research-plan" ]; then
     CURRENT_AGENT="${CURRENT_AGENT:-plan}"
-    # Compute allowed-tools paths (dynamic: bare names or work/ prefix)
-    PLAN_WORK_PREFIX=""
-    if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
-      PLAN_WORK_PREFIX="${BOTFERENCE_WORK_DIR#$BOTFERENCE_PROJECT_ROOT/}/"
-    fi
-    PLAN_ALLOWED_TOOLS=("Read" "Glob" "Grep" "Bash" "WebSearch" "WebFetch")
-    if [ -n "$PLAN_WORK_PREFIX" ]; then
-      PLAN_ALLOWED_TOOLS+=(
-        "Edit(/${PLAN_WORK_PREFIX}*)"
-        "Edit(/${PLAN_WORK_PREFIX}**)"
-        "Write(/${PLAN_WORK_PREFIX}*)"
-        "Write(/${PLAN_WORK_PREFIX}**)"
-        "MultiEdit(/${PLAN_WORK_PREFIX}*)"
-        "MultiEdit(/${PLAN_WORK_PREFIX}**)"
-      )
-    else
-      PLAN_ALLOWED_TOOLS+=(
-        "Edit(/checkpoint.md)"
-        "Edit(/implementation-plan.md)"
-        "Edit(/implementation-plan-*.md)"
-        "Edit(/inbox.md)"
-        "Write(/checkpoint.md)"
-        "Write(/implementation-plan.md)"
-        "Write(/implementation-plan-*.md)"
-        "Write(/inbox.md)"
-      )
-    fi
 
     # --- Botference mode: Claude + Codex TUI ---
     if $BOTFERENCE_MODE; then
@@ -437,29 +410,79 @@ while true; do
     if [ -n "$PLAN_SYSTEM" ]; then
       SYS_ARGS=(--append-system-prompt "$PLAN_SYSTEM")
     fi
+    PLAN_CLAUDE_SETTINGS=$(mktemp)
+    python3 - "$BOTFERENCE_PROJECT_ROOT" "$BOTFERENCE_WORK_DIR" "$PLAN_CLAUDE_SETTINGS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+project_root = Path(sys.argv[1]).resolve()
+work_dir = Path(sys.argv[2]).resolve()
+out_path = Path(sys.argv[3])
+
+allow = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]
+if work_dir == project_root:
+    allow.extend([
+        f"Edit(//{(work_dir / 'checkpoint.md').as_posix().lstrip('/')})",
+        f"Edit(//{(work_dir / 'implementation-plan.md').as_posix().lstrip('/')})",
+        f"Edit(//{(work_dir / 'implementation-plan-*.md').as_posix().lstrip('/')})",
+        f"Edit(//{(work_dir / 'inbox.md').as_posix().lstrip('/')})",
+    ])
+else:
+    work_abs = work_dir.as_posix().lstrip("/")
+    allow.extend([
+        "Bash",
+        f"Edit(//{work_abs})",
+        f"Edit(//{work_abs}/*)",
+        f"Edit(//{work_abs}/**)",
+    ])
+
+settings = {
+    "permissions": {
+        "defaultMode": "dontAsk",
+        "allow": allow,
+    },
+    "sandbox": {
+        "enabled": True,
+        "allowUnsandboxedCommands": False,
+    },
+}
+out_path.write_text(json.dumps(settings))
+PY
+    CLAUDE_DIR_ARGS=()
+    if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+      CLAUDE_DIR_ARGS=(--add-dir "$BOTFERENCE_PROJECT_ROOT")
+    fi
     SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
     resolve_model_and_effort "$CLAUDE_MODEL" "plan"
     echo "  Model: $CLI_MODEL ($LOOP_MODE — claude CLI${EFFORT_FLAG:+, effort: ${EFFORT_FLAG#--effort }})"
     if [ -n "$PROMPT" ]; then
-      echo "$PROMPT" | claude --model "$CLI_MODEL" \
-        $EFFORT_FLAG \
-        "${SYS_ARGS[@]}" \
-        --session-id "$SESSION_ID" \
-        --permission-mode acceptEdits \
-        --name "${CURRENT_THREAD:-botference-plan}" \
-        --allowedTools "${PLAN_ALLOWED_TOOLS[@]}"
+      (
+        cd "$BOTFERENCE_WORK_DIR"
+        echo "$PROMPT" | claude --model "$CLI_MODEL" \
+          $EFFORT_FLAG \
+          "${SYS_ARGS[@]}" \
+          --session-id "$SESSION_ID" \
+          --name "${CURRENT_THREAD:-botference-plan}" \
+          --settings "$PLAN_CLAUDE_SETTINGS" \
+          "${CLAUDE_DIR_ARGS[@]}"
+      )
 
     else
-      claude --model "$CLI_MODEL" \
-        $EFFORT_FLAG \
-        "${SYS_ARGS[@]}" \
-        --session-id "$SESSION_ID" \
-        --permission-mode acceptEdits \
-        --name "${CURRENT_THREAD:-botference-plan}" \
-        --allowedTools "${PLAN_ALLOWED_TOOLS[@]}"
+      (
+        cd "$BOTFERENCE_WORK_DIR"
+        claude --model "$CLI_MODEL" \
+          $EFFORT_FLAG \
+          "${SYS_ARGS[@]}" \
+          --session-id "$SESSION_ID" \
+          --name "${CURRENT_THREAD:-botference-plan}" \
+          --settings "$PLAN_CLAUDE_SETTINGS" \
+          "${CLAUDE_DIR_ARGS[@]}"
+      )
 
     fi
     EXIT_CODE=$?
+    rm -f "$PLAN_CLAUDE_SETTINGS"
 
     cleanup_pid "$MONITOR_PID"; MONITOR_PID=""
 

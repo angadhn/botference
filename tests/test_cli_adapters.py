@@ -27,6 +27,7 @@ from cli_adapters import (
     _read_jsonl_lines,
     _truncate,
     _CONTEXT_WINDOWS,
+    claude_plan_settings_for_work_dir,
     plan_allowed_tools_for_work_dir,
 )
 
@@ -635,17 +636,24 @@ class TestCommandConstruction:
         assert "--resume" in cmd
         assert "--session-id" not in cmd
 
-    def test_claude_allowed_tools_do_not_force_plan_permission_mode(self):
+    def test_claude_settings_include_work_dir_and_project_context(self):
         c = ClaudeAdapter(
             model="claude-haiku-4-5",
-            allowed_tools=["Write(/botference/**)"],
+            cwd="/repo/botference",
+            add_dirs=["/repo"],
+            settings=claude_plan_settings_for_work_dir("/repo", "/repo/botference"),
         )
         c.session_id = "test-sid"
         cmd = c._build_cmd(resume=False)
-        assert "--allowedTools" in cmd
-        assert "Write(/botference/**)" in cmd
-        assert "--permission-mode" in cmd
-        assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
+        assert "--settings" in cmd
+        assert "--add-dir" in cmd
+        assert cmd[cmd.index("--add-dir") + 1] == "/repo"
+        settings = json.loads(cmd[cmd.index("--settings") + 1])
+        assert settings["permissions"]["defaultMode"] == "dontAsk"
+        assert "Bash" in settings["permissions"]["allow"]
+        assert "Edit(//repo/botference/**)" in settings["permissions"]["allow"]
+        assert settings["sandbox"]["enabled"] is True
+        assert settings["sandbox"]["allowUnsandboxedCommands"] is False
 
     def test_codex_send_cmd(self):
         x = CodexAdapter(model="gpt-5.4")
@@ -696,6 +704,14 @@ class TestCommandConstruction:
         assert "Edit(/implementation-plan.md)" in allowed
         assert "Write(/inbox.md)" in allowed
         assert "Edit(/repo/**)" not in allowed
+
+    def test_claude_plan_settings_keep_root_fallback_narrow(self):
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo")
+        allow = settings["permissions"]["allow"]
+        assert settings["permissions"]["defaultMode"] == "dontAsk"
+        assert "Bash" not in allow
+        assert "Edit(//repo/implementation-plan.md)" in allow
+        assert "Edit(//repo/inbox.md)" in allow
 
 # ── Error paths ──────────────────────────────────────────────
 

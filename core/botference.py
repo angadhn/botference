@@ -26,7 +26,7 @@ from cli_adapters import (
     ClaudeAdapter,
     CodexAdapter,
     ToolSummary,
-    plan_allowed_tools_for_work_dir,
+    claude_plan_settings_for_work_dir,
 )
 from paths import BotferencePaths
 from botference_ui import RoomMode, StatusSnapshot
@@ -1859,7 +1859,10 @@ def main() -> None:
             "WebFetch",
         ],
         debug_log_path=claude_log,
-        allowed_tools=plan_allowed_tools_for_work_dir(
+        cwd=str(paths.work_dir),
+        add_dirs=([str(paths.project_root)]
+                  if paths.work_dir != paths.project_root else []),
+        settings=claude_plan_settings_for_work_dir(
             paths.project_root, paths.work_dir
         ),
     )

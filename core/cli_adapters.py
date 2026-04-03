@@ -59,6 +59,60 @@ def plan_allowed_tools_for_work_dir(
             allowed.append(f"{tool}({pattern})")
     return allowed
 
+
+def claude_plan_settings_for_work_dir(
+    project_root: str | Path, work_dir: str | Path
+) -> dict:
+    """Build Claude Code settings for planner sessions.
+
+    Use permission rules for file tools and OS sandboxing for Bash so planner
+    sessions can write inside the Botference work directory without opening the
+    whole repository to edits.
+    """
+
+    project_root_path = Path(project_root).resolve()
+    work_dir_path = Path(work_dir).resolve()
+
+    allow_rules = [
+        "Read",
+        "Glob",
+        "Grep",
+        "WebSearch",
+        "WebFetch",
+    ]
+    sandbox = {
+        "enabled": True,
+        "allowUnsandboxedCommands": False,
+    }
+
+    if work_dir_path == project_root_path:
+        checkpoint_path = (work_dir_path / "checkpoint.md").as_posix().lstrip("/")
+        plan_path = (work_dir_path / "implementation-plan.md").as_posix().lstrip("/")
+        plan_glob = (work_dir_path / "implementation-plan-*.md").as_posix().lstrip("/")
+        inbox_path = (work_dir_path / "inbox.md").as_posix().lstrip("/")
+        allow_rules.extend([
+            f"Edit(//{checkpoint_path})",
+            f"Edit(//{plan_path})",
+            f"Edit(//{plan_glob})",
+            f"Edit(//{inbox_path})",
+        ])
+    else:
+        allow_rules.append("Bash")
+        work_dir_abs = work_dir_path.as_posix()
+        allow_rules.extend([
+            f"Edit(//{work_dir_abs.lstrip('/')})",
+            f"Edit(//{work_dir_abs.lstrip('/')}/*)",
+            f"Edit(//{work_dir_abs.lstrip('/')}/**)",
+        ])
+
+    return {
+        "permissions": {
+            "defaultMode": "dontAsk",
+            "allow": allow_rules,
+        },
+        "sandbox": sandbox,
+    }
+
 # ── Response types ───────────────────────────────────────────
 
 
@@ -225,7 +279,9 @@ class ClaudeAdapter:
                  effort: str = "",
                  timeout: Optional[int] = None,
                  debug_log_path: str = "",
-                 allowed_tools: Optional[list] = None):
+                 cwd: str = "",
+                 add_dirs: Optional[list[str]] = None,
+                 settings: Optional[dict] = None):
         self.model = model
         self.tools = tools or ["Read", "Glob", "Grep", "Bash"]
         self.effort = effort
@@ -234,7 +290,9 @@ class ClaudeAdapter:
             "BOTFERENCE_CLI_TIMEOUT",
         )
         self.debug_log_path = debug_log_path
-        self.allowed_tools = allowed_tools  # path-restricted tool permissions
+        self.cwd = cwd
+        self.add_dirs = add_dirs or []
+        self.settings = settings
         self.session_id: str = ""
 
     def _build_cmd(self, resume: bool) -> list:
@@ -251,8 +309,10 @@ class ClaudeAdapter:
         ]
         if self.effort:
             cmd += ["--effort", self.effort]
-        if self.allowed_tools:
-            cmd += ["--permission-mode", "acceptEdits", "--allowedTools"] + self.allowed_tools
+        for path in self.add_dirs:
+            cmd += ["--add-dir", path]
+        if self.settings:
+            cmd += ["--settings", json.dumps(self.settings, separators=(",", ":"))]
         return cmd
 
     async def send(self, prompt: str) -> AdapterResponse:
@@ -276,6 +336,7 @@ class ClaudeAdapter:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=self.cwd or None,
             )
         except FileNotFoundError:
             return AdapterResponse(
