@@ -32,6 +32,9 @@ def room_preamble(name: str, other: str) -> str:
         f"You are {name} in a shared planning room with {other} "
         f"and a human user.\n"
         f"You are collaborating on creating an implementation plan.\n"
+        "You may create or update files inside the Botference work directory "
+        "(project-local `botference/` or self-hosted `work/`) when the user "
+        "explicitly asks for it, but do not modify project source files outside that area.\n"
         f"Be concise and constructive. Focus on architecture and "
         f"design decisions."
     )

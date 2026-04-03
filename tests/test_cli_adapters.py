@@ -627,6 +627,7 @@ class TestCommandConstruction:
         assert "--output-format" in cmd
         idx = cmd.index("--tools")
         assert cmd[idx + 1] == "Read,Grep"
+        assert "--permission-mode" not in cmd
 
     def test_claude_resume_cmd(self):
         c = ClaudeAdapter(model="claude-haiku-4-5")
@@ -634,6 +635,17 @@ class TestCommandConstruction:
         cmd = c._build_cmd(resume=True)
         assert "--resume" in cmd
         assert "--session-id" not in cmd
+
+    def test_claude_allowed_tools_do_not_force_plan_permission_mode(self):
+        c = ClaudeAdapter(
+            model="claude-haiku-4-5",
+            allowed_tools=["Write(/botference/**)"],
+        )
+        c.session_id = "test-sid"
+        cmd = c._build_cmd(resume=False)
+        assert "--allowedTools" in cmd
+        assert "Write(/botference/**)" in cmd
+        assert "--permission-mode" not in cmd
 
     def test_codex_send_cmd(self):
         x = CodexAdapter(model="gpt-5.4")

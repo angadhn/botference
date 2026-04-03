@@ -58,6 +58,7 @@ class TestRoomPreamble:
         result = room_preamble("Claude", "Codex")
         assert "planning room" in result
         assert "implementation plan" in result
+        assert "Botference work directory" in result
 
     def test_symmetric(self):
         a = room_preamble("Claude", "Codex")
