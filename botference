@@ -445,6 +445,7 @@ while true; do
         $EFFORT_FLAG \
         "${SYS_ARGS[@]}" \
         --session-id "$SESSION_ID" \
+        --permission-mode acceptEdits \
         --name "${CURRENT_THREAD:-botference-plan}" \
         --allowedTools "${PLAN_ALLOWED_TOOLS[@]}"
 
@@ -453,6 +454,7 @@ while true; do
         $EFFORT_FLAG \
         "${SYS_ARGS[@]}" \
         --session-id "$SESSION_ID" \
+        --permission-mode acceptEdits \
         --name "${CURRENT_THREAD:-botference-plan}" \
         --allowedTools "${PLAN_ALLOWED_TOOLS[@]}"
 

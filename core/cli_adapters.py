@@ -252,7 +252,7 @@ class ClaudeAdapter:
         if self.effort:
             cmd += ["--effort", self.effort]
         if self.allowed_tools:
-            cmd += ["--allowedTools"] + self.allowed_tools
+            cmd += ["--permission-mode", "acceptEdits", "--allowedTools"] + self.allowed_tools
         return cmd
 
     async def send(self, prompt: str) -> AdapterResponse:
