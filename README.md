@@ -1,6 +1,7 @@
 # Botference
 
 [![Tracked code LOC](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/angadhn/botference/main/docs/badges/loc.json)](#tracked-code-loc)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 > [!NOTE]
 > This README was AI-generated. I (Angadh) have skimmed and supervised its creation.
