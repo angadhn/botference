@@ -478,13 +478,18 @@ class CodexAdapter:
         return cmd
 
     def _build_resume_cmd(self, message: str) -> list:
-        cmd = [
-            "codex", "exec", "resume", self.thread_id,
-            "--json",
-            "--skip-git-repo-check",
-        ]
         if self.cwd:
-            cmd += ["--cd", self.cwd]
+            cmd = [
+                "codex", "exec", "--cd", self.cwd, "resume", self.thread_id,
+                "--json",
+                "--skip-git-repo-check",
+            ]
+        else:
+            cmd = [
+                "codex", "exec", "resume", self.thread_id,
+                "--json",
+                "--skip-git-repo-check",
+            ]
         cmd.append(message)
         return cmd
 
