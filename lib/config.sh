@@ -289,7 +289,7 @@ parse_loop_args() {
   CLI_MODEL=""
   BOTFERENCE_MODE=false
   DEBUG_PANES=false
-  UI_MODE="textual"
+  UI_MODE="ink"
   INIT_PROFILE="vault-drafter"
 
   for arg in "$@"; do
@@ -332,8 +332,8 @@ Options:
   -p                Non-interactive (pipe) mode
   --anthropic-model=<name>  Override Anthropic model (Claude participant)
   --claude          Solo Claude mode (skip Codex, use claude CLI only)
-  --ink             Use Ink (Node.js) TUI for botference mode
-  --textual         Use Textual (Python) TUI for botference mode (default)
+  --ink             Use Ink (Node.js) TUI for botference mode (default)
+  --textual         Use Textual (Python) TUI for botference mode
   --no-debug-panes  Disable debug panes in botference mode
   --serial          Force serial architecture
   --parallel        Force parallel architecture

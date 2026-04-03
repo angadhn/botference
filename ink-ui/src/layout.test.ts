@@ -181,16 +181,38 @@ describe("preRenderLines", () => {
     }];
     const lines = preRenderLines(entries, 80);
     assert.equal(lines[1]!.segments?.[0]?.text, "def");
-    assert.equal(lines[1]!.segments?.[0]?.color, "magenta");
+    assert.equal(lines[1]!.segments?.[0]?.color, "#ff7b72");
     assert.equal(lines[2]!.segments?.[0]?.text, "def");
-    assert.equal(lines[2]!.segments?.[0]?.color, "magenta");
+    assert.equal(lines[2]!.segments?.[0]?.color, "#ff7b72");
 
     const removedChanged = lines[1]!.segments?.find((segment) => segment.text.includes("old_name"));
     const addedChanged = lines[2]!.segments?.find((segment) => segment.text.includes("new_name"));
-    assert.equal(removedChanged?.color, "greenBright");
-    assert.equal(addedChanged?.color, "greenBright");
+    assert.equal(removedChanged?.color, "#d2a8ff");
+    assert.equal(addedChanged?.color, "#d2a8ff");
     assert.equal(removedChanged?.backgroundColor, "red");
     assert.equal(addedChanged?.backgroundColor, "green");
+  });
+
+  it("marks wrapped diff continuation rows and preserves intraline highlights", () => {
+    const entries = [{
+      speaker: "codex",
+      text: "Edited in src/app.py (+1 -1)\n- const veryLongOldName = 12345;\n+ const veryLongNewName = 12345;",
+    }];
+    const lines = preRenderLines(entries, 36);
+    const wrappedRemoved = lines.find((line) => line.gutter === "   .    . -");
+    const wrappedAdded = lines.find((line) => line.gutter === "   .    . +");
+    assert.ok(wrappedRemoved);
+    assert.ok(wrappedAdded);
+    assert.equal(wrappedRemoved?.gutterBackgroundColor, "red");
+    assert.equal(wrappedAdded?.gutterBackgroundColor, "green");
+    assert.ok(
+      wrappedRemoved?.segments?.some((segment) => segment.backgroundColor === "red"),
+      "expected wrapped removed line to keep intraline background",
+    );
+    assert.ok(
+      wrappedAdded?.segments?.some((segment) => segment.backgroundColor === "green"),
+      "expected wrapped added line to keep intraline background",
+    );
   });
 
   it("does not color ordinary bullet lists as diff lines", () => {
@@ -216,10 +238,21 @@ describe("preRenderLines", () => {
     assert.equal(lines[1]!.text, "");
     assert.equal(lines[2]!.gutter, " 400  ");
     assert.equal(lines[2]!.segments?.[0]?.text, "def");
-    assert.equal(lines[2]!.segments?.[0]?.color, "magenta");
-    assert.equal(lines[2]!.segments?.[2]?.text, "parse_input");
-    assert.equal(lines[2]!.segments?.[2]?.color, "greenBright");
+    assert.equal(lines[2]!.segments?.[0]?.color, "#ff7b72");
+    const functionName = lines[2]!.segments?.find((segment) => segment.text.includes("parse_input"));
+    assert.equal(functionName?.color, "#d2a8ff");
+    assert.equal(functionName?.bold, true);
     assert.equal(lines[3]!.gutter, " 401  ");
+  });
+
+  it("marks wrapped code rows with a continuation gutter", () => {
+    const entries = [{
+      speaker: "claude",
+      text: "'core/botference.py' lines 400-401:\n\n```python\ndef parse_input_with_a_very_long_name(raw: str):\n```",
+    }];
+    const lines = preRenderLines(entries, 36);
+    assert.equal(lines[2]!.gutter, " 400  ");
+    assert.equal(lines[3]!.gutter, "  ..  ");
   });
 
   it("highlights JS/TS declaration names more strongly", () => {
@@ -229,7 +262,7 @@ describe("preRenderLines", () => {
     }];
     const lines = preRenderLines(entries, 80);
     const functionName = lines[1]!.segments?.find((segment) => segment.text.includes("renderDiffBlock"));
-    assert.equal(functionName?.color, "cyanBright");
+    assert.equal(functionName?.color, "#d2a8ff");
     assert.equal(functionName?.bold, true);
   });
 

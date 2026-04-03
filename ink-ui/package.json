@@ -10,6 +10,7 @@
     "test": "npx tsx --test src/**/*.test.ts"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "ink": "^6.8.0",
     "react": "^19.2.0",
     "string-width": "^8.2.0",

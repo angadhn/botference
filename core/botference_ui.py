@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from typing import Callable, Optional
 
+from rich.syntax import Syntax
 from rich.text import Text
 from render_blocks import parse_render_blocks
 
@@ -216,6 +218,43 @@ def render_transcript_entry(
         rendered.append("\n")
         is_first_line = False
 
+    def append_highlighted_line(
+        prefix_parts: list[tuple[str, str]],
+        highlighted: Optional[Text],
+        fallback_text: str = "",
+        fallback_style: str = body_style,
+    ) -> None:
+        nonlocal is_first_line
+        line = Text()
+        line.append(label if is_first_line else indent, style=label_style)
+        for chunk, style in prefix_parts:
+            line.append(chunk, style=style)
+        if highlighted is not None:
+            line.append_text(highlighted.copy())
+        else:
+            line.append(fallback_text, style=fallback_style)
+        line.append("\n")
+        rendered.append_text(line)
+        is_first_line = False
+
+    @lru_cache(maxsize=64)
+    def _syntax_for_language(language: str) -> Syntax:
+        return Syntax(
+            "",
+            language,
+            theme="monokai",
+            line_numbers=False,
+            word_wrap=False,
+        )
+
+    def highlight_code_text(raw_text: str, language: Optional[str]) -> Optional[Text]:
+        if not language:
+            return None
+        try:
+            return _syntax_for_language(str(language)).highlight(raw_text)
+        except Exception:
+            return None
+
     for block in blocks:
         if block["type"] == "text":
             for raw_line in block["lines"]:
@@ -253,8 +292,12 @@ def render_transcript_entry(
                 parts = []
                 if gutter:
                     parts.append((gutter, "bright_black"))
-                parts.append((raw_line, "white"))
-                append_line(parts)
+                append_highlighted_line(
+                    parts,
+                    highlight_code_text(raw_line, block.get("language")),
+                    fallback_text=raw_line,
+                    fallback_style="white",
+                )
                 if next_line is not None:
                     next_line += 1
             continue
@@ -287,27 +330,34 @@ def render_transcript_entry(
                 continue
 
             if raw_line.startswith("+") and not raw_line.startswith("+++ "):
-                append_line([
-                    (_format_diff_gutter(None, new_line, "+"), "green"),
-                    (raw_line[1:], "green"),
-                ])
+                append_highlighted_line(
+                    [(_format_diff_gutter(None, new_line, "+"), "green")],
+                    highlight_code_text(raw_line[1:], block.get("language")),
+                    fallback_text=raw_line[1:],
+                    fallback_style="green",
+                )
                 if new_line is not None:
                     new_line += 1
                 continue
 
             if raw_line.startswith("-") and not raw_line.startswith("--- "):
-                append_line([
-                    (_format_diff_gutter(old_line, None, "-"), "red"),
-                    (raw_line[1:], "red"),
-                ])
+                append_highlighted_line(
+                    [(_format_diff_gutter(old_line, None, "-"), "red")],
+                    highlight_code_text(raw_line[1:], block.get("language")),
+                    fallback_text=raw_line[1:],
+                    fallback_style="red",
+                )
                 if old_line is not None:
                     old_line += 1
                 continue
 
-            append_line([
-                (_format_diff_gutter(old_line, new_line, " "), "bright_black"),
-                (raw_line[1:] if raw_line.startswith(" ") else raw_line, "white"),
-            ])
+            context_text = raw_line[1:] if raw_line.startswith(" ") else raw_line
+            append_highlighted_line(
+                [(_format_diff_gutter(old_line, new_line, " "), "bright_black")],
+                highlight_code_text(context_text, block.get("language")),
+                fallback_text=context_text,
+                fallback_style="white",
+            )
             if old_line is not None:
                 old_line += 1
             if new_line is not None:

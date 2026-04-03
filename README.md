@@ -23,11 +23,11 @@ part that works well and is ready for use.
 > workflow.
 
 **Ink TUI** — council panel (left), caucus panel (right), input field and
-status line at the bottom:
+status line at the bottom. This is the primary interface and default planner UI:
 
 ![Ink UI — council and caucus panels with status line](docs/images/ink-ui.png)
 
-**Textual TUI** — same layout, Python-based (default):
+**Textual TUI** — same layout, Python-based fallback:
 
 ![Textual UI — council and caucus panels with status line](docs/images/textual-ui.png)
 
@@ -35,8 +35,8 @@ The TUI has two backends:
 
 | Flag | Backend | Notes |
 |------|---------|-------|
-| `--textual` | Textual (Python) | Default. No extra install needed. |
-| `--ink` | Ink (Node.js/React) | First use after clone: `cd ink-ui && npm install`. Supports multiline input (Shift+Enter). |
+| `--ink` | Ink (Node.js/React) | Default. First use after clone: `cd ink-ui && npm install`. Supports multiline input (Shift+Enter). |
+| `--textual` | Textual (Python) | Fallback backend if you want the Python/Textual UI. |
 
 Both present the same council + caucus interface. Use `--claude` to skip Codex
 and run a solo Claude session (no TUI, just the Claude CLI).
@@ -77,7 +77,7 @@ conflicting opinions.
 - Claude Code CLI installed and authenticated
 - Codex CLI installed and authenticated
 - Python 3 available on your `PATH`
-- Node.js + npm only if you want the Ink UI (`--ink`)
+- Node.js + npm for the default Ink UI (`plan` / `research-plan`)
 
 ### Running From This Repo Checkout
 
@@ -85,10 +85,10 @@ If you cloned **this** repository and want to try Botference immediately, run
 it from the repo root with the local launcher:
 
 ```bash
-./botference plan                          # Textual TUI
-./botference plan --ink                    # Ink TUI
+./botference plan                          # Ink TUI (default)
+./botference plan --textual                # Textual fallback
 ./botference plan --claude                 # Solo Claude
-./botference research-plan --ink           # Structured planning (experimental)
+./botference research-plan                 # Structured planning in Ink (experimental)
 ./botference --help
 ```
 
@@ -96,7 +96,7 @@ Do **not** run `botference init` in the Botference source repo. This checkout
 uses the legacy self-hosted layout (`work/`, `build/`, `archive/`) rather than
 a top-level `botference/` state directory.
 
-Before the first `--ink` run from a fresh clone:
+Before the first planning run from a fresh clone:
 
 ```bash
 cd ink-ui && npm install
@@ -108,9 +108,9 @@ From a target project root:
 
 ```bash
 botference init                            # Create project-local botference/ state
-botference plan                            # Council: you + Claude + Codex
+botference plan                            # Council: you + Claude + Codex (Ink default)
+botference plan --textual                  # Use the Textual fallback instead
 botference plan --claude                   # Solo Claude (no Codex)
-botference plan --ink                      # Use Ink TUI instead of Textual
 
 # Building (experimental)
 botference build                           # Interactive build loop
@@ -164,7 +164,8 @@ explicitly. For example:
 That keeps the default safety boundary narrow while still allowing project-local
 owned outputs when you choose to expand them.
 
-For a fresh clone, install Ink's Node dependencies once before using `--ink`:
+For a fresh clone, install Ink's Node dependencies once before using the
+default planner UI:
 
 ```bash
 cd ink-ui && npm install

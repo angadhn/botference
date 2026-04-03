@@ -1,5 +1,6 @@
 import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
+import hljs from "highlight.js";
 
 // Layout budget constants — derived from Ink's rendered chrome.
 // INPUT_CHROME: divider(1) + status(1) + label(1) + top inset(1)
@@ -415,6 +416,10 @@ function formatCodeGutter(lineNumber: number | null): string | undefined {
   return `${String(lineNumber).padStart(4, " ")}  `;
 }
 
+function formatCodeContinuationGutter(): string {
+  return "  ..  ";
+}
+
 function formatDiffGutter(
   kind: "add" | "remove" | "context" | "continuation",
   oldLine: number | null,
@@ -423,6 +428,20 @@ function formatDiffGutter(
   if (kind === "continuation") return " ".repeat(DIFF_GUTTER_WIDTH);
   const marker = kind === "add" ? "+" : kind === "remove" ? "-" : " ";
   return `${formatDiffLineNumber(oldLine)} ${formatDiffLineNumber(newLine)} ${marker} `;
+}
+
+function formatDiffContinuationGutter(
+  kind: "add" | "remove" | "context" | "meta" | "summary",
+): string {
+  if (kind === "summary" || kind === "meta") {
+    return "...".padEnd(DIFF_GUTTER_WIDTH, " ");
+  }
+  const marker = kind === "add"
+    ? "+"
+    : kind === "remove"
+      ? "-"
+      : "|";
+  return `${"   ."} ${"   ."} ${marker}`;
 }
 
 function nextDiffContext(
@@ -777,6 +796,54 @@ const JS_TOKEN_RE = /(\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\
 const SHELL_TOKEN_RE = /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(^|\s)(-[A-Za-z-]+)\b|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w-]*\b/g;
 const JSON_TOKEN_RE = /("(?:[^"\\]|\\.)*")|(-?\d+(?:\.\d+)?)|\b(true|false|null)\b/g;
 const YAML_TOKEN_RE = /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(^\s*[A-Za-z0-9_.-]+:)|(-?\d+(?:\.\d+)?)|\b(true|false|null)\b/g;
+const HLJS_STYLE_MAP: Record<string, Omit<LineSegment, "text">> = {
+  "hljs-keyword": { color: "#ff7b72", bold: true },
+  "hljs-operator": { color: "#ff7b72" },
+  "hljs-built_in": { color: "#79c0ff" },
+  "hljs-type": { color: "#ffa657", bold: true },
+  "hljs-title": { color: "#d2a8ff", bold: true },
+  "hljs-function": { color: "#d2a8ff", bold: true },
+  "hljs-params": { color: "#c9d1d9" },
+  "hljs-string": { color: "#a5d6ff" },
+  "hljs-char.escape_": { color: "#79c0ff" },
+  "hljs-number": { color: "#79c0ff" },
+  "hljs-literal": { color: "#79c0ff", bold: true },
+  "hljs-comment": { color: "#8b949e" },
+  "hljs-quote": { color: "#8b949e" },
+  "hljs-variable": { color: "#ffa657" },
+  "hljs-property": { color: "#79c0ff" },
+  "hljs-attr": { color: "#79c0ff" },
+  "hljs-attribute": { color: "#79c0ff" },
+  "hljs-meta": { color: "#7ee787" },
+  "hljs-tag": { color: "#7ee787" },
+  "hljs-name": { color: "#7ee787" },
+  "hljs-section": { color: "#d2a8ff", bold: true },
+  "hljs-punctuation": { color: "#c9d1d9" },
+  "function_": { color: "#d2a8ff", bold: true },
+  "class_": { color: "#ffa657", bold: true },
+};
+const HLJS_LANGUAGE_ALIASES: Record<string, string> = {
+  py: "python",
+  python: "python",
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  mjs: "javascript",
+  cjs: "javascript",
+  javascript: "javascript",
+  typescript: "typescript",
+  bash: "bash",
+  sh: "bash",
+  zsh: "bash",
+  shell: "bash",
+  json: "json",
+  yaml: "yaml",
+  yml: "yaml",
+  md: "markdown",
+  markdown: "markdown",
+};
+const highlightCache = new Map<string, LineSegment[]>();
 
 function makeSegment(
   text: string,
@@ -888,11 +955,143 @@ function highlightShellGeneric(line: string, baseBackgroundColor?: string): Line
   }, "white");
 }
 
+function decodeHighlightedText(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'");
+}
+
+function mergeLineSegmentStyle(
+  base: Omit<LineSegment, "text">,
+  extra: Omit<LineSegment, "text">,
+): Omit<LineSegment, "text"> {
+  return {
+    ...base,
+    ...extra,
+    backgroundColor: extra.backgroundColor ?? base.backgroundColor,
+  };
+}
+
+function normalizeHighlightLanguage(language: string | null): string | null {
+  const normalized = normalizeLanguageName(language);
+  if (!normalized) return null;
+  const candidate = HLJS_LANGUAGE_ALIASES[normalized] ?? normalized;
+  return hljs.getLanguage(candidate) ? candidate : null;
+}
+
+function stylesEqual(
+  left: Omit<LineSegment, "text">,
+  right: Omit<LineSegment, "text">,
+): boolean {
+  return left.color === right.color
+    && left.bold === right.bold
+    && left.backgroundColor === right.backgroundColor;
+}
+
+function pushHighlightedSegment(
+  segments: LineSegment[],
+  text: string,
+  style: Omit<LineSegment, "text">,
+): void {
+  if (text.length === 0) return;
+  const previous = segments[segments.length - 1];
+  if (previous && stylesEqual(previous, style)) {
+    previous.text += text;
+    return;
+  }
+  segments.push({ text, ...style });
+}
+
+function parseHighlightedHtml(
+  html: string,
+  baseBackgroundColor?: string,
+): LineSegment[] {
+  const baseStyle: Omit<LineSegment, "text"> = {
+    color: "#e6edf3",
+    ...(baseBackgroundColor == null ? {} : { backgroundColor: baseBackgroundColor }),
+  };
+  const segments: LineSegment[] = [];
+  const stack: Array<Omit<LineSegment, "text">> = [baseStyle];
+  const tagPattern = /<\/?span(?:\s+class="([^"]+)")?>/g;
+  let lastIndex = 0;
+
+  for (const match of html.matchAll(tagPattern)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      pushHighlightedSegment(
+        segments,
+        decodeHighlightedText(html.slice(lastIndex, index)),
+        stack[stack.length - 1]!,
+      );
+    }
+
+    if (match[0].startsWith("</")) {
+      if (stack.length > 1) stack.pop();
+    } else {
+      const classes = (match[1] ?? "").split(/\s+/).filter(Boolean);
+      let style = stack[stack.length - 1]!;
+      for (const className of classes) {
+        const classStyle = HLJS_STYLE_MAP[className] ?? HLJS_STYLE_MAP[`hljs-${className}`];
+        if (classStyle) {
+          style = mergeLineSegmentStyle(style, classStyle);
+        }
+      }
+      stack.push(style);
+    }
+
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < html.length) {
+    pushHighlightedSegment(
+      segments,
+      decodeHighlightedText(html.slice(lastIndex)),
+      stack[stack.length - 1]!,
+    );
+  }
+
+  return segments.length > 0 ? segments : [{ text: decodeHighlightedText(html), ...baseStyle }];
+}
+
+function highlightCodeLineWithHighlightJs(
+  line: string,
+  language: string | null,
+  baseBackgroundColor?: string,
+): LineSegment[] | null {
+  const resolvedLanguage = normalizeHighlightLanguage(language);
+  if (!resolvedLanguage) return null;
+
+  const cacheKey = `${resolvedLanguage}\u0000${baseBackgroundColor ?? ""}\u0000${line}`;
+  const cached = highlightCache.get(cacheKey);
+  if (cached) {
+    return cached.map((segment) => ({ ...segment }));
+  }
+
+  try {
+    const html = hljs.highlight(line, {
+      language: resolvedLanguage,
+      ignoreIllegals: true,
+    }).value;
+    const parsed = parseHighlightedHtml(html, baseBackgroundColor);
+    highlightCache.set(cacheKey, parsed);
+    return parsed.map((segment) => ({ ...segment }));
+  } catch {
+    return null;
+  }
+}
+
 function highlightCodeLine(
   line: string,
   language: string | null,
   baseBackgroundColor?: string,
 ): LineSegment[] {
+  const highlighted = highlightCodeLineWithHighlightJs(line, language, baseBackgroundColor);
+  if (highlighted) return highlighted;
+
   const lang = normalizeLanguageName(language) ?? "";
 
   if (lang === "python") {
@@ -1148,6 +1347,23 @@ function applyIntralineBackground(
   return result.filter((segment) => segment.text.length > 0);
 }
 
+function sliceRangeForWrappedLine(
+  range: IntralineRange | null,
+  start: number,
+  length: number,
+): IntralineRange | null {
+  if (!range) return null;
+  const wrappedEnd = start + length;
+  const sliceStart = Math.max(range.start, start);
+  const sliceEnd = Math.min(range.end, wrappedEnd);
+  if (sliceEnd <= sliceStart) return null;
+  return {
+    start: sliceStart - start,
+    end: sliceEnd - start,
+    backgroundColor: range.backgroundColor,
+  };
+}
+
 function renderTextBlock(
   block: TextBlock,
   options: {
@@ -1236,7 +1452,7 @@ function renderCodeBlock(
         gutter: index === 0
           ? codeGutter
           : codeGutter
-            ? " ".repeat(CODE_GUTTER_WIDTH)
+            ? formatCodeContinuationGutter()
             : undefined,
         gutterColor: "gray",
         gutterBackgroundColor: CODE_BACKGROUND_COLOR,
@@ -1277,7 +1493,7 @@ function renderDiffBlock(
           gutter: wrappedIndex === 0
             ? line.gutter
             : line.gutter
-              ? " ".repeat(DIFF_GUTTER_WIDTH)
+              ? formatDiffContinuationGutter(line.kind)
               : undefined,
           gutterColor: line.gutterColor,
           gutterBackgroundColor: DIFF_HEADER_BACKGROUND_COLOR,
@@ -1300,6 +1516,8 @@ function renderDiffBlock(
       : line.kind === "remove"
         ? "red"
         : DIFF_HEADER_BACKGROUND_COLOR;
+    const intralineRange = intralineHighlights.get(index) ?? null;
+    let wrappedOffset = 0;
 
     for (let wrappedIndex = 0; wrappedIndex < wrapped.length; wrappedIndex++) {
       let segments = highlightCodeLine(
@@ -1307,18 +1525,20 @@ function renderDiffBlock(
         lineLanguage,
         rowBackgroundColor,
       );
-      if (wrapped.length === 1) {
-        segments = applyIntralineBackground(
-          segments,
-          intralineHighlights.get(index) ?? null,
-        );
-      }
+      segments = applyIntralineBackground(
+        segments,
+        sliceRangeForWrappedLine(
+          intralineRange,
+          wrappedOffset,
+          wrapped[wrappedIndex]!.length,
+        ),
+      );
 
       pushLine({
         gutter: wrappedIndex === 0
           ? line.gutter
           : line.gutter
-            ? formatDiffGutter("continuation", null, null)
+            ? formatDiffContinuationGutter(line.kind)
             : undefined,
         gutterColor: line.gutterColor,
         gutterBackgroundColor,
@@ -1331,6 +1551,8 @@ function renderDiffBlock(
             : "white",
         bodyBackgroundColor: rowBackgroundColor,
       });
+
+      wrappedOffset += wrapped[wrappedIndex]!.length;
     }
   }
 }
