@@ -1866,6 +1866,7 @@ def main() -> None:
     codex = CodexAdapter(
         model=args.openai_model,
         sandbox="workspace-write",
+        cwd=str(paths.work_dir),
         debug_log_path=codex_log,
         fallback_api_key=_fallback_api_key,
     )

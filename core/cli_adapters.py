@@ -446,11 +446,13 @@ class CodexAdapter:
 
     def __init__(self, model: str = "gpt-5.4",
                  sandbox: str = "read-only",
+                 cwd: str = "",
                  timeout: Optional[int] = None,
                  debug_log_path: str = "",
                  fallback_api_key: str = ""):
         self.model = model
         self.sandbox = sandbox
+        self.cwd = cwd
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CODEX_TIMEOUT",
             "BOTFERENCE_CLI_TIMEOUT",
@@ -468,18 +470,23 @@ class CodexAdapter:
                "--sandbox", self.sandbox,
                "--skip-git-repo-check",
                "--json"]
+        if self.cwd:
+            cmd += ["--cd", self.cwd]
         if self.model:
             cmd += ["-m", self.model]
         cmd.append(prompt)
         return cmd
 
     def _build_resume_cmd(self, message: str) -> list:
-        return [
+        cmd = [
             "codex", "exec", "resume", self.thread_id,
             "--json",
             "--skip-git-repo-check",
-            message,
         ]
+        if self.cwd:
+            cmd += ["--cd", self.cwd]
+        cmd.append(message)
+        return cmd
 
     async def send(self, prompt: str) -> AdapterResponse:
         """First message — creates a new thread."""

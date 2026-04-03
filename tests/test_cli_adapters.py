@@ -664,6 +664,19 @@ class TestCommandConstruction:
         assert cmd[3] == "tid-abc"
         assert cmd[-1] == "follow up"
 
+    def test_codex_send_cmd_includes_cd_when_configured(self):
+        x = CodexAdapter(model="gpt-5.4", cwd="/repo/botference")
+        cmd = x._build_send_cmd("hello")
+        assert "--cd" in cmd
+        assert cmd[cmd.index("--cd") + 1] == "/repo/botference"
+
+    def test_codex_resume_cmd_includes_cd_when_configured(self):
+        x = CodexAdapter(cwd="/repo/botference")
+        x.thread_id = "tid-abc"
+        cmd = x._build_resume_cmd("follow up")
+        assert "--cd" in cmd
+        assert cmd[cmd.index("--cd") + 1] == "/repo/botference"
+
     def test_plan_allowed_tools_cover_work_tree(self):
         allowed = plan_allowed_tools_for_work_dir(
             "/repo",
