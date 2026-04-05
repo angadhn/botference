@@ -1416,7 +1416,8 @@ class TestInitModeLauncher:
         project_json = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
         assert project_json["profile"] == "greenfield-app"
         assert project_json["modes"]["build"] is True
-        assert project_json["write_roots"]["build"] == ["botference/build"]
+        assert project_json["write_roots"]["plan"] == ["botference"]
+        assert project_json["write_roots"]["build"] == ["botference"]
 
 
 class TestArchiveModeLauncher:
@@ -1679,7 +1680,7 @@ validate_project_agents
                     "version": 1,
                     "profile": "vault-drafter",
                     "modes": {"plan": True, "research_plan": True, "build": False},
-                    "write_roots": {"plan": [], "build": ["botference/build"]},
+                    "write_roots": {"plan": ["botference"], "build": ["botference"]},
                     "agent_overrides": [],
                 }
             ),
@@ -1713,7 +1714,7 @@ validate_project_agents
                     "version": 1,
                     "profile": "vault-drafter",
                     "modes": {"plan": True, "research_plan": True, "build": True},
-                    "write_roots": {"plan": [], "build": ["botference/build"]},
+                    "write_roots": {"plan": ["botference"], "build": ["botference"]},
                     "agent_overrides": [],
                 }
             ),
@@ -1759,7 +1760,8 @@ validate_project_agents
         project_dir = tmp_path / custom_dir
         assert project_dir.is_dir()
         policy = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
-        assert policy["write_roots"]["build"] == [f"{custom_dir}/build"]
+        assert policy["write_roots"]["plan"] == [custom_dir]
+        assert policy["write_roots"]["build"] == [custom_dir]
 
     def test_non_git_snapshot_scopes_to_owned_paths(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
@@ -1776,7 +1778,7 @@ validate_project_agents
                     "profile": "vault-drafter",
                     "modes": {"plan": True, "research_plan": True, "build": True},
                     "write_roots": {
-                        "plan": [],
+                        "plan": ["botference"],
                         "build": ["botference/build", "botference/wiki"],
                     },
                     "agent_overrides": [],
@@ -1812,7 +1814,7 @@ cut -f2 "$snapshot"
         assert "botference/checkpoint.md" in paths
         assert "botference/build/draft.md" in paths
         assert "botference/wiki/entry.md" in paths
-        assert "large-note.md" not in paths
+        assert "large-note.md" in paths
 
     def test_project_local_plan_policy_allows_any_work_file(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
@@ -1826,7 +1828,7 @@ cut -f2 "$snapshot"
                     "version": 1,
                     "profile": "vault-drafter",
                     "modes": {"plan": True, "research_plan": True, "build": True},
-                    "write_roots": {"plan": [], "build": ["botference/build"]},
+                    "write_roots": {"plan": ["botference"], "build": ["botference"]},
                     "agent_overrides": [],
                 }
             ),
@@ -1858,6 +1860,46 @@ true
         lines = set(filter(None, result.stdout.splitlines()))
         assert "work-ok" in lines
         assert "outside-ok" not in lines
+
+    def test_project_local_plan_policy_requires_explicit_roots(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        exports_dir = project_dir / "exports"
+        project_dir.mkdir()
+        exports_dir.mkdir()
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "vault-drafter",
+                    "modes": {"plan": True, "research_plan": True, "build": True},
+                    "write_roots": {"plan": [], "build": ["botference"]},
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        work_file = exports_dir / "caucus.md"
+
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+export BOTFERENCE_HOME="{repo_root}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+init_botference_paths
+policy_path_allowed "{work_file}" plan && echo work-ok
+true
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        lines = set(filter(None, result.stdout.splitlines()))
+        assert "work-ok" not in lines
 
 
 class TestPlanningPromptPolicy:

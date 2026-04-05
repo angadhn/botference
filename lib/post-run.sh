@@ -154,6 +154,19 @@ plan_write_state_snapshot() {
   : > "$snapshot_file"
 
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -f "$BOTFERENCE_PROJECT_CONFIG_FILE" ]; then
+      (
+        cd "$BOTFERENCE_PROJECT_ROOT"
+        find . \( -name .git -o -path './.git/*' \) -prune -o -type f -print | sed 's#^\./##' | sort
+      ) | while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        local abs_path="$BOTFERENCE_PROJECT_ROOT/$path"
+        printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_path")" "$path" >> "$snapshot_file"
+      done
+      sort -u "$snapshot_file" -o "$snapshot_file"
+      return 0
+    fi
+
     while IFS= read -r root; do
       [ -n "$root" ] || continue
       local abs_root="$BOTFERENCE_PROJECT_ROOT/$root"

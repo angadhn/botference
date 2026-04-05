@@ -60,23 +60,40 @@ def plan_allowed_tools_for_work_dir(
     return allowed
 
 
-def claude_plan_settings_for_work_dir(
-    project_root: str | Path, work_dir: str | Path
-) -> dict:
-    """Build Claude Code settings for planner sessions.
-
-    Use permission rules for file tools and OS sandboxing for Bash so planner
-    sessions can write inside the Botference work directory without opening the
-    whole repository to edits.
-    """
-
+def planner_write_roots_for_env(
+    project_root: str | Path,
+    fallback_dir: str | Path,
+    *,
+    mode: str = "plan",
+) -> list[Path]:
+    """Resolve explicit write roots from Botference env for a mode."""
     project_root_path = Path(project_root).resolve()
-    work_dir_path = Path(work_dir).resolve()
+    config_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+    project_config = project_root_path / config_name / "project.json"
+    env_name = "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" if mode == "plan" else "BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS"
+    raw_roots = os.environ.get(env_name, "").strip()
+    if raw_roots:
+        roots = []
+        for root in raw_roots.split(","):
+            root = root.strip().strip("/")
+            if not root:
+                continue
+            roots.append((project_root_path / root).resolve())
+        return roots
+    if project_config.exists():
+        return []
+    return [Path(fallback_dir).resolve()]
+
+
+def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
+    """Build Claude Code settings for planner sessions from explicit write roots."""
+    normalized_roots = [Path(root).resolve() for root in write_roots]
 
     allow_rules = [
         "Read",
         "Glob",
         "Grep",
+        "Bash",
         "WebSearch",
         "WebFetch",
     ]
@@ -85,24 +102,16 @@ def claude_plan_settings_for_work_dir(
         "allowUnsandboxedCommands": False,
     }
 
-    if work_dir_path == project_root_path:
-        checkpoint_path = (work_dir_path / "checkpoint.md").as_posix().lstrip("/")
-        plan_path = (work_dir_path / "implementation-plan.md").as_posix().lstrip("/")
-        plan_glob = (work_dir_path / "implementation-plan-*.md").as_posix().lstrip("/")
-        inbox_path = (work_dir_path / "inbox.md").as_posix().lstrip("/")
+    seen = set()
+    for root in normalized_roots:
+        root_abs = root.as_posix().lstrip("/")
+        if root_abs in seen:
+            continue
+        seen.add(root_abs)
         allow_rules.extend([
-            f"Edit(//{checkpoint_path})",
-            f"Edit(//{plan_path})",
-            f"Edit(//{plan_glob})",
-            f"Edit(//{inbox_path})",
-        ])
-    else:
-        allow_rules.append("Bash")
-        work_dir_abs = work_dir_path.as_posix()
-        allow_rules.extend([
-            f"Edit(//{work_dir_abs.lstrip('/')})",
-            f"Edit(//{work_dir_abs.lstrip('/')}/*)",
-            f"Edit(//{work_dir_abs.lstrip('/')}/**)",
+            f"Edit(//{root_abs})",
+            f"Edit(//{root_abs}/*)",
+            f"Edit(//{root_abs}/**)",
         ])
 
     return {
@@ -112,6 +121,14 @@ def claude_plan_settings_for_work_dir(
         },
         "sandbox": sandbox,
     }
+
+
+def claude_plan_settings_for_work_dir(
+    project_root: str | Path, work_dir: str | Path
+) -> dict:
+    """Backward-compatible wrapper for existing tests/callers."""
+    roots = planner_write_roots_for_env(project_root, work_dir, mode="plan")
+    return claude_plan_settings_for_write_roots([str(root) for root in roots])
 
 # ── Response types ───────────────────────────────────────────
 
@@ -157,7 +174,7 @@ _CONTEXT_WINDOWS = {
     "o4-mini": 200_000,
 }
 
-_DEFAULT_TIMEOUT = 300  # seconds
+_DEFAULT_TIMEOUT = 3600  # seconds
 
 
 def _timeout_from_env(*names: str, default: int = _DEFAULT_TIMEOUT) -> int:

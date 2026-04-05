@@ -13,8 +13,14 @@ import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from cli_adapters import ClaudeAdapter, CodexAdapter, claude_plan_settings_for_work_dir
+from cli_adapters import (
+    ClaudeAdapter,
+    CodexAdapter,
+    claude_plan_settings_for_work_dir,
+    planner_write_roots_for_env,
+)
 from paths import BotferencePaths
 from botference import Botference
 from botference_ui import RoomMode, StatusSnapshot
@@ -127,6 +133,18 @@ async def main() -> None:
                 f.write("")
 
     paths = BotferencePaths.resolve()
+    plan_write_roots = planner_write_roots_for_env(
+        paths.project_root, paths.work_dir, mode="plan"
+    )
+    claude_cwd = str(plan_write_roots[0] if plan_write_roots else paths.project_root)
+    claude_add_dirs = []
+    if Path(claude_cwd).resolve() != Path(paths.project_root).resolve():
+        claude_add_dirs.append(str(paths.project_root))
+    for root in plan_write_roots[1:]:
+        root_str = str(root)
+        if root_str != claude_cwd and root_str not in claude_add_dirs:
+            claude_add_dirs.append(root_str)
+
     claude = ClaudeAdapter(
         model=args.anthropic_model,
         effort=args.claude_effort,
@@ -142,17 +160,16 @@ async def main() -> None:
             "WebFetch",
         ],
         debug_log_path=claude_log,
-        cwd=str(paths.work_dir),
-        add_dirs=([str(paths.project_root)]
-                  if paths.work_dir != paths.project_root else []),
+        cwd=claude_cwd,
+        add_dirs=claude_add_dirs,
         settings=claude_plan_settings_for_work_dir(
             paths.project_root, paths.work_dir
         ),
     )
     codex = CodexAdapter(
         model=args.openai_model,
-        sandbox="workspace-write",
-        cwd=str(paths.work_dir),
+        sandbox="workspace-write" if plan_write_roots else "read-only",
+        cwd=str(plan_write_roots[0] if plan_write_roots else paths.project_root),
         debug_log_path=codex_log,
         fallback_api_key=fallback_api_key,
     )

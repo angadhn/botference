@@ -23,6 +23,7 @@ source "${BOTFERENCE_HOME}/lib/post-run.sh"
 source "${BOTFERENCE_HOME}/lib/exec.sh"
 
 parse_loop_args "$@"
+export BOTFERENCE_ACTIVE_MODE="$LOOP_MODE"
 
 if $SHOW_HELP; then
   show_help
@@ -420,21 +421,29 @@ project_root = Path(sys.argv[1]).resolve()
 work_dir = Path(sys.argv[2]).resolve()
 out_path = Path(sys.argv[3])
 
-allow = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]
-if work_dir == project_root:
+config_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+project_config = project_root / config_name / "project.json"
+raw_roots = os.environ.get("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", "").strip()
+roots = []
+if raw_roots:
+    for root in raw_roots.split(","):
+        root = root.strip().strip("/")
+        if root:
+            roots.append((project_root / root).resolve())
+elif not project_config.exists():
+    roots = [work_dir]
+
+allow = ["Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
+seen = set()
+for root in roots:
+    root_abs = root.as_posix().lstrip("/")
+    if root_abs in seen:
+        continue
+    seen.add(root_abs)
     allow.extend([
-        f"Edit(//{(work_dir / 'checkpoint.md').as_posix().lstrip('/')})",
-        f"Edit(//{(work_dir / 'implementation-plan.md').as_posix().lstrip('/')})",
-        f"Edit(//{(work_dir / 'implementation-plan-*.md').as_posix().lstrip('/')})",
-        f"Edit(//{(work_dir / 'inbox.md').as_posix().lstrip('/')})",
-    ])
-else:
-    work_abs = work_dir.as_posix().lstrip("/")
-    allow.extend([
-        "Bash",
-        f"Edit(//{work_abs})",
-        f"Edit(//{work_abs}/*)",
-        f"Edit(//{work_abs}/**)",
+        f"Edit(//{root_abs})",
+        f"Edit(//{root_abs}/*)",
+        f"Edit(//{root_abs}/**)",
     ])
 
 settings = {
@@ -449,8 +458,28 @@ settings = {
 }
 out_path.write_text(json.dumps(settings))
 PY
+    PLAN_CLAUDE_CWD="$BOTFERENCE_PROJECT_ROOT"
     CLAUDE_DIR_ARGS=()
-    if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+    if [ -n "${BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS:-}" ]; then
+      IFS=',' read -r -a _plan_roots <<< "$BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS"
+      first_root=""
+      for _raw_root in "${_plan_roots[@]}"; do
+        _clean_root="${_raw_root#/}"
+        _clean_root="${_clean_root%/}"
+        [ -n "$_clean_root" ] || continue
+        _abs_root="$BOTFERENCE_PROJECT_ROOT/$_clean_root"
+        if [ -z "$first_root" ]; then
+          first_root="$_abs_root"
+          PLAN_CLAUDE_CWD="$_abs_root"
+        else
+          CLAUDE_DIR_ARGS+=(--add-dir "$_abs_root")
+        fi
+      done
+      if [ "$PLAN_CLAUDE_CWD" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+        CLAUDE_DIR_ARGS+=(--add-dir "$BOTFERENCE_PROJECT_ROOT")
+      fi
+    elif [ ! -f "$BOTFERENCE_PROJECT_CONFIG_FILE" ] && [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
+      PLAN_CLAUDE_CWD="$BOTFERENCE_WORK_DIR"
       CLAUDE_DIR_ARGS=(--add-dir "$BOTFERENCE_PROJECT_ROOT")
     fi
     SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -458,7 +487,7 @@ PY
     echo "  Model: $CLI_MODEL ($LOOP_MODE — claude CLI${EFFORT_FLAG:+, effort: ${EFFORT_FLAG#--effort }})"
     if [ -n "$PROMPT" ]; then
       (
-        cd "$BOTFERENCE_WORK_DIR"
+        cd "$PLAN_CLAUDE_CWD"
         echo "$PROMPT" | claude --model "$CLI_MODEL" \
           $EFFORT_FLAG \
           "${SYS_ARGS[@]}" \
@@ -470,7 +499,7 @@ PY
 
     else
       (
-        cd "$BOTFERENCE_WORK_DIR"
+        cd "$PLAN_CLAUDE_CWD"
         claude --model "$CLI_MODEL" \
           $EFFORT_FLAG \
           "${SYS_ARGS[@]}" \

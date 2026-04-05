@@ -74,8 +74,8 @@ Current default shape:
     "build": true
   },
   "write_roots": {
-    "plan": [],
-    "build": ["botference/build"]
+    "plan": ["botference"],
+    "build": ["botference"]
   },
   "agent_overrides": []
 }
@@ -83,20 +83,22 @@ Current default shape:
 
 Interpretation:
 
-- plan/research-plan always write Botference state files inside `botference/`
-- build may additionally write inside `botference/build/**`
+- plan/research-plan may write only inside the declared `write_roots.plan`
+- build may write only inside the declared `write_roots.build`
+- the default init policy explicitly grants `botference/**` to both modes
 - a project may disable `build` entirely
 - reserved built-in agent names may only be overridden if explicitly listed in
   `agent_overrides`
-- any wider write scope must be explicitly added under `write_roots`
+- anything outside declared write roots is treated as read-only
+- nested `.git` directories stay blocked even if they appear under a writable root
 
 ## Permission Enforcement
 
 Botference enforces project policy in three places:
 
 1. Pre-run gate: blocked modes fail before model startup.
-2. Runtime adapter: Claude/Codex launch configuration is derived from the same
-   project policy.
+2. Runtime adapter / tool layer: writable paths are derived from the same
+   project policy and out-of-policy file mutations are rejected before write.
 3. Post-run audit: changed files are checked against the policy and the run
    fails closed on violations.
 
@@ -111,15 +113,15 @@ For vault-style projects, the intended default is:
 
 - read/search: whole project, but lazy and on-demand
 - `plan` writes: `botference/**`
-- `build` writes: `botference/build/**`
+- `build` writes: `botference/**`
 - vault notes and content: read-only
 
 This keeps build useful for draft generation without granting direct write
 access to the vault itself.
 
-If you later want an LLM-owned wiki, the supported direction is to add another
-Botference-owned path such as `botference/wiki` to `write_roots.build` instead
-of widening writes to the vault in general.
+If you later want a narrower boundary, shrink `write_roots` to subpaths such as
+`botference/build` or `botference/wiki` instead of widening writes to the vault
+in general.
 
 ## Agent Resolution
 

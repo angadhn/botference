@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Tool registry for botference_agent.py.
 
 Collects tool definitions from submodules and provides per-agent registries.
@@ -7,6 +9,7 @@ Adding a tool = adding it to the right submodule's TOOLS dict + AGENT_TOOLS here
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 from tools.core import TOOLS as _core_tools
 from tools.checks import TOOLS as _checks_tools
@@ -80,7 +83,127 @@ def execute_tool(name: str, tool_input: dict):
     tool = TOOLS.get(name)
     if not tool:
         return f"Unknown tool: {name}"
+    violation = _mutation_policy_violation(name, tool_input)
+    if violation:
+        return violation
     return tool["function"](tool_input)
+
+
+def _active_tool_mode() -> str:
+    return os.environ.get("BOTFERENCE_ACTIVE_MODE", "build").strip() or "build"
+
+
+def _extra_write_roots_for_mode(mode: str) -> list[str]:
+    env_name = "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" if mode == "plan" else "BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS"
+    raw = os.environ.get(env_name, "")
+    return [root.strip().strip("/") for root in raw.split(",") if root.strip()]
+
+
+def _project_root() -> Path:
+    return Path(os.environ.get("BOTFERENCE_PROJECT_ROOT", os.getcwd())).resolve()
+
+
+def _project_dir_name() -> str:
+    return os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+
+
+def _project_dir() -> Path:
+    return Path(os.environ.get("BOTFERENCE_PROJECT_DIR", _project_root() / _project_dir_name())).resolve()
+
+
+def _work_dir() -> Path:
+    return Path(os.environ.get("BOTFERENCE_WORK_DIR", _project_root())).resolve()
+
+
+def _resolved_tool_path(raw_path: str) -> Path:
+    return (Path.cwd() / raw_path).resolve() if not os.path.isabs(raw_path) else Path(raw_path).resolve()
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _policy_path_allowed_python(path: Path, mode: str) -> bool:
+    project_root = _project_root()
+    if not _is_relative_to(path, project_root):
+        return False
+    rel = path.relative_to(project_root).as_posix()
+    parts = [part for part in rel.split("/") if part]
+    if ".git" in parts:
+        return False
+
+    work_dir = _work_dir()
+    project_dir = _project_dir()
+    project_dir_exists = project_dir.is_dir()
+    project_config_exists = (_project_root() / _project_dir_name() / "project.json").is_file()
+
+    if work_dir == project_root and not project_dir_exists:
+        if mode == "plan":
+            return path.name in {
+                "checkpoint.md",
+                "implementation-plan.md",
+                "inbox.md",
+            } or path.name.startswith("implementation-plan-")
+        return True
+
+    if not project_config_exists and mode == "plan" and work_dir != project_root and _is_relative_to(path, work_dir):
+        return True
+
+    for root in _extra_write_roots_for_mode(mode):
+        if rel == root or rel.startswith(root + "/"):
+            return True
+    return False
+
+
+def _mutation_policy_violation(name: str, tool_input: dict) -> Optional[str]:
+    candidate_paths: list[str] = []
+    if name in {"write_file", "edit_file", "delete_file"}:
+        if isinstance(tool_input.get("file_path"), str):
+            candidate_paths.append(tool_input["file_path"])
+    elif name == "compile_latex":
+        target = tool_input.get("file", "main.tex")
+        if isinstance(target, str) and target.strip():
+            candidate_paths.append(str(Path(target).parent))
+    elif name == "build_cited_tracker_from_tex":
+        if isinstance(tool_input.get("output_file"), str):
+            candidate_paths.append(tool_input["output_file"])
+    elif name == "extract_figure" and not tool_input.get("list_only"):
+        if isinstance(tool_input.get("output_dir"), str):
+            candidate_paths.append(tool_input["output_dir"])
+    elif name == "citation_lint":
+        if isinstance(tool_input.get("bib_dir"), str):
+            candidate_paths.append(tool_input["bib_dir"])
+    elif name == "citation_lookup" and isinstance(tool_input.get("output_file"), str):
+        candidate_paths.append(tool_input["output_file"])
+    elif name == "citation_download" and isinstance(tool_input.get("papers_dir"), str):
+        candidate_paths.append(tool_input["papers_dir"])
+    elif name == "citation_manifest" and tool_input.get("file") and isinstance(tool_input.get("papers_dir"), str):
+        candidate_paths.append(tool_input["papers_dir"])
+    elif name == "verify_cited_claims":
+        if isinstance(tool_input.get("output_dir"), str):
+            candidate_paths.append(tool_input["output_dir"])
+        if tool_input.get("auto_download") and isinstance(tool_input.get("papers_dir"), str):
+            candidate_paths.append(tool_input["papers_dir"])
+
+    if not candidate_paths:
+        return None
+
+    mode = _active_tool_mode()
+    for raw_path in candidate_paths:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        resolved = _resolved_tool_path(raw_path.strip())
+        if not _policy_path_allowed_python(resolved, mode):
+            rel_project = os.path.relpath(resolved, _project_root()) if _is_relative_to(resolved, _project_root()) else str(resolved)
+            return (
+                f"Error: {name} blocked by project policy. "
+                f"Path '{rel_project}' is outside allowed write roots for {mode} mode."
+            )
+    return None
 
 
 def _project_agent_roots() -> list[Path]:

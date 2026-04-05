@@ -220,12 +220,19 @@ policy_path_allowed() {
   local mode=$2
   local rel
   rel=$(project_relative_path "$path")
+  case "$rel" in
+    .git|.git/*|*/.git|*/.git/*)
+      return 1
+      ;;
+  esac
   local work_rel=""
   if [ "$BOTFERENCE_WORK_DIR" != "$BOTFERENCE_PROJECT_ROOT" ]; then
     work_rel=$(project_relative_path "$BOTFERENCE_WORK_DIR")
   fi
+  local project_config_exists=false
+  [ -f "$BOTFERENCE_PROJECT_CONFIG_FILE" ] && project_config_exists=true
 
-  if [ "$mode" = "plan" ] && [ -n "$work_rel" ]; then
+  if ! $project_config_exists && [ "$mode" = "plan" ] && [ -n "$work_rel" ]; then
     case "$rel" in
       "$work_rel"|"$work_rel/"*)
         return 0
@@ -250,25 +257,27 @@ policy_path_allowed() {
     esac
   fi
 
-  case "$rel" in
-    "${BOTFERENCE_PROJECT_DIR_NAME}/implementation-plan.md"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/implementation-plan-"*.md|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/checkpoint.md"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/inbox.md"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/HUMAN_REVIEW_NEEDED.md"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/iteration_count"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/CHANGELOG.md"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/handoff-claude.md"|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/handoff-codex.md")
-      return 0
-      ;;
-    "${BOTFERENCE_PROJECT_DIR_NAME}/handoffs/"*|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/archive/"*|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/build/logs/"*|\
-    "${BOTFERENCE_PROJECT_DIR_NAME}/build/run/"*)
-      return 0
-      ;;
-  esac
+  if ! $project_config_exists; then
+    case "$rel" in
+      "${BOTFERENCE_PROJECT_DIR_NAME}/implementation-plan.md"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/implementation-plan-"*.md|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/checkpoint.md"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/inbox.md"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/HUMAN_REVIEW_NEEDED.md"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/iteration_count"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/CHANGELOG.md"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/handoff-claude.md"|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/handoff-codex.md")
+        return 0
+        ;;
+      "${BOTFERENCE_PROJECT_DIR_NAME}/handoffs/"*|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/archive/"*|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/build/logs/"*|\
+      "${BOTFERENCE_PROJECT_DIR_NAME}/build/run/"*)
+        return 0
+        ;;
+    esac
+  fi
 
   local roots=""
   case "$mode" in

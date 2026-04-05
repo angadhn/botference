@@ -709,9 +709,9 @@ class TestCommandConstruction:
         settings = claude_plan_settings_for_work_dir("/repo", "/repo")
         allow = settings["permissions"]["allow"]
         assert settings["permissions"]["defaultMode"] == "dontAsk"
-        assert "Bash" not in allow
-        assert "Edit(//repo/implementation-plan.md)" in allow
-        assert "Edit(//repo/inbox.md)" in allow
+        assert "Bash" in allow
+        assert "Edit(//repo)" in allow
+        assert "Edit(//repo/**)" in allow
 
 # ── Error paths ──────────────────────────────────────────────
 

@@ -54,8 +54,8 @@ def build_project_json(profile: str, project_dir_name: str) -> dict:
             "build": True,
         },
         "write_roots": {
-            "plan": [],
-            "build": [f"{project_dir_name}/build"],
+            "plan": [f"{project_dir_name}"],
+            "build": [f"{project_dir_name}"],
         },
         "agent_overrides": [],
     }

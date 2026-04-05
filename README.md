@@ -135,19 +135,18 @@ Default write scope:
 ```json
 {
   "write_roots": {
-    "plan": [],
-    "build": ["botference/build"]
+    "plan": ["botference"],
+    "build": ["botference"]
   }
 }
 ```
 
 This means:
 
-- `plan` and `research-plan` write only Botference state such as
-  `botference/implementation-plan.md`, `botference/checkpoint.md`, and
-  `botference/inbox.md`
-- `build` may also write generated artifacts under `botference/build/`
+- `plan` and `research-plan` may write anywhere under `botference/`
+- `build` may write anywhere under `botference/`
 - the rest of the project stays read-only by default
+- anything outside declared `write_roots` is blocked at runtime and by post-run audit
 
 If you want to opt into another Botference-owned writable area later, add it
 explicitly. For example:
@@ -155,14 +154,14 @@ explicitly. For example:
 ```json
 {
   "write_roots": {
-    "plan": [],
-    "build": ["botference/build", "botference/wiki"]
+    "plan": ["botference"],
+    "build": ["botference", "assets/generated"]
   }
 }
 ```
 
-That keeps the default safety boundary narrow while still allowing project-local
-owned outputs when you choose to expand them.
+If you want a narrower boundary, reduce the roots instead, for example
+`"build": ["botference/build"]`.
 
 For a fresh clone, install Ink's Node dependencies once before using the
 default planner UI:
@@ -459,5 +458,5 @@ python3 scripts/update_loc_badge.py
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
 | `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |
 | `BOTFERENCE_CLI_TIMEOUT` | Timeout in seconds for both CLI adapters unless a model-specific override is set |
-| `BOTFERENCE_CLAUDE_TIMEOUT` | Timeout in seconds for Claude CLI turns (default: `300`) |
-| `BOTFERENCE_CODEX_TIMEOUT` | Timeout in seconds for Codex CLI turns (default: `600`) |
+| `BOTFERENCE_CLAUDE_TIMEOUT` | Timeout in seconds for Claude CLI turns (default: `3600`) |
+| `BOTFERENCE_CODEX_TIMEOUT` | Timeout in seconds for Codex CLI turns (default: `3600`) |
