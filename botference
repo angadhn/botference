@@ -271,6 +271,7 @@ while true; do
       CLAUDE_MODEL_RESOLVED=$(resolve_model "plan")
       resolve_model_and_effort "$CLAUDE_MODEL_RESOLVED" "plan"
       OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.4}"
+      OPENAI_REASONING_EFFORT="${OPENAI_REASONING_EFFORT:-high}"
 
       if [ -n "$PROMPT_FILE" ]; then
         PROMPT=$(cat "$PROMPT_FILE")
@@ -318,7 +319,7 @@ while true; do
         echo "$OPENAI_API_KEY" | codex login --with-api-key 2>/dev/null || true
       fi
 
-      echo "Launching Botference Council - Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE"
+      echo "Launching Botference Council - Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${OPENAI_REASONING_EFFORT:+  openai-effort=$OPENAI_REASONING_EFFORT}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE"
       if [ "$UI_MODE" = "ink" ]; then
         ensure_ink_ui_dist
         # Pass large strings via temp files to avoid arg-length/escaping issues
@@ -328,6 +329,7 @@ while true; do
         node "${BOTFERENCE_HOME}/ink-ui/dist/bin.js" \
           --anthropic-model "$CLI_MODEL" \
           --openai-model "$OPENAI_MODEL" \
+          --openai-effort "$OPENAI_REASONING_EFFORT" \
           ${EFFORT_FLAG:+--claude-effort ${EFFORT_FLAG#--effort }} \
           --system-prompt-file "$_ink_sys" \
           --task-file "$_ink_task" \
@@ -337,6 +339,7 @@ while true; do
         python3 "${BOTFERENCE_HOME}/core/botference.py" \
           --anthropic-model "$CLI_MODEL" \
           --openai-model "$OPENAI_MODEL" \
+          --openai-effort "$OPENAI_REASONING_EFFORT" \
           ${EFFORT_FLAG:+--claude-effort ${EFFORT_FLAG#--effort }} \
           --system-prompt "$PLAN_SYSTEM" \
           --task "$PROMPT" \

@@ -678,12 +678,25 @@ class TestCommandConstruction:
         assert "--cd" in cmd
         assert cmd[cmd.index("--cd") + 1] == "/repo/botference"
 
+    def test_codex_send_cmd_includes_reasoning_effort_when_configured(self):
+        x = CodexAdapter(model="gpt-5.4", reasoning_effort="high")
+        cmd = x._build_send_cmd("hello")
+        idx = cmd.index("-c")
+        assert cmd[idx + 1] == 'model_reasoning_effort="high"'
+
     def test_codex_resume_cmd_includes_cd_when_configured(self):
         x = CodexAdapter(cwd="/repo/botference")
         x.thread_id = "tid-abc"
         cmd = x._build_resume_cmd("follow up")
         assert "--cd" in cmd
         assert cmd[cmd.index("--cd") + 1] == "/repo/botference"
+
+    def test_codex_resume_cmd_includes_reasoning_effort_when_configured(self):
+        x = CodexAdapter(reasoning_effort="high")
+        x.thread_id = "tid-abc"
+        cmd = x._build_resume_cmd("follow up")
+        idx = cmd.index("-c")
+        assert cmd[idx + 1] == 'model_reasoning_effort="high"'
 
     def test_plan_allowed_tools_cover_work_tree(self):
         allowed = plan_allowed_tools_for_work_dir(

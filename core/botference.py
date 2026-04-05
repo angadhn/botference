@@ -1799,6 +1799,7 @@ def main() -> None:
     parser.add_argument("--anthropic-model", default="claude-sonnet-4-6")
     parser.add_argument("--claude-effort", default="")
     parser.add_argument("--openai-model", default="gpt-5.4")
+    parser.add_argument("--openai-effort", default="")
     parser.add_argument("--system-prompt", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--debug-panes", action="store_true")
@@ -1879,6 +1880,7 @@ def main() -> None:
         model=args.openai_model,
         sandbox="workspace-write" if plan_write_roots else "read-only",
         cwd=str(plan_write_roots[0] if plan_write_roots else paths.project_root),
+        reasoning_effort=args.openai_effort,
         debug_log_path=codex_log,
         fallback_api_key=_fallback_api_key,
     )

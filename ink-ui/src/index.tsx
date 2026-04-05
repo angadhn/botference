@@ -161,6 +161,7 @@ function parseArgs(argv: string[]) {
   const args = {
     anthropicModel: "claude-sonnet-4-6",
     openaiModel: "gpt-5.4",
+    openaiEffort: "",
     systemPromptFile: "",
     taskFile: "",
     debugPanes: false,
@@ -175,6 +176,9 @@ function parseArgs(argv: string[]) {
         break;
       case "--openai-model":
         args.openaiModel = argv[++i] ?? args.openaiModel;
+        break;
+      case "--openai-effort":
+        args.openaiEffort = argv[++i] ?? "";
         break;
       case "--system-prompt-file":
         args.systemPromptFile = argv[++i] ?? "";

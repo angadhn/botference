@@ -525,12 +525,14 @@ class CodexAdapter:
     def __init__(self, model: str = "gpt-5.4",
                  sandbox: str = "read-only",
                  cwd: str = "",
+                 reasoning_effort: str = "",
                  timeout: Optional[int] = None,
                  debug_log_path: str = "",
                  fallback_api_key: str = ""):
         self.model = model
         self.sandbox = sandbox
         self.cwd = cwd
+        self.reasoning_effort = reasoning_effort
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CODEX_TIMEOUT",
             "BOTFERENCE_CLI_TIMEOUT",
@@ -552,22 +554,22 @@ class CodexAdapter:
             cmd += ["--cd", self.cwd]
         if self.model:
             cmd += ["-m", self.model]
+        if self.reasoning_effort:
+            cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
         cmd.append(prompt)
         return cmd
 
     def _build_resume_cmd(self, message: str) -> list:
+        cmd = ["codex", "exec"]
         if self.cwd:
-            cmd = [
-                "codex", "exec", "--cd", self.cwd, "resume", self.thread_id,
-                "--json",
-                "--skip-git-repo-check",
-            ]
-        else:
-            cmd = [
-                "codex", "exec", "resume", self.thread_id,
-                "--json",
-                "--skip-git-repo-check",
-            ]
+            cmd += ["--cd", self.cwd]
+        if self.reasoning_effort:
+            cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
+        cmd += [
+            "resume", self.thread_id,
+            "--json",
+            "--skip-git-repo-check",
+        ]
         cmd.append(message)
         return cmd
 

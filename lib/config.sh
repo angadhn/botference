@@ -380,6 +380,7 @@ Model resolution order:
 Environment variables:
   ANTHROPIC_MODEL          Global Anthropic model override (same as --anthropic-model)
   OPENAI_MODEL           OpenAI participant model (default: gpt-5.4)
+  OPENAI_REASONING_EFFORT Codex participant reasoning effort in planner sessions (default: high)
   BOTFERENCE_HOME          Path to botference framework install
   ANTHROPIC_API_KEY     API key for Anthropic models
   OPENAI_API_KEY        API key for OpenAI models
