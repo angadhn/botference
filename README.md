@@ -148,6 +148,15 @@ This means:
 - the rest of the project stays read-only by default
 - anything outside declared `write_roots` is blocked at runtime and by post-run audit
 
+In practice, this gives you two common workflows:
+
+- greenfield work happens naturally inside `botference/`, where planning can
+  create notes, caucus exports, scratch files, and plan artifacts without
+  touching the project tree yet
+- brownfield work keeps the existing project read-only by default; actual
+  project-file edits happen only if you explicitly widen `write_roots`,
+  typically for `build`, or if you make the edits manually yourself
+
 If you want to opt into another Botference-owned writable area later, add it
 explicitly. For example:
 
