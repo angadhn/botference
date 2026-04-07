@@ -125,6 +125,19 @@ After `botference init`, Botference stores its state inside `./botference/` in
 that target project. This is the right workflow for brownfield or greenfield
 projects outside the Botference engine repo.
 
+If you move the Botference framework itself to a new directory later, target
+projects do not need to be re-initialized. Their local `./botference/` state
+stays valid. Just make sure the launcher points at the new framework path, for
+example:
+
+```bash
+export BOTFERENCE_HOME=/new/path/to/botference-main
+```
+
+There is no extra “run it once from the framework repo” step. The framework
+path is resolved at launch time from `BOTFERENCE_HOME` or from the `botference`
+script you actually invoked.
+
 ## Project Scoping
 
 In a project initialized with `botference init`, the local policy lives in
