@@ -148,6 +148,15 @@ class TestHandoffPaths:
         )
         assert p.relay_prompt == tmp_path / "prompts" / "relay.md"
 
+    def test_session_paths(self, tmp_path):
+        (tmp_path / "work").mkdir()
+        p = BotferencePaths.resolve(
+            botference_home=tmp_path, project_root=tmp_path,
+        )
+        assert p.session_dir == tmp_path / "work" / "sessions"
+        assert p.session_state_file("abc123") == tmp_path / "work" / "sessions" / "abc123.json"
+        assert p.session_crash_log == tmp_path / "work" / "sessions" / "crash.log"
+
 
 class TestWorkPrefix:
     def test_work_prefix_with_project_dir(self, tmp_path):

@@ -25,6 +25,7 @@ from paths import BotferencePaths
 from botference import Botference
 from botference_ui import RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
+from session_store import append_crash_log
 
 log = logging.getLogger(__name__)
 
@@ -204,8 +205,18 @@ async def main() -> None:
         if msg.get("type") == "input":
             text = msg.get("text", "")
             attachments = msg.get("attachments", [])
-            await botference.handle_input(text, bridge, attachments=attachments)
-            bridge.set_status(botference.status_snapshot())
+            try:
+                await botference.handle_input(text, bridge, attachments=attachments)
+                bridge.set_status(botference.status_snapshot())
+            except Exception as exc:
+                append_crash_log(
+                    paths,
+                    location="botference_ink_bridge.handle_input",
+                    session_id=botference.session_id,
+                    exc=exc,
+                )
+                bridge.add_room_entry("system", f"Unhandled controller error: {exc}")
+                bridge.set_status(botference.status_snapshot())
 
             if botference.quit_requested:
                 emit({"type": "exit"})
@@ -217,4 +228,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        append_crash_log(
+            BotferencePaths.resolve(),
+            location="botference_ink_bridge.main",
+            session_id="",
+            exc=exc,
+        )
+        raise

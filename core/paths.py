@@ -47,6 +47,20 @@ class BotferencePaths:
         return self.handoff_history_dir / model
 
     @property
+    def session_dir(self) -> Path:
+        """Crash-safe plan session snapshots: work/sessions/"""
+        return self.work_dir / "sessions"
+
+    def session_state_file(self, session_id: str) -> Path:
+        """Snapshot file for a plan session."""
+        return self.session_dir / f"{session_id}.json"
+
+    @property
+    def session_crash_log(self) -> Path:
+        """Crash log for plan sessions."""
+        return self.session_dir / "crash.log"
+
+    @property
     def handoff_template(self) -> Path:
         """Handoff template: templates/handoff.md"""
         return self.botference_home / "templates" / "handoff.md"

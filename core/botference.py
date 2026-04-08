@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
@@ -45,6 +46,7 @@ from room_prompts import (
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
 from render_blocks import parse_render_blocks
+from session_store import SessionStore, iso_now, append_crash_log
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +129,7 @@ class InputKind(Enum):
     HELP = "help"
     QUIT = "quit"
     RELAY = "relay"
+    RESUME = "resume"
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,7 @@ _SLASH_COMMANDS = {
     "/lead": InputKind.LEAD,
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
+    "/resume": InputKind.RESUME,
     "/status": InputKind.STATUS,
     "/auth": InputKind.AUTH,
     "/help": InputKind.HELP,
@@ -238,6 +242,12 @@ class TranscriptRecord:
     text: str
     tool_summaries: list = field(default_factory=list)
     turn_index: int = 0
+
+
+@dataclass
+class DisplayRecord:
+    speaker: str
+    text: str
 
 
 class Transcript:
@@ -519,12 +529,19 @@ class Botference:
         self.system_prompt = system_prompt
         self.task = task
         self.paths = paths or BotferencePaths.resolve()
+        self.session_store = SessionStore(self.paths)
+        self.session_id = str(uuid.uuid4())
+        self.created_at = iso_now()
+        self.updated_at = self.created_at
 
         self.transcript = Transcript()
         self.router = AutoRouter()
         self.mode = RoomMode.PUBLIC
         self.lead: str = "auto"
         self.observe: bool = True
+        self._room_history: list[DisplayRecord] = []
+        self._caucus_history: list[DisplayRecord] = []
+        self._restoring_session: bool = False
 
         self._claude_pct: Optional[float] = None
         self._codex_pct: Optional[float] = None
@@ -538,6 +555,7 @@ class Botference:
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
         self._quit_requested: bool = False
+        self._persist_session()
 
     @property
     def quit_requested(self) -> bool:
@@ -569,6 +587,282 @@ class Botference:
     def _archive_root(self) -> Path:
         env_dir = os.environ.get("BOTFERENCE_ARCHIVE_DIR")
         return Path(env_dir) if env_dir else (self.paths.project_root / "archive")
+
+    def _serialize_tool_summary(self, summary: ToolSummary) -> dict:
+        return {
+            "id": summary.id,
+            "name": summary.name,
+            "input_preview": summary.input_preview,
+            "output_preview": summary.output_preview,
+            "output_blocks": summary.output_blocks,
+            "pending_output_blocks": summary.pending_output_blocks,
+        }
+
+    def _deserialize_tool_summary(self, payload: dict) -> ToolSummary:
+        return ToolSummary(
+            id=str(payload.get("id", "")),
+            name=str(payload.get("name", "")),
+            input_preview=str(payload.get("input_preview", "")),
+            output_preview=str(payload.get("output_preview", "")),
+            output_blocks=list(payload.get("output_blocks", []) or []),
+            pending_output_blocks=list(payload.get("pending_output_blocks", []) or []),
+        )
+
+    def _session_title(self) -> str:
+        for entry in self.transcript.entries:
+            if entry.speaker != "user":
+                continue
+            text = " ".join(entry.text.split()).strip()
+            if text:
+                return text[:80]
+        task = " ".join(self.task.split()).strip()
+        return task[:80] if task else "Untitled session"
+
+    def _session_payload(self) -> dict:
+        return {
+            "version": 1,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "title": self._session_title(),
+            "system_prompt": self.system_prompt,
+            "task": self.task,
+            "mode": self.mode.value,
+            "lead": self.lead,
+            "route": self.router.current_route,
+            "router_had_first_turn": self.router._had_first_turn,
+            "observe": self.observe,
+            "room_history": [
+                {"speaker": entry.speaker, "text": entry.text}
+                for entry in self._room_history
+            ],
+            "caucus_history": [
+                {"speaker": entry.speaker, "text": entry.text}
+                for entry in self._caucus_history
+            ],
+            "transcript": [
+                {
+                    "speaker": entry.speaker,
+                    "text": entry.text,
+                    "turn_index": entry.turn_index,
+                    "tool_summaries": [
+                        self._serialize_tool_summary(summary)
+                        for summary in entry.tool_summaries
+                    ],
+                }
+                for entry in self.transcript.entries
+            ],
+            "last_seen": dict(self.transcript._last_seen),
+            "claude": {
+                "session_id": self.claude.session_id,
+                "percent": self._claude_pct,
+                "tokens": self._claude_tokens,
+                "window": self._claude_window,
+            },
+            "codex": {
+                "thread_id": self.codex.thread_id,
+                "percent": self._codex_pct,
+                "tokens": self._codex_tokens,
+                "window": self._codex_window,
+            },
+            "models_initialized": sorted(self._models_initialized),
+            "yield_pressure": dict(self._yield_pressure),
+            "relay_boundary": dict(self._relay_boundary),
+            "pending_relay_handoffs": dict(self._pending_relay_handoffs),
+        }
+
+    def _persist_session(self) -> None:
+        if self._restoring_session:
+            return
+        try:
+            self.updated_at = iso_now()
+            self.session_store.save(self.session_id, self._session_payload())
+        except OSError as exc:
+            log.warning("Failed to persist botference session %s: %s", self.session_id, exc)
+
+    def _can_replace_with_resumed_session(self) -> bool:
+        return (
+            not self.transcript.entries
+            and not self._models_initialized
+            and not self._caucus_history
+        )
+
+    def _format_session_list(self, summaries: list) -> str:
+        if not summaries:
+            return "No saved sessions found."
+        lines = ["Saved sessions:"]
+        for summary in summaries:
+            lines.append(
+                f"  {summary.session_id[:12]}  {summary.updated_at}  {summary.title}"
+            )
+        lines.extend([
+            "",
+            "Run /resume latest or /resume <session-id-prefix>.",
+        ])
+        return "\n".join(lines)
+
+    def _restore_from_payload(self, payload: dict) -> str:
+        self._restoring_session = True
+        try:
+            self.session_id = str(payload.get("session_id", self.session_id))
+            self.created_at = str(payload.get("created_at", self.created_at))
+            self.updated_at = str(payload.get("updated_at", self.updated_at))
+            self.system_prompt = str(payload.get("system_prompt", self.system_prompt))
+            self.task = str(payload.get("task", self.task))
+            self.lead = str(payload.get("lead", "auto"))
+            self.observe = bool(payload.get("observe", self.observe))
+            self.router.current_route = str(payload.get("route", "@all"))
+            self.router._had_first_turn = bool(payload.get("router_had_first_turn", False))
+
+            saved_mode = str(payload.get("mode", RoomMode.PUBLIC.value))
+            self.mode = RoomMode.PUBLIC
+
+            self._room_history = [
+                DisplayRecord(
+                    speaker=str(entry.get("speaker", "system")),
+                    text=str(entry.get("text", "")),
+                )
+                for entry in payload.get("room_history", []) or []
+                if isinstance(entry, dict)
+            ]
+            self._caucus_history = [
+                DisplayRecord(
+                    speaker=str(entry.get("speaker", "system")),
+                    text=str(entry.get("text", "")),
+                )
+                for entry in payload.get("caucus_history", []) or []
+                if isinstance(entry, dict)
+            ]
+
+            self.transcript = Transcript()
+            transcript_entries = payload.get("transcript", []) or []
+            for entry in transcript_entries:
+                if not isinstance(entry, dict):
+                    continue
+                self.transcript.entries.append(TranscriptRecord(
+                    speaker=str(entry.get("speaker", "system")),
+                    text=str(entry.get("text", "")),
+                    tool_summaries=[
+                        self._deserialize_tool_summary(item)
+                        for item in entry.get("tool_summaries", []) or []
+                        if isinstance(item, dict)
+                    ],
+                    turn_index=int(entry.get("turn_index", len(self.transcript.entries))),
+                ))
+            if self.transcript.entries:
+                self.transcript._counter = max(
+                    entry.turn_index for entry in self.transcript.entries
+                ) + 1
+            else:
+                self.transcript._counter = 0
+            self.transcript._last_seen = {
+                str(model): int(turn)
+                for model, turn in (payload.get("last_seen", {}) or {}).items()
+            }
+
+            claude_state = payload.get("claude", {}) or {}
+            codex_state = payload.get("codex", {}) or {}
+            self.claude.session_id = str(claude_state.get("session_id", ""))
+            self.codex.thread_id = str(codex_state.get("thread_id", ""))
+            self._claude_pct = claude_state.get("percent")
+            self._claude_tokens = claude_state.get("tokens")
+            self._claude_window = claude_state.get("window")
+            self._codex_pct = codex_state.get("percent")
+            self._codex_tokens = codex_state.get("tokens")
+            self._codex_window = codex_state.get("window")
+
+            self._models_initialized = set(payload.get("models_initialized", []) or [])
+            if not self.claude.session_id:
+                self._models_initialized.discard("claude")
+            if not self.codex.thread_id:
+                self._models_initialized.discard("codex")
+            self._yield_pressure = {
+                str(model): float(value)
+                for model, value in (payload.get("yield_pressure", {}) or {}).items()
+            }
+            self._relay_boundary = {
+                str(model): int(value)
+                for model, value in (payload.get("relay_boundary", {}) or {}).items()
+            }
+            self._pending_relay_handoffs = {
+                str(model): str(value)
+                for model, value in (payload.get("pending_relay_handoffs", {}) or {}).items()
+            }
+        finally:
+            self._restoring_session = False
+        return saved_mode
+
+    def _replay_restored_session(self, ui: UIPort) -> None:
+        for entry in self._room_history:
+            ui.add_room_entry(entry.speaker, entry.text, self._structured_blocks(entry.text))
+        for entry in self._caucus_history:
+            ui.add_caucus_entry(entry.speaker, entry.text, self._structured_blocks(entry.text))
+
+    def _show_resume_list(self, ui: UIPort) -> None:
+        summaries = self.session_store.list_summaries(
+            limit=10, exclude_session_id=self.session_id,
+        )
+        self._add_room_entry(ui, "system", self._format_session_list(summaries))
+
+    def _resume_session(self, arg: str, ui: UIPort) -> None:
+        replaceable = self._can_replace_with_resumed_session()
+        if not replaceable:
+            self._add_room_entry(
+                ui,
+                "system",
+                "Resume is only available in a fresh controller session. Start a new plan session first.",
+            )
+            return
+
+        query = arg.strip()
+        summaries = self.session_store.list_summaries(
+            limit=25, exclude_session_id=self.session_id,
+        )
+        if not query:
+            self._show_resume_list(ui)
+            return
+
+        if query == "latest":
+            if not summaries:
+                self._add_room_entry(ui, "system", "No saved sessions found.")
+                return
+            target_id = summaries[0].session_id
+        else:
+            matches = [
+                summary.session_id
+                for summary in summaries
+                if summary.session_id == query or summary.session_id.startswith(query)
+            ]
+            if not matches:
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    f"No saved session matched '{query}'.\n\n{self._format_session_list(summaries[:10])}",
+                )
+                return
+            if len(matches) > 1:
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    "Multiple sessions matched:\n"
+                    + "\n".join(f"  {session_id[:12]}" for session_id in matches[:10]),
+                )
+                return
+            target_id = matches[0]
+
+        payload = self.session_store.load(target_id)
+        old_session_id = self.session_id
+        saved_mode = self._restore_from_payload(payload)
+        if old_session_id != self.session_id and replaceable:
+            self.session_store.delete(old_session_id)
+        self._replay_restored_session(ui)
+        note = f"Resumed session {self.session_id[:12]} from {self.updated_at}."
+        if saved_mode != RoomMode.PUBLIC.value:
+            note += f" Restored interrupted {saved_mode} session in public mode."
+        self._add_room_entry(ui, "system", note)
+        ui.set_mode(self.mode)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
 
     def _read_work_file(self, path: Path) -> str:
         try:
@@ -664,7 +958,8 @@ class Botference:
 
         if parsed.kind is InputKind.QUIT:
             self._quit_requested = True
-            ui.add_room_entry("system", "Exiting council. No files written.")
+            self._add_room_entry(ui, "system", "Exiting council. No files written.")
+            self._persist_session()
             return
 
         if parsed.kind is InputKind.HELP:
@@ -683,9 +978,13 @@ class Botference:
             self._set_lead(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.RESUME:
+            self._resume_session(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.RELAY:
             if not parsed.target:
-                ui.add_room_entry("system", _RELAY_USAGE)
+                self._add_room_entry(ui, "system", _RELAY_USAGE)
                 return
             await self._relay_model(parsed.target, ui)
             return
@@ -707,13 +1006,14 @@ class Botference:
     # ── /help ─────────────────────────────────────────────
 
     def _show_help(self, ui: UIPort) -> None:
-        ui.add_room_entry("system", "\n".join([
+        self._add_room_entry(ui, "system", "\n".join([
             "Commands:",
             "  /caucus <topic>     — Start a structured discussion between Claude and Codex",
             "  /lead @claude|@codex — Set who writes the plan",
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
+            "  /resume [latest|id] — Restore a saved plan session in a fresh controller",
             "  /status             — Show context %, lead, mode, sessions",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /help               — Show this help",
@@ -741,6 +1041,7 @@ class Botference:
         c_pct = _format_window_percent(self._claude_tokens, self._claude_window)
         x_pct = _format_window_percent(self._codex_tokens, self._codex_window)
         lines = [
+            f"Session: {self.session_id[:12]}",
             f"Mode: {self.mode.value}",
             f"Lead: {self.lead}",
             f"Route: {self.router.current_route}",
@@ -749,7 +1050,7 @@ class Botference:
             f"Observe: {'on' if self.observe else 'off'}",
             f"Turns: {len(self.transcript.entries)}",
         ]
-        ui.add_room_entry("system", "\n".join(lines))
+        self._add_room_entry(ui, "system", "\n".join(lines))
 
     def _show_auth_status(self, arg: str, ui: UIPort) -> None:
         target = arg.strip().lower().lstrip("@")
@@ -758,13 +1059,13 @@ class Botference:
         elif target in ("claude", "codex"):
             targets = [target]
         else:
-            ui.add_room_entry("system", "Usage: /auth [claude|codex|all]")
+            self._add_room_entry(ui, "system", "Usage: /auth [claude|codex|all]")
             return
 
         lines = ["Auth diagnostics:"]
         for model in targets:
             lines.extend(self._auth_status_lines(model))
-        ui.add_room_entry("system", "\n".join(lines))
+        self._add_room_entry(ui, "system", "\n".join(lines))
 
     def _auth_status_lines(self, model: str) -> list[str]:
         if model == "codex":
@@ -826,21 +1127,23 @@ class Botference:
         arg = arg.strip().lower()
         if arg in ("auto", "@claude", "@codex"):
             self.lead = arg
-            ui.add_room_entry("system", f"Lead set to {self.lead}")
+            self._add_room_entry(ui, "system", f"Lead set to {self.lead}")
         else:
-            ui.add_room_entry("system",
+            self._add_room_entry(ui, "system",
                               "Usage: /lead auto|@claude|@codex")
         ui.set_status(self.status_snapshot())
+        self._persist_session()
 
     # ── /relay ────────────────────────────────────────────
 
     async def _relay_model(self, model: str, ui: UIPort) -> None:
         """Relay a model's session: create handoff, tear down, restart immediately."""
         if model not in ("claude", "codex"):
-            ui.add_room_entry("system", _RELAY_USAGE)
+            self._add_room_entry(ui, "system", _RELAY_USAGE)
             return
         if model not in self._models_initialized:
-            ui.add_room_entry(
+            self._add_room_entry(
+                ui,
                 "system",
                 f"Cannot relay {model} — no active session.",
             )
@@ -849,7 +1152,8 @@ class Botference:
         # Read relay prompt
         relay_prompt = self._read_relay_prompt()
         if relay_prompt is None:
-            ui.add_room_entry(
+            self._add_room_entry(
+                ui,
                 "system",
                 f"Relay failed — prompt file not found: {self.paths.relay_prompt}",
             )
@@ -888,7 +1192,8 @@ class Botference:
             )
 
         if handoff_doc is None:
-            ui.add_room_entry(
+            self._add_room_entry(
+                ui,
                 "system",
                 f"Relay failed for {model} — could not generate valid handoff.",
             )
@@ -918,17 +1223,20 @@ class Botference:
 
         # Confirmation
         if restarted:
-            ui.add_room_entry(
+            self._add_room_entry(
+                ui,
                 "system",
                 f"Relayed {model} (tier: {used_tier}) and started a fresh session.",
             )
         else:
-            ui.add_room_entry(
+            self._add_room_entry(
+                ui,
                 "system",
                 f"Relayed {model} (tier: {used_tier}), but fresh-session startup failed. "
                 f"Retry by messaging {model}.",
             )
         ui.set_status(self.status_snapshot())
+        self._persist_session()
 
     def _relay_tier_sequence(self, model: str, pct: float) -> list[str]:
         """Return ordered list of generation tiers to attempt."""
@@ -971,20 +1279,22 @@ class Botference:
         )
         self._models_initialized.add(model)
         label = "Restarting" if handoff_doc else "Starting"
-        ui.add_room_entry("system", f"{label} {model} session…")
+        self._add_room_entry(ui, "system", f"{label} {model} session…")
         try:
             resp = await adapter.send(prompt)
         except Exception as e:
-            ui.add_room_entry("system", f"Error starting {model}: {e}")
+            self._add_room_entry(ui, "system", f"Error starting {model}: {e}")
             self._models_initialized.discard(model)
             if handoff_doc:
                 self._persist_failed_relay_handoff(model)
+            self._persist_session()
             return None
 
         if handoff_doc:
             self._pending_relay_handoffs.pop(model, None)
             self.paths.handoff_live_file(model).unlink(missing_ok=True)
 
+        self._persist_session()
         return resp
 
     async def _relay_generate_self(
@@ -1210,10 +1520,14 @@ class Botference:
         return parse_render_blocks(text)
 
     def _add_room_entry(self, ui: UIPort, speaker: str, text: str) -> None:
+        self._room_history.append(DisplayRecord(speaker=speaker, text=text))
         ui.add_room_entry(speaker, text, self._structured_blocks(text))
+        self._persist_session()
 
     def _add_caucus_entry(self, ui: UIPort, speaker: str, text: str) -> None:
+        self._caucus_history.append(DisplayRecord(speaker=speaker, text=text))
         ui.add_caucus_entry(speaker, text, self._structured_blocks(text))
+        self._persist_session()
 
     async def _send_message(
         self, parsed: ParsedInput, ui: UIPort,
@@ -1235,6 +1549,7 @@ class Botference:
             body = f"{body}\n\n{refs}"
 
         self.transcript.add("user", body)
+        self._persist_session()
 
         targets = (
             ["claude", "codex"] if route == "@all"
@@ -1248,6 +1563,7 @@ class Botference:
                 self.transcript.mark_seen(model)
                 self._update_pct(model, resp, ui)
                 ui.set_status(self.status_snapshot())
+                self._persist_session()
 
     async def _send_to_model(
         self, model: str, message: str, ui: UIPort,
@@ -1288,6 +1604,7 @@ class Botference:
             self._add_room_entry(ui, model, resp.text)
         if resp.exit_code == -1:
             self._add_room_entry(
+                ui,
                 "system",
                 f"{model.capitalize()} CLI timed out. Run /auth {model} to check login state. "
                 f"If auth looks fine, /relay @{model} will reset the session.",
@@ -1357,7 +1674,8 @@ class Botference:
                 and tokens is not None
                 and model not in self._warned_overlimit_models):
             self._warned_overlimit_models.add(model)
-            ui.add_room_entry(
+            self._add_room_entry(
+                ui,
                 "system",
                 f"⚠ {model.capitalize()} last turn used {tokens:,} / {window:,} "
                 f"tokens ({raw_pct:.0f}% of window), above botference's yield "
@@ -1489,6 +1807,7 @@ class Botference:
         self._add_caucus_entry(ui, "system", "--- caucus ended ---")
         self._add_room_entry(ui, "summary", summary)
         self.transcript.add("system", f"[Caucus summary: {summary}]")
+        self._persist_session()
 
         # Auto-lead from consensus votes
         if self.lead == "auto" and writer_votes:
@@ -1590,6 +1909,7 @@ class Botference:
         self._update_pct(lead, resp, ui)
         self._add_room_entry(ui, lead, resp.text)
         self.transcript.add(lead, resp.text, resp.tool_summaries)
+        self._persist_session()
         self.transcript.mark_seen(lead)
         current_plan = resp.text
         self._write_work_file(self._plan_path, current_plan)
@@ -1619,6 +1939,7 @@ class Botference:
             self._update_pct(reviewer, rev_resp, ui)
             self._add_room_entry(ui, reviewer, rev_resp.text)
             self.transcript.add(reviewer, rev_resp.text, rev_resp.tool_summaries)
+            self._persist_session()
             self.transcript.mark_seen(reviewer)
 
             review_path = self._reviewer_comments_path(round_number)
@@ -1649,6 +1970,7 @@ class Botference:
             self._update_pct(lead, revised_resp, ui)
             self._add_room_entry(ui, lead, revised_resp.text)
             self.transcript.add(lead, revised_resp.text, revised_resp.tool_summaries)
+            self._persist_session()
             self.transcript.mark_seen(lead)
             current_plan = revised_resp.text
             self._write_work_file(self._plan_path, current_plan)
@@ -1720,6 +2042,7 @@ class Botference:
             self._update_pct(lead, final_resp, ui)
             self._add_room_entry(ui, lead, final_resp.text)
             self.transcript.add(lead, final_resp.text, final_resp.tool_summaries)
+            self._persist_session()
             self.transcript.mark_seen(lead)
             final_plan = final_resp.text
             self._write_work_file(self._plan_path, final_plan)
@@ -1740,6 +2063,7 @@ class Botference:
         self._update_pct(lead, checkpoint_resp, ui)
         self._add_room_entry(ui, lead, checkpoint_resp.text)
         self.transcript.add(lead, checkpoint_resp.text, checkpoint_resp.tool_summaries)
+        self._persist_session()
         self.transcript.mark_seen(lead)
         self._write_work_file(self._checkpoint_path, checkpoint_resp.text)
         self._add_room_entry(
@@ -1895,7 +2219,16 @@ def main() -> None:
 
     def on_submit(text: str) -> None:
         async def _handle() -> None:
-            await botference.handle_input(text, app)
+            try:
+                await botference.handle_input(text, app)
+            except Exception as exc:
+                append_crash_log(
+                    paths,
+                    location="botference.main.handle_input",
+                    session_id=botference.session_id,
+                    exc=exc,
+                )
+                app.add_room_entry("system", f"Unhandled controller error: {exc}")
             if botference.quit_requested:
                 app.exit()
         app.run_worker(_handle(), exclusive=True)

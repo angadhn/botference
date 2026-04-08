@@ -107,6 +107,11 @@ class TestParseInput:
         p = parse_input("/finalize")
         assert p.kind is InputKind.FINALIZE
 
+    def test_slash_resume(self):
+        p = parse_input("/resume latest")
+        assert p.kind is InputKind.RESUME
+        assert p.body == "latest"
+
     def test_slash_status(self):
         p = parse_input("/status")
         assert p.kind is InputKind.STATUS
@@ -437,9 +442,9 @@ def _make_botference(
     kwargs = {}
     if tmp_path is not None:
         work_dir = tmp_path / "work"
-        work_dir.mkdir()
+        work_dir.mkdir(exist_ok=True)
         archive_dir = tmp_path / "archive"
-        archive_dir.mkdir()
+        archive_dir.mkdir(exist_ok=True)
         repo_root = Path(__file__).resolve().parent.parent
         kwargs["paths"] = BotferencePaths(
             botference_home=repo_root,
@@ -564,6 +569,19 @@ class TestBotferenceMessageRouting:
         assert len(c.transcript.entries) == 2  # user + claude
         assert c.transcript.entries[0].speaker == "user"
         assert c.transcript.entries[1].speaker == "claude"
+
+    async def test_session_snapshot_persisted_after_message(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("yo")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hi", ui)
+        session_path = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        assert payload["session_id"] == c.session_id
+        assert len(payload["transcript"]) == 2
+        assert payload["transcript"][0]["speaker"] == "user"
+        assert payload["transcript"][1]["speaker"] == "claude"
 
     async def test_tool_summaries_displayed_as_folded_tree(self):
         resp = _ok("Found it", tool_summaries=[
@@ -978,8 +996,47 @@ class TestBotferenceFinalize:
         await c.handle_input("/finalize", ui)
         assert c.mode is RoomMode.PUBLIC
         assert len(claude.send_calls) == 1
+
+
+@pytest.mark.asyncio
+class TestBotferenceResume:
+    async def test_resume_latest_restores_session_and_uses_resume(self, tmp_path):
+        original, _, _, original_ui = _make_botference(
+            claude_responses=[_ok("first reply")],
+            tmp_path=tmp_path,
+        )
+        await original.handle_input("@claude first question", original_ui)
+        original_session_id = original.session_id
+
+        resumed, claude, codex, resumed_ui = _make_botference(
+            claude_responses=[_ok("continued reply")],
+            codex_responses=[_ok("codex reply")],
+            tmp_path=tmp_path,
+        )
+        await resumed.handle_input("/resume latest", resumed_ui)
+
+        assert resumed.session_id == original_session_id
+        assert resumed.claude.session_id == "mock-session"
+        assert resumed.router.current_route == "@claude"
+        assert len(resumed.transcript.entries) == 2
+        assert any("Resumed session" in text for _, text in resumed_ui.room_entries)
+
+        await resumed.handle_input("follow up", resumed_ui)
+        assert len(claude.resume_calls) == 1
+        assert len(claude.send_calls) == 0
         assert len(codex.send_calls) == 0
-        assert work.joinpath("checkpoint.md").is_file()
+
+    async def test_resume_requires_fresh_controller(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hi", ui)
+        await c.handle_input("/resume latest", ui)
+        assert any(
+            "fresh controller session" in text.lower()
+            for _, text in ui.room_entries
+        )
 
     async def test_draft_without_prior_session(self, tmp_path):
         """Bootstraps lead and reviewer sessions before drafting."""

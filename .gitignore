@@ -4,6 +4,7 @@ work/iteration_count
 work/handoffs/
 work/handoff-claude.md
 work/handoff-codex.md
+work/sessions/
 .council/
 .DS_Store
 __pycache__/
