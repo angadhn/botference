@@ -1029,6 +1029,8 @@ class Botference:
             "",
             "Workflow: discuss → /caucus → /lead → /draft [rounds] → /finalize",
             "",
+            "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
+            "",
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows a last-turn prompt-footprint proxy once it has a baseline.",
         ]))
@@ -2102,6 +2104,12 @@ class Botference:
             self._relay_boundary[model] = self.transcript.entries[-1].turn_index
         else:
             self._relay_boundary[model] = -1
+
+    def interrupt(self, ui: UIPort) -> None:
+        """Record that the user interrupted the active turn."""
+        self._add_room_entry(ui, "system", "Interrupted current turn.")
+        self.transcript.add("system", "[Interrupted current turn]")
+        self._persist_session()
 
     def _resolve_lead(self) -> Optional[str]:
         """Resolve lead to bare model name, or None if auto."""

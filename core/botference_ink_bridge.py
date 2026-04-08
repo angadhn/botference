@@ -85,6 +85,34 @@ async def _read_line() -> str:
     return await loop.run_in_executor(_executor, sys.stdin.readline)
 
 
+async def _wait_for_turn(
+    task: asyncio.Task,
+    botference: Botference,
+    bridge: InkBridge,
+    paths: BotferencePaths,
+) -> None:
+    try:
+        await task
+        bridge.set_status(botference.status_snapshot())
+    except asyncio.CancelledError:
+        botference.interrupt(bridge)
+        bridge.set_status(botference.status_snapshot())
+    except Exception as exc:
+        append_crash_log(
+            paths,
+            location="botference_ink_bridge.handle_input",
+            session_id=botference.session_id,
+            exc=exc,
+        )
+        bridge.add_room_entry("system", f"Unhandled controller error: {exc}")
+        bridge.set_status(botference.status_snapshot())
+    finally:
+        if botference.quit_requested:
+            emit({"type": "exit"})
+        else:
+            emit({"type": "ready"})
+
+
 async def main() -> None:
     import argparse
 
@@ -184,6 +212,7 @@ async def main() -> None:
     botference.observe = args.debug_panes
 
     bridge = InkBridge()
+    current_turn: asyncio.Task | None = None
 
     # Send initial state
     bridge.set_status(botference.status_snapshot())
@@ -203,26 +232,21 @@ async def main() -> None:
             continue
 
         if msg.get("type") == "input":
+            if current_turn is not None and not current_turn.done():
+                bridge.add_room_entry("system", "A turn is already running.")
+                continue
             text = msg.get("text", "")
             attachments = msg.get("attachments", [])
-            try:
-                await botference.handle_input(text, bridge, attachments=attachments)
-                bridge.set_status(botference.status_snapshot())
-            except Exception as exc:
-                append_crash_log(
-                    paths,
-                    location="botference_ink_bridge.handle_input",
-                    session_id=botference.session_id,
-                    exc=exc,
-                )
-                bridge.add_room_entry("system", f"Unhandled controller error: {exc}")
-                bridge.set_status(botference.status_snapshot())
+            current_turn = asyncio.create_task(
+                botference.handle_input(text, bridge, attachments=attachments)
+            )
+            asyncio.create_task(_wait_for_turn(current_turn, botference, bridge, paths))
+            continue
 
-            if botference.quit_requested:
-                emit({"type": "exit"})
-                break
-
-            emit({"type": "ready"})
+        if msg.get("type") == "interrupt":
+            if current_turn is not None and not current_turn.done():
+                current_turn.cancel()
+            continue
 
     _executor.shutdown(wait=False)
 

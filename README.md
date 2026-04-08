@@ -254,6 +254,7 @@ excerpts still render as code blocks.
 | `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved beside the plan in the Botference state directory. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
+| `/resume [latest\|<session-id-prefix>]` | Restore a previously saved planning session from `work/sessions/`. Run with no argument to list recent resumable sessions. Resume is only available from a fresh botference controller session. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
@@ -273,6 +274,25 @@ starts a fresh session in the same running controller.
 - Fresh `./botference plan` launches do not auto-load persisted handoff notes.
 - The live `handoff-claude.md` and `handoff-codex.md` files are failure-only artifacts used to preserve a retry payload if the immediate restart fails.
 
+### Resume and crash recovery
+
+Plan-mode sessions are now snapshotted under `work/sessions/` after each turn.
+Each snapshot includes:
+
+- the shared transcript
+- room and caucus panel history
+- route, lead, mode, and status state
+- Claude `session_id` and Codex `thread_id` for native CLI resume
+
+Use `/resume` in a fresh `./botference plan` session to list saved sessions,
+then `/resume latest` or `/resume <session-id-prefix>` to restore one.
+
+Unhandled plan-mode crashes are appended to `work/sessions/crash.log`.
+If you also run with debug panes, the model stream logs remain:
+
+- `build/logs/debug-claude.log`
+- `build/logs/debug-codex.log`
+
 ### Navigation and input
 
 The TUI has two panels: **council** (left) and **caucus** (right), with a text
@@ -282,6 +302,8 @@ input field at the bottom.
   each panel.
 - **Shift+Enter** inserts a newline (Ink backend only). In the Textual backend
   the input is single-line.
+- **Esc interrupts the current in-flight turn** in the Ink backend. It no
+  longer clears the input buffer.
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
 

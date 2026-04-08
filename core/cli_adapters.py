@@ -10,6 +10,7 @@ Verified syntax from spike-output/CLI-SPIKE-RESULTS.md (Task 0, commit 55e2209).
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import os
@@ -460,43 +461,52 @@ class ClaudeAdapter:
                         )
 
         try:
-            await asyncio.wait_for(_drain(), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                await asyncio.wait_for(_drain(), timeout=self.timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                if debug_file:
+                    debug_file.close()
+                tail = _tail_excerpt(raw_lines)
+                message = "Error: Claude CLI timed out after %ds" % self.timeout
+                if tail:
+                    message += "\nRecent CLI output:\n" + tail
+                return AdapterResponse(
+                    text=message,
+                    raw_output="\n".join(raw_lines),
+                    exit_code=-1,
+                    session_id=self.session_id,
+                )
+
+            stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
+            await proc.wait()
+
+            if stderr.strip():
+                raw_lines.append("[stderr] " + stderr.strip())
+                if debug_file:
+                    debug_file.write("[stderr] " + stderr.strip() + "\n")
+
             if debug_file:
                 debug_file.close()
-            tail = _tail_excerpt(raw_lines)
-            message = "Error: Claude CLI timed out after %ds" % self.timeout
-            if tail:
-                message += "\nRecent CLI output:\n" + tail
-            return AdapterResponse(
-                text=message,
-                raw_output="\n".join(raw_lines),
-                exit_code=-1,
-                session_id=self.session_id,
-            )
 
-        stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
-        await proc.wait()
+            if proc.returncode != 0 and not text_parts:
+                text_parts.append(
+                    "Error: claude exited %d\n%s" % (proc.returncode, stderr)
+                )
 
-        if stderr.strip():
-            raw_lines.append("[stderr] " + stderr.strip())
+            response.text = "\n".join(text_parts) if text_parts else ""
+            response.tool_summaries = tool_summaries
+            response.raw_output = "\n".join(raw_lines)
+            response.exit_code = proc.returncode or 0
+            return response
+        except asyncio.CancelledError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            with suppress(Exception):
+                await proc.wait()
             if debug_file:
-                debug_file.write("[stderr] " + stderr.strip() + "\n")
-
-        if debug_file:
-            debug_file.close()
-
-        if proc.returncode != 0 and not text_parts:
-            text_parts.append(
-                "Error: claude exited %d\n%s" % (proc.returncode, stderr)
-            )
-
-        response.text = "\n".join(text_parts) if text_parts else ""
-        response.tool_summaries = tool_summaries
-        response.raw_output = "\n".join(raw_lines)
-        response.exit_code = proc.returncode or 0
-        return response
+                debug_file.close()
+            raise
 
     def context_percent(self, resp: AdapterResponse) -> float:
         """Projected next-turn occupancy as % of yield limit. 100 = yield now."""
@@ -704,59 +714,68 @@ class CodexAdapter:
                     text_parts.append("Error: %s" % msg)
 
         try:
-            await asyncio.wait_for(_drain(), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                await asyncio.wait_for(_drain(), timeout=self.timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                if debug_file:
+                    debug_file.close()
+                tail = _tail_excerpt(raw_lines)
+                message = "Error: Codex CLI timed out after %ds" % self.timeout
+                if tail:
+                    message += "\nRecent CLI output:\n" + tail
+                return AdapterResponse(
+                    text=message,
+                    raw_output="\n".join(raw_lines),
+                    exit_code=-1,
+                    session_id=response.session_id,
+                )
+
+            stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
+            await proc.wait()
+
+            if stderr.strip():
+                raw_lines.append("[stderr] " + stderr.strip())
+                if debug_file:
+                    debug_file.write("[stderr] " + stderr.strip() + "\n")
+
             if debug_file:
                 debug_file.close()
-            tail = _tail_excerpt(raw_lines)
-            message = "Error: Codex CLI timed out after %ds" % self.timeout
-            if tail:
-                message += "\nRecent CLI output:\n" + tail
-            return AdapterResponse(
-                text=message,
-                raw_output="\n".join(raw_lines),
-                exit_code=-1,
-                session_id=response.session_id,
-            )
 
-        stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
-        await proc.wait()
+            if proc.returncode != 0 and not text_parts:
+                text_parts.append(
+                    "Error: codex exited %d\n%s" % (proc.returncode, stderr)
+                )
 
-        if stderr.strip():
-            raw_lines.append("[stderr] " + stderr.strip())
+            # Deduplicate tool summaries — item.started then item.completed
+            # produce two entries for the same item.id; merge into one
+            seen = {}
+            deduped = []
+            for ts in tool_summaries:
+                if ts.id and ts.id in seen:
+                    existing = seen[ts.id]
+                    existing.output_preview = ts.output_preview or existing.output_preview
+                    existing.output_blocks = ts.output_blocks or existing.output_blocks
+                    if ts.input_preview != "(running)":
+                        existing.input_preview = ts.input_preview
+                else:
+                    if ts.id:
+                        seen[ts.id] = ts
+                    deduped.append(ts)
+
+            response.text = "\n".join(text_parts) if text_parts else ""
+            response.tool_summaries = deduped
+            response.raw_output = "\n".join(raw_lines)
+            response.exit_code = proc.returncode or 0
+            return response
+        except asyncio.CancelledError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            with suppress(Exception):
+                await proc.wait()
             if debug_file:
-                debug_file.write("[stderr] " + stderr.strip() + "\n")
-
-        if debug_file:
-            debug_file.close()
-
-        if proc.returncode != 0 and not text_parts:
-            text_parts.append(
-                "Error: codex exited %d\n%s" % (proc.returncode, stderr)
-            )
-
-        # Deduplicate tool summaries — item.started then item.completed
-        # produce two entries for the same item.id; merge into one
-        seen = {}
-        deduped = []
-        for ts in tool_summaries:
-            if ts.id and ts.id in seen:
-                existing = seen[ts.id]
-                existing.output_preview = ts.output_preview or existing.output_preview
-                existing.output_blocks = ts.output_blocks or existing.output_blocks
-                if ts.input_preview != "(running)":
-                    existing.input_preview = ts.input_preview
-            else:
-                if ts.id:
-                    seen[ts.id] = ts
-                deduped.append(ts)
-
-        response.text = "\n".join(text_parts) if text_parts else ""
-        response.tool_summaries = deduped
-        response.raw_output = "\n".join(raw_lines)
-        response.exit_code = proc.returncode or 0
-        return response
+                debug_file.close()
+            raise
 
     def context_percent(self, resp: AdapterResponse) -> float:
         """Projected next-turn usage as % of yield limit. 100 = yield now."""

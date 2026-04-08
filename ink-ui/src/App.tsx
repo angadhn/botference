@@ -716,6 +716,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     nextImageId.current = 1;
   }, [inputText, focusedPane, ready, imageAttachments]);
 
+  const interrupt = useCallback(() => {
+    if (ready) {
+      return;
+    }
+    const proc = bridgeRef.current;
+    if (proc?.stdin?.writable) {
+      proc.stdin.write(JSON.stringify({ type: "interrupt" }) + "\n");
+      setHint("Interrupting...");
+    }
+  }, [ready]);
+
   // ── Keyboard handling ──────────────────────────────────
 
   useInput((input, key) => {
@@ -752,12 +763,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    // Escape — clear input
+    // Escape — interrupt active turn
     if (key.escape) {
-      setInputText("");
-      setCursor(0);
-      setHint("");
-      setDesiredCol(null);
+      interrupt();
       return;
     }
 
@@ -889,7 +897,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setCursor((c) => c + input.length);
       setDesiredCol(null);
     }
-  });
+  }, [cleanup, focusedPane, cursor, submit, ready, interrupt]);
 
   // ── Input label ────────────────────────────────────────
 
