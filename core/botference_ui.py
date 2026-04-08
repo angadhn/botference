@@ -743,6 +743,15 @@ if TEXTUAL_AVAILABLE:
             )
             self._sync_focus_to_mode(mode)
 
+        async def request_write_permission(self, request) -> bool:
+            self.add_room_entry(
+                "system",
+                "Protected write request denied in Textual mode. "
+                f"{request.model.capitalize()} requested {request.path}: {request.reason}. "
+                "Use the Ink UI for interactive allow/deny prompts.",
+            )
+            return False
+
         def _sync_focus_to_mode(self, mode: RoomMode) -> None:
             if mode is RoomMode.CAUCUS:
                 self.focused_pane = PaneFocus.CAUCUS

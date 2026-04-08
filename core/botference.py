@@ -26,8 +26,10 @@ from cli_adapters import (
     AdapterResponse,
     ClaudeAdapter,
     CodexAdapter,
+    PlannerWriteConfig,
     ToolSummary,
-    claude_plan_settings_for_work_dir,
+    normalize_write_roots,
+    planner_write_config,
     planner_write_roots_for_env,
 )
 from paths import BotferencePaths
@@ -124,6 +126,7 @@ class InputKind(Enum):
     LEAD = "lead"
     DRAFT = "draft"
     FINALIZE = "finalize"
+    PERMISSIONS = "permissions"
     STATUS = "status"
     AUTH = "auth"
     HELP = "help"
@@ -146,6 +149,7 @@ _SLASH_COMMANDS = {
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
     "/resume": InputKind.RESUME,
+    "/permissions": InputKind.PERMISSIONS,
     "/status": InputKind.STATUS,
     "/auth": InputKind.AUTH,
     "/help": InputKind.HELP,
@@ -203,6 +207,21 @@ def parse_input(raw: str) -> ParsedInput:
         )
 
     return ParsedInput(kind=InputKind.MESSAGE, body=text)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_write_access_request(text: str) -> tuple[str, str] | None:
+    match = _WRITE_ACCESS_REQUEST_RE.match(text.strip())
+    if not match:
+        return None
+    return match.group(1).strip(), match.group(2).strip()
 
 
 # ── Auto-routing ───────────────────────────────────────────
@@ -489,6 +508,23 @@ class UIPort(Protocol):
     ) -> None: ...
     def set_status(self, status: StatusSnapshot) -> None: ...
     def set_mode(self, mode: RoomMode) -> None: ...
+    async def request_write_permission(
+        self, request: "WritePermissionRequest",
+    ) -> bool: ...
+
+
+@dataclass(frozen=True)
+class WritePermissionRequest:
+    request_id: str
+    model: str
+    path: str
+    reason: str
+
+
+_WRITE_ACCESS_REQUEST_RE = re.compile(
+    r'^\s*<write-access-request\s+path="([^"\n]+)"\s+reason="([^"\n]+)"\s*/>\s*$',
+    re.IGNORECASE,
+)
 
 def _strip_response_frontmatter(text: str) -> str:
     """Strip any YAML frontmatter a model may have included in its response."""
@@ -523,6 +559,7 @@ class Botference:
         system_prompt: str,
         task: str,
         paths: Optional[BotferencePaths] = None,
+        plan_write_roots: Optional[list[str | Path]] = None,
     ):
         self.claude = claude
         self.codex = codex
@@ -555,6 +592,16 @@ class Botference:
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
         self._quit_requested: bool = False
+        roots = plan_write_roots
+        if roots is None:
+            roots = planner_write_roots_for_env(
+                self.paths.project_root,
+                self.paths.work_dir,
+                mode="plan",
+            )
+        self._base_plan_write_roots = normalize_write_roots(list(roots))
+        self._granted_plan_write_roots: list[Path] = []
+        self._apply_planner_write_config()
         self._persist_session()
 
     @property
@@ -588,6 +635,81 @@ class Botference:
         env_dir = os.environ.get("BOTFERENCE_ARCHIVE_DIR")
         return Path(env_dir) if env_dir else (self.paths.project_root / "archive")
 
+    def _relative_project_path(self, path: Path) -> str:
+        resolved = path.resolve()
+        project_root = self.paths.project_root.resolve()
+        if _is_relative_to(resolved, project_root):
+            rel = resolved.relative_to(project_root).as_posix()
+            return rel or "."
+        return str(resolved)
+
+    def _plan_write_roots(self) -> list[Path]:
+        return normalize_write_roots(
+            self._base_plan_write_roots + self._granted_plan_write_roots
+        )
+
+    def _plan_write_roots_display(self) -> str:
+        roots = self._plan_write_roots()
+        if not roots:
+            return "(none)"
+        return ", ".join(self._relative_project_path(root) for root in roots)
+
+    def _serialize_write_roots(self, roots: list[Path]) -> list[str]:
+        return [self._relative_project_path(root) for root in normalize_write_roots(roots)]
+
+    def _apply_planner_write_config(self) -> None:
+        config = planner_write_config(
+            self.paths.project_root,
+            self._plan_write_roots(),
+        )
+        self._configure_planner_adapters(config)
+
+    def _configure_planner_adapters(self, config: PlannerWriteConfig) -> None:
+        self.claude.cwd = config.claude_cwd
+        self.claude.add_dirs = list(config.claude_add_dirs)
+        self.claude.settings = dict(config.claude_settings)
+        self.codex.cwd = config.codex_cwd
+        self.codex.add_dirs = list(config.codex_add_dirs)
+        self.codex.sandbox = config.codex_sandbox
+
+    def _resolve_requested_write_root(self, raw_path: str) -> tuple[Path | None, str]:
+        candidate = raw_path.strip()
+        if not candidate:
+            return None, "empty path"
+        path = Path(candidate)
+        resolved = (
+            path.resolve()
+            if path.is_absolute()
+            else (self.paths.project_root / path).resolve()
+        )
+        if resolved.exists() and resolved.is_file():
+            resolved = resolved.parent
+        elif not resolved.exists() and resolved.suffix:
+            resolved = resolved.parent
+        project_root = self.paths.project_root.resolve()
+        if not _is_relative_to(resolved, project_root):
+            return None, "path is outside the project root"
+        if ".git" in resolved.relative_to(project_root).parts:
+            return None, "paths under .git are never writable"
+        return resolved, ""
+
+    def _is_write_root_allowed(self, candidate: Path) -> bool:
+        resolved = candidate.resolve()
+        return any(
+            _is_relative_to(resolved, root.resolve())
+            for root in self._plan_write_roots()
+        )
+
+    def _grant_plan_write_root(self, root: Path) -> str:
+        resolved = root.resolve()
+        if not self._is_write_root_allowed(resolved):
+            self._granted_plan_write_roots = normalize_write_roots(
+                self._granted_plan_write_roots + [resolved]
+            )
+            self._apply_planner_write_config()
+            self._persist_session()
+        return self._relative_project_path(resolved)
+
     def _serialize_tool_summary(self, summary: ToolSummary) -> dict:
         return {
             "id": summary.id,
@@ -620,7 +742,7 @@ class Botference:
 
     def _session_payload(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "session_id": self.session_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -632,6 +754,12 @@ class Botference:
             "route": self.router.current_route,
             "router_had_first_turn": self.router._had_first_turn,
             "observe": self.observe,
+            "base_plan_write_roots": self._serialize_write_roots(
+                self._base_plan_write_roots
+            ),
+            "granted_plan_write_roots": self._serialize_write_roots(
+                self._granted_plan_write_roots
+            ),
             "room_history": [
                 {"speaker": entry.speaker, "text": entry.text}
                 for entry in self._room_history
@@ -713,6 +841,23 @@ class Botference:
             self.observe = bool(payload.get("observe", self.observe))
             self.router.current_route = str(payload.get("route", "@all"))
             self.router._had_first_turn = bool(payload.get("router_had_first_turn", False))
+            saved_base_roots = payload.get("base_plan_write_roots")
+            if isinstance(saved_base_roots, list):
+                resolved_roots = []
+                for raw_root in saved_base_roots:
+                    resolved, error = self._resolve_requested_write_root(str(raw_root))
+                    if resolved is not None and not error:
+                        resolved_roots.append(resolved)
+                self._base_plan_write_roots = normalize_write_roots(resolved_roots)
+            saved_granted_roots = payload.get("granted_plan_write_roots")
+            if isinstance(saved_granted_roots, list):
+                resolved_grants = []
+                for raw_root in saved_granted_roots:
+                    resolved, error = self._resolve_requested_write_root(str(raw_root))
+                    if resolved is not None and not error:
+                        resolved_grants.append(resolved)
+                self._granted_plan_write_roots = normalize_write_roots(resolved_grants)
+            self._apply_planner_write_config()
 
             saved_mode = str(payload.get("mode", RoomMode.PUBLIC.value))
             self.mode = RoomMode.PUBLIC
@@ -970,6 +1115,10 @@ class Botference:
             self._show_status(ui)
             return
 
+        if parsed.kind is InputKind.PERMISSIONS:
+            self._show_permissions(ui)
+            return
+
         if parsed.kind is InputKind.AUTH:
             self._show_auth_status(parsed.body, ui)
             return
@@ -1014,6 +1163,7 @@ class Botference:
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
             "  /resume [latest|id] — Restore a saved plan session in a fresh controller",
+            "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /help               — Show this help",
@@ -1034,6 +1184,27 @@ class Botference:
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows a last-turn prompt-footprint proxy once it has a baseline.",
         ]))
+
+    def _show_permissions(self, ui: UIPort) -> None:
+        lines = [
+            "Planner write roots:",
+            f"  Active: {self._plan_write_roots_display()}",
+        ]
+        if self._granted_plan_write_roots:
+            lines.append(
+                "  Runtime grants: "
+                + ", ".join(
+                    self._relative_project_path(root)
+                    for root in self._granted_plan_write_roots
+                )
+            )
+        else:
+            lines.append("  Runtime grants: none")
+        lines.extend([
+            "",
+            "If a model needs to edit a protected area, the Ink UI will show an allow/deny prompt.",
+        ])
+        self._add_room_entry(ui, "system", "\n".join(lines))
 
     # ── /status ───────────────────────────────────────────
 
@@ -1595,6 +1766,28 @@ class Botference:
                 self._add_room_entry(ui, "system", f"Error from {model}: {e}")
                 return None
 
+        for _ in range(3):
+            permission_request = _extract_write_access_request(resp.text)
+            if not permission_request:
+                break
+            follow_up = await self._handle_write_access_request(
+                model,
+                permission_request,
+                ui,
+            )
+            try:
+                resp = await adapter.resume(follow_up)
+            except Exception as e:
+                self._add_room_entry(ui, "system", f"Error from {model}: {e}")
+                return None
+        else:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"{model.capitalize()} hit the write-permission request limit for one turn.",
+            )
+            return None
+
         tool_display = _tool_summary_display_text(resp.tool_summaries)
         if tool_display:
             ui.add_room_entry(
@@ -1638,7 +1831,7 @@ class Botference:
         """
         name = model.capitalize()
         other = "Codex" if model == "claude" else "Claude"
-        parts = [room_preamble(name, other)]
+        parts = [room_preamble(name, other, self._plan_write_roots_display())]
         if self.system_prompt:
             parts.extend(["--- System Prompt ---", self.system_prompt])
         if self.task:
@@ -1652,6 +1845,73 @@ class Botference:
             backfill = self.transcript.context_since(model, "")
         parts.extend(["--- Room History ---", backfill])
         return "\n\n".join(parts)
+
+    async def _handle_write_access_request(
+        self,
+        model: str,
+        request: tuple[str, str],
+        ui: UIPort,
+    ) -> str:
+        raw_path, reason = request
+        resolved, error = self._resolve_requested_write_root(raw_path)
+        if resolved is None:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Ignored invalid write-access request from {model}: {raw_path} ({error}).",
+            )
+            self.transcript.add(
+                "system",
+                f"[Ignored invalid write-access request from {model}: {raw_path} ({error})]",
+            )
+            self._persist_session()
+            return (
+                "Your write-access request was invalid. Continue without editing "
+                "outside the current writable roots and explain the limitation."
+            )
+
+        rel_path = self._relative_project_path(resolved)
+        if self._is_write_root_allowed(resolved):
+            return (
+                f"Write access to {rel_path} is already available. Continue with the pending task."
+            )
+
+        approved = await ui.request_write_permission(
+            WritePermissionRequest(
+                request_id=str(uuid.uuid4()),
+                model=model,
+                path=rel_path,
+                reason=reason,
+            )
+        )
+        if approved:
+            granted_path = self._grant_plan_write_root(resolved)
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Granted write access to {granted_path} for this planner session.",
+            )
+            self.transcript.add(
+                "system",
+                f"[Granted write access to {granted_path} for this planner session]",
+            )
+            self._persist_session()
+            return (
+                f"Write access to {granted_path} is now approved for this planner session. "
+                "Continue with the pending task."
+            )
+
+        self._add_room_entry(
+            ui,
+            "system",
+            f"Denied write access to {rel_path}.",
+        )
+        self.transcript.add("system", f"[Denied write access to {rel_path}]")
+        self._persist_session()
+        return (
+            f"Write access to {rel_path} was denied. Continue without editing "
+            "outside the current writable roots, and explain any remaining limitation."
+        )
 
     def _update_pct(self, model: str, resp: AdapterResponse,
                     ui: Optional[UIPort] = None) -> None:
@@ -2181,14 +2441,7 @@ def main() -> None:
     plan_write_roots = planner_write_roots_for_env(
         paths.project_root, paths.work_dir, mode="plan"
     )
-    claude_cwd = str(plan_write_roots[0] if plan_write_roots else paths.project_root)
-    claude_add_dirs = []
-    if Path(claude_cwd).resolve() != Path(paths.project_root).resolve():
-        claude_add_dirs.append(str(paths.project_root))
-    for root in plan_write_roots[1:]:
-        root_str = str(root)
-        if root_str != claude_cwd and root_str not in claude_add_dirs:
-            claude_add_dirs.append(root_str)
+    planner_config = planner_write_config(paths.project_root, plan_write_roots)
     claude = ClaudeAdapter(
         model=args.anthropic_model,
         effort=args.claude_effort,
@@ -2204,14 +2457,15 @@ def main() -> None:
             "WebFetch",
         ],
         debug_log_path=claude_log,
-        cwd=claude_cwd,
-        add_dirs=claude_add_dirs,
-        settings=claude_plan_settings_for_work_dir(paths.project_root, paths.work_dir),
+        cwd=planner_config.claude_cwd,
+        add_dirs=planner_config.claude_add_dirs,
+        settings=planner_config.claude_settings,
     )
     codex = CodexAdapter(
         model=args.openai_model,
-        sandbox="workspace-write" if plan_write_roots else "read-only",
-        cwd=str(plan_write_roots[0] if plan_write_roots else paths.project_root),
+        sandbox=planner_config.codex_sandbox,
+        cwd=planner_config.codex_cwd,
+        add_dirs=planner_config.codex_add_dirs,
         reasoning_effort=args.openai_effort,
         debug_log_path=codex_log,
         fallback_api_key=_fallback_api_key,
@@ -2220,6 +2474,7 @@ def main() -> None:
         claude=claude, codex=codex,
         system_prompt=args.system_prompt, task=args.task,
         paths=paths,
+        plan_write_roots=planner_config.write_roots,
     )
     botference.observe = args.debug_panes
 

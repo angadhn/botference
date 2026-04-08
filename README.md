@@ -255,6 +255,7 @@ excerpts still render as code blocks.
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
 | `/resume [latest\|<session-id-prefix>]` | Restore a previously saved planning session from `work/sessions/`. Run with no argument to list recent resumable sessions. Resume is only available from a fresh botference controller session. |
+| `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
@@ -293,6 +294,18 @@ If you also run with debug panes, the model stream logs remain:
 - `build/logs/debug-claude.log`
 - `build/logs/debug-codex.log`
 
+### Protected write approvals
+
+Plan mode still starts with the write roots from `botference/project.json` (or
+the default Botference work directory in legacy layouts). If a model wants to
+edit somewhere else, it must first request a runtime grant for the narrowest
+directory it needs.
+
+In the Ink UI, this appears as an allow/deny prompt. Choosing `Allow once`
+expands the planner write roots for the rest of the current session and records
+that grant in the resumable session snapshot. Choosing `Deny` keeps the current
+roots unchanged and the model must continue without writing there.
+
 ### Navigation and input
 
 The TUI has two panels: **council** (left) and **caucus** (right), with a text
@@ -304,6 +317,8 @@ input field at the bottom.
   the input is single-line.
 - **Esc interrupts the current in-flight turn** in the Ink backend. It no
   longer clears the input buffer.
+- When a protected write is requested in the Ink backend, use **Left/Right** or
+  **Tab** to switch between `Allow once` and `Deny`, then press **Enter**.
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
 

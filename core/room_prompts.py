@@ -26,7 +26,7 @@ FOOTER_SCHEMA = (
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."
 
 
-def room_preamble(name: str, other: str) -> str:
+def room_preamble(name: str, other: str, writable_roots: str) -> str:
     """Shared planning room context for model initialization."""
     return (
         f"You are {name} in a shared planning room with {other} "
@@ -35,6 +35,10 @@ def room_preamble(name: str, other: str) -> str:
         "You may create or update files inside the Botference work directory "
         "(project-local `botference/` or self-hosted `work/`) when the user "
         "explicitly asks for it, but do not modify project source files outside that area.\n"
+        f"Current writable roots for this session: {writable_roots}.\n"
+        "If you need write access outside those roots, do not continue with the task yet. "
+        "Respond with only this exact tag format, using the narrowest directory you need: "
+        "<write-access-request path=\"relative/path\" reason=\"short reason\" />\n"
         f"Be concise and constructive. Focus on architecture and "
         f"design decisions."
     )

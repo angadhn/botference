@@ -49,6 +49,13 @@ interface BridgeArgs {
   claudeEffort: string;
 }
 
+interface PendingPermission {
+  request_id: string;
+  model: string;
+  path: string;
+  reason: string;
+}
+
 // ── Constants ──────────────────────────────────────────────
 
 const COMPLETIONS = [
@@ -57,6 +64,7 @@ const COMPLETIONS = [
   "/lead @codex",
   "/draft",
   "/finalize",
+  "/permissions",
   "/status",
   "/help",
   "/quit",
@@ -347,6 +355,53 @@ function StatusBar({
   );
 }
 
+function PermissionPrompt({
+  request,
+  choice,
+}: {
+  request: PendingPermission;
+  choice: "allow" | "deny";
+}) {
+  const allowFocused = choice === "allow";
+  const denyFocused = choice === "deny";
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={THEME.warning}
+      paddingX={1}
+      marginX={1}
+      marginBottom={1}
+    >
+      <Text bold color={THEME.warning}>Protected Write Request</Text>
+      <Text color={THEME.text}>
+        {request.model.charAt(0).toUpperCase() + request.model.slice(1)} wants to edit{" "}
+        <Text bold>{request.path}</Text>
+      </Text>
+      <Text color={THEME.textMuted}>{request.reason}</Text>
+      <Box marginTop={1}>
+        <Text
+          bold={allowFocused}
+          color={allowFocused ? THEME.ready : THEME.textMuted}
+        >
+          {allowFocused ? "> " : "  "}Allow once
+        </Text>
+        <Text color={THEME.textMuted}>{"    "}</Text>
+        <Text
+          bold={denyFocused}
+          color={denyFocused ? THEME.danger : THEME.textMuted}
+        >
+          {denyFocused ? "> " : "  "}Deny
+        </Text>
+      </Box>
+      <Text color={THEME.textMuted}>
+        Enter confirms. Left/Right or Tab switches. Y allows. N or Esc denies.
+      </Text>
+    </Box>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────
 
 export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
@@ -378,6 +433,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   const [desiredCol, setDesiredCol] = useState<number | null>(null);
   const [imageAttachments, setImageAttachments] = useState<Map<number, string>>(new Map());
+  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
+  const [permissionChoice, setPermissionChoice] = useState<"allow" | "deny">("allow");
   const nextImageId = useRef(1);
   const cursorRef = useRef(0);
   cursorRef.current = cursor; // keep ref in sync for use in stdin filter callbacks
@@ -638,6 +695,20 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setReady(true);
           setBusyTarget(null);
           break;
+        case "permission_request":
+          setPendingPermission({
+            request_id: msg.request_id as string,
+            model: msg.model as string,
+            path: msg.path as string,
+            reason: msg.reason as string,
+          });
+          setPermissionChoice("allow");
+          setHint("Approve or deny the protected write.");
+          break;
+        case "permission_cleared":
+          setPendingPermission(null);
+          setHint("");
+          break;
         case "exit":
           cleanup();
           break;
@@ -677,6 +748,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // ── Submission logic ───────────────────────────────────
 
   const submit = useCallback(() => {
+    if (pendingPermission) {
+      setHint("Resolve the protected write request first.");
+      return;
+    }
     const stripped = inputText.trim();
     if (!stripped) {
       setHint("Enter a message or command.");
@@ -714,7 +789,20 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [inputText, focusedPane, ready, imageAttachments]);
+  }, [inputText, focusedPane, ready, imageAttachments, pendingPermission]);
+
+  const respondToPermission = useCallback((allow: boolean) => {
+    const proc = bridgeRef.current;
+    if (!pendingPermission || !proc?.stdin?.writable) {
+      return;
+    }
+    proc.stdin.write(JSON.stringify({
+      type: "permission_response",
+      request_id: pendingPermission.request_id,
+      allow,
+    }) + "\n");
+    setHint(allow ? "Allowing protected write..." : "Denying protected write...");
+  }, [pendingPermission]);
 
   const interrupt = useCallback(() => {
     if (ready) {
@@ -733,6 +821,26 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Ctrl+C — exit
     if (input === "c" && key.ctrl) {
       cleanup();
+      return;
+    }
+
+    if (pendingPermission) {
+      if (key.leftArrow || key.rightArrow || key.tab) {
+        setPermissionChoice((prev) => (prev === "allow" ? "deny" : "allow"));
+        return;
+      }
+      if (key.return) {
+        respondToPermission(permissionChoice === "allow");
+        return;
+      }
+      if (key.escape || input.toLowerCase() === "n") {
+        respondToPermission(false);
+        return;
+      }
+      if (input.toLowerCase() === "y") {
+        respondToPermission(true);
+        return;
+      }
       return;
     }
 
@@ -897,7 +1005,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setCursor((c) => c + input.length);
       setDesiredCol(null);
     }
-  }, [cleanup, focusedPane, cursor, submit, ready, interrupt]);
+  }, [cleanup, focusedPane, cursor, submit, ready, interrupt, pendingPermission, permissionChoice, respondToPermission]);
 
   // ── Input label ────────────────────────────────────────
 
@@ -938,6 +1046,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           hasNewMessages={caucusHasNew}
         />
       </Box>
+
+      {pendingPermission ? (
+        <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
+      ) : null}
 
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">

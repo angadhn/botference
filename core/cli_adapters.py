@@ -25,6 +25,17 @@ from render_blocks import build_tool_use_blocks, parse_render_blocks
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class PlannerWriteConfig:
+    write_roots: list[Path]
+    claude_cwd: str
+    claude_add_dirs: list[str]
+    claude_settings: dict
+    codex_cwd: str
+    codex_add_dirs: list[str]
+    codex_sandbox: str
+
+
 def plan_allowed_tools_for_work_dir(
     project_root: str | Path, work_dir: str | Path
 ) -> list[str]:
@@ -86,9 +97,21 @@ def planner_write_roots_for_env(
     return [Path(fallback_dir).resolve()]
 
 
+def normalize_write_roots(write_roots: list[str | Path]) -> list[Path]:
+    normalized: list[Path] = []
+    seen: set[Path] = set()
+    for root in write_roots:
+        path = Path(root).resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+    return normalized
+
+
 def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
     """Build Claude Code settings for planner sessions from explicit write roots."""
-    normalized_roots = [Path(root).resolve() for root in write_roots]
+    normalized_roots = normalize_write_roots(write_roots)
 
     allow_rules = [
         "Read",
@@ -130,6 +153,36 @@ def claude_plan_settings_for_work_dir(
     """Backward-compatible wrapper for existing tests/callers."""
     roots = planner_write_roots_for_env(project_root, work_dir, mode="plan")
     return claude_plan_settings_for_write_roots([str(root) for root in roots])
+
+
+def planner_write_config(
+    project_root: str | Path,
+    write_roots: list[str | Path],
+) -> PlannerWriteConfig:
+    """Build the runtime CLI config for planner sessions from write roots."""
+    project_root_path = Path(project_root).resolve()
+    normalized_roots = normalize_write_roots(write_roots)
+    primary_root = normalized_roots[0] if normalized_roots else project_root_path
+
+    claude_add_dirs: list[str] = []
+    if primary_root != project_root_path:
+        claude_add_dirs.append(str(project_root_path))
+    for root in normalized_roots[1:]:
+        root_str = str(root)
+        if root_str not in claude_add_dirs:
+            claude_add_dirs.append(root_str)
+
+    codex_add_dirs = [str(root) for root in normalized_roots[1:]]
+
+    return PlannerWriteConfig(
+        write_roots=normalized_roots,
+        claude_cwd=str(primary_root),
+        claude_add_dirs=claude_add_dirs,
+        claude_settings=claude_plan_settings_for_write_roots(normalized_roots),
+        codex_cwd=str(primary_root),
+        codex_add_dirs=codex_add_dirs,
+        codex_sandbox="workspace-write" if normalized_roots else "read-only",
+    )
 
 # ── Response types ───────────────────────────────────────────
 
@@ -535,6 +588,7 @@ class CodexAdapter:
     def __init__(self, model: str = "gpt-5.4",
                  sandbox: str = "read-only",
                  cwd: str = "",
+                 add_dirs: Optional[list[str]] = None,
                  reasoning_effort: str = "",
                  timeout: Optional[int] = None,
                  debug_log_path: str = "",
@@ -542,6 +596,7 @@ class CodexAdapter:
         self.model = model
         self.sandbox = sandbox
         self.cwd = cwd
+        self.add_dirs = add_dirs or []
         self.reasoning_effort = reasoning_effort
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CODEX_TIMEOUT",
@@ -562,6 +617,8 @@ class CodexAdapter:
                "--json"]
         if self.cwd:
             cmd += ["--cd", self.cwd]
+        for path in self.add_dirs:
+            cmd += ["--add-dir", path]
         if self.model:
             cmd += ["-m", self.model]
         if self.reasoning_effort:
@@ -570,9 +627,11 @@ class CodexAdapter:
         return cmd
 
     def _build_resume_cmd(self, message: str) -> list:
-        cmd = ["codex", "exec"]
+        cmd = ["codex", "exec", "--sandbox", self.sandbox]
         if self.cwd:
             cmd += ["--cd", self.cwd]
+        for path in self.add_dirs:
+            cmd += ["--add-dir", path]
         if self.reasoning_effort:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
         cmd += [

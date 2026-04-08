@@ -112,6 +112,10 @@ class TestParseInput:
         assert p.kind is InputKind.RESUME
         assert p.body == "latest"
 
+    def test_slash_permissions(self):
+        p = parse_input("/permissions")
+        assert p.kind is InputKind.PERMISSIONS
+
     def test_slash_status(self):
         p = parse_input("/status")
         assert p.kind is InputKind.STATUS
@@ -370,6 +374,10 @@ class MockAdapter:
         self.model = "mock-model"
         self.tools = ["Read"]
         self.effort = ""
+        self.cwd = ""
+        self.add_dirs: list[str] = []
+        self.settings: dict | None = None
+        self.sandbox = "read-only"
         self.send_calls: list[str] = []
         self.resume_calls: list[str] = []
         self._cumulative_input = 0
@@ -407,6 +415,8 @@ class MockUI:
     caucus_blocks: list[list[dict] | None] = field(default_factory=list)
     statuses: list[StatusSnapshot] = field(default_factory=list)
     modes: list[RoomMode] = field(default_factory=list)
+    permission_responses: list[bool] = field(default_factory=list)
+    permission_requests: list[object] = field(default_factory=list)
 
     def add_room_entry(
         self, speaker: str, text: str, blocks: list[dict] | None = None,
@@ -425,6 +435,12 @@ class MockUI:
 
     def set_mode(self, mode: RoomMode) -> None:
         self.modes.append(mode)
+
+    async def request_write_permission(self, request) -> bool:
+        self.permission_requests.append(request)
+        if self.permission_responses:
+            return self.permission_responses.pop(0)
+        return False
 
 
 def _ok(text: str = "OK", **kw) -> AdapterResponse:
@@ -497,6 +513,13 @@ class TestBotferenceStatus:
         status_text = "\n".join(t for s, t in ui.room_entries if s == "system")
         assert "Claude: ~34% (342.0K / 1.0M)" in status_text
         assert "Codex:  ~61% (167.0K / 272.0K)" in status_text
+
+    async def test_permissions_shows_active_roots(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/permissions", ui)
+        status_text = "\n".join(t for s, t in ui.room_entries if s == "system")
+        assert "Planner write roots:" in status_text
+        assert "Active: work" in status_text
 
 
 @pytest.mark.asyncio
@@ -582,6 +605,56 @@ class TestBotferenceMessageRouting:
         assert len(payload["transcript"]) == 2
         assert payload["transcript"][0]["speaker"] == "user"
         assert payload["transcript"][1]["speaker"] == "claude"
+
+    async def test_permission_request_can_grant_runtime_write_root(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok('<write-access-request path="src" reason="Need to update existing app code" />'),
+                _ok("Updated plan after approval"),
+            ],
+            tmp_path=tmp_path,
+        )
+        ui.permission_responses = [True]
+
+        await c.handle_input("@claude update the app", ui)
+
+        assert len(ui.permission_requests) == 1
+        request = ui.permission_requests[0]
+        assert request.model == "claude"
+        assert request.path == "src"
+        assert any(
+            "Granted write access to src" in text
+            for speaker, text in ui.room_entries
+            if speaker == "system"
+        )
+        assert any(root.name == "src" for root in c._plan_write_roots())
+        assert any(path.endswith("/src") for path in codex.add_dirs)
+        session_path = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        assert "src" in payload["granted_plan_write_roots"]
+        assert claude.resume_calls[-1].startswith("Write access to src is now approved")
+
+    async def test_permission_request_can_be_denied(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok('<write-access-request path="src" reason="Need to update existing app code" />'),
+                _ok("I cannot edit src without approval."),
+            ],
+            tmp_path=tmp_path,
+        )
+        ui.permission_responses = [False]
+
+        await c.handle_input("@claude update the app", ui)
+
+        assert len(ui.permission_requests) == 1
+        assert any(
+            "Denied write access to src." == text
+            for speaker, text in ui.room_entries
+            if speaker == "system"
+        )
+        assert not any(root.name == "src" for root in c._plan_write_roots())
+        assert not any(path.endswith("/src") for path in codex.add_dirs)
+        assert claude.resume_calls[-1].startswith("Write access to src was denied")
 
     async def test_tool_summaries_displayed_as_folded_tree(self):
         resp = _ok("Found it", tool_summaries=[

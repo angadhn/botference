@@ -18,11 +18,11 @@ from pathlib import Path
 from cli_adapters import (
     ClaudeAdapter,
     CodexAdapter,
-    claude_plan_settings_for_work_dir,
+    planner_write_config,
     planner_write_roots_for_env,
 )
 from paths import BotferencePaths
-from botference import Botference
+from botference import Botference, WritePermissionRequest
 from botference_ui import RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
 from session_store import append_crash_log
@@ -40,6 +40,9 @@ def emit(obj: dict) -> None:
 
 class InkBridge:
     """UIPort implementation that emits JSON-lines to stdout."""
+
+    def __init__(self) -> None:
+        self._pending_permission: asyncio.Future[bool] | None = None
 
     def add_room_entry(
         self, speaker: str, text: str, blocks: list[dict] | None = None,
@@ -78,6 +81,33 @@ class InkBridge:
 
     def set_mode(self, mode: RoomMode) -> None:
         emit({"type": "mode", "mode": mode.value})
+
+    async def request_write_permission(
+        self,
+        request: WritePermissionRequest,
+    ) -> bool:
+        if self._pending_permission is not None and not self._pending_permission.done():
+            raise RuntimeError("Permission request already pending")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+        self._pending_permission = future
+        emit({
+            "type": "permission_request",
+            "request_id": request.request_id,
+            "model": request.model,
+            "path": request.path,
+            "reason": request.reason,
+        })
+        try:
+            return await future
+        finally:
+            self._pending_permission = None
+            emit({"type": "permission_cleared"})
+
+    def resolve_permission_request(self, allow: bool) -> None:
+        if self._pending_permission is None or self._pending_permission.done():
+            return
+        self._pending_permission.set_result(allow)
 
 
 async def _read_line() -> str:
@@ -166,14 +196,7 @@ async def main() -> None:
     plan_write_roots = planner_write_roots_for_env(
         paths.project_root, paths.work_dir, mode="plan"
     )
-    claude_cwd = str(plan_write_roots[0] if plan_write_roots else paths.project_root)
-    claude_add_dirs = []
-    if Path(claude_cwd).resolve() != Path(paths.project_root).resolve():
-        claude_add_dirs.append(str(paths.project_root))
-    for root in plan_write_roots[1:]:
-        root_str = str(root)
-        if root_str != claude_cwd and root_str not in claude_add_dirs:
-            claude_add_dirs.append(root_str)
+    planner_config = planner_write_config(paths.project_root, plan_write_roots)
 
     claude = ClaudeAdapter(
         model=args.anthropic_model,
@@ -190,16 +213,15 @@ async def main() -> None:
             "WebFetch",
         ],
         debug_log_path=claude_log,
-        cwd=claude_cwd,
-        add_dirs=claude_add_dirs,
-        settings=claude_plan_settings_for_work_dir(
-            paths.project_root, paths.work_dir
-        ),
+        cwd=planner_config.claude_cwd,
+        add_dirs=planner_config.claude_add_dirs,
+        settings=planner_config.claude_settings,
     )
     codex = CodexAdapter(
         model=args.openai_model,
-        sandbox="workspace-write" if plan_write_roots else "read-only",
-        cwd=str(plan_write_roots[0] if plan_write_roots else paths.project_root),
+        sandbox=planner_config.codex_sandbox,
+        cwd=planner_config.codex_cwd,
+        add_dirs=planner_config.codex_add_dirs,
         reasoning_effort=args.openai_effort,
         debug_log_path=codex_log,
         fallback_api_key=fallback_api_key,
@@ -208,6 +230,7 @@ async def main() -> None:
         claude=claude, codex=codex,
         system_prompt=system_prompt, task=task,
         paths=paths,
+        plan_write_roots=planner_config.write_roots,
     )
     botference.observe = args.debug_panes
 
@@ -246,6 +269,10 @@ async def main() -> None:
         if msg.get("type") == "interrupt":
             if current_turn is not None and not current_turn.done():
                 current_turn.cancel()
+            continue
+
+        if msg.get("type") == "permission_response":
+            bridge.resolve_permission_request(bool(msg.get("allow")))
             continue
 
     _executor.shutdown(wait=False)
