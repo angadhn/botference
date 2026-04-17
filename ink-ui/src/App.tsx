@@ -423,7 +423,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [imageAttachments, setImageAttachments] = useState<Map<number, string>>(new Map());
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [permissionChoice, setPermissionChoice] = useState<"allow" | "deny">("allow");
-  const [completions, setCompletions] = useState<string[]>([]);
+  const [completionCtx, setCompletionCtx] = useState<{
+    global: string[];
+    scoped: Record<string, string[]>;
+  }>({ global: [], scoped: {} });
   const nextImageId = useRef(1);
   const cursorRef = useRef(0);
   cursorRef.current = cursor; // keep ref in sync for use in stdin filter callbacks
@@ -571,16 +574,38 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   // ── Ghost text (autocomplete) ──────────────────────────
 
+  const normPunct = (s: string) => s.replace(/[-.]/g, "");
   const ghostText = React.useMemo(() => {
     if (!inputText) return "";
     const lower = inputText.toLowerCase();
-    for (const cmd of completions) {
+    // Scoped match: "/model @claude opus" -> claude-opus-4-7. Fires even when
+    // only the prefix is typed (shows first option) and normalizes punctuation
+    // so "5-4", "5.4", "47", "opus-4" all substring-match.
+    for (const [prefix, options] of Object.entries(completionCtx.scoped)) {
+      const lowerPrefix = prefix.toLowerCase();
+      let suffix: string | null = null;
+      if (lower.startsWith(lowerPrefix)) {
+        suffix = inputText.slice(prefix.length).toLowerCase();
+      } else if (lower === lowerPrefix.trimEnd()) {
+        suffix = "";
+      }
+      if (suffix === null) continue;
+      const nsuffix = normPunct(suffix);
+      for (const opt of options) {
+        if (normPunct(opt.toLowerCase()).includes(nsuffix) && opt.toLowerCase() !== suffix) {
+          return (prefix + opt).slice(inputText.length);
+        }
+      }
+      return "";
+    }
+    // Global (prefix) match
+    for (const cmd of completionCtx.global) {
       if (cmd.toLowerCase().startsWith(lower) && cmd.toLowerCase() !== lower) {
         return cmd.slice(inputText.length);
       }
     }
     return "";
-  }, [inputText, completions]);
+  }, [inputText, completionCtx]);
 
   // ── Bridge subprocess ──────────────────────────────────
 
@@ -684,8 +709,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setReady(true);
           setBusyTarget(null);
           break;
-        case "slash_commands":
-          setCompletions((msg.list as string[]) ?? []);
+        case "completion_context":
+          setCompletionCtx({
+            global: (msg.global as string[]) ?? [],
+            scoped: (msg.scoped as Record<string, string[]>) ?? {},
+          });
           break;
         case "permission_request":
           setPendingPermission({

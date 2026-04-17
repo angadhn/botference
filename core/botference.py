@@ -133,6 +133,9 @@ class InputKind(Enum):
     QUIT = "quit"
     RELAY = "relay"
     RESUME = "resume"
+    MODEL = "model"
+    EFFORT = "effort"
+    CURRENT = "current"
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,10 @@ _SLASH_COMMANDS = {
     "/permissions": InputKind.PERMISSIONS,
     "/status": InputKind.STATUS,
     "/auth": InputKind.AUTH,
+    "/model": InputKind.MODEL,
+    "/effort": InputKind.EFFORT,
+    "/current-model": InputKind.CURRENT,
+    "/current": InputKind.CURRENT,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -166,7 +173,42 @@ _RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex)$", re.IGNORECASE)
 _RELAY_TARGET_RE = re.compile(r"^@?(claude|codex)$", re.IGNORECASE)
 
 # Commands that require a @target argument, expanded into @claude/@codex variants
-_TARGETED_COMMANDS = ("/lead", "/relay", "/tag")
+_TARGETED_COMMANDS = ("/lead", "/relay", "/tag", "/model", "/effort")
+
+# Known effort levels (passed through to the underlying CLI)
+_CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
+_CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high")
+
+
+def _known_claude_models() -> list[str]:
+    """Claude model IDs from the shared pricing table."""
+    from tools._pricing import PRICING
+    return [m for m in PRICING if m.startswith("claude-")]
+
+
+def _known_codex_models() -> list[str]:
+    """Non-Claude model IDs from the shared pricing table (OpenAI)."""
+    from tools._pricing import PRICING
+    return [m for m in PRICING if not m.startswith("claude-")]
+
+
+def get_completion_context() -> dict:
+    """Completion metadata for TUI autosuggest.
+
+    Returns {"global": [...], "scoped": {prefix: [options], ...}}.
+    Global entries prefix-match the input. Scoped entries kick in when
+    the input starts with the prefix key and substring-match the remainder
+    against the option list.
+    """
+    return {
+        "global": get_slash_commands(),
+        "scoped": {
+            "/model @claude ": _known_claude_models(),
+            "/model @codex ": _known_codex_models(),
+            "/effort @claude ": list(_CLAUDE_EFFORT_LEVELS),
+            "/effort @codex ": list(_CODEX_EFFORT_LEVELS),
+        },
+    }
 
 
 def get_slash_commands() -> list[str]:
@@ -809,12 +851,16 @@ class Botference:
                 "percent": self._claude_pct,
                 "tokens": self._claude_tokens,
                 "window": self._claude_window,
+                "model": getattr(self.claude, "model", None),
+                "effort": getattr(self.claude, "effort", None),
             },
             "codex": {
                 "thread_id": self.codex.thread_id,
                 "percent": self._codex_pct,
                 "tokens": self._codex_tokens,
                 "window": self._codex_window,
+                "model": getattr(self.codex, "model", None),
+                "reasoning_effort": getattr(self.codex, "reasoning_effort", None),
             },
             "models_initialized": sorted(self._models_initialized),
             "yield_pressure": dict(self._yield_pressure),
@@ -938,6 +984,18 @@ class Botference:
             self._codex_pct = codex_state.get("percent")
             self._codex_tokens = codex_state.get("tokens")
             self._codex_window = codex_state.get("window")
+            saved_claude_model = claude_state.get("model")
+            if saved_claude_model and hasattr(self.claude, "model"):
+                self.claude.model = str(saved_claude_model)
+            saved_claude_effort = claude_state.get("effort")
+            if saved_claude_effort is not None and hasattr(self.claude, "effort"):
+                self.claude.effort = str(saved_claude_effort)
+            saved_codex_model = codex_state.get("model")
+            if saved_codex_model and hasattr(self.codex, "model"):
+                self.codex.model = str(saved_codex_model)
+            saved_codex_effort = codex_state.get("reasoning_effort")
+            if saved_codex_effort is not None and hasattr(self.codex, "reasoning_effort"):
+                self.codex.reasoning_effort = str(saved_codex_effort)
 
             self._models_initialized = set(payload.get("models_initialized", []) or [])
             if not self.claude.session_id:
@@ -1154,6 +1212,18 @@ class Botference:
             self._resume_session(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.MODEL:
+            await self._handle_model_cmd(parsed.body, ui)
+            return
+
+        if parsed.kind is InputKind.EFFORT:
+            self._handle_effort_cmd(parsed.body, ui)
+            return
+
+        if parsed.kind is InputKind.CURRENT:
+            self._show_current(ui)
+            return
+
         if parsed.kind is InputKind.RELAY:
             if not parsed.target:
                 self._add_room_entry(ui, "system", _RELAY_USAGE)
@@ -1189,6 +1259,9 @@ class Botference:
             "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
             "  /auth [claude|codex|all] — Check local CLI auth status",
+            "  /model [@claude|@codex <id>] — Show or set the model for a participant",
+            "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
+            "  /current-model (or /current) — Show both loaded models and effort levels",
             "  /help               — Show this help",
             "  /quit | /exit       — Exit without writing files",
             "",
@@ -1330,10 +1403,117 @@ class Botference:
         ui.set_status(self.status_snapshot())
         self._persist_session()
 
+    # ── /model and /effort ────────────────────────────────
+
+    def _split_target_value(self, arg: str) -> tuple[str, str]:
+        parts = arg.strip().split(None, 1)
+        target = parts[0].lower().lstrip("@") if parts else ""
+        value = parts[1].strip() if len(parts) > 1 else ""
+        return target, value
+
+    async def _handle_model_cmd(self, arg: str, ui: UIPort) -> None:
+        target, value = self._split_target_value(arg)
+        if not target:
+            self._add_room_entry(ui, "system", "\n".join([
+                f"claude model: {self.claude.model}",
+                f"codex  model: {self.codex.model}",
+                "Usage: /model @claude|@codex <model-id>",
+            ]))
+            return
+        if target not in ("claude", "codex"):
+            self._add_room_entry(ui, "system",
+                              "Usage: /model @claude|@codex <model-id>")
+            return
+        adapter = self.claude if target == "claude" else self.codex
+        if not value:
+            self._add_room_entry(ui, "system", f"{target} model: {adapter.model}")
+            return
+        valid = _known_claude_models() if target == "claude" else _known_codex_models()
+        if value not in valid:
+            self._add_room_entry(ui, "system",
+                              f"Unknown {target} model '{value}'. Known: {', '.join(valid)}")
+            return
+        if value == adapter.model:
+            self._add_room_entry(ui, "system",
+                              f"{target} model already {value} — no change.")
+            return
+        # If the participant is already running a live session, relay it so the
+        # handoff is authored by the old model and the fresh session picks up
+        # the new one. Otherwise just queue the change for startup.
+        if target in self._models_initialized:
+            self._add_room_entry(
+                ui, "system",
+                f"Relaying {target} to switch model → {value}…",
+            )
+            await self._relay_model(target, ui, new_model=value)
+            return
+        adapter.model = value
+        self._add_room_entry(
+            ui, "system",
+            f"{target} model → {value} (will apply when the participant starts)",
+        )
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+
+    def _show_current(self, ui: UIPort) -> None:
+        claude_eff = self.claude.effort or "(default)"
+        codex_eff = self.codex.reasoning_effort or "(default)"
+        self._add_room_entry(ui, "system", "\n".join([
+            "Currently loaded:",
+            f"  @claude: {self.claude.model}  (effort: {claude_eff})",
+            f"  @codex:  {self.codex.model}  (effort: {codex_eff})",
+        ]))
+
+    def _handle_effort_cmd(self, arg: str, ui: UIPort) -> None:
+        target, value = self._split_target_value(arg)
+        if not target:
+            self._add_room_entry(ui, "system", "\n".join([
+                f"claude effort: {self.claude.effort or '(default)'}",
+                f"codex  effort: {self.codex.reasoning_effort or '(default)'}",
+                "Usage: /effort @claude|@codex <level>",
+            ]))
+            return
+        if target not in ("claude", "codex"):
+            self._add_room_entry(ui, "system",
+                              "Usage: /effort @claude|@codex <level>")
+            return
+        if target == "claude":
+            current = self.claude.effort or "(default)"
+            valid = _CLAUDE_EFFORT_LEVELS
+        else:
+            current = self.codex.reasoning_effort or "(default)"
+            valid = _CODEX_EFFORT_LEVELS
+        if not value:
+            self._add_room_entry(ui, "system", f"{target} effort: {current}")
+            return
+        if value.lower() not in valid:
+            self._add_room_entry(ui, "system",
+                              f"Unknown {target} effort '{value}'. Valid: {', '.join(valid)}")
+            return
+        value = value.lower()
+        if target == "claude":
+            self.claude.effort = value
+        else:
+            self.codex.reasoning_effort = value
+        self._add_room_entry(
+            ui, "system",
+            f"{target} effort → {value} (applies on next turn)",
+        )
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+
     # ── /relay ────────────────────────────────────────────
 
-    async def _relay_model(self, model: str, ui: UIPort) -> None:
-        """Relay a model's session: create handoff, tear down, restart immediately."""
+    async def _relay_model(
+        self, model: str, ui: UIPort, *, new_model: str | None = None,
+    ) -> None:
+        """Relay a model's session: create handoff with the live (old) model,
+        tear down, optionally swap the adapter's model, restart fresh.
+
+        When ``new_model`` is provided, the handoff is generated by the
+        currently-live model, then the adapter is mutated just before restart
+        so the fresh session starts on the new model.
+        """
         if model not in ("claude", "codex"):
             self._add_room_entry(ui, "system", _RELAY_USAGE)
             return
@@ -1409,6 +1589,15 @@ class Botference:
         # Tear down session state
         self._teardown_model_session(model, ui)
 
+        # Swap the adapter's model right before restart so the fresh session
+        # starts on the new model while the handoff above was generated by
+        # the old (live) session.
+        adapter = self.claude if model == "claude" else self.codex
+        model_changed = False
+        if new_model is not None and new_model != adapter.model:
+            adapter.model = new_model
+            model_changed = True
+
         # Relay bootstrap is in-process only. Clear any prior failure artifact,
         # then keep the handoff in memory for the immediate restart attempt.
         live_path = self.paths.handoff_live_file(model)
@@ -1418,17 +1607,18 @@ class Botference:
         restarted = await self._ensure_initialized(model, ui)
 
         # Confirmation
+        suffix = f" on {new_model}" if model_changed else ""
         if restarted:
             self._add_room_entry(
                 ui,
                 "system",
-                f"Relayed {model} (tier: {used_tier}) and started a fresh session.",
+                f"Relayed {model} (tier: {used_tier}) and started a fresh session{suffix}.",
             )
         else:
             self._add_room_entry(
                 ui,
                 "system",
-                f"Relayed {model} (tier: {used_tier}), but fresh-session startup failed. "
+                f"Relayed {model} (tier: {used_tier}){suffix}, but fresh-session startup failed. "
                 f"Retry by messaging {model}.",
             )
         ui.set_status(self.status_snapshot())

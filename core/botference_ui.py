@@ -486,25 +486,51 @@ if TEXTUAL_AVAILABLE:
             self.update(format_status_rich(status))
 
 
-    _COMPLETIONS_CACHE: list[str] | None = None
+    _COMPLETION_CTX_CACHE: dict | None = None
 
-    def _get_completions() -> list[str]:
+    def _norm_punct(s: str) -> str:
+        return s.replace("-", "").replace(".", "")
+
+    def _get_completion_ctx() -> dict:
         # Lazy import: botference imports botference_ui, so importing at module
         # level would be circular.
-        global _COMPLETIONS_CACHE
-        if _COMPLETIONS_CACHE is None:
-            from botference import get_slash_commands
-            _COMPLETIONS_CACHE = get_slash_commands()
-        return _COMPLETIONS_CACHE
+        global _COMPLETION_CTX_CACHE
+        if _COMPLETION_CTX_CACHE is None:
+            from botference import get_completion_context
+            _COMPLETION_CTX_CACHE = get_completion_context()
+        return _COMPLETION_CTX_CACHE
 
     class SlashSuggester(Suggester):
-        """Suggest /commands and @mentions as the user types."""
+        """Suggest /commands, @mentions, and scoped arg values as the user types.
+
+        Scoped keys (e.g. "/model @claude ") switch the matcher into
+        substring mode over the scoped option list, so typing "opus" or
+        "4-7" after "/model @claude " narrows to the right model.
+        """
 
         async def get_suggestion(self, value: str) -> str | None:
             if not value:
                 return None
+            ctx = _get_completion_ctx()
             lower = value.lower()
-            for cmd in _get_completions():
+            # Scoped match for e.g. "/model @claude <suffix>". Fires even when
+            # only the prefix is typed (shows first option) and normalizes
+            # punctuation so "5-4", "5.4", "47", "opus-4" all substring-match.
+            for prefix, options in ctx["scoped"].items():
+                plower = prefix.lower()
+                if lower.startswith(plower):
+                    suffix = value[len(prefix):].lower()
+                elif lower == plower.rstrip():
+                    suffix = ""
+                else:
+                    continue
+                nsuffix = _norm_punct(suffix)
+                for opt in options:
+                    if nsuffix in _norm_punct(opt.lower()) and opt.lower() != suffix:
+                        return prefix + opt
+                return None
+            # Global (prefix) match
+            for cmd in ctx["global"]:
                 if cmd.lower().startswith(lower) and cmd.lower() != lower:
                     return cmd
             return None
