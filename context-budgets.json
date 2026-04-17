@@ -1,82 +1,82 @@
 {
   "plan": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "scout": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "triage": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "deep-reader": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "critic": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "provocateur": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "synthesizer": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "paper-writer": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "editor": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "coherence-reviewer": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "research-coder": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "figure-stylist": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "coder": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "refactorer": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "orchestrator": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   },
   "security-auditor": {
-    "model": "claude-opus-4-6",
-    "effort": "max",
+    "model": "claude-opus-4-7",
+    "effort": "xhigh",
     "max_tokens": 32768
   }
 }

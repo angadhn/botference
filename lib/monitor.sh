@@ -8,7 +8,7 @@ estimate_input_cost() {
   local BYTES_PER_TOKEN=35
   # Use model-aware context window if resolve_context_window is available
   local CONTEXT_WINDOW
-  CONTEXT_WINDOW=$(resolve_context_window "${ANTHROPIC_MODEL:-claude-opus-4-6}" 2>/dev/null || echo 1000000)
+  CONTEXT_WINDOW=$(resolve_context_window "${ANTHROPIC_MODEL:-claude-opus-4-7}" 2>/dev/null || echo 1000000)
   local BASELINE_OVERHEAD=3000
   local EFFECTIVE_WINDOW=$(( CONTEXT_WINDOW - BASELINE_OVERHEAD ))
 

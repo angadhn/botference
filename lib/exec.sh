@@ -17,7 +17,7 @@ resolve_model() {
     model=$(jq -r --arg a "$agent_name" '.[$a].model // empty' "$budgets_file" 2>/dev/null || true)
   fi
   if [ -z "$model" ]; then
-    model="${ANTHROPIC_MODEL:-claude-opus-4-6}"
+    model="${ANTHROPIC_MODEL:-claude-opus-4-7}"
   fi
   echo "$model"
 }
@@ -214,7 +214,7 @@ EOF
 resolve_cli_model() {
   # Append [1m] to Claude model names when the context window is 1M.
   # This tells the claude CLI to use the extended context window.
-  local model="${1:-claude-opus-4-6}"
+  local model="${1:-claude-opus-4-7}"
   local ctx_window
   ctx_window=$(resolve_context_window "$model")
   if [ "$ctx_window" -ge 1000000 ] 2>/dev/null; then
@@ -233,7 +233,7 @@ resolve_context_window() {
     echo "$BOTFERENCE_CONTEXT_WINDOW"
     return
   fi
-  local model="${1:-claude-opus-4-6}"
+  local model="${1:-claude-opus-4-7}"
   case "$model" in
     gpt-5.4*) echo 272000 ;;
     gpt-4o|gpt-4o-mini) echo 128000 ;;

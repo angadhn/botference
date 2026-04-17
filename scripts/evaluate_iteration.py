@@ -244,7 +244,7 @@ def main():
     # If we don't have a context reading from the file, estimate from tokens
     if peak_ctx == 0 and usage.get("input_tokens", 0) > 0:
         from providers import get_context_window
-        model = usage.get("model", "claude-opus-4-6")
+        model = usage.get("model", "claude-opus-4-7")
         ctx_window = get_context_window(model)
         peak_ctx = int(usage["input_tokens"] / ctx_window * 100)
 

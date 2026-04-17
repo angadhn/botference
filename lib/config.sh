@@ -363,7 +363,7 @@ Options:
   --help, -h        Show this help and exit
 
 Supported models:
-  claude-opus-4-6       Anthropic Opus 4.6  (1M context)
+  claude-opus-4-7       Anthropic Opus 4.7  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
   claude-haiku-4-5      Anthropic Haiku 4.5  (200k context)
   gpt-5.4               OpenAI GPT-5.4       (272k context)
@@ -375,7 +375,7 @@ Model resolution order:
   1. --anthropic-model flag
   2. ANTHROPIC_MODEL env var
   3. Per-agent model in context-budgets.json
-  4. Default: claude-opus-4-6
+  4. Default: claude-opus-4-7
 
 Environment variables:
   ANTHROPIC_MODEL          Global Anthropic model override (same as --anthropic-model)

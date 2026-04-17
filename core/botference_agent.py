@@ -359,7 +359,7 @@ def main():
     parser = argparse.ArgumentParser(description="Botference agent runner")
     parser.add_argument("--agent", required=True, help="Agent name (e.g., paper-writer)")
     parser.add_argument("--task", required=True, help="Task prompt (or - to read from stdin)")
-    default_model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6")
+    default_model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
     parser.add_argument("--model", default=default_model,
                         help="Model to use (auto-detects provider from name)")
     parser.add_argument("--max-tokens", type=int, default=None, help="Max output tokens (default: from context-budgets.json or 8096)")
