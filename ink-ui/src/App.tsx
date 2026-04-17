@@ -58,27 +58,9 @@ interface PendingPermission {
 
 // ── Constants ──────────────────────────────────────────────
 
-const COMPLETIONS = [
-  "/caucus ",
-  "/lead @claude",
-  "/lead @codex",
-  "/relay @claude",
-  "/relay @codex",
-  "/tag @claude",
-  "/tag @codex",
-  "/draft",
-  "/finalize",
-  "/resume",
-  "/permissions",
-  "/status",
-  "/auth",
-  "/help",
-  "/quit",
-  "/exit",
-  "@claude ",
-  "@codex ",
-  "@all ",
-];
+// Autosuggest completions are sourced from the Python bridge at startup
+// (type: "slash_commands") so they stay in sync with the canonical
+// dispatcher in core/botference.py.
 
 const THEME = {
   chrome: "gray",
@@ -441,6 +423,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [imageAttachments, setImageAttachments] = useState<Map<number, string>>(new Map());
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [permissionChoice, setPermissionChoice] = useState<"allow" | "deny">("allow");
+  const [completions, setCompletions] = useState<string[]>([]);
   const nextImageId = useRef(1);
   const cursorRef = useRef(0);
   cursorRef.current = cursor; // keep ref in sync for use in stdin filter callbacks
@@ -591,13 +574,13 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const ghostText = React.useMemo(() => {
     if (!inputText) return "";
     const lower = inputText.toLowerCase();
-    for (const cmd of COMPLETIONS) {
+    for (const cmd of completions) {
       if (cmd.toLowerCase().startsWith(lower) && cmd.toLowerCase() !== lower) {
         return cmd.slice(inputText.length);
       }
     }
     return "";
-  }, [inputText]);
+  }, [inputText, completions]);
 
   // ── Bridge subprocess ──────────────────────────────────
 
@@ -700,6 +683,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         case "ready":
           setReady(true);
           setBusyTarget(null);
+          break;
+        case "slash_commands":
+          setCompletions((msg.list as string[]) ?? []);
           break;
         case "permission_request":
           setPendingPermission({

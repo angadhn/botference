@@ -486,27 +486,16 @@ if TEXTUAL_AVAILABLE:
             self.update(format_status_rich(status))
 
 
-    _COMPLETIONS = [
-        "/caucus ",
-        "/lead @claude",
-        "/lead @codex",
-        "/relay @claude",
-        "/relay @codex",
-        "/tag @claude",
-        "/tag @codex",
-        "/draft",
-        "/finalize",
-        "/resume",
-        "/permissions",
-        "/status",
-        "/auth",
-        "/help",
-        "/quit",
-        "/exit",
-        "@claude ",
-        "@codex ",
-        "@all ",
-    ]
+    _COMPLETIONS_CACHE: list[str] | None = None
+
+    def _get_completions() -> list[str]:
+        # Lazy import: botference imports botference_ui, so importing at module
+        # level would be circular.
+        global _COMPLETIONS_CACHE
+        if _COMPLETIONS_CACHE is None:
+            from botference import get_slash_commands
+            _COMPLETIONS_CACHE = get_slash_commands()
+        return _COMPLETIONS_CACHE
 
     class SlashSuggester(Suggester):
         """Suggest /commands and @mentions as the user types."""
@@ -515,7 +504,7 @@ if TEXTUAL_AVAILABLE:
             if not value:
                 return None
             lower = value.lower()
-            for cmd in _COMPLETIONS:
+            for cmd in _get_completions():
                 if cmd.lower().startswith(lower) and cmd.lower() != lower:
                     return cmd
             return None

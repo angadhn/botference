@@ -165,6 +165,29 @@ _MENTION_RE = re.compile(
 _RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex)$", re.IGNORECASE)
 _RELAY_TARGET_RE = re.compile(r"^@?(claude|codex)$", re.IGNORECASE)
 
+# Commands that require a @target argument, expanded into @claude/@codex variants
+_TARGETED_COMMANDS = ("/lead", "/relay", "/tag")
+
+
+def get_slash_commands() -> list[str]:
+    """Canonical completion list for TUI autosuggest.
+
+    Sourced from _SLASH_COMMANDS plus relay/tag aliases; targeted commands
+    are expanded with @claude/@codex variants (matching the /lead pattern).
+    Trailing spaces on /caucus and @mentions signal that a message body
+    follows.
+    """
+    out: list[str] = ["/caucus "]
+    for cmd in _TARGETED_COMMANDS:
+        out.append(f"{cmd} @claude")
+        out.append(f"{cmd} @codex")
+    for cmd in _SLASH_COMMANDS:
+        if cmd in _TARGETED_COMMANDS or cmd == "/caucus":
+            continue
+        out.append(cmd)
+    out.extend(["@claude ", "@codex ", "@all "])
+    return out
+
 
 def parse_input(raw: str) -> ParsedInput:
     """Parse raw user input into a structured command."""

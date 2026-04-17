@@ -22,7 +22,7 @@ from cli_adapters import (
     planner_write_roots_for_env,
 )
 from paths import BotferencePaths
-from botference import Botference, WritePermissionRequest
+from botference import Botference, WritePermissionRequest, get_slash_commands
 from botference_ui import RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
 from session_store import append_crash_log
@@ -238,6 +238,7 @@ async def main() -> None:
     current_turn: asyncio.Task | None = None
 
     # Send initial state
+    emit({"type": "slash_commands", "list": get_slash_commands()})
     bridge.set_status(botference.status_snapshot())
     bridge.add_room_entry("system", "Council room ready. First plain text routes to @all.")
     bridge.add_caucus_entry("system", "(empty until /caucus)")
