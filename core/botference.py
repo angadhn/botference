@@ -181,15 +181,15 @@ _CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high")
 
 
 def _known_claude_models() -> list[str]:
-    """Claude model IDs from the shared pricing table."""
-    from tools._pricing import PRICING
-    return [m for m in PRICING if m.startswith("claude-")]
+    """Claude model IDs from the CLI adapter context-window table."""
+    from cli_adapters import _CONTEXT_WINDOWS
+    return [m for m in _CONTEXT_WINDOWS if m.startswith("claude-")]
 
 
 def _known_codex_models() -> list[str]:
-    """Non-Claude model IDs from the shared pricing table (OpenAI)."""
-    from tools._pricing import PRICING
-    return [m for m in PRICING if not m.startswith("claude-")]
+    """Non-Claude (OpenAI) model IDs from the CLI adapter context-window table."""
+    from cli_adapters import _CONTEXT_WINDOWS
+    return [m for m in _CONTEXT_WINDOWS if not m.startswith("claude-")]
 
 
 def get_completion_context() -> dict:

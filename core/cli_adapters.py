@@ -225,6 +225,8 @@ _CONTEXT_WINDOWS = {
     "claude-sonnet-4-6": 1_000_000,
     "claude-haiku-4-5": 200_000,
     "gpt-5.4": 272_000,
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
     "o3": 200_000,
     "o4-mini": 200_000,
 }
