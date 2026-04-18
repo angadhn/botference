@@ -55,6 +55,13 @@ def _default_title(payload: dict[str, Any]) -> str:
     return task[:80] if task else "Untitled session"
 
 
+def _display_title(payload: dict[str, Any]) -> str:
+    title = str(
+        payload.get("custom_title") or payload.get("title") or ""
+    ).strip()
+    return title or _default_title(payload)
+
+
 @dataclass(frozen=True)
 class SessionSummary:
     session_id: str
@@ -99,7 +106,7 @@ class SessionStore:
                 session_id=session_id,
                 created_at=str(payload.get("created_at", "")),
                 updated_at=str(payload.get("updated_at", "")),
-                title=str(payload.get("title") or _default_title(payload)),
+                title=_display_title(payload),
                 entry_count=entry_count,
             ))
             if len(summaries) >= limit:

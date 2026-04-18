@@ -133,6 +133,7 @@ class InputKind(Enum):
     QUIT = "quit"
     RELAY = "relay"
     RESUME = "resume"
+    RENAME = "rename"
     MODEL = "model"
     EFFORT = "effort"
     CURRENT = "current"
@@ -152,6 +153,7 @@ _SLASH_COMMANDS = {
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
     "/resume": InputKind.RESUME,
+    "/rename": InputKind.RENAME,
     "/permissions": InputKind.PERMISSIONS,
     "/status": InputKind.STATUS,
     "/auth": InputKind.AUTH,
@@ -171,6 +173,8 @@ _MENTION_RE = re.compile(
 # Relay command patterns
 _RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex)$", re.IGNORECASE)
 _RELAY_TARGET_RE = re.compile(r"^@?(claude|codex)$", re.IGNORECASE)
+
+_SESSION_TITLE_MAX = 80
 
 # Commands that require a @target argument, expanded into @claude/@codex variants
 _TARGETED_COMMANDS = ("/lead", "/relay", "/tag", "/model", "/effort")
@@ -597,6 +601,12 @@ def _strip_response_frontmatter(text: str) -> str:
     return text[m.end():] if m else text
 
 
+def _clean_session_title(text: str) -> str:
+    """Normalize a user-facing session title for storage and matching."""
+    title = " ".join(text.split()).strip()
+    return title[:_SESSION_TITLE_MAX]
+
+
 
 # ── Botference controller ────────────────────────────────────
 
@@ -635,6 +645,7 @@ class Botference:
         self.session_id = str(uuid.uuid4())
         self.created_at = iso_now()
         self.updated_at = self.created_at
+        self.custom_title: str = ""
 
         self.transcript = Transcript()
         self.router = AutoRouter()
@@ -796,14 +807,16 @@ class Botference:
         )
 
     def _session_title(self) -> str:
+        if self.custom_title:
+            return self.custom_title
         for entry in self.transcript.entries:
             if entry.speaker != "user":
                 continue
-            text = " ".join(entry.text.split()).strip()
+            text = _clean_session_title(entry.text)
             if text:
-                return text[:80]
-        task = " ".join(self.task.split()).strip()
-        return task[:80] if task else "Untitled session"
+                return text
+        task = _clean_session_title(self.task)
+        return task if task else "Untitled session"
 
     def _session_payload(self) -> dict:
         return {
@@ -811,6 +824,7 @@ class Botference:
             "session_id": self.session_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "custom_title": self.custom_title,
             "title": self._session_title(),
             "system_prompt": self.system_prompt,
             "task": self.task,
@@ -888,15 +902,44 @@ class Botference:
         if not summaries:
             return "No saved sessions found."
         lines = ["Saved sessions:"]
-        for summary in summaries:
+        for idx, summary in enumerate(summaries, start=1):
             lines.append(
-                f"  {summary.session_id[:12]}  {summary.updated_at}  {summary.title}"
+                f"  {idx:>2}. {summary.session_id[:12]}  {summary.updated_at}  {summary.title}"
             )
         lines.extend([
             "",
-            "Run /resume latest or /resume <session-id-prefix>.",
+            "Run /resume latest, /resume <number>, /resume <title>, or /resume <session-id-prefix>.",
         ])
         return "\n".join(lines)
+
+    def _matching_sessions_by_title(self, summaries: list, query: str) -> list[str]:
+        needle = _clean_session_title(query).lower()
+        if not needle:
+            return []
+
+        def title(summary) -> str:
+            return _clean_session_title(summary.title).lower()
+
+        exact = [s.session_id for s in summaries if title(s) == needle]
+        if exact:
+            return exact
+        prefix = [s.session_id for s in summaries if title(s).startswith(needle)]
+        if prefix:
+            return prefix
+        return [s.session_id for s in summaries if needle in title(s)]
+
+    def _rename_session(self, arg: str, ui: UIPort) -> None:
+        title = _clean_session_title(arg)
+        if not title:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Current session name: {self._session_title()}\nUsage: /rename <session name>",
+            )
+            return
+        self.custom_title = title
+        self._persist_session()
+        self._add_room_entry(ui, "system", f"Session renamed to: {title}")
 
     def _restore_from_payload(self, payload: dict) -> str:
         self._restoring_session = True
@@ -904,6 +947,9 @@ class Botference:
             self.session_id = str(payload.get("session_id", self.session_id))
             self.created_at = str(payload.get("created_at", self.created_at))
             self.updated_at = str(payload.get("updated_at", self.updated_at))
+            self.custom_title = _clean_session_title(
+                str(payload.get("custom_title", "") or "")
+            )
             self.system_prompt = str(payload.get("system_prompt", self.system_prompt))
             self.task = str(payload.get("task", self.task))
             self.lead = str(payload.get("lead", "auto"))
@@ -1042,23 +1088,27 @@ class Botference:
 
         query = arg.strip()
         summaries = self.session_store.list_summaries(
-            limit=25, exclude_session_id=self.session_id,
+            limit=100, exclude_session_id=self.session_id,
         )
         if not query:
             self._show_resume_list(ui)
             return
 
-        if query == "latest":
+        if query.lower() == "latest":
             if not summaries:
                 self._add_room_entry(ui, "system", "No saved sessions found.")
                 return
             target_id = summaries[0].session_id
+        elif query.isdigit() and 1 <= int(query) <= len(summaries):
+            target_id = summaries[int(query) - 1].session_id
         else:
             matches = [
                 summary.session_id
                 for summary in summaries
                 if summary.session_id == query or summary.session_id.startswith(query)
             ]
+            if not matches:
+                matches = self._matching_sessions_by_title(summaries, query)
             if not matches:
                 self._add_room_entry(
                     ui,
@@ -1067,11 +1117,15 @@ class Botference:
                 )
                 return
             if len(matches) > 1:
+                by_id = {summary.session_id: summary for summary in summaries}
                 self._add_room_entry(
                     ui,
                     "system",
                     "Multiple sessions matched:\n"
-                    + "\n".join(f"  {session_id[:12]}" for session_id in matches[:10]),
+                    + "\n".join(
+                        f"  {session_id[:12]}  {by_id[session_id].title}"
+                        for session_id in matches[:10]
+                    ),
                 )
                 return
             target_id = matches[0]
@@ -1082,7 +1136,10 @@ class Botference:
         if old_session_id != self.session_id and replaceable:
             self.session_store.delete(old_session_id)
         self._replay_restored_session(ui)
-        note = f"Resumed session {self.session_id[:12]} from {self.updated_at}."
+        note = (
+            f"Resumed session {self._session_title()} "
+            f"({self.session_id[:12]}) from {self.updated_at}."
+        )
         if saved_mode != RoomMode.PUBLIC.value:
             note += f" Restored interrupted {saved_mode} session in public mode."
         self._add_room_entry(ui, "system", note)
@@ -1212,6 +1269,10 @@ class Botference:
             self._resume_session(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.RENAME:
+            self._rename_session(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.MODEL:
             await self._handle_model_cmd(parsed.body, ui)
             return
@@ -1255,7 +1316,8 @@ class Botference:
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
-            "  /resume [latest|id] — Restore a saved plan session in a fresh controller",
+            "  /resume [latest|number|title|id] — Restore a saved plan session in a fresh controller",
+            "  /rename <name>      — Name this saved session for future /resume lookup",
             "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
             "  /auth [claude|codex|all] — Check local CLI auth status",

@@ -112,6 +112,11 @@ class TestParseInput:
         assert p.kind is InputKind.RESUME
         assert p.body == "latest"
 
+    def test_slash_rename(self):
+        p = parse_input("/rename useful plan")
+        assert p.kind is InputKind.RENAME
+        assert p.body == "useful plan"
+
     def test_slash_permissions(self):
         p = parse_input("/permissions")
         assert p.kind is InputKind.PERMISSIONS
@@ -1073,6 +1078,17 @@ class TestBotferenceFinalize:
 
 @pytest.mark.asyncio
 class TestBotferenceResume:
+    async def test_rename_persists_custom_session_title(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/rename auth plan", ui)
+
+        session_path = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        assert payload["custom_title"] == "auth plan"
+        assert payload["title"] == "auth plan"
+        assert any("Session renamed to: auth plan" in text for _, text in ui.room_entries)
+
     async def test_resume_latest_restores_session_and_uses_resume(self, tmp_path):
         original, _, _, original_ui = _make_botference(
             claude_responses=[_ok("first reply")],
@@ -1098,6 +1114,52 @@ class TestBotferenceResume:
         assert len(claude.resume_calls) == 1
         assert len(claude.send_calls) == 0
         assert len(codex.send_calls) == 0
+
+    async def test_resume_by_number_from_session_list(self, tmp_path):
+        first, _, _, first_ui = _make_botference(
+            claude_responses=[_ok("first reply")],
+            tmp_path=tmp_path,
+        )
+        await first.handle_input("/rename older plan", first_ui)
+        await first.handle_input("@claude first question", first_ui)
+
+        second, _, _, second_ui = _make_botference(
+            claude_responses=[_ok("second reply")],
+            tmp_path=tmp_path,
+        )
+        await second.handle_input("/rename newer plan", second_ui)
+        await second.handle_input("@claude second question", second_ui)
+        first_path = tmp_path / "work" / "sessions" / f"{first.session_id}.json"
+        second_path = tmp_path / "work" / "sessions" / f"{second.session_id}.json"
+        os.utime(first_path, (1_700_000_000, 1_700_000_000))
+        os.utime(second_path, (1_700_000_100, 1_700_000_100))
+
+        resumed, _, _, resumed_ui = _make_botference(tmp_path=tmp_path)
+        await resumed.handle_input("/resume", resumed_ui)
+        listing = "\n".join(text for _, text in resumed_ui.room_entries)
+        assert "1." in listing
+        assert "newer plan" in listing
+        assert "2." in listing
+        assert "older plan" in listing
+
+        await resumed.handle_input("/resume 2", resumed_ui)
+        assert resumed.session_id == first.session_id
+        assert resumed.custom_title == "older plan"
+
+    async def test_resume_by_session_title(self, tmp_path):
+        original, _, _, original_ui = _make_botference(
+            claude_responses=[_ok("first reply")],
+            tmp_path=tmp_path,
+        )
+        await original.handle_input("/rename checkout migration", original_ui)
+        await original.handle_input("@claude first question", original_ui)
+
+        resumed, _, _, resumed_ui = _make_botference(tmp_path=tmp_path)
+        await resumed.handle_input("/resume checkout", resumed_ui)
+
+        assert resumed.session_id == original.session_id
+        assert resumed.custom_title == "checkout migration"
+        assert any("checkout migration" in text for _, text in resumed_ui.room_entries)
 
     async def test_resume_requires_fresh_controller(self, tmp_path):
         c, _, _, ui = _make_botference(

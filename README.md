@@ -254,7 +254,8 @@ excerpts still render as code blocks.
 | `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved beside the plan in the Botference state directory. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
-| `/resume [latest\|<session-id-prefix>]` | Restore a previously saved planning session from `work/sessions/`. Run with no argument to list recent resumable sessions. Resume is only available from a fresh botference controller session. |
+| `/resume [latest\|<number>\|<title>\|<session-id-prefix>]` | Restore a previously saved planning session from `work/sessions/`. Run with no argument to list recent resumable sessions with names and numbers. Resume is only available from a fresh botference controller session. |
+| `/rename <name>` | Name the current planning session for future `/resume` lookup. Sessions also get an automatic title from the first user message or task. |
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/help` | Show the command reference. |
@@ -286,7 +287,10 @@ Each snapshot includes:
 - Claude `session_id` and Codex `thread_id` for native CLI resume
 
 Use `/resume` in a fresh `./botference plan` session to list saved sessions,
-then `/resume latest` or `/resume <session-id-prefix>` to restore one.
+then `/resume latest`, `/resume <number>`, `/resume <title>`, or
+`/resume <session-id-prefix>` to restore one. Use `/rename <name>` during a
+session to set a durable title; otherwise Botference derives a title from the
+first user message or task.
 
 Unhandled plan-mode crashes are appended to `work/sessions/crash.log`.
 If you also run with debug panes, the model stream logs remain:
