@@ -72,6 +72,66 @@ export function computeViewportSlice(
   return { startIdx, endIdx, clampedScroll };
 }
 
+const WHEEL_ACCEL_WINDOW_MS = 40;
+const WHEEL_ACCEL_STEP = 0.3;
+const WHEEL_ACCEL_MAX = 6;
+
+export interface WheelAccelState {
+  time: number;
+  multiplier: number;
+  direction: 0 | 1 | -1;
+}
+
+export function initWheelAccel(): WheelAccelState {
+  return { time: 0, multiplier: 1, direction: 0 };
+}
+
+export function computeWheelStep(
+  state: WheelAccelState,
+  direction: 1 | -1,
+  now: number,
+): number {
+  const gap = now - state.time;
+  if (direction !== state.direction || gap > WHEEL_ACCEL_WINDOW_MS) {
+    state.multiplier = 1;
+  } else {
+    state.multiplier = Math.min(WHEEL_ACCEL_MAX, state.multiplier + WHEEL_ACCEL_STEP);
+  }
+  state.time = now;
+  state.direction = direction;
+  return Math.max(1, Math.floor(state.multiplier));
+}
+
+export function computeWheelScrollDelta(
+  state: WheelAccelState,
+  wheelSteps: number,
+  now: number,
+): number {
+  const direction = wheelSteps > 0 ? 1 : -1;
+  let delta = 0;
+  for (let i = 0; i < Math.abs(wheelSteps); i++) {
+    delta += computeWheelStep(state, direction, now) * direction;
+  }
+  return delta;
+}
+
+export function computeSmoothScrollNext(
+  currentOffset: number,
+  targetOffset: number,
+): number {
+  const distance = targetOffset - currentOffset;
+  if (distance === 0) return currentOffset;
+  const step = Math.min(
+    Math.abs(distance),
+    Math.max(1, Math.ceil(Math.abs(distance) * 0.35)),
+  );
+  return currentOffset + Math.sign(distance) * step;
+}
+
+export function clampScrollOffset(scrollOffset: number, maxScroll: number): number {
+  return Math.max(0, Math.min(maxScroll, scrollOffset));
+}
+
 export function truncateTitle(
   title: string,
   scrollOffset: number,

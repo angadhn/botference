@@ -6,8 +6,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import stringWidth from "string-width";
 import {
+  clampScrollOffset,
   computeLayoutBudget,
+  computeSmoothScrollNext,
   computeViewportSlice,
+  computeWheelScrollDelta,
+  initWheelAccel,
   truncateTitle,
   preRenderLines,
   shouldAutoScroll,
@@ -431,6 +435,15 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const cursorRef = useRef(0);
   cursorRef.current = cursor; // keep ref in sync for use in stdin filter callbacks
 
+  const wheelAccelRef = useRef(initWheelAccel());
+  const roomScrollRef = useRef(0);
+  const caucusScrollRef = useRef(0);
+  const roomScrollTargetRef = useRef(0);
+  const caucusScrollTargetRef = useRef(0);
+  const roomMaxScrollRef = useRef(0);
+  const caucusMaxScrollRef = useRef(0);
+  const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const bridgeRef = useRef<ChildProcess | null>(null);
   const { stdout } = useStdout();
   const rows = stdout?.rows ?? 24;
@@ -473,33 +486,83 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   );
   const roomMaxScroll = Math.max(0, roomFlatLineCount - paneContentHeight);
   const caucusMaxScroll = Math.max(0, caucusFlatLineCount - paneContentHeight);
+  roomMaxScrollRef.current = roomMaxScroll;
+  caucusMaxScrollRef.current = caucusMaxScroll;
+  roomScrollRef.current = roomScroll;
+  caucusScrollRef.current = caucusScroll;
+
+  const startScrollDrain = useCallback(() => {
+    if (scrollTimerRef.current) return;
+    scrollTimerRef.current = setInterval(() => {
+      const roomTarget = clampScrollOffset(roomScrollTargetRef.current, roomMaxScrollRef.current);
+      const caucusTarget = clampScrollOffset(caucusScrollTargetRef.current, caucusMaxScrollRef.current);
+      roomScrollTargetRef.current = roomTarget;
+      caucusScrollTargetRef.current = caucusTarget;
+
+      const nextRoomScroll = computeSmoothScrollNext(roomScrollRef.current, roomTarget);
+      const nextCaucusScroll = computeSmoothScrollNext(caucusScrollRef.current, caucusTarget);
+      roomScrollRef.current = nextRoomScroll;
+      caucusScrollRef.current = nextCaucusScroll;
+      setRoomScroll(nextRoomScroll);
+      setCaucusScroll(nextCaucusScroll);
+
+      const keepDraining = (
+        nextRoomScroll !== roomTarget ||
+        nextCaucusScroll !== caucusTarget
+      );
+      if (!keepDraining && scrollTimerRef.current) {
+        clearInterval(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+    }, 16);
+  }, []);
 
   // ── Mouse scroll — dispatch to focused pane ──────────────
   useEffect(() => {
-    return onMouseScroll((dir) => {
+    return onMouseScroll((wheelSteps) => {
+      const delta = computeWheelScrollDelta(
+        wheelAccelRef.current,
+        wheelSteps,
+        performance.now(),
+      );
       if (focusedPane === "room") {
-        setRoomScroll((prev) => (
-          dir === "up"
-            ? Math.min(roomMaxScroll, prev + 1)
-            : Math.max(0, prev - 1)
-        ));
+        roomScrollTargetRef.current = clampScrollOffset(
+          roomScrollTargetRef.current + delta,
+          roomMaxScroll,
+        );
       } else {
-        setCaucusScroll((prev) => (
-          dir === "up"
-            ? Math.min(caucusMaxScroll, prev + 1)
-            : Math.max(0, prev - 1)
-        ));
+        caucusScrollTargetRef.current = clampScrollOffset(
+          caucusScrollTargetRef.current + delta,
+          caucusMaxScroll,
+        );
       }
+      startScrollDrain();
     });
-  }, [focusedPane, roomMaxScroll, caucusMaxScroll]);
+  }, [focusedPane, roomMaxScroll, caucusMaxScroll, startScrollDrain]);
 
   useEffect(() => {
-    setRoomScroll((prev) => Math.min(prev, roomMaxScroll));
+    return () => {
+      if (scrollTimerRef.current) clearInterval(scrollTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    setRoomScroll((prev) => clampScrollOffset(prev, roomMaxScroll));
+    roomScrollTargetRef.current = clampScrollOffset(roomScrollTargetRef.current, roomMaxScroll);
   }, [roomMaxScroll]);
 
   useEffect(() => {
-    setCaucusScroll((prev) => Math.min(prev, caucusMaxScroll));
+    setCaucusScroll((prev) => clampScrollOffset(prev, caucusMaxScroll));
+    caucusScrollTargetRef.current = clampScrollOffset(caucusScrollTargetRef.current, caucusMaxScroll);
   }, [caucusMaxScroll]);
+
+  useEffect(() => {
+    if (!scrollTimerRef.current) roomScrollTargetRef.current = roomScroll;
+  }, [roomScroll]);
+
+  useEffect(() => {
+    if (!scrollTimerRef.current) caucusScrollTargetRef.current = caucusScroll;
+  }, [caucusScroll]);
 
   // ── Shift+Enter — insert newline (intercepted at stdin filter level) ──
   useEffect(() => {

@@ -8,6 +8,7 @@ lands separately in botference.py.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -62,6 +63,14 @@ class TranscriptEntry:
     speaker: str
     text: str
     blocks: Optional[list[dict]] = None
+
+
+TEXTUAL_SCROLL_LINES = 3
+TEXTUAL_SCROLL_DURATION = 0.10
+TEXTUAL_PAGE_SCROLL_DURATION = 0.16
+TEXTUAL_WHEEL_ACCEL_WINDOW = 0.040
+TEXTUAL_WHEEL_ACCEL_STEP = 0.3
+TEXTUAL_WHEEL_ACCEL_MAX = 6.0
 
 
 def cycle_pane_focus(
@@ -443,9 +452,10 @@ if TEXTUAL_AVAILABLE:
 
         def append_entry(self, entry: TranscriptEntry) -> None:
             self._entries.append(entry)
+            at_end = self.scroll_target_y >= self.max_scroll_y
             self.write(
                 render_transcript_entry(entry, dimmed=self._dimmed),
-                scroll_end=True,
+                scroll_end=at_end,
             )
 
         def set_dimmed(self, dimmed: bool) -> None:
@@ -463,6 +473,21 @@ if TEXTUAL_AVAILABLE:
                 y=min(scroll_y, self.max_scroll_y),
                 animate=False,
                 immediate=True,
+            )
+
+        def scroll_relative(
+            self, lines: int, *, duration: float = TEXTUAL_SCROLL_DURATION
+        ) -> None:
+            if lines == 0:
+                return
+            target_y = max(
+                0,
+                min(self.max_scroll_y, self.scroll_target_y + lines),
+            )
+            self.scroll_to(
+                y=target_y,
+                animate=True,
+                duration=duration,
             )
 
 
@@ -635,6 +660,9 @@ if TEXTUAL_AVAILABLE:
             super().__init__(**kwargs)
             self.on_submit = on_submit
             self._initial_status = initial_status or StatusSnapshot()
+            self._wheel_scroll_time = 0.0
+            self._wheel_scroll_multiplier = 1.0
+            self._wheel_scroll_direction = 0
 
         def compose(self) -> ComposeResult:
             with Horizontal(id="panes"):
@@ -705,29 +733,58 @@ if TEXTUAL_AVAILABLE:
             )
             self._apply_focus_state()
 
-        def _focused_log(self) -> RichLog:
+        def _focused_log(self) -> TranscriptPane:
             if self.focused_pane is PaneFocus.CAUCUS:
                 return self.query_one(CaucusPane)
             return self.query_one(RoomPane)
 
+        def _wheel_scroll_lines(self, direction: int) -> int:
+            now = time.monotonic()
+            gap = now - self._wheel_scroll_time
+            if (
+                direction != self._wheel_scroll_direction
+                or gap > TEXTUAL_WHEEL_ACCEL_WINDOW
+            ):
+                self._wheel_scroll_multiplier = 1.0
+            else:
+                self._wheel_scroll_multiplier = min(
+                    TEXTUAL_WHEEL_ACCEL_MAX,
+                    self._wheel_scroll_multiplier + TEXTUAL_WHEEL_ACCEL_STEP,
+                )
+            self._wheel_scroll_time = now
+            self._wheel_scroll_direction = direction
+            return max(1, int(self._wheel_scroll_multiplier))
+
         def action_scroll_focused_up(self) -> None:
-            self._focused_log().scroll_up(animate=False)
+            self._focused_log().scroll_relative(-TEXTUAL_SCROLL_LINES)
 
         def action_scroll_focused_down(self) -> None:
-            self._focused_log().scroll_down(animate=False)
+            self._focused_log().scroll_relative(TEXTUAL_SCROLL_LINES)
 
         def action_page_focused_up(self) -> None:
-            self._focused_log().scroll_page_up(animate=False)
+            log = self._focused_log()
+            log.scroll_relative(
+                -log.scrollable_content_region.height,
+                duration=TEXTUAL_PAGE_SCROLL_DURATION,
+            )
 
         def action_page_focused_down(self) -> None:
-            self._focused_log().scroll_page_down(animate=False)
+            log = self._focused_log()
+            log.scroll_relative(
+                log.scrollable_content_region.height,
+                duration=TEXTUAL_PAGE_SCROLL_DURATION,
+            )
 
         def on_mouse_scroll_up(self, event) -> None:
-            self._focused_log().scroll_up(animate=False)
+            self._focused_log().scroll_relative(
+                -self._wheel_scroll_lines(-1),
+            )
             event.stop()
 
         def on_mouse_scroll_down(self, event) -> None:
-            self._focused_log().scroll_down(animate=False)
+            self._focused_log().scroll_relative(
+                self._wheel_scroll_lines(1),
+            )
             event.stop()
 
         def add_room_entry(

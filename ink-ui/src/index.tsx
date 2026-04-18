@@ -11,7 +11,7 @@ import App from "./App";
 // Emit scroll events for panels to consume.
 // Pattern: Howler TUI (apps/tui/src/bin.tsx)
 
-type ScrollHandler = (direction: "up" | "down") => void;
+type ScrollHandler = (wheelSteps: number) => void;
 const scrollHandlers: ScrollHandler[] = [];
 export function onMouseScroll(handler: ScrollHandler) {
   scrollHandlers.push(handler);
@@ -70,10 +70,14 @@ const stdinFilter = new Transform({
     // Handle mouse scroll sequences
     MOUSE_SEQ.lastIndex = 0;
     let m;
+    let wheelSteps = 0;
     while ((m = MOUSE_SEQ.exec(text)) !== null) {
       const btn = parseInt(m[1]!, 10);
-      if (btn === 64) scrollHandlers.forEach((h) => h("up"));
-      else if (btn === 65) scrollHandlers.forEach((h) => h("down"));
+      if (btn === 64) wheelSteps += 1;
+      else if (btn === 65) wheelSteps -= 1;
+    }
+    if (wheelSteps !== 0) {
+      scrollHandlers.forEach((h) => h(wheelSteps));
     }
     MOUSE_SEQ.lastIndex = 0;
     text = text.replace(MOUSE_SEQ, "");

@@ -1,7 +1,18 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import stringWidth from "string-width";
-import { computeLayoutBudget, computeViewportSlice, truncateTitle, preRenderLines, parseRenderBlocks, shouldAutoScroll } from "./layout.js";
+import {
+  clampScrollOffset,
+  computeLayoutBudget,
+  computeSmoothScrollNext,
+  computeViewportSlice,
+  computeWheelScrollDelta,
+  truncateTitle,
+  initWheelAccel,
+  preRenderLines,
+  parseRenderBlocks,
+  shouldAutoScroll,
+} from "./layout.js";
 
 describe("computeLayoutBudget", () => {
   it("returns correct dimensions for standard terminal", () => {
@@ -44,6 +55,43 @@ describe("computeViewportSlice", () => {
   it("clamps excessive scroll", () => {
     const result = computeViewportSlice(20, 14, 999);
     assert.deepEqual(result, { startIdx: 0, endIdx: 14, clampedScroll: 6 });
+  });
+});
+
+describe("wheel scroll acceleration", () => {
+  it("keeps slow gestures precise", () => {
+    const state = initWheelAccel();
+    assert.equal(computeWheelScrollDelta(state, 1, 100), 1);
+    assert.equal(computeWheelScrollDelta(state, 1, 200), 1);
+  });
+
+  it("ramps repeated fast events", () => {
+    const state = initWheelAccel();
+    const deltas = [
+      computeWheelScrollDelta(state, 1, 100),
+      computeWheelScrollDelta(state, 1, 110),
+      computeWheelScrollDelta(state, 1, 120),
+      computeWheelScrollDelta(state, 1, 130),
+    ];
+    assert.deepEqual(deltas, [1, 1, 1, 2]);
+  });
+
+  it("coalesces same-batch wheel events", () => {
+    const state = initWheelAccel();
+    assert.equal(computeWheelScrollDelta(state, 5, 100), 6);
+  });
+});
+
+describe("smooth scroll helpers", () => {
+  it("moves proportionally toward distant targets", () => {
+    assert.equal(computeSmoothScrollNext(0, 1), 1);
+    assert.equal(computeSmoothScrollNext(0, 10), 4);
+  });
+
+  it("clamps scroll offset to bounds", () => {
+    assert.equal(clampScrollOffset(-5, 20), 0);
+    assert.equal(clampScrollOffset(25, 20), 20);
+    assert.equal(clampScrollOffset(12, 20), 12);
   });
 });
 
