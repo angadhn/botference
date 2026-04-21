@@ -358,37 +358,34 @@ function PermissionPrompt({
   const denyFocused = choice === "deny";
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={THEME.warning}
-      paddingX={1}
-      marginX={1}
-      marginBottom={1}
-    >
-      <Text bold color={THEME.warning}>Protected Write Request</Text>
-      <Text color={THEME.text}>
+    <Box flexDirection="column" paddingX={1} width="100%">
+      <Text bold color={THEME.warning}>
+        Protected write request
+      </Text>
+      <Text color={THEME.text} wrap="truncate-end">
         {request.model.charAt(0).toUpperCase() + request.model.slice(1)} wants to edit{" "}
         <Text bold>{request.path}</Text>
       </Text>
-      <Text color={THEME.textMuted}>{request.reason}</Text>
-      <Box marginTop={1}>
+      <Text color={THEME.textMuted} wrap="truncate-end">
+        {request.reason}
+      </Text>
+      <Box>
         <Text
           bold={allowFocused}
           color={allowFocused ? THEME.ready : THEME.textMuted}
         >
-          {allowFocused ? "> " : "  "}Allow once
+          {allowFocused ? "[ Allow once ]" : "  Allow once  "}
         </Text>
-        <Text color={THEME.textMuted}>{"    "}</Text>
+        <Text color={THEME.textMuted}>{"  "}</Text>
         <Text
           bold={denyFocused}
           color={denyFocused ? THEME.danger : THEME.textMuted}
         >
-          {denyFocused ? "> " : "  "}Deny
+          {denyFocused ? "[ Deny ]" : "  Deny  "}
         </Text>
       </Box>
-      <Text color={THEME.textMuted}>
-        Enter confirms. Left/Right or Tab switches. Y allows. N or Esc denies.
+      <Text color={THEME.statusMuted} wrap="truncate-end">
+        Enter confirms | Tab/Left/Right switches | Y allows | N/Esc denies
       </Text>
     </Box>
   );
@@ -1130,41 +1127,43 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         />
       </Box>
 
-      {pendingPermission ? (
-        <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
-      ) : null}
-
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">
         <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
-        <Text color={hint ? THEME.textMuted : THEME.statusMuted}>
-          {hint || ready
-            ? statusText
-            : busySegments.map((segment, index) => (
-                <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
-                  {segment.text}
-                </Text>
-              ))}
-        </Text>
-        <Text color={THEME.text}>{inputLabel}</Text>
-        <Box
-          flexDirection="column"
-          paddingX={1}
-          paddingY={1}
-          backgroundColor="black"
-          width="100%"
-          overflow="hidden"
-        >
-          <InputRenderer
-            text={inputText}
-            cursor={cursor}
-            ghostText={ghostText}
-            cursorColor={cursorColor}
-            textWidth={inputTextWidth}
-            maxVisibleLines={visibleInputLines}
-            showTrailingCursorLine={showTrailingCursorLine}
-          />
-        </Box>
+        {pendingPermission ? (
+          <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
+        ) : (
+          <>
+            <Text color={hint ? THEME.textMuted : THEME.statusMuted}>
+              {hint || ready
+                ? statusText
+                : busySegments.map((segment, index) => (
+                    <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
+                      {segment.text}
+                    </Text>
+                  ))}
+            </Text>
+            <Text color={THEME.text}>{inputLabel}</Text>
+            <Box
+              flexDirection="column"
+              paddingX={1}
+              paddingY={1}
+              backgroundColor="black"
+              width="100%"
+              overflow="hidden"
+            >
+              <InputRenderer
+                text={inputText}
+                cursor={cursor}
+                ghostText={ghostText}
+                cursorColor={cursorColor}
+                textWidth={inputTextWidth}
+                maxVisibleLines={visibleInputLines}
+                showTrailingCursorLine={showTrailingCursorLine}
+              />
+            </Box>
+          </>
+        )}
       </Box>
 
       {/* Status bar */}
