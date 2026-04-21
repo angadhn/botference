@@ -25,6 +25,16 @@ from render_blocks import build_tool_use_blocks, parse_render_blocks
 log = logging.getLogger(__name__)
 
 
+def _resolve_write_root_entry(project_root: Path, root: str | Path) -> Path | None:
+    raw = str(root).strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    return candidate.resolve()
+
+
 @dataclass(frozen=True)
 class PlannerWriteConfig:
     write_roots: list[Path]
@@ -87,10 +97,9 @@ def planner_write_roots_for_env(
     if raw_roots:
         roots = []
         for root in raw_roots.split(","):
-            root = root.strip().strip("/")
-            if not root:
-                continue
-            roots.append((project_root_path / root).resolve())
+            resolved = _resolve_write_root_entry(project_root_path, root)
+            if resolved is not None:
+                roots.append(resolved)
         return roots
     if project_config.exists():
         return []

@@ -93,10 +93,20 @@ def _active_tool_mode() -> str:
     return os.environ.get("BOTFERENCE_ACTIVE_MODE", "build").strip() or "build"
 
 
-def _extra_write_roots_for_mode(mode: str) -> list[str]:
+def _extra_write_roots_for_mode(mode: str) -> list[Path]:
     env_name = "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" if mode == "plan" else "BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS"
     raw = os.environ.get(env_name, "")
-    return [root.strip().strip("/") for root in raw.split(",") if root.strip()]
+    project_root = _project_root()
+    roots: list[Path] = []
+    for root in raw.split(","):
+        root = root.strip()
+        if not root:
+            continue
+        candidate = Path(root).expanduser()
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+        roots.append(candidate.resolve())
+    return roots
 
 
 def _project_root() -> Path:
@@ -129,11 +139,7 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 def _policy_path_allowed_python(path: Path, mode: str) -> bool:
     project_root = _project_root()
-    if not _is_relative_to(path, project_root):
-        return False
-    rel = path.relative_to(project_root).as_posix()
-    parts = [part for part in rel.split("/") if part]
-    if ".git" in parts:
+    if ".git" in path.parts:
         return False
 
     work_dir = _work_dir()
@@ -141,20 +147,21 @@ def _policy_path_allowed_python(path: Path, mode: str) -> bool:
     project_dir_exists = project_dir.is_dir()
     project_config_exists = (_project_root() / _project_dir_name() / "project.json").is_file()
 
-    if work_dir == project_root and not project_dir_exists:
-        if mode == "plan":
-            return path.name in {
-                "checkpoint.md",
-                "implementation-plan.md",
-                "inbox.md",
-            } or path.name.startswith("implementation-plan-")
-        return True
+    if _is_relative_to(path, project_root):
+        if work_dir == project_root and not project_dir_exists:
+            if mode == "plan":
+                return path.name in {
+                    "checkpoint.md",
+                    "implementation-plan.md",
+                    "inbox.md",
+                } or path.name.startswith("implementation-plan-")
+            return True
 
-    if not project_config_exists and mode == "plan" and work_dir != project_root and _is_relative_to(path, work_dir):
-        return True
+        if not project_config_exists and mode == "plan" and work_dir != project_root and _is_relative_to(path, work_dir):
+            return True
 
     for root in _extra_write_roots_for_mode(mode):
-        if rel == root or rel.startswith(root + "/"):
+        if _is_relative_to(path, root):
             return True
     return False
 

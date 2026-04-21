@@ -417,6 +417,7 @@ while true; do
     PLAN_CLAUDE_SETTINGS=$(mktemp)
     python3 - "$BOTFERENCE_PROJECT_ROOT" "$BOTFERENCE_WORK_DIR" "$PLAN_CLAUDE_SETTINGS" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -430,9 +431,13 @@ raw_roots = os.environ.get("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", "").strip()
 roots = []
 if raw_roots:
     for root in raw_roots.split(","):
-        root = root.strip().strip("/")
-        if root:
-            roots.append((project_root / root).resolve())
+        root = root.strip()
+        if not root:
+            continue
+        candidate = Path(root).expanduser()
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+        roots.append(candidate.resolve())
 elif not project_config.exists():
     roots = [work_dir]
 
@@ -467,10 +472,12 @@ PY
       IFS=',' read -r -a _plan_roots <<< "$BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS"
       first_root=""
       for _raw_root in "${_plan_roots[@]}"; do
-        _clean_root="${_raw_root#/}"
-        _clean_root="${_clean_root%/}"
+        _clean_root="${_raw_root%/}"
         [ -n "$_clean_root" ] || continue
-        _abs_root="$BOTFERENCE_PROJECT_ROOT/$_clean_root"
+        case "$_clean_root" in
+          /*) _abs_root="$_clean_root" ;;
+          *) _abs_root="$BOTFERENCE_PROJECT_ROOT/$_clean_root" ;;
+        esac
         if [ -z "$first_root" ]; then
           first_root="$_abs_root"
           PLAN_CLAUDE_CWD="$_abs_root"

@@ -29,6 +29,7 @@ from cli_adapters import (
     _CONTEXT_WINDOWS,
     claude_plan_settings_for_work_dir,
     plan_allowed_tools_for_work_dir,
+    planner_write_roots_for_env,
 )
 
 SPIKE_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -725,6 +726,24 @@ class TestCommandConstruction:
         assert "Bash" in allow
         assert "Edit(//repo)" in allow
         assert "Edit(//repo/**)" in allow
+
+    def test_planner_write_roots_preserve_absolute_entries(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        outside_root = tmp_path / "outside"
+        sibling_root = tmp_path / "sibling"
+        monkeypatch.setenv(
+            "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS",
+            f"botference,{outside_root},../sibling",
+        )
+
+        roots = planner_write_roots_for_env(project_root, project_root / "botference")
+
+        assert roots == [
+            (project_root / "botference").resolve(),
+            outside_root.resolve(),
+            sibling_root.resolve(),
+        ]
 
 # ── Error paths ──────────────────────────────────────────────
 

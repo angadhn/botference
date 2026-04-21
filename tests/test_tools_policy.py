@@ -36,6 +36,22 @@ class TestToolWritePolicy:
         assert result.startswith("Wrote ")
         assert (project_root / "botference" / "wiki" / "entry.md").read_text() == "hello\n"
 
+    def test_write_file_allows_absolute_declared_build_root(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        outside_root = tmp_path / "outside"
+        project_root.mkdir()
+        outside_root.mkdir()
+        monkeypatch.chdir(project_root)
+        _set_project_env(monkeypatch, project_root, mode="build", build_roots=str(outside_root))
+
+        result = execute_tool(
+            "write_file",
+            {"file_path": str(outside_root / "entry.md"), "content": "hello\n"},
+        )
+
+        assert result.startswith("Wrote ")
+        assert (outside_root / "entry.md").read_text() == "hello\n"
+
     def test_write_file_blocks_outside_declared_build_roots(self, tmp_path, monkeypatch):
         project_root = tmp_path
         (project_root / "botference").mkdir(parents=True)

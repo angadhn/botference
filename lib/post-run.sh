@@ -169,7 +169,11 @@ plan_write_state_snapshot() {
 
     while IFS= read -r root; do
       [ -n "$root" ] || continue
-      local abs_root="$BOTFERENCE_PROJECT_ROOT/$root"
+      local abs_root
+      case "$root" in
+        /*) abs_root="$root" ;;
+        *) abs_root="$BOTFERENCE_PROJECT_ROOT/$root" ;;
+      esac
 
       if [ -f "$abs_root" ]; then
         printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_root")" "$root" >> "$snapshot_file"
@@ -184,7 +188,11 @@ plan_write_state_snapshot() {
         find "$root" -type f | sort
       ) | while IFS= read -r path; do
         [ -n "$path" ] || continue
-        local abs_path="$BOTFERENCE_PROJECT_ROOT/$path"
+        local abs_path
+        case "$path" in
+          /*) abs_path="$path" ;;
+          *) abs_path="$BOTFERENCE_PROJECT_ROOT/$path" ;;
+        esac
         printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_path")" "$path" >> "$snapshot_file"
       done
     done < <(snapshot_roots_for_mode "$mode")
