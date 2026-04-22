@@ -35,6 +35,30 @@ def _resolve_write_root_entry(project_root: Path, root: str | Path) -> Path | No
     return candidate.resolve()
 
 
+_DEFAULT_PLAN_ALLOWED_HOSTS = (
+    "github.com",
+    "*.github.com",
+    "*.githubusercontent.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "api.github.com",
+)
+
+
+def _plan_network_enabled() -> bool:
+    raw = os.environ.get("BOTFERENCE_PLAN_ALLOW_NETWORK", "").strip().lower()
+    if raw == "":
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+def _plan_allowed_hosts() -> list[str]:
+    raw = os.environ.get("BOTFERENCE_PLAN_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        return list(_DEFAULT_PLAN_ALLOWED_HOSTS)
+    return [h.strip() for h in raw.split(",") if h.strip()]
+
+
 @dataclass(frozen=True)
 class PlannerWriteConfig:
     write_roots: list[Path]
@@ -44,6 +68,7 @@ class PlannerWriteConfig:
     codex_cwd: str
     codex_add_dirs: list[str]
     codex_sandbox: str
+    codex_network_access: bool = False
 
 
 def plan_allowed_tools_for_work_dir(
@@ -134,6 +159,8 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
         "enabled": True,
         "allowUnsandboxedCommands": False,
     }
+    if _plan_network_enabled():
+        sandbox["network"] = {"allowedDomains": _plan_allowed_hosts()}
 
     seen = set()
     for root in normalized_roots:
@@ -191,6 +218,7 @@ def planner_write_config(
         codex_cwd=str(primary_root),
         codex_add_dirs=codex_add_dirs,
         codex_sandbox="workspace-write" if normalized_roots else "read-only",
+        codex_network_access=_plan_network_enabled(),
     )
 
 # ── Response types ───────────────────────────────────────────
@@ -604,12 +632,14 @@ class CodexAdapter:
                  reasoning_effort: str = "",
                  timeout: Optional[int] = None,
                  debug_log_path: str = "",
-                 fallback_api_key: str = ""):
+                 fallback_api_key: str = "",
+                 network_access: bool = False):
         self.model = model
         self.sandbox = sandbox
         self.cwd = cwd
         self.add_dirs = add_dirs or []
         self.reasoning_effort = reasoning_effort
+        self.network_access = network_access
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CODEX_TIMEOUT",
             "BOTFERENCE_CLI_TIMEOUT",
@@ -635,6 +665,8 @@ class CodexAdapter:
             cmd += ["-m", self.model]
         if self.reasoning_effort:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
+        if self.network_access:
+            cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         cmd.append(prompt)
         return cmd
 
@@ -646,6 +678,8 @@ class CodexAdapter:
             cmd += ["--add-dir", path]
         if self.reasoning_effort:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
+        if self.network_access:
+            cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         cmd += [
             "resume", self.thread_id,
             "--json",

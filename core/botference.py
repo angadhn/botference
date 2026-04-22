@@ -747,6 +747,7 @@ class Botference:
         self.codex.cwd = config.codex_cwd
         self.codex.add_dirs = list(config.codex_add_dirs)
         self.codex.sandbox = config.codex_sandbox
+        self.codex.network_access = config.codex_network_access
 
     def _resolve_requested_write_root(self, raw_path: str) -> tuple[Path | None, str]:
         candidate = raw_path.strip()
@@ -2744,6 +2745,7 @@ def main() -> None:
         reasoning_effort=args.openai_effort,
         debug_log_path=codex_log,
         fallback_api_key=_fallback_api_key,
+        network_access=planner_config.codex_network_access,
     )
     botference = Botference(
         claude=claude, codex=codex,

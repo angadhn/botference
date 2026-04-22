@@ -29,6 +29,7 @@ from cli_adapters import (
     _CONTEXT_WINDOWS,
     claude_plan_settings_for_work_dir,
     plan_allowed_tools_for_work_dir,
+    planner_write_config,
     planner_write_roots_for_env,
 )
 
@@ -669,8 +670,8 @@ class TestCommandConstruction:
         x = CodexAdapter()
         x.thread_id = "tid-abc"
         cmd = x._build_resume_cmd("follow up")
-        assert cmd[2] == "resume"
-        assert cmd[3] == "tid-abc"
+        resume_idx = cmd.index("resume")
+        assert cmd[resume_idx + 1] == "tid-abc"
         assert cmd[-1] == "follow up"
 
     def test_codex_send_cmd_includes_cd_when_configured(self):
@@ -744,6 +745,67 @@ class TestCommandConstruction:
             outside_root.resolve(),
             sibling_root.resolve(),
         ]
+
+    def test_plan_network_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        assert "github.com" in settings["sandbox"]["network"]["allowedDomains"]
+
+        config = planner_write_config("/repo", ["/repo/botference"])
+        assert config.codex_network_access is True
+
+    def test_plan_network_can_be_explicitly_disabled(self, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "0")
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        assert "network" not in settings["sandbox"]
+
+        config = planner_write_config("/repo", ["/repo/botference"])
+        assert config.codex_network_access is False
+
+    def test_plan_network_enabled_populates_claude_allowlist(self, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "1")
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        hosts = settings["sandbox"]["network"]["allowedDomains"]
+        assert "github.com" in hosts
+        assert "*.github.com" in hosts
+        assert settings["sandbox"]["enabled"] is True
+
+    def test_plan_network_custom_host_list_is_honored(self, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "1")
+        monkeypatch.setenv(
+            "BOTFERENCE_PLAN_ALLOWED_HOSTS",
+            "example.com, *.internal.corp",
+        )
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        assert settings["sandbox"]["network"]["allowedDomains"] == [
+            "example.com",
+            "*.internal.corp",
+        ]
+
+    def test_plan_network_enabled_flips_codex_config(self, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "true")
+        config = planner_write_config("/repo", ["/repo/botference"])
+        assert config.codex_network_access is True
+
+    def test_codex_send_cmd_includes_network_access_override(self):
+        x = CodexAdapter(model="gpt-5.4", network_access=True)
+        cmd = x._build_send_cmd("hello")
+        idx = cmd.index("sandbox_workspace_write.network_access=true")
+        assert cmd[idx - 1] == "-c"
+
+    def test_codex_send_cmd_omits_network_access_override_when_disabled(self):
+        x = CodexAdapter(model="gpt-5.4")
+        cmd = x._build_send_cmd("hello")
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+
+    def test_codex_resume_cmd_includes_network_access_override(self):
+        x = CodexAdapter(network_access=True)
+        x.thread_id = "tid-abc"
+        cmd = x._build_resume_cmd("follow up")
+        idx = cmd.index("sandbox_workspace_write.network_access=true")
+        assert cmd[idx - 1] == "-c"
 
 # ── Error paths ──────────────────────────────────────────────
 

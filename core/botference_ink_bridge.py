@@ -225,6 +225,7 @@ async def main() -> None:
         reasoning_effort=args.openai_effort,
         debug_log_path=codex_log,
         fallback_api_key=fallback_api_key,
+        network_access=planner_config.codex_network_access,
     )
     botference = Botference(
         claude=claude, codex=codex,
