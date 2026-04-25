@@ -517,7 +517,7 @@ python3 scripts/update_loc_badge.py
 |----------|---------|
 | `BOTFERENCE_HOME` | Path to this framework (auto-detected) |
 | `ANTHROPIC_MODEL` | Global model override (e.g. `claude-sonnet-4-6`) |
-| `OPENAI_MODEL` | Codex participant model (default: `gpt-5.4`) |
+| `OPENAI_MODEL` | Codex participant model (default: `gpt-5.5`) |
 | `OPENAI_REASONING_EFFORT` | Codex participant reasoning effort for planner sessions (default: `high`) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
 | `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |

@@ -270,7 +270,7 @@ while true; do
     if $BOTFERENCE_MODE; then
       CLAUDE_MODEL_RESOLVED=$(resolve_model "plan")
       resolve_model_and_effort "$CLAUDE_MODEL_RESOLVED" "plan"
-      OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.4}"
+      OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.5}"
       OPENAI_REASONING_EFFORT="${OPENAI_REASONING_EFFORT:-high}"
 
       if [ -n "$PROMPT_FILE" ]; then

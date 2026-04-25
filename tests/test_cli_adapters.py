@@ -686,6 +686,14 @@ class TestCommandConstruction:
         idx = cmd.index("-c")
         assert cmd[idx + 1] == 'model_reasoning_effort="high"'
 
+    def test_codex_probe_cmd_uses_explicit_model_and_read_only_sandbox(self):
+        x = CodexAdapter(model="gpt-5-latest", cwd="/repo/botference")
+        cmd = x._build_probe_cmd("gpt-5.5")
+        assert cmd[:2] == ["codex", "exec"]
+        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+        assert cmd[cmd.index("--cd") + 1] == "/repo/botference"
+        assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
+
     def test_codex_resume_cmd_includes_cd_when_configured(self):
         x = CodexAdapter(cwd="/repo/botference")
         x.thread_id = "tid-abc"
@@ -807,6 +815,15 @@ class TestCommandConstruction:
         idx = cmd.index("sandbox_workspace_write.network_access=true")
         assert cmd[idx - 1] == "-c"
 
+    def test_codex_set_model_resets_alias_resolution_state(self):
+        x = CodexAdapter(model="gpt-5-latest")
+        x._model_resolution_attempted = True
+        x.model = "gpt-5.4"
+        x.set_model("o3")
+        assert x.requested_model == "o3"
+        assert x.model == "o3"
+        assert x._model_resolution_attempted is False
+
 # ── Error paths ──────────────────────────────────────────────
 
 
@@ -854,7 +871,7 @@ class TestErrorPaths:
 class TestRawOutputCapture:
     def test_stderr_appears_in_raw_output(self):
         async def _test():
-            adapter = CodexAdapter()
+            adapter = CodexAdapter(model="gpt-5.4")
 
             mock_proc = AsyncMock()
             mock_proc.returncode = 0
@@ -877,10 +894,55 @@ class TestRawOutputCapture:
 
         asyncio.run(_test())
 
+
+class TestCodexModelAliasResolution:
+    def test_gpt_5_latest_uses_gpt_5_5_when_probe_succeeds(self):
+        async def _test():
+            adapter = CodexAdapter(model="gpt-5-latest")
+            adapter._run_once = AsyncMock(side_effect=[
+                AdapterResponse(text="OK", exit_code=0),
+                AdapterResponse(text="done", exit_code=0, session_id="t1"),
+            ])
+
+            resp = await adapter.send("test")
+
+            assert resp.text == "done"
+            assert adapter.model == "gpt-5.5"
+            assert adapter._run_once.await_count == 2
+            probe_cmd = adapter._run_once.await_args_list[0].args[0]
+            send_cmd = adapter._run_once.await_args_list[1].args[0]
+            assert probe_cmd[probe_cmd.index("-m") + 1] == "gpt-5.5"
+            assert send_cmd[send_cmd.index("-m") + 1] == "gpt-5.5"
+
+        asyncio.run(_test())
+
+    def test_gpt_5_latest_falls_back_to_gpt_5_4_when_probe_fails(self):
+        async def _test():
+            adapter = CodexAdapter(model="gpt-5-latest")
+            adapter._run_once = AsyncMock(side_effect=[
+                AdapterResponse(text="Error: model unavailable", exit_code=1),
+                AdapterResponse(text="OK", exit_code=0),
+                AdapterResponse(text="done", exit_code=0, session_id="t1"),
+            ])
+
+            resp = await adapter.send("test")
+
+            assert resp.text == "done"
+            assert adapter.model == "gpt-5.4"
+            assert adapter._run_once.await_count == 3
+            first_probe = adapter._run_once.await_args_list[0].args[0]
+            second_probe = adapter._run_once.await_args_list[1].args[0]
+            send_cmd = adapter._run_once.await_args_list[2].args[0]
+            assert first_probe[first_probe.index("-m") + 1] == "gpt-5.5"
+            assert second_probe[second_probe.index("-m") + 1] == "gpt-5.4"
+            assert send_cmd[send_cmd.index("-m") + 1] == "gpt-5.4"
+
+        asyncio.run(_test())
+
     def test_non_json_stdout_in_raw_output(self):
         """Non-JSON stdout lines should appear in raw_output for debugging."""
         async def _test():
-            adapter = CodexAdapter()
+            adapter = CodexAdapter(model="gpt-5.4")
 
             mock_proc = AsyncMock()
             mock_proc.returncode = 0

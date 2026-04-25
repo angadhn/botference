@@ -1510,7 +1510,10 @@ class Botference:
             )
             await self._relay_model(target, ui, new_model=value)
             return
-        adapter.model = value
+        if target == "codex" and hasattr(adapter, "set_model"):
+            adapter.set_model(value)
+        else:
+            adapter.model = value
         self._add_room_entry(
             ui, "system",
             f"{target} model → {value} (will apply when the participant starts)",
@@ -1658,7 +1661,10 @@ class Botference:
         adapter = self.claude if model == "claude" else self.codex
         model_changed = False
         if new_model is not None and new_model != adapter.model:
-            adapter.model = new_model
+            if model == "codex" and hasattr(adapter, "set_model"):
+                adapter.set_model(new_model)
+            else:
+                adapter.model = new_model
             model_changed = True
 
         # Relay bootstrap is in-process only. Clear any prior failure artifact,
@@ -2666,7 +2672,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="botference mode")
     parser.add_argument("--anthropic-model", default="claude-sonnet-4-6")
     parser.add_argument("--claude-effort", default="")
-    parser.add_argument("--openai-model", default="gpt-5.4")
+    parser.add_argument("--openai-model", default="gpt-5.5")
     parser.add_argument("--openai-effort", default="")
     parser.add_argument("--system-prompt", required=True)
     parser.add_argument("--task", required=True)

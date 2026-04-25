@@ -261,12 +261,22 @@ _CONTEXT_WINDOWS = {
     "claude-opus-4-7": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,
     "claude-haiku-4-5": 200_000,
+    "gpt-5-latest": 272_000,
+    "gpt-5.5": 258_000,
     "gpt-5.4": 272_000,
     "gpt-4o": 128_000,
     "gpt-4o-mini": 128_000,
     "o3": 200_000,
     "o4-mini": 200_000,
 }
+
+_CODEX_MODEL_ALIASES = {
+    # Probe the current Codex/OpenAI path for the newest GPT-5 release we want
+    # to use, but fall back to GPT-5.4 until that model is actually live there.
+    "gpt-5-latest": ("gpt-5.5", "gpt-5.4"),
+}
+
+_CODEX_MODEL_PROBE_PROMPT = "Reply with exactly OK."
 
 _DEFAULT_TIMEOUT = 3600  # seconds
 
@@ -625,7 +635,7 @@ class ClaudeAdapter:
 class CodexAdapter:
     """Wraps `codex exec` with session continuity via thread_id resume."""
 
-    def __init__(self, model: str = "gpt-5.4",
+    def __init__(self, model: str = "gpt-5.5",
                  sandbox: str = "read-only",
                  cwd: str = "",
                  add_dirs: Optional[list[str]] = None,
@@ -634,6 +644,7 @@ class CodexAdapter:
                  debug_log_path: str = "",
                  fallback_api_key: str = "",
                  network_access: bool = False):
+        self.requested_model = model
         self.model = model
         self.sandbox = sandbox
         self.cwd = cwd
@@ -647,10 +658,17 @@ class CodexAdapter:
         self.debug_log_path = debug_log_path
         self.fallback_api_key = fallback_api_key
         self._using_api_key: bool = False
+        self._model_resolution_attempted = False
         self.thread_id: str = ""
         self._last_cumulative_input_tokens: int = 0
         self._last_cumulative_cached_input_tokens: int = 0
         self._last_cumulative_output_tokens: int = 0
+
+    def set_model(self, model: str) -> None:
+        """Update the requested model and clear any cached alias resolution."""
+        self.requested_model = model
+        self.model = model
+        self._model_resolution_attempted = False
 
     def _build_send_cmd(self, prompt: str) -> list:
         cmd = ["codex", "exec",
@@ -668,6 +686,20 @@ class CodexAdapter:
         if self.network_access:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         cmd.append(prompt)
+        return cmd
+
+    def _build_probe_cmd(self, model: str) -> list:
+        cmd = [
+            "codex", "exec",
+            "--sandbox", "read-only",
+            "--skip-git-repo-check",
+            "--json",
+        ]
+        if self.cwd:
+            cmd += ["--cd", self.cwd]
+        for path in self.add_dirs:
+            cmd += ["--add-dir", path]
+        cmd += ["-m", model, _CODEX_MODEL_PROBE_PROMPT]
         return cmd
 
     def _build_resume_cmd(self, message: str) -> list:
@@ -688,8 +720,42 @@ class CodexAdapter:
         cmd.append(message)
         return cmd
 
+    async def _probe_model(self, model: str) -> bool:
+        probe = await self._run_once(self._build_probe_cmd(model), isolated=True)
+        if probe.exit_code != 0:
+            return False
+        return not probe.text.lstrip().lower().startswith("error:")
+
+    async def _resolve_model_alias(self) -> None:
+        if self._model_resolution_attempted:
+            return
+        self._model_resolution_attempted = True
+
+        requested = self.requested_model or self.model
+        candidates = _CODEX_MODEL_ALIASES.get(requested)
+        if not candidates:
+            self.model = requested
+            return
+
+        for candidate in candidates:
+            if await self._probe_model(candidate):
+                self.model = candidate
+                log.info("Resolved Codex model alias %s -> %s", requested, candidate)
+                return
+
+        # Fall back to the last candidate so the real send still runs on the
+        # most conservative supported model if the probes fail for non-model
+        # reasons (for example, auth or transient CLI issues).
+        self.model = candidates[-1]
+        log.warning(
+            "Failed to verify any Codex model candidate for %s; defaulting to %s",
+            requested,
+            self.model,
+        )
+
     async def send(self, prompt: str) -> AdapterResponse:
         """First message — creates a new thread."""
+        await self._resolve_model_alias()
         self.thread_id = ""
         self._last_cumulative_input_tokens = 0
         self._last_cumulative_cached_input_tokens = 0
@@ -698,6 +764,7 @@ class CodexAdapter:
 
     async def resume(self, message: str) -> AdapterResponse:
         """Follow-up message in existing thread."""
+        await self._resolve_model_alias()
         if not self.thread_id:
             raise RuntimeError("No thread to resume — call send() first")
         return await self._run(self._build_resume_cmd(message))
