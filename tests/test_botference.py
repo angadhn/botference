@@ -1493,6 +1493,43 @@ class TestInitialPromptSections:
         assert "--- Task ---" in prompt
         assert "Build a thing" in prompt
 
+    def test_build_initial_prompt_includes_project_skills(self, tmp_path):
+        skill_dir = tmp_path / ".agents" / "skills" / "grill-me"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: grill-me\n"
+            "description: Stress-test a plan.\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        paths = BotferencePaths(
+            botference_home=tmp_path,
+            project_root=tmp_path,
+            project_dir=tmp_path,
+            work_dir=work_dir,
+            build_dir=tmp_path,
+            archive_dir=archive_dir,
+        )
+        c = Botference(
+            claude=MockAdapter(),
+            codex=MockAdapter(),
+            system_prompt="",
+            task="",
+            paths=paths,
+        )
+
+        prompt = c._build_initial_prompt("codex")
+
+        assert "--- Project Skills ---" in prompt
+        assert "grill-me: Stress-test a plan." in prompt
+        assert str(skill_path.resolve()) in prompt
+
 
 # ── CLI planning mode routing (lib/config.sh) ────────────
 

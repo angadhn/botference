@@ -11,6 +11,8 @@ Layered prompt composition (per plan Prompt Composition):
 
 from __future__ import annotations
 
+from pathlib import Path
+
 # -- Footer schema ----------------------------------------------------------
 
 FOOTER_SCHEMA = (
@@ -21,12 +23,82 @@ FOOTER_SCHEMA = (
     '"summary": "one-line state update"}'
 )
 
+# -- Skills -----------------------------------------------------------------
+
+_SKILL_DIRS_BY_MODEL = {
+    "claude": (".claude/skills", ".agents/skills"),
+    "codex": (".agents/skills", ".claude/skills"),
+}
+
+
+def _frontmatter_fields(path: Path) -> dict[str, str]:
+    """Parse the small SKILL.md frontmatter subset used for discovery."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+
+    fields: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = key.strip()
+        if key in {"name", "description"}:
+            fields[key] = value.strip().strip("'\"")
+    return fields
+
+
+def project_skill_context(model: str, roots: list[str | Path]) -> str:
+    """Return prompt text listing repo-local skills available to a model."""
+    model_key = model.lower()
+    skill_dirs = _SKILL_DIRS_BY_MODEL.get(
+        model_key,
+        (".agents/skills", ".claude/skills"),
+    )
+    seen: set[str] = set()
+    entries: list[tuple[str, str, Path]] = []
+
+    for root in roots:
+        root_path = Path(root).resolve()
+        for skill_dir in skill_dirs:
+            base = root_path / skill_dir
+            if not base.is_dir():
+                continue
+            for skill_md in sorted(base.glob("*/SKILL.md")):
+                fields = _frontmatter_fields(skill_md)
+                name = fields.get("name") or skill_md.parent.name
+                if name in seen:
+                    continue
+                seen.add(name)
+                entries.append((name, fields.get("description", ""), skill_md))
+
+    if not entries:
+        return ""
+
+    lines = [
+        "--- Project Skills ---",
+        "Repo-local skills are available. When the user explicitly names a skill "
+        "or their request matches a skill description, read that SKILL.md before "
+        "responding and follow it for the current turn.",
+    ]
+    for name, description, path in entries:
+        detail = f": {description}" if description else ""
+        lines.append(f"- {name}{detail} Read `{path}`.")
+    return "\n".join(lines)
+
+
 # -- Room role --------------------------------------------------------------
 
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."
 
 
-def room_preamble(name: str, other: str, writable_roots: str) -> str:
+def room_preamble(name: str, other: str, writable_roots: str = "(unspecified)") -> str:
     """Shared planning room context for model initialization."""
     return (
         f"You are {name} in a shared planning room with {other} "

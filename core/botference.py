@@ -44,6 +44,7 @@ from room_prompts import (
     reviewer_preamble,
     revision_from_plan_preamble,
     room_preamble,
+    project_skill_context,
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
@@ -2114,6 +2115,12 @@ class Botference:
         name = model.capitalize()
         other = "Codex" if model == "claude" else "Claude"
         parts = [room_preamble(name, other, self._plan_write_roots_display())]
+        skill_context = project_skill_context(
+            model,
+            [self.paths.project_root, self.paths.botference_home],
+        )
+        if skill_context:
+            parts.append(skill_context)
         if self.system_prompt:
             parts.extend(["--- System Prompt ---", self.system_prompt])
         if self.task:

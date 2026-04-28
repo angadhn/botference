@@ -16,6 +16,7 @@ from room_prompts import (
     caucus_turn,
     checkpoint_preamble,
     finalize_plan_preamble,
+    project_skill_context,
     reviewer_preamble,
     revision_from_plan_preamble,
     room_preamble,
@@ -65,6 +66,46 @@ class TestRoomPreamble:
         b = room_preamble("Codex", "Claude")
         assert "You are Claude" in a
         assert "You are Codex" in b
+
+
+class TestProjectSkillContext:
+    def test_lists_codex_native_project_skills_first(self, tmp_path):
+        skill_dir = tmp_path / ".agents" / "skills" / "grill-me"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: grill-me\n"
+            "description: Stress-test a plan with questions.\n"
+            "---\n\n"
+            "Ask hard questions.\n",
+            encoding="utf-8",
+        )
+
+        result = project_skill_context("codex", [tmp_path])
+
+        assert "--- Project Skills ---" in result
+        assert "grill-me: Stress-test a plan with questions." in result
+        assert str(skill_path.resolve()) in result
+
+    def test_deduplicates_matching_claude_and_codex_skills(self, tmp_path):
+        for base in (".agents", ".claude"):
+            skill_dir = tmp_path / base / "skills" / "grill-me"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: grill-me\n"
+                "description: Stress-test a plan.\n"
+                "---\n",
+                encoding="utf-8",
+            )
+
+        result = project_skill_context("claude", [tmp_path])
+
+        assert result.count("- grill-me:") == 1
+        assert str(
+            (tmp_path / ".claude" / "skills" / "grill-me" / "SKILL.md").resolve()
+        ) in result
 
 
 # -- ROOM_ROLE_SUFFIX -------------------------------------------------------

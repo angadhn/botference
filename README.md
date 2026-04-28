@@ -266,6 +266,17 @@ excerpts still render as code blocks.
 **Typical workflow:** discuss → `/caucus` → `/lead` (or let caucus decide) →
 `/draft [rounds]` → iterate with human comments as needed → `/finalize`.
 
+### Project Skills
+
+Plan-mode participants discover repo-local skills at session start. Add Codex
+skills under `.agents/skills/<skill-name>/SKILL.md` and Claude skills under
+`.claude/skills/<skill-name>/SKILL.md`. When Claude or Codex sees a matching
+request, it is instructed to read the relevant `SKILL.md` before responding.
+
+For shared behavior, keep the same `name` and `description` frontmatter in both
+directories. The built-in `grill-me` skill follows this layout, so prompts like
+"grill me on this plan" can trigger the same workflow for either participant.
+
 ### Relay Semantics
 
 `/relay` is now eager. When you relay `@claude` or `@codex`, botference
@@ -480,6 +491,8 @@ botference/
 ├── core/                # Python modules (orchestrator, TUI, adapters, agent runner)
 ├── prompts/             # Dispatcher prompts for plan and build modes
 ├── .claude/agents/      # Agent definitions (plan, coder, orchestrator, etc.)
+├── .claude/skills/      # Claude Code repo-local skills
+├── .agents/skills/      # Codex repo-local skills
 ├── lib/                 # Shell libraries (config, detection, monitoring, post-run)
 ├── tools/               # Python tool implementations (MCP server, file ops, search, etc.)
 ├── scripts/             # Utility scripts (archive, evaluation, usage extraction)
