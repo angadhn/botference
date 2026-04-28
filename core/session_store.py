@@ -56,10 +56,13 @@ def _default_title(payload: dict[str, Any]) -> str:
 
 
 def _display_title(payload: dict[str, Any]) -> str:
-    title = str(
-        payload.get("custom_title") or payload.get("title") or ""
-    ).strip()
-    return title or _default_title(payload)
+    custom_title = str(payload.get("custom_title") or "").strip()
+    if custom_title:
+        return custom_title
+    title = str(payload.get("title") or "").strip()
+    if title and title != "Untitled session":
+        return title
+    return _default_title(payload)
 
 
 @dataclass(frozen=True)

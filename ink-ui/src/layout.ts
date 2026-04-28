@@ -1206,12 +1206,20 @@ function classifyTextLine(
   endsToolBlock?: boolean;
 } {
   const trimmed = rawLine.trimStart();
-  const isToolInvocation = /^> /.test(trimmed);
+  const isQuotedLine = /^> /.test(trimmed);
+  const isToolInvocation = (
+    /^> (?:Read|Glob|Grep|Bash|WebSearch|WebFetch|Edit|MultiEdit|Write|Shell)\b/
+      .test(trimmed)
+  );
   const isToolSummaryHeader = trimmed === "Explored";
   const isToolSummaryLine = /^[├└│]/.test(trimmed);
 
   if (isToolInvocation) {
     return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
+  }
+
+  if (isQuotedLine) {
+    return { bodyColor: "white", bodyBold: false };
   }
 
   if (isToolSummaryHeader) {

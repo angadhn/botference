@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -411,6 +412,20 @@ class MockAdapter:
         return 0
 
 
+class SideEffectAdapter(MockAdapter):
+    def __init__(self, responses: Optional[list[AdapterResponse]], side_effect):
+        super().__init__(responses)
+        self._side_effect = side_effect
+
+    async def send(self, prompt: str) -> AdapterResponse:
+        self._side_effect()
+        return await super().send(prompt)
+
+    async def resume(self, message: str) -> AdapterResponse:
+        self._side_effect()
+        return await super().resume(message)
+
+
 @dataclass
 class MockUI:
     """Collects all UI calls for assertions."""
@@ -725,6 +740,51 @@ class TestBotferenceMessageRouting:
         explored_blocks = ui.room_blocks[explored_index]
         assert explored_blocks is not None
         assert any(block["type"] == "diff" for block in explored_blocks)
+
+    async def test_codex_worktree_changes_render_as_diff_blocks(self, tmp_path):
+        subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+        target = tmp_path / "app.txt"
+        target.write_text("old\n", encoding="utf-8")
+        subprocess.run(["git", "add", "app.txt"], cwd=tmp_path, check=True)
+
+        def edit_file():
+            target.write_text("new\n", encoding="utf-8")
+
+        codex = SideEffectAdapter([_ok("Updated it")], edit_file)
+        claude = MockAdapter([_ok("unused")])
+        ui = MockUI()
+        paths = BotferencePaths(
+            botference_home=tmp_path,
+            project_root=tmp_path,
+            project_dir=tmp_path,
+            work_dir=tmp_path,
+            build_dir=tmp_path,
+            archive_dir=tmp_path,
+        )
+        c = Botference(
+            claude=claude,
+            codex=codex,
+            system_prompt="",
+            task="",
+            paths=paths,
+        )
+
+        await c.handle_input("@codex update app", ui)
+
+        explored_index = next(
+            i for i, (_, text) in enumerate(ui.room_entries) if text.startswith("Explored")
+        )
+        explored_blocks = ui.room_blocks[explored_index]
+        assert explored_blocks is not None
+        assert any(block["type"] == "diff" for block in explored_blocks)
+        diff_lines = [
+            line
+            for block in explored_blocks
+            if block["type"] == "diff"
+            for line in block["lines"]
+        ]
+        assert "-old" in diff_lines
+        assert "+new" in diff_lines
 
 
 @pytest.mark.asyncio
@@ -1160,6 +1220,25 @@ class TestBotferenceResume:
         assert resumed.session_id == original.session_id
         assert resumed.custom_title == "checkout migration"
         assert any("checkout migration" in text for _, text in resumed_ui.room_entries)
+
+    async def test_resume_list_generates_title_for_unnamed_session(self, tmp_path):
+        original, _, _, original_ui = _make_botference(
+            claude_responses=[_ok("first reply")],
+            tmp_path=tmp_path,
+        )
+        await original.handle_input("@claude design the checkout flow", original_ui)
+        session_path = tmp_path / "work" / "sessions" / f"{original.session_id}.json"
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        payload["custom_title"] = ""
+        payload["title"] = "Untitled session"
+        session_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        resumed, _, _, resumed_ui = _make_botference(tmp_path=tmp_path)
+        await resumed.handle_input("/resume", resumed_ui)
+
+        listing = "\n".join(text for _, text in resumed_ui.room_entries)
+        assert "design the checkout flow" in listing
+        assert "Untitled session" not in listing
 
     async def test_resume_requires_fresh_controller(self, tmp_path):
         c, _, _, ui = _make_botference(

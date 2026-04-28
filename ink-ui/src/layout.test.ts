@@ -191,6 +191,13 @@ describe("preRenderLines", () => {
     assert.equal(lines[3]!.bodyColor, "green");
   });
 
+  it("renders markdown blockquotes with brighter contrast", () => {
+    const entries = [{ speaker: "claude", text: "> This is quoted context" }];
+    const lines = preRenderLines(entries, 40);
+    assert.equal(lines[0]!.bodyColor, "white");
+    assert.equal(lines[0]!.bodyBold, false);
+  });
+
   it("renders explored summaries as a muted tree block", () => {
     const entries = [{ speaker: "claude", text: "Explored\n├ Read botference\n└ Search ctrl+o in src" }];
     const lines = preRenderLines(entries, 60);

@@ -176,6 +176,7 @@ _RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex)$", re.IGNORECASE)
 _RELAY_TARGET_RE = re.compile(r"^@?(claude|codex)$", re.IGNORECASE)
 
 _SESSION_TITLE_MAX = 80
+_CODEX_DIFF_PREVIEW_LIMIT = 120_000
 
 # Commands that require a @target argument, expanded into @claude/@codex variants
 _TARGETED_COMMANDS = ("/lead", "/relay", "/tag", "/model", "/effort")
@@ -491,6 +492,9 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
             file_path = _extract_arg(preview, "file_path")
             return f"Write {_display_path(file_path)}" if file_path else "Write file"
 
+        if name == "Diff":
+            return "Show file changes"
+
         if preview and preview != "(running)":
             return f"{name} {preview}"
 
@@ -606,6 +610,89 @@ def _clean_session_title(text: str) -> str:
     """Normalize a user-facing session title for storage and matching."""
     title = " ".join(text.split()).strip()
     return title[:_SESSION_TITLE_MAX]
+
+
+@dataclass(frozen=True)
+class WorktreeDiffSnapshot:
+    diff_text: str
+    untracked_files: frozenset[str]
+
+
+def _run_git_text(project_root: Path, args: list[str]) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, ValueError):
+        return ""
+    return proc.stdout if proc.returncode in (0, 1) else ""
+
+
+def _worktree_diff_snapshot(project_root: Path) -> WorktreeDiffSnapshot:
+    diff_text = _run_git_text(
+        project_root,
+        ["diff", "--no-ext-diff", "--no-color", "--unified=80", "--"],
+    )
+    raw_untracked = _run_git_text(
+        project_root,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    )
+    untracked = frozenset(path for path in raw_untracked.split("\0") if path)
+    return WorktreeDiffSnapshot(diff_text=diff_text, untracked_files=untracked)
+
+
+def _untracked_file_diff(project_root: Path, rel_path: str) -> str:
+    path = project_root / rel_path
+    if not path.is_file():
+        return ""
+    try:
+        if path.stat().st_size > _CODEX_DIFF_PREVIEW_LIMIT:
+            return ""
+    except OSError:
+        return ""
+    return _run_git_text(
+        project_root,
+        [
+            "diff",
+            "--no-index",
+            "--no-color",
+            "--unified=80",
+            "--",
+            "/dev/null",
+            rel_path,
+        ],
+    )
+
+
+def _codex_worktree_diff_blocks(
+    project_root: Path,
+    before: WorktreeDiffSnapshot,
+) -> list[dict]:
+    after = _worktree_diff_snapshot(project_root)
+    diff_parts: list[str] = []
+    if after.diff_text and after.diff_text != before.diff_text:
+        diff_parts.append(after.diff_text)
+
+    new_untracked = sorted(after.untracked_files - before.untracked_files)
+    for rel_path in new_untracked:
+        text = _untracked_file_diff(project_root, rel_path)
+        if text:
+            diff_parts.append(text)
+
+    if not diff_parts:
+        return []
+
+    diff_text = "\n".join(part.strip("\n") for part in diff_parts)
+    if len(diff_text) > _CODEX_DIFF_PREVIEW_LIMIT:
+        diff_text = (
+            diff_text[:_CODEX_DIFF_PREVIEW_LIMIT]
+            + "\n[diff preview truncated]"
+        )
+    return parse_render_blocks(diff_text)
 
 
 
@@ -2025,6 +2112,11 @@ class Botference:
         self, model: str, message: str, ui: UIPort,
     ) -> Optional[AdapterResponse]:
         adapter = self.claude if model == "claude" else self.codex
+        codex_before_diff = (
+            _worktree_diff_snapshot(self.paths.project_root)
+            if model == "codex"
+            else None
+        )
 
         if model not in self._models_initialized:
             handoff_doc = self._pending_relay_handoffs.get(model)
@@ -2070,6 +2162,20 @@ class Botference:
                 f"{model.capitalize()} hit the write-permission request limit for one turn.",
             )
             return None
+
+        if model == "codex" and codex_before_diff is not None:
+            diff_blocks = _codex_worktree_diff_blocks(
+                self.paths.project_root,
+                codex_before_diff,
+            )
+            if diff_blocks:
+                resp.tool_summaries.append(ToolSummary(
+                    id=f"codex-diff-{len(resp.tool_summaries)}",
+                    name="Diff",
+                    input_preview="",
+                    output_preview="worktree changed",
+                    output_blocks=diff_blocks,
+                ))
 
         tool_display = _tool_summary_display_text(resp.tool_summaries)
         if tool_display:
