@@ -17,6 +17,19 @@ botference build
 `init` is explicit. Botference does not silently create project state on first
 run.
 
+The state directory name defaults to `botference`, but can be changed:
+
+```bash
+botference init --project-dir=spaceship
+botference --project-dir=spaceship plan --ink
+```
+
+Use the same `--project-dir` value on later commands, or set
+`BOTFERENCE_PROJECT_DIR_NAME=spaceship` in the project environment. Slugs may
+contain letters, numbers, hyphens, and underscores. Bare slugs are prefixed, so
+`spaceship` resolves to `botference-spaceship/`; explicit names like
+`botference-spaceship` are accepted as-is.
+
 ## Project Layout
 
 After `botference init`, a project contains:
@@ -48,9 +61,12 @@ The visible directory is intentional:
 - uninstall is simple: remove `botference/`
 - Botference-owned state stays contained instead of leaking into the project root
 
+With a custom directory name, the same layout is created under that name.
+
 ## Policy File
 
-`botference/project.json` is the project-local Botference policy file.
+`botference/project.json` is the project-local Botference policy file. With a
+custom state directory, the policy file lives at `<project-dir>/project.json`.
 
 Current enforced fields:
 

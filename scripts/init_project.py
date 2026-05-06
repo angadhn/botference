@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -61,6 +62,18 @@ def build_project_json(profile: str, project_dir_name: str) -> dict:
     }
 
 
+def valid_project_dir_name(value: str) -> bool:
+    return bool(value) and value not in {".", ".."} and re.fullmatch(r"[A-Za-z0-9_-]+", value) is not None
+
+
+def normalize_project_dir_name(value: str) -> str:
+    if not valid_project_dir_name(value):
+        raise ValueError("project dir must be a slug using letters, numbers, hyphens, or underscores")
+    if value == "botference" or value.startswith(("botference-", "botference_")):
+        return value
+    return f"botference-{value}"
+
+
 def ensure_text(path: Path, text: str) -> None:
     if not path.exists():
         path.write_text(text, encoding="utf-8")
@@ -74,11 +87,17 @@ def ensure_copy(src: Path, dst: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Initialize project-local Botference state.")
     parser.add_argument("--profile", default="vault-drafter")
+    parser.add_argument("--project-dir", default=None, help="Project-local state directory slug/name.")
     args = parser.parse_args()
 
     botference_home = Path(os.environ["BOTFERENCE_HOME"]).resolve()
     project_root = Path(os.environ.get("BOTFERENCE_PROJECT_ROOT", os.getcwd())).resolve()
-    project_dir_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+    raw_project_dir_name = args.project_dir or os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+    try:
+        project_dir_name = normalize_project_dir_name(raw_project_dir_name)
+    except ValueError as exc:
+        print(f"Error: --project-dir {exc}.", file=sys.stderr)
+        return 2
     project_dir = project_root / project_dir_name
 
     if project_dir.exists() and not project_dir.is_dir():

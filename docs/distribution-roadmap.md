@@ -31,7 +31,7 @@ to be stabilized first.
 The brownfield project model comes first:
 
 - one engine install
-- one project-local `botference/` directory per project
+- one project-local state directory per project, defaulting to `botference/`
 - one project-local policy file
 - one consistent permission model across Claude and Codex
 
@@ -62,9 +62,10 @@ This phase does not attempt to:
 When packaging does happen later, the project contract should stay the same:
 
 - users still run `botference`
-- projects still keep local state under `botference/`
+- projects still keep local state under `botference/` by default, with an
+  explicit custom directory option
 - uninstall still means removing the installed command and deleting
-  `project-root/botference/`
+  the project-local state directory
 
 That is the main reason the current implementation is being shaped around the
 global-command model now.

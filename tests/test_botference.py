@@ -1625,7 +1625,8 @@ def _shell_parse_loop_args(*args: str) -> dict[str, str]:
         'echo "LOOP_MODE=$LOOP_MODE" && '
         'echo "PROMPT_FILE=$PROMPT_FILE" && '
         'echo "BOTFERENCE_MODE=$BOTFERENCE_MODE" && '
-        'echo "INIT_PROFILE=$INIT_PROFILE"'
+        'echo "INIT_PROFILE=$INIT_PROFILE" && '
+        'echo "BOTFERENCE_PROJECT_DIR_NAME=$BOTFERENCE_PROJECT_DIR_NAME"'
     )
     result = subprocess.run(
         ["bash", "-c", cmd],
@@ -1686,6 +1687,17 @@ class TestPlanningModeRouting:
         assert init["BOTFERENCE_MODE"] == "false"
         assert init["INIT_PROFILE"] == "greenfield-app"
 
+    def test_parse_loop_args_supports_project_dir_option(self):
+        init = _shell_parse_loop_args("init", "--project-dir=spaceship")
+        assert init["BOTFERENCE_PROJECT_DIR_NAME"] == "botference-spaceship"
+
+        plan = _shell_parse_loop_args("--project-dir", "space_ship-2", "plan")
+        assert plan["LOOP_MODE"] == "plan"
+        assert plan["BOTFERENCE_PROJECT_DIR_NAME"] == "botference-space_ship-2"
+
+        explicit = _shell_parse_loop_args("init", "--project-dir=botference-spaceship")
+        assert explicit["BOTFERENCE_PROJECT_DIR_NAME"] == "botference-spaceship"
+
     def test_interactive_plan_mode_helper(self):
         assert _shell_eval_config("plan")["INTERACTIVE_PLAN"] == "true"
         assert _shell_eval_config("research-plan")["INTERACTIVE_PLAN"] == "true"
@@ -1726,6 +1738,29 @@ class TestInitModeLauncher:
         assert project_json["modes"]["build"] is True
         assert project_json["write_roots"]["plan"] == ["botference"]
         assert project_json["write_roots"]["build"] == ["botference"]
+
+    def test_botference_init_supports_custom_project_dir(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+
+        result = subprocess.run(
+            [str(repo_root / "botference"), "init", "--project-dir=spaceship"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "BOTFERENCE_HOME": str(repo_root),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        project_dir = tmp_path / "botference-spaceship"
+        assert project_dir.is_dir()
+        assert not (tmp_path / "botference").exists()
+        project_json = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
+        assert project_json["write_roots"]["plan"] == ["botference-spaceship"]
+        assert project_json["write_roots"]["build"] == ["botference-spaceship"]
 
 
 class TestArchiveModeLauncher:
@@ -2048,7 +2083,8 @@ validate_project_agents
 
     def test_init_project_uses_custom_project_dir_name(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
-        custom_dir = "state"
+        custom_dir = "space_ship-2"
+        expected_dir = "botference-space_ship-2"
 
         result = subprocess.run(
             [sys.executable, str(repo_root / "scripts" / "init_project.py"), "--profile", "vault-drafter"],
@@ -2065,11 +2101,11 @@ validate_project_agents
         )
 
         assert result.returncode == 0, result.stderr
-        project_dir = tmp_path / custom_dir
+        project_dir = tmp_path / expected_dir
         assert project_dir.is_dir()
         policy = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
-        assert policy["write_roots"]["plan"] == [custom_dir]
-        assert policy["write_roots"]["build"] == [custom_dir]
+        assert policy["write_roots"]["plan"] == [expected_dir]
+        assert policy["write_roots"]["build"] == [expected_dir]
 
     def test_non_git_snapshot_scopes_to_owned_paths(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent

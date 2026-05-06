@@ -299,6 +299,24 @@ policy_path_allowed() {
 
 # ── CLI argument parsing ─────────────────────────────────────
 
+normalize_project_dir_name() {
+  local raw=${1:-}
+  case "$raw" in
+    ""|"."|".."|*/*|*\\*|*[!A-Za-z0-9_-]*)
+      echo "Error: --project-dir must be a slug using letters, numbers, hyphens, or underscores." >&2
+      return 2
+      ;;
+  esac
+  case "$raw" in
+    botference|botference-*|botference_*)
+      printf '%s\n' "$raw"
+      ;;
+    *)
+      printf 'botference-%s\n' "$raw"
+      ;;
+  esac
+}
+
 parse_loop_args() {
   PIPE_MODE=false
   LOOP_MODE="build"
@@ -312,8 +330,11 @@ parse_loop_args() {
   DEBUG_PANES=false
   UI_MODE="ink"
   INIT_PROFILE="vault-drafter"
+  PROJECT_DIR_NAME="${BOTFERENCE_PROJECT_DIR_NAME:-botference}"
 
-  for arg in "$@"; do
+  while [ "$#" -gt 0 ]; do
+    local arg="$1"
+    shift
     case "$arg" in
       -p) PIPE_MODE=true ;;
       init) LOOP_MODE="init"; PROMPT_FILE=""; BOTFERENCE_MODE=false ;;
@@ -326,6 +347,15 @@ parse_loop_args() {
       --orchestrated) ARCH_MODE="orchestrated" ;;
       --run-tag=*) RUN_TAG="${arg#--run-tag=}" ;;
       --anthropic-model=*) CLI_MODEL="${arg#--anthropic-model=}" ;;
+      --project-dir=*) PROJECT_DIR_NAME="${arg#--project-dir=}" ;;
+      --project-dir)
+        if [ "$#" -eq 0 ]; then
+          echo "Error: --project-dir requires a directory name." >&2
+          return 2
+        fi
+        PROJECT_DIR_NAME="$1"
+        shift
+        ;;
       --claude) BOTFERENCE_MODE=false ;;
       --botference|--group) BOTFERENCE_MODE=true ;;
       --ink) UI_MODE="ink" ;;
@@ -336,6 +366,9 @@ parse_loop_args() {
       [0-9]*) MAX_ITERATIONS="$arg" ;;
     esac
   done
+
+  BOTFERENCE_PROJECT_DIR_NAME=$(normalize_project_dir_name "$PROJECT_DIR_NAME") || return $?
+  export BOTFERENCE_PROJECT_DIR_NAME
 }
 
 show_help() {
@@ -343,7 +376,7 @@ show_help() {
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
 
 Modes:
-  init              Bootstrap a project-local botference/ directory
+  init              Bootstrap a project-local state directory
   plan              Freeform planning room (botference mode by default)
   research-plan     Structured planning with prompts/plan.md (botference mode)
   archive           Archive current thread and restore blank templates
@@ -360,6 +393,7 @@ Options:
   --parallel        Force parallel architecture
   --run-tag=<tag>   Tag for this run (used in logs)
   --profile=<name>  Init profile (default: vault-drafter)
+  --project-dir=<slug>  Project-local state directory slug (default: botference)
   --help, -h        Show this help and exit
 
 Supported models:
@@ -384,11 +418,14 @@ Environment variables:
   OPENAI_MODEL           OpenAI participant model (default: gpt-5.5)
   OPENAI_REASONING_EFFORT Codex participant reasoning effort in planner sessions (default: high)
   BOTFERENCE_HOME          Path to botference framework install
+  BOTFERENCE_PROJECT_DIR_NAME Project-local state directory slug/name (default: botference)
   ANTHROPIC_API_KEY     API key for Anthropic models
   OPENAI_API_KEY        API key for OpenAI models
 
 Examples:
   botference init                                     # Bootstrap botference/ in this project
+  botference init --project-dir=spaceship             # Bootstrap botference-spaceship/ instead
+  botference --project-dir=spaceship plan             # Use botference-spaceship/
   botference plan                                     # Freeform planning room
   botference plan --claude                            # Solo Claude freeform planning
   botference research-plan                            # Structured planning (botference)

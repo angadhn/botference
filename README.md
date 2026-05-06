@@ -108,7 +108,9 @@ From a target project root:
 
 ```bash
 botference init                            # Create project-local botference/ state
+botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
 botference plan                            # Council: you + Claude + Codex (Ink default)
+botference --project-dir=spaceship plan    # Use botference-spaceship/
 botference plan --textual                  # Use the Textual fallback instead
 botference plan --claude                   # Solo Claude (no Codex)
 
@@ -124,6 +126,13 @@ botference --help                          # Full usage + supported models
 After `botference init`, Botference stores its state inside `./botference/` in
 that target project. This is the right workflow for brownfield or greenfield
 projects outside the Botference engine repo.
+
+If you use `--project-dir=<slug>`, pass the same option on later Botference
+commands for that project, or set `BOTFERENCE_PROJECT_DIR_NAME=<slug>` in your
+shell/project environment. Slugs may contain letters, numbers, hyphens, and
+underscores. Bare slugs are prefixed, so `--project-dir=spaceship` resolves to
+`botference-spaceship/`; explicit names like `botference-spaceship` are accepted
+as-is.
 
 If you move the Botference framework itself to a new directory later, target
 projects do not need to be re-initialized. Their local `./botference/` state
@@ -142,6 +151,10 @@ script you actually invoked.
 
 In a project initialized with `botference init`, the local policy lives in
 `botference/project.json`.
+
+With a custom state directory, the policy file moves with it. For example,
+`botference init --project-dir=spaceship` creates
+`botference-spaceship/project.json`.
 
 Default write scope:
 
