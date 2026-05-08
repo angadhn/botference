@@ -21,6 +21,7 @@ from tools.interact import TOOLS as _interact_tools
 from tools.github import TOOLS as _github_tools
 from tools.latex import TOOLS as _latex_tools
 from tools.verify import TOOLS as _verify_tools
+from tools.paper_ledger import TOOLS as _paper_ledger_tools
 
 # ── Merged registry ───────────────────────────────────────────
 
@@ -35,6 +36,7 @@ TOOLS.update(_interact_tools)
 TOOLS.update(_github_tools)
 TOOLS.update(_latex_tools)
 TOOLS.update(_verify_tools)
+TOOLS.update(_paper_ledger_tools)
 
 # ── Per-agent tool registries ─────────────────────────────────
 # Every agent gets the essentials: read_file, write_file, git_commit, list_files, code_search
@@ -49,17 +51,17 @@ SERVER_TOOLS = {
 }
 
 AGENT_TOOLS = {
-    "paper-writer": _ESSENTIALS + ["check_language", "citation_lint", "compile_latex"],
+    "paper-writer": _ESSENTIALS + ["check_language", "citation_lint", "compile_latex", "validate_support_requests"],
     "critic": _ESSENTIALS + ["check_language", "check_journal", "check_figure", "check_claims", "citation_verify_all", "verify_cited_claims", "build_cited_tracker_from_tex"],
-    "scout": _ESSENTIALS + ["web_search", "pdf_metadata", "citation_lookup", "citation_verify", "citation_verify_all", "citation_manifest", "citation_download"],
-    "deep-reader": _ESSENTIALS + ["pdf_metadata", "extract_figure", "view_pdf_page"],
+    "scout": _ESSENTIALS + ["web_search", "pdf_metadata", "citation_lookup", "citation_verify", "citation_verify_all", "citation_manifest", "citation_download", "validate_paper_ledger", "render_paper_ledger_markdown", "validate_support_requests"],
+    "deep-reader": _ESSENTIALS + ["pdf_metadata", "extract_figure", "view_pdf_page", "validate_paper_ledger", "render_paper_ledger_markdown", "validate_support_requests"],
     "research-coder": _ESSENTIALS,
     "figure-stylist": _ESSENTIALS + ["check_figure", "view_pdf_page"],
     "editor": _ESSENTIALS + ["check_claims", "check_language", "citation_lint", "citation_verify_all", "verify_cited_claims", "build_cited_tracker_from_tex"],
     "coherence-reviewer": _ESSENTIALS + ["check_claims", "check_language"],
     "provocateur": _ESSENTIALS + [],
     "synthesizer": _ESSENTIALS + ["citation_lint", "citation_verify_all"],
-    "triage": _ESSENTIALS + ["pdf_metadata", "citation_verify_all"],
+    "triage": _ESSENTIALS + ["pdf_metadata", "citation_verify_all", "validate_paper_ledger", "render_paper_ledger_markdown"],
     "coder": _ESSENTIALS + ["gh"],
     # plan mode uses claude CLI (not botference_agent.py) — no tool registry needed
 }
@@ -195,6 +197,8 @@ def _mutation_policy_violation(name: str, tool_input: dict) -> Optional[str]:
             candidate_paths.append(tool_input["output_dir"])
         if tool_input.get("auto_download") and isinstance(tool_input.get("papers_dir"), str):
             candidate_paths.append(tool_input["papers_dir"])
+    elif name == "render_paper_ledger_markdown" and isinstance(tool_input.get("output_file"), str):
+        candidate_paths.append(tool_input["output_file"])
 
     if not candidate_paths:
         return None

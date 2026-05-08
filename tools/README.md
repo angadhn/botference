@@ -20,6 +20,7 @@ Based on [ghuntley's agent architecture](https://ghuntley.com/agent) ([repo](htt
 | `check_figure.py` | check_figure | Raster/vector figure compliance checks |
 | `citations.py` | citation_lint, citation_lookup, citation_verify, citation_verify_all, citation_manifest | Citation handlers built on `_citation.py` |
 | `claims.py` | check_claims | Cross-ref .tex + evidence-ledger + .bib |
+| `paper_ledger.py` | validate_paper_ledger, render_paper_ledger_markdown, validate_support_requests | Research paper lifecycle and support-request checks |
 | `pdf.py` | pdf_metadata, extract_figure | Inlined from scripts; fitz lazy-imported |
 | `download.py` | citation_download | Unpaywall + SciHub fallback; uses `_citation.manifest_add` |
 | `_citation.py` | *(internal)* | Shared citation functions (17 funcs from former `scripts/citation_tools.py`) |

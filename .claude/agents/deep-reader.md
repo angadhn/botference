@@ -11,6 +11,7 @@ Deep reader — reads PDFs to extract quantitative findings, contradictions, and
 - `AI-generated-outputs/<thread>/scout-corpus/scored_papers.md` — paper grades and scores (replaces triage assignment). Read A-grade papers first, then B-grade if context permits.
 - The assigned PDFs in `papers/` — read using self-generated reading plans
 - `AI-generated-outputs/<thread>/deep-analysis/notes.md` — if resuming, read to know what's already covered
+- `corpus/paper_ledger.jsonl` and `specs/paper-ledger-format.md` — update reader notes provenance as papers are read
 
 ## Operational Guardrails
 
@@ -49,6 +50,10 @@ AI-generated-outputs/<thread>/deep-analysis/
 ├── notes.md           # Full detailed notes (grows across iterations)
 ├── section_map.md     # Proposed paper sections + claims + citations (final iteration only)
 └── reference-figures/ # Extracted figures from source PDFs (notable figures only)
+
+corpus/
+├── paper_ledger.jsonl # reader_notes/status updated after each read
+└── paper_ledger.md    # generated human-readable table
 ```
 
 `notes.md` section headers: Papers Read, Unread Queue, Discovered References, Emerging Synthesis, Open Problems Identified, Figure Opportunities, Extracted Reference Figures.
@@ -65,12 +70,14 @@ Full templates for `notes.md` and `section_map.md`: see `specs/deep-reader-outpu
    b. Check context %
    c. Read high-priority sections in 5-page chunks
    d. Read `specs/deep-reader-output-format.md` (first iteration only) — load notes template. WRITE notes to notes.md immediately after each chunk. Note figure opportunities.
+      Update that paper's `corpus/paper_ledger.jsonl` row after writing notes: set `status` to `read` when complete (or keep `assigned` for partial reads), set `reader_notes` to the notes file path, and set `notes_anchor` to the paper heading used in `notes.md`.
    e. If a notable figure is encountered (key result, comparison chart, or diagram worth adapting), extract it with `extract_figure` (set pages and output_dir to `AI-generated-outputs/<thread>/deep-analysis/reference-figures/`).
       Log the extraction in the "Extracted Reference Figures" section of notes.md.
    f. Read medium-priority sections if context permits
 5. Reference discovery: if context < 30% and new important reference found, note in Discovered References. If multiple gaps accumulate, set up gap-fill request (see below).
-6. Final iteration (all A-grade papers read): produce `section_map.md` + synthesize `report.tex`
-7. Update `checkpoint.md` — replace Knowledge State with deep-reader tracking table, update Next Task
+6. Run `validate_paper_ledger`, then `render_paper_ledger_markdown` before committing.
+7. Final iteration (all A-grade papers read): produce `section_map.md` + synthesize `report.tex`
+8. Update `checkpoint.md` — replace Knowledge State with deep-reader tracking table, update Next Task
 
 ### Gap-Fill Request Protocol
 

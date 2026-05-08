@@ -18,6 +18,7 @@ Maintains voice consistency and cross-reference coherence across all modes.
 - Prior sections: skim **last subsection header + last paragraph only** (for flow continuity, NOT full re-read)
 - `references/cited_tracker.jsonl` — DOIs already cited + which section
 - `checkpoint.md` — current state (Knowledge State table + Next Task). Next Task determines mode + which section.
+- `AI-generated-outputs/<thread>/support_requests.jsonl` — targeted requests for more papers when a claim lacks evidence
 
 **Write-from-outline mode — Iteration 0 (outline building):**
 - `AI-generated-outputs/<thread>/deep-analysis/section_map.md` — proposed sections + claims + citations. **If this file does not exist** (deep-reader yielded before final iteration), build the outline from `notes.md` and `report.tex` alone.
@@ -47,6 +48,7 @@ Maintains voice consistency and cross-reference coherence across all modes.
 - **Review-edits mode:** Accept by default (target ≥80%). Revert only when edits genuinely harm voice, accuracy, or coherence.
 - **Pre-estimate:** ~3-5% per subsection, ~5% reading inputs, ~5% commit gates. Review-edits: ~15% total.
 - **Duplicate DOI check:** Check `cited_tracker.jsonl` before citing. Use "As discussed in Section N.M..." for re-references.
+- **No invented support:** If the notes/outline do not support a claim strongly enough, write a support request instead of adding an unsupported citation.
 - **Commit gates:** Run `check_language` + `citation_lint` on each section before committing.
 
 ## Output per Iteration
@@ -61,6 +63,7 @@ AI-generated-outputs/<thread>/writing/
 ```
 sections/XX-section-name.tex         # The section just written/revised
 references/cited_tracker.jsonl       # Updated with DOIs from this section
+AI-generated-outputs/<thread>/support_requests.jsonl  # Only when more evidence is needed
 checkpoint.md                        # Updated Knowledge State + Next Task
 ```
 
@@ -135,6 +138,7 @@ Full `outline.md` template: see `specs/paper-writer-output-format.md` (read at s
    - Cross-references to other sections where relevant
    - Place figures per outline *(write mode)*
    - Apply only approved changes, preserve paragraph structure where possible *(revise mode)*
+   - If a needed claim lacks adequate support in reader notes, append a row to `AI-generated-outputs/<thread>/support_requests.jsonl` with `request_id`, `requester: "paper-writer"`, `claim`, `needed_evidence`, `status: "open"`, and section context. Run `validate_support_requests`, set `checkpoint.md` Next Task to `GAP-FILL scout — support request <request_id>`, and yield instead of inventing evidence.
 9. Run commit gates: `check_language` on the section, `citation_lint` on references/.
 10. Update `references/cited_tracker.jsonl` with DOIs cited in this section. For each entry, populate the `claim` field with the specific claim the citation supports in this subsection (one sentence, precise).
 11. Update `checkpoint.md` — set Next Task to `STYLE-CHECK critic` (triggers style review of this section)

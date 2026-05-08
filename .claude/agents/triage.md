@@ -9,6 +9,8 @@ Triage — corpus management and reading plan generation. Three responsibilities
 
 - `checkpoint.md` — current state (Knowledge State table + Next Task)
 - `corpus/corpus_index.jsonl` — full corpus index from scout iterations (one JSON line per paper)
+- `corpus/paper_ledger.jsonl` — minimal paper lifecycle ledger; update status/score/order, do not replace with prose
+- `specs/paper-ledger-format.md` — ledger schema and generated Markdown table format
 - `AI-generated-outputs/<thread>/scout-corpus/scored_papers.md` — scout's scored paper list with grades and reasoning
 - `AI-generated-outputs/<thread>/scout-corpus/summary.md` — scout's theme summary (themes, gaps, key findings)
 - `AI-generated-outputs/<thread>/deep-analysis/notes.md` — deep-reader's notes (if exists). Check what's already been read to avoid re-assigning.
@@ -33,7 +35,9 @@ AI-generated-outputs/<thread>/triage/
 └── reading_plan.md            # Prioritized reading plan for deep-reader
 
 corpus/
-└── corpus_index_deduped.jsonl # Deduplicated corpus (original preserved)
+├── corpus_index_deduped.jsonl # Deduplicated corpus (original preserved)
+├── paper_ledger.jsonl         # Updated lifecycle statuses
+└── paper_ledger.md            # Generated human-readable table
 ```
 
 Full templates: see `specs/triage-output-format.md` (read before writing outputs).
@@ -66,14 +70,15 @@ Full templates: see `specs/triage-output-format.md` (read before writing outputs
 7. **Write deduplicated corpus:**
    a. Write `corpus/corpus_index_deduped.jsonl` — deduplicated, with final grades.
    b. Add `triage_status` field to each entry: `assigned` (in reading plan), `read` (already processed), `deferred` (low priority), `unavailable` (no PDF).
-8. Read `specs/triage-output-format.md` — load templates.
-9. **Write outputs:**
+8. Update `corpus/paper_ledger.jsonl` to match the triage decision. Keep the human table minimal by preserving required fields: `paper`, `authors_year_journal`, `score`, `reader_notes`; use optional `status`, `paper_id`, `doi`, and `pdf_path` for provenance. Run `validate_paper_ledger`, then `render_paper_ledger_markdown`.
+9. Read `specs/triage-output-format.md` — load templates.
+10. **Write outputs:**
    a. `triage_report.md` — deduplication results, conflict resolutions, corpus statistics.
    b. `reading_plan.md` — prioritized reading plan for deep-reader.
-10. Update `checkpoint.md`:
+11. Update `checkpoint.md`:
     - Record triage as complete in Knowledge State.
     - Set Next Task to `deep-reader` (with reading plan reference).
-11. Commit all outputs.
+12. Commit all outputs.
 
 ## Commit Gates
 

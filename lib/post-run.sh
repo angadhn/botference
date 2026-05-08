@@ -95,6 +95,66 @@ validate_plan_tdd_structure() {
   return $rc
 }
 
+validate_research_pipeline_outputs() {
+  case "${CURRENT_AGENT:-}" in
+    scout|triage|deep-reader|paper-writer) ;;
+    *) return 0 ;;
+  esac
+
+  if [ "${CURRENT_AGENT:-}" = "paper-writer" ]; then
+    local support_file=""
+    if [ -n "${CURRENT_THREAD:-}" ]; then
+      support_file="AI-generated-outputs/${CURRENT_THREAD}/support_requests.jsonl"
+    fi
+    if [ -n "$support_file" ] && [ -f "$support_file" ]; then
+      local support_report
+      support_report=$(python3 "${BOTFERENCE_HOME}/tools/cli.py" validate_support_requests "{\"support_requests_file\":\"${support_file}\",\"ledger_file\":\"corpus/paper_ledger.jsonl\"}" 2>&1) || {
+        echo "$support_report"
+        return 1
+      }
+      if ! printf '%s\n' "$support_report" | grep -q '\*\*PASS\*\*'; then
+        echo "$support_report"
+        echo "  ✗ Research pipeline gate failed: support requests are invalid"
+        return 1
+      fi
+      echo "  ✓ Research pipeline support requests validated"
+    fi
+    return 0
+  fi
+
+  if [ "${CURRENT_AGENT:-}" = "scout" ] && [ ! -f "corpus/paper_ledger.jsonl" ]; then
+    echo "  (research pipeline paper ledger gate skipped — scout has not created corpus/paper_ledger.jsonl yet)"
+    return 0
+  fi
+
+  local report
+  report=$(python3 "${BOTFERENCE_HOME}/tools/cli.py" validate_paper_ledger '{"ledger_file":"corpus/paper_ledger.jsonl"}' 2>&1) || {
+    echo "$report"
+    return 1
+  }
+
+  if ! printf '%s\n' "$report" | grep -q '\*\*PASS\*\*'; then
+    echo "$report"
+    echo "  ✗ Research pipeline gate failed: corpus/paper_ledger.jsonl is invalid"
+    return 1
+  fi
+
+  local render_report
+  render_report=$(python3 "${BOTFERENCE_HOME}/tools/cli.py" render_paper_ledger_markdown '{"ledger_file":"corpus/paper_ledger.jsonl","output_file":"corpus/paper_ledger.md"}' 2>&1) || {
+    echo "$render_report"
+    return 1
+  }
+
+  if ! printf '%s\n' "$render_report" | grep -q '\*\*PASS\*\*'; then
+    echo "$render_report"
+    echo "  ✗ Research pipeline gate failed: could not render corpus/paper_ledger.md"
+    return 1
+  fi
+
+  echo "  ✓ Research pipeline paper ledger validated"
+  return 0
+}
+
 
 restore_circuit_breaker_state() {
   if [ -f "$CB_FILE" ]; then

@@ -841,6 +841,9 @@ PY
     if ! enforce_build_audit; then
       EXIT_CODE=1
     fi
+    if [ "$EXIT_CODE" -eq 0 ] && ! validate_research_pipeline_outputs; then
+      EXIT_CODE=1
+    fi
   else
     # Interactive: monitor runs in background, agent gets the terminal
     monitor_context "$$" "$ITER_START" "$IGNORE_UNTIL" "$CURRENT_AGENT" &
@@ -893,6 +896,9 @@ PY
     # --- Eval capture ---
     post_iteration
     if ! enforce_build_audit; then
+      EXIT_CODE=1
+    fi
+    if [ "$EXIT_CODE" -eq 0 ] && ! validate_research_pipeline_outputs; then
       EXIT_CODE=1
     fi
   fi

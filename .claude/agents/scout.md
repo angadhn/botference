@@ -13,6 +13,7 @@ Produces scored paper lists, not full reports.
 
 - `checkpoint.md` — current state (Knowledge State table + Next Task). Next Task determines mode.
 - `specs/grading-rubric.md` — scoring formula, anchor tables, grade thresholds, entry format
+- `specs/paper-ledger-format.md` — paper lifecycle ledger schema and human table format
 - Web search results — abstracts and snippets (bulk of work)
 - **Corpus-building:** research questions from `checkpoint.md` Knowledge State
 - **Gap-fill:** gap description from checkpoint's Next Task
@@ -36,7 +37,9 @@ papers/
 └── Author2024_ShortTitle.pdf  # Downloaded A-grade (and open-access B-grade) PDFs
 
 corpus/
-└── corpus_index.jsonl         # Appended with verified paper entries
+├── corpus_index.jsonl         # Appended with verified paper entries
+├── paper_ledger.jsonl         # Minimal lifecycle ledger, source of truth
+└── paper_ledger.md            # Generated human-readable table
 ```
 
 `corpus_index.jsonl` — one line per paper:
@@ -61,9 +64,11 @@ Full templates for `summary.md` and `scored_papers.md`: see `specs/scout-output-
 8. Download A-grade PDFs to `papers/`, B-grade if open-access
 9. Run `pdf_metadata` on each downloaded PDF
 10. Append verified papers to `corpus/corpus_index.jsonl`
-11. Read `specs/scout-output-format.md` — load templates for summary + scored_papers
-12. Write `summary.md` + `scored_papers.md` + `report.bib`. Every `report.bib` entry must include `doi = {10.xxxx/xxxxx}` from the `citation_lookup` result.
-13. Update `checkpoint.md` — replace Knowledge State with current table, update Next Task
+11. Update `corpus/paper_ledger.jsonl` for every discovered/downloaded paper. Required fields: `paper`, `authors_year_journal`, `score`, `reader_notes`. Include `paper_id`, `doi`, `pdf_path`, `status`, and request fields when available. In gap-fill/support mode, use `status: "requested_support"` and `score: null` or `"n/a"` only when the paper was requested for a specific claim; populate `requested_for_claim` or `request_id`.
+12. Run `validate_paper_ledger`, then `render_paper_ledger_markdown` to regenerate `corpus/paper_ledger.md`.
+13. Read `specs/scout-output-format.md` — load templates for summary + scored_papers
+14. Write `summary.md` + `scored_papers.md` + `report.bib`. Every `report.bib` entry must include `doi = {10.xxxx/xxxxx}` from the `citation_lookup` result.
+15. Update `checkpoint.md` — replace Knowledge State with current table, update Next Task
 
 ## Yield
 

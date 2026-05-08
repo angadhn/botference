@@ -12,13 +12,13 @@ Custom workspace agents (in project `.claude/agents/`) override framework agents
 
 | Agent | Role | Tools (beyond essentials) | Upstream → | → Downstream | Assign when… |
 |---|---|---|---|---|---|
-| scout | Search + score papers | pdf_metadata, citation_lookup/verify/verify_all, citation_manifest/download | user/planner | triage | Starting literature search or filling gaps |
-| triage | Dedup corpus, resolve grade conflicts, generate reading plan | pdf_metadata, citation_verify_all | scout | deep-reader | After scout completes a round |
-| deep-reader | Read PDFs, extract claims/data, map sections | pdf_metadata, extract_figure | triage | critic, provocateur, synthesizer | After triage produces a reading plan |
+| scout | Search + score papers | pdf_metadata, citation_lookup/verify/verify_all, citation_manifest/download, validate_paper_ledger, render_paper_ledger_markdown, validate_support_requests | user/planner | triage | Starting literature search or filling gaps |
+| triage | Dedup corpus, resolve grade conflicts, generate reading plan | pdf_metadata, citation_verify_all, validate_paper_ledger, render_paper_ledger_markdown | scout | deep-reader | After scout completes a round |
+| deep-reader | Read PDFs, extract claims/data, map sections | pdf_metadata, extract_figure, validate_paper_ledger, render_paper_ledger_markdown, validate_support_requests | triage | critic, provocateur, synthesizer | After triage produces a reading plan |
 | critic | Assess structure; check style/journal/figure compliance; propose figures | check_language, check_journal, check_figure, check_claims, citation_verify_all | deep-reader (survey), paper-writer (STYLE-CHECK), editor (compliance) | provocateur, synthesizer (survey); paper-writer (STYLE-CHECK); research-coder (FIGURE-PROPOSAL) | After deep-reader finishes, or after each paper-writer section |
 | provocateur | Stress-test: negative space, inverted assumptions, cross-domain bridges | — | deep-reader + critic | synthesizer | After critic's survey assessment |
 | synthesizer | Merge findings into synthesis narrative + outline | citation_lint, citation_verify_all | deep-reader + critic + provocateur | paper-writer | After all analysis agents complete |
-| paper-writer | Write/revise sections; review editor changes | check_language, citation_lint | synthesizer (write), critic (revise), editor (REVIEW-EDITS) | critic (STYLE-CHECK), editor | When outline is ready or revisions approved |
+| paper-writer | Write/revise sections; review editor changes | check_language, citation_lint, validate_support_requests | synthesizer (write), critic (revise), editor (REVIEW-EDITS) | critic (STYLE-CHECK), editor | When outline is ready or revisions approved |
 | editor | Substantiated edits to .tex with evidence backing | check_claims, check_language, citation_lint, citation_verify_all | paper-writer | coherence-reviewer, paper-writer (REVIEW-EDITS) | After paper-writer completes a section |
 | coherence-reviewer | Post-editing: promise-delivery, terminology, contradictions, novelty claims | check_claims, check_language | editor | editor (fixes) | After all sections are edited |
 | research-coder | Analysis scripts, simulations, figures from data | — | critic (FIGURE-PROPOSAL), planner | figure-stylist (figures), paper-writer (data) | When figures proposed or data analysis needed |
