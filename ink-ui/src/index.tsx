@@ -1,10 +1,14 @@
 import React from "react";
 import { render } from "ink";
 import { Transform } from "node:stream";
-import { rmSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import App from "./App";
+import {
+  DISABLE_MOUSE_TRACKING,
+  ENABLE_BRACKETED_PASTE,
+  ENABLE_MOUSE_TRACKING,
+  ENTER_ALT_SCREEN,
+  restoreTerminalSync,
+} from "./v2/terminalModes.js";
 
 // ── Mouse scroll support via stdin filter ──────────────────
 // Strip SGR 1006 mouse sequences from stdin before Ink sees them.
@@ -74,8 +78,12 @@ let mouseTrackingEnabled = false;
 export function setMouseTrackingEnabled(enabled: boolean) {
   if (!process.stdout.isTTY || mouseTrackingEnabled === enabled) return;
   mouseTrackingEnabled = enabled;
-  process.stdout.write(enabled ? "\x1b[?1006h" : "\x1b[?1006l"); // SGR 1006 mouse mode
-  process.stdout.write(enabled ? "\x1b[?1003h" : "\x1b[?1003l"); // Any-event tracking
+  if (enabled) {
+    process.stdout.write(ENABLE_MOUSE_TRACKING);
+  } else {
+    process.stdout.write(DISABLE_MOUSE_TRACKING);
+    mouseTrackingEnabled = false;
+  }
 }
 
 // ── Stdin filter transform ─────────────────────────────────
@@ -190,7 +198,7 @@ Object.defineProperty(stdinFilter, "unref", {
 // Enable terminal modes
 if (process.stdout.isTTY) {
   setMouseTrackingEnabled(true);
-  process.stdout.write("\x1b[?2004h"); // Bracketed paste mode
+  process.stdout.write(ENABLE_BRACKETED_PASTE); // Bracketed paste mode
 }
 process.stdin.pipe(stdinFilter);
 
@@ -248,20 +256,16 @@ function parseArgs(argv: string[]) {
 const useAltScreen = !process.env["INK_DEBUG"];
 
 if (useAltScreen) {
-  process.stdout.write("\x1b[?1049h");
+  process.stdout.write(ENTER_ALT_SCREEN);
 }
 
+let didRestoreTerminal = false;
+
 function restoreTerminal() {
-  if (process.stdout.isTTY) {
-    setMouseTrackingEnabled(false);
-    process.stdout.write("\x1b[?2004l"); // Disable bracketed paste
-  }
-  if (useAltScreen) {
-    process.stdout.write("\x1b[?1049l");
-  }
-  // Clean up staged image attachments
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-  rmSync(resolve(repoRoot, ".botference", "tmp"), { recursive: true, force: true });
+  if (didRestoreTerminal) return;
+  didRestoreTerminal = true;
+  mouseTrackingEnabled = false;
+  restoreTerminalSync({ useAltScreen });
 }
 
 // Guarantee terminal modes are restored on ANY exit path.

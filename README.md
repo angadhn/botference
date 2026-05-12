@@ -347,8 +347,11 @@ input field at the bottom.
 - **Ink v2 text selection:** run `botference plan --ink-v2` to use
   app-level mouse selection. Dragging inside a pane selects text from that pane
   only, keeps mouse scrolling enabled, highlights the selected range, and
-  copies the selected plain text on release. On macOS this uses `pbcopy`;
-  other terminals use OSC 52 as a fallback.
+  copies the selected plain text on release. On local macOS this uses
+  `pbcopy`; in tmux it also tries `tmux load-buffer` and an OSC 52 passthrough;
+  otherwise it writes OSC 52 as a best-effort fallback. Copy diagnostics are
+  appended to `.botference/ink-v2.log` unless `BOTFERENCE_INK_LOG=0` is set.
+  Set `BOTFERENCE_INK_LOG=/path/to/log` to put those diagnostics elsewhere.
 - **Copying text in the Ink backend:** press **Ctrl+Y** to enter mouse
   selection mode, then drag-select text with the mouse/trackpad and copy using
   your terminal's normal shortcut (for example **Cmd+C** on macOS). Press
@@ -363,6 +366,14 @@ input field at the bottom.
   **Tab** to switch between `Allow once` and `Deny`, then press **Enter**.
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
+
+Ink v2 intentionally keeps Botference's existing Ink renderer and bridge
+protocol rather than vendoring the larger CC custom renderer. The v2 selection
+code is isolated under `ink-ui/src/v2/`: it keeps a pane-local representation of
+rendered lines for hit-testing, clamps drags to the starting pane, and borrows
+the CC renderer's terminal lessons for clipboard routing and exit cleanup. A
+full screen-buffer renderer remains deferred unless the lighter pane-line layer
+proves insufficient.
 
 ![Ink input field and status line — typing @claude while lead is @codex](docs/images/ink-input-status.png)
 

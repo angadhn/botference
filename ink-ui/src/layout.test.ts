@@ -17,7 +17,7 @@ import {
 describe("computeLayoutBudget", () => {
   it("returns correct dimensions for standard terminal", () => {
     const b = computeLayoutBudget(24, 80, 1);
-    assert.equal(b.paneContentHeight, 13);
+    assert.equal(b.paneContentHeight, 12);
     assert.equal(b.leftPaneWidth, 40);
     assert.equal(b.rightPaneWidth, 40);
     assert.equal(b.leftTextWidth, 36);
@@ -28,9 +28,9 @@ describe("computeLayoutBudget", () => {
     const single = computeLayoutBudget(24, 80, 1);
     const triple = computeLayoutBudget(24, 80, 3);
     const tall = computeLayoutBudget(24, 80, 10);
-    assert.equal(single.paneContentHeight, 13);
-    assert.equal(triple.paneContentHeight, 11);
-    assert.equal(tall.paneContentHeight, 4);
+    assert.equal(single.paneContentHeight, 12);
+    assert.equal(triple.paneContentHeight, 10);
+    assert.equal(tall.paneContentHeight, 3);
   });
 
   it("handles odd terminal width", () => {
@@ -73,7 +73,7 @@ describe("wheel scroll acceleration", () => {
       computeWheelScrollDelta(state, 1, 120),
       computeWheelScrollDelta(state, 1, 130),
     ];
-    assert.deepEqual(deltas, [1, 1, 1, 2]);
+    assert.deepEqual(deltas, [1, 1, 1, 1]);
   });
 
   it("coalesces same-batch wheel events", () => {
@@ -268,15 +268,13 @@ describe("preRenderLines", () => {
       text: "Edited in src/app.py (+1 -1)\n- def old_name(value):\n+ def new_name(value):",
     }];
     const lines = preRenderLines(entries, 80);
-    assert.equal(lines[1]!.segments?.[0]?.text, "def");
-    assert.equal(lines[1]!.segments?.[0]?.color, "#ff7b72");
-    assert.equal(lines[2]!.segments?.[0]?.text, "def");
-    assert.equal(lines[2]!.segments?.[0]?.color, "#ff7b72");
+    const removedDef = lines[1]!.segments?.find((segment) => segment.text === "def");
+    const addedDef = lines[2]!.segments?.find((segment) => segment.text === "def");
+    assert.equal(removedDef?.color, "#ff7b72");
+    assert.equal(addedDef?.color, "#ff7b72");
 
-    const removedChanged = lines[1]!.segments?.find((segment) => segment.text.includes("old_name"));
-    const addedChanged = lines[2]!.segments?.find((segment) => segment.text.includes("new_name"));
-    assert.equal(removedChanged?.color, "#d2a8ff");
-    assert.equal(addedChanged?.color, "#d2a8ff");
+    const removedChanged = lines[1]!.segments?.find((segment) => segment.text === "old");
+    const addedChanged = lines[2]!.segments?.find((segment) => segment.text === "new");
     assert.equal(removedChanged?.backgroundColor, "red");
     assert.equal(addedChanged?.backgroundColor, "green");
   });

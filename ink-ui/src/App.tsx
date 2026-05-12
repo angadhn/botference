@@ -19,7 +19,6 @@ import {
   wrappedLineColToCursor,
   wrapInputLines,
   type FlatLine,
-  type LineSegment,
   type RenderBlock,
 } from "./layout.js";
 import {
@@ -30,6 +29,24 @@ import {
   setMouseTrackingEnabled,
   type MouseEventInfo,
 } from "./index.js";
+import { copyToClipboard } from "./v2/clipboard.js";
+import {
+  buildToolStackText,
+  nextPacedChunkEnd,
+  replaceOrAppendStreamEntry,
+  shouldAppendImmediately,
+  toolEventId,
+  toolPreviewLine,
+  PACED_MESSAGE_INTERVAL_MS,
+} from "./v2/messages.js";
+import {
+  applySelectionHighlight,
+  hitTestPane,
+  selectedTextFromLines,
+  type PaneHit,
+  type PaneName,
+  type PaneSelection,
+} from "./v2/selection.js";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -41,8 +58,6 @@ interface Entry {
   streaming?: boolean;
   restored?: boolean;
 }
-
-type PaneName = "room" | "caucus";
 
 interface StatusData {
   mode: string;
@@ -66,21 +81,6 @@ interface BridgeArgs {
   debugPanes: boolean;
   claudeEffort: string;
   inkV2: boolean;
-}
-
-interface PaneSelection {
-  pane: PaneName;
-  anchorLine: number;
-  anchorCol: number;
-  focusLine: number;
-  focusCol: number;
-  dragging: boolean;
-}
-
-interface PaneHit {
-  pane: PaneName;
-  lineIndex: number;
-  col: number;
 }
 
 interface PendingPermission {
@@ -108,10 +108,6 @@ const THEME = {
   statusMuted: "gray",
   ready: "green",
 };
-
-const PACED_MESSAGE_MIN_CHARS = 240;
-const PACED_MESSAGE_INTERVAL_MS = 35;
-const PACED_MESSAGE_CHUNK_CHARS = 48;
 
 type BusyTarget = "claude" | "codex" | "all" | "system" | null;
 type BusySegment = { text: string; color: string; bold?: boolean };
@@ -165,187 +161,6 @@ function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
     }
     return { text: char, color: THEME.statusMuted };
   });
-}
-
-function shouldPaceEntry(speaker: string, text: string): boolean {
-  const normalizedSpeaker = speaker.toLowerCase();
-  return (
-    (normalizedSpeaker === "claude" || normalizedSpeaker === "codex")
-    && text.length >= PACED_MESSAGE_MIN_CHARS
-    && !text.startsWith("Explored\n")
-  );
-}
-
-function nextPacedChunkEnd(text: string, start: number): number {
-  const hardEnd = Math.min(text.length, start + PACED_MESSAGE_CHUNK_CHARS);
-  if (hardEnd >= text.length) return text.length;
-
-  const newline = text.indexOf("\n", start);
-  if (newline !== -1 && newline < hardEnd) return newline + 1;
-
-  for (let index = hardEnd; index > start + 12; index--) {
-    if (/\s/.test(text[index - 1]!)) return index;
-  }
-
-  return hardEnd;
-}
-
-function replaceOrAppendStreamEntry(entries: Entry[], entry: Entry): Entry[] {
-  if (!entry.streamId) return [...entries, entry];
-  const index = entries.findIndex((candidate) => candidate.streamId === entry.streamId);
-  if (index === -1) return [...entries, entry];
-  const next = [...entries];
-  next[index] = entry;
-  return next;
-}
-
-function toolPreviewLine(msg: Record<string, unknown>): string {
-  const name = String(msg.name ?? "tool");
-  const preview = String(
-    msg.output_preview
-    ?? msg.input_preview
-    ?? "",
-  ).replace(/\s+/g, " ").trim();
-  if (!preview) return name;
-  return `${name} - ${preview}`;
-}
-
-function toolEventId(msg: Record<string, unknown>): string {
-  if (typeof msg.tool_id === "string" && msg.tool_id) return msg.tool_id;
-  if (typeof msg.name === "string" && msg.name) return msg.name;
-  return "unknown";
-}
-
-function buildToolStackText(lines: string[]): string {
-  const textLines = ["Explored"];
-  lines.forEach((line, index) => {
-    const branch = index === lines.length - 1 ? "└" : "├";
-    textLines.push(`${branch} ${line}`);
-  });
-  return textLines.join("\n");
-}
-
-function normalizedSelection(selection: PaneSelection | null): {
-  startLine: number;
-  startCol: number;
-  endLine: number;
-  endCol: number;
-} | null {
-  if (!selection) return null;
-  const before = (
-    selection.anchorLine < selection.focusLine
-    || (
-      selection.anchorLine === selection.focusLine
-      && selection.anchorCol <= selection.focusCol
-    )
-  );
-  return before
-    ? {
-      startLine: selection.anchorLine,
-      startCol: selection.anchorCol,
-      endLine: selection.focusLine,
-      endCol: selection.focusCol,
-    }
-    : {
-      startLine: selection.focusLine,
-      startCol: selection.focusCol,
-      endLine: selection.anchorLine,
-      endCol: selection.anchorCol,
-    };
-}
-
-function selectionRangeForLine(
-  selection: PaneSelection | null,
-  pane: PaneName,
-  lineIndex: number,
-  lineText: string,
-): { start: number; end: number } | null {
-  if (!selection || selection.pane !== pane) return null;
-  const normalized = normalizedSelection(selection);
-  if (!normalized) return null;
-  if (lineIndex < normalized.startLine || lineIndex > normalized.endLine) return null;
-
-  const lineLength = lineText.length;
-  const start = lineIndex === normalized.startLine
-    ? Math.max(0, Math.min(lineLength, normalized.startCol))
-    : 0;
-  const end = lineIndex === normalized.endLine
-    ? Math.max(0, Math.min(lineLength, normalized.endCol + 1))
-    : lineLength;
-  if (end <= start) return null;
-  return { start, end };
-}
-
-function applySelectionHighlight(
-  line: FlatLine,
-  selection: PaneSelection | null,
-  pane: PaneName,
-  lineIndex: number,
-): LineSegment[] | undefined {
-  const range = selectionRangeForLine(selection, pane, lineIndex, line.text);
-  if (!range) return line.segments;
-  const source = line.segments ?? [{ text: line.text, color: line.bodyColor }];
-  const highlighted: LineSegment[] = [];
-  let offset = 0;
-
-  for (const segment of source) {
-    const segmentStart = offset;
-    const segmentEnd = offset + segment.text.length;
-    offset = segmentEnd;
-
-    if (range.end <= segmentStart || range.start >= segmentEnd) {
-      highlighted.push(segment);
-      continue;
-    }
-
-    const localStart = Math.max(0, range.start - segmentStart);
-    const localEnd = Math.min(segment.text.length, range.end - segmentStart);
-    if (localStart > 0) {
-      highlighted.push({ ...segment, text: segment.text.slice(0, localStart) });
-    }
-    if (localEnd > localStart) {
-      highlighted.push({
-        ...segment,
-        text: segment.text.slice(localStart, localEnd),
-        backgroundColor: "blue",
-        color: "white",
-      });
-    }
-    if (localEnd < segment.text.length) {
-      highlighted.push({ ...segment, text: segment.text.slice(localEnd) });
-    }
-  }
-
-  return highlighted;
-}
-
-function selectedTextFromLines(
-  lines: FlatLine[],
-  selection: PaneSelection | null,
-): string {
-  if (!selection) return "";
-  const normalized = normalizedSelection(selection);
-  if (!normalized) return "";
-  const selected: string[] = [];
-  for (let index = normalized.startLine; index <= normalized.endLine; index++) {
-    const line = lines[index];
-    if (!line) continue;
-    const range = selectionRangeForLine(selection, selection.pane, index, line.text);
-    if (!range) continue;
-    selected.push(line.text.slice(range.start, range.end).trimEnd());
-  }
-  return selected.join("\n").trim();
-}
-
-function copyToClipboard(text: string): void {
-  if (!text) return;
-  if (process.platform === "darwin") {
-    const proc = spawn("pbcopy", { stdio: ["pipe", "ignore", "ignore"] });
-    proc.stdin?.end(text);
-    return;
-  }
-  const encoded = Buffer.from(text, "utf-8").toString("base64");
-  process.stdout.write(`\x1b]52;c;${encoded}\x07`);
 }
 
 // ── Sub-components ─────────────────────────────────────────
@@ -757,7 +572,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    if (entry.restored || !shouldPaceEntry(entry.speaker, entry.text)) {
+    if (shouldAppendImmediately(entry)) {
       setEntries((prev) => [...prev, entry]);
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
@@ -858,36 +673,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     });
   }, [focusedPane, roomMaxScroll, caucusMaxScroll, startScrollDrain]);
 
-  const hitTestPane = useCallback((event: MouseEventInfo): PaneHit | null => {
-    const contentTop = 2;
-    const contentBottom = contentTop + paneContentHeight - 1;
-    if (event.y < contentTop || event.y > contentBottom) return null;
-
-    const pane = event.x < leftPaneWidth ? "room" : "caucus";
-    const paneLeft = pane === "room" ? 0 : leftPaneWidth;
-    const textWidth = pane === "room" ? leftTextWidth : rightTextWidth;
-    const contentLeft = paneLeft + 2;
-    const contentRight = contentLeft + textWidth - 1;
-    if (event.x < contentLeft || event.x > contentRight) return null;
-
-    const flatLines = pane === "room" ? roomFlatLines : caucusFlatLines;
-    const scrollOffset = pane === "room" ? roomScrollRef.current : caucusScrollRef.current;
-    const { startIdx, endIdx } = computeViewportSlice(
-      flatLines.length,
+  const hitTestPaneForEvent = useCallback((event: MouseEventInfo): PaneHit | null => {
+    return hitTestPane(event, {
       paneContentHeight,
-      scrollOffset,
-    );
-    const visibleRow = event.y - contentTop;
-    const lineIndex = startIdx + visibleRow;
-    if (lineIndex < startIdx || lineIndex >= endIdx || !flatLines[lineIndex]) return null;
-
-    const line = flatLines[lineIndex]!;
-    const bodyStart = stringWidth(line.label) + stringWidth(line.gutter ?? "");
-    const col = Math.max(0, Math.min(
-      line.text.length,
-      event.x - contentLeft - bodyStart,
-    ));
-    return { pane, lineIndex, col };
+      leftPaneWidth,
+      leftTextWidth,
+      rightTextWidth,
+      roomFlatLines,
+      caucusFlatLines,
+      roomScrollOffset: roomScrollRef.current,
+      caucusScrollOffset: caucusScrollRef.current,
+    });
   }, [
     caucusFlatLines,
     leftPaneWidth,
@@ -900,7 +696,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   useEffect(() => {
     if (!bridgeArgs.inkV2) return undefined;
     return onMouseEvent((event) => {
-      const hit = hitTestPane(event);
+      const hit = hitTestPaneForEvent(event);
       if (event.kind === "press") {
         if (!hit) {
           setPaneSelection(null);
@@ -938,12 +734,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             ? { ...prev, focusLine: hit.lineIndex, focusCol: hit.col, dragging: false }
             : { ...prev, dragging: false };
           const lines = finalSelection.pane === "room" ? roomFlatLines : caucusFlatLines;
-          copyToClipboard(selectedTextFromLines(lines, finalSelection));
+          void copyToClipboard(selectedTextFromLines(lines, finalSelection));
           return finalSelection;
         });
       }
     });
-  }, [bridgeArgs.inkV2, caucusFlatLines, hitTestPane, roomFlatLines]);
+  }, [bridgeArgs.inkV2, caucusFlatLines, hitTestPaneForEvent, roomFlatLines]);
 
   useEffect(() => {
     setMouseTrackingEnabled(!mouseSelectionMode);
