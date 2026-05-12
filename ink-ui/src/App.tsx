@@ -184,6 +184,13 @@ function toolPreviewLine(msg: Record<string, unknown>): string {
   return `${name} - ${preview}`;
 }
 
+function toolStreamId(baseStreamId: string, msg: Record<string, unknown>): string {
+  const toolId = typeof msg.tool_id === "string" && msg.tool_id
+    ? msg.tool_id
+    : "unknown";
+  return `${baseStreamId}:tool:${toolId}`;
+}
+
 // ── Sub-components ─────────────────────────────────────────
 
 function Pane({
@@ -912,11 +919,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           }
 
           if (msg.kind === "tool_start" || msg.kind === "tool_done") {
-            const toolStreamId = `${streamId}:tools`;
-            updateStreamEntry(pane, toolStreamId, speaker, () => ({
+            const currentToolStreamId = toolStreamId(streamId, msg);
+            updateStreamEntry(pane, currentToolStreamId, speaker, () => ({
               speaker,
               text: `Explored\n└ ${toolPreviewLine(msg)}`,
-              streamId: toolStreamId,
+              streamId: currentToolStreamId,
               streaming: msg.kind === "tool_start",
             }));
             break;

@@ -515,6 +515,11 @@ def _tool_summary_display_blocks(tool_summaries: list) -> list[dict]:
     return text_blocks + output_blocks
 
 
+def _tool_stream_id(base_stream_id: str, ts: ToolSummary, index: int) -> str:
+    suffix = ts.id or f"index-{index}"
+    return f"{base_stream_id}:tool:{suffix}" if base_stream_id else ""
+
+
 # ── Caucus footer parsing ──────────────────────────────────
 
 _TERMINAL_STATUSES = frozenset(
@@ -2303,14 +2308,16 @@ class Botference:
                     output_blocks=diff_blocks,
                 ))
 
-        tool_display = _tool_summary_display_text(resp.tool_summaries)
-        if tool_display:
+        for idx, tool_summary in enumerate(resp.tool_summaries):
+            tool_display = _tool_summary_display_text([tool_summary])
+            if not tool_display:
+                continue
             self._emit_room_entry(
                 ui,
                 model,
                 tool_display,
-                _tool_summary_display_blocks(resp.tool_summaries),
-                stream_id=f"{resp.stream_id}:tools" if resp.stream_id else "",
+                _tool_summary_display_blocks([tool_summary]),
+                stream_id=_tool_stream_id(resp.stream_id, tool_summary, idx),
             )
         if resp.text:
             self._add_room_entry(ui, model, resp.text, stream_id=resp.stream_id)
