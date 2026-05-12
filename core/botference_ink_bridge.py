@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -41,28 +42,58 @@ def emit(obj: dict) -> None:
 class InkBridge:
     """UIPort implementation that emits JSON-lines to stdout."""
 
-    def __init__(self) -> None:
+    def __init__(self, paths: BotferencePaths) -> None:
         self._pending_permission: asyncio.Future[bool] | None = None
+        self.stream_log_path = paths.session_dir / "stream-events.jsonl"
+        self.stream_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.stream_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "type": "stream_log_opened",
+                "path": str(self.stream_log_path),
+            }) + "\n")
 
     def add_room_entry(
-        self, speaker: str, text: str, blocks: list[dict] | None = None,
+        self,
+        speaker: str,
+        text: str,
+        blocks: list[dict] | None = None,
+        *,
+        stream_id: str = "",
     ) -> None:
-        emit({
+        event = {
             "type": "room",
             "speaker": speaker,
             "text": text,
             "blocks": blocks if blocks is not None else parse_render_blocks(text),
-        })
+        }
+        if stream_id:
+            event["stream_id"] = stream_id
+        emit(event)
 
     def add_caucus_entry(
-        self, speaker: str, text: str, blocks: list[dict] | None = None,
+        self,
+        speaker: str,
+        text: str,
+        blocks: list[dict] | None = None,
+        *,
+        stream_id: str = "",
     ) -> None:
-        emit({
+        event = {
             "type": "caucus",
             "speaker": speaker,
             "text": text,
             "blocks": blocks if blocks is not None else parse_render_blocks(text),
-        })
+        }
+        if stream_id:
+            event["stream_id"] = stream_id
+        emit(event)
+
+    def stream_event(self, event: dict) -> None:
+        payload = {"type": "stream", **event}
+        with self.stream_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.time(), **payload}) + "\n")
+        emit(payload)
 
     def set_status(self, status: StatusSnapshot) -> None:
         emit({
@@ -235,7 +266,7 @@ async def main() -> None:
     )
     botference.observe = args.debug_panes
 
-    bridge = InkBridge()
+    bridge = InkBridge(paths)
     current_turn: asyncio.Task | None = None
 
     # Send initial state

@@ -28,6 +28,8 @@ interface Entry {
   speaker: string;
   text: string;
   blocks?: RenderBlock[];
+  streamId?: string;
+  streaming?: boolean;
 }
 
 type PaneName = "room" | "caucus";
@@ -160,6 +162,26 @@ function nextPacedChunkEnd(text: string, start: number): number {
   }
 
   return hardEnd;
+}
+
+function replaceOrAppendStreamEntry(entries: Entry[], entry: Entry): Entry[] {
+  if (!entry.streamId) return [...entries, entry];
+  const index = entries.findIndex((candidate) => candidate.streamId === entry.streamId);
+  if (index === -1) return [...entries, entry];
+  const next = [...entries];
+  next[index] = entry;
+  return next;
+}
+
+function toolPreviewLine(msg: Record<string, unknown>): string {
+  const name = String(msg.name ?? "tool");
+  const preview = String(
+    msg.output_preview
+    ?? msg.input_preview
+    ?? "",
+  ).replace(/\s+/g, " ").trim();
+  if (!preview) return name;
+  return `${name} - ${preview}`;
 }
 
 // ── Sub-components ─────────────────────────────────────────
@@ -552,6 +574,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
     const scrollRef = pane === "room" ? roomScrollRef : caucusScrollRef;
 
+    if (entry.streamId) {
+      setEntries((prev) => replaceOrAppendStreamEntry(prev, entry));
+      setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+      return;
+    }
+
     if (!shouldPaceEntry(entry.speaker, entry.text)) {
       setEntries((prev) => [...prev, entry]);
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
@@ -599,6 +627,35 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       }
     }, PACED_MESSAGE_INTERVAL_MS);
     pacedTimersRef.current.add(interval);
+  }, []);
+
+  const updateStreamEntry = useCallback((
+    pane: PaneName,
+    streamId: string,
+    speaker: string,
+    update: (entry: Entry | undefined) => Entry | null,
+  ) => {
+    const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
+    const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
+    const scrollRef = pane === "room" ? roomScrollRef : caucusScrollRef;
+
+    setEntries((prev) => {
+      const index = prev.findIndex((entry) => entry.streamId === streamId);
+      const updated = update(index === -1 ? undefined : prev[index]);
+      if (!updated) {
+        if (index === -1) return prev;
+        return prev.filter((_, entryIndex) => entryIndex !== index);
+      }
+      if (index === -1) {
+        return [...prev, updated];
+      }
+      const next = [...prev];
+      next[index] = updated;
+      return next;
+    });
+    if (shouldAutoScroll(scrollRef.current)) {
+      setScroll(0);
+    }
   }, []);
 
   // ── Mouse scroll — dispatch to focused pane ──────────────
@@ -815,6 +872,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             speaker: msg.speaker as string,
             text: msg.text as string,
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
+            streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
           });
           break;
         case "caucus":
@@ -822,8 +880,63 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             speaker: msg.speaker as string,
             text: msg.text as string,
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
+            streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
           });
           break;
+        case "stream": {
+          const pane = msg.pane === "caucus" ? "caucus" : "room";
+          const streamId = typeof msg.stream_id === "string" ? msg.stream_id : "";
+          const speaker = typeof msg.model === "string" ? msg.model : "system";
+          if (!streamId) break;
+
+          if (msg.kind === "start") {
+            updateStreamEntry(pane, streamId, speaker, () => ({
+              speaker,
+              text: "",
+              streamId,
+              streaming: true,
+            }));
+            break;
+          }
+
+          if (msg.kind === "text_delta") {
+            const delta = typeof msg.text === "string" ? msg.text : "";
+            if (!delta) break;
+            updateStreamEntry(pane, streamId, speaker, (entry) => ({
+              speaker,
+              text: `${entry?.text ?? ""}${delta}`,
+              streamId,
+              streaming: true,
+            }));
+            break;
+          }
+
+          if (msg.kind === "tool_start" || msg.kind === "tool_done") {
+            const toolStreamId = `${streamId}:tools`;
+            updateStreamEntry(pane, toolStreamId, speaker, () => ({
+              speaker,
+              text: `Explored\n└ ${toolPreviewLine(msg)}`,
+              streamId: toolStreamId,
+              streaming: msg.kind === "tool_start",
+            }));
+            break;
+          }
+
+          if (msg.kind === "done") {
+            updateStreamEntry(pane, streamId, speaker, (entry) => {
+              const text = entry?.text ?? "";
+              if (!text) return null;
+              return {
+                speaker,
+                text,
+                blocks: entry?.blocks,
+                streamId,
+                streaming: false,
+              };
+            });
+          }
+          break;
+        }
         case "status":
           setStatus({
             mode: msg.mode as string,
@@ -896,7 +1009,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     return () => {
       proc.kill();
     };
-  }, [appendEntry]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [appendEntry, updateStreamEntry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cleanup = useCallback(() => {
     if (bridgeRef.current) {

@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
-from typing import Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from cli_adapters import (
     AdapterResponse,
@@ -756,6 +756,7 @@ class Botference:
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
         self._quit_requested: bool = False
+        self._stream_seq: int = 0
         roots = plan_write_roots
         if roots is None:
             roots = planner_write_roots_for_env(
@@ -1812,6 +1813,8 @@ class Botference:
         *,
         handoff_doc: str | None = None,
         after_turn: int | None = None,
+        stream: bool = False,
+        pane: str = "room",
     ) -> Optional[AdapterResponse]:
         """Start a fresh model session, optionally from an in-process relay handoff."""
         adapter = self.claude if model == "claude" else self.codex
@@ -1824,7 +1827,16 @@ class Botference:
         label = "Restarting" if handoff_doc else "Starting"
         self._add_room_entry(ui, "system", f"{label} {model} session…")
         try:
-            resp = await adapter.send(prompt)
+            if stream:
+                resp = await self._run_adapter_streamed(
+                    adapter,
+                    model,
+                    pane,
+                    ui,
+                    lambda: adapter.send(prompt),
+                )
+            else:
+                resp = await adapter.send(prompt)
         except Exception as e:
             self._add_room_entry(ui, "system", f"Error starting {model}: {e}")
             self._models_initialized.discard(model)
@@ -2062,14 +2074,114 @@ class Botference:
     def _structured_blocks(self, text: str) -> list[dict]:
         return parse_render_blocks(text)
 
-    def _add_room_entry(self, ui: UIPort, speaker: str, text: str) -> None:
+    def _emit_stream_event(self, ui: UIPort, event: dict[str, Any]) -> None:
+        stream_event = getattr(ui, "stream_event", None)
+        if not callable(stream_event):
+            return
+        stream_event(event)
+
+    def _next_stream_id(self, model: str, pane: str) -> str:
+        self._stream_seq += 1
+        return f"{self.session_id}:{pane}:{model}:{self._stream_seq}"
+
+    async def _run_adapter_streamed(
+        self,
+        adapter: ClaudeAdapter | CodexAdapter,
+        model: str,
+        pane: str,
+        ui: UIPort,
+        call: Callable[[], Awaitable[AdapterResponse]],
+    ) -> AdapterResponse:
+        stream_id = self._next_stream_id(model, pane)
+        old_callback = getattr(adapter, "stream_callback", None)
+        self._emit_stream_event(ui, {
+            "kind": "start",
+            "stream_id": stream_id,
+            "pane": pane,
+            "model": model,
+        })
+
+        def _callback(event: dict[str, Any]) -> None:
+            self._emit_stream_event(ui, {
+                **event,
+                "stream_id": stream_id,
+                "pane": pane,
+                "model": model,
+            })
+
+        adapter.stream_callback = _callback
+        try:
+            resp = await call()
+        finally:
+            adapter.stream_callback = old_callback
+
+        resp.stream_id = stream_id
+        self._emit_stream_event(ui, {
+            "kind": "done",
+            "stream_id": stream_id,
+            "pane": pane,
+            "model": model,
+        })
+        return resp
+
+    def _emit_room_entry(
+        self,
+        ui: UIPort,
+        speaker: str,
+        text: str,
+        blocks: list[dict],
+        *,
+        stream_id: str = "",
+    ) -> None:
+        if stream_id:
+            try:
+                ui.add_room_entry(speaker, text, blocks, stream_id=stream_id)  # type: ignore[call-arg]
+                return
+            except TypeError:
+                pass
+        ui.add_room_entry(speaker, text, blocks)
+
+    def _emit_caucus_entry(
+        self,
+        ui: UIPort,
+        speaker: str,
+        text: str,
+        blocks: list[dict],
+        *,
+        stream_id: str = "",
+    ) -> None:
+        if stream_id:
+            try:
+                ui.add_caucus_entry(speaker, text, blocks, stream_id=stream_id)  # type: ignore[call-arg]
+                return
+            except TypeError:
+                pass
+        ui.add_caucus_entry(speaker, text, blocks)
+
+    def _add_room_entry(
+        self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",
+    ) -> None:
         self._room_history.append(DisplayRecord(speaker=speaker, text=text))
-        ui.add_room_entry(speaker, text, self._structured_blocks(text))
+        self._emit_room_entry(
+            ui,
+            speaker,
+            text,
+            self._structured_blocks(text),
+            stream_id=stream_id,
+        )
         self._persist_session()
 
-    def _add_caucus_entry(self, ui: UIPort, speaker: str, text: str) -> None:
+    def _add_caucus_entry(
+        self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",
+    ) -> None:
         self._caucus_history.append(DisplayRecord(speaker=speaker, text=text))
-        ui.add_caucus_entry(speaker, text, self._structured_blocks(text))
+        self._emit_caucus_entry(
+            ui,
+            speaker,
+            text,
+            self._structured_blocks(text),
+            stream_id=stream_id,
+        )
         self._persist_session()
 
     async def _send_message(
@@ -2126,6 +2238,8 @@ class Botference:
                 ui,
                 handoff_doc=handoff_doc,
                 after_turn=relay_turn,
+                stream=True,
+                pane="room",
             )
             if resp is None:
                 return None
@@ -2136,7 +2250,13 @@ class Botference:
             # up.  Passing "" avoids injecting the user message twice.
             context = self.transcript.context_since(model, "")
             try:
-                resp = await adapter.resume(context)
+                resp = await self._run_adapter_streamed(
+                    adapter,
+                    model,
+                    "room",
+                    ui,
+                    lambda: adapter.resume(context),
+                )
             except Exception as e:
                 self._add_room_entry(ui, "system", f"Error from {model}: {e}")
                 return None
@@ -2151,7 +2271,13 @@ class Botference:
                 ui,
             )
             try:
-                resp = await adapter.resume(follow_up)
+                resp = await self._run_adapter_streamed(
+                    adapter,
+                    model,
+                    "room",
+                    ui,
+                    lambda: adapter.resume(follow_up),
+                )
             except Exception as e:
                 self._add_room_entry(ui, "system", f"Error from {model}: {e}")
                 return None
@@ -2179,13 +2305,15 @@ class Botference:
 
         tool_display = _tool_summary_display_text(resp.tool_summaries)
         if tool_display:
-            ui.add_room_entry(
+            self._emit_room_entry(
+                ui,
                 model,
                 tool_display,
                 _tool_summary_display_blocks(resp.tool_summaries),
+                stream_id=f"{resp.stream_id}:tools" if resp.stream_id else "",
             )
         if resp.text:
-            self._add_room_entry(ui, model, resp.text)
+            self._add_room_entry(ui, model, resp.text, stream_id=resp.stream_id)
         if resp.exit_code == -1:
             self._add_room_entry(
                 ui,
@@ -2418,7 +2546,13 @@ class Botference:
                     )
 
                 try:
-                    resp = await adapter.resume(turn)
+                    resp = await self._run_adapter_streamed(
+                        adapter,
+                        speaker,
+                        "caucus",
+                        ui,
+                        lambda: adapter.resume(turn),
+                    )
                 except Exception as e:
                     self._add_caucus_entry(ui, "system", f"Error from {speaker}: {e}")
                     final_footer = CaucusFooter(
@@ -2435,7 +2569,12 @@ class Botference:
                 footer = CaucusFooter.parse(resp.text)
                 display = (CaucusFooter.strip_footer(resp.text)
                            if footer else resp.text)
-                self._add_caucus_entry(ui, speaker, display)
+                self._add_caucus_entry(
+                    ui,
+                    speaker,
+                    display,
+                    stream_id=resp.stream_id,
+                )
                 last_resp_text = resp.text
 
                 if footer:

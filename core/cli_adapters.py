@@ -17,12 +17,14 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from providers import percent_of_limit
 from render_blocks import build_tool_use_blocks, parse_render_blocks
 
 log = logging.getLogger(__name__)
+
+StreamCallback = Callable[[dict[str, Any]], None]
 
 
 def _resolve_write_root_entry(project_root: Path, root: str | Path) -> Path | None:
@@ -252,6 +254,7 @@ class AdapterResponse:
     turn_output_tokens: int = 0  # last-turn output tokens for debugging/UI
     context_tokens_reliable: bool = True  # false when usage lacks a stable baseline
     session_id: str = ""  # session/thread ID for resume
+    stream_id: str = ""  # UI stream ID used to replace live partial output
 
 
 # ── Context windows (fallback when not reported by CLI) ──────
@@ -402,7 +405,8 @@ class ClaudeAdapter:
                  debug_log_path: str = "",
                  cwd: str = "",
                  add_dirs: Optional[list[str]] = None,
-                 settings: Optional[dict] = None):
+                 settings: Optional[dict] = None,
+                 stream_callback: Optional[StreamCallback] = None):
         self.model = model
         self.tools = tools or ["Read", "Glob", "Grep", "Bash"]
         self.effort = effort
@@ -415,6 +419,15 @@ class ClaudeAdapter:
         self.add_dirs = add_dirs or []
         self.settings = settings
         self.session_id: str = ""
+        self.stream_callback = stream_callback
+
+    def _emit_stream(self, event: dict[str, Any]) -> None:
+        if not self.stream_callback:
+            return
+        try:
+            self.stream_callback(event)
+        except Exception:
+            log.exception("Claude stream callback failed")
 
     def _build_cmd(self, resume: bool) -> list:
         cmd = ["claude", "-p"]
@@ -424,6 +437,7 @@ class ClaudeAdapter:
             cmd += ["--session-id", self.session_id]
         cmd += [
             "--output-format", "stream-json",
+            "--include-partial-messages",
             "--verbose",
             "--model", self.model,
             "--tools", ",".join(self.tools),
@@ -471,6 +485,7 @@ class ClaudeAdapter:
         proc.stdin.close()
 
         text_parts = []
+        streamed_text: dict[str, str] = {}
         tool_summaries = []
         raw_lines = []
         pending_tools = {}  # tool_use_id -> ToolSummary
@@ -485,10 +500,30 @@ class ClaudeAdapter:
                 etype = event.get("type", "")
 
                 if etype == "assistant":
-                    for block in event.get("message", {}).get("content", []):
+                    message = event.get("message", {})
+                    message_id = message.get("id", "")
+                    for index, block in enumerate(message.get("content", [])):
                         btype = block.get("type", "")
                         if btype == "text":
-                            text_parts.append(block["text"])
+                            text = block.get("text", "")
+                            if not text:
+                                continue
+                            key = f"{message_id}:{index}" if message_id else f"assistant:{index}"
+                            previous = streamed_text.get(key, "")
+                            if text.startswith(previous):
+                                delta = text[len(previous):]
+                                streamed_text[key] = text
+                            elif previous and previous.endswith(text):
+                                delta = ""
+                            else:
+                                delta = text
+                                streamed_text[key] = previous + text
+                            if delta:
+                                self._emit_stream({
+                                    "kind": "text_delta",
+                                    "model": "claude",
+                                    "text": delta,
+                                })
                         elif btype == "tool_use":
                             tool_id = block.get("id", "")
                             ts = ToolSummary(
@@ -504,6 +539,13 @@ class ClaudeAdapter:
                             )
                             pending_tools[tool_id] = ts
                             tool_summaries.append(ts)
+                            self._emit_stream({
+                                "kind": "tool_start",
+                                "model": "claude",
+                                "tool_id": tool_id,
+                                "name": ts.name,
+                                "input_preview": ts.input_preview,
+                            })
                     # Capture point-in-time occupancy from assistant event usage
                     usage = event.get("message", {}).get("usage")
                     if usage:
@@ -538,6 +580,13 @@ class ClaudeAdapter:
                                     pending_tools[tid].output_blocks = (
                                         pending_tools[tid].pending_output_blocks
                                     )
+                                self._emit_stream({
+                                    "kind": "tool_done",
+                                    "model": "claude",
+                                    "tool_id": tid,
+                                    "name": pending_tools[tid].name,
+                                    "output_preview": pending_tools[tid].output_preview,
+                                })
 
                 elif etype == "result":
                     result_text = event.get("result", "")
@@ -597,7 +646,10 @@ class ClaudeAdapter:
                     "Error: claude exited %d\n%s" % (proc.returncode, stderr)
                 )
 
-            response.text = "\n".join(text_parts) if text_parts else ""
+            response.text = (
+                "\n".join(text_parts)
+                if text_parts else "\n".join(streamed_text.values())
+            )
             response.tool_summaries = tool_summaries
             response.raw_output = "\n".join(raw_lines)
             response.exit_code = proc.returncode or 0
@@ -643,7 +695,8 @@ class CodexAdapter:
                  timeout: Optional[int] = None,
                  debug_log_path: str = "",
                  fallback_api_key: str = "",
-                 network_access: bool = False):
+                 network_access: bool = False,
+                 stream_callback: Optional[StreamCallback] = None):
         self.requested_model = model
         self.model = model
         self.sandbox = sandbox
@@ -663,6 +716,15 @@ class CodexAdapter:
         self._last_cumulative_input_tokens: int = 0
         self._last_cumulative_cached_input_tokens: int = 0
         self._last_cumulative_output_tokens: int = 0
+        self.stream_callback = stream_callback
+
+    def _emit_stream(self, event: dict[str, Any]) -> None:
+        if not self.stream_callback:
+            return
+        try:
+            self.stream_callback(event)
+        except Exception:
+            log.exception("Codex stream callback failed")
 
     def set_model(self, model: str) -> None:
         """Update the requested model and clear any cached alias resolution."""
@@ -828,25 +890,49 @@ class CodexAdapter:
                         text = item.get("text", "")
                         if text:
                             text_parts.append(text)
+                            if not isolated:
+                                self._emit_stream({
+                                    "kind": "text_delta",
+                                    "model": "codex",
+                                    "text": text,
+                                })
                     elif itype == "command_execution":
                         agg_output = item.get("aggregated_output", "")
                         response.tool_result_tokens_estimate += len(agg_output) // 4
-                        tool_summaries.append(ToolSummary(
+                        ts = ToolSummary(
                             id=item_id,
                             name=item.get("command", "")[:80],
                             input_preview="",
                             output_preview=_truncate(agg_output, 200),
                             output_blocks=_structured_output_blocks(agg_output),
-                        ))
+                        )
+                        tool_summaries.append(ts)
+                        if not isolated:
+                            self._emit_stream({
+                                "kind": "tool_done",
+                                "model": "codex",
+                                "tool_id": ts.id,
+                                "name": ts.name,
+                                "output_preview": ts.output_preview,
+                            })
 
                 elif etype == "item.started":
                     item = event.get("item", {})
                     if item.get("type") == "command_execution":
-                        tool_summaries.append(ToolSummary(
+                        ts = ToolSummary(
                             id=item.get("id", ""),
                             name=item.get("command", "")[:80],
                             input_preview="(running)",
-                        ))
+                        )
+                        tool_summaries.append(ts)
+                        if not isolated:
+                            self._emit_stream({
+                                "kind": "tool_start",
+                                "model": "codex",
+                                "tool_id": ts.id,
+                                "name": ts.name,
+                                "input_preview": ts.input_preview,
+                            })
 
                 elif etype == "turn.completed":
                     usage = event.get("usage", {})

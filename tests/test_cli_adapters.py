@@ -338,6 +338,112 @@ class TestCodexSessionIsolation:
         asyncio.run(_test())
 
 
+class TestAdapterStreaming:
+    def test_claude_emits_partial_text_and_tool_events(self):
+        async def _test():
+            stream_events = []
+            adapter = ClaudeAdapter(
+                model="claude-sonnet-4-6",
+                stream_callback=stream_events.append,
+            )
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+            jsonl = "\n".join([
+                json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "id": "m1",
+                        "content": [{"type": "text", "text": "Hel"}],
+                    },
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "id": "m1",
+                        "content": [{"type": "text", "text": "Hello"}],
+                    },
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "id": "m2",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Read",
+                            "input": {"file_path": "README.md"},
+                        }],
+                    },
+                }),
+                json.dumps({
+                    "type": "user",
+                    "message": {"content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "contents",
+                    }]},
+                }),
+                json.dumps({"type": "result", "result": "Hello"}),
+            ]) + "\n"
+            mock_proc.stdout = _make_reader(jsonl)
+            mock_proc.stderr = _make_reader("")
+            mock_proc.stdin = AsyncMock()
+            mock_proc.stdin.write = MagicMock()
+            mock_proc.stdin.drain = AsyncMock()
+            mock_proc.stdin.close = MagicMock()
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_proc.kill = MagicMock()
+
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                resp = await adapter.send("test")
+
+            assert resp.text == "Hello"
+            assert [e for e in stream_events if e["kind"] == "text_delta"] == [
+                {"kind": "text_delta", "model": "claude", "text": "Hel"},
+                {"kind": "text_delta", "model": "claude", "text": "lo"},
+            ]
+            assert any(e["kind"] == "tool_start" for e in stream_events)
+            assert any(e["kind"] == "tool_done" for e in stream_events)
+
+        asyncio.run(_test())
+
+    def test_codex_emits_agent_message_and_tool_events(self):
+        async def _test():
+            stream_events = []
+            adapter = CodexAdapter(
+                model="gpt-5.4",
+                stream_callback=stream_events.append,
+            )
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+            jsonl = (
+                '{"type":"thread.started","thread_id":"t1"}\n'
+                '{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"ls"}}\n'
+                '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"ls","aggregated_output":"README.md"}}\n'
+                '{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Done"}}\n'
+                '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}\n'
+            )
+            mock_proc.stdout = _make_reader(jsonl)
+            mock_proc.stderr = _make_reader("")
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_proc.kill = MagicMock()
+
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                resp = await adapter.send("test")
+
+            assert resp.text == "Done"
+            assert any(e["kind"] == "tool_start" for e in stream_events)
+            assert any(e["kind"] == "tool_done" for e in stream_events)
+            assert stream_events[-1] == {
+                "kind": "text_delta",
+                "model": "codex",
+                "text": "Done",
+            }
+
+        asyncio.run(_test())
+
 
 # ── Context percent ──────────────────────────────────────────
 
