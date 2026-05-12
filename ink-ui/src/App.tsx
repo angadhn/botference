@@ -30,6 +30,7 @@ interface Entry {
   blocks?: RenderBlock[];
   streamId?: string;
   streaming?: boolean;
+  restored?: boolean;
 }
 
 type PaneName = "room" | "caucus";
@@ -587,7 +588,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    if (!shouldPaceEntry(entry.speaker, entry.text)) {
+    if (entry.restored || !shouldPaceEntry(entry.speaker, entry.text)) {
       setEntries((prev) => [...prev, entry]);
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
@@ -880,6 +881,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             text: msg.text as string,
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
             streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
+            restored: msg.restored === true,
           });
           break;
         case "caucus":
@@ -888,6 +890,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             text: msg.text as string,
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
             streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
+            restored: msg.restored === true,
           });
           break;
         case "stream": {

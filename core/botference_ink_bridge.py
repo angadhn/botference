@@ -60,6 +60,7 @@ class InkBridge:
         blocks: list[dict] | None = None,
         *,
         stream_id: str = "",
+        restored: bool = False,
     ) -> None:
         event = {
             "type": "room",
@@ -69,6 +70,8 @@ class InkBridge:
         }
         if stream_id:
             event["stream_id"] = stream_id
+        if restored:
+            event["restored"] = True
         emit(event)
 
     def add_caucus_entry(
@@ -78,6 +81,7 @@ class InkBridge:
         blocks: list[dict] | None = None,
         *,
         stream_id: str = "",
+        restored: bool = False,
     ) -> None:
         event = {
             "type": "caucus",
@@ -87,6 +91,8 @@ class InkBridge:
         }
         if stream_id:
             event["stream_id"] = stream_id
+        if restored:
+            event["restored"] = True
         emit(event)
 
     def stream_event(self, event: dict) -> None:

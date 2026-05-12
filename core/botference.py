@@ -1161,9 +1161,21 @@ class Botference:
 
     def _replay_restored_session(self, ui: UIPort) -> None:
         for entry in self._room_history:
-            ui.add_room_entry(entry.speaker, entry.text, self._structured_blocks(entry.text))
+            self._emit_room_entry(
+                ui,
+                entry.speaker,
+                entry.text,
+                self._structured_blocks(entry.text),
+                restored=True,
+            )
         for entry in self._caucus_history:
-            ui.add_caucus_entry(entry.speaker, entry.text, self._structured_blocks(entry.text))
+            self._emit_caucus_entry(
+                ui,
+                entry.speaker,
+                entry.text,
+                self._structured_blocks(entry.text),
+                restored=True,
+            )
 
     def _show_resume_list(self, ui: UIPort) -> None:
         summaries = self.session_store.list_summaries(
@@ -2137,10 +2149,17 @@ class Botference:
         blocks: list[dict],
         *,
         stream_id: str = "",
+        restored: bool = False,
     ) -> None:
-        if stream_id:
+        if stream_id or restored:
             try:
-                ui.add_room_entry(speaker, text, blocks, stream_id=stream_id)  # type: ignore[call-arg]
+                ui.add_room_entry(
+                    speaker,
+                    text,
+                    blocks,
+                    stream_id=stream_id,
+                    restored=restored,
+                )  # type: ignore[call-arg]
                 return
             except TypeError:
                 pass
@@ -2154,10 +2173,17 @@ class Botference:
         blocks: list[dict],
         *,
         stream_id: str = "",
+        restored: bool = False,
     ) -> None:
-        if stream_id:
+        if stream_id or restored:
             try:
-                ui.add_caucus_entry(speaker, text, blocks, stream_id=stream_id)  # type: ignore[call-arg]
+                ui.add_caucus_entry(
+                    speaker,
+                    text,
+                    blocks,
+                    stream_id=stream_id,
+                    restored=restored,
+                )  # type: ignore[call-arg]
                 return
             except TypeError:
                 pass
