@@ -185,11 +185,19 @@ function toolPreviewLine(msg: Record<string, unknown>): string {
   return `${name} - ${preview}`;
 }
 
-function toolStreamId(baseStreamId: string, msg: Record<string, unknown>): string {
-  const toolId = typeof msg.tool_id === "string" && msg.tool_id
-    ? msg.tool_id
-    : "unknown";
-  return `${baseStreamId}:tool:${toolId}`;
+function toolEventId(msg: Record<string, unknown>): string {
+  if (typeof msg.tool_id === "string" && msg.tool_id) return msg.tool_id;
+  if (typeof msg.name === "string" && msg.name) return msg.name;
+  return "unknown";
+}
+
+function buildToolStackText(lines: string[]): string {
+  const textLines = ["Explored"];
+  lines.forEach((line, index) => {
+    const branch = index === lines.length - 1 ? "└" : "├";
+    textLines.push(`${branch} ${line}`);
+  });
+  return textLines.join("\n");
 }
 
 // ── Sub-components ─────────────────────────────────────────
@@ -503,6 +511,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const caucusMaxScrollRef = useRef(0);
   const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
+  const toolStacksRef = useRef<Map<string, Map<string, string>>>(new Map());
 
   const bridgeRef = useRef<ChildProcess | null>(null);
   const { stdout } = useStdout();
@@ -922,11 +931,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           }
 
           if (msg.kind === "tool_start" || msg.kind === "tool_done") {
-            const currentToolStreamId = toolStreamId(streamId, msg);
-            updateStreamEntry(pane, currentToolStreamId, speaker, () => ({
+            const toolStackStreamId = `${streamId}:tools`;
+            const stack = toolStacksRef.current.get(toolStackStreamId) ?? new Map<string, string>();
+            stack.set(toolEventId(msg), toolPreviewLine(msg));
+            toolStacksRef.current.set(toolStackStreamId, stack);
+            updateStreamEntry(pane, toolStackStreamId, speaker, () => ({
               speaker,
-              text: `Explored\n└ ${toolPreviewLine(msg)}`,
-              streamId: currentToolStreamId,
+              text: buildToolStackText(Array.from(stack.values())),
+              streamId: toolStackStreamId,
               streaming: msg.kind === "tool_start",
             }));
             break;
