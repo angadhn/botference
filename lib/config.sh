@@ -359,6 +359,7 @@ parse_loop_args() {
       --claude) BOTFERENCE_MODE=false ;;
       --botference|--group) BOTFERENCE_MODE=true ;;
       --ink) UI_MODE="ink" ;;
+      --ink-v2) UI_MODE="ink-v2" ;;
       --textual) UI_MODE="textual" ;;
       --profile=*) INIT_PROFILE="${arg#--profile=}" ;;
       --no-debug-panes) DEBUG_PANES=false ;;
@@ -387,6 +388,7 @@ Options:
   --anthropic-model=<name>  Override Anthropic model (Claude participant)
   --claude          Solo Claude mode (skip Codex, use claude CLI only)
   --ink             Use Ink (Node.js) TUI for botference mode (default)
+  --ink-v2          Use experimental Ink v2 TUI with app-level text selection
   --textual         Use Textual (Python) TUI for botference mode
   --no-debug-panes  Disable debug panes in botference mode
   --serial          Force serial architecture

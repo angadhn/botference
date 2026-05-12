@@ -21,6 +21,22 @@ export function onMouseScroll(handler: ScrollHandler) {
   };
 }
 
+export interface MouseEventInfo {
+  kind: "press" | "drag" | "release";
+  x: number;
+  y: number;
+}
+
+type MouseEventHandler = (event: MouseEventInfo) => void;
+const mouseEventHandlers: MouseEventHandler[] = [];
+export function onMouseEvent(handler: MouseEventHandler) {
+  mouseEventHandlers.push(handler);
+  return () => {
+    const idx = mouseEventHandlers.indexOf(handler);
+    if (idx >= 0) mouseEventHandlers.splice(idx, 1);
+  };
+}
+
 // ── Bracketed paste support ────────────────────────────────
 // Detect paste boundaries (\x1b[200~ start, \x1b[201~ end)
 // and dispatch the full pasted text to handlers.
@@ -64,7 +80,7 @@ export function setMouseTrackingEnabled(enabled: boolean) {
 
 // ── Stdin filter transform ─────────────────────────────────
 
-const MOUSE_SEQ = /\x1b\[<(\d+);(\d+);(\d+)[mM]/g;
+const MOUSE_SEQ = /\x1b\[<(\d+);(\d+);(\d+)([mM])/g;
 const SHIFT_ENTER_SEQS = [
   "\x1b[27;2;13~", // xterm modifyOtherKeys
   "\x1b[13;2u",    // kitty protocol
@@ -86,6 +102,17 @@ const stdinFilter = new Transform({
       const btn = parseInt(m[1]!, 10);
       if (btn === 64) wheelSteps += 1;
       else if (btn === 65) wheelSteps -= 1;
+      else {
+        const x = Math.max(0, parseInt(m[2]!, 10) - 1);
+        const y = Math.max(0, parseInt(m[3]!, 10) - 1);
+        const suffix = m[4]!;
+        const kind = suffix === "m"
+          ? "release"
+          : (btn & 32) === 32
+            ? "drag"
+            : "press";
+        mouseEventHandlers.forEach((h) => h({ kind, x, y }));
+      }
     }
     if (wheelSteps !== 0) {
       scrollHandlers.forEach((h) => h(wheelSteps));
@@ -180,6 +207,7 @@ function parseArgs(argv: string[]) {
     taskFile: "",
     debugPanes: false,
     claudeEffort: "",
+    inkV2: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -202,6 +230,9 @@ function parseArgs(argv: string[]) {
         break;
       case "--debug-panes":
         args.debugPanes = true;
+        break;
+      case "--ink-v2":
+        args.inkV2 = true;
         break;
       case "--claude-effort":
         args.claudeEffort = argv[++i] ?? "";

@@ -36,6 +36,7 @@ The TUI has two backends:
 | Flag | Backend | Notes |
 |------|---------|-------|
 | `--ink` | Ink (Node.js/React) | Default. First use after clone: `cd ink-ui && npm install`. Supports multiline input (Shift+Enter). |
+| `--ink-v2` | Experimental Ink v2 | Same bridge/controller path as Ink, with app-level pane-clamped text selection. |
 | `--textual` | Textual (Python) | Fallback backend if you want the Python/Textual UI. |
 
 Both present the same council + caucus interface. Use `--claude` to skip Codex
@@ -86,6 +87,7 @@ it from the repo root with the local launcher:
 
 ```bash
 ./botference plan                          # Ink TUI (default)
+./botference plan --ink-v2                 # Experimental Ink v2 TUI
 ./botference plan --textual                # Textual fallback
 ./botference plan --claude                 # Solo Claude
 ./botference research-plan                 # Structured planning in Ink (experimental)
@@ -110,6 +112,7 @@ From a target project root:
 botference init                            # Create project-local botference/ state
 botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
 botference plan                            # Council: you + Claude + Codex (Ink default)
+botference plan --ink-v2                   # Experimental Ink v2 with app-level selection
 botference --project-dir=spaceship plan    # Use botference-spaceship/
 botference plan --textual                  # Use the Textual fallback instead
 botference plan --claude                   # Solo Claude (no Codex)
@@ -341,6 +344,11 @@ input field at the bottom.
 
 - **Arrow keys do not move between panels.** Use the mouse to scroll within
   each panel.
+- **Ink v2 text selection:** run `botference plan --ink-v2` to use
+  app-level mouse selection. Dragging inside a pane selects text from that pane
+  only, keeps mouse scrolling enabled, highlights the selected range, and
+  copies the selected plain text on release. On macOS this uses `pbcopy`;
+  other terminals use OSC 52 as a fallback.
 - **Copying text in the Ink backend:** press **Ctrl+Y** to enter mouse
   selection mode, then drag-select text with the mouse/trackpad and copy using
   your terminal's normal shortcut (for example **Cmd+C** on macOS). Press

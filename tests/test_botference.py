@@ -1625,6 +1625,7 @@ def _shell_parse_loop_args(*args: str) -> dict[str, str]:
         'echo "LOOP_MODE=$LOOP_MODE" && '
         'echo "PROMPT_FILE=$PROMPT_FILE" && '
         'echo "BOTFERENCE_MODE=$BOTFERENCE_MODE" && '
+        'echo "UI_MODE=$UI_MODE" && '
         'echo "INIT_PROFILE=$INIT_PROFILE" && '
         'echo "BOTFERENCE_PROJECT_DIR_NAME=$BOTFERENCE_PROJECT_DIR_NAME"'
     )
@@ -1667,12 +1668,18 @@ class TestPlanningModeRouting:
         assert plan["LOOP_MODE"] == "plan"
         assert plan["PROMPT_FILE"] == ""
         assert plan["BOTFERENCE_MODE"] == "true"
+        assert plan["UI_MODE"] == "ink"
 
         # research-plan → structured: uses prompts/plan.md, botference mode on
         rp = _shell_parse_loop_args("research-plan")
         assert rp["LOOP_MODE"] == "research-plan"
         assert rp["PROMPT_FILE"] == "prompts/plan.md"
         assert rp["BOTFERENCE_MODE"] == "true"
+
+    def test_parse_loop_args_supports_ink_v2(self):
+        plan = _shell_parse_loop_args("plan", "--ink-v2")
+        assert plan["LOOP_MODE"] == "plan"
+        assert plan["UI_MODE"] == "ink-v2"
 
     def test_parse_loop_args_supports_archive_mode(self):
         archive = _shell_parse_loop_args("archive")

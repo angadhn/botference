@@ -320,12 +320,16 @@ while true; do
       fi
 
       echo "Launching Botference Council - Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${OPENAI_REASONING_EFFORT:+  openai-effort=$OPENAI_REASONING_EFFORT}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE"
-      if [ "$UI_MODE" = "ink" ]; then
+      if [ "$UI_MODE" = "ink" ] || [ "$UI_MODE" = "ink-v2" ]; then
         ensure_ink_ui_dist
         # Pass large strings via temp files to avoid arg-length/escaping issues
         _ink_sys=$(mktemp); _ink_task=$(mktemp)
         printf '%s' "$PLAN_SYSTEM" > "$_ink_sys"
         printf '%s' "$PROMPT" > "$_ink_task"
+        _ink_v2_flag=""
+        if [ "$UI_MODE" = "ink-v2" ]; then
+          _ink_v2_flag="--ink-v2"
+        fi
         node "${BOTFERENCE_HOME}/ink-ui/dist/bin.js" \
           --anthropic-model "$CLI_MODEL" \
           --openai-model "$OPENAI_MODEL" \
@@ -333,6 +337,7 @@ while true; do
           ${EFFORT_FLAG:+--claude-effort ${EFFORT_FLAG#--effort }} \
           --system-prompt-file "$_ink_sys" \
           --task-file "$_ink_task" \
+          $_ink_v2_flag \
           $DEBUG_FLAG
         rm -f "$_ink_sys" "$_ink_task"
       else
