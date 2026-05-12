@@ -420,6 +420,9 @@ export interface LineSegment {
   text: string;
   color?: string;
   bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
   backgroundColor?: string;
 }
 
@@ -1049,6 +1052,9 @@ function stylesEqual(
 ): boolean {
   return left.color === right.color
     && left.bold === right.bold
+    && left.italic === right.italic
+    && left.underline === right.underline
+    && left.strikethrough === right.strikethrough
     && left.backgroundColor === right.backgroundColor;
 }
 
@@ -1193,6 +1199,224 @@ function wrapText(text: string, width: number): string[] {
   if (width <= 0) return [text];
   const wrapped = wrapAnsi(text, width, { hard: true, trim: false });
   return wrapped.split("\n");
+}
+
+function pushMergedSegment(
+  segments: LineSegment[],
+  text: string,
+  style: Omit<LineSegment, "text">,
+): void {
+  if (text.length === 0) return;
+  const previous = segments[segments.length - 1];
+  if (previous && stylesEqual(previous, style)) {
+    previous.text += text;
+    return;
+  }
+  segments.push({ text, ...style });
+}
+
+function mergeInlineStyle(
+  base: Omit<LineSegment, "text">,
+  extra: Omit<LineSegment, "text">,
+): Omit<LineSegment, "text"> {
+  return {
+    ...base,
+    ...extra,
+    bold: extra.bold ?? base.bold,
+    italic: extra.italic ?? base.italic,
+    underline: extra.underline ?? base.underline,
+    strikethrough: extra.strikethrough ?? base.strikethrough,
+    backgroundColor: extra.backgroundColor ?? base.backgroundColor,
+  };
+}
+
+function findClosingMarker(line: string, marker: string, start: number): number {
+  for (let index = start; index < line.length; index++) {
+    if (line[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (line.startsWith(marker, index)) return index;
+  }
+  return -1;
+}
+
+function parseInlineMarkdownSegments(
+  rawLine: string,
+  baseStyle: Omit<LineSegment, "text">,
+): LineSegment[] {
+  const segments: LineSegment[] = [];
+  let line = rawLine;
+  let activeBaseStyle = baseStyle;
+
+  const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+  if (heading) {
+    line = heading[2]!;
+    activeBaseStyle = mergeInlineStyle(activeBaseStyle, {
+      bold: true,
+      color: "white",
+    });
+  }
+
+  const append = (text: string, style: Omit<LineSegment, "text"> = {}) => {
+    pushMergedSegment(segments, text, mergeInlineStyle(activeBaseStyle, style));
+  };
+
+  let index = 0;
+  while (index < line.length) {
+    const char = line[index]!;
+
+    if (char === "\\" && index + 1 < line.length && /[`*_~\[\]\\]/.test(line[index + 1]!)) {
+      append(line[index + 1]!);
+      index += 2;
+      continue;
+    }
+
+    if (char === "`") {
+      const close = findClosingMarker(line, "`", index + 1);
+      if (close > index + 1) {
+        append(line.slice(index + 1, close), {
+          color: "white",
+          backgroundColor: CODE_BACKGROUND_COLOR,
+        });
+        index = close + 1;
+        continue;
+      }
+    }
+
+    if (line.startsWith("[", index)) {
+      const labelEnd = findClosingMarker(line, "]", index + 1);
+      if (labelEnd > index + 1 && line[labelEnd + 1] === "(") {
+        const urlEnd = findClosingMarker(line, ")", labelEnd + 2);
+        if (urlEnd > labelEnd + 2) {
+          append(line.slice(index + 1, labelEnd), {
+            color: "cyan",
+            underline: true,
+          });
+          const url = line.slice(labelEnd + 2, urlEnd);
+          if (url) append(` (${url})`, { color: "gray" });
+          index = urlEnd + 1;
+          continue;
+        }
+      }
+    }
+
+    const marker = line.startsWith("***", index) || line.startsWith("___", index)
+      ? line.slice(index, index + 3)
+      : line.startsWith("**", index) || line.startsWith("__", index)
+        ? line.slice(index, index + 2)
+        : line.startsWith("~~", index)
+          ? "~~"
+          : null;
+    if (marker) {
+      const close = findClosingMarker(line, marker, index + marker.length);
+      if (close > index + marker.length) {
+        const inner = line.slice(index + marker.length, close);
+        const style = marker.length === 3
+          ? { bold: true, italic: true }
+          : marker === "~~"
+            ? { strikethrough: true }
+            : { bold: true };
+        for (const segment of parseInlineMarkdownSegments(inner, mergeInlineStyle(activeBaseStyle, style))) {
+          const { text, ...segmentStyle } = segment;
+          pushMergedSegment(segments, text, segmentStyle);
+        }
+        index = close + marker.length;
+        continue;
+      }
+    }
+
+    const maybeItalic = char === "*" || char === "_";
+    const previous = index === 0 ? "" : line[index - 1]!;
+    const next = index + 1 < line.length ? line[index + 1]! : "";
+    if (
+      maybeItalic
+      && /\S/.test(next)
+      && !/\w/.test(previous)
+      && !line.startsWith(`${char}${char}`, index)
+    ) {
+      const close = findClosingMarker(line, char, index + 1);
+      if (close > index + 1 && !/\s/.test(line[close - 1]!)) {
+        const inner = line.slice(index + 1, close);
+        for (const segment of parseInlineMarkdownSegments(inner, mergeInlineStyle(activeBaseStyle, { italic: true }))) {
+          const { text, ...segmentStyle } = segment;
+          pushMergedSegment(segments, text, segmentStyle);
+        }
+        index = close + 1;
+        continue;
+      }
+    }
+
+    let nextSpecial = line.length;
+    for (const special of ["\\", "`", "[", "*", "_", "~"]) {
+      const found = line.indexOf(special, index + 1);
+      if (found !== -1 && found < nextSpecial) nextSpecial = found;
+    }
+    append(line.slice(index, nextSpecial));
+    index = nextSpecial;
+  }
+
+  return segments.length > 0 ? segments : [{ text: "", ...activeBaseStyle }];
+}
+
+function wrapSegments(segments: LineSegment[], width: number): LineSegment[][] {
+  if (width <= 0) return [segments];
+  const lines: LineSegment[][] = [];
+  let current: LineSegment[] = [];
+  let currentWidth = 0;
+  let lastBreakIdx: number | null = null;
+
+  const mergeSegments = (items: LineSegment[]): LineSegment[] => {
+    const merged: LineSegment[] = [];
+    for (const segment of items) {
+      const { text, ...style } = segment;
+      pushMergedSegment(merged, text, style);
+    }
+    return merged;
+  };
+  const flattenCurrent = (): LineSegment[] => mergeSegments(current);
+  const rebuildState = () => {
+    currentWidth = current.reduce((sum, segment) => sum + stringWidth(segment.text), 0);
+    lastBreakIdx = null;
+    for (let i = 0; i < current.length; i++) {
+      if (/\s/.test(current[i]!.text)) lastBreakIdx = i;
+    }
+  };
+  const pushLine = (line: LineSegment[]) => {
+    lines.push(line.length > 0 ? line : [{ text: "" }]);
+  };
+
+  for (const segment of segments) {
+    const { text: segmentText, ...style } = segment;
+    for (const { segment: grapheme } of segmentGraphemes(segmentText)) {
+      const graphemeWidth = Math.max(1, stringWidth(grapheme));
+      current.push({ text: grapheme, ...style });
+      currentWidth += graphemeWidth;
+      if (/\s/.test(grapheme)) lastBreakIdx = current.length - 1;
+
+      while (current.length > 0 && currentWidth > width) {
+        if (lastBreakIdx !== null && lastBreakIdx < current.length - 1) {
+          pushLine(mergeSegments(current.slice(0, lastBreakIdx + 1)));
+          current = current.slice(lastBreakIdx + 1);
+          rebuildState();
+          continue;
+        }
+
+        if (current.length > 1) {
+          const tail = current[current.length - 1]!;
+          pushLine(mergeSegments(current.slice(0, -1)));
+          current = [tail];
+          rebuildState();
+          continue;
+        }
+
+        break;
+      }
+    }
+  }
+
+  pushLine(flattenCurrent());
+  return lines;
 }
 
 function classifyTextLine(
@@ -1452,11 +1676,15 @@ function renderTextBlock(
       endsToolBlock,
     } = classifyTextLine(rawLine, defaultColor, inToolBlock);
     const contentWidth = Math.max(4, textWidth - labelWidth);
-    const wrapped = wrapText(rawLine, contentWidth);
+    const baseStyle: Omit<LineSegment, "text"> = { color: bodyColor };
+    const inlineSegments = parseInlineMarkdownSegments(rawLine, baseStyle);
+    const wrapped = wrapSegments(inlineSegments, contentWidth);
 
-    for (const wrappedLine of wrapped) {
+    for (const wrappedSegments of wrapped) {
+      const wrappedLine = wrappedSegments.map((segment) => segment.text).join("");
       pushLine({
         text: wrappedLine,
+        segments: wrappedSegments,
         bodyColor,
         bodyBold,
       });

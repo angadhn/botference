@@ -207,6 +207,39 @@ describe("preRenderLines", () => {
     assert.equal(lines[2]!.bodyColor, "gray");
   });
 
+  it("renders inline markdown emphasis as styled text segments", () => {
+    const entries = [{
+      speaker: "codex",
+      text: "Use **bold**, *italic*, ***both***, `code`, and [docs](https://example.com).",
+    }];
+    const lines = preRenderLines(entries, 100);
+    assert.equal(lines[0]!.text, "Use bold, italic, both, code, and docs (https://example.com).");
+
+    const bold = lines[0]!.segments?.find((segment) => segment.text === "bold");
+    const italic = lines[0]!.segments?.find((segment) => segment.text === "italic");
+    const both = lines[0]!.segments?.find((segment) => segment.text === "both");
+    const code = lines[0]!.segments?.find((segment) => segment.text === "code");
+    const docs = lines[0]!.segments?.find((segment) => segment.text === "docs");
+
+    assert.equal(bold?.bold, true);
+    assert.equal(italic?.italic, true);
+    assert.equal(both?.bold, true);
+    assert.equal(both?.italic, true);
+    assert.equal(code?.backgroundColor, "blackBright");
+    assert.equal(docs?.underline, true);
+  });
+
+  it("preserves inline markdown styles across wrapped rows", () => {
+    const entries = [{
+      speaker: "claude",
+      text: "This has **bold text that wraps cleanly** after the label.",
+    }];
+    const lines = preRenderLines(entries, 28);
+    assert.ok(lines.length > 1);
+    assert.ok(lines.some((line) => line.segments?.some((segment) => segment.bold)));
+    assert.ok(lines.every((line) => !line.text.includes("**")));
+  });
+
   it("classifies patch summary and diff lines", () => {
     const entries = [{
       speaker: "codex",

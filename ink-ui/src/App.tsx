@@ -222,6 +222,9 @@ function Pane({
                     color={dimmed ? THEME.chromeMuted : (segment.color ?? line.bodyColor)}
                     backgroundColor={dimmed ? undefined : (segment.backgroundColor ?? line.bodyBackgroundColor)}
                     bold={!dimmed && segment.bold}
+                    italic={!dimmed && segment.italic}
+                    underline={!dimmed && segment.underline}
+                    strikethrough={!dimmed && segment.strikethrough}
                   >
                     {segment.text}
                   </Text>
