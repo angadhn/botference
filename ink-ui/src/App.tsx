@@ -30,6 +30,8 @@ interface Entry {
   blocks?: RenderBlock[];
 }
 
+type PaneName = "room" | "caucus";
+
 interface StatusData {
   mode: string;
   lead: string;
@@ -78,6 +80,10 @@ const THEME = {
   statusMuted: "gray",
   ready: "green",
 };
+
+const PACED_MESSAGE_MIN_CHARS = 240;
+const PACED_MESSAGE_INTERVAL_MS = 35;
+const PACED_MESSAGE_CHUNK_CHARS = 48;
 
 type BusyTarget = "claude" | "codex" | "all" | "system" | null;
 type BusySegment = { text: string; color: string; bold?: boolean };
@@ -131,6 +137,29 @@ function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
     }
     return { text: char, color: THEME.statusMuted };
   });
+}
+
+function shouldPaceEntry(speaker: string, text: string): boolean {
+  const normalizedSpeaker = speaker.toLowerCase();
+  return (
+    (normalizedSpeaker === "claude" || normalizedSpeaker === "codex")
+    && text.length >= PACED_MESSAGE_MIN_CHARS
+    && !text.startsWith("Explored\n")
+  );
+}
+
+function nextPacedChunkEnd(text: string, start: number): number {
+  const hardEnd = Math.min(text.length, start + PACED_MESSAGE_CHUNK_CHARS);
+  if (hardEnd >= text.length) return text.length;
+
+  const newline = text.indexOf("\n", start);
+  if (newline !== -1 && newline < hardEnd) return newline + 1;
+
+  for (let index = hardEnd; index > start + 12; index--) {
+    if (/\s/.test(text[index - 1]!)) return index;
+  }
+
+  return hardEnd;
 }
 
 // ── Sub-components ─────────────────────────────────────────
@@ -443,6 +472,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const roomMaxScrollRef = useRef(0);
   const caucusMaxScrollRef = useRef(0);
   const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
 
   const bridgeRef = useRef<ChildProcess | null>(null);
   const { stdout } = useStdout();
@@ -517,6 +547,60 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }, 16);
   }, []);
 
+  const appendEntry = useCallback((pane: PaneName, entry: Entry) => {
+    const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
+    const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
+    const scrollRef = pane === "room" ? roomScrollRef : caucusScrollRef;
+
+    if (!shouldPaceEntry(entry.speaker, entry.text)) {
+      setEntries((prev) => [...prev, entry]);
+      setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+      return;
+    }
+
+    const finalText = entry.text;
+    const finalBlocks = entry.blocks;
+    let entryIndex: number | null = null;
+    setEntries((prev) => {
+      entryIndex = prev.length;
+      return [
+        ...prev,
+        { speaker: entry.speaker, text: "" },
+      ];
+    });
+    setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+
+    let visibleEnd = 0;
+    const interval = setInterval(() => {
+      visibleEnd = nextPacedChunkEnd(finalText, visibleEnd);
+      const done = visibleEnd >= finalText.length;
+
+      setEntries((prev) => {
+        const index = entryIndex ?? prev.length - 1;
+        entryIndex = index;
+        if (index < 0 || index >= prev.length) return prev;
+
+        const next = [...prev];
+        next[index] = {
+          speaker: entry.speaker,
+          text: finalText.slice(0, visibleEnd),
+          blocks: done ? finalBlocks : undefined,
+        };
+        return next;
+      });
+
+      if (shouldAutoScroll(scrollRef.current)) {
+        setScroll(0);
+      }
+
+      if (done) {
+        clearInterval(interval);
+        pacedTimersRef.current.delete(interval);
+      }
+    }, PACED_MESSAGE_INTERVAL_MS);
+    pacedTimersRef.current.add(interval);
+  }, []);
+
   // ── Mouse scroll — dispatch to focused pane ──────────────
   useEffect(() => {
     return onMouseScroll((wheelSteps) => {
@@ -543,6 +627,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   useEffect(() => {
     return () => {
       if (scrollTimerRef.current) clearInterval(scrollTimerRef.current);
+      for (const timer of pacedTimersRef.current) clearInterval(timer);
+      pacedTimersRef.current.clear();
     };
   }, []);
 
@@ -725,26 +811,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
       switch (msg.type) {
         case "room":
-          setRoomEntries((prev) => [
-            ...prev,
-            {
-              speaker: msg.speaker as string,
-              text: msg.text as string,
-              blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
-            },
-          ]);
-          setRoomScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+          appendEntry("room", {
+            speaker: msg.speaker as string,
+            text: msg.text as string,
+            blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
+          });
           break;
         case "caucus":
-          setCaucusEntries((prev) => [
-            ...prev,
-            {
-              speaker: msg.speaker as string,
-              text: msg.text as string,
-              blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
-            },
-          ]);
-          setCaucusScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+          appendEntry("caucus", {
+            speaker: msg.speaker as string,
+            text: msg.text as string,
+            blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
+          });
           break;
         case "status":
           setStatus({
@@ -818,7 +896,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     return () => {
       proc.kill();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [appendEntry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cleanup = useCallback(() => {
     if (bridgeRef.current) {
