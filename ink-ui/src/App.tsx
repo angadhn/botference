@@ -20,7 +20,7 @@ import {
   wrapInputLines,
   type RenderBlock,
 } from "./layout.js";
-import { onMouseScroll, onPaste, onShiftEnter } from "./index.js";
+import { onMouseScroll, onPaste, onShiftEnter, setMouseTrackingEnabled } from "./index.js";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -485,6 +485,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [ready, setReady] = useState(false);
   const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
   const [busyFrameIndex, setBusyFrameIndex] = useState(0);
+  const [mouseSelectionMode, setMouseSelectionMode] = useState(false);
   const [roomScroll, setRoomScroll] = useState(0);
   const [caucusScroll, setCaucusScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
@@ -697,6 +698,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       startScrollDrain();
     });
   }, [focusedPane, roomMaxScroll, caucusMaxScroll, startScrollDrain]);
+
+  useEffect(() => {
+    setMouseTrackingEnabled(!mouseSelectionMode);
+    return () => setMouseTrackingEnabled(true);
+  }, [mouseSelectionMode]);
 
   useEffect(() => {
     return () => {
@@ -1120,6 +1126,24 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
+    // Ctrl+Y — toggle native terminal text selection.
+    if (input.toLowerCase() === "y" && key.ctrl) {
+      setMouseSelectionMode((prev) => {
+        const next = !prev;
+        setHint(next
+          ? "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling."
+          : "");
+        return next;
+      });
+      return;
+    }
+
+    if (mouseSelectionMode && key.escape) {
+      setMouseSelectionMode(false);
+      setHint("");
+      return;
+    }
+
     if (pendingPermission) {
       if (key.leftArrow || key.rightArrow || key.tab) {
         setPermissionChoice((prev) => (prev === "allow" ? "deny" : "allow"));
@@ -1301,7 +1325,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setCursor((c) => c + input.length);
       setDesiredCol(null);
     }
-  }, [cleanup, focusedPane, cursor, submit, ready, interrupt, pendingPermission, permissionChoice, respondToPermission]);
+  }, [cleanup, focusedPane, cursor, submit, ready, interrupt, pendingPermission, permissionChoice, respondToPermission, mouseSelectionMode]);
 
   // ── Input label ────────────────────────────────────────
 
@@ -1313,7 +1337,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const busyText = activeBusyLabel;
   const busySegments = buildBusySegments(busyText, busyFrameIndex);
-  const statusText = hint || (!ready ? busyText : " ");
+  const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
+  const statusText = mouseSelectionMode ? selectionHint : hint || (!ready ? busyText : " ");
 
   // ── Render ─────────────────────────────────────────────
 
@@ -1350,8 +1375,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
         ) : (
           <>
-            <Text color={hint ? THEME.textMuted : THEME.statusMuted}>
-              {hint || ready
+            <Text color={(hint || mouseSelectionMode) ? THEME.textMuted : THEME.statusMuted}>
+              {mouseSelectionMode || hint || ready
                 ? statusText
                 : busySegments.map((segment, index) => (
                     <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>

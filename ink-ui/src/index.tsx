@@ -51,6 +51,17 @@ export function onShiftEnter(handler: ShiftEnterHandler) {
   };
 }
 
+// ── Mouse tracking terminal mode ───────────────────────────
+
+let mouseTrackingEnabled = false;
+
+export function setMouseTrackingEnabled(enabled: boolean) {
+  if (!process.stdout.isTTY || mouseTrackingEnabled === enabled) return;
+  mouseTrackingEnabled = enabled;
+  process.stdout.write(enabled ? "\x1b[?1006h" : "\x1b[?1006l"); // SGR 1006 mouse mode
+  process.stdout.write(enabled ? "\x1b[?1003h" : "\x1b[?1003l"); // Any-event tracking
+}
+
 // ── Stdin filter transform ─────────────────────────────────
 
 const MOUSE_SEQ = /\x1b\[<(\d+);(\d+);(\d+)[mM]/g;
@@ -151,8 +162,7 @@ Object.defineProperty(stdinFilter, "unref", {
 
 // Enable terminal modes
 if (process.stdout.isTTY) {
-  process.stdout.write("\x1b[?1006h"); // SGR 1006 mouse mode
-  process.stdout.write("\x1b[?1003h"); // Any-event tracking (for wheel)
+  setMouseTrackingEnabled(true);
   process.stdout.write("\x1b[?2004h"); // Bracketed paste mode
 }
 process.stdin.pipe(stdinFilter);
@@ -212,8 +222,7 @@ if (useAltScreen) {
 
 function restoreTerminal() {
   if (process.stdout.isTTY) {
-    process.stdout.write("\x1b[?1003l"); // Disable any-event mouse tracking
-    process.stdout.write("\x1b[?1006l"); // Disable SGR mouse mode
+    setMouseTrackingEnabled(false);
     process.stdout.write("\x1b[?2004l"); // Disable bracketed paste
   }
   if (useAltScreen) {
