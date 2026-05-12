@@ -341,6 +341,12 @@ input field at the bottom.
 
 - **Arrow keys do not move between panels.** Use the mouse to scroll within
   each panel.
+- **Copying text in the Ink backend:** press **Ctrl+Y** to enter mouse
+  selection mode, then drag-select text with the mouse/trackpad and copy using
+  your terminal's normal shortcut (for example **Cmd+C** on macOS). Press
+  **Ctrl+Y** again or **Esc** to return to Botference mouse scrolling.
+  Selection mode uses the terminal's native selection, so it can select across
+  both panels; it does not clamp copied text to the active council/caucus pane.
 - **Shift+Enter** inserts a newline (Ink backend only). In the Textual backend
   the input is single-line.
 - **Esc interrupts the current in-flight turn** in the Ink backend. It no
