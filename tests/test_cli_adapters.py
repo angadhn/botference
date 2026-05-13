@@ -184,6 +184,16 @@ class TestClaudeInteractiveTmuxHelpers:
         assert tmux_capture_looks_idle("Claude\n> ")
         assert not tmux_capture_looks_idle("Claude is thinking\nesc to interrupt")
         assert not tmux_capture_looks_idle("Claude\n✢ Percolating…\n❯ ")
+        assert tmux_capture_looks_idle(
+            "⏺ Done\n\n"
+            "──────────────── botference ──\n"
+            "❯ \n"
+            "──────────────────────────────\n"
+            "  Opus 4.7 │ ✍️ 2% │ work (main*) │ ◑ xhigh\n"
+            "  current ○○○○○○○○○○   0% ⟳ 4:00am\n"
+            "  weekly  ○○○○○○○○○○   4% ⟳ may 20, 7:00am\n"
+            "  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+        )
 
     def test_extract_assistant_text_ignores_prompt_echo_and_chrome(self):
         capture = """
@@ -345,7 +355,7 @@ class TestClaudeInteractiveTmuxHelpers:
             assert calls[1][1] == b"hello\nclaude\n"
             assert calls[2][0][:2] == ("tmux", "paste-buffer")
             assert calls[3][0][:2] == ("tmux", "send-keys")
-            assert "Enter" in calls[3][0]
+            assert "C-m" in calls[3][0]
 
         asyncio.run(run())
 

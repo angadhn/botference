@@ -148,7 +148,8 @@ def tmux_capture_looks_idle(capture: str) -> bool:
     text = normalize_tmux_capture(capture).lower()
     if not text:
         return False
-    tail = "\n".join(text.splitlines()[-8:])
+    tail_lines = text.splitlines()[-24:]
+    tail = "\n".join(tail_lines)
     busy_markers = (
         "esc to interrupt",
         "press esc to interrupt",
@@ -162,7 +163,7 @@ def tmux_capture_looks_idle(capture: str) -> bool:
     if any(marker in tail for marker in busy_markers):
         return False
     return bool(
-        re.search(r"(^|\n)\s*(>|❯|›)\s*$", tail)
+        any(re.match(r"\s*(>|❯|›)\s*$", line) for line in tail_lines)
         or "what would you like" in tail
         or "try \"" in tail and "claude" in tail
     )
@@ -1048,8 +1049,9 @@ class ClaudeInteractiveTmuxAdapter:
         )
         if code != 0:
             return self._startup_failure(err.strip() or out.strip() or "tmux paste-buffer failed.")
+        await asyncio.sleep(0.2)
         code, out, err = await self._run_command(
-            "tmux", "send-keys", "-t", self.tmux_target, "Enter",
+            "tmux", "send-keys", "-t", self.tmux_target, "C-m",
         )
         if code != 0:
             return self._startup_failure(err.strip() or out.strip() or "tmux send-keys failed.")
