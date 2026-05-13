@@ -19,7 +19,7 @@ function line(text: string, label = ""): FlatLine {
   };
 }
 
-describe("Ink v2 pane hit testing", () => {
+describe("Ink pane hit testing", () => {
   it("maps terminal coordinates into council and caucus panes", () => {
     const room = [line("alpha", "[Codex] ")];
     const caucus = [line("bravo", "System: ")];
@@ -70,7 +70,7 @@ describe("Ink v2 pane hit testing", () => {
   });
 });
 
-describe("Ink v2 pane selection", () => {
+describe("Ink pane selection", () => {
   it("clamps selection rendering to the pane where the drag started", () => {
     const selection: PaneSelection = {
       pane: "room",

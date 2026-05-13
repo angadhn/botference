@@ -35,8 +35,8 @@ The TUI has two backends:
 
 | Flag | Backend | Notes |
 |------|---------|-------|
-| `--ink` | Ink (Node.js/React) | Default. First use after clone: `cd ink-ui && npm install`. Supports multiline input (Shift+Enter). |
-| `--ink-v2` | Experimental Ink v2 | Same bridge/controller path as Ink, with app-level pane-clamped text selection. |
+| `--ink` | Ink (Node.js/React) | Default. First use after clone: `cd ink-ui && npm install`. Supports app-level pane-clamped text selection, multiline input (Shift+Enter), streaming, and activity status. |
+| `--ink-legacy` | Legacy Ink | Older Ink behavior with Ctrl+Y native terminal selection. |
 | `--textual` | Textual (Python) | Fallback backend if you want the Python/Textual UI. |
 
 Both present the same council + caucus interface. Use `--claude` to skip Codex
@@ -87,7 +87,7 @@ it from the repo root with the local launcher:
 
 ```bash
 ./botference plan                          # Ink TUI (default)
-./botference plan --ink-v2                 # Experimental Ink v2 TUI
+./botference plan --ink-legacy             # Legacy Ink TUI
 ./botference plan --textual                # Textual fallback
 ./botference plan --claude                 # Solo Claude
 ./botference research-plan                 # Structured planning in Ink (experimental)
@@ -112,7 +112,7 @@ From a target project root:
 botference init                            # Create project-local botference/ state
 botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
 botference plan                            # Council: you + Claude + Codex (Ink default)
-botference plan --ink-v2                   # Experimental Ink v2 with app-level selection
+botference plan --ink-legacy               # Legacy Ink with Ctrl+Y native selection
 botference --project-dir=spaceship plan    # Use botference-spaceship/
 botference plan --textual                  # Use the Textual fallback instead
 botference plan --claude                   # Solo Claude (no Codex)
@@ -344,20 +344,21 @@ input field at the bottom.
 
 - **Arrow keys do not move between panels.** Use the mouse to scroll within
   each panel.
-- **Ink v2 text selection:** run `botference plan --ink-v2` to use
-  app-level mouse selection. Dragging inside a pane selects text from that pane
-  only, keeps mouse scrolling enabled, highlights the selected range, and
-  copies the selected plain text on release. On local macOS this uses
-  `pbcopy`; in tmux it also tries `tmux load-buffer` and an OSC 52 passthrough;
-  otherwise it writes OSC 52 as a best-effort fallback. Copy diagnostics are
-  appended to `.botference/ink-v2.log` unless `BOTFERENCE_INK_LOG=0` is set.
-  Set `BOTFERENCE_INK_LOG=/path/to/log` to put those diagnostics elsewhere.
-- **Ink v2 activity line:** while a turn is running, the status line shows a
+- **Ink text selection:** app-level mouse selection is the default Ink
+  behavior. Dragging inside a pane selects text from that pane only, keeps mouse
+  scrolling enabled, highlights the selected range, and copies the selected
+  plain text on release. On local macOS this uses `pbcopy`; in tmux it also
+  tries `tmux load-buffer` and an OSC 52 passthrough; otherwise it writes OSC
+  52 as a best-effort fallback. Copy diagnostics are appended to
+  `.botference/ink.log` unless `BOTFERENCE_INK_LOG=0` is set. Set
+  `BOTFERENCE_INK_LOG=/path/to/log` to put those diagnostics elsewhere.
+- **Ink activity line:** while a turn is running, the status line shows a
   small animated glyph and action phrase. It uses whimsical fallback verbs
   such as `Prestidigitating...`, but switches to concrete activity when bridge
   events expose it, for example `Codex is reading README.md...` or
   `Claude is responding...`.
-- **Copying text in the Ink backend:** press **Ctrl+Y** to enter mouse
+- **Copying text in the legacy Ink backend:** run `botference plan
+  --ink-legacy`, then press **Ctrl+Y** to enter mouse
   selection mode, then drag-select text with the mouse/trackpad and copy using
   your terminal's normal shortcut (for example **Cmd+C** on macOS). Press
   **Ctrl+Y** again or **Esc** to return to Botference mouse scrolling.
@@ -372,13 +373,12 @@ input field at the bottom.
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
 
-Ink v2 intentionally keeps Botference's existing Ink renderer and bridge
-protocol rather than vendoring the larger CC custom renderer. The v2 selection
-code is isolated under `ink-ui/src/v2/`: it keeps a pane-local representation of
-rendered lines for hit-testing, clamps drags to the starting pane, and borrows
-the CC renderer's terminal lessons for clipboard routing and exit cleanup. A
-full screen-buffer renderer remains deferred unless the lighter pane-line layer
-proves insufficient.
+Ink intentionally keeps Botference's existing renderer and bridge protocol
+rather than vendoring the larger CC custom renderer. The app-level selection
+code keeps a pane-local representation of rendered lines for hit-testing,
+clamps drags to the starting pane, and borrows the CC renderer's terminal
+lessons for clipboard routing and exit cleanup. A full screen-buffer renderer
+remains deferred unless the lighter pane-line layer proves insufficient.
 
 ![Ink input field and status line — typing @claude while lead is @codex](docs/images/ink-input-status.png)
 

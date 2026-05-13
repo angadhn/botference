@@ -1676,10 +1676,15 @@ class TestPlanningModeRouting:
         assert rp["PROMPT_FILE"] == "prompts/plan.md"
         assert rp["BOTFERENCE_MODE"] == "true"
 
-    def test_parse_loop_args_supports_ink_v2(self):
+    def test_parse_loop_args_supports_ink_legacy(self):
+        plan = _shell_parse_loop_args("plan", "--ink-legacy")
+        assert plan["LOOP_MODE"] == "plan"
+        assert plan["UI_MODE"] == "ink-legacy"
+
+    def test_parse_loop_args_keeps_ink_v2_alias(self):
         plan = _shell_parse_loop_args("plan", "--ink-v2")
         assert plan["LOOP_MODE"] == "plan"
-        assert plan["UI_MODE"] == "ink-v2"
+        assert plan["UI_MODE"] == "ink"
 
     def test_parse_loop_args_supports_archive_mode(self):
         archive = _shell_parse_loop_args("archive")

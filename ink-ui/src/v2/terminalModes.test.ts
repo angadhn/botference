@@ -8,7 +8,7 @@ import {
   terminalRestoreSequence,
 } from "./terminalModes.js";
 
-describe("Ink v2 terminal cleanup sequences", () => {
+describe("Ink terminal cleanup sequences", () => {
   it("restores mouse, paste, cursor, and alternate screen modes on exit", () => {
     const sequence = terminalRestoreSequence({ useAltScreen: true });
     assert.ok(sequence.includes(DISABLE_MOUSE_TRACKING));

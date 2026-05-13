@@ -11,7 +11,7 @@ import {
   v2ActivityGlyph,
 } from "./activity.js";
 
-describe("Ink v2 activity status", () => {
+describe("Ink activity status", () => {
   it("keeps the CC-style action words available", () => {
     assert.equal(V2_SPINNER_VERBS.includes("Prestidigitating"), true);
     assert.notEqual(v2ActivityGlyph(0), v2ActivityGlyph(1));

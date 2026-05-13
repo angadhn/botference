@@ -7,7 +7,7 @@ import {
   tmuxPassthrough,
 } from "./clipboard.js";
 
-describe("Ink v2 clipboard routing", () => {
+describe("Ink clipboard routing", () => {
   it("uses pbcopy on local macOS", () => {
     assert.equal(getClipboardPath({
       platform: "darwin",

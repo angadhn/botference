@@ -54,7 +54,7 @@ export function tmuxPassthrough(sequence: string): string {
 function defaultLogPath(): string | null {
   if (process.env["BOTFERENCE_INK_LOG"] === "0") return null;
   return process.env["BOTFERENCE_INK_LOG"]
-    ?? path.join(process.cwd(), ".botference", "ink-v2.log");
+    ?? path.join(process.cwd(), ".botference", "ink.log");
 }
 
 async function logClipboardResult(result: ClipboardResult, logPath: string | null | undefined): Promise<void> {
@@ -66,7 +66,7 @@ async function logClipboardResult(result: ClipboardResult, logPath: string | nul
       target,
       JSON.stringify({
         ts: new Date().toISOString(),
-        event: "ink_v2_clipboard_copy",
+        event: "ink_clipboard_copy",
         ...result,
       }) + "\n",
       "utf-8",

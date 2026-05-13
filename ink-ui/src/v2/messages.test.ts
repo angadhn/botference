@@ -9,7 +9,7 @@ import {
   toolPreviewLine,
 } from "./messages.js";
 
-describe("Ink v2 message pacing", () => {
+describe("Ink message pacing", () => {
   it("paces long live model messages", () => {
     assert.equal(shouldPaceEntry("codex", "x".repeat(300)), true);
     assert.equal(shouldPaceEntry("claude", "x".repeat(300)), true);
@@ -28,7 +28,7 @@ describe("Ink v2 message pacing", () => {
   });
 });
 
-describe("Ink v2 streamed tool stack", () => {
+describe("Ink streamed tool stack", () => {
   it("replaces matching stream entries rather than appending duplicates", () => {
     const entries = replaceOrAppendStreamEntry([
       { speaker: "codex", text: "old", streamId: "s1" },

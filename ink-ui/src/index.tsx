@@ -215,7 +215,7 @@ function parseArgs(argv: string[]) {
     taskFile: "",
     debugPanes: false,
     claudeEffort: "",
-    inkV2: false,
+    inkLegacy: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -239,8 +239,11 @@ function parseArgs(argv: string[]) {
       case "--debug-panes":
         args.debugPanes = true;
         break;
+      case "--ink-legacy":
+        args.inkLegacy = true;
+        break;
       case "--ink-v2":
-        args.inkV2 = true;
+        args.inkLegacy = false;
         break;
       case "--claude-effort":
         args.claudeEffort = argv[++i] ?? "";

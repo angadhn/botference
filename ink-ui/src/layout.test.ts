@@ -182,12 +182,12 @@ describe("preRenderLines", () => {
     assert.equal(lines[1]!.label, expectedIndent);
   });
 
-  it("mutes tool transcript blocks and resumes speaker body styling after a blank line", () => {
+  it("renders tool transcript blocks with readable accent color and resumes speaker styling after a blank line", () => {
     const entries = [{ speaker: "codex", text: "  > Read(file)\noutput line\n\nplain text" }];
     const lines = preRenderLines(entries, 40);
-    assert.equal(lines[0]!.bodyColor, "gray");
+    assert.equal(lines[0]!.bodyColor, "yellow");
     assert.equal(lines[0]!.bodyBold, false);
-    assert.equal(lines[1]!.bodyColor, "gray");
+    assert.equal(lines[1]!.bodyColor, "yellow");
     assert.equal(lines[3]!.bodyColor, "green");
   });
 
@@ -198,13 +198,13 @@ describe("preRenderLines", () => {
     assert.equal(lines[0]!.bodyBold, false);
   });
 
-  it("renders explored summaries as a muted tree block", () => {
+  it("renders explored summaries as a readable accent tree block", () => {
     const entries = [{ speaker: "claude", text: "Explored\n├ Read botference\n└ Search ctrl+o in src" }];
     const lines = preRenderLines(entries, 60);
-    assert.equal(lines[0]!.bodyColor, "grayBright");
+    assert.equal(lines[0]!.bodyColor, "yellowBright");
     assert.equal(lines[0]!.bodyBold, true);
-    assert.equal(lines[1]!.bodyColor, "gray");
-    assert.equal(lines[2]!.bodyColor, "gray");
+    assert.equal(lines[1]!.bodyColor, "yellow");
+    assert.equal(lines[2]!.bodyColor, "yellow");
   });
 
   it("renders inline markdown emphasis as styled text segments", () => {

@@ -88,7 +88,7 @@ interface BridgeArgs {
   taskFile: string;
   debugPanes: boolean;
   claudeEffort: string;
-  inkV2: boolean;
+  inkLegacy: boolean;
 }
 
 interface PendingPermission {
@@ -717,7 +717,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   ]);
 
   useEffect(() => {
-    if (!bridgeArgs.inkV2) return undefined;
+    if (bridgeArgs.inkLegacy) return undefined;
     return onMouseEvent((event) => {
       const hit = hitTestPaneForEvent(event);
       if (event.kind === "press") {
@@ -762,7 +762,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         });
       }
     });
-  }, [bridgeArgs.inkV2, caucusFlatLines, hitTestPaneForEvent, roomFlatLines]);
+  }, [bridgeArgs.inkLegacy, caucusFlatLines, hitTestPaneForEvent, roomFlatLines]);
 
   useEffect(() => {
     setMouseTrackingEnabled(!mouseSelectionMode);
@@ -978,7 +978,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           const streamId = typeof msg.stream_id === "string" ? msg.stream_id : "";
           const speaker = typeof msg.model === "string" ? msg.model : "system";
           if (!streamId) break;
-          if (bridgeArgs.inkV2) {
+          if (!bridgeArgs.inkLegacy) {
             setV2Activity((prev) => updateV2ActivityForStream(prev, msg));
           }
 
@@ -1106,7 +1106,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     return () => {
       proc.kill();
     };
-  }, [appendEntry, bridgeArgs.inkV2, updateStreamEntry]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [appendEntry, bridgeArgs.inkLegacy, updateStreamEntry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cleanup = useCallback(() => {
     if (bridgeRef.current) {
@@ -1140,7 +1140,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     setReady(false);
     const nextBusyTarget = resolveBusyTarget(stripped, status.route, status.mode);
     setBusyTarget(nextBusyTarget);
-    if (bridgeArgs.inkV2) {
+    if (!bridgeArgs.inkLegacy) {
       setV2Activity(startV2ActivityFromInput(stripped, status.route, status.mode));
     }
     setHint("");
@@ -1164,7 +1164,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [bridgeArgs.inkV2, inputText, focusedPane, ready, imageAttachments, pendingPermission, status.route, status.mode]);
+  }, [bridgeArgs.inkLegacy, inputText, focusedPane, ready, imageAttachments, pendingPermission, status.route, status.mode]);
 
   const respondToPermission = useCallback((allow: boolean) => {
     const proc = bridgeRef.current;
@@ -1200,7 +1200,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     // Ctrl+Y — toggle native terminal text selection.
-    if (!bridgeArgs.inkV2 && input.toLowerCase() === "y" && key.ctrl) {
+    if (bridgeArgs.inkLegacy && input.toLowerCase() === "y" && key.ctrl) {
       setMouseSelectionMode((prev) => {
         const next = !prev;
         setHint(next
@@ -1398,7 +1398,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setCursor((c) => c + input.length);
       setDesiredCol(null);
     }
-  }, [bridgeArgs.inkV2, cleanup, focusedPane, cursor, submit, ready, interrupt, pendingPermission, permissionChoice, respondToPermission, mouseSelectionMode]);
+  }, [bridgeArgs.inkLegacy, cleanup, focusedPane, cursor, submit, ready, interrupt, pendingPermission, permissionChoice, respondToPermission, mouseSelectionMode]);
 
   // ── Input label ────────────────────────────────────────
 
@@ -1409,7 +1409,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget, status.mode);
-  const busyText = bridgeArgs.inkV2 ? formatV2ActivityText(activeV2Activity) : activeBusyLabel;
+  const busyText = !bridgeArgs.inkLegacy ? formatV2ActivityText(activeV2Activity) : activeBusyLabel;
   const busySegments = buildBusySegments(busyText, busyFrameIndex);
   const busyGlyph = v2ActivityGlyph(busyFrameIndex);
   const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
@@ -1431,7 +1431,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           textWidth={leftTextWidth}
           scrollOffset={roomScroll}
           hasNewMessages={roomHasNew}
-          selection={bridgeArgs.inkV2 ? paneSelection : null}
+          selection={!bridgeArgs.inkLegacy ? paneSelection : null}
         />
         <Pane
           title="CAUCUS"
@@ -1443,7 +1443,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           textWidth={rightTextWidth}
           scrollOffset={caucusScroll}
           hasNewMessages={caucusHasNew}
-          selection={bridgeArgs.inkV2 ? paneSelection : null}
+          selection={!bridgeArgs.inkLegacy ? paneSelection : null}
         />
       </Box>
 
@@ -1459,7 +1459,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
                 ? statusText
                 : (
                   <>
-                    {bridgeArgs.inkV2 ? <Text color={THEME.accentBright}>{busyGlyph} </Text> : null}
+                    {!bridgeArgs.inkLegacy ? <Text color={THEME.accentBright}>{busyGlyph} </Text> : null}
                     {busySegments.map((segment, index) => (
                       <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
                         {segment.text}

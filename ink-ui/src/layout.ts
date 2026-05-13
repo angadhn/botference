@@ -12,6 +12,8 @@ const STATUS_HEIGHT = 1;
 const PANE_CHROME = 3;
 const PANE_HORIZONTAL_BORDER = 2;
 const PANE_HORIZONTAL_PADDING = 2;
+const TOOL_TEXT_COLOR = "yellow";
+const TOOL_HEADER_COLOR = "yellowBright";
 
 export interface LayoutBudget {
   paneHeight: number;
@@ -1439,7 +1441,7 @@ function classifyTextLine(
   const isToolSummaryLine = /^[├└│]/.test(trimmed);
 
   if (isToolInvocation) {
-    return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
+    return { bodyColor: TOOL_TEXT_COLOR, bodyBold: false, startsToolBlock: true };
   }
 
   if (isQuotedLine) {
@@ -1447,7 +1449,7 @@ function classifyTextLine(
   }
 
   if (isToolSummaryHeader) {
-    return { bodyColor: "grayBright", bodyBold: true, startsToolBlock: true };
+    return { bodyColor: TOOL_HEADER_COLOR, bodyBold: true, startsToolBlock: true };
   }
 
   if (inToolBlock) {
@@ -1455,9 +1457,9 @@ function classifyTextLine(
       return { bodyColor: defaultColor, bodyBold: false, endsToolBlock: true };
     }
     if (isToolSummaryLine) {
-      return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
+      return { bodyColor: TOOL_TEXT_COLOR, bodyBold: false, startsToolBlock: true };
     }
-    return { bodyColor: "gray", bodyBold: false, startsToolBlock: true };
+    return { bodyColor: TOOL_TEXT_COLOR, bodyBold: false, startsToolBlock: true };
   }
 
   if (/^\d+\s+[|:]/.test(trimmed) || /^\[\+?\-?\d+\]/.test(trimmed)) {
