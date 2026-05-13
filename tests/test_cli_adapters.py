@@ -215,6 +215,38 @@ class TestClaudeInteractiveTmuxHelpers:
             "Hi! Ready to help plan. What are we working on?"
         )
 
+    def test_extract_assistant_text_deduplicates_redrawn_blocks(self):
+        capture = """
+⏺ Hi! Ready to collaborate on planning. What are we working on today?
+
+✻ Baked for 1s
+────────────────── botference-claude-unknown ──
+❯ [Room update since your last response]
+  hi
+
+⏺ Hi! Ready to collaborate on planning. What are we working on today?
+
+✻ Baked for 1s
+────────────────── botference-claude-unknown ──
+❯
+"""
+        assert extract_tmux_assistant_text(capture) == (
+            "Hi! Ready to collaborate on planning. What are we working on today?"
+        )
+
+    def test_extract_assistant_text_preserves_distinct_response_blocks(self):
+        capture = """
+⏺ First response.
+
+❯ [Room update since your last response]
+  second prompt
+
+⏺ Second response.
+"""
+        assert extract_tmux_assistant_text(capture) == (
+            "First response.\n\nSecond response."
+        )
+
     def test_extract_assistant_text_keeps_tool_blocks(self):
         capture = """
 ⏺ Read(README.md)
@@ -227,6 +259,28 @@ class TestClaudeInteractiveTmuxHelpers:
             "⎿ Read 12 lines\n\n"
             "The README confirms the setup."
         )
+
+    def test_tmux_capture_uses_bounded_recent_history(self, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_CLAUDE_TMUX_CAPTURE_START", raising=False)
+        adapter = ClaudeInteractiveTmuxAdapter(session_name="session", window_name="claude")
+        adapter.debug_log_path = ""
+        adapter._run_command = AsyncMock(return_value=(0, "screen", ""))
+
+        assert asyncio.run(adapter._capture()) == "screen"
+        adapter._run_command.assert_awaited_once_with(
+            "tmux",
+            "capture-pane",
+            "-p",
+            "-S",
+            "-120",
+            "-t",
+            "session:claude",
+        )
+
+    def test_tmux_capture_start_can_be_overridden(self, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_CLAUDE_TMUX_CAPTURE_START", "-40")
+        adapter = ClaudeInteractiveTmuxAdapter(session_name="session", window_name="claude")
+        assert adapter._capture_start == "-40"
 
     def test_build_command_is_minimal_interactive_claude(self, tmp_path):
         adapter = ClaudeInteractiveTmuxAdapter(

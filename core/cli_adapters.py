@@ -99,14 +99,27 @@ def extract_tmux_assistant_text(capture: str) -> str:
     intentionally ignores prompt echoes, status bars, splash text, and activity
     spinners, then keeps only assistant/tool-looking blocks.
     """
-    out: list[str] = []
-    in_assistant_block = False
+    blocks: list[str] = []
+    current: list[str] = []
+    seen_blocks: set[str] = set()
+
+    def flush_current() -> None:
+        nonlocal current
+        while current and current[-1] == "":
+            current.pop()
+        block = "\n".join(current).strip()
+        current = []
+        if not block or block in seen_blocks:
+            return
+        seen_blocks.add(block)
+        blocks.append(block)
+
     for raw_line in normalize_tmux_capture(capture).splitlines():
         line = raw_line.rstrip()
         stripped = line.strip()
         if not stripped:
-            if in_assistant_block and out and out[-1] != "":
-                out.append("")
+            if current and current[-1] != "":
+                current.append("")
             continue
         if (
             "Claude Code v" in stripped
@@ -118,30 +131,28 @@ def extract_tmux_assistant_text(capture: str) -> str:
             or re.fullmatch(r"[─━]+.*", stripped)
             or stripped.startswith(("▐", "▝", "▘", "✢", "✽", "✻", "✶"))
         ):
-            in_assistant_block = False
+            flush_current()
             continue
         if re.match(r"^[❯>]\s", stripped):
-            in_assistant_block = False
+            flush_current()
             continue
         assistant_match = re.match(r"^[⏺●]\s*(.*)", stripped)
         if assistant_match:
+            flush_current()
             text = assistant_match.group(1).strip()
             if text:
-                out.append(text)
-            in_assistant_block = True
+                current.append(text)
             continue
         if stripped.startswith(("⎿", "↳", "⤷")):
-            out.append(stripped)
-            in_assistant_block = True
+            current.append(stripped)
             continue
-        if in_assistant_block and raw_line.startswith(("  ", "\t")):
-            out.append(stripped)
+        if current and raw_line.startswith(("  ", "\t")):
+            current.append(stripped)
             continue
-        in_assistant_block = False
+        flush_current()
 
-    while out and out[-1] == "":
-        out.pop()
-    return "\n".join(out)
+    flush_current()
+    return "\n\n".join(blocks)
 
 
 def tmux_capture_looks_idle(capture: str) -> bool:
@@ -872,6 +883,9 @@ class ClaudeInteractiveTmuxAdapter:
         self._idle_grace = float(
             os.environ.get("BOTFERENCE_CLAUDE_TMUX_IDLE_SECONDS", "4.0")
         )
+        self._capture_start = os.environ.get(
+            "BOTFERENCE_CLAUDE_TMUX_CAPTURE_START", "-120"
+        )
 
     @property
     def tmux_target(self) -> str:
@@ -1013,7 +1027,7 @@ class ClaudeInteractiveTmuxAdapter:
             "capture-pane",
             "-p",
             "-S",
-            "-",
+            self._capture_start,
             "-t",
             self.tmux_target,
         )
@@ -1079,6 +1093,7 @@ class ClaudeInteractiveTmuxAdapter:
             return paste_error
 
         collected = ""
+        emitted_chunks: set[str] = set()
         last_change = time.monotonic()
         deadline = time.monotonic() + self.timeout
         last_capture = before
@@ -1090,7 +1105,8 @@ class ClaudeInteractiveTmuxAdapter:
             delta = tmux_capture_delta(previous_assistant_text, assistant_text)
             if delta:
                 cleaned = delta.strip("\n")
-                if cleaned:
+                if cleaned and cleaned not in emitted_chunks:
+                    emitted_chunks.add(cleaned)
                     collected += ("\n" if collected else "") + cleaned
                     self._emit_stream({
                         "kind": "text_delta",
@@ -1098,7 +1114,9 @@ class ClaudeInteractiveTmuxAdapter:
                         "text": cleaned + "\n",
                     })
                     self._log("parsed_delta", cleaned)
-                last_change = time.monotonic()
+                    last_change = time.monotonic()
+                elif cleaned:
+                    self._log("duplicate_delta_ignored", cleaned)
                 previous_assistant_text = assistant_text
                 last_capture = capture
                 continue
