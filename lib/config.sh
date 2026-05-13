@@ -329,6 +329,7 @@ parse_loop_args() {
   BOTFERENCE_MODE=false
   DEBUG_PANES=false
   UI_MODE="ink"
+  CLAUDE_TRANSPORT="${BOTFERENCE_CLAUDE_TRANSPORT:-programmatic}"
   INIT_PROFILE="vault-drafter"
   PROJECT_DIR_NAME="${BOTFERENCE_PROJECT_DIR_NAME:-botference}"
 
@@ -358,6 +359,16 @@ parse_loop_args() {
         ;;
       --claude) BOTFERENCE_MODE=false ;;
       --botference|--group) BOTFERENCE_MODE=true ;;
+      --claude-interactive) CLAUDE_TRANSPORT="tmux" ;;
+      --claude-transport=*) CLAUDE_TRANSPORT="${arg#--claude-transport=}" ;;
+      --claude-transport)
+        if [ "$#" -eq 0 ]; then
+          echo "Error: --claude-transport requires a value." >&2
+          return 2
+        fi
+        CLAUDE_TRANSPORT="$1"
+        shift
+        ;;
       --ink) UI_MODE="ink" ;;
       --ink-legacy) UI_MODE="ink-legacy" ;;
       --ink-v2) UI_MODE="ink" ;;
@@ -370,7 +381,8 @@ parse_loop_args() {
   done
 
   BOTFERENCE_PROJECT_DIR_NAME=$(normalize_project_dir_name "$PROJECT_DIR_NAME") || return $?
-  export BOTFERENCE_PROJECT_DIR_NAME
+  BOTFERENCE_CLAUDE_TRANSPORT="$CLAUDE_TRANSPORT"
+  export BOTFERENCE_PROJECT_DIR_NAME BOTFERENCE_CLAUDE_TRANSPORT
 }
 
 show_help() {
@@ -388,6 +400,10 @@ Options:
   -p                Non-interactive (pipe) mode
   --anthropic-model=<name>  Override Anthropic model (Claude participant)
   --claude          Solo Claude mode (skip Codex, use claude CLI only)
+  --claude-interactive
+                    Experimental botference mode: mirror interactive Claude through tmux
+  --claude-transport=<programmatic|tmux>
+                    Select Claude transport for botference mode
   --ink             Use Ink (Node.js) TUI for botference mode (default)
   --ink-legacy      Use the legacy Ink TUI with Ctrl+Y native text selection
   --textual         Use Textual (Python) TUI for botference mode

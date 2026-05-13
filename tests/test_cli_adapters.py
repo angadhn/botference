@@ -22,15 +22,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 from cli_adapters import (
     AdapterResponse,
     ClaudeAdapter,
+    ClaudeInteractiveTmuxAdapter,
     CodexAdapter,
     ToolSummary,
     _read_jsonl_lines,
     _truncate,
     _CONTEXT_WINDOWS,
+    build_tmux_paste_payload,
     claude_plan_settings_for_work_dir,
+    normalize_claude_transport,
+    normalize_tmux_capture,
     plan_allowed_tools_for_work_dir,
     planner_write_config,
     planner_write_roots_for_env,
+    tmux_capture_delta,
+    tmux_capture_looks_idle,
+    tmux_safe_name,
 )
 
 SPIKE_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -125,6 +132,117 @@ class TestTruncate:
 
     def test_long_string_truncated(self):
         assert _truncate("abcdef", 3) == "abc..."
+
+
+# ── Claude interactive tmux helpers ─────────────────────────
+
+
+class TestClaudeInteractiveTmuxHelpers:
+    def test_normalize_claude_transport_accepts_aliases(self, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_CLAUDE_TRANSPORT", raising=False)
+        assert normalize_claude_transport(None) == "programmatic"
+        assert normalize_claude_transport("claude-p") == "programmatic"
+        assert normalize_claude_transport("interactive") == "tmux"
+
+        monkeypatch.setenv("BOTFERENCE_CLAUDE_TRANSPORT", "tmux")
+        assert normalize_claude_transport(None) == "tmux"
+
+    def test_normalize_claude_transport_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            normalize_claude_transport("socket")
+
+    def test_tmux_safe_name_strips_unsafe_characters(self):
+        assert tmux_safe_name("botference", "Thread One/Two!") == "botference-Thread-One-Two"
+        assert len(tmux_safe_name("x" * 200, max_len=32)) == 32
+
+    def test_normalize_tmux_capture_removes_ansi_and_blank_edges(self):
+        capture = "\n\x1b[31mClaude\x1b[0m\r\nanswer  \n\n"
+        assert normalize_tmux_capture(capture) == "Claude\nanswer"
+
+    def test_tmux_capture_delta_prefers_prefix_diff(self):
+        previous = "Claude\nhello"
+        current = "Claude\nhello\nworld"
+        assert tmux_capture_delta(previous, current) == "world"
+
+    def test_tmux_capture_delta_handles_scrolled_overlap(self):
+        previous = "a\nb\nc"
+        current = "b\nc\nd"
+        assert tmux_capture_delta(previous, current) == "d"
+
+    def test_tmux_paste_payload_preserves_multiline_prompt_and_final_enter(self):
+        payload = build_tmux_paste_payload("line 1\nline 2")
+        assert payload == b"line 1\nline 2\n"
+
+    def test_tmux_idle_detector(self):
+        assert tmux_capture_looks_idle("Claude\n> ")
+        assert not tmux_capture_looks_idle("Claude is thinking\nesc to interrupt")
+
+    def test_build_command_includes_session_and_settings(self, tmp_path):
+        adapter = ClaudeInteractiveTmuxAdapter(
+            model="claude-sonnet-4-6",
+            effort="high",
+            cwd=str(tmp_path),
+            add_dirs=["/tmp/other"],
+            settings={"permissions": {"defaultMode": "dontAsk"}},
+            session_name="botference-claude-test",
+        )
+        cmd = adapter._build_claude_command()
+        assert "claude --model claude-sonnet-4-6" in cmd
+        assert "--session-id botference-claude-test" in cmd
+        assert "--effort high" in cmd
+        assert "--add-dir /tmp/other" in cmd
+
+    def test_ensure_session_starts_tmux_when_missing(self, monkeypatch, tmp_path):
+        async def run():
+            adapter = ClaudeInteractiveTmuxAdapter(
+                model="claude-sonnet-4-6",
+                cwd=str(tmp_path),
+                debug_log_path=str(tmp_path / "debug.jsonl"),
+                session_name="botference-claude-test",
+            )
+            calls = []
+
+            async def fake_run_command(*args, input_bytes=None, check=False):
+                calls.append((args, input_bytes, check))
+                if args[:2] == ("tmux", "has-session"):
+                    return 1, "", ""
+                if "capture-pane" in args:
+                    return 0, "> ", ""
+                return 0, "", ""
+
+            monkeypatch.setattr("cli_adapters.shutil.which", lambda name: f"/bin/{name}")
+            monkeypatch.setattr("cli_adapters.asyncio.sleep", AsyncMock())
+            adapter._run_command = fake_run_command
+
+            error = await adapter._ensure_session()
+            assert error is None
+            assert any(call[0][:2] == ("tmux", "new-session") for call in calls)
+            assert any("claude --model" in call[0][-1] for call in calls if call[0][:2] == ("tmux", "new-session"))
+
+        asyncio.run(run())
+
+    def test_paste_prompt_uses_tmux_buffer(self, tmp_path):
+        async def run():
+            adapter = ClaudeInteractiveTmuxAdapter(
+                debug_log_path=str(tmp_path / "debug.jsonl"),
+                session_name="botference-claude-test",
+            )
+            calls = []
+
+            async def fake_run_command(*args, input_bytes=None, check=False):
+                calls.append((args, input_bytes, check))
+                return 0, "", ""
+
+            adapter._run_command = fake_run_command
+            await adapter._paste_prompt("hello\nclaude")
+
+            assert calls[0][0][:2] == ("tmux", "load-buffer")
+            assert calls[0][1] == b"hello\nclaude\n"
+            assert calls[1][0][:2] == ("tmux", "paste-buffer")
+            assert calls[2][0][:2] == ("tmux", "send-keys")
+            assert "Enter" in calls[2][0]
+
+        asyncio.run(run())
 
 
 # ── ToolSummary tests ────────────────────────────────────────

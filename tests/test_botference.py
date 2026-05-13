@@ -1626,6 +1626,7 @@ def _shell_parse_loop_args(*args: str) -> dict[str, str]:
         'echo "PROMPT_FILE=$PROMPT_FILE" && '
         'echo "BOTFERENCE_MODE=$BOTFERENCE_MODE" && '
         'echo "UI_MODE=$UI_MODE" && '
+        'echo "CLAUDE_TRANSPORT=$CLAUDE_TRANSPORT" && '
         'echo "INIT_PROFILE=$INIT_PROFILE" && '
         'echo "BOTFERENCE_PROJECT_DIR_NAME=$BOTFERENCE_PROJECT_DIR_NAME"'
     )
@@ -1685,6 +1686,14 @@ class TestPlanningModeRouting:
         plan = _shell_parse_loop_args("plan", "--ink-v2")
         assert plan["LOOP_MODE"] == "plan"
         assert plan["UI_MODE"] == "ink"
+
+    def test_parse_loop_args_supports_claude_interactive_transport(self):
+        plan = _shell_parse_loop_args("plan", "--claude-interactive")
+        assert plan["LOOP_MODE"] == "plan"
+        assert plan["CLAUDE_TRANSPORT"] == "tmux"
+
+        explicit = _shell_parse_loop_args("plan", "--claude-transport", "programmatic")
+        assert explicit["CLAUDE_TRANSPORT"] == "programmatic"
 
     def test_parse_loop_args_supports_archive_mode(self):
         archive = _shell_parse_loop_args("archive")

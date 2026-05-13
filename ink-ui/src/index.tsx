@@ -215,6 +215,7 @@ function parseArgs(argv: string[]) {
     taskFile: "",
     debugPanes: false,
     claudeEffort: "",
+    claudeTransport: process.env["BOTFERENCE_CLAUDE_TRANSPORT"] ?? "programmatic",
     inkLegacy: false,
   };
 
@@ -247,6 +248,12 @@ function parseArgs(argv: string[]) {
         break;
       case "--claude-effort":
         args.claudeEffort = argv[++i] ?? "";
+        break;
+      case "--claude-transport":
+        args.claudeTransport = argv[++i] ?? args.claudeTransport;
+        break;
+      case "--claude-interactive":
+        args.claudeTransport = "tmux";
         break;
     }
   }

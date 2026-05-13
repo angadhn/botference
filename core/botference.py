@@ -25,9 +25,11 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 from cli_adapters import (
     AdapterResponse,
     ClaudeAdapter,
+    ClaudeInteractiveTmuxAdapter,
     CodexAdapter,
     PlannerWriteConfig,
     ToolSummary,
+    normalize_claude_transport,
     normalize_write_roots,
     planner_write_config,
     planner_write_roots_for_env,
@@ -2955,6 +2957,10 @@ def main() -> None:
     parser.add_argument("--system-prompt", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--debug-panes", action="store_true")
+    parser.add_argument(
+        "--claude-transport",
+        default=os.environ.get("BOTFERENCE_CLAUDE_TRANSPORT", "programmatic"),
+    )
     args = parser.parse_args()
 
     from botference_ui import BotferenceApp
@@ -2996,13 +3002,25 @@ def main() -> None:
         print(f"  tail -f {claude_log}")
         print(f"  tail -f {codex_log}")
         print()
+    elif normalize_claude_transport(args.claude_transport) == "tmux":
+        log_dir = os.environ.get(
+            "BOTFERENCE_RUN",
+            os.path.join(_project_dir, ".botference", "logs"),
+        )
+        os.makedirs(log_dir, exist_ok=True)
+        claude_log = os.path.join(log_dir, "debug-claude-tmux.log")
 
     paths = BotferencePaths.resolve()
     plan_write_roots = planner_write_roots_for_env(
         paths.project_root, paths.work_dir, mode="plan"
     )
     planner_config = planner_write_config(paths.project_root, plan_write_roots)
-    claude = ClaudeAdapter(
+    claude_cls = (
+        ClaudeInteractiveTmuxAdapter
+        if normalize_claude_transport(args.claude_transport) == "tmux"
+        else ClaudeAdapter
+    )
+    claude = claude_cls(
         model=args.anthropic_model,
         effort=args.claude_effort,
         tools=[

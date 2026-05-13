@@ -89,6 +89,7 @@ interface BridgeArgs {
   taskFile: string;
   debugPanes: boolean;
   claudeEffort: string;
+  claudeTransport: string;
   inkLegacy: boolean;
 }
 
@@ -925,6 +926,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (bridgeArgs.debugPanes) args.push("--debug-panes");
     if (bridgeArgs.claudeEffort) args.push("--claude-effort", bridgeArgs.claudeEffort);
     if (bridgeArgs.openaiEffort) args.push("--openai-effort", bridgeArgs.openaiEffort);
+    if (bridgeArgs.claudeTransport) args.push("--claude-transport", bridgeArgs.claudeTransport);
 
     const proc = spawn("python3", args, {
       stdio: ["pipe", "pipe", "pipe"],

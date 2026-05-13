@@ -18,7 +18,9 @@ from pathlib import Path
 
 from cli_adapters import (
     ClaudeAdapter,
+    ClaudeInteractiveTmuxAdapter,
     CodexAdapter,
+    normalize_claude_transport,
     planner_write_config,
     planner_write_roots_for_env,
 )
@@ -191,6 +193,10 @@ async def main() -> None:
     parser.add_argument("--system-prompt-file", required=True)
     parser.add_argument("--task-file", required=True)
     parser.add_argument("--debug-panes", action="store_true")
+    parser.add_argument(
+        "--claude-transport",
+        default=os.environ.get("BOTFERENCE_CLAUDE_TRANSPORT", "programmatic"),
+    )
     args = parser.parse_args()
 
     with open(args.system_prompt_file) as f:
@@ -228,6 +234,13 @@ async def main() -> None:
         for p in (claude_log, codex_log):
             with open(p, "w") as f:
                 f.write("")
+    elif normalize_claude_transport(args.claude_transport) == "tmux":
+        log_dir = os.environ.get(
+            "BOTFERENCE_RUN",
+            os.path.join(project_dir, ".botference", "logs"),
+        )
+        os.makedirs(log_dir, exist_ok=True)
+        claude_log = os.path.join(log_dir, "debug-claude-tmux.log")
 
     paths = BotferencePaths.resolve()
     plan_write_roots = planner_write_roots_for_env(
@@ -235,7 +248,12 @@ async def main() -> None:
     )
     planner_config = planner_write_config(paths.project_root, plan_write_roots)
 
-    claude = ClaudeAdapter(
+    claude_cls = (
+        ClaudeInteractiveTmuxAdapter
+        if normalize_claude_transport(args.claude_transport) == "tmux"
+        else ClaudeAdapter
+    )
+    claude = claude_cls(
         model=args.anthropic_model,
         effort=args.claude_effort,
         tools=[

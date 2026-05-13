@@ -90,6 +90,7 @@ it from the repo root with the local launcher:
 ./botference plan --ink-legacy             # Legacy Ink TUI
 ./botference plan --textual                # Textual fallback
 ./botference plan --claude                 # Solo Claude
+./botference plan --claude-interactive     # Experimental: mirror interactive Claude through tmux
 ./botference research-plan                 # Structured planning in Ink (experimental)
 ./botference --help
 ```
@@ -116,6 +117,7 @@ botference plan --ink-legacy               # Legacy Ink with Ctrl+Y native selec
 botference --project-dir=spaceship plan    # Use botference-spaceship/
 botference plan --textual                  # Use the Textual fallback instead
 botference plan --claude                   # Solo Claude (no Codex)
+botference plan --claude-interactive       # Experimental interactive-Claude tmux transport
 
 # Building (experimental)
 botference build                           # Interactive build loop
@@ -324,6 +326,41 @@ If you also run with debug panes, the model stream logs remain:
 
 - `build/logs/debug-claude.log`
 - `build/logs/debug-codex.log`
+
+### Experimental interactive Claude transport
+
+By default, Botference plan mode still talks to Claude through the structured
+programmatic Claude Code path. To opt into a screen-scraped interactive Claude
+Code session instead, run:
+
+```bash
+botference plan --claude-interactive
+# or
+BOTFERENCE_CLAUDE_TRANSPORT=tmux botference plan
+```
+
+This starts or reuses a dedicated `tmux` session running interactive `claude`,
+pastes prompts into it with `tmux load-buffer` / `paste-buffer`, captures the
+pane with `tmux capture-pane`, and mirrors newly detected Claude output back
+into the Council pane. Codex remains on the existing structured adapter path.
+
+Limitations: this is a best-effort mirror, not a structured Claude stream. Idle
+detection is heuristic, Claude tool activity is not available with the same
+JSON structure as the default transport, and terminal wrapping can make prompt
+echo removal imperfect. Logs are written to `debug-claude-tmux.log` under the
+current Botference run/log directory, or `.botference/logs/` when no run
+directory is available.
+
+To inspect or recover the underlying Claude session:
+
+```bash
+tmux ls | grep botference-claude
+tmux attach -t <session-name>
+tmux kill-session -t <session-name>   # only when you want to clean it up
+```
+
+Botference does not kill the tmux Claude session on normal exit, so the
+interactive Claude context can continue across Botference restarts.
 
 ### Protected write approvals
 
@@ -577,6 +614,10 @@ python3 scripts/update_loc_badge.py
 | `OPENAI_REASONING_EFFORT` | Codex participant reasoning effort for planner sessions (default: `high`) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
 | `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |
+| `BOTFERENCE_CLAUDE_TRANSPORT` | Claude plan-mode transport: `programmatic` (default) or experimental `tmux` interactive mirror |
 | `BOTFERENCE_CLI_TIMEOUT` | Timeout in seconds for both CLI adapters unless a model-specific override is set |
 | `BOTFERENCE_CLAUDE_TIMEOUT` | Timeout in seconds for Claude CLI turns (default: `3600`) |
+| `BOTFERENCE_CLAUDE_TMUX_TIMEOUT` | Timeout in seconds for experimental interactive Claude tmux turns |
+| `BOTFERENCE_CLAUDE_TMUX_POLL_SECONDS` | Poll interval for tmux pane capture in interactive Claude mode |
+| `BOTFERENCE_CLAUDE_TMUX_IDLE_SECONDS` | Idle grace period before Botference treats the tmux Claude turn as complete |
 | `BOTFERENCE_CODEX_TIMEOUT` | Timeout in seconds for Codex CLI turns (default: `3600`) |

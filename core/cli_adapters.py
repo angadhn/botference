@@ -14,6 +14,10 @@ from contextlib import suppress
 import json
 import logging
 import os
+import re
+import shlex
+import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +29,84 @@ from render_blocks import build_tool_use_blocks, parse_render_blocks
 log = logging.getLogger(__name__)
 
 StreamCallback = Callable[[dict[str, Any]], None]
+
+_ANSI_RE = re.compile(
+    r"(?:\x1b\][^\x07]*(?:\x07|\x1b\\))|(?:\x1b\[[0-?]*[ -/]*[@-~])"
+)
+
+
+def normalize_claude_transport(value: Optional[str]) -> str:
+    raw = (value or os.environ.get("BOTFERENCE_CLAUDE_TRANSPORT", "")).strip().lower()
+    if raw in ("", "default", "programmatic", "cli", "claude-p", "print"):
+        return "programmatic"
+    if raw in ("tmux", "interactive", "claude-interactive"):
+        return "tmux"
+    raise ValueError(
+        f"Unsupported Claude transport '{value}'. Use 'programmatic' or 'tmux'."
+    )
+
+
+def tmux_safe_name(*parts: str, max_len: int = 80) -> str:
+    raw = "-".join(part for part in parts if part)
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    return (cleaned or "botference-claude")[:max_len]
+
+
+def normalize_tmux_capture(text: str) -> str:
+    text = _ANSI_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def tmux_capture_delta(previous: str, current: str) -> str:
+    previous = normalize_tmux_capture(previous)
+    current = normalize_tmux_capture(current)
+    if not current or current == previous:
+        return ""
+    if previous and current.startswith(previous):
+        return current[len(previous):].lstrip("\n")
+
+    prev_lines = previous.splitlines()
+    cur_lines = current.splitlines()
+    max_overlap = min(len(prev_lines), len(cur_lines))
+    for overlap in range(max_overlap, 0, -1):
+        if prev_lines[-overlap:] == cur_lines[:overlap]:
+            return "\n".join(cur_lines[overlap:]).strip("\n")
+    return current
+
+
+def build_tmux_paste_payload(prompt: str) -> bytes:
+    if not prompt.endswith("\n"):
+        prompt += "\n"
+    return prompt.encode("utf-8")
+
+
+def tmux_capture_looks_idle(capture: str) -> bool:
+    text = normalize_tmux_capture(capture).lower()
+    if not text:
+        return False
+    tail = "\n".join(text.splitlines()[-8:])
+    busy_markers = (
+        "esc to interrupt",
+        "press esc to interrupt",
+        "ctrl+c to cancel",
+        "thinking",
+        "running",
+        "working",
+    )
+    if any(marker in tail for marker in busy_markers):
+        return False
+    return bool(
+        re.search(r"(^|\n)\s*(>|❯|›)\s*$", tail)
+        or "what would you like" in tail
+        or "try \"" in tail and "claude" in tail
+    )
 
 
 def _resolve_write_root_entry(project_root: Path, root: str | Path) -> Path | None:
@@ -679,6 +761,272 @@ class ClaudeAdapter:
         return (resp.input_tokens
                 + resp.cache_creation_tokens
                 + resp.cache_read_tokens)
+
+
+class ClaudeInteractiveTmuxAdapter:
+    """Experimental interactive Claude Code transport mirrored through tmux.
+
+    This adapter intentionally screen-scrapes an interactive tmux pane. It is a
+    best-effort mirror for users who explicitly opt in; the structured
+    `claude -p` adapter remains the default.
+    """
+
+    def __init__(self, model: str = "claude-sonnet-4-6",
+                 tools: Optional[list] = None,
+                 effort: str = "",
+                 timeout: Optional[int] = None,
+                 debug_log_path: str = "",
+                 cwd: str = "",
+                 add_dirs: Optional[list[str]] = None,
+                 settings: Optional[dict] = None,
+                 stream_callback: Optional[StreamCallback] = None,
+                 session_name: str = "",
+                 window_name: str = "claude"):
+        self.model = model
+        self.tools = tools or []
+        self.effort = effort
+        self.timeout = timeout or _timeout_from_env(
+            "BOTFERENCE_CLAUDE_TMUX_TIMEOUT",
+            "BOTFERENCE_CLAUDE_TIMEOUT",
+        )
+        if debug_log_path:
+            self.debug_log_path = debug_log_path
+        else:
+            log_dir = os.environ.get("BOTFERENCE_RUN") or os.path.join(
+                os.getcwd(), ".botference", "logs"
+            )
+            self.debug_log_path = os.path.join(log_dir, "debug-claude-tmux.log")
+        self.cwd = cwd
+        self.add_dirs = add_dirs or []
+        self.settings = settings
+        self.stream_callback = stream_callback
+        self.session_id = session_name
+        self.window_name = tmux_safe_name(window_name, max_len=32)
+        self._last_capture = ""
+        self._capture_interval = float(
+            os.environ.get("BOTFERENCE_CLAUDE_TMUX_POLL_SECONDS", "1.0")
+        )
+        self._idle_grace = float(
+            os.environ.get("BOTFERENCE_CLAUDE_TMUX_IDLE_SECONDS", "4.0")
+        )
+
+    @property
+    def tmux_target(self) -> str:
+        return f"{self.session_id}:{self.window_name}"
+
+    def _emit_stream(self, event: dict[str, Any]) -> None:
+        if not self.stream_callback:
+            return
+        try:
+            self.stream_callback(event)
+        except Exception:
+            log.exception("Claude tmux stream callback failed")
+
+    def _log(self, event: str, payload: str = "") -> None:
+        if not self.debug_log_path:
+            return
+        Path(self.debug_log_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(self.debug_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "transport": "tmux",
+                "session": self.session_id,
+                "window": self.window_name,
+                "event": event,
+                "payload": payload,
+            }, ensure_ascii=False) + "\n")
+
+    async def _run_command(
+        self,
+        *args: str,
+        input_bytes: Optional[bytes] = None,
+        check: bool = False,
+    ) -> tuple[int, str, str]:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate(input_bytes)
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if check and proc.returncode != 0:
+            raise RuntimeError(f"{' '.join(args)} failed: {err.strip() or out.strip()}")
+        return proc.returncode or 0, out, err
+
+    def _build_claude_command(self) -> str:
+        cmd = ["claude", "--model", self.model]
+        if self.session_id:
+            cmd += ["--session-id", self.session_id, "--name", self.session_id]
+        if self.effort:
+            cmd += ["--effort", self.effort]
+        if self.settings:
+            cmd += ["--settings", json.dumps(self.settings, separators=(",", ":"))]
+        for path in self.add_dirs:
+            cmd += ["--add-dir", path]
+        return " ".join(shlex.quote(part) for part in cmd)
+
+    async def _ensure_session(self) -> Optional[AdapterResponse]:
+        if not shutil.which("tmux"):
+            return AdapterResponse(
+                text="Error: tmux is required for --claude-interactive but was not found on PATH.",
+                exit_code=127,
+                session_id=self.session_id,
+            )
+        if not shutil.which("claude"):
+            return AdapterResponse(
+                text="Error: `claude` CLI not found. Install Claude Code before using --claude-interactive.",
+                exit_code=127,
+                session_id=self.session_id,
+            )
+        if not self.session_id:
+            thread = os.environ.get("CURRENT_THREAD", "") or os.environ.get(
+                "BOTFERENCE_CURRENT_THREAD", ""
+            )
+            self.session_id = tmux_safe_name(
+                "botference", "claude", thread, str(uuid.uuid4())[:8]
+            )
+
+        code, _, _ = await self._run_command("tmux", "has-session", "-t", self.session_id)
+        if code == 0:
+            self._log("reuse_session")
+            return None
+
+        cwd = self.cwd or os.getcwd()
+        cmd = self._build_claude_command()
+        try:
+            await self._run_command(
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                self.session_id,
+                "-n",
+                self.window_name,
+                "-c",
+                cwd,
+                cmd,
+                check=True,
+            )
+        except RuntimeError as exc:
+            return AdapterResponse(text=f"Error starting tmux Claude session: {exc}", exit_code=1)
+        self._log("start_session", cmd)
+        await asyncio.sleep(1.0)
+        self._last_capture = await self._capture()
+        return None
+
+    async def _capture(self) -> str:
+        _, out, err = await self._run_command(
+            "tmux",
+            "capture-pane",
+            "-p",
+            "-S",
+            "-",
+            "-t",
+            self.tmux_target,
+        )
+        if err.strip():
+            self._log("capture_stderr", err.strip())
+        self._log("raw_capture", out)
+        return out
+
+    async def _paste_prompt(self, prompt: str) -> None:
+        buffer_name = tmux_safe_name("botference", "prompt", str(uuid.uuid4())[:8])
+        await self._run_command(
+            "tmux",
+            "load-buffer",
+            "-b",
+            buffer_name,
+            "-",
+            input_bytes=build_tmux_paste_payload(prompt),
+            check=True,
+        )
+        await self._run_command(
+            "tmux",
+            "paste-buffer",
+            "-b",
+            buffer_name,
+            "-t",
+            self.tmux_target,
+            check=True,
+        )
+        await self._run_command("tmux", "send-keys", "-t", self.tmux_target, "Enter", check=True)
+        await self._run_command("tmux", "delete-buffer", "-b", buffer_name)
+        self._log("prompt_sent", prompt)
+
+    async def send(self, prompt: str) -> AdapterResponse:
+        return await self._run(prompt)
+
+    async def resume(self, message: str) -> AdapterResponse:
+        return await self._run(message)
+
+    async def _run(self, prompt: str) -> AdapterResponse:
+        setup_error = await self._ensure_session()
+        if setup_error:
+            return setup_error
+
+        before = self._last_capture or await self._capture()
+        await self._paste_prompt(prompt)
+
+        collected = ""
+        last_change = time.monotonic()
+        deadline = time.monotonic() + self.timeout
+        last_capture = before
+
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self._capture_interval)
+            capture = await self._capture()
+            delta = tmux_capture_delta(last_capture, capture)
+            if delta:
+                # Interactive Claude echoes pasted prompts. Remove exact prompt
+                # occurrences when possible; wrapped echoes remain best-effort.
+                cleaned = delta.replace(prompt, "").strip("\n")
+                if cleaned:
+                    collected += ("\n" if collected else "") + cleaned
+                    self._emit_stream({
+                        "kind": "text_delta",
+                        "model": "claude",
+                        "text": cleaned + "\n",
+                    })
+                    self._log("parsed_delta", cleaned)
+                last_change = time.monotonic()
+                last_capture = capture
+                continue
+
+            if (
+                time.monotonic() - last_change >= self._idle_grace
+                and tmux_capture_looks_idle(capture)
+            ):
+                self._last_capture = capture
+                return AdapterResponse(
+                    text=collected.strip(),
+                    raw_output=normalize_tmux_capture(capture),
+                    exit_code=0,
+                    session_id=self.session_id,
+                    context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                    context_tokens_reliable=False,
+                )
+
+        self._last_capture = last_capture
+        return AdapterResponse(
+            text=(
+                collected.strip()
+                or "Timed out waiting for interactive Claude tmux session to become idle. "
+                f"Attach with: tmux attach -t {self.session_id}"
+            ),
+            raw_output=normalize_tmux_capture(last_capture),
+            exit_code=-1,
+            session_id=self.session_id,
+            context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+            context_tokens_reliable=False,
+        )
+
+    def context_percent(self, resp: AdapterResponse) -> float:
+        return 0.0
+
+    def context_tokens(self, resp: AdapterResponse) -> int:
+        return 0
 
 
 # ── Codex Adapter ────────────────────────────────────────────
