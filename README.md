@@ -352,6 +352,11 @@ input field at the bottom.
   otherwise it writes OSC 52 as a best-effort fallback. Copy diagnostics are
   appended to `.botference/ink-v2.log` unless `BOTFERENCE_INK_LOG=0` is set.
   Set `BOTFERENCE_INK_LOG=/path/to/log` to put those diagnostics elsewhere.
+- **Ink v2 activity line:** while a turn is running, the status line shows a
+  small animated glyph and action phrase. It uses whimsical fallback verbs
+  such as `Prestidigitating...`, but switches to concrete activity when bridge
+  events expose it, for example `Codex is reading README.md...` or
+  `Claude is responding...`.
 - **Copying text in the Ink backend:** press **Ctrl+Y** to enter mouse
   selection mode, then drag-select text with the mouse/trackpad and copy using
   your terminal's normal shortcut (for example **Cmd+C** on macOS). Press
