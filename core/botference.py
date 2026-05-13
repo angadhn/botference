@@ -1859,6 +1859,15 @@ class Botference:
             self._persist_session()
             return None
 
+        if resp.exit_code not in (0, -1):
+            detail = resp.text.strip() or f"{model} exited with code {resp.exit_code}"
+            self._add_room_entry(ui, "system", f"Error starting {model}: {detail}")
+            self._models_initialized.discard(model)
+            if handoff_doc:
+                self._persist_failed_relay_handoff(model)
+            self._persist_session()
+            return None
+
         if handoff_doc:
             self._pending_relay_handoffs.pop(model, None)
             self.paths.handoff_live_file(model).unlink(missing_ok=True)
@@ -2241,6 +2250,16 @@ class Botference:
 
         for model in targets:
             resp = await self._send_to_model(model, body, ui)
+            if resp is None and route == "@all" and model == "claude" and getattr(
+                self.claude, "abort_all_on_startup_failure", False
+            ):
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    "Codex was not started because the interactive Claude "
+                    "session failed to start.",
+                )
+                break
             if resp:
                 self.transcript.add(model, resp.text, resp.tool_summaries)
                 self.transcript.mark_seen(model)

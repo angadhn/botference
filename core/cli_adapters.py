@@ -771,6 +771,8 @@ class ClaudeInteractiveTmuxAdapter:
     `claude -p` adapter remains the default.
     """
 
+    abort_all_on_startup_failure = True
+
     def __init__(self, model: str = "claude-sonnet-4-6",
                  tools: Optional[list] = None,
                  effort: str = "",
@@ -867,6 +869,32 @@ class ClaudeInteractiveTmuxAdapter:
             cmd += ["--add-dir", path]
         return " ".join(shlex.quote(part) for part in cmd)
 
+    def _startup_failure(self, detail: str) -> AdapterResponse:
+        message = (
+            "Error: interactive Claude tmux session failed to start. "
+            f"{detail} "
+            f"Debug log: {self.debug_log_path}. "
+            f"Try attaching manually with: tmux attach -t {self.session_id}"
+        )
+        self._log("startup_failure", message)
+        return AdapterResponse(
+            text=message,
+            exit_code=1,
+            session_id=self.session_id,
+            context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+            context_tokens_reliable=False,
+        )
+
+    async def _session_exists(self) -> bool:
+        if not self.session_id:
+            return False
+        code, _, err = await self._run_command(
+            "tmux", "has-session", "-t", self.session_id
+        )
+        if code != 0 and err.strip():
+            self._log("has_session_stderr", err.strip())
+        return code == 0
+
     async def _ensure_session(self) -> Optional[AdapterResponse]:
         if not shutil.which("tmux"):
             return AdapterResponse(
@@ -888,31 +916,34 @@ class ClaudeInteractiveTmuxAdapter:
                 "botference", "claude", thread, str(uuid.uuid4())[:8]
             )
 
-        code, _, _ = await self._run_command("tmux", "has-session", "-t", self.session_id)
-        if code == 0:
+        if await self._session_exists():
             self._log("reuse_session")
             return None
 
         cwd = self.cwd or os.getcwd()
         cmd = self._build_claude_command()
-        try:
-            await self._run_command(
-                "tmux",
-                "new-session",
-                "-d",
-                "-s",
-                self.session_id,
-                "-n",
-                self.window_name,
-                "-c",
-                cwd,
-                cmd,
-                check=True,
-            )
-        except RuntimeError as exc:
-            return AdapterResponse(text=f"Error starting tmux Claude session: {exc}", exit_code=1)
+        code, out, err = await self._run_command(
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            self.session_id,
+            "-n",
+            self.window_name,
+            "-c",
+            cwd,
+            cmd,
+        )
+        if code != 0:
+            detail = err.strip() or out.strip() or "tmux new-session failed."
+            return self._startup_failure(detail)
         self._log("start_session", cmd)
         await asyncio.sleep(1.0)
+        if not await self._session_exists():
+            return self._startup_failure(
+                "The tmux session exited before it was ready; interactive "
+                "`claude` likely exited immediately."
+            )
         self._last_capture = await self._capture()
         return None
 
@@ -931,29 +962,41 @@ class ClaudeInteractiveTmuxAdapter:
         self._log("raw_capture", out)
         return out
 
-    async def _paste_prompt(self, prompt: str) -> None:
+    async def _paste_prompt(self, prompt: str) -> Optional[AdapterResponse]:
+        if not await self._session_exists():
+            return self._startup_failure(
+                "The tmux session is not running, so Botference did not paste "
+                "the prompt."
+            )
         buffer_name = tmux_safe_name("botference", "prompt", str(uuid.uuid4())[:8])
-        await self._run_command(
+        code, out, err = await self._run_command(
             "tmux",
             "load-buffer",
             "-b",
             buffer_name,
             "-",
             input_bytes=build_tmux_paste_payload(prompt),
-            check=True,
         )
-        await self._run_command(
+        if code != 0:
+            return self._startup_failure(err.strip() or out.strip() or "tmux load-buffer failed.")
+        code, out, err = await self._run_command(
             "tmux",
             "paste-buffer",
             "-b",
             buffer_name,
             "-t",
             self.tmux_target,
-            check=True,
         )
-        await self._run_command("tmux", "send-keys", "-t", self.tmux_target, "Enter", check=True)
+        if code != 0:
+            return self._startup_failure(err.strip() or out.strip() or "tmux paste-buffer failed.")
+        code, out, err = await self._run_command(
+            "tmux", "send-keys", "-t", self.tmux_target, "Enter",
+        )
+        if code != 0:
+            return self._startup_failure(err.strip() or out.strip() or "tmux send-keys failed.")
         await self._run_command("tmux", "delete-buffer", "-b", buffer_name)
         self._log("prompt_sent", prompt)
+        return None
 
     async def send(self, prompt: str) -> AdapterResponse:
         return await self._run(prompt)
@@ -967,7 +1010,9 @@ class ClaudeInteractiveTmuxAdapter:
             return setup_error
 
         before = self._last_capture or await self._capture()
-        await self._paste_prompt(prompt)
+        paste_error = await self._paste_prompt(prompt)
+        if paste_error:
+            return paste_error
 
         collected = ""
         last_change = time.monotonic()

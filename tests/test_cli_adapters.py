@@ -201,11 +201,14 @@ class TestClaudeInteractiveTmuxHelpers:
                 session_name="botference-claude-test",
             )
             calls = []
+            has_session_calls = 0
 
             async def fake_run_command(*args, input_bytes=None, check=False):
+                nonlocal has_session_calls
                 calls.append((args, input_bytes, check))
                 if args[:2] == ("tmux", "has-session"):
-                    return 1, "", ""
+                    has_session_calls += 1
+                    return (1 if has_session_calls == 1 else 0), "", ""
                 if "capture-pane" in args:
                     return 0, "> ", ""
                 return 0, "", ""
@@ -221,6 +224,59 @@ class TestClaudeInteractiveTmuxHelpers:
 
         asyncio.run(run())
 
+    def test_ensure_session_reports_dead_session_after_start(self, monkeypatch, tmp_path):
+        async def run():
+            adapter = ClaudeInteractiveTmuxAdapter(
+                model="claude-sonnet-4-6",
+                cwd=str(tmp_path),
+                debug_log_path=str(tmp_path / "debug.jsonl"),
+                session_name="botference-claude-test",
+            )
+            has_session_calls = 0
+
+            async def fake_run_command(*args, input_bytes=None, check=False):
+                nonlocal has_session_calls
+                if args[:2] == ("tmux", "has-session"):
+                    has_session_calls += 1
+                    return 1, "", "no server running"
+                return 0, "", ""
+
+            monkeypatch.setattr("cli_adapters.shutil.which", lambda name: f"/bin/{name}")
+            monkeypatch.setattr("cli_adapters.asyncio.sleep", AsyncMock())
+            adapter._run_command = fake_run_command
+
+            error = await adapter._ensure_session()
+            assert error is not None
+            assert error.exit_code == 1
+            assert "exited before it was ready" in error.text
+            assert has_session_calls == 2
+
+        asyncio.run(run())
+
+    def test_paste_prompt_refuses_missing_tmux_session(self, tmp_path):
+        async def run():
+            adapter = ClaudeInteractiveTmuxAdapter(
+                debug_log_path=str(tmp_path / "debug.jsonl"),
+                session_name="botference-claude-test",
+            )
+            calls = []
+
+            async def fake_run_command(*args, input_bytes=None, check=False):
+                calls.append(args)
+                if args[:2] == ("tmux", "has-session"):
+                    return 1, "", "no server running"
+                return 0, "", ""
+
+            adapter._run_command = fake_run_command
+            error = await adapter._paste_prompt("hello")
+
+            assert error is not None
+            assert error.exit_code == 1
+            assert "did not paste" in error.text
+            assert not any(call[:2] == ("tmux", "load-buffer") for call in calls)
+
+        asyncio.run(run())
+
     def test_paste_prompt_uses_tmux_buffer(self, tmp_path):
         async def run():
             adapter = ClaudeInteractiveTmuxAdapter(
@@ -231,16 +287,20 @@ class TestClaudeInteractiveTmuxHelpers:
 
             async def fake_run_command(*args, input_bytes=None, check=False):
                 calls.append((args, input_bytes, check))
+                if args[:2] == ("tmux", "has-session"):
+                    return 0, "", ""
                 return 0, "", ""
 
             adapter._run_command = fake_run_command
-            await adapter._paste_prompt("hello\nclaude")
+            error = await adapter._paste_prompt("hello\nclaude")
 
-            assert calls[0][0][:2] == ("tmux", "load-buffer")
-            assert calls[0][1] == b"hello\nclaude\n"
-            assert calls[1][0][:2] == ("tmux", "paste-buffer")
-            assert calls[2][0][:2] == ("tmux", "send-keys")
-            assert "Enter" in calls[2][0]
+            assert error is None
+            assert calls[0][0][:2] == ("tmux", "has-session")
+            assert calls[1][0][:2] == ("tmux", "load-buffer")
+            assert calls[1][1] == b"hello\nclaude\n"
+            assert calls[2][0][:2] == ("tmux", "paste-buffer")
+            assert calls[3][0][:2] == ("tmux", "send-keys")
+            assert "Enter" in calls[3][0]
 
         asyncio.run(run())
 

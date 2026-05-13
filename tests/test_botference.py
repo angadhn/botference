@@ -579,6 +579,20 @@ class TestBotferenceMessageRouting:
         assert len(claude.send_calls) == 1
         assert len(codex.send_calls) == 1
 
+    async def test_all_aborts_codex_when_interactive_claude_start_fails(self):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[AdapterResponse(text="tmux session died", exit_code=1)],
+            codex_responses=[_ok("from codex")],
+        )
+        claude.abort_all_on_startup_failure = True
+
+        await c.handle_input("Hello botference", ui)
+
+        assert len(claude.send_calls) == 1
+        assert len(codex.send_calls) == 0
+        assert any("Error starting claude" in text for _, text in ui.room_entries)
+        assert any("Codex was not started" in text for _, text in ui.room_entries)
+
     async def test_directed_at_claude_only(self):
         c, claude, codex, ui = _make_botference(
             claude_responses=[_ok("hi")],
