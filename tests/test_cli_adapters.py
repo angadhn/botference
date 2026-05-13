@@ -29,6 +29,7 @@ from cli_adapters import (
     _truncate,
     _CONTEXT_WINDOWS,
     build_tmux_paste_payload,
+    extract_tmux_assistant_text,
     normalize_interactive_claude_model,
     claude_plan_settings_for_work_dir,
     normalize_claude_transport,
@@ -182,8 +183,42 @@ class TestClaudeInteractiveTmuxHelpers:
     def test_tmux_idle_detector(self):
         assert tmux_capture_looks_idle("Claude\n> ")
         assert not tmux_capture_looks_idle("Claude is thinking\nesc to interrupt")
+        assert not tmux_capture_looks_idle("Claude\n✢ Percolating…\n❯ ")
 
-    def test_build_command_includes_session_and_settings(self, tmp_path):
+    def test_extract_assistant_text_ignores_prompt_echo_and_chrome(self):
+        capture = """
+ ▐▛███▜▌   Claude Code v2.1.139
+▝▜█████▛▘  Opus 4.7 with xhigh effort · Claude Max
+
+❯ You are Claude in a shared planning room.
+  [User said:]
+  hi
+
+⏺ Hi! Ready to help plan. What are we working on?
+
+✻ Churned for 3s
+────────────────── botference-claude-unknown ──
+❯ [Pasted text #1 +9 lines]
+  Opus 4.7 │ ✍️ 2% │ work (main*) │ ◑ xhigh
+"""
+        assert extract_tmux_assistant_text(capture) == (
+            "Hi! Ready to help plan. What are we working on?"
+        )
+
+    def test_extract_assistant_text_keeps_tool_blocks(self):
+        capture = """
+⏺ Read(README.md)
+  ⎿ Read 12 lines
+
+⏺ The README confirms the setup.
+"""
+        assert extract_tmux_assistant_text(capture) == (
+            "Read(README.md)\n"
+            "⎿ Read 12 lines\n\n"
+            "The README confirms the setup."
+        )
+
+    def test_build_command_is_minimal_interactive_claude(self, tmp_path):
         adapter = ClaudeInteractiveTmuxAdapter(
             model="claude-sonnet-4-6[1m]",
             effort="high",
@@ -195,9 +230,11 @@ class TestClaudeInteractiveTmuxHelpers:
         cmd = adapter._build_claude_command()
         assert "claude --model claude-sonnet-4-6" in cmd
         assert "[1m" not in cmd
-        assert "--session-id botference-claude-test" in cmd
+        assert "--name botference-claude-test" in cmd
         assert "--effort high" in cmd
-        assert "--add-dir /tmp/other" in cmd
+        assert "--session-id" not in cmd
+        assert "--settings" not in cmd
+        assert "--add-dir" not in cmd
 
     def test_ensure_session_starts_tmux_when_missing(self, monkeypatch, tmp_path):
         async def run():
@@ -228,6 +265,7 @@ class TestClaudeInteractiveTmuxHelpers:
             assert error is None
             assert any(call[0][:2] == ("tmux", "new-session") for call in calls)
             assert any("claude --model" in call[0][-1] for call in calls if call[0][:2] == ("tmux", "new-session"))
+            assert not any("--session-id" in call[0][-1] for call in calls if call[0][:2] == ("tmux", "new-session"))
 
         asyncio.run(run())
 

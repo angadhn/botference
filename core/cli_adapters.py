@@ -92,6 +92,58 @@ def normalize_interactive_claude_model(model: str) -> str:
     return re.sub(r"\[1m\]?$", "", model.strip())
 
 
+def extract_tmux_assistant_text(capture: str) -> str:
+    """Extract Claude-visible response/tool text from an interactive TUI screen.
+
+    Claude Code's interactive UI continuously redraws the whole screen. This
+    intentionally ignores prompt echoes, status bars, splash text, and activity
+    spinners, then keeps only assistant/tool-looking blocks.
+    """
+    out: list[str] = []
+    in_assistant_block = False
+    for raw_line in normalize_tmux_capture(capture).splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            if in_assistant_block and out and out[-1] != "":
+                out.append("")
+            continue
+        if (
+            "Claude Code v" in stripped
+            or "Claude Max" in stripped
+            or "⟳" in stripped
+            or "/effort" in stripped
+            or "paste again" in stripped.lower()
+            or "don't ask on" in stripped.lower()
+            or re.fullmatch(r"[─━]+.*", stripped)
+            or stripped.startswith(("▐", "▝", "▘", "✢", "✽", "✻", "✶"))
+        ):
+            in_assistant_block = False
+            continue
+        if re.match(r"^[❯>]\s", stripped):
+            in_assistant_block = False
+            continue
+        assistant_match = re.match(r"^[⏺●]\s*(.*)", stripped)
+        if assistant_match:
+            text = assistant_match.group(1).strip()
+            if text:
+                out.append(text)
+            in_assistant_block = True
+            continue
+        if stripped.startswith(("⎿", "↳", "⤷")):
+            out.append(stripped)
+            in_assistant_block = True
+            continue
+        if in_assistant_block and raw_line.startswith(("  ", "\t")):
+            out.append(stripped)
+            continue
+        in_assistant_block = False
+
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
+
+
 def tmux_capture_looks_idle(capture: str) -> bool:
     text = normalize_tmux_capture(capture).lower()
     if not text:
@@ -104,6 +156,8 @@ def tmux_capture_looks_idle(capture: str) -> bool:
         "thinking",
         "running",
         "working",
+        "percolating",
+        "churning",
     )
     if any(marker in tail for marker in busy_markers):
         return False
@@ -810,6 +864,7 @@ class ClaudeInteractiveTmuxAdapter:
         self.session_id = session_name
         self.window_name = tmux_safe_name(window_name, max_len=32)
         self._last_capture = ""
+        self._last_assistant_text = ""
         self._capture_interval = float(
             os.environ.get("BOTFERENCE_CLAUDE_TMUX_POLL_SECONDS", "1.0")
         )
@@ -863,15 +918,14 @@ class ClaudeInteractiveTmuxAdapter:
         return proc.returncode or 0, out, err
 
     def _build_claude_command(self) -> str:
+        # Keep the interactive transport close to a normal `claude` session.
+        # The programmatic adapter owns strict tool/settings enforcement; this
+        # mirror path should let Claude Code ask for permissions normally.
         cmd = ["claude", "--model", normalize_interactive_claude_model(self.model)]
         if self.session_id:
-            cmd += ["--session-id", self.session_id, "--name", self.session_id]
+            cmd += ["--name", self.session_id]
         if self.effort:
             cmd += ["--effort", self.effort]
-        if self.settings:
-            cmd += ["--settings", json.dumps(self.settings, separators=(",", ":"))]
-        for path in self.add_dirs:
-            cmd += ["--add-dir", path]
         return " ".join(shlex.quote(part) for part in cmd)
 
     def _startup_failure(self, detail: str) -> AdapterResponse:
@@ -1015,6 +1069,9 @@ class ClaudeInteractiveTmuxAdapter:
             return setup_error
 
         before = self._last_capture or await self._capture()
+        previous_assistant_text = (
+            self._last_assistant_text or extract_tmux_assistant_text(before)
+        )
         paste_error = await self._paste_prompt(prompt)
         if paste_error:
             return paste_error
@@ -1027,11 +1084,10 @@ class ClaudeInteractiveTmuxAdapter:
         while time.monotonic() < deadline:
             await asyncio.sleep(self._capture_interval)
             capture = await self._capture()
-            delta = tmux_capture_delta(last_capture, capture)
+            assistant_text = extract_tmux_assistant_text(capture)
+            delta = tmux_capture_delta(previous_assistant_text, assistant_text)
             if delta:
-                # Interactive Claude echoes pasted prompts. Remove exact prompt
-                # occurrences when possible; wrapped echoes remain best-effort.
-                cleaned = delta.replace(prompt, "").strip("\n")
+                cleaned = delta.strip("\n")
                 if cleaned:
                     collected += ("\n" if collected else "") + cleaned
                     self._emit_stream({
@@ -1041,6 +1097,7 @@ class ClaudeInteractiveTmuxAdapter:
                     })
                     self._log("parsed_delta", cleaned)
                 last_change = time.monotonic()
+                previous_assistant_text = assistant_text
                 last_capture = capture
                 continue
 
@@ -1049,6 +1106,7 @@ class ClaudeInteractiveTmuxAdapter:
                 and tmux_capture_looks_idle(capture)
             ):
                 self._last_capture = capture
+                self._last_assistant_text = assistant_text
                 return AdapterResponse(
                     text=collected.strip(),
                     raw_output=normalize_tmux_capture(capture),
@@ -1059,6 +1117,7 @@ class ClaudeInteractiveTmuxAdapter:
                 )
 
         self._last_capture = last_capture
+        self._last_assistant_text = previous_assistant_text
         return AdapterResponse(
             text=(
                 collected.strip()
