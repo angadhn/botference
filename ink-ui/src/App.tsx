@@ -33,6 +33,7 @@ import { copyToClipboard } from "./v2/clipboard.js";
 import {
   buildToolStackText,
   nextPacedChunkEnd,
+  replaceOrInsertStreamEntryBefore,
   replaceOrAppendStreamEntry,
   shouldAppendImmediately,
   toolEventId,
@@ -649,6 +650,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     streamId: string,
     speaker: string,
     update: (entry: Entry | undefined) => Entry | null,
+    options: { beforeStreamId?: string } = {},
   ) => {
     const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
     const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
@@ -662,6 +664,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         return prev.filter((_, entryIndex) => entryIndex !== index);
       }
       if (index === -1) {
+        if (options.beforeStreamId) {
+          return replaceOrInsertStreamEntryBefore(prev, updated, options.beforeStreamId);
+        }
         return [...prev, updated];
       }
       const next = [...prev];
@@ -1014,7 +1019,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
               text: buildToolStackText(Array.from(stack.values())),
               streamId: toolStackStreamId,
               streaming: msg.kind === "tool_start",
-            }));
+            }), { beforeStreamId: streamId });
             break;
           }
 

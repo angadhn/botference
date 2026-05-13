@@ -48,6 +48,28 @@ export function replaceOrAppendStreamEntry<T extends { streamId?: string }>(
   return next;
 }
 
+export function replaceOrInsertStreamEntryBefore<T extends { streamId?: string }>(
+  entries: T[],
+  entry: T,
+  beforeStreamId: string,
+): T[] {
+  if (!entry.streamId) return [...entries, entry];
+
+  const index = entries.findIndex((candidate) => candidate.streamId === entry.streamId);
+  if (index !== -1) {
+    const next = [...entries];
+    next[index] = entry;
+    return next;
+  }
+
+  const beforeIndex = entries.findIndex((candidate) => candidate.streamId === beforeStreamId);
+  if (beforeIndex === -1) return [...entries, entry];
+
+  const next = [...entries];
+  next.splice(beforeIndex, 0, entry);
+  return next;
+}
+
 export function toolPreviewLine(msg: Record<string, unknown>): string {
   const name = String(msg.name ?? "tool");
   const preview = String(
@@ -73,4 +95,3 @@ export function buildToolStackText(lines: string[]): string {
   });
   return textLines.join("\n");
 }
-
