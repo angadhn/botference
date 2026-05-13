@@ -175,6 +175,7 @@ def extract_tmux_assistant_text(capture: str) -> str:
             or "/effort" in stripped
             or "paste again" in stripped.lower()
             or "don't ask on" in stripped.lower()
+            or "ctrl+o to expand" in stripped.lower()
             or re.fullmatch(r"[─━]+.*", stripped)
             or stripped.startswith(("▐", "▝", "▘", "✢", "✽", "✻", "✶"))
         ):
@@ -190,7 +191,7 @@ def extract_tmux_assistant_text(capture: str) -> str:
             if text:
                 current.append(text)
             continue
-        if stripped.startswith(("⎿", "↳", "⤷")):
+        if current and stripped.startswith(("⎿", "↳", "⤷")):
             current.append(stripped)
             continue
         if current and raw_line.startswith(("  ", "\t")):

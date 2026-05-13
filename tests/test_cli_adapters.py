@@ -299,6 +299,30 @@ class TestClaudeInteractiveTmuxHelpers:
             "The README confirms the setup."
         )
 
+    def test_extract_assistant_text_ignores_prompt_history_after_tool_echo(self):
+        capture = """
+❯ [Room update since your last response]
+  [Claude said:]
+  This is old prompt history.
+⎿  ~/MySiteFromObsidianVault/angadh.com/_notes/Of Microaliens.md
+  This is old prompt history that should not stream again.
+  - Jekyll content: _notes/
+
+⏺ I've read the note. My take:
+  The micro/macro split is really an agent/process split.
+
+Reading 1 file… (ctrl+o to expand)
+⎿  ~/MySiteFromObsidianVault/angadh.com/_notes/Of Microaliens.md
+
+✻ Cooked for 3s
+────────────────── botference-claude-unknown ──
+❯
+"""
+        assert extract_tmux_assistant_text(capture) == (
+            "I've read the note. My take:\n"
+            "The micro/macro split is really an agent/process split."
+        )
+
     def test_tmux_capture_uses_bounded_recent_history(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_CLAUDE_TMUX_CAPTURE_START", raising=False)
         adapter = ClaudeInteractiveTmuxAdapter(session_name="session", window_name="claude")
