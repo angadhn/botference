@@ -164,7 +164,7 @@ function v2ActivityFromBusyTarget(target: BusyTarget, mode: string): V2Activity 
 
 function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
   const chars = Array.from(text);
-  if (chars.length === 0) return [{ text: "", color: THEME.statusMuted }];
+  if (chars.length === 0) return [{ text: "", color: THEME.textMuted }];
 
   const cyclePadding = 10;
   const cycleLength = chars.length + cyclePadding * 2;
@@ -181,7 +181,7 @@ function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
     if (distance <= 2) {
       return { text: char, color: THEME.textMuted };
     }
-    return { text: char, color: THEME.statusMuted };
+    return { text: char, color: THEME.textMuted };
   });
 }
 
