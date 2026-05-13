@@ -37,6 +37,7 @@ from cli_adapters import (
     plan_allowed_tools_for_work_dir,
     planner_write_config,
     planner_write_roots_for_env,
+    tmux_capture_can_complete_turn,
     tmux_capture_delta,
     tmux_capture_has_completion_marker,
     tmux_capture_looks_idle,
@@ -233,6 +234,19 @@ class TestClaudeInteractiveTmuxHelpers:
         assert tmux_capture_has_completion_marker(capture)
         assert not tmux_capture_prompt_ready(capture)
         assert not tmux_capture_turn_complete(capture)
+
+    def test_tmux_completion_requires_current_turn_text(self):
+        capture = (
+            "⏺ Old response.\n\n"
+            "✻ Cooked for 3s\n\n"
+            "────────────────── botference ──\n"
+            "❯ \n"
+            "────────────────────────────────\n"
+            "  Opus 4.7 │ ✍️ 2% │ work (main*) │ ◑ xhigh\n"
+        )
+        assert tmux_capture_turn_complete(capture)
+        assert not tmux_capture_can_complete_turn(capture, "")
+        assert tmux_capture_can_complete_turn(capture, "New response.")
 
     def test_extract_assistant_text_ignores_prompt_echo_and_chrome(self):
         capture = """

@@ -139,6 +139,10 @@ def tmux_capture_turn_complete(capture: str) -> bool:
     )
 
 
+def tmux_capture_can_complete_turn(capture: str, collected_text: str) -> bool:
+    return bool(collected_text.strip()) and tmux_capture_turn_complete(capture)
+
+
 def extract_tmux_assistant_text(capture: str) -> str:
     """Extract Claude-visible response/tool text from an interactive TUI screen.
 
@@ -1151,7 +1155,7 @@ class ClaudeInteractiveTmuxAdapter:
                     self._log("duplicate_delta_ignored", cleaned)
                 previous_assistant_text = assistant_text
                 last_capture = capture
-                if tmux_capture_turn_complete(capture):
+                if tmux_capture_can_complete_turn(capture, collected):
                     self._log("turn_complete_marker", "")
                     self._last_capture = capture
                     self._last_assistant_text = assistant_text
@@ -1165,7 +1169,7 @@ class ClaudeInteractiveTmuxAdapter:
                     )
                 continue
 
-            if tmux_capture_turn_complete(capture):
+            if tmux_capture_can_complete_turn(capture, collected):
                 self._log("turn_complete_marker", "")
                 self._last_capture = capture
                 self._last_assistant_text = assistant_text
@@ -1179,7 +1183,8 @@ class ClaudeInteractiveTmuxAdapter:
                 )
 
             if (
-                time.monotonic() - last_change >= self._idle_grace
+                collected.strip()
+                and time.monotonic() - last_change >= self._idle_grace
                 and tmux_capture_looks_idle(capture)
             ):
                 self._last_capture = capture
