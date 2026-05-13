@@ -38,7 +38,10 @@ from cli_adapters import (
     planner_write_config,
     planner_write_roots_for_env,
     tmux_capture_delta,
+    tmux_capture_has_completion_marker,
     tmux_capture_looks_idle,
+    tmux_capture_prompt_ready,
+    tmux_capture_turn_complete,
     tmux_safe_name,
 )
 
@@ -194,6 +197,42 @@ class TestClaudeInteractiveTmuxHelpers:
             "  weekly  ○○○○○○○○○○   4% ⟳ may 20, 7:00am\n"
             "  ⏵⏵ auto mode on (shift+tab to cycle)\n"
         )
+
+    def test_tmux_completion_marker_detects_finished_activity(self):
+        capture = (
+            "⏺ Hi! Ready to plan.\n\n"
+            "✻ Cooked for 3s\n\n"
+            "────────────────── botference ──\n"
+            "❯ \n"
+            "────────────────────────────────\n"
+            "  Opus 4.7 │ ✍️ 2% │ work (main*) │ ◑ xhigh\n"
+        )
+        assert tmux_capture_has_completion_marker(capture)
+        assert tmux_capture_prompt_ready(capture)
+        assert tmux_capture_turn_complete(capture)
+
+    def test_tmux_completion_marker_does_not_fire_while_busy(self):
+        capture = (
+            "⏺ Working on it.\n\n"
+            "✢ Percolating…\n\n"
+            "────────────────── botference ──\n"
+            "❯ \n"
+            "────────────────────────────────\n"
+            "  Opus 4.7 │ ✍️ 2% │ work (main*) │ ◑ xhigh\n"
+        )
+        assert not tmux_capture_has_completion_marker(capture)
+        assert not tmux_capture_turn_complete(capture)
+        assert not tmux_capture_looks_idle(capture)
+
+    def test_tmux_completion_requires_ready_prompt(self):
+        capture = (
+            "⏺ Hi! Ready to plan.\n\n"
+            "✻ Churned for 3s\n\n"
+            "❯ You are Claude in a shared planning room.\n"
+        )
+        assert tmux_capture_has_completion_marker(capture)
+        assert not tmux_capture_prompt_ready(capture)
+        assert not tmux_capture_turn_complete(capture)
 
     def test_extract_assistant_text_ignores_prompt_echo_and_chrome(self):
         capture = """

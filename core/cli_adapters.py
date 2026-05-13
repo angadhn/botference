@@ -92,6 +92,53 @@ def normalize_interactive_claude_model(model: str) -> str:
     return re.sub(r"\[1m\]?$", "", model.strip())
 
 
+def _tmux_capture_tail(capture: str, lines: int = 24) -> list[str]:
+    return normalize_tmux_capture(capture).lower().splitlines()[-lines:]
+
+
+def tmux_capture_has_busy_marker(capture: str) -> bool:
+    tail = "\n".join(_tmux_capture_tail(capture))
+    busy_markers = (
+        "esc to interrupt",
+        "press esc to interrupt",
+        "ctrl+c to cancel",
+        "thinking",
+        "running",
+        "working",
+        "percolating",
+        "churning",
+    )
+    return any(marker in tail for marker in busy_markers)
+
+
+def tmux_capture_prompt_ready(capture: str) -> bool:
+    tail_lines = _tmux_capture_tail(capture)
+    tail = "\n".join(tail_lines)
+    return bool(
+        any(re.match(r"\s*(>|❯|›)\s*$", line) for line in tail_lines)
+        or any(re.match(r'\s*(>|❯|›)\s*try "', line) for line in tail_lines)
+        or "what would you like" in tail
+        or "try \"" in tail and "claude" in tail
+    )
+
+
+def tmux_capture_has_completion_marker(capture: str) -> bool:
+    """Detect Claude Code's past-tense activity summary, e.g. `Cooked for 3s`."""
+    done_re = re.compile(
+        r"^[✢✽✻✶]?\s*[a-z][a-z -]{1,48}\s+for\s+"
+        r"\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b"
+    )
+    return any(done_re.match(line.strip()) for line in _tmux_capture_tail(capture, 32))
+
+
+def tmux_capture_turn_complete(capture: str) -> bool:
+    return (
+        tmux_capture_has_completion_marker(capture)
+        and tmux_capture_prompt_ready(capture)
+        and not tmux_capture_has_busy_marker(capture)
+    )
+
+
 def extract_tmux_assistant_text(capture: str) -> str:
     """Extract Claude-visible response/tool text from an interactive TUI screen.
 
@@ -159,25 +206,9 @@ def tmux_capture_looks_idle(capture: str) -> bool:
     text = normalize_tmux_capture(capture).lower()
     if not text:
         return False
-    tail_lines = text.splitlines()[-24:]
-    tail = "\n".join(tail_lines)
-    busy_markers = (
-        "esc to interrupt",
-        "press esc to interrupt",
-        "ctrl+c to cancel",
-        "thinking",
-        "running",
-        "working",
-        "percolating",
-        "churning",
-    )
-    if any(marker in tail for marker in busy_markers):
+    if tmux_capture_has_busy_marker(capture):
         return False
-    return bool(
-        any(re.match(r"\s*(>|❯|›)\s*$", line) for line in tail_lines)
-        or "what would you like" in tail
-        or "try \"" in tail and "claude" in tail
-    )
+    return tmux_capture_prompt_ready(capture)
 
 
 def _resolve_write_root_entry(project_root: Path, root: str | Path) -> Path | None:
@@ -1119,7 +1150,32 @@ class ClaudeInteractiveTmuxAdapter:
                     self._log("duplicate_delta_ignored", cleaned)
                 previous_assistant_text = assistant_text
                 last_capture = capture
+                if tmux_capture_turn_complete(capture):
+                    self._log("turn_complete_marker", "")
+                    self._last_capture = capture
+                    self._last_assistant_text = assistant_text
+                    return AdapterResponse(
+                        text=collected.strip(),
+                        raw_output=normalize_tmux_capture(capture),
+                        exit_code=0,
+                        session_id=self.session_id,
+                        context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                        context_tokens_reliable=False,
+                    )
                 continue
+
+            if tmux_capture_turn_complete(capture):
+                self._log("turn_complete_marker", "")
+                self._last_capture = capture
+                self._last_assistant_text = assistant_text
+                return AdapterResponse(
+                    text=collected.strip(),
+                    raw_output=normalize_tmux_capture(capture),
+                    exit_code=0,
+                    session_id=self.session_id,
+                    context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                    context_tokens_reliable=False,
+                )
 
             if (
                 time.monotonic() - last_change >= self._idle_grace
