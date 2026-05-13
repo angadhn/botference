@@ -97,7 +97,8 @@ def _tmux_capture_tail(capture: str, lines: int = 24) -> list[str]:
 
 
 def tmux_capture_has_busy_marker(capture: str) -> bool:
-    tail = "\n".join(_tmux_capture_tail(capture))
+    tail_lines = _tmux_capture_tail(capture)
+    tail = "\n".join(tail_lines)
     busy_markers = (
         "esc to interrupt",
         "press esc to interrupt",
@@ -108,7 +109,10 @@ def tmux_capture_has_busy_marker(capture: str) -> bool:
         "percolating",
         "churning",
     )
-    return any(marker in tail for marker in busy_markers)
+    if any(marker in tail for marker in busy_markers):
+        return True
+    busy_re = re.compile(r"^[✢✽✻✶✳·]\s*[a-z][a-z -]{1,48}…")
+    return any(busy_re.match(line.strip()) for line in tail_lines)
 
 
 def tmux_capture_prompt_ready(capture: str) -> bool:

@@ -39,6 +39,7 @@ from cli_adapters import (
     planner_write_roots_for_env,
     tmux_capture_can_complete_turn,
     tmux_capture_delta,
+    tmux_capture_has_busy_marker,
     tmux_capture_has_completion_marker,
     tmux_capture_looks_idle,
     tmux_capture_prompt_ready,
@@ -222,6 +223,20 @@ class TestClaudeInteractiveTmuxHelpers:
             "  Opus 4.7 │ ✍️ 2% │ work (main*) │ ◑ xhigh\n"
         )
         assert not tmux_capture_has_completion_marker(capture)
+        assert not tmux_capture_turn_complete(capture)
+        assert not tmux_capture_looks_idle(capture)
+
+    def test_tmux_busy_detector_handles_dynamic_activity_words(self):
+        capture = (
+            "⏺ Prior response.\n\n"
+            "✻ Crunched for 30s\n\n"
+            "❯ [Room update since your last response]\n"
+            "  Respond in your planning room role.\n\n"
+            "✶ Befuddling…\n\n"
+            "────────────────── botference ──\n"
+            "❯ \n"
+        )
+        assert tmux_capture_has_busy_marker(capture)
         assert not tmux_capture_turn_complete(capture)
         assert not tmux_capture_looks_idle(capture)
 
