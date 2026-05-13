@@ -29,6 +29,7 @@ from cli_adapters import (
     _truncate,
     _CONTEXT_WINDOWS,
     build_tmux_paste_payload,
+    normalize_interactive_claude_model,
     claude_plan_settings_for_work_dir,
     normalize_claude_transport,
     normalize_tmux_capture,
@@ -173,13 +174,18 @@ class TestClaudeInteractiveTmuxHelpers:
         payload = build_tmux_paste_payload("line 1\nline 2")
         assert payload == b"line 1\nline 2\n"
 
+    def test_interactive_model_strips_extended_context_suffix(self):
+        assert normalize_interactive_claude_model("claude-opus-4-7[1m]") == "claude-opus-4-7"
+        assert normalize_interactive_claude_model("claude-opus-4-7[1m") == "claude-opus-4-7"
+        assert normalize_interactive_claude_model("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
     def test_tmux_idle_detector(self):
         assert tmux_capture_looks_idle("Claude\n> ")
         assert not tmux_capture_looks_idle("Claude is thinking\nesc to interrupt")
 
     def test_build_command_includes_session_and_settings(self, tmp_path):
         adapter = ClaudeInteractiveTmuxAdapter(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4-6[1m]",
             effort="high",
             cwd=str(tmp_path),
             add_dirs=["/tmp/other"],
@@ -188,6 +194,7 @@ class TestClaudeInteractiveTmuxHelpers:
         )
         cmd = adapter._build_claude_command()
         assert "claude --model claude-sonnet-4-6" in cmd
+        assert "[1m" not in cmd
         assert "--session-id botference-claude-test" in cmd
         assert "--effort high" in cmd
         assert "--add-dir /tmp/other" in cmd

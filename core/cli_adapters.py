@@ -87,6 +87,11 @@ def build_tmux_paste_payload(prompt: str) -> bytes:
     return prompt.encode("utf-8")
 
 
+def normalize_interactive_claude_model(model: str) -> str:
+    """Interactive Claude Code does not accept Botference's `[1m]` model suffix."""
+    return re.sub(r"\[1m\]?$", "", model.strip())
+
+
 def tmux_capture_looks_idle(capture: str) -> bool:
     text = normalize_tmux_capture(capture).lower()
     if not text:
@@ -858,7 +863,7 @@ class ClaudeInteractiveTmuxAdapter:
         return proc.returncode or 0, out, err
 
     def _build_claude_command(self) -> str:
-        cmd = ["claude", "--model", self.model]
+        cmd = ["claude", "--model", normalize_interactive_claude_model(self.model)]
         if self.session_id:
             cmd += ["--session-id", self.session_id, "--name", self.session_id]
         if self.effort:
