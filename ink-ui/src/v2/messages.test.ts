@@ -2,12 +2,16 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   buildToolStackText,
+  createStreamSegmentState,
+  isFinalEntryForSegmentedStream,
   replaceOrInsertStreamEntryBefore,
   replaceOrAppendStreamEntry,
   shouldAppendImmediately,
   shouldPaceEntry,
+  textSegmentStreamId,
   toolEventId,
   toolPreviewLine,
+  toolSegmentStreamId,
 } from "./messages.js";
 
 describe("Ink message pacing", () => {
@@ -77,5 +81,27 @@ describe("Ink streamed tool stack", () => {
       buildToolStackText(["Read - src/App.tsx", "Search - selection"]),
       "Explored\n├ Read - src/App.tsx\n└ Search - selection",
     );
+  });
+
+  it("allocates chronological text and tool stream segments", () => {
+    const state = createStreamSegmentState();
+    const firstText = textSegmentStreamId("s1", state);
+    const firstTool = toolSegmentStreamId("s1", state, "tool-a", true);
+    const sameTool = toolSegmentStreamId("s1", state, "tool-a", false);
+    const secondText = textSegmentStreamId("s1", state);
+    const secondTool = toolSegmentStreamId("s1", state, "tool-b", true);
+
+    assert.equal(firstText, "s1:text:0");
+    assert.equal(firstTool, "s1:tools:0");
+    assert.equal(sameTool, "s1:tools:0");
+    assert.equal(secondText, "s1:text:1");
+    assert.equal(secondTool, "s1:tools:1");
+  });
+
+  it("recognizes final controller entries superseded by segmented streams", () => {
+    assert.equal(isFinalEntryForSegmentedStream("s1", "s1"), true);
+    assert.equal(isFinalEntryForSegmentedStream("s1:tools", "s1"), true);
+    assert.equal(isFinalEntryForSegmentedStream("s1:text:0", "s1"), false);
+    assert.equal(isFinalEntryForSegmentedStream("s1:tools:0", "s1"), false);
   });
 });

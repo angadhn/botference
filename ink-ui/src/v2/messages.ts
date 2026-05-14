@@ -70,6 +70,56 @@ export function replaceOrInsertStreamEntryBefore<T extends { streamId?: string }
   return next;
 }
 
+export interface StreamSegmentState {
+  nextTextIndex: number;
+  nextToolIndex: number;
+  currentTextStreamId?: string;
+  currentToolStreamId?: string;
+  toolStreamIds: Record<string, string>;
+}
+
+export function createStreamSegmentState(): StreamSegmentState {
+  return {
+    nextTextIndex: 0,
+    nextToolIndex: 0,
+    toolStreamIds: {},
+  };
+}
+
+export function textSegmentStreamId(baseStreamId: string, state: StreamSegmentState): string {
+  if (!state.currentTextStreamId) {
+    state.currentTextStreamId = `${baseStreamId}:text:${state.nextTextIndex}`;
+    state.nextTextIndex += 1;
+  }
+  state.currentToolStreamId = undefined;
+  return state.currentTextStreamId;
+}
+
+export function toolSegmentStreamId(
+  baseStreamId: string,
+  state: StreamSegmentState,
+  toolId: string,
+  startsToolGroup: boolean,
+): string {
+  const existing = state.toolStreamIds[toolId];
+  if (existing) return existing;
+
+  if (startsToolGroup || !state.currentToolStreamId) {
+    state.currentToolStreamId = `${baseStreamId}:tools:${state.nextToolIndex}`;
+    state.nextToolIndex += 1;
+  }
+  state.currentTextStreamId = undefined;
+  state.toolStreamIds[toolId] = state.currentToolStreamId;
+  return state.currentToolStreamId;
+}
+
+export function isFinalEntryForSegmentedStream(
+  entryStreamId: string,
+  baseStreamId: string,
+): boolean {
+  return entryStreamId === baseStreamId || entryStreamId === `${baseStreamId}:tools`;
+}
+
 export function toolPreviewLine(msg: Record<string, unknown>): string {
   const name = String(msg.name ?? "tool");
   const preview = String(

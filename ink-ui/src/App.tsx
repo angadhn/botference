@@ -32,12 +32,17 @@ import {
 import { copyToClipboard } from "./v2/clipboard.js";
 import {
   buildToolStackText,
+  createStreamSegmentState,
+  isFinalEntryForSegmentedStream,
   nextPacedChunkEnd,
   replaceOrInsertStreamEntryBefore,
   replaceOrAppendStreamEntry,
   shouldAppendImmediately,
+  textSegmentStreamId,
   toolEventId,
   toolPreviewLine,
+  toolSegmentStreamId,
+  type StreamSegmentState,
   PACED_MESSAGE_INTERVAL_MS,
 } from "./v2/messages.js";
 import {
@@ -510,6 +515,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
   const toolStacksRef = useRef<Map<string, Map<string, string>>>(new Map());
+  const streamSegmentsRef = useRef<Map<string, StreamSegmentState>>(new Map());
+  const handledSegmentedStreamsRef = useRef<Set<string>>(new Set());
+  const completedSegmentedStreamsRef = useRef<Set<string>>(new Set());
 
   const bridgeRef = useRef<ChildProcess | null>(null);
   const { stdout } = useStdout();
@@ -592,6 +600,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const scrollRef = pane === "room" ? roomScrollRef : caucusScrollRef;
 
     if (entry.streamId) {
+      for (const baseStreamId of completedSegmentedStreamsRef.current) {
+        if (
+          handledSegmentedStreamsRef.current.has(baseStreamId)
+          && isFinalEntryForSegmentedStream(entry.streamId, baseStreamId)
+        ) {
+          return;
+        }
+      }
       setEntries((prev) => replaceOrAppendStreamEntry(prev, entry));
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
@@ -990,53 +1006,53 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           }
 
           if (msg.kind === "start") {
-            updateStreamEntry(pane, streamId, speaker, () => ({
-              speaker,
-              text: "",
-              streamId,
-              streaming: true,
-            }));
+            streamSegmentsRef.current.set(streamId, createStreamSegmentState());
+            completedSegmentedStreamsRef.current.delete(streamId);
+            handledSegmentedStreamsRef.current.delete(streamId);
             break;
           }
 
           if (msg.kind === "text_delta") {
             const delta = typeof msg.text === "string" ? msg.text : "";
             if (!delta) break;
-            updateStreamEntry(pane, streamId, speaker, (entry) => ({
+            const segmentState = streamSegmentsRef.current.get(streamId) ?? createStreamSegmentState();
+            streamSegmentsRef.current.set(streamId, segmentState);
+            const textStreamId = textSegmentStreamId(streamId, segmentState);
+            handledSegmentedStreamsRef.current.add(streamId);
+            updateStreamEntry(pane, textStreamId, speaker, (entry) => ({
               speaker,
               text: `${entry?.text ?? ""}${delta}`,
-              streamId,
+              streamId: textStreamId,
               streaming: true,
             }));
             break;
           }
 
           if (msg.kind === "tool_start" || msg.kind === "tool_done") {
-            const toolStackStreamId = `${streamId}:tools`;
+            const segmentState = streamSegmentsRef.current.get(streamId) ?? createStreamSegmentState();
+            streamSegmentsRef.current.set(streamId, segmentState);
+            const toolId = toolEventId(msg);
+            const toolStackStreamId = toolSegmentStreamId(
+              streamId,
+              segmentState,
+              toolId,
+              msg.kind === "tool_start",
+            );
             const stack = toolStacksRef.current.get(toolStackStreamId) ?? new Map<string, string>();
-            stack.set(toolEventId(msg), toolPreviewLine(msg));
+            stack.set(toolId, toolPreviewLine(msg));
             toolStacksRef.current.set(toolStackStreamId, stack);
+            handledSegmentedStreamsRef.current.add(streamId);
             updateStreamEntry(pane, toolStackStreamId, speaker, () => ({
               speaker,
               text: buildToolStackText(Array.from(stack.values())),
               streamId: toolStackStreamId,
               streaming: msg.kind === "tool_start",
-            }), { beforeStreamId: streamId });
+            }));
             break;
           }
 
           if (msg.kind === "done") {
-            updateStreamEntry(pane, streamId, speaker, (entry) => {
-              const text = entry?.text ?? "";
-              if (!text) return null;
-              return {
-                speaker,
-                text,
-                blocks: entry?.blocks,
-                streamId,
-                streaming: false,
-              };
-            });
+            completedSegmentedStreamsRef.current.add(streamId);
           }
           break;
         }
