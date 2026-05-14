@@ -226,6 +226,10 @@ PDF is the rendered artifact: a compile step alone is not enough; the PDF must
 also be inspected with `view_pdf_page`, a screenshot, or an equivalent visual
 check.
 
+Verification actions are marked in the tool stack as `[verify]` and rendered
+with a distinct bright accent in the Ink UI, so visual checks are easier to
+spot while a turn is running or after it completes.
+
 Botference includes a deterministic HTML visual gate:
 
 ```bash

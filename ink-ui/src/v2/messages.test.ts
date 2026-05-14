@@ -81,6 +81,10 @@ describe("Ink streamed tool stack", () => {
       buildToolStackText(["Read - src/App.tsx", "Search - selection"]),
       "Explored\n├ Read - src/App.tsx\n└ Search - selection",
     );
+    assert.equal(toolPreviewLine({
+      name: "Bash",
+      input_preview: "python3 tools/cli.py visual_check_html '{\"html_file\":\"plot.html\"}'",
+    }), "[verify] Bash - python3 tools/cli.py visual_check_html '{\"html_file\":\"plot.html\"}'");
   });
 
   it("allocates chronological text and tool stream segments", () => {

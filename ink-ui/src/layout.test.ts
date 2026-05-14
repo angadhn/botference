@@ -207,6 +207,13 @@ describe("preRenderLines", () => {
     assert.equal(lines[2]!.bodyColor, "yellow");
   });
 
+  it("renders verification tool summaries with a distinct accent", () => {
+    const entries = [{ speaker: "claude", text: "Explored\n└ [verify] visual_check_html - plot.html" }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines[1]!.bodyColor, "greenBright");
+    assert.equal(lines[1]!.bodyBold, true);
+  });
+
   it("renders inline markdown emphasis as styled text segments", () => {
     const entries = [{
       speaker: "codex",

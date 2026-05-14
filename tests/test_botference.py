@@ -737,6 +737,31 @@ class TestBotferenceMessageRouting:
         assert len(tool_entries) == 1
         assert tool_entries[0] == "Explored\n└ Edit app.py"
 
+    async def test_tool_summaries_mark_visual_verification_steps(self):
+        resp = _ok("Visually verified", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Bash",
+                input_preview='{"command":"python3 tools/cli.py visual_check_html '
+                              '\'{\\"html_file\\":\\"plot.html\\"}\'"}',
+            ),
+            ToolSummary(
+                id="t2",
+                name="view_pdf_page",
+                input_preview='{"pdf_file":"paper.pdf","page":1}',
+            ),
+        ])
+        c, _, _, ui = _make_botference(claude_responses=[resp])
+        await c.handle_input("@claude verify", ui)
+        tool_entries = [t for _, t in ui.room_entries if "Explored" in t]
+        assert len(tool_entries) == 1
+        assert tool_entries[0] == (
+            "Explored\n"
+            "├ [verify] Shell python3 tools/cli.py visual_check_html "
+            "'{\"html_file\":\"plot.html\"}'\n"
+            "└ [verify] view_pdf_page {\"pdf_file\":\"paper.pdf\",\"page\":1}"
+        )
+
     async def test_tool_summaries_preserve_structured_diff_blocks(self):
         diff_text = "@@ -1,1 +1,1 @@\n-old_name = 1\n+new_name = 1"
         resp = _ok("Checked it", tool_summaries=[

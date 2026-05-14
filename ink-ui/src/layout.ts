@@ -1439,6 +1439,7 @@ function classifyTextLine(
   );
   const isToolSummaryHeader = trimmed === "Explored";
   const isToolSummaryLine = /^[├└│]/.test(trimmed);
+  const isVerificationSummaryLine = /^[├└│]\s+\[verify\]/.test(trimmed);
 
   if (isToolInvocation) {
     return { bodyColor: TOOL_TEXT_COLOR, bodyBold: false, startsToolBlock: true };
@@ -1455,6 +1456,9 @@ function classifyTextLine(
   if (inToolBlock) {
     if (trimmed.length === 0) {
       return { bodyColor: defaultColor, bodyBold: false, endsToolBlock: true };
+    }
+    if (isVerificationSummaryLine) {
+      return { bodyColor: "greenBright", bodyBold: true, startsToolBlock: true };
     }
     if (isToolSummaryLine) {
       return { bodyColor: TOOL_TEXT_COLOR, bodyBold: false, startsToolBlock: true };

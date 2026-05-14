@@ -127,8 +127,8 @@ export function toolPreviewLine(msg: Record<string, unknown>): string {
     ?? msg.input_preview
     ?? "",
   ).replace(/\s+/g, " ").trim();
-  if (!preview) return name;
-  return `${name} - ${preview}`;
+  const line = preview ? `${name} - ${preview}` : name;
+  return isVerificationToolLine(line) ? `[verify] ${line}` : line;
 }
 
 export function toolEventId(msg: Record<string, unknown>): string {
@@ -144,4 +144,20 @@ export function buildToolStackText(lines: string[]): string {
     textLines.push(`${branch} ${line}`);
   });
   return textLines.join("\n");
+}
+
+export function isVerificationToolLine(line: string): boolean {
+  const normalized = line.toLowerCase();
+  return [
+    "check_figure",
+    "compile_latex",
+    "latexmk",
+    "page.screenshot",
+    "pdflatex",
+    "playwright",
+    "puppeteer",
+    "tectonic",
+    "view_pdf_page",
+    "visual_check_html",
+  ].some((token) => normalized.includes(token));
 }

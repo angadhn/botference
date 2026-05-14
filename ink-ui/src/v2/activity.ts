@@ -125,6 +125,24 @@ export function describeV2ToolActivity(msg: Record<string, unknown>): string {
   const name = String(msg.name ?? "tool");
   const normalized = name.toLowerCase();
   const preview = cleanPreview(msg.input_preview ?? msg.output_preview);
+  const fullText = `${normalized} ${preview.toLowerCase()}`;
+
+  if (
+    [
+      "check_figure",
+      "compile_latex",
+      "latexmk",
+      "page.screenshot",
+      "pdflatex",
+      "playwright",
+      "puppeteer",
+      "tectonic",
+      "view_pdf_page",
+      "visual_check_html",
+    ].some((token) => fullText.includes(token))
+  ) {
+    return preview ? `Verifying ${preview}` : "Verifying visual output";
+  }
 
   if (normalized.includes("read")) return preview ? `Reading ${preview}` : "Reading files";
   if (normalized.includes("grep") || normalized.includes("search") || normalized.includes("glob")) {

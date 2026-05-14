@@ -45,6 +45,10 @@ describe("Ink activity status", () => {
   it("describes tool activity from tool names and previews", () => {
     assert.equal(describeV2ToolActivity({ name: "Read", input_preview: " src/App.tsx\n" }), "Reading src/App.tsx");
     assert.equal(describeV2ToolActivity({ name: "Bash", input_preview: " npm test " }), "Running npm test");
+    assert.equal(
+      describeV2ToolActivity({ name: "Bash", input_preview: "python3 tools/cli.py visual_check_html plot.html" }),
+      "Verifying python3 tools/cli.py visual_check_html plot.html",
+    );
     assert.equal(describeV2ToolActivity({ name: "Mystery" }), "Using Mystery");
   });
 

@@ -418,6 +418,25 @@ class Transcript:
         return '\n'.join(parts)
 
 
+_VISUAL_VERIFICATION_SUMMARY_TOKENS = (
+    "check_figure",
+    "compile_latex",
+    "latexmk",
+    "page.screenshot",
+    "pdflatex",
+    "playwright",
+    "puppeteer",
+    "tectonic",
+    "view_pdf_page",
+    "visual_check_html",
+)
+
+
+def _tool_summary_is_verification_step(ts: ToolSummary) -> bool:
+    text = "\n".join([ts.name, ts.input_preview, ts.output_preview]).lower()
+    return any(token in text for token in _VISUAL_VERIFICATION_SUMMARY_TOKENS)
+
+
 def _tool_summary_display_text(tool_summaries: list) -> str:
     """Collapse a tool run into a short human-readable summary block."""
     if not tool_summaries:
@@ -505,7 +524,10 @@ def _tool_summary_display_text(tool_summaries: list) -> str:
     lines = ["Explored"]
     for idx, ts in enumerate(tool_summaries):
         branch = "└" if idx == len(tool_summaries) - 1 else "├"
-        lines.append(f"{branch} {_summarize_tool(ts)}")
+        summary = _summarize_tool(ts)
+        if _tool_summary_is_verification_step(ts):
+            summary = f"[verify] {summary}"
+        lines.append(f"{branch} {summary}")
     return "\n".join(lines)
 
 
