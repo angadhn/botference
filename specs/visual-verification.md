@@ -1,8 +1,14 @@
 # Visual Output Verification
 
 For any work whose output is rendered by a human, including HTML, CSS, plots,
-charts, PDFs, dashboards, web UI, generated images, or inline document figures,
-the agent must use the status labels and verification rules below.
+charts, PDFs, LaTeX files that produce PDFs, dashboards, web UI, generated
+images, or inline document figures, the agent must use the status labels and
+verification rules below.
+
+This is a hard Botference gate, not a style preference. If an agent changes or
+generates a rendered artifact and the same turn does not show an appropriate
+render check, Botference records the result as **User-review needed** and
+rejects any "done", "fixed", "ready", or "verified" claim.
 
 ## Status Labels
 
@@ -22,8 +28,8 @@ changed and ask the user to reload the artifact.
 Before claiming rendered output is visually verified:
 
 1. Render the artifact with the same kind of renderer a user will use: browser
-   for HTML/web UI, PDF renderer for PDFs, or the plotting backend for static
-   figures.
+   for HTML/web UI, PDF renderer for PDFs, LaTeX compiler plus PDF inspection
+   for `.tex` files, or the plotting backend for static figures.
 2. Check at desktop and narrow/mobile widths.
 3. Check that `document.documentElement.scrollWidth <= window.innerWidth` for
    HTML outputs.
@@ -42,6 +48,12 @@ The tool writes screenshots and `report.json` under
 `$BOTFERENCE_WORK_DIR/visual-checks/` by default. If Playwright is missing, the
 result is not visually verified; report the missing dependency and ask the user
 whether to install it.
+
+For LaTeX artifacts, `.tex` is treated as visual work because the human output
+is the generated PDF. A compile-only pass is structural, not visual. Before
+claiming visual completion, compile the file with `compile_latex`, `pdflatex`,
+`latexmk`, or `tectonic`, then inspect the rendered PDF with `view_pdf_page`,
+a screenshot, or an equivalent PDF visual check.
 
 ## Inline Figures In Reading Documents
 

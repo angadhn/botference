@@ -517,6 +517,226 @@ def _tool_summary_display_blocks(tool_summaries: list) -> list[dict]:
     return text_blocks + output_blocks
 
 
+_VISUAL_ARTIFACT_EXTENSIONS = {
+    ".css",
+    ".gif",
+    ".htm",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".pdf",
+    ".png",
+    ".svg",
+    ".tex",
+    ".webp",
+}
+_HTML_ARTIFACT_EXTENSIONS = {".htm", ".html"}
+_LATEX_ARTIFACT_EXTENSIONS = {".tex"}
+_IMAGE_OR_PDF_ARTIFACT_EXTENSIONS = {
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".pdf",
+    ".png",
+    ".svg",
+    ".webp",
+}
+_MUTATING_VISUAL_TOOL_NAMES = {
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Patch",
+    "Write",
+    "create_file",
+    "update_file",
+}
+_SHELL_VISUAL_WRITE_TOKENS = (
+    ">",
+    "cat ",
+    "cp ",
+    "latexmk",
+    "matplotlib",
+    "mv ",
+    "pdflatex",
+    "plotly",
+    "savefig",
+    "sips ",
+    "tee ",
+    "tectonic",
+    "write_image",
+)
+_HTML_VERIFY_TOKENS = (
+    "visual_check_html",
+    "page.screenshot",
+    "playwright",
+    "puppeteer",
+)
+_LATEX_COMPILE_TOKENS = (
+    "compile_latex",
+    "latexmk",
+    "pdflatex",
+    "tectonic",
+)
+_PDF_VISUAL_TOKENS = (
+    "view_pdf_page",
+    "pdftoppm",
+    "screenshot",
+)
+_STATIC_VISUAL_TOKENS = (
+    "check_figure",
+    "page.screenshot",
+    "playwright",
+    "visual_check_html",
+    "view_pdf_page",
+)
+_COMPLETION_CLAIM_RE = re.compile(
+    r"\b(done|fixed|ready|this works|verified|complete|completed)\b",
+    re.IGNORECASE,
+)
+_VISUAL_PATH_RE = re.compile(
+    r"(?P<path>(?:~|\.{1,2}|/)?[A-Za-z0-9_./:@%+= -]+"
+    r"\.(?:css|gif|html?|jpe?g|pdf|png|svg|tex|webp))"
+)
+
+
+def _tool_preview_arg(preview: str, key: str) -> str:
+    if not preview:
+        return ""
+    try:
+        parsed = json.loads(preview)
+        if isinstance(parsed, dict):
+            value = parsed.get(key, "")
+            return str(value).strip()
+    except Exception:
+        pass
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]+)"', preview)
+    return match.group(1).strip() if match else ""
+
+
+def _tool_summary_text(ts: ToolSummary) -> str:
+    parts = [ts.name, ts.input_preview, ts.output_preview]
+    for block in ts.output_blocks + ts.pending_output_blocks:
+        if not isinstance(block, dict):
+            continue
+        for key in ("text", "content", "code", "body", "line", "lines"):
+            value = block.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, list):
+                parts.extend(str(item) for item in value)
+    return "\n".join(part for part in parts if part)
+
+
+def _is_visual_path(path_str: str) -> bool:
+    clean = path_str.strip().strip("'\"`")
+    return Path(clean).suffix.lower() in _VISUAL_ARTIFACT_EXTENSIONS
+
+
+def _normalize_visual_path(path_str: str) -> str:
+    clean = path_str.strip().strip("'\"`,)")
+    if clean.startswith("diff --git "):
+        parts = clean.split()
+        if len(parts) >= 3:
+            clean = parts[2]
+    elif clean.startswith("--- ") or clean.startswith("+++ "):
+        parts = clean.split()
+        if len(parts) >= 2:
+            clean = parts[1]
+    if clean.startswith(("a/", "b/")):
+        clean = clean[2:]
+    return clean
+
+
+def _visual_paths_in_text(text: str) -> set[str]:
+    paths: set[str] = set()
+    for match in _VISUAL_PATH_RE.finditer(text or ""):
+        path_str = _normalize_visual_path(match.group("path"))
+        if _is_visual_path(path_str):
+            paths.add(path_str)
+    return paths
+
+
+def _summary_mutates_visual_artifacts(ts: ToolSummary) -> bool:
+    name = ts.name.strip()
+    if name == "Diff":
+        return True
+    if name in _MUTATING_VISUAL_TOOL_NAMES:
+        return True
+    if name.lower() in {"bash", "shell", "exec_command"}:
+        text = _tool_summary_text(ts).lower()
+        return any(token in text for token in _SHELL_VISUAL_WRITE_TOKENS)
+    return False
+
+
+def _visual_artifacts_from_tool_summaries(tool_summaries: list[ToolSummary]) -> list[str]:
+    artifacts: set[str] = set()
+    for ts in tool_summaries:
+        if not _summary_mutates_visual_artifacts(ts):
+            continue
+        for key in ("file_path", "path", "html_file", "output_file"):
+            value = _tool_preview_arg(ts.input_preview, key)
+            if value and _is_visual_path(value):
+                artifacts.add(value)
+        artifacts.update(_visual_paths_in_text(_tool_summary_text(ts)))
+    return sorted(artifacts)
+
+
+def _visual_verification_warning(model: str, resp: AdapterResponse) -> str:
+    artifacts = _visual_artifacts_from_tool_summaries(resp.tool_summaries)
+    if not artifacts:
+        return ""
+
+    lower_tool_text = "\n".join(
+        _tool_summary_text(ts).lower() for ts in resp.tool_summaries
+    )
+    html_artifacts = [
+        path for path in artifacts
+        if Path(path).suffix.lower() in _HTML_ARTIFACT_EXTENSIONS
+    ]
+    latex_artifacts = [
+        path for path in artifacts
+        if Path(path).suffix.lower() in _LATEX_ARTIFACT_EXTENSIONS
+    ]
+    static_artifacts = [
+        path for path in artifacts
+        if Path(path).suffix.lower() in _IMAGE_OR_PDF_ARTIFACT_EXTENSIONS
+    ]
+
+    missing: list[str] = []
+    if html_artifacts and not any(token in lower_tool_text for token in _HTML_VERIFY_TOKENS):
+        missing.append("HTML/browser render check (`visual_check_html` or Playwright screenshot)")
+    if latex_artifacts:
+        compiled = any(token in lower_tool_text for token in _LATEX_COMPILE_TOKENS)
+        inspected = any(token in lower_tool_text for token in _PDF_VISUAL_TOKENS)
+        if not compiled or not inspected:
+            missing.append(
+                "LaTeX PDF verification (`compile_latex`/pdflatex plus `view_pdf_page` or screenshot)"
+            )
+    if static_artifacts and not any(token in lower_tool_text for token in _STATIC_VISUAL_TOKENS):
+        missing.append("static figure/PDF visual inspection (`check_figure`, `view_pdf_page`, or screenshot)")
+    if "playwright-missing" in lower_tool_text:
+        missing.append("working browser dependency; Playwright was reported missing")
+
+    if not missing:
+        return ""
+
+    artifact_text = ", ".join(artifacts[:6])
+    if len(artifacts) > 6:
+        artifact_text += f", and {len(artifacts) - 6} more"
+    claim_note = (
+        " Completion claim rejected."
+        if _COMPLETION_CLAIM_RE.search(resp.text or "")
+        else ""
+    )
+    required = "; ".join(dict.fromkeys(missing))
+    return (
+        f"Visual verification gate: {model.capitalize()} changed/generated rendered "
+        f"artifact(s): {artifact_text}. Status: User-review needed.{claim_note} "
+        f"Required before calling this done: {required}. For `.tex` files, the PDF "
+        "is the rendered artifact, so compile it and inspect the PDF output."
+    )
+
+
 # ── Caucus footer parsing ──────────────────────────────────
 
 _TERMINAL_STATUSES = frozenset(
@@ -2262,6 +2482,10 @@ class Botference:
                 break
             if resp:
                 self.transcript.add(model, resp.text, resp.tool_summaries)
+                visual_warning = _visual_verification_warning(model, resp)
+                if visual_warning:
+                    self._add_room_entry(ui, "system", visual_warning)
+                    self.transcript.add("system", visual_warning)
                 self.transcript.mark_seen(model)
                 self._update_pct(model, resp, ui)
                 ui.set_status(self.status_snapshot())
@@ -2622,6 +2846,10 @@ class Botference:
                     display,
                     stream_id=resp.stream_id,
                 )
+                visual_warning = _visual_verification_warning(speaker, resp)
+                if visual_warning:
+                    self._add_caucus_entry(ui, "system", visual_warning)
+                    self.transcript.add("system", visual_warning)
                 last_resp_text = resp.text
 
                 if footer:

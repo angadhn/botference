@@ -30,6 +30,8 @@ from botference import (
     ParsedInput,
     Transcript,
     _TERMINAL_STATUSES,
+    _visual_artifacts_from_tool_summaries,
+    _visual_verification_warning,
     parse_input,
 )
 from botference_ui import RoomMode, StatusSnapshot
@@ -754,6 +756,98 @@ class TestBotferenceMessageRouting:
         explored_blocks = ui.room_blocks[explored_index]
         assert explored_blocks is not None
         assert any(block["type"] == "diff" for block in explored_blocks)
+
+    async def test_visual_gate_detects_html_edit_without_render_check(self):
+        resp = _ok("Done", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Write",
+                input_preview='{"file_path":"projects/demo/plot.html"}',
+            ),
+        ])
+
+        warning = _visual_verification_warning("claude", resp)
+
+        assert "Visual verification gate" in warning
+        assert "plot.html" in warning
+        assert "Completion claim rejected" in warning
+        assert "visual_check_html" in warning
+
+    async def test_visual_gate_treats_latex_as_rendered_pdf_output(self):
+        resp = _ok("Ready", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Edit",
+                input_preview='{"file_path":"paper/main.tex"}',
+            ),
+        ])
+
+        warning = _visual_verification_warning("codex", resp)
+
+        assert "Visual verification gate" in warning
+        assert "main.tex" in warning
+        assert "LaTeX PDF verification" in warning
+        assert "PDF is the rendered artifact" in warning
+
+    async def test_visual_gate_accepts_latex_compile_plus_pdf_inspection(self):
+        resp = _ok("Visually verified", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Edit",
+                input_preview='{"file_path":"paper/main.tex"}',
+            ),
+            ToolSummary(
+                id="t2",
+                name="compile_latex",
+                input_preview='{"tex_file":"paper/main.tex"}',
+                output_preview="wrote paper/main.pdf",
+            ),
+            ToolSummary(
+                id="t3",
+                name="view_pdf_page",
+                input_preview='{"pdf_file":"paper/main.pdf","page":1}',
+                output_preview="rendered page screenshot",
+            ),
+        ])
+
+        assert _visual_verification_warning("codex", resp) == ""
+
+    async def test_visual_artifact_detection_uses_structured_diff_blocks(self):
+        tools = [
+            ToolSummary(
+                id="t1",
+                name="Diff",
+                input_preview="",
+                output_preview="worktree changed",
+                output_blocks=parse_render_blocks(
+                    "diff --git a/projects/demo/chart.svg b/projects/demo/chart.svg\n"
+                    "--- a/projects/demo/chart.svg\n"
+                    "+++ b/projects/demo/chart.svg\n"
+                ),
+            )
+        ]
+
+        assert "projects/demo/chart.svg" in _visual_artifacts_from_tool_summaries(tools)
+
+    async def test_visual_gate_adds_system_entry_after_unverified_visual_turn(self):
+        resp = _ok("Fixed and ready", tool_summaries=[
+            ToolSummary(
+                id="t1",
+                name="Write",
+                input_preview='{"file_path":"projects/demo/index.html"}',
+            ),
+        ])
+        c, _, _, ui = _make_botference(claude_responses=[resp])
+
+        await c.handle_input("@claude make a plot", ui)
+
+        system_text = "\n".join(t for speaker, t in ui.room_entries if speaker == "system")
+        assert "Visual verification gate" in system_text
+        assert "Completion claim rejected" in system_text
+        assert any(
+            entry.speaker == "system" and "Visual verification gate" in entry.text
+            for entry in c.transcript.entries
+        )
 
     async def test_codex_worktree_changes_render_as_diff_blocks(self, tmp_path):
         subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)

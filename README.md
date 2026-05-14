@@ -206,8 +206,8 @@ If you want a narrower boundary, reduce the roots instead, for example
 ### Visual Verification For Generated Plots And HTML
 
 Rendered artifacts have a stricter definition of done than ordinary text or
-code. For HTML, plots, charts, PDFs, web UI, generated images, and inline
-document figures, agents must follow
+code. For HTML, plots, charts, PDFs, LaTeX files that produce PDFs, web UI,
+generated images, and inline document figures, agents must follow
 [`specs/visual-verification.md`](specs/visual-verification.md):
 
 - use **Changed**, **Generated**, **Structurally checked**,
@@ -217,6 +217,14 @@ document figures, agents must follow
 - default to static SVG/PNG figures inside prose documents; keep interactive
   Plotly/D3/Chart.js views as standalone linked pages unless browser-verified
 - batch likely visual fixes before asking the user to reload
+
+Botference also enforces this after each agent turn. If Claude or Codex changes
+or generates a rendered artifact and the turn does not include a matching render
+check, Botference adds a system-level **Visual verification gate** warning and
+marks the artifact as **User-review needed**. For `.tex` edits, the generated
+PDF is the rendered artifact: a compile step alone is not enough; the PDF must
+also be inspected with `view_pdf_page`, a screenshot, or an equivalent visual
+check.
 
 Botference includes a deterministic HTML visual gate:
 
