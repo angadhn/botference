@@ -108,3 +108,21 @@ class TestToolWritePolicy:
 
         assert "blocked by project policy" in result
         assert not (project_root / "botference" / "wiki" / ".git" / "config").exists()
+
+    def test_visual_check_blocks_output_dir_outside_write_roots(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "botference").mkdir()
+        html = project_root / "plot.html"
+        html.write_text("<!doctype html><title>Plot</title>", encoding="utf-8")
+        outside = tmp_path / "outside"
+        monkeypatch.chdir(project_root)
+        _set_project_env(monkeypatch, project_root, mode="plan")
+
+        result = execute_tool(
+            "visual_check_html",
+            {"html_file": "plot.html", "output_dir": str(outside)},
+        )
+
+        assert "blocked by project policy" in result
+        assert "outside allowed write roots for plan mode" in result

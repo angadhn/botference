@@ -12,6 +12,11 @@ Plan mode is planning only.
 - If a new agent is needed, write that as a scoped task in the implementation
   plan instead of creating the agent directly.
 - If the user asks to execute, finish the plan and stop. Build mode executes.
+- If the plan includes rendered/visual output (HTML, plots, charts, PDFs,
+  web UI, or images), read `specs/visual-verification.md`. Plan for static
+  SVG/PNG figures inside reading documents by default, and include
+  `visual_check_html` or an equivalent render check before any task may claim
+  "visually verified."
 
 ## Step 1 — Intake
 
@@ -73,6 +78,9 @@ Architecture options:
 When assigning tasks, match the development approach to the task type.
 Coder tasks that produce testable software should note "red/green TDD"
 in the task description so the coder agent knows to write tests first.
+Tasks that produce rendered/visual output should include a visual verification
+gate naming the renderer/tool and viewports. If visual tooling is unavailable,
+the task must end with "User-review needed", not "done".
 
 For coder tasks annotated "red/green TDD", include decision-complete
 sub-fields indented below the task line:

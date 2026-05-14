@@ -24,6 +24,11 @@ IMPORTANT:
 - update implementation-plan.md when the task is done
 - when checks pass, commit all modified files
 - update checkpoint.md with what you did and what comes next
+- if the task produces rendered/visual output (HTML, plots, charts, PDFs,
+  web UI, or images), follow `specs/visual-verification.md`. Use
+  `visual_check_html` for HTML outputs when available. Do not report
+  "done/fixed/ready" unless the rendered output is visually verified; otherwise
+  report "Changed" or "Generated" plus "User-review needed."
 
 ## Autonomy Gates
 

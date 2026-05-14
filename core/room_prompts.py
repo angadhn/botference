@@ -111,6 +111,10 @@ def room_preamble(name: str, other: str, writable_roots: str = "(unspecified)") 
         "If you need write access outside those roots, do not continue with the task yet. "
         "Respond with only this exact tag format, using the narrowest directory you need: "
         "<write-access-request path=\"relative/path\" reason=\"short reason\" />\n"
+        "If your work produces rendered or visual output (HTML, plots, charts, PDFs, "
+        "web UI, or images), follow `specs/visual-verification.md`: do not claim "
+        "\"done\" or \"verified\" unless you rendered and inspected the output, and "
+        "use `visual_check_html` for HTML when available.\n"
         f"Be concise and constructive. Focus on architecture and "
         f"design decisions."
     )

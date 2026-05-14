@@ -18,6 +18,7 @@ Based on [ghuntley's agent architecture](https://ghuntley.com/agent) ([repo](htt
 | `check_language.py` | check_language | LaTeX/Markdown prose checks |
 | `check_journal.py` | check_journal | Word count, page estimate, bibliography field checks |
 | `check_figure.py` | check_figure | Raster/vector figure compliance checks |
+| `visual.py` | visual_check_html | Headless Chromium screenshots and deterministic HTML layout checks; Playwright is optional but required for actual rendering |
 | `citations.py` | citation_lint, citation_lookup, citation_verify, citation_verify_all, citation_manifest | Citation handlers built on `_citation.py` |
 | `claims.py` | check_claims | Cross-ref .tex + evidence-ledger + .bib |
 | `paper_ledger.py` | validate_paper_ledger, render_paper_ledger_markdown, validate_support_requests | Research paper lifecycle and support-request checks |
@@ -33,4 +34,4 @@ Based on [ghuntley's agent architecture](https://ghuntley.com/agent) ([repo](htt
 | `github.py` | gh | GitHub CLI wrapper for PRs, issues, releases |
 | `cli.py` | *(dispatcher)* | CLI entry point — invoke any tool from Bash (`cli.py <tool> '<json>'`) |
 
-`__init__.py` merges all modules into a single TOOLS dict, defines AGENT_TOOLS (per-agent tool assignments), and provides `execute_tool()` and `get_tools_for_agent()` for dispatch. 19 tools total, 6 essentials shared by all agents.
+`__init__.py` merges all modules into a single TOOLS dict, defines AGENT_TOOLS (per-agent tool assignments), and provides `execute_tool()` and `get_tools_for_agent()` for dispatch.

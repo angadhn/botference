@@ -203,6 +203,44 @@ explicitly. For example:
 If you want a narrower boundary, reduce the roots instead, for example
 `"build": ["botference/build"]`.
 
+### Visual Verification For Generated Plots And HTML
+
+Rendered artifacts have a stricter definition of done than ordinary text or
+code. For HTML, plots, charts, PDFs, web UI, generated images, and inline
+document figures, agents must follow
+[`specs/visual-verification.md`](specs/visual-verification.md):
+
+- use **Changed**, **Generated**, **Structurally checked**,
+  **Visually verified**, and **User-review needed** precisely
+- do not say "done", "fixed", "ready", or "verified" for visual work unless
+  the rendered output was inspected
+- default to static SVG/PNG figures inside prose documents; keep interactive
+  Plotly/D3/Chart.js views as standalone linked pages unless browser-verified
+- batch likely visual fixes before asking the user to reload
+
+Botference includes a deterministic HTML visual gate:
+
+```bash
+python3 "$BOTFERENCE_HOME/tools/cli.py" visual_check_html '{"html_file":"botference/projects/spaceshipengineering/index.html"}'
+```
+
+The tool renders the page at desktop, tablet, and mobile widths, saves
+screenshots plus `report.json` under `$BOTFERENCE_WORK_DIR/visual-checks/`,
+and reports layout failures such as horizontal overflow, clipped text,
+overlapping visible text, console errors, and page errors. It is intentionally
+usable from plan and research-plan mode through Bash, so agents can inspect
+their own generated HTML without another model turn.
+
+Install the browser dependency once when you want automatic visual checks:
+
+```bash
+python3 -m pip install playwright
+python3 -m playwright install chromium
+```
+
+If Playwright is unavailable, agents must report **User-review needed** and
+tell you which artifact to reload.
+
 For a fresh clone, install Ink's Node dependencies once before using the
 default planner UI:
 
