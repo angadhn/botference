@@ -22,12 +22,29 @@ part that works well and is ready for use.
 > done, use `botference plan` and take the resulting plan into your own
 > workflow.
 
-**Ink TUI** — council panel (left), caucus panel (right), input field and
-status line at the bottom. This is the primary interface and default planner UI:
+**Ink TUI** — projects panel (left), council panel (center), caucus panel
+(right), input field and status line at the bottom. This is the primary
+interface and default planner UI:
 
 ![Ink UI — council and caucus panels with status line](docs/images/ink-ui.png)
 
-**Textual TUI** — same layout, Python-based fallback:
+The Projects panel lists `Inbox` plus every folder under `projects/` and
+expands the active project to show its 8 most recent resumable chats. Pane
+controls in Ink:
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Cycle focus across Council → Caucus → Projects (when visible) |
+| `↑` / `↓` | Navigate the Projects list while it has focus |
+| `Enter` | Open the highlighted project, switch to Inbox, or resume the highlighted chat |
+| `Ctrl+P` | Toggle the Projects panel's visibility |
+
+Selecting `Inbox` runs `/project clear`; selecting a project header runs
+`/project open <id>`; selecting a session row runs `/resume <session-id>`.
+You can switch sessions mid-chat — the current session is persisted on every
+turn, so you can `/resume <its-id>` to come back later.
+
+**Textual TUI** — Python-based fallback (project panel features land in Ink first):
 
 ![Textual UI — council and caucus panels with status line](docs/images/textual-ui.png)
 
@@ -322,7 +339,9 @@ excerpts still render as code blocks.
 | `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved beside the plan in the Botference state directory. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
-| `/resume [latest\|<number>\|<title>\|<session-id-prefix>]` | Restore a previously saved planning session from `work/sessions/`. Run with no argument to list recent resumable sessions with names and numbers. Resume is only available from a fresh botference controller session. |
+| `/projects` | List project folders under `projects/` and show the active project marker, status, priority, chat count, and next action when known. |
+| `/project [open <id>\|clear\|current\|create <title>\|create-from-chat]` | Set, clear, show, or create the current project context. The status bar and Projects panel show the selected project; `Inbox` means no project is selected. |
+| `/resume [latest\|<number>\|<title>\|<session-id-prefix>]` | Restore a previously saved planning session. With a project selected, project-associated and project-local sessions are shown first, while old unassigned sessions remain visible. You can resume mid-chat — the current session is persisted on every turn, so the chat you're leaving stays recoverable via `/resume <its-id>`. Selecting a session row in the Ink Projects panel runs this command for you. |
 | `/rename <name>` | Name the current planning session for future `/resume` lookup. Sessions also get an automatic title from the first user message or task. |
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
 | `/status` | Show context usage, lead, mode, and session state. |
@@ -345,6 +364,60 @@ For shared behavior, keep the same `name` and `description` frontmatter in both
 directories. The built-in `grill-me` skill follows this layout, so prompts like
 "grill me on this plan" can trigger the same workflow for either participant.
 
+### Project Portfolio
+
+Botference can treat `projects/` as a lightweight portfolio of durable work
+containers. This is separate from a single chat session: a project can have many
+resumable planning sessions, imported work artifacts, and future build/delegation
+threads.
+
+In plan mode the TUI is laid out as `Projects | Council | Caucus`. The left
+Projects panel is persistent: it shows `Inbox`, discovered projects, the active
+project marker, and the active project's resumable chats. New controller
+sessions start in `Inbox`; Botference does not create a new project until you
+ask it to.
+
+Run `/projects` in plan mode to list directories under `projects/`. A directory
+appears even without metadata; Botference infers its title from, in order:
+
+1. `PROJECT.md` first `# Heading`
+2. `README.md` first `# Heading`
+3. the directory slug, title-cased
+
+Use `/project open <id>` to select a project:
+
+```text
+/projects
+/project open spaceship-engineering
+/resume
+```
+
+The status bar will show the selected project. `/project clear` returns to the
+default `Inbox` context, and `/project current` prints the active project root.
+
+Create a project from plan mode with:
+
+```text
+/project create My New Project
+```
+
+Botference creates `projects/my-new-project/PROJECT.md`, adds a stable
+`projects/portfolio.json` entry, sets the new project active, and persists the
+current session with that `project_id`. If the slug already exists, creation is
+refused and the existing project is left untouched.
+
+Use `/project create-from-chat` to create a project from the current session
+title, or from the first user message if the session has not been renamed. This
+is deterministic; it does not call a model.
+
+`PROJECT.md` is the human-readable project card. New project cards include
+placeholders for Status, Priority, Cadence, Why This Matters, Desired Outcome,
+and Next Action. Optional portfolio metadata lives in `projects/portfolio.json`;
+use it for status, priority, cadence, desired outcome, and next action. Optional
+session associations live in `projects/session-index.json`, which lets old chats
+in `work/sessions/` show up under a project without moving the session files.
+Project-local sessions under `projects/<id>/sessions/*.json` are also supported.
+
 ### Relay Semantics
 
 `/relay` is now eager. When you relay `@claude` or `@codex`, botference
@@ -357,19 +430,35 @@ starts a fresh session in the same running controller.
 
 ### Resume and crash recovery
 
-Plan-mode sessions are now snapshotted under `work/sessions/` after each turn.
-Each snapshot includes:
+Plan-mode sessions are snapshotted under `work/sessions/` after each turn by
+default. Project-local sessions under `projects/<id>/sessions/` can also be
+listed and restored when that project is selected. A small sidecar file at
+`work/sessions/.metadata-index.json` caches per-session metadata (mtime,
+`project_id`, transcript length) so the Projects panel can render counts
+quickly without re-parsing every session JSON on every refresh — it's
+maintained automatically and is safe to delete (it'll be rebuilt on next
+launch). Each snapshot includes:
 
 - the shared transcript
 - room and caucus panel history
 - route, lead, mode, and status state
+- the active `project_id`, when the session belongs to a project
 - Claude `session_id` and Codex `thread_id` for native CLI resume
 
-Use `/resume` in a fresh `./botference plan` session to list saved sessions,
+Use `/resume` in any `./botference plan` session to list saved sessions,
 then `/resume latest`, `/resume <number>`, `/resume <title>`, or
-`/resume <session-id-prefix>` to restore one. Use `/rename <name>` during a
-session to set a durable title; otherwise Botference derives a title from the
-first user message or task.
+`/resume <session-id-prefix>` to restore one. Resume works mid-chat — the
+current session is persisted on every turn, so the chat you're leaving stays
+on disk and can be re-resumed by id. If a project is selected with
+`/project open <id>`, `/resume` lists that project's local or indexed sessions
+first and leaves unassigned legacy sessions visible underneath. In the Ink
+Projects panel you can also press `Enter` on a chat row to do the same thing.
+Use
+`/rename <name>` during a session to set a durable title; otherwise Botference
+derives a title from the first user message or task.
+
+When a resumed session includes `project_id`, Botference restores that active
+project context and updates the status line and Projects panel.
 
 Unhandled plan-mode crashes are appended to `work/sessions/crash.log`.
 If you also run with debug panes, the model stream logs remain:

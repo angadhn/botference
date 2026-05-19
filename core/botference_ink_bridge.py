@@ -26,7 +26,7 @@ from cli_adapters import (
 )
 from paths import BotferencePaths
 from botference import Botference, WritePermissionRequest, get_completion_context
-from botference_ui import RoomMode, StatusSnapshot
+from botference_ui import ProjectPanelState, RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
 from session_store import append_crash_log
 
@@ -109,6 +109,7 @@ class InkBridge:
             "mode": status.mode.value,
             "lead": status.lead,
             "route": status.route,
+            "project": status.project,
             "claude_pct": status.claude_percent,
             "codex_pct": status.codex_percent,
             "claude_tokens": status.claude_tokens,
@@ -118,8 +119,38 @@ class InkBridge:
             "observe": status.observe_enabled,
         })
 
+    def set_projects(self, state: ProjectPanelState) -> None:
+        emit({
+            "type": "projects",
+            "active_project_id": state.active_project_id,
+            "inbox_session_count": state.inbox_session_count,
+            "projects": [
+                {
+                    "id": project.project_id,
+                    "title": project.title,
+                    "status": project.status,
+                    "next_action": project.next_action,
+                    "active": project.active,
+                    "session_count": project.session_count,
+                    "sessions": [
+                        {
+                            "session_id": session.session_id,
+                            "title": session.title,
+                            "updated_at": session.updated_at,
+                            "active": session.active,
+                        }
+                        for session in project.sessions
+                    ],
+                }
+                for project in state.projects
+            ],
+        })
+
     def set_mode(self, mode: RoomMode) -> None:
         emit({"type": "mode", "mode": mode.value})
+
+    def clear_panes(self) -> None:
+        emit({"type": "clear_panes"})
 
     async def request_write_permission(
         self,
@@ -163,9 +194,11 @@ async def _wait_for_turn(
     try:
         await task
         bridge.set_status(botference.status_snapshot())
+        bridge.set_projects(botference.project_panel_snapshot())
     except asyncio.CancelledError:
         botference.interrupt(bridge)
         bridge.set_status(botference.status_snapshot())
+        bridge.set_projects(botference.project_panel_snapshot())
     except Exception as exc:
         append_crash_log(
             paths,
@@ -175,6 +208,7 @@ async def _wait_for_turn(
         )
         bridge.add_room_entry("system", f"Unhandled controller error: {exc}")
         bridge.set_status(botference.status_snapshot())
+        bridge.set_projects(botference.project_panel_snapshot())
     finally:
         if botference.quit_requested:
             emit({"type": "exit"})
@@ -296,6 +330,7 @@ async def main() -> None:
     # Send initial state
     emit({"type": "completion_context", **get_completion_context()})
     bridge.set_status(botference.status_snapshot())
+    bridge.set_projects(botference.project_panel_snapshot())
     bridge.add_room_entry("system", "Council room ready. First plain text routes to @all.")
     bridge.add_caucus_entry("system", "(empty until /caucus)")
     emit({"type": "ready"})

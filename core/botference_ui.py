@@ -36,6 +36,7 @@ class StatusSnapshot:
     mode: RoomMode = RoomMode.PUBLIC
     lead: str = "auto"
     route: str = "@all"
+    project: str = "Inbox"
     claude_percent: Optional[float] = None
     codex_percent: Optional[float] = None
     claude_tokens: Optional[int] = None
@@ -63,6 +64,32 @@ class TranscriptEntry:
     speaker: str
     text: str
     blocks: Optional[list[dict]] = None
+
+
+@dataclass(frozen=True)
+class ProjectPanelSession:
+    session_id: str
+    title: str
+    updated_at: str = ""
+    active: bool = False
+
+
+@dataclass(frozen=True)
+class ProjectPanelProject:
+    project_id: str
+    title: str
+    status: str = "active"
+    next_action: str = ""
+    active: bool = False
+    session_count: int = 0
+    sessions: tuple[ProjectPanelSession, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProjectPanelState:
+    projects: tuple[ProjectPanelProject, ...] = ()
+    active_project_id: str = ""
+    inbox_session_count: int = 0
 
 
 TEXTUAL_SCROLL_LINES = 3
@@ -148,7 +175,7 @@ def _context_style(value: Optional[float]) -> str:
 
 def format_status_line(status: StatusSnapshot) -> str:
     return (
-        f"Mode: {status.mode.value} | Lead: {status.lead} | "
+        f"Project: {status.project} | Mode: {status.mode.value} | Lead: {status.lead} | "
         f"Route: {status.route} | "
         f"Claude: {_format_context_percent(status.claude_percent)} | "
         f"Codex: {_format_context_percent(status.codex_percent)} | "
@@ -159,7 +186,7 @@ def format_status_line(status: StatusSnapshot) -> str:
 def format_status_rich(status: StatusSnapshot) -> Text:
     """Rich Text version of the status line with context warning colors."""
     t = Text()
-    t.append(f"Mode: {status.mode.value} | Lead: {status.lead} | "
+    t.append(f"Project: {status.project} | Mode: {status.mode.value} | Lead: {status.lead} | "
              f"Route: {status.route} | Claude: ")
     t.append(
         _format_context_percent(status.claude_percent),
@@ -172,6 +199,36 @@ def format_status_rich(status: StatusSnapshot) -> Text:
     )
     t.append(f" | Observe: {'on' if status.observe_enabled else 'off'}")
     return t
+
+
+def render_project_panel(state: ProjectPanelState) -> Text:
+    text = Text()
+    text.append("Projects\n", style="bold")
+    inbox_marker = "●" if not state.active_project_id else " "
+    inbox_meta = f" ({state.inbox_session_count} chats)" if state.inbox_session_count else ""
+    text.append(f"{inbox_marker} Inbox{inbox_meta}\n", style="cyan" if not state.active_project_id else "")
+    for project in state.projects:
+        marker = "●" if project.active else " "
+        disclosure = "▾" if project.active else "▸"
+        style = "bold cyan" if project.active else ""
+        count = f" · {project.session_count} chats" if project.session_count else ""
+        text.append(f"{marker} {disclosure} {project.title}{count}\n", style=style)
+        if project.active:
+            if project.next_action:
+                text.append(f"    next: {project.next_action}\n", style="dim")
+            if project.sessions:
+                for session in project.sessions[:8]:
+                    session_marker = "●" if session.active else " "
+                    title = session.title or session.session_id[:12]
+                    if len(title) > 28:
+                        title = title[:25] + "..."
+                    text.append(
+                        f"  {session_marker} {session.session_id[:8]}  {title}\n",
+                        style="green" if session.active else "dim",
+                    )
+            else:
+                text.append("    no resumable chats yet\n", style="dim")
+    return text
 
 
 def render_transcript_entry(
@@ -458,6 +515,10 @@ if TEXTUAL_AVAILABLE:
                 scroll_end=at_end,
             )
 
+        def clear_entries(self) -> None:
+            self._entries.clear()
+            self.clear()
+
         def set_dimmed(self, dimmed: bool) -> None:
             if dimmed == self._dimmed:
                 return
@@ -499,6 +560,17 @@ if TEXTUAL_AVAILABLE:
     class CaucusPane(TranscriptPane):
         def __init__(self) -> None:
             super().__init__("CAUCUS")
+
+
+    class ProjectsPane(Static):
+        def __init__(self, state: Optional[ProjectPanelState] = None) -> None:
+            super().__init__("", id="projects-pane")
+            self.project_state = state or ProjectPanelState()
+            self.border_title = "PROJECTS"
+
+        def update_projects(self, state: ProjectPanelState) -> None:
+            self.project_state = state
+            self.update(render_project_panel(state))
 
 
     class StatusBar(Static):
@@ -605,6 +677,12 @@ if TEXTUAL_AVAILABLE:
             padding: 0 1;
         }
 
+        ProjectsPane {
+            width: 34;
+            border: round $panel;
+            padding: 0 1;
+        }
+
         .focused-pane {
             border: round $accent;
         }
@@ -650,22 +728,26 @@ if TEXTUAL_AVAILABLE:
 
         focused_pane = reactive(PaneFocus.ROOM)
         status = reactive(StatusSnapshot())
+        project_state = reactive(ProjectPanelState())
 
         def __init__(
             self,
             on_submit: Optional[Callable[[str], None]] = None,
             initial_status: Optional[StatusSnapshot] = None,
+            initial_projects: Optional[ProjectPanelState] = None,
             **kwargs,
         ) -> None:
             super().__init__(**kwargs)
             self.on_submit = on_submit
             self._initial_status = initial_status or StatusSnapshot()
+            self._initial_projects = initial_projects or ProjectPanelState()
             self._wheel_scroll_time = 0.0
             self._wheel_scroll_multiplier = 1.0
             self._wheel_scroll_direction = 0
 
         def compose(self) -> ComposeResult:
             with Horizontal(id="panes"):
+                yield ProjectsPane(self.project_state)
                 yield RoomPane()
                 yield CaucusPane()
             with Vertical(id="bottom"):
@@ -687,7 +769,9 @@ if TEXTUAL_AVAILABLE:
             )
             self._apply_focus_state()
             self.status = self._initial_status
+            self.project_state = self._initial_projects
             self.query_one(StatusBar).update_status(self.status)
+            self.query_one(ProjectsPane).update_projects(self.project_state)
             self.query_one(InputBar).focus_input()
 
         def watch_status(self, status: StatusSnapshot) -> None:
@@ -699,6 +783,16 @@ if TEXTUAL_AVAILABLE:
                 return
             if bars:
                 bars.first().update_status(status)
+
+        def watch_project_state(self, state: ProjectPanelState) -> None:
+            if not self.is_running:
+                return
+            try:
+                panes = self.query(ProjectsPane)
+            except Exception:
+                return
+            if panes:
+                panes.first().update_projects(state)
 
         def _apply_focus_state(self) -> None:
             room = self.query_one(RoomPane)
@@ -807,11 +901,15 @@ if TEXTUAL_AVAILABLE:
             if status.mode != old_mode:
                 self._sync_focus_to_mode(status.mode)
 
+        def set_projects(self, state: ProjectPanelState) -> None:
+            self.project_state = state
+
         def set_mode(self, mode: RoomMode) -> None:
             self.status = StatusSnapshot(
                 mode=mode,
                 lead=self.status.lead,
                 route=self.status.route,
+                project=self.status.project,
                 claude_percent=self.status.claude_percent,
                 codex_percent=self.status.codex_percent,
                 claude_tokens=self.status.claude_tokens,
@@ -821,6 +919,13 @@ if TEXTUAL_AVAILABLE:
                 observe_enabled=self.status.observe_enabled,
             )
             self._sync_focus_to_mode(mode)
+
+        def clear_panes(self) -> None:
+            try:
+                self.query_one(RoomPane).clear_entries()
+                self.query_one(CaucusPane).clear_entries()
+            except Exception:
+                pass
 
         async def request_write_permission(self, request) -> bool:
             self.add_room_entry(

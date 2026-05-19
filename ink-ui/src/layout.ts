@@ -14,6 +14,8 @@ const PANE_HORIZONTAL_BORDER = 2;
 const PANE_HORIZONTAL_PADDING = 2;
 const TOOL_TEXT_COLOR = "yellow";
 const TOOL_HEADER_COLOR = "yellowBright";
+const PROJECTS_PANE_TARGET_WIDTH = 30;
+const PROJECTS_PANE_MIN_WIDTH = 18;
 
 export interface LayoutBudget {
   paneHeight: number;
@@ -22,20 +24,45 @@ export interface LayoutBudget {
   rightPaneWidth: number;
   leftTextWidth: number;
   rightTextWidth: number;
+  projectsPaneWidth: number;
+  projectsTextWidth: number;
   inputHeight: number;
+}
+
+export interface LayoutBudgetOptions {
+  projectsVisible?: boolean;
 }
 
 export function computeLayoutBudget(
   termRows: number,
   termCols: number,
   inputViewportLineCount: number,
+  options: LayoutBudgetOptions = {},
 ): LayoutBudget {
   const inputHeight = INPUT_CHROME + Math.max(1, inputViewportLineCount);
   const paneHeight = Math.max(PANE_CHROME + 1, termRows - inputHeight - STATUS_HEIGHT);
   const paneContentHeight = Math.max(1, paneHeight - PANE_CHROME);
 
-  const leftPaneWidth = Math.floor(termCols / 2);
-  const rightPaneWidth = termCols - leftPaneWidth;
+  // Reserve a fixed-ish left column for the Projects panel when visible.
+  // Cap at one-third of the terminal so narrow windows still leave room for
+  // Council/Caucus, and refuse to draw it below the min usable width.
+  let projectsPaneWidth = 0;
+  let projectsTextWidth = 0;
+  if (options.projectsVisible) {
+    const cap = Math.max(0, Math.floor(termCols / 3));
+    const candidate = Math.min(PROJECTS_PANE_TARGET_WIDTH, cap);
+    if (candidate >= PROJECTS_PANE_MIN_WIDTH) {
+      projectsPaneWidth = candidate;
+      projectsTextWidth = Math.max(
+        4,
+        projectsPaneWidth - PANE_HORIZONTAL_BORDER - PANE_HORIZONTAL_PADDING,
+      );
+    }
+  }
+
+  const remainingCols = termCols - projectsPaneWidth;
+  const leftPaneWidth = Math.floor(remainingCols / 2);
+  const rightPaneWidth = remainingCols - leftPaneWidth;
   const leftTextWidth = Math.max(
     4,
     leftPaneWidth - PANE_HORIZONTAL_BORDER - PANE_HORIZONTAL_PADDING,
@@ -52,6 +79,8 @@ export function computeLayoutBudget(
     rightPaneWidth,
     leftTextWidth,
     rightTextWidth,
+    projectsPaneWidth,
+    projectsTextWidth,
     inputHeight,
   };
 }

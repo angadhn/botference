@@ -34,7 +34,7 @@ from botference import (
     _visual_verification_warning,
     parse_input,
 )
-from botference_ui import RoomMode, StatusSnapshot
+from botference_ui import ProjectPanelState, RoomMode, StatusSnapshot
 from paths import BotferencePaths
 from render_blocks import parse_render_blocks
 
@@ -114,6 +114,25 @@ class TestParseInput:
         p = parse_input("/resume latest")
         assert p.kind is InputKind.RESUME
         assert p.body == "latest"
+
+    def test_slash_projects(self):
+        p = parse_input("/projects")
+        assert p.kind is InputKind.PROJECTS
+
+    def test_slash_project_open(self):
+        p = parse_input("/project open spaceship-engineering")
+        assert p.kind is InputKind.PROJECT
+        assert p.body == "open spaceship-engineering"
+
+    def test_slash_project_create(self):
+        p = parse_input("/project create Space Data Centers")
+        assert p.kind is InputKind.PROJECT
+        assert p.body == "create Space Data Centers"
+
+    def test_slash_project_create_from_chat(self):
+        p = parse_input("/project create-from-chat")
+        assert p.kind is InputKind.PROJECT
+        assert p.body == "create-from-chat"
 
     def test_slash_rename(self):
         p = parse_input("/rename useful plan")
@@ -436,6 +455,7 @@ class MockUI:
     room_blocks: list[list[dict] | None] = field(default_factory=list)
     caucus_blocks: list[list[dict] | None] = field(default_factory=list)
     statuses: list[StatusSnapshot] = field(default_factory=list)
+    project_states: list[ProjectPanelState] = field(default_factory=list)
     modes: list[RoomMode] = field(default_factory=list)
     permission_responses: list[bool] = field(default_factory=list)
     permission_requests: list[object] = field(default_factory=list)
@@ -455,8 +475,17 @@ class MockUI:
     def set_status(self, status: StatusSnapshot) -> None:
         self.statuses.append(status)
 
+    def set_projects(self, state: ProjectPanelState) -> None:
+        self.project_states.append(state)
+
     def set_mode(self, mode: RoomMode) -> None:
         self.modes.append(mode)
+
+    def clear_panes(self) -> None:
+        self.room_entries.clear()
+        self.room_blocks.clear()
+        self.caucus_entries.clear()
+        self.caucus_blocks.clear()
 
     async def request_write_permission(self, request) -> bool:
         self.permission_requests.append(request)
@@ -1373,17 +1402,187 @@ class TestBotferenceResume:
         assert "design the checkout flow" in listing
         assert "Untitled session" not in listing
 
-    async def test_resume_requires_fresh_controller(self, tmp_path):
-        c, _, _, ui = _make_botference(
-            claude_responses=[_ok("reply")],
+    async def test_resume_mid_chat_switches_session(self, tmp_path):
+        # First controller writes session A and finishes a turn.
+        first, _, _, first_ui = _make_botference(
+            claude_responses=[_ok("first reply")],
             tmp_path=tmp_path,
         )
-        await c.handle_input("@claude hi", ui)
-        await c.handle_input("/resume latest", ui)
-        assert any(
-            "fresh controller session" in text.lower()
-            for _, text in ui.room_entries
+        await first.handle_input("@claude design the checkout flow", first_ui)
+        session_a = first.session_id
+
+        # Second controller starts a fresh session B, sends a message, then
+        # picks session A from the sidebar. We expect the swap to succeed
+        # even though session B already had transcript content (the previous
+        # "fresh controller" gate has been relaxed).
+        second, _, _, second_ui = _make_botference(
+            claude_responses=[_ok("second reply")],
+            tmp_path=tmp_path,
         )
+        await second.handle_input("@claude pick a totally different thread", second_ui)
+        session_b = second.session_id
+        second_ui.room_entries.clear()
+        await second.handle_input(f"/resume {session_a}", second_ui)
+        assert second.session_id == session_a
+        assert session_a != session_b
+        assert not any(
+            "fresh controller session" in text.lower()
+            for _, text in second_ui.room_entries
+        )
+        # Session B's payload should still be on disk so the user can switch
+        # back to it later.
+        loaded_b = second.session_store.load(session_b)
+        assert loaded_b["session_id"] == session_b
+
+
+@pytest.mark.asyncio
+class TestBotferenceProjects:
+    async def test_projects_lists_project_directories(self, tmp_path):
+        projects = tmp_path / "projects"
+        project = projects / "spaceship-engineering"
+        project.mkdir(parents=True)
+        project.joinpath("PROJECT.md").write_text(
+            "# Spaceship Engineering\n\n## Next Action\n\nConsolidate thesis.\n",
+            encoding="utf-8",
+        )
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/projects", ui)
+
+        listing = "\n".join(text for _, text in ui.room_entries)
+        assert "spaceship-engineering" in listing
+        assert "Spaceship Engineering" in listing
+
+    async def test_project_open_sets_active_project_and_status(self, tmp_path):
+        project = tmp_path / "projects" / "CareerSwitch"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project open CareerSwitch", ui)
+
+        assert c.active_project_id == "CareerSwitch"
+        assert ui.statuses[-1].project == "CareerSwitch"
+        assert any("Project context set" in text for _, text in ui.room_entries)
+
+    async def test_project_context_persists_in_session_payload(self, tmp_path):
+        project = tmp_path / "projects" / "CareerSwitch"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project open CareerSwitch", ui)
+
+        session_path = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        assert payload["project_id"] == "CareerSwitch"
+        index_path = tmp_path / "projects" / "session-index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        assert {"session_id": c.session_id, "project": "CareerSwitch"} in index["sessions"]
+
+    async def test_project_create_makes_project_and_sets_active(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project create Space Data Centers", ui)
+
+        project_dir = tmp_path / "projects" / "space-data-centers"
+        assert project_dir.is_dir()
+        assert "# Space Data Centers" in project_dir.joinpath("PROJECT.md").read_text(encoding="utf-8")
+        assert c.active_project_id == "space-data-centers"
+        assert ui.statuses[-1].project == "Space Data Centers"
+        assert ui.project_states[-1].active_project_id == "space-data-centers"
+
+    async def test_project_create_refuses_existing_slug(self, tmp_path):
+        existing = tmp_path / "projects" / "space-data-centers"
+        existing.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project create Space Data Centers", ui)
+
+        assert c.active_project_id == ""
+        assert any("already exists" in text for _, text in ui.room_entries)
+
+    async def test_project_create_from_chat_uses_session_title(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/rename Space Data Centers", ui)
+
+        await c.handle_input("/project create-from-chat", ui)
+
+        assert c.active_project_id == "space-data-centers"
+        assert (tmp_path / "projects" / "space-data-centers" / "PROJECT.md").exists()
+
+    async def test_project_resume_lists_project_local_sessions(self, tmp_path):
+        project = tmp_path / "projects" / "spaceship-engineering"
+        session_dir = project / "sessions"
+        session_dir.mkdir(parents=True)
+        session_dir.joinpath("ship-session.json").write_text(json.dumps({
+            "session_id": "ship-session",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "spaceship thesis",
+            "project_id": "spaceship-engineering",
+            "transcript": [{"speaker": "user", "text": "work on spaceship thesis"}],
+        }), encoding="utf-8")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project open spaceship-engineering", ui)
+        await c.handle_input("/resume", ui)
+
+        listing = "\n".join(text for _, text in ui.room_entries)
+        assert "Saved sessions for Spaceship Engineering" in listing
+        assert "ship-session" in listing
+        assert "spaceship thesis" in listing
+
+    async def test_panel_counts_session_by_payload_project_id(self, tmp_path):
+        # A legacy session that knows its project via payload.project_id but
+        # was never registered in session-index.json should still count to
+        # the project — not Inbox.
+        project = tmp_path / "projects" / "spaceship-engineering"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        session_file = c.paths.session_dir / "legacy-session.json"
+        session_file.write_text(json.dumps({
+            "session_id": "legacy-session",
+            "project_id": "spaceship-engineering",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+            "updated_at": "2026-05-01T00:00:00Z",
+        }), encoding="utf-8")
+
+        snapshot = c.project_panel_snapshot()
+        ship = next(p for p in snapshot.projects if p.project_id == "spaceship-engineering")
+        assert ship.session_count == 1
+        # The current controller's own (still-empty) session should not
+        # inflate Inbox — we filter entry_count < 1 sessions.
+        assert snapshot.inbox_session_count == 0
+
+    async def test_panel_inbox_count_skips_empty_sessions(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        # Empty transcript → should not count.
+        (c.paths.session_dir / "empty.json").write_text(json.dumps({
+            "session_id": "empty",
+            "transcript": [],
+        }), encoding="utf-8")
+        # One-entry transcript → should count.
+        (c.paths.session_dir / "one.json").write_text(json.dumps({
+            "session_id": "one",
+            "transcript": [{"speaker": "user", "text": "hello"}],
+        }), encoding="utf-8")
+
+        snapshot = c.project_panel_snapshot()
+        assert snapshot.inbox_session_count == 1
+
+    async def test_panel_metadata_index_is_persisted(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        (c.paths.session_dir / "alpha.json").write_text(json.dumps({
+            "session_id": "alpha",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+            "updated_at": "2026-05-02T00:00:00Z",
+        }), encoding="utf-8")
+
+        c.project_panel_snapshot()
+        index_path = c.paths.session_dir / ".metadata-index.json"
+        assert index_path.exists()
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        assert "alpha" in data["entries"]
+        assert data["entries"]["alpha"]["entry_count"] == 1
 
     async def test_draft_without_prior_session(self, tmp_path):
         """Bootstraps lead and reviewer sessions before drafting."""

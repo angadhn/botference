@@ -77,6 +77,7 @@ interface StatusData {
   mode: string;
   lead: string;
   route: string;
+  project: string;
   claude_pct: number | null;
   codex_pct: number | null;
   claude_tokens: number | null;
@@ -104,6 +105,18 @@ interface PendingPermission {
   path: string;
   reason: string;
 }
+
+// Project panel data shapes + row builder live in projects.ts so they can be
+// exercised by node:test without spinning up React.
+import {
+  buildProjectRows,
+  clampSelectableRow,
+  nextSelectableRow,
+  projectRowCommand,
+  type ProjectPanelProjectData,
+  type ProjectPanelStateData,
+  type ProjectRow,
+} from "./projects.js";
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -305,6 +318,123 @@ function Pane({
   );
 }
 
+function ProjectsPane({
+  rows,
+  focused,
+  cursorIndex,
+  height,
+  textWidth,
+  viewportHeight,
+}: {
+  rows: ProjectRow[];
+  focused: boolean;
+  cursorIndex: number;
+  height: number;
+  textWidth: number;
+  viewportHeight: number;
+}) {
+  // Keep the cursor in view by scrolling the row window when needed.
+  const safeHeight = Math.max(1, viewportHeight);
+  let startIdx = 0;
+  if (rows.length > safeHeight) {
+    startIdx = Math.min(
+      Math.max(0, cursorIndex - Math.floor(safeHeight / 2)),
+      rows.length - safeHeight,
+    );
+  }
+  const visible = rows.slice(startIdx, startIdx + safeHeight);
+  const dimmed = !focused;
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle={focused ? "bold" : "single"}
+      borderColor={focused ? THEME.accent : THEME.chrome}
+      overflow="hidden"
+      height={height}
+      width={textWidth + 4}
+      paddingX={1}
+    >
+      <Text bold color={focused ? THEME.accentBright : THEME.textMuted}>
+        PROJECTS
+      </Text>
+      {visible.map((row, vi) => {
+        const idx = startIdx + vi;
+        const isCursor = focused && idx === cursorIndex && row.selectable;
+        if (row.kind === "inbox") {
+          const marker = row.active ? "●" : " ";
+          const color = dimmed
+            ? THEME.textMuted
+            : row.active ? THEME.accentBright : THEME.text;
+          return (
+            <Box key={`row-${idx}`} width="100%">
+              <Text
+                bold={row.active && !dimmed}
+                color={color}
+                backgroundColor={isCursor ? THEME.accent : undefined}
+                wrap="truncate-end"
+              >
+                {`${marker} ${row.title}${row.meta ? " " + row.meta : ""}`}
+              </Text>
+            </Box>
+          );
+        }
+        if (row.kind === "project") {
+          const marker = row.active ? "●" : " ";
+          const disclosure = row.active ? "▾" : "▸";
+          const color = dimmed
+            ? THEME.textMuted
+            : row.active ? THEME.accentBright : THEME.text;
+          const tail = row.meta ? ` · ${row.meta}` : "";
+          return (
+            <Box key={`row-${idx}`} width="100%">
+              <Text
+                bold={row.active && !dimmed}
+                color={color}
+                backgroundColor={isCursor ? THEME.accent : undefined}
+                wrap="truncate-end"
+              >
+                {`${marker} ${disclosure} ${row.title}${tail}`}
+              </Text>
+            </Box>
+          );
+        }
+        if (row.kind === "next") {
+          return (
+            <Box key={`row-${idx}`} width="100%">
+              <Text color={THEME.textMuted} wrap="truncate-end">
+                {`    ${row.title}`}
+              </Text>
+            </Box>
+          );
+        }
+        if (row.kind === "session") {
+          const sessionMarker = row.active ? "●" : " ";
+          return (
+            <Box key={`row-${idx}`} width="100%">
+              <Text
+                color={dimmed ? THEME.textMuted : (row.active ? THEME.ready : THEME.text)}
+                backgroundColor={isCursor ? THEME.accent : undefined}
+                wrap="truncate-end"
+              >
+                {`  ${sessionMarker} ${row.meta}  ${row.title}`}
+              </Text>
+            </Box>
+          );
+        }
+        // empty
+        return (
+          <Box key={`row-${idx}`} width="100%">
+            <Text color={THEME.textMuted} wrap="truncate-end">
+              {`    ${row.title}`}
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
 function ContextPercent({ pct }: {
   pct: number | null;
 }) {
@@ -407,7 +537,7 @@ function StatusBar({
   return (
     <Box height={1} paddingX={1}>
       <Text color={THEME.textMuted}>
-        {"Mode: "}{status.mode}{" | Lead: "}{status.lead}{" | Route: "}{status.route}{" | Claude: "}
+        {"Project: "}{status.project}{" | Mode: "}{status.mode}{" | Lead: "}{status.lead}{" | Route: "}{status.route}{" | Claude: "}
         <ContextPercent pct={status.claude_pct} />
         {" | Codex: "}
         <ContextPercent pct={status.codex_pct} />
@@ -470,6 +600,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     mode: "public",
     lead: "auto",
     route: "@all",
+    project: "Inbox",
     claude_pct: null,
     codex_pct: null,
     claude_tokens: null,
@@ -478,7 +609,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     codex_window: null,
     observe: true,
   });
-  const [focusedPane, setFocusedPane] = useState<"room" | "caucus">("room");
+  const [focusedPane, setFocusedPane] = useState<"room" | "caucus" | "projects">("room");
+  const [projectState, setProjectState] = useState<ProjectPanelStateData>({
+    active_project_id: "",
+    inbox_session_count: 0,
+    projects: [],
+  });
+  const [projectsVisible, setProjectsVisible] = useState(true);
+  const [projectCursor, setProjectCursor] = useState(0);
   const [inputText, setInputText] = useState("");
   const [cursor, setCursor] = useState(0);
   const [hint, setHint] = useState("");
@@ -549,8 +687,47 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   );
 
   // Parent-owned layout budget — single source of truth for all dimensions
-  const { paneHeight, paneContentHeight, leftPaneWidth, leftTextWidth, rightTextWidth } =
-    computeLayoutBudget(rows, cols, visibleInputLines);
+  const {
+    paneHeight,
+    paneContentHeight,
+    leftPaneWidth,
+    leftTextWidth,
+    rightTextWidth,
+    projectsPaneWidth,
+    projectsTextWidth,
+  } = computeLayoutBudget(rows, cols, visibleInputLines, {
+    projectsVisible,
+  });
+  // If the budget refused to draw the panel (e.g. terminal too narrow), treat
+  // it as hidden for behavior purposes too — otherwise focus could get stuck
+  // on an invisible pane.
+  const projectsPaneRendered = projectsVisible && projectsPaneWidth > 0;
+  const projectRows = useMemo(
+    () => buildProjectRows(projectState),
+    [projectState],
+  );
+
+  // Snap the cursor to the active row on first load, then leave it alone so
+  // selecting a session doesn't yank focus back to the project header. If the
+  // cursor lands on a row that disappears (e.g. sessions collapse), clamp to
+  // the nearest selectable row.
+  const initialProjectSnapRef = useRef(false);
+  useEffect(() => {
+    if (projectRows.length === 0) return;
+    setProjectCursor((prev) => {
+      if (!initialProjectSnapRef.current) {
+        initialProjectSnapRef.current = true;
+        const activeIdx = projectRows.findIndex(
+          (row) => row.selectable && (row as { active?: boolean }).active,
+        );
+        if (activeIdx >= 0) return activeIdx;
+      }
+      if (prev >= 0 && prev < projectRows.length && projectRows[prev]!.selectable) {
+        return prev;
+      }
+      return clampSelectableRow(projectRows, prev);
+    });
+  }, [projectRows]);
   const roomFlatLines = useMemo(
     () => preRenderLines(roomEntries, leftTextWidth),
     [roomEntries, leftTextWidth],
@@ -728,6 +905,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       caucusFlatLines,
       roomScrollOffset: roomScrollRef.current,
       caucusScrollOffset: caucusScrollRef.current,
+      projectsPaneWidth: projectsPaneRendered ? projectsPaneWidth : 0,
     });
   }, [
     caucusFlatLines,
@@ -736,6 +914,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     paneContentHeight,
     rightTextWidth,
     roomFlatLines,
+    projectsPaneRendered,
+    projectsPaneWidth,
   ]);
 
   useEffect(() => {
@@ -1056,11 +1236,37 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           }
           break;
         }
+        case "clear_panes":
+          setRoomEntries([]);
+          setCaucusEntries([]);
+          setRoomScroll(0);
+          setCaucusScroll(0);
+          streamSegmentsRef.current.clear();
+          toolStacksRef.current.clear();
+          handledSegmentedStreamsRef.current.clear();
+          completedSegmentedStreamsRef.current.clear();
+          break;
+        case "projects": {
+          const projectsArr = Array.isArray(msg.projects)
+            ? (msg.projects as ProjectPanelProjectData[])
+            : [];
+          setProjectState({
+            active_project_id: typeof msg.active_project_id === "string"
+              ? msg.active_project_id
+              : "",
+            inbox_session_count: typeof msg.inbox_session_count === "number"
+              ? msg.inbox_session_count
+              : 0,
+            projects: projectsArr,
+          });
+          break;
+        }
         case "status":
           setStatus({
             mode: msg.mode as string,
             lead: msg.lead as string,
             route: msg.route as string,
+            project: typeof msg.project === "string" && msg.project ? msg.project : "Inbox",
             claude_pct: msg.claude_pct as number | null,
             codex_pct: msg.codex_pct as number | null,
             claude_tokens: (msg.claude_tokens as number) ?? null,
@@ -1153,6 +1359,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
     if (focusedPane === "caucus" && !stripped.startsWith("/")) {
       setHint("Caucus focused \u2014 Shift-Tab to Council to send messages");
+      return;
+    }
+    if (focusedPane === "projects" && !stripped.startsWith("/")) {
+      setHint("Projects focused \u2014 Tab to Council to send messages");
       return;
     }
     if (!ready) {
@@ -1261,14 +1471,64 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     // Tab / Shift+Tab — toggle pane focus
-    if (key.tab) {
-      setFocusedPane((prev) => (prev === "room" ? "caucus" : "room"));
-      setHint(
-        focusedPane === "room"
-          ? "Caucus focused \u2014 Shift-Tab to Council to send messages"
-          : "",
-      );
+    if (input === "p" && key.ctrl) {
+      setProjectsVisible((prev) => {
+        const next = !prev;
+        if (!next && focusedPane === "projects") {
+          setFocusedPane("room");
+        }
+        setHint(next ? "" : "Projects panel hidden (Ctrl+P to show)");
+        return next;
+      });
       return;
+    }
+
+    if (key.tab) {
+      const order: Array<"room" | "caucus" | "projects"> = projectsPaneRendered
+        ? ["room", "caucus", "projects"]
+        : ["room", "caucus"];
+      setFocusedPane((prev) => {
+        const idx = order.indexOf(prev);
+        const fromIdx = idx === -1 ? 0 : idx;
+        const step = key.shift ? -1 : 1;
+        const next = order[(fromIdx + step + order.length) % order.length]!;
+        if (next === "caucus") {
+          setHint("Caucus focused \u2014 Shift-Tab to Council to send messages");
+        } else if (next === "projects") {
+          setHint("Projects focused \u2014 \u2191/\u2193 to navigate, Enter to open, Tab to leave");
+        } else {
+          setHint("");
+        }
+        return next;
+      });
+      return;
+    }
+
+    if (focusedPane === "projects" && projectsPaneRendered) {
+      if (key.upArrow && !key.meta && !key.ctrl) {
+        setProjectCursor((prev) => nextSelectableRow(projectRows, prev, -1));
+        return;
+      }
+      if (key.downArrow && !key.meta && !key.ctrl) {
+        setProjectCursor((prev) => nextSelectableRow(projectRows, prev, 1));
+        return;
+      }
+      if (key.return && !key.meta) {
+        const row = projectRows[projectCursor];
+        if (!row || !row.selectable) return;
+        const command = projectRowCommand(row);
+        if (!command) return;
+        const proc = bridgeRef.current;
+        if (proc?.stdin?.writable && ready) {
+          setReady(false);
+          setBusyTarget("system");
+          if (!bridgeArgs.inkLegacy) {
+            setV2Activity(createV2Activity("system", status.mode, "system"));
+          }
+          proc.stdin.write(JSON.stringify({ type: "input", text: command }) + "\n");
+        }
+        return;
+      }
     }
 
     // Alt/Option+Enter — insert newline (fallback for Shift+Enter)
@@ -1421,14 +1681,16 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setCursor((c) => c + input.length);
       setDesiredCol(null);
     }
-  }, [bridgeArgs.inkLegacy, cleanup, focusedPane, cursor, submit, ready, interrupt, pendingPermission, permissionChoice, respondToPermission, mouseSelectionMode]);
+  });
 
   // ── Input label ────────────────────────────────────────
 
   const inputLabel =
     focusedPane === "caucus"
       ? "Slash commands still work here:"
-      : "You (@claude/@codex/@all, /help):";
+      : focusedPane === "projects"
+        ? "Projects — Enter opens; / for commands:"
+        : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget, status.mode);
@@ -1444,6 +1706,16 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     <Box flexDirection="column" height={rows}>
       {/* Panes */}
       <Box flexDirection="row" flexGrow={1} marginBottom={1}>
+        {projectsPaneRendered ? (
+          <ProjectsPane
+            rows={projectRows}
+            focused={focusedPane === "projects"}
+            cursorIndex={projectCursor}
+            height={paneHeight}
+            textWidth={projectsTextWidth}
+            viewportHeight={paneContentHeight}
+          />
+        ) : null}
         <Pane
           title="COUNCIL"
           pane="room"

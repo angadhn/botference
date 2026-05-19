@@ -32,6 +32,7 @@ export interface PaneHitTestConfig {
   caucusFlatLines: FlatLine[];
   roomScrollOffset: number;
   caucusScrollOffset: number;
+  projectsPaneWidth?: number;
   contentTop?: number;
   horizontalPadding?: number;
 }
@@ -157,8 +158,12 @@ export function hitTestPane(
   const contentBottom = contentTop + config.paneContentHeight - 1;
   if (event.y < contentTop || event.y > contentBottom) return null;
 
-  const pane = event.x < config.leftPaneWidth ? "room" : "caucus";
-  const paneLeft = pane === "room" ? 0 : config.leftPaneWidth;
+  const projectsWidth = config.projectsPaneWidth ?? 0;
+  if (event.x < projectsWidth) return null;
+  const roomLeft = projectsWidth;
+  const caucusLeft = projectsWidth + config.leftPaneWidth;
+  const pane = event.x < caucusLeft ? "room" : "caucus";
+  const paneLeft = pane === "room" ? roomLeft : caucusLeft;
   const textWidth = pane === "room" ? config.leftTextWidth : config.rightTextWidth;
   const contentLeft = paneLeft + horizontalPadding;
   const contentRight = contentLeft + textWidth - 1;

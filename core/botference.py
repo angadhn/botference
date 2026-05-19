@@ -35,7 +35,14 @@ from cli_adapters import (
     planner_write_roots_for_env,
 )
 from paths import BotferencePaths
-from botference_ui import RoomMode, StatusSnapshot
+from project_store import ProjectInfo, ProjectStore
+from botference_ui import (
+    ProjectPanelProject,
+    ProjectPanelSession,
+    ProjectPanelState,
+    RoomMode,
+    StatusSnapshot,
+)
 from room_prompts import (
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
@@ -125,6 +132,8 @@ def stage_attachments(attachments: list[dict]) -> list[str]:
 
 class InputKind(Enum):
     MESSAGE = "message"
+    PROJECTS = "projects"
+    PROJECT = "project"
     CAUCUS = "caucus"
     LEAD = "lead"
     DRAFT = "draft"
@@ -151,6 +160,8 @@ class ParsedInput:
 
 
 _SLASH_COMMANDS = {
+    "/projects": InputKind.PROJECTS,
+    "/project": InputKind.PROJECT,
     "/caucus": InputKind.CAUCUS,
     "/lead": InputKind.LEAD,
     "/draft": InputKind.DRAFT,
@@ -825,7 +836,9 @@ class UIPort(Protocol):
         self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
     ) -> None: ...
     def set_status(self, status: StatusSnapshot) -> None: ...
+    def set_projects(self, state: ProjectPanelState) -> None: ...
     def set_mode(self, mode: RoomMode) -> None: ...
+    def clear_panes(self) -> None: ...
     async def request_write_permission(
         self, request: "WritePermissionRequest",
     ) -> bool: ...
@@ -854,6 +867,14 @@ def _clean_session_title(text: str) -> str:
     """Normalize a user-facing session title for storage and matching."""
     title = " ".join(text.split()).strip()
     return title[:_SESSION_TITLE_MAX]
+
+
+def _project_title_from_session_title(title: str) -> str:
+    cleaned = _clean_session_title(title)
+    if not cleaned or cleaned == "Untitled session":
+        return "Untitled Project"
+    cleaned = re.sub(r"^[/@]\S+\s*", "", cleaned).strip()
+    return cleaned or "Untitled Project"
 
 
 @dataclass(frozen=True)
@@ -974,6 +995,8 @@ class Botference:
         self.task = task
         self.paths = paths or BotferencePaths.resolve()
         self.session_store = SessionStore(self.paths)
+        self.project_store = ProjectStore(self.paths.project_root)
+        self.active_project_id: str = ""
         self.session_id = str(uuid.uuid4())
         self.created_at = iso_now()
         self.updated_at = self.created_at
@@ -1022,6 +1045,7 @@ class Botference:
             mode=self.mode,
             lead=self.lead,
             route=self.router.current_route,
+            project=self._active_project_label(),
             claude_percent=self._claude_pct,
             codex_percent=self._codex_pct,
             claude_tokens=self._claude_tokens,
@@ -1043,6 +1067,149 @@ class Botference:
     def _archive_root(self) -> Path:
         env_dir = os.environ.get("BOTFERENCE_ARCHIVE_DIR")
         return Path(env_dir) if env_dir else (self.paths.project_root / "archive")
+
+    def _active_project(self) -> ProjectInfo | None:
+        if not self.active_project_id:
+            return None
+        return self.project_store.get(self.active_project_id)
+
+    def _active_project_label(self) -> str:
+        project = self._active_project()
+        return project.title if project else "Inbox"
+
+    def _project_tagged_summaries(self, project: ProjectInfo, *, limit: int = 100):
+        summaries = self.session_store.list_summaries(
+            limit=limit,
+            exclude_session_id="",
+            session_dirs=self._project_session_dirs(project),
+        )
+        indexed_ids = set(project.session_ids)
+        tagged = []
+        for summary in summaries:
+            belongs = (
+                summary.project_id == project.id
+                or summary.session_id in indexed_ids
+                or str(summary.source_path).startswith(str(project.session_dir))
+            )
+            if belongs:
+                tagged.append(summary)
+        return tagged
+
+    def _project_session_dirs(self, project: ProjectInfo | None = None) -> list[Path]:
+        dirs = [self.paths.session_dir]
+        if project and project.session_dir != self.paths.session_dir:
+            dirs.append(project.session_dir)
+        return dirs
+
+    def _session_summaries_for_resume(self, *, limit: int, exclude_session_id: str):
+        project = self._active_project()
+        summaries = self.session_store.list_summaries(
+            limit=limit,
+            exclude_session_id=exclude_session_id,
+            session_dirs=self._project_session_dirs(project),
+        )
+        if not project:
+            return summaries
+
+        tagged: list = []
+        untagged: list = []
+        indexed_ids = set(project.session_ids)
+        for summary in summaries:
+            belongs = (
+                summary.project_id == project.id
+                or summary.session_id in indexed_ids
+                or str(summary.source_path).startswith(str(project.session_dir))
+            )
+            if belongs:
+                tagged.append(summary)
+            elif not summary.project_id:
+                untagged.append(summary)
+        # While older sessions are not yet tagged, show project-local/indexed
+        # sessions first and keep unassigned global sessions visible underneath.
+        return tagged + untagged
+
+    def project_panel_snapshot(self) -> ProjectPanelState:
+        # Hot path: this fires at startup and after every turn. We rely on a
+        # cached metadata index (work/sessions/.metadata-index.json) so we
+        # never parse the full session corpus more than once per process,
+        # and counts honor both `payload.project_id` AND empty/unresumable
+        # filtering — the things a raw filesystem count would get wrong.
+        projects = self.project_store.list_projects()
+        indexed_to_project = self.project_store.session_index_map()
+        metadata = self.session_store.metadata_index()
+
+        global_dir = self.paths.session_dir
+        inbox_count = 0
+        global_count_by_project: dict[str, int] = {}
+        for session_id, entry in metadata.items():
+            if entry.entry_count < 1:
+                continue
+            project_id = entry.project_id or indexed_to_project.get(session_id, "")
+            if project_id:
+                global_count_by_project[project_id] = (
+                    global_count_by_project.get(project_id, 0) + 1
+                )
+            else:
+                inbox_count += 1
+
+        local_count_by_project: dict[str, int] = {}
+        for project in projects:
+            local_dir = project.session_dir
+            if local_dir == global_dir or not local_dir.is_dir():
+                continue
+            # Project-local dirs are typically tiny — parse inline to match
+            # the same "entry_count >= 1" filter we apply globally.
+            count = 0
+            for path in local_dir.glob("*.json"):
+                if path.name.startswith("."):
+                    continue
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                transcript = payload.get("transcript", [])
+                if isinstance(transcript, list) and len(transcript) >= 1:
+                    count += 1
+            local_count_by_project[project.id] = count
+
+        panel_projects: list[ProjectPanelProject] = []
+        for project in projects:
+            is_active = project.id == self.active_project_id
+            session_count = (
+                global_count_by_project.get(project.id, 0)
+                + local_count_by_project.get(project.id, 0)
+            )
+            if is_active:
+                summaries = self._project_tagged_summaries(project, limit=8)
+                panel_sessions = tuple(
+                    ProjectPanelSession(
+                        session_id=s.session_id,
+                        title=s.title,
+                        updated_at=s.updated_at,
+                        active=s.session_id == self.session_id,
+                    )
+                    for s in summaries
+                )
+            else:
+                panel_sessions = ()
+            panel_projects.append(ProjectPanelProject(
+                project_id=project.id,
+                title=project.title,
+                status=project.status,
+                next_action=project.next_action,
+                active=is_active,
+                session_count=session_count,
+                sessions=panel_sessions,
+            ))
+        return ProjectPanelState(
+            projects=tuple(panel_projects),
+            active_project_id=self.active_project_id,
+            inbox_session_count=inbox_count,
+        )
+
+    def _sync_project_ui(self, ui: UIPort) -> None:
+        ui.set_status(self.status_snapshot())
+        ui.set_projects(self.project_panel_snapshot())
 
     def _relative_project_path(self, path: Path) -> str:
         resolved = path.resolve()
@@ -1164,6 +1331,7 @@ class Botference:
             "task": self.task,
             "mode": self.mode.value,
             "lead": self.lead,
+            "project_id": self.active_project_id,
             "route": self.router.current_route,
             "router_had_first_turn": self.router._had_first_turn,
             "observe": self.observe,
@@ -1222,6 +1390,10 @@ class Botference:
         try:
             self.updated_at = iso_now()
             self.session_store.save(self.session_id, self._session_payload())
+            if self.active_project_id:
+                self.project_store.associate_session(
+                    self.active_project_id, self.session_id
+                )
         except OSError as exc:
             log.warning("Failed to persist botference session %s: %s", self.session_id, exc)
 
@@ -1235,14 +1407,26 @@ class Botference:
     def _format_session_list(self, summaries: list) -> str:
         if not summaries:
             return "No saved sessions found."
-        lines = ["Saved sessions:"]
+        project = self._active_project()
+        if project:
+            lines = [f"Saved sessions for {project.title}:"]
+        else:
+            lines = ["Saved sessions:"]
         for idx, summary in enumerate(summaries, start=1):
+            source = ""
+            if summary.source_path:
+                try:
+                    rel = self._relative_project_path(Path(summary.source_path))
+                    source = f"  [{rel}]"
+                except Exception:
+                    source = ""
             lines.append(
-                f"  {idx:>2}. {summary.session_id[:12]}  {summary.updated_at}  {summary.title}"
+                f"  {idx:>2}. {summary.session_id[:12]}  {summary.updated_at}  {summary.title}{source}"
             )
         lines.extend([
             "",
             "Run /resume latest, /resume <number>, /resume <title>, or /resume <session-id-prefix>.",
+            "Use /project open <id> to filter by project, or /project clear for Inbox/global.",
         ])
         return "\n".join(lines)
 
@@ -1287,6 +1471,7 @@ class Botference:
             self.system_prompt = str(payload.get("system_prompt", self.system_prompt))
             self.task = str(payload.get("task", self.task))
             self.lead = str(payload.get("lead", "auto"))
+            self.active_project_id = str(payload.get("project_id", "") or "")
             self.observe = bool(payload.get("observe", self.observe))
             self.router.current_route = str(payload.get("route", "@all"))
             self.router._had_first_turn = bool(payload.get("router_had_first_turn", False))
@@ -1417,23 +1602,26 @@ class Botference:
             )
 
     def _show_resume_list(self, ui: UIPort) -> None:
-        summaries = self.session_store.list_summaries(
+        summaries = self._session_summaries_for_resume(
             limit=10, exclude_session_id=self.session_id,
         )
         self._add_room_entry(ui, "system", self._format_session_list(summaries))
 
     def _resume_session(self, arg: str, ui: UIPort) -> None:
+        # The previous controller version refused to resume once any messages
+        # had been exchanged. We allow the switch now: the current session is
+        # persisted on every turn so the in-memory state is recoverable, and
+        # the cleaner UX from the sidebar is "click chat → switch to it".
+        # `replaceable` is still used to decide whether to delete the
+        # empty boot-time session (no point keeping that around).
         replaceable = self._can_replace_with_resumed_session()
+        # Defensive: persist any pending state before swapping so the chat we
+        # are leaving is on disk in case the user wants to resume it later.
         if not replaceable:
-            self._add_room_entry(
-                ui,
-                "system",
-                "Resume is only available in a fresh controller session. Start a new plan session first.",
-            )
-            return
+            self._persist_session()
 
         query = arg.strip()
-        summaries = self.session_store.list_summaries(
+        summaries = self._session_summaries_for_resume(
             limit=100, exclude_session_id=self.session_id,
         )
         if not query:
@@ -1476,11 +1664,17 @@ class Botference:
                 return
             target_id = matches[0]
 
-        payload = self.session_store.load(target_id)
+        by_id = {summary.session_id: summary for summary in summaries}
+        target_summary = by_id.get(target_id)
+        if target_summary and target_summary.source_path:
+            payload = self.session_store.load_from_path(Path(target_summary.source_path))
+        else:
+            payload = self.session_store.load(target_id)
         old_session_id = self.session_id
         saved_mode = self._restore_from_payload(payload)
         if old_session_id != self.session_id and replaceable:
             self.session_store.delete(old_session_id)
+        ui.clear_panes()
         self._replay_restored_session(ui)
         note = (
             f"Resumed session {self._session_title()} "
@@ -1490,7 +1684,7 @@ class Botference:
             note += f" Restored interrupted {saved_mode} session in public mode."
         self._add_room_entry(ui, "system", note)
         ui.set_mode(self.mode)
-        ui.set_status(self.status_snapshot())
+        self._sync_project_ui(ui)
         self._persist_session()
 
     def _read_work_file(self, path: Path) -> str:
@@ -1595,6 +1789,14 @@ class Botference:
             self._show_help(ui)
             return
 
+        if parsed.kind is InputKind.PROJECTS:
+            self._show_projects(ui)
+            return
+
+        if parsed.kind is InputKind.PROJECT:
+            self._handle_project_cmd(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.STATUS:
             self._show_status(ui)
             return
@@ -1657,12 +1859,15 @@ class Botference:
     def _show_help(self, ui: UIPort) -> None:
         self._add_room_entry(ui, "system", "\n".join([
             "Commands:",
+            "  /projects          — List project folders under projects/",
+            "  /project [open <id>|clear|current|create <title>|create-from-chat]",
+            "                     — Set, show, or create the active project context",
             "  /caucus <topic>     — Start a structured discussion between Claude and Codex",
             "  /lead @claude|@codex — Set who writes the plan",
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
-            "  /resume [latest|number|title|id] — Restore a saved plan session in a fresh controller",
+            "  /resume [latest|number|title|id] — Switch to a saved plan session (works mid-chat; current session is auto-persisted)",
             "  /rename <name>      — Name this saved session for future /resume lookup",
             "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
@@ -1688,6 +1893,120 @@ class Botference:
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows a last-turn prompt-footprint proxy once it has a baseline.",
         ]))
+
+    # ── /projects / /project ─────────────────────────────
+
+    def _show_projects(self, ui: UIPort) -> None:
+        projects = self.project_store.list_projects()
+        if not projects:
+            self._add_room_entry(
+                ui,
+                "system",
+                "No projects found. Use /project create <title> or create folders under projects/.",
+            )
+            return
+        lines = ["Projects:"]
+        for project in projects:
+            active = "●" if project.id == self.active_project_id else " "
+            priority = f"p{project.priority}" if project.priority is not None else "-"
+            session_count = len(self._project_tagged_summaries(project))
+            meta = f"{project.status}, {priority}, {session_count} chat(s)"
+            lines.append(f"  {active} {project.id} — {project.title} ({meta})")
+            if project.next_action:
+                lines.append(f"      next: {project.next_action}")
+        lines.extend([
+            "",
+            "Use /project open <id> to switch context, /project clear for Inbox/global.",
+            "Use /project create <title> or /project create-from-chat to add one.",
+        ])
+        self._add_room_entry(ui, "system", "\n".join(lines))
+
+    def _handle_project_cmd(self, arg: str, ui: UIPort) -> None:
+        raw = arg.strip()
+        if not raw or raw == "current":
+            project = self._active_project()
+            if project:
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    f"Current project: {project.title} ({project.id})\n"
+                    f"Root: {self._relative_project_path(project.root)}",
+                )
+            else:
+                self._add_room_entry(ui, "system", "Current project: Inbox")
+            return
+
+        parts = raw.split(None, 1)
+        action = parts[0].lower()
+        value = parts[1].strip() if len(parts) > 1 else ""
+        if action == "clear":
+            self.active_project_id = ""
+            self._persist_session()
+            self._sync_project_ui(ui)
+            self._add_room_entry(
+                ui, "system", "Project context cleared. Current project: Inbox"
+            )
+            return
+
+        if action == "create":
+            self._create_project(value, ui)
+            return
+
+        if action == "create-from-chat":
+            if value:
+                self._add_room_entry(ui, "system", "Usage: /project create-from-chat")
+                return
+            title = _project_title_from_session_title(self._session_title())
+            self._create_project(title, ui)
+            return
+
+        query = value if action == "open" else raw
+        if not query:
+            self._add_room_entry(ui, "system", "Usage: /project open <project-id>")
+            return
+        project = self.project_store.get(query)
+        if not project:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"No project matched '{query}'.\n\nRun /projects to list available projects.",
+            )
+            return
+        self.active_project_id = project.id
+        self._persist_session()
+        self.project_store.associate_session(project.id, self.session_id)
+        self._sync_project_ui(ui)
+        self._add_room_entry(
+            ui,
+            "system",
+            f"Project context set to {project.title} ({project.id}).\n"
+            f"Run /resume to see chats for this project plus unassigned recent chats.",
+        )
+
+    def _create_project(self, title: str, ui: UIPort) -> None:
+        try:
+            project = self.project_store.create_project(title)
+        except ValueError as exc:
+            self._add_room_entry(ui, "system", f"Could not create project: {exc}")
+            return
+        except FileExistsError as exc:
+            project_id = str(exc) or title
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Project '{project_id}' already exists. Use /project open {project_id}.",
+            )
+            return
+
+        self.active_project_id = project.id
+        self.project_store.associate_session(project.id, self.session_id)
+        self._persist_session()
+        self._sync_project_ui(ui)
+        self._add_room_entry(
+            ui,
+            "system",
+            f"Created project {project.title} ({project.id}) and set it active.",
+        )
 
     def _show_permissions(self, ui: UIPort) -> None:
         lines = [
@@ -1719,6 +2038,7 @@ class Botference:
         x_pct = _format_window_percent(self._codex_tokens, self._codex_window)
         lines = [
             f"Session: {self.session_id[:12]}",
+            f"Project: {self._active_project_label()}",
             f"Mode: {self.mode.value}",
             f"Lead: {self.lead}",
             f"Route: {self.router.current_route}",
@@ -3326,7 +3646,10 @@ def main() -> None:
     )
     botference.observe = args.debug_panes
 
-    app = BotferenceApp(initial_status=botference.status_snapshot())
+    app = BotferenceApp(
+        initial_status=botference.status_snapshot(),
+        initial_projects=botference.project_panel_snapshot(),
+    )
 
     def on_submit(text: str) -> None:
         async def _handle() -> None:
@@ -3340,6 +3663,7 @@ def main() -> None:
                     exc=exc,
                 )
                 app.add_room_entry("system", f"Unhandled controller error: {exc}")
+            app.set_projects(botference.project_panel_snapshot())
             if botference.quit_requested:
                 app.exit()
         app.run_worker(_handle(), exclusive=True)

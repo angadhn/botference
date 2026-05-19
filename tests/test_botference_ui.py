@@ -7,6 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 from botference_ui import (
     PaneFocus,
+    ProjectPanelProject,
+    ProjectPanelSession,
+    ProjectPanelState,
     RoomMode,
     StatusSnapshot,
     TranscriptEntry,
@@ -15,6 +18,7 @@ from botference_ui import (
     format_status_line,
     format_status_rich,
     pane_visual_state,
+    render_project_panel,
     render_transcript_entry,
     submission_policy,
 )
@@ -70,7 +74,8 @@ class TestStatusLine:
         line = format_status_line(status)
         assert "Claude: ~34%" in line
         assert "Codex: ~61%" in line
-        assert line.startswith("Mode: caucus")
+        assert "Mode: caucus" in line
+        assert line.startswith("Project: Inbox")
         assert "Observe: on" in line
 
     def test_formats_missing_context_as_unknown(self):
@@ -89,6 +94,32 @@ class TestStatusLine:
         line = format_status_line(status)
         assert "Claude: ~8%" in line
         assert "Codex: ~2%" in line
+
+
+class TestProjectPanel:
+    def test_renders_active_project_and_sessions(self):
+        state = ProjectPanelState(projects=(
+            ProjectPanelProject(
+                project_id="spaceship-engineering",
+                title="Spaceship Engineering",
+                active=True,
+                session_count=1,
+                sessions=(
+                    ProjectPanelSession(
+                        session_id="ec53fd69-37ec",
+                        title="spaceship",
+                        active=True,
+                    ),
+                ),
+            ),
+        ), active_project_id="spaceship-engineering")
+
+        rendered = render_project_panel(state).plain
+
+        assert "Projects" in rendered
+        assert "▾ Spaceship Engineering" in rendered
+        assert "ec53fd69" in rendered
+        assert "spaceship" in rendered
 
 
 class TestContextWarningColors:
@@ -123,7 +154,8 @@ class TestContextWarningColors:
             codex_tokens=122_400, codex_window=272_000,
         )
         rich_text = format_status_rich(status)
-        assert rich_text.plain.startswith("Mode: public")
+        assert rich_text.plain.startswith("Project: Inbox")
+        assert "Mode: public" in rich_text.plain
         assert "~92%" in rich_text.plain
         assert "~45%" in rich_text.plain
         # Verify the 92% span got styled (red)
@@ -224,6 +256,7 @@ if TEXTUAL_AVAILABLE:
         CaucusPane,
         BotferenceApp,
         InputBar,
+        ProjectsPane,
         RoomPane,
         StatusBar,
     )
@@ -236,6 +269,7 @@ class TestBotferenceAppMount:
     async def test_app_mounts_with_both_panes(self):
         app = BotferenceApp()
         async with app.run_test():
+            assert len(app.query(ProjectsPane)) == 1
             assert len(app.query(RoomPane)) == 1
             assert len(app.query(CaucusPane)) == 1
 
@@ -253,6 +287,24 @@ class TestBotferenceAppMount:
             assert bar.status.mode is RoomMode.PUBLIC
             assert bar.status.lead == "auto"
             assert bar.status.route == "@all"
+
+    async def test_initial_project_panel_renders_projects(self):
+        state = ProjectPanelState(projects=(
+            ProjectPanelProject(
+                project_id="career-switch",
+                title="Career Switch",
+                active=True,
+                session_count=1,
+                sessions=(ProjectPanelSession(session_id="abc123", title="anthropic"),),
+            ),
+        ), active_project_id="career-switch")
+        app = BotferenceApp(initial_projects=state)
+        async with app.run_test():
+            pane = app.query_one(ProjectsPane)
+            assert pane.project_state.active_project_id == "career-switch"
+            rendered = render_project_panel(pane.project_state).plain
+            assert "Career Switch" in rendered
+            assert "anthropic" in rendered
 
     async def test_room_pane_has_welcome_message(self):
         app = BotferenceApp()

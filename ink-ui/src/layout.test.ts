@@ -39,6 +39,46 @@ describe("computeLayoutBudget", () => {
     assert.equal(b.rightPaneWidth, 41);
     assert.equal(b.rightTextWidth, 37);
   });
+
+  it("reserves a projects column when projectsVisible=true", () => {
+    const b = computeLayoutBudget(24, 120, 1, { projectsVisible: true });
+    // Cap is floor(120/3)=40, target is 30 → projects width = 30.
+    assert.equal(b.projectsPaneWidth, 30);
+    assert.equal(b.projectsTextWidth, 26);
+    // Remaining 90 cols split evenly between Council and Caucus.
+    assert.equal(b.leftPaneWidth, 45);
+    assert.equal(b.rightPaneWidth, 45);
+    assert.equal(b.leftTextWidth, 41);
+    assert.equal(b.rightTextWidth, 41);
+  });
+
+  it("returns zero projects width by default", () => {
+    const b = computeLayoutBudget(24, 80, 1);
+    assert.equal(b.projectsPaneWidth, 0);
+    assert.equal(b.projectsTextWidth, 0);
+    // Council and Caucus still split the full width like before.
+    assert.equal(b.leftPaneWidth, 40);
+    assert.equal(b.rightPaneWidth, 40);
+  });
+
+  it("hides the projects panel when the terminal is too narrow", () => {
+    // floor(40/3)=13, which is below the 18-cell minimum, so the panel
+    // refuses to draw. Caller should treat projects as hidden in that case.
+    const b = computeLayoutBudget(24, 40, 1, { projectsVisible: true });
+    assert.equal(b.projectsPaneWidth, 0);
+    assert.equal(b.projectsTextWidth, 0);
+    assert.equal(b.leftPaneWidth, 20);
+    assert.equal(b.rightPaneWidth, 20);
+  });
+
+  it("caps the projects column at one-third of terminal width", () => {
+    // floor(60/3)=20 ≥ 18 min, but 20 < 30 target → use 20.
+    const b = computeLayoutBudget(24, 60, 1, { projectsVisible: true });
+    assert.equal(b.projectsPaneWidth, 20);
+    assert.equal(b.projectsTextWidth, 16);
+    assert.equal(b.leftPaneWidth, 20);
+    assert.equal(b.rightPaneWidth, 20);
+  });
 });
 
 describe("computeViewportSlice", () => {
