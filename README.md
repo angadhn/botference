@@ -178,6 +178,11 @@ With a custom state directory, the policy file moves with it. For example,
 `botference init --project-dir=spaceship` creates
 `botference-spaceship/project.json`.
 
+Workspace-style repos can also put policy at the project root as
+`project.json`. This is useful for portfolio workspaces where the models should
+be able to clone or edit under top-level folders such as `projects/` without
+creating a separate `botference/` state directory.
+
 Default write scope:
 
 ```json
@@ -219,6 +224,17 @@ explicitly. For example:
 
 If you want a narrower boundary, reduce the roots instead, for example
 `"build": ["botference/build"]`.
+
+If the whole workspace is intentionally writable, use `"."`:
+
+```json
+{
+  "write_roots": {
+    "plan": ["."],
+    "build": ["."]
+  }
+}
+```
 
 ### Visual Verification For Generated Plots And HTML
 

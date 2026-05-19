@@ -1239,6 +1239,32 @@ class TestCommandConstruction:
             sibling_root.resolve(),
         ]
 
+    def test_planner_write_roots_read_root_project_json(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "project.json").write_text(
+            json.dumps({
+                "version": 1,
+                "write_roots": {
+                    "plan": ["."],
+                    "build": ["projects", "../shared"],
+                },
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", raising=False)
+        monkeypatch.delenv("BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS", raising=False)
+
+        assert planner_write_roots_for_env(
+            project_root, project_root / "work", mode="plan"
+        ) == [project_root.resolve()]
+        assert planner_write_roots_for_env(
+            project_root, project_root / "work", mode="build"
+        ) == [
+            (project_root / "projects").resolve(),
+            (tmp_path / "shared").resolve(),
+        ]
+
     def test_plan_network_enabled_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
         monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)

@@ -2558,6 +2558,51 @@ true
         assert "work-ok" in lines
         assert "outside-ok" not in lines
 
+    def test_root_project_policy_dot_allows_workspace_writes(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        projects_file = tmp_path / "projects" / "paper" / "README.md"
+        git_file = tmp_path / ".git" / "config"
+        projects_file.parent.mkdir(parents=True)
+        git_file.parent.mkdir()
+        projects_file.write_text("paper\n", encoding="utf-8")
+        git_file.write_text("git\n", encoding="utf-8")
+        (tmp_path / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "portfolio-workspace",
+                    "modes": {"plan": True, "research_plan": True, "build": True},
+                    "write_roots": {"plan": ["."], "build": ["."]},
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+export BOTFERENCE_HOME="{repo_root}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+init_botference_paths
+echo "config=$BOTFERENCE_PROJECT_CONFIG_FILE"
+policy_path_allowed "{projects_file}" plan && echo projects-ok
+policy_path_allowed "{git_file}" plan && echo git-ok
+true
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        lines = set(filter(None, result.stdout.splitlines()))
+        assert f"config={tmp_path / 'project.json'}" in lines
+        assert "projects-ok" in lines
+        assert "git-ok" not in lines
+
     def test_project_local_plan_policy_requires_explicit_roots(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
         project_dir = tmp_path / "botference"

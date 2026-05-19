@@ -312,6 +312,10 @@ def planner_write_roots_for_env(
     project_root_path = Path(project_root).resolve()
     config_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
     project_config = project_root_path / config_name / "project.json"
+    if not project_config.exists():
+        root_config = project_root_path / "project.json"
+        if root_config.exists():
+            project_config = root_config
     env_name = "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" if mode == "plan" else "BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS"
     raw_roots = os.environ.get(env_name, "").strip()
     if raw_roots:
@@ -322,7 +326,16 @@ def planner_write_roots_for_env(
                 roots.append(resolved)
         return roots
     if project_config.exists():
-        return []
+        try:
+            data = json.loads(project_config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        roots = []
+        for root in data.get("write_roots", {}).get(mode, []):
+            resolved = _resolve_write_root_entry(project_root_path, str(root))
+            if resolved is not None:
+                roots.append(resolved)
+        return roots
     return [Path(fallback_dir).resolve()]
 
 

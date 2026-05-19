@@ -8,6 +8,9 @@ init_botference_paths() {
   BOTFERENCE_PROJECT_DIR_NAME="${BOTFERENCE_PROJECT_DIR_NAME:-botference}"
   BOTFERENCE_PROJECT_DIR="${BOTFERENCE_PROJECT_ROOT}/${BOTFERENCE_PROJECT_DIR_NAME}"
   BOTFERENCE_PROJECT_CONFIG_FILE="${BOTFERENCE_PROJECT_DIR}/project.json"
+  if [ ! -f "$BOTFERENCE_PROJECT_CONFIG_FILE" ] && [ -f "${BOTFERENCE_PROJECT_ROOT}/project.json" ]; then
+    BOTFERENCE_PROJECT_CONFIG_FILE="${BOTFERENCE_PROJECT_ROOT}/project.json"
+  fi
   BOTFERENCE_PROJECT_AGENT_DIR="${BOTFERENCE_PROJECT_DIR}/agents"
   BOTFERENCE_PROJECT_README_FILE="${BOTFERENCE_PROJECT_DIR}/README.md"
   BOTFERENCE_CHANGELOG_FILE="${BOTFERENCE_PROJECT_ROOT}/CHANGELOG.md"
@@ -241,7 +244,7 @@ policy_path_allowed() {
   fi
 
   # Legacy/self-hosted mode keeps the old behavior.
-  if [ "$BOTFERENCE_WORK_DIR" = "$BOTFERENCE_PROJECT_ROOT" ] && [ ! -d "${BOTFERENCE_PROJECT_DIR}" ]; then
+  if ! $project_config_exists && [ "$BOTFERENCE_WORK_DIR" = "$BOTFERENCE_PROJECT_ROOT" ] && [ ! -d "${BOTFERENCE_PROJECT_DIR}" ]; then
     case "$mode" in
       plan)
         case "$(basename "$path")" in
@@ -288,9 +291,25 @@ policy_path_allowed() {
   local root
   for root in $(printf '%s' "$roots" | tr ',' ' '); do
     [ -n "$root" ] || continue
-    case "$rel" in
-      "$root"|"$root/"*)
-        return 0
+    case "$root" in
+      /*)
+        case "$path" in
+          "$root"|"$root/"*)
+            return 0
+            ;;
+        esac
+        ;;
+      *)
+        root="${root#./}"
+        root="${root%/}"
+        if [ -z "$root" ] || [ "$root" = "." ]; then
+          return 0
+        fi
+        case "$rel" in
+          "$root"|"$root/"*)
+            return 0
+            ;;
+        esac
         ;;
     esac
   done
