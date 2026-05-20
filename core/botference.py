@@ -1077,22 +1077,55 @@ class Botference:
         project = self._active_project()
         return project.title if project else "Inbox"
 
+    def _summary_belongs_to_project(
+        self,
+        summary,
+        project: ProjectInfo,
+        indexed_to_project: dict[str, str],
+    ) -> bool:
+        # Saved payload metadata is authoritative.  The session index only
+        # backfills older sessions that do not yet carry project_id.
+        if summary.project_id:
+            return summary.project_id == project.id
+        try:
+            source = Path(summary.source_path).resolve()
+            project_session_dir = project.session_dir.resolve()
+            if _is_relative_to(source, project_session_dir):
+                return True
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return indexed_to_project.get(summary.session_id, "") == project.id
+
+    def _payload_belongs_to_project(
+        self,
+        payload: dict,
+        project: ProjectInfo,
+        *,
+        source_path: Path | None = None,
+    ) -> bool:
+        project_id = str(payload.get("project_id") or payload.get("project") or "")
+        if project_id:
+            return project_id == project.id
+        if source_path is None:
+            return False
+        try:
+            return _is_relative_to(source_path.resolve(), project.session_dir.resolve())
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     def _project_tagged_summaries(self, project: ProjectInfo, *, limit: int = 100):
         summaries = self.session_store.list_summaries(
-            limit=limit,
+            limit=max(limit * 10, 1000),
             exclude_session_id="",
             session_dirs=self._project_session_dirs(project),
         )
-        indexed_ids = set(project.session_ids)
+        indexed_to_project = self.project_store.session_index_map()
         tagged = []
         for summary in summaries:
-            belongs = (
-                summary.project_id == project.id
-                or summary.session_id in indexed_ids
-                or str(summary.source_path).startswith(str(project.session_dir))
-            )
-            if belongs:
+            if self._summary_belongs_to_project(summary, project, indexed_to_project):
                 tagged.append(summary)
+                if len(tagged) >= limit:
+                    break
         return tagged
 
     def _project_session_dirs(self, project: ProjectInfo | None = None) -> list[Path]:
@@ -1104,7 +1137,7 @@ class Botference:
     def _session_summaries_for_resume(self, *, limit: int, exclude_session_id: str):
         project = self._active_project()
         summaries = self.session_store.list_summaries(
-            limit=limit,
+            limit=max(limit * 10, 1000) if project else limit,
             exclude_session_id=exclude_session_id,
             session_dirs=self._project_session_dirs(project),
         )
@@ -1112,21 +1145,11 @@ class Botference:
             return summaries
 
         tagged: list = []
-        untagged: list = []
-        indexed_ids = set(project.session_ids)
+        indexed_to_project = self.project_store.session_index_map()
         for summary in summaries:
-            belongs = (
-                summary.project_id == project.id
-                or summary.session_id in indexed_ids
-                or str(summary.source_path).startswith(str(project.session_dir))
-            )
-            if belongs:
+            if self._summary_belongs_to_project(summary, project, indexed_to_project):
                 tagged.append(summary)
-            elif not summary.project_id:
-                untagged.append(summary)
-        # While older sessions are not yet tagged, show project-local/indexed
-        # sessions first and keep unassigned global sessions visible underneath.
-        return tagged + untagged
+        return tagged[:limit]
 
     def project_panel_snapshot(self) -> ProjectPanelState:
         # Hot path: this fires at startup and after every turn. We rely on a
@@ -1168,7 +1191,13 @@ class Botference:
                 except (OSError, json.JSONDecodeError):
                     continue
                 transcript = payload.get("transcript", [])
-                if isinstance(transcript, list) and len(transcript) >= 1:
+                if (
+                    isinstance(transcript, list)
+                    and len(transcript) >= 1
+                    and self._payload_belongs_to_project(
+                        payload, project, source_path=path
+                    )
+                ):
                     count += 1
             local_count_by_project[project.id] = count
 
@@ -1585,6 +1614,8 @@ class Botference:
 
     def _replay_restored_session(self, ui: UIPort) -> None:
         for entry in self._room_history:
+            if self._is_routine_restored_system_entry(entry):
+                continue
             self._emit_room_entry(
                 ui,
                 entry.speaker,
@@ -1593,6 +1624,8 @@ class Botference:
                 restored=True,
             )
         for entry in self._caucus_history:
+            if self._is_routine_restored_system_entry(entry):
+                continue
             self._emit_caucus_entry(
                 ui,
                 entry.speaker,
@@ -1601,11 +1634,32 @@ class Botference:
                 restored=True,
             )
 
+    @staticmethod
+    def _is_routine_restored_system_entry(entry: DisplayRecord) -> bool:
+        if entry.speaker != "system":
+            return False
+        text = " ".join(entry.text.split())
+        routine_prefixes = (
+            "Project context set to ",
+            "Project context cleared.",
+            "Current project: ",
+            "Saved sessions",
+            "No saved sessions found.",
+            "No saved session matched ",
+            "Multiple sessions matched:",
+            "Run /resume latest,",
+            "Use /project open ",
+            "Resumed session ",
+            "Council room ready.",
+            "(empty until /caucus)",
+        )
+        return text.startswith(routine_prefixes)
+
     def _show_resume_list(self, ui: UIPort) -> None:
         summaries = self._session_summaries_for_resume(
             limit=10, exclude_session_id=self.session_id,
         )
-        self._add_room_entry(ui, "system", self._format_session_list(summaries))
+        self._show_room_notice(ui, "system", self._format_session_list(summaries))
 
     def _resume_session(self, arg: str, ui: UIPort) -> None:
         # The previous controller version refused to resume once any messages
@@ -1644,7 +1698,7 @@ class Botference:
             if not matches:
                 matches = self._matching_sessions_by_title(summaries, query)
             if not matches:
-                self._add_room_entry(
+                self._show_room_notice(
                     ui,
                     "system",
                     f"No saved session matched '{query}'.\n\n{self._format_session_list(summaries[:10])}",
@@ -1652,7 +1706,7 @@ class Botference:
                 return
             if len(matches) > 1:
                 by_id = {summary.session_id: summary for summary in summaries}
-                self._add_room_entry(
+                self._show_room_notice(
                     ui,
                     "system",
                     "Multiple sessions matched:\n"
@@ -1943,7 +1997,7 @@ class Botference:
             self.active_project_id = ""
             self._persist_session()
             self._sync_project_ui(ui)
-            self._add_room_entry(
+            self._show_room_notice(
                 ui, "system", "Project context cleared. Current project: Inbox"
             )
             return
@@ -1976,11 +2030,11 @@ class Botference:
         self._persist_session()
         self.project_store.associate_session(project.id, self.session_id)
         self._sync_project_ui(ui)
-        self._add_room_entry(
+        self._show_room_notice(
             ui,
             "system",
             f"Project context set to {project.title} ({project.id}).\n"
-            f"Run /resume to see chats for this project plus unassigned recent chats.",
+            f"Run /resume to see chats for this project.",
         )
 
     def _create_project(self, title: str, ui: UIPort) -> None:
@@ -2769,6 +2823,17 @@ class Botference:
             stream_id=stream_id,
         )
         self._persist_session()
+
+    def _show_room_notice(
+        self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",
+    ) -> None:
+        self._emit_room_entry(
+            ui,
+            speaker,
+            text,
+            self._structured_blocks(text),
+            stream_id=stream_id,
+        )
 
     def _add_caucus_entry(
         self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",

@@ -102,6 +102,28 @@ def _session_index(projects_root: Path) -> dict[str, list[str]]:
     return out
 
 
+def _session_index_map(projects_root: Path) -> dict[str, str]:
+    """Return canonical session_id -> project_id from session-index.json.
+
+    Older indexes may contain the same session more than once.  Preserve
+    append-order semantics: the most recent association wins.
+    """
+
+    data = _load_json(projects_root / "session-index.json")
+    raw_sessions = data.get("sessions", [])
+    if not isinstance(raw_sessions, list):
+        return {}
+    out: dict[str, str] = {}
+    for raw in raw_sessions:
+        if not isinstance(raw, dict):
+            continue
+        project_id = str(raw.get("project") or raw.get("project_id") or "").strip()
+        session_id = str(raw.get("session_id") or raw.get("id") or "").strip()
+        if project_id and session_id:
+            out[session_id] = project_id
+    return out
+
+
 class ProjectStore:
     def __init__(self, project_root: Path):
         self.project_root = project_root
@@ -109,19 +131,16 @@ class ProjectStore:
 
     def session_index_map(self) -> dict[str, str]:
         """Return session_id -> project_id from session-index.json (cheap)."""
-        index = _session_index(self.projects_root)
-        out: dict[str, str] = {}
-        for project_id, session_ids in index.items():
-            for session_id in session_ids:
-                out[session_id] = project_id
-        return out
+        return _session_index_map(self.projects_root)
 
     def list_projects(self) -> list[ProjectInfo]:
         if not self.projects_root.is_dir():
             return []
 
         metadata = _portfolio_entries(self.projects_root)
-        session_index = _session_index(self.projects_root)
+        session_index: dict[str, list[str]] = {}
+        for session_id, project_id in _session_index_map(self.projects_root).items():
+            session_index.setdefault(project_id, []).append(session_id)
         projects: list[ProjectInfo] = []
         for child in sorted(self.projects_root.iterdir(), key=lambda p: p.name.lower()):
             if not child.is_dir() or child.name.startswith(".") or child.name in _SKIP_DIRS:
@@ -232,16 +251,22 @@ class ProjectStore:
         sessions = data.get("sessions")
         if not isinstance(sessions, list):
             sessions = []
+        kept_sessions = []
+        changed = False
         for raw in sessions:
             if not isinstance(raw, dict):
+                kept_sessions.append(raw)
                 continue
-            if raw.get("session_id") == session_id and (
-                raw.get("project") == project_id or raw.get("project_id") == project_id
-            ):
-                return
-        sessions.append({"session_id": session_id, "project": project_id})
+            raw_session_id = str(raw.get("session_id") or raw.get("id") or "").strip()
+            if raw_session_id == session_id:
+                changed = True
+                continue
+            kept_sessions.append(raw)
+        kept_sessions.append({"session_id": session_id, "project": project_id})
         data["version"] = data.get("version", 1)
-        data["sessions"] = sessions
+        data["sessions"] = kept_sessions
+        if not changed and sessions == kept_sessions:
+            return
         self._write_json(path, data)
 
     def _upsert_portfolio_entry(self, entry: dict[str, Any]) -> None:

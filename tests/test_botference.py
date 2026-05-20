@@ -36,6 +36,7 @@ from botference import (
 )
 from botference_ui import ProjectPanelState, RoomMode, StatusSnapshot
 from paths import BotferencePaths
+from project_store import ProjectStore
 from render_blocks import parse_render_blocks
 
 
@@ -1434,6 +1435,52 @@ class TestBotferenceResume:
         loaded_b = second.session_store.load(session_b)
         assert loaded_b["session_id"] == session_b
 
+    async def test_resume_replay_filters_routine_system_entries(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("saved-session", {
+            "session_id": "saved-session",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "old thread",
+            "room_history": [
+                {
+                    "speaker": "system",
+                    "text": (
+                        "Project context set to Spaceship Engineering "
+                        "(spaceship-engineering).\n"
+                        "Run /resume to see chats for this project."
+                    ),
+                },
+                {"speaker": "user", "text": "@claude actual question"},
+                {"speaker": "claude", "text": "actual answer"},
+                {"speaker": "system", "text": "Error from claude: network failed"},
+                {
+                    "speaker": "system",
+                    "text": (
+                        "Saved sessions for Spaceship Engineering:\n"
+                        "  1. saved-session old thread"
+                    ),
+                },
+            ],
+            "caucus_history": [
+                {"speaker": "system", "text": "(empty until /caucus)"},
+                {"speaker": "claude", "text": "caucus content"},
+            ],
+            "transcript": [{"speaker": "user", "text": "actual question"}],
+        })
+
+        await c.handle_input("/resume saved-session", ui)
+
+        room_text = "\n".join(text for _, text in ui.room_entries)
+        caucus_text = "\n".join(text for _, text in ui.caucus_entries)
+        assert "actual question" in room_text
+        assert "actual answer" in room_text
+        assert "Error from claude: network failed" in room_text
+        assert "Project context set" not in room_text
+        assert "Saved sessions for" not in room_text
+        assert "(empty until /caucus)" not in caucus_text
+        assert "caucus content" in caucus_text
+
 
 @pytest.mark.asyncio
 class TestBotferenceProjects:
@@ -1477,6 +1524,9 @@ class TestBotferenceProjects:
         index_path = tmp_path / "projects" / "session-index.json"
         index = json.loads(index_path.read_text(encoding="utf-8"))
         assert {"session_id": c.session_id, "project": "CareerSwitch"} in index["sessions"]
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        history = "\n".join(entry["text"] for entry in payload["room_history"])
+        assert "Project context set" not in history
 
     async def test_project_create_makes_project_and_sets_active(self, tmp_path):
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
@@ -1530,6 +1580,108 @@ class TestBotferenceProjects:
         assert "Saved sessions for Spaceship Engineering" in listing
         assert "ship-session" in listing
         assert "spaceship thesis" in listing
+
+    async def test_project_resume_is_strict_to_active_project(self, tmp_path):
+        career = tmp_path / "projects" / "CareerSwitch"
+        spaceship = tmp_path / "projects" / "spaceship-engineering"
+        career.mkdir(parents=True)
+        spaceship.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("career-session", {
+            "session_id": "career-session",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-03T00:00:00Z",
+            "title": "career packet",
+            "project_id": "CareerSwitch",
+            "transcript": [{"speaker": "user", "text": "career"}],
+        })
+        c.session_store.save("ship-session", {
+            "session_id": "ship-session",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "ship paper",
+            "project_id": "spaceship-engineering",
+            "transcript": [{"speaker": "user", "text": "ship"}],
+        })
+        c.session_store.save("unassigned-session", {
+            "session_id": "unassigned-session",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-04T00:00:00Z",
+            "title": "global note",
+            "transcript": [{"speaker": "user", "text": "global"}],
+        })
+        (tmp_path / "projects" / "session-index.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": [
+                {"session_id": "ship-session", "project": "CareerSwitch"},
+                {"session_id": "career-session", "project": "spaceship-engineering"},
+            ],
+        }), encoding="utf-8")
+
+        await c.handle_input("/project open CareerSwitch", ui)
+        ui.room_entries.clear()
+        await c.handle_input("/resume", ui)
+
+        listing = "\n".join(text for _, text in ui.room_entries)
+        assert "career packet" in listing
+        assert "ship paper" not in listing
+        assert "global note" not in listing
+
+    async def test_project_panel_uses_payload_project_over_duplicate_index(self, tmp_path):
+        career = tmp_path / "projects" / "CareerSwitch"
+        spaceship = tmp_path / "projects" / "spaceship-engineering"
+        career.mkdir(parents=True)
+        spaceship.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("ship-session", {
+            "session_id": "ship-session",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "ship paper",
+            "project_id": "spaceship-engineering",
+            "transcript": [{"speaker": "user", "text": "ship"}],
+        })
+        (tmp_path / "projects" / "session-index.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": [
+                {"session_id": "ship-session", "project": "CareerSwitch"},
+                {"session_id": "ship-session", "project": "spaceship-engineering"},
+            ],
+        }), encoding="utf-8")
+
+        c.active_project_id = "CareerSwitch"
+        career_snapshot = c.project_panel_snapshot()
+        career_row = next(p for p in career_snapshot.projects if p.project_id == "CareerSwitch")
+        assert career_row.session_count == 0
+        assert not career_row.sessions
+
+        c.active_project_id = "spaceship-engineering"
+        ship_snapshot = c.project_panel_snapshot()
+        ship_row = next(p for p in ship_snapshot.projects if p.project_id == "spaceship-engineering")
+        assert ship_row.session_count == 1
+        assert [s.session_id for s in ship_row.sessions] == ["ship-session"]
+
+    async def test_associate_session_moves_existing_index_entry(self, tmp_path):
+        projects = tmp_path / "projects"
+        projects.mkdir()
+        (projects / "session-index.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": [
+                {"session_id": "abc", "project": "CareerSwitch"},
+                {"session_id": "other", "project": "CareerSwitch"},
+                {"session_id": "abc", "project": "spaceship-engineering"},
+            ],
+        }), encoding="utf-8")
+        store = ProjectStore(tmp_path)
+
+        store.associate_session("my-obsidian-wiki", "abc")
+
+        data = json.loads((projects / "session-index.json").read_text(encoding="utf-8"))
+        assert data["sessions"] == [
+            {"session_id": "other", "project": "CareerSwitch"},
+            {"session_id": "abc", "project": "my-obsidian-wiki"},
+        ]
+        assert store.session_index_map()["abc"] == "my-obsidian-wiki"
 
     async def test_panel_counts_session_by_payload_project_id(self, tmp_path):
         # A legacy session that knows its project via payload.project_id but
