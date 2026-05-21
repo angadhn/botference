@@ -1736,6 +1736,179 @@ class TestBotferenceProjects:
         assert "alpha" in data["entries"]
         assert data["entries"]["alpha"]["entry_count"] == 1
 
+    async def test_panel_metadata_index_persists_title_and_created_at(self, tmp_path):
+        # The index must carry enough information that the project panel can
+        # shortlist active-project sessions without re-reading session JSONs.
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        (c.paths.session_dir / "alpha.json").write_text(json.dumps({
+            "session_id": "alpha",
+            "created_at": "2026-05-01T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "hello there",
+            "transcript": [{"speaker": "user", "text": "hello there"}],
+        }), encoding="utf-8")
+
+        c.project_panel_snapshot()
+        index_path = c.paths.session_dir / ".metadata-index.json"
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        entry = data["entries"]["alpha"]
+        assert entry["title"] == "hello there"
+        assert entry["created_at"] == "2026-05-01T00:00:00Z"
+
+    async def test_panel_metadata_index_backfills_old_entries_without_title(self, tmp_path):
+        # An index written before the title/created_at fields existed must
+        # still load, and the entry should be reparsed once so subsequent
+        # launches can build summaries from the cache alone.
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        session_file = c.paths.session_dir / "legacy.json"
+        session_file.write_text(json.dumps({
+            "session_id": "legacy",
+            "created_at": "2026-04-30T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "transcript": [{"speaker": "user", "text": "look ma no title field"}],
+        }), encoding="utf-8")
+        real_mtime = session_file.stat().st_mtime
+        index_path = c.paths.session_dir / ".metadata-index.json"
+        index_path.write_text(json.dumps({
+            "version": 1,
+            "entries": {
+                "legacy": {
+                    "mtime": real_mtime,
+                    "project_id": "",
+                    "entry_count": 1,
+                    "updated_at": "2026-05-02T00:00:00Z",
+                    # No title / created_at — pre-upgrade schema.
+                },
+            },
+        }), encoding="utf-8")
+
+        c.project_panel_snapshot()
+
+        persisted = json.loads(index_path.read_text(encoding="utf-8"))
+        backfilled = persisted["entries"]["legacy"]
+        assert backfilled["title"] == "look ma no title field"
+        assert backfilled["created_at"] == "2026-04-30T00:00:00Z"
+
+    async def test_panel_active_sessions_built_from_metadata_cache(self, tmp_path):
+        # Regression: the active-project shortlist must come from the metadata
+        # index + session-index.json, NOT from re-parsing global session JSONs.
+        # We prove this by populating the cache so the shortlist already knows
+        # everything it needs, then ensuring the on-disk session files would
+        # fail any json.loads() — if the code path tried to read them, the
+        # rows would vanish (or worse, raise).
+        import os
+
+        project = tmp_path / "projects" / "alpha-project"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        session_dir = c.paths.session_dir
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        cache_mtimes = {"sess-a": 1000.0, "sess-b": 2000.0, "sess-c": 3000.0}
+        # The files on disk are intentionally invalid JSON — any reparse
+        # would silently drop them from the index and break the assertions
+        # below. Their mtimes are pinned to match the cache so the metadata
+        # index treats them as already-known.
+        for sid, mtime in cache_mtimes.items():
+            path = session_dir / f"{sid}.json"
+            path.write_text("THIS IS NOT VALID JSON", encoding="utf-8")
+            os.utime(path, (mtime, mtime))
+
+        # An unrelated invalid file should be ignored entirely.
+        (session_dir / "garbage.json").write_text(
+            "also not json", encoding="utf-8"
+        )
+
+        # Membership: sess-a/sess-b carry project_id in cache.
+        # sess-c is "legacy" — empty project_id in cache, project comes from
+        # session-index.json fallback.
+        index_path = session_dir / ".metadata-index.json"
+        index_path.write_text(json.dumps({
+            "version": 1,
+            "entries": {
+                "sess-a": {
+                    "mtime": cache_mtimes["sess-a"],
+                    "project_id": "alpha-project",
+                    "entry_count": 2,
+                    "updated_at": "2026-05-01T00:00:00Z",
+                    "title": "alpha first chat",
+                    "created_at": "2026-05-01T00:00:00Z",
+                },
+                "sess-b": {
+                    "mtime": cache_mtimes["sess-b"],
+                    "project_id": "alpha-project",
+                    "entry_count": 3,
+                    "updated_at": "2026-05-02T00:00:00Z",
+                    "title": "alpha second chat",
+                    "created_at": "2026-05-02T00:00:00Z",
+                },
+                "sess-c": {
+                    "mtime": cache_mtimes["sess-c"],
+                    "project_id": "",  # legacy session with no payload project_id
+                    "entry_count": 1,
+                    "updated_at": "2026-05-03T00:00:00Z",
+                    "title": "alpha third chat",
+                    "created_at": "2026-05-03T00:00:00Z",
+                },
+                # Empty transcript: must be filtered out of both count + list.
+                "sess-empty": {
+                    "mtime": 4000.0,
+                    "project_id": "alpha-project",
+                    "entry_count": 0,
+                    "updated_at": "2026-05-04T00:00:00Z",
+                    "title": "",
+                    "created_at": "",
+                },
+                # Different project: must not appear in alpha-project's rows.
+                "other-proj-session": {
+                    "mtime": 5000.0,
+                    "project_id": "other-project",
+                    "entry_count": 2,
+                    "updated_at": "2026-05-05T00:00:00Z",
+                    "title": "unrelated",
+                    "created_at": "2026-05-05T00:00:00Z",
+                },
+            },
+        }), encoding="utf-8")
+        # sess-empty / other-proj-session don't need backing files; the
+        # metadata index reaper only deletes cache rows for files that have
+        # been removed AND were previously known, and these have valid cache
+        # entries that the glob walk simply won't see — but the post-walk
+        # reap drops cache entries whose files are missing, so we add stubs
+        # with matching mtimes to keep them.
+        for sid, mtime in (
+            ("sess-empty", 4000.0),
+            ("other-proj-session", 5000.0),
+        ):
+            path = session_dir / f"{sid}.json"
+            path.write_text("ALSO NOT JSON", encoding="utf-8")
+            os.utime(path, (mtime, mtime))
+
+        # session-index.json supplies sess-c's project (legacy fallback).
+        (tmp_path / "projects" / "session-index.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": [
+                {"session_id": "sess-c", "project": "alpha-project"},
+            ],
+        }), encoding="utf-8")
+
+        c.active_project_id = "alpha-project"
+        snapshot = c.project_panel_snapshot()
+        row = next(
+            p for p in snapshot.projects if p.project_id == "alpha-project"
+        )
+        # sess-empty filtered, other-proj-session excluded by membership.
+        assert row.session_count == 3
+        # Sorted by metadata mtime descending: sess-c (3000), sess-b (2000),
+        # sess-a (1000).
+        assert [s.session_id for s in row.sessions] == [
+            "sess-c", "sess-b", "sess-a",
+        ]
+        assert row.sessions[0].title == "alpha third chat"
+        assert row.sessions[0].updated_at == "2026-05-03T00:00:00Z"
+        assert row.sessions[1].title == "alpha second chat"
+        assert row.sessions[2].title == "alpha first chat"
+
     async def test_draft_without_prior_session(self, tmp_path):
         """Bootstraps lead and reviewer sessions before drafting."""
         c, claude, codex, ui = _make_botference(
@@ -2638,6 +2811,15 @@ validate_project_agents
         (project_dir / "checkpoint.md").write_text("checkpoint\n", encoding="utf-8")
         (build_dir / "draft.md").write_text("draft\n", encoding="utf-8")
         (wiki_dir / "entry.md").write_text("entry\n", encoding="utf-8")
+        generated_dir = project_dir / "projects" / "demo" / ".next" / "server" / "chunks"
+        vendor_dir = project_dir / "projects" / "demo" / "node_modules" / "pkg"
+        netlify_dir = project_dir / "projects" / "demo" / ".netlify" / "functions"
+        generated_dir.mkdir(parents=True)
+        vendor_dir.mkdir(parents=True)
+        netlify_dir.mkdir(parents=True)
+        (generated_dir / "bundle.js").write_text("generated\n", encoding="utf-8")
+        (vendor_dir / "index.js").write_text("vendor\n", encoding="utf-8")
+        (netlify_dir / "handler.js").write_text("netlify\n", encoding="utf-8")
         (tmp_path / "large-note.md").write_text("outside scope\n", encoding="utf-8")
 
         cmd = f'''
@@ -2664,6 +2846,9 @@ cut -f2 "$snapshot"
         assert "botference/build/draft.md" in paths
         assert "botference/wiki/entry.md" in paths
         assert "large-note.md" in paths
+        assert "botference/projects/demo/.next/server/chunks/bundle.js" not in paths
+        assert "botference/projects/demo/node_modules/pkg/index.js" not in paths
+        assert "botference/projects/demo/.netlify/functions/handler.js" not in paths
 
     def test_project_local_plan_policy_allows_any_work_file(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent

@@ -178,11 +178,68 @@ plan_is_allowed_file() {
 
 _snapshot_sig_for_path() {
   local abs_path=$1
+  local sig=""
   if [ -f "$abs_path" ]; then
-    cksum < "$abs_path" | awk '{print $1 ":" $2}'
+    if sig=$(stat -f '%m:%z:%i:%c' "$abs_path" 2>/dev/null); then
+      printf '%s' "$sig"
+    elif sig=$(stat -c '%Y:%s:%i:%Z' "$abs_path" 2>/dev/null); then
+      printf '%s' "$sig"
+    else
+      cksum < "$abs_path" | awk '{print $1 ":" $2}'
+    fi
   else
     printf '__missing__'
   fi
+}
+
+snapshot_find_files() {
+  local root=$1
+  (
+    cd "$BOTFERENCE_PROJECT_ROOT"
+    find "$root" \
+      \( \
+        -name .git \
+        -o -name node_modules \
+        -o -name .next \
+        -o -name .netlify \
+        -o -name .turbo \
+        -o -name .vercel \
+        -o -name .cache \
+        -o -name __pycache__ \
+        -o -name .pytest_cache \
+        -o -name .mypy_cache \
+        -o -name .ruff_cache \
+        -o -name .venv \
+        -o -name venv \
+      \) -prune \
+      -o -type f -print \
+      | sed 's#^\./##' \
+      | sort
+  )
+}
+
+snapshot_write_tree_signatures() {
+  local root=$1
+  local snapshot_file=$2
+
+  (
+    cd "$BOTFERENCE_PROJECT_ROOT" || exit 1
+    if stat -f '%m:%z:%i:%c	%N' . >/dev/null 2>&1; then
+      snapshot_find_files "$root" | tr '\n' '\0' | xargs -0 stat -f '%m:%z:%i:%c	%N' 2>/dev/null
+    elif stat -c '%Y:%s:%i:%Z	%n' . >/dev/null 2>&1; then
+      snapshot_find_files "$root" | tr '\n' '\0' | xargs -0 stat -c '%Y:%s:%i:%Z	%n' 2>/dev/null
+    else
+      snapshot_find_files "$root" | while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        local abs_path
+        case "$path" in
+          /*) abs_path="$path" ;;
+          *) abs_path="$BOTFERENCE_PROJECT_ROOT/$path" ;;
+        esac
+        printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_path")" "$path"
+      done
+    fi
+  ) | sed 's#	\./#	#' >> "$snapshot_file"
 }
 
 snapshot_roots_for_mode() {
@@ -215,14 +272,7 @@ plan_write_state_snapshot() {
 
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     if [ -f "$BOTFERENCE_PROJECT_CONFIG_FILE" ]; then
-      (
-        cd "$BOTFERENCE_PROJECT_ROOT"
-        find . \( -name .git -o -path './.git/*' \) -prune -o -type f -print | sed 's#^\./##' | sort
-      ) | while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        local abs_path="$BOTFERENCE_PROJECT_ROOT/$path"
-        printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_path")" "$path" >> "$snapshot_file"
-      done
+      snapshot_write_tree_signatures "." "$snapshot_file"
       sort -u "$snapshot_file" -o "$snapshot_file"
       return 0
     fi
@@ -243,18 +293,7 @@ plan_write_state_snapshot() {
         continue
       fi
 
-      (
-        cd "$BOTFERENCE_PROJECT_ROOT"
-        find "$root" -type f | sort
-      ) | while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        local abs_path
-        case "$path" in
-          /*) abs_path="$path" ;;
-          *) abs_path="$BOTFERENCE_PROJECT_ROOT/$path" ;;
-        esac
-        printf '%s\t%s\n' "$(_snapshot_sig_for_path "$abs_path")" "$path" >> "$snapshot_file"
-      done
+      snapshot_write_tree_signatures "$root" "$snapshot_file"
     done < <(snapshot_roots_for_mode "$mode")
     sort -u "$snapshot_file" -o "$snapshot_file"
     return 0
@@ -344,6 +383,11 @@ plan_audit_changed_files() {
 plan_commit_and_push_changes() {
   local changed_file=$1
   local files=()
+
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+
   while IFS= read -r path; do
     [ -z "$path" ] && continue
     files+=("$path")

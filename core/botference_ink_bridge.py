@@ -185,6 +185,60 @@ async def _read_line() -> str:
     return await loop.run_in_executor(_executor, sys.stdin.readline)
 
 
+async def _hydrate_project_panel(
+    bridge: InkBridge,
+    botference: Botference,
+    paths: BotferencePaths,
+) -> None:
+    """Compute project_panel_snapshot off the event loop and send the result.
+
+    Failures are written to the crash log so a broken snapshot can't take
+    the bridge down — the Ink UI keeps the placeholder panel emitted at
+    startup until/unless a later turn refreshes it.
+    """
+    try:
+        snapshot = await asyncio.to_thread(botference.project_panel_snapshot)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        append_crash_log(
+            paths,
+            location="botference_ink_bridge.hydrate_project_panel",
+            session_id=botference.session_id,
+            exc=exc,
+        )
+        return
+    bridge.set_projects(snapshot)
+
+
+async def _send_initial_state_and_schedule_hydration(
+    bridge: InkBridge,
+    botference: Botference,
+    paths: BotferencePaths,
+) -> asyncio.Task:
+    """Paint a usable Ink UI immediately and schedule project-panel hydration.
+
+    The initial projects payload is an empty placeholder so launch is not
+    gated on scanning the session corpus — the real snapshot lands later
+    via the returned background task.
+    """
+    emit({"type": "completion_context", **get_completion_context()})
+    bridge.set_status(botference.status_snapshot())
+    bridge.set_projects(ProjectPanelState(
+        projects=(),
+        active_project_id=botference.active_project_id,
+        inbox_session_count=0,
+    ))
+    bridge.add_room_entry(
+        "system", "Council room ready. First plain text routes to @all."
+    )
+    bridge.add_caucus_entry("system", "(empty until /caucus)")
+    emit({"type": "ready"})
+    return asyncio.create_task(
+        _hydrate_project_panel(bridge, botference, paths)
+    )
+
+
 async def _wait_for_turn(
     task: asyncio.Task,
     botference: Botference,
@@ -327,13 +381,11 @@ async def main() -> None:
     bridge = InkBridge(paths)
     current_turn: asyncio.Task | None = None
 
-    # Send initial state
-    emit({"type": "completion_context", **get_completion_context()})
-    bridge.set_status(botference.status_snapshot())
-    bridge.set_projects(botference.project_panel_snapshot())
-    bridge.add_room_entry("system", "Council room ready. First plain text routes to @all.")
-    bridge.add_caucus_entry("system", "(empty until /caucus)")
-    emit({"type": "ready"})
+    # Paint the UI now; hydrate project/session data in the background.
+    # The returned task is held to prevent GC of the running coroutine.
+    hydration_task = await _send_initial_state_and_schedule_hydration(
+        bridge, botference, paths
+    )
 
     # Main input loop
     while True:

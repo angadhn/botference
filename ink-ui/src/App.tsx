@@ -1124,7 +1124,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (bridgeArgs.openaiEffort) args.push("--openai-effort", bridgeArgs.openaiEffort);
     if (bridgeArgs.claudeTransport) args.push("--claude-transport", bridgeArgs.claudeTransport);
 
-    const proc = spawn("python3", args, {
+    const bridgePython = process.env.BOTFERENCE_PYTHON_BIN || "python3";
+    const proc = spawn(bridgePython, args, {
       stdio: ["pipe", "pipe", "pipe"],
       // Inherit CWD from parent (project root) so file writes target the right place.
       // PYTHONPATH handles imports — no need to force cwd to botferenceHome.

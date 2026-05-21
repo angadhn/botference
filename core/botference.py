@@ -58,7 +58,13 @@ from room_prompts import (
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
 from render_blocks import parse_render_blocks
-from session_store import SessionStore, iso_now, append_crash_log
+from session_store import (
+    SessionStore,
+    SessionSummary,
+    _display_title,
+    append_crash_log,
+    iso_now,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1114,19 +1120,67 @@ class Botference:
             return False
 
     def _project_tagged_summaries(self, project: ProjectInfo, *, limit: int = 100):
-        summaries = self.session_store.list_summaries(
-            limit=max(limit * 10, 1000),
-            exclude_session_id="",
-            session_dirs=self._project_session_dirs(project),
-        )
+        # Global rows come from the metadata index — title/updated_at/created_at
+        # are cached, so we do not re-read any session JSON to build them.
+        # Membership precedence still matches _summary_belongs_to_project:
+        # payload.project_id wins; session-index.json backfills legacy sessions
+        # whose payload predates the project_id field.
+        #
+        # Project-local session dirs (projects/<id>/sessions/) are typically
+        # tiny and aren't covered by the global index, so we still parse them
+        # inline to find their rows.
+        metadata = self.session_store.metadata_index()
         indexed_to_project = self.project_store.session_index_map()
-        tagged = []
-        for summary in summaries:
-            if self._summary_belongs_to_project(summary, project, indexed_to_project):
-                tagged.append(summary)
-                if len(tagged) >= limit:
-                    break
-        return tagged
+        global_dir = self.paths.session_dir
+
+        rows: list[tuple[float, SessionSummary]] = []
+
+        for session_id, entry in metadata.items():
+            if entry.entry_count < 1:
+                continue
+            membership = entry.project_id or indexed_to_project.get(session_id, "")
+            if membership != project.id:
+                continue
+            rows.append((
+                entry.mtime,
+                self.session_store.summary_from_metadata(
+                    session_id, entry, project_id=project.id
+                ),
+            ))
+
+        for session_dir in self._project_session_dirs(project):
+            if session_dir == global_dir or not session_dir.is_dir():
+                continue
+            for path in session_dir.glob("*.json"):
+                if path.name.startswith("."):
+                    continue
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                transcript = payload.get("transcript", [])
+                if not (isinstance(transcript, list) and len(transcript) >= 1):
+                    continue
+                if not self._payload_belongs_to_project(
+                    payload, project, source_path=path
+                ):
+                    continue
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                rows.append((mtime, SessionSummary(
+                    session_id=str(payload.get("session_id") or path.stem),
+                    created_at=str(payload.get("created_at", "")),
+                    updated_at=str(payload.get("updated_at", "")),
+                    title=_display_title(payload),
+                    entry_count=len(transcript),
+                    source_path=str(path),
+                    project_id=str(payload.get("project_id") or project.id),
+                )))
+
+        rows.sort(key=lambda r: r[0], reverse=True)
+        return [summary for _, summary in rows[:limit]]
 
     def _project_session_dirs(self, project: ProjectInfo | None = None) -> list[Path]:
         dirs = [self.paths.session_dir]

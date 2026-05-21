@@ -82,6 +82,8 @@ class SessionMetadata:
     project_id: str
     entry_count: int
     updated_at: str
+    title: str = ""
+    created_at: str = ""
 
 
 _METADATA_INDEX_NAME = ".metadata-index.json"
@@ -115,6 +117,8 @@ class SessionStore:
                 project_id=str(payload.get("project_id", "") or ""),
                 entry_count=entry_count,
                 updated_at=str(payload.get("updated_at", "") or ""),
+                title=_display_title(payload),
+                created_at=str(payload.get("created_at", "") or ""),
             )
             self._save_metadata_index(self._metadata_cache)
 
@@ -158,6 +162,8 @@ class SessionStore:
                 project_id=str(raw.get("project_id", "") or ""),
                 entry_count=entry_count,
                 updated_at=str(raw.get("updated_at", "") or ""),
+                title=str(raw.get("title", "") or ""),
+                created_at=str(raw.get("created_at", "") or ""),
             )
         return out
 
@@ -170,6 +176,8 @@ class SessionStore:
                     "project_id": entry.project_id,
                     "entry_count": entry.entry_count,
                     "updated_at": entry.updated_at,
+                    "title": entry.title,
+                    "created_at": entry.created_at,
                 }
                 for session_id, entry in cache.items()
             },
@@ -207,7 +215,11 @@ class SessionStore:
             except OSError:
                 continue
             cached = cache.get(session_id)
-            if cached is not None and cached.mtime == mtime:
+            # Cached title="" signals a pre-upgrade entry written before we
+            # cached display title; re-parse once to backfill so the project
+            # panel can build summaries from the index alone next launch.
+            # _display_title() never returns the empty string, so this is safe.
+            if cached is not None and cached.mtime == mtime and cached.title:
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -222,6 +234,8 @@ class SessionStore:
                 project_id=str(payload.get("project_id", "") or ""),
                 entry_count=entry_count,
                 updated_at=str(payload.get("updated_at", "") or ""),
+                title=_display_title(payload),
+                created_at=str(payload.get("created_at", "") or ""),
             )
             changed = True
 
@@ -233,7 +247,36 @@ class SessionStore:
 
         if changed:
             self._save_metadata_index(cache)
-        return cache
+        # Return a shallow snapshot so background readers (e.g. the
+        # async project-panel hydration) can iterate without racing a
+        # concurrent save() that mutates the live cache. Entries are
+        # frozen dataclasses, so a dict copy is enough.
+        return dict(cache)
+
+    def summary_from_metadata(
+        self,
+        session_id: str,
+        entry: SessionMetadata,
+        *,
+        project_id: str = "",
+    ) -> SessionSummary:
+        """Build a SessionSummary purely from a cached metadata entry.
+
+        Used by the project panel shortlist so we don't have to re-read each
+        session JSON to populate title/created_at. `project_id` is the
+        fallback membership when entry.project_id is empty (legacy sessions
+        whose payload predates the project_id field — membership comes from
+        ProjectStore.session_index_map() and is supplied by the caller).
+        """
+        return SessionSummary(
+            session_id=session_id,
+            created_at=entry.created_at,
+            updated_at=entry.updated_at,
+            title=entry.title or "Untitled session",
+            entry_count=entry.entry_count,
+            source_path=str(self.paths.session_state_file(session_id)),
+            project_id=entry.project_id or project_id,
+        )
 
     def list_summaries(
         self,
