@@ -144,3 +144,53 @@ class TestInkBridgeStartup:
         project_calls = [c2 for c2 in bridge.calls if c2[0] == "set_projects"]
         assert len(project_calls) == 1
         assert project_calls[0][1].projects == ()
+
+
+@pytest.mark.asyncio
+class TestInkBridgeInputQueue:
+    async def test_inputs_submitted_during_turn_run_in_order(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+
+        releases = [asyncio.Event(), asyncio.Event()]
+        handled: list[tuple[str, list[dict]]] = []
+
+        async def handle_input(text, bridge, attachments=None):
+            handled.append((text, list(attachments or [])))
+            await releases[len(handled) - 1].wait()
+
+        c.handle_input = handle_input
+        bridge = _RecordingBridge()
+        queue = binkb.InputTurnQueue(c, bridge, c.paths)
+
+        queue.submit("first", [])
+        await asyncio.sleep(0)
+        queue.submit("second", [{"id": 1, "path": "/tmp/a.png", "type": "image"}])
+        await asyncio.sleep(0)
+
+        assert handled == [("first", [])]
+        assert any(e == {"type": "queue", "pending": 1} for e in emitted)
+        assert not any(e.get("type") == "ready" for e in emitted)
+
+        releases[0].set()
+        deadline = time.time() + 2.0
+        while len(handled) < 2 and time.time() < deadline:
+            await asyncio.sleep(0.005)
+        assert handled == [
+            ("first", []),
+            ("second", [{"id": 1, "path": "/tmp/a.png", "type": "image"}]),
+        ]
+        assert not any(e.get("type") == "ready" for e in emitted)
+
+        releases[1].set()
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+
+        assert emitted[-2:] == [
+            {"type": "queue", "pending": 0},
+            {"type": "ready"},
+        ]

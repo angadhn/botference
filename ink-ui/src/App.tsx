@@ -621,6 +621,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [cursor, setCursor] = useState(0);
   const [hint, setHint] = useState("");
   const [ready, setReady] = useState(false);
+  const [queuedCount, setQueuedCount] = useState(0);
   const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
   const [busyFrameIndex, setBusyFrameIndex] = useState(0);
   const [v2Activity, setV2Activity] = useState<V2Activity | null>(null);
@@ -1287,9 +1288,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "ready":
           setReady(true);
+          setQueuedCount(0);
+          setHint("");
           setBusyTarget(null);
           setV2Activity(null);
           break;
+        case "queue": {
+          const pending = typeof msg.pending === "number" ? msg.pending : 0;
+          setQueuedCount(pending);
+          if (pending > 0) {
+            setHint(`${pending} queued message${pending === 1 ? "" : "s"}.`);
+          }
+          break;
+        }
         case "completion_context":
           setCompletionCtx({
             global: (msg.global as string[]) ?? [],
@@ -1366,18 +1377,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setHint("Projects focused \u2014 Tab to Council to send messages");
       return;
     }
-    if (!ready) {
-      setHint("Waiting for response...");
-      return;
+    const queued = !ready;
+    if (!queued) {
+      setReady(false);
+      const nextBusyTarget = resolveBusyTarget(stripped, status.route, status.mode);
+      setBusyTarget(nextBusyTarget);
+      if (!bridgeArgs.inkLegacy) {
+        setV2Activity(startV2ActivityFromInput(stripped, status.route, status.mode));
+      }
+      setHint("");
+    } else {
+      setQueuedCount((prev) => prev + 1);
+      setHint("Queued message.");
     }
-
-    setReady(false);
-    const nextBusyTarget = resolveBusyTarget(stripped, status.route, status.mode);
-    setBusyTarget(nextBusyTarget);
-    if (!bridgeArgs.inkLegacy) {
-      setV2Activity(startV2ActivityFromInput(stripped, status.route, status.mode));
-    }
-    setHint("");
     setInputText("");
     setCursor(0);
     setDesiredCol(null);
@@ -1520,11 +1532,16 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         const command = projectRowCommand(row);
         if (!command) return;
         const proc = bridgeRef.current;
-        if (proc?.stdin?.writable && ready) {
-          setReady(false);
-          setBusyTarget("system");
-          if (!bridgeArgs.inkLegacy) {
-            setV2Activity(createV2Activity("system", status.mode, "system"));
+        if (proc?.stdin?.writable) {
+          if (ready) {
+            setReady(false);
+            setBusyTarget("system");
+            if (!bridgeArgs.inkLegacy) {
+              setV2Activity(createV2Activity("system", status.mode, "system"));
+            }
+          } else {
+            setQueuedCount((prev) => prev + 1);
+            setHint("Queued project command.");
           }
           proc.stdin.write(JSON.stringify({ type: "input", text: command }) + "\n");
         }
@@ -1699,7 +1716,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const busySegments = buildBusySegments(busyText, busyFrameIndex);
   const busyGlyph = v2ActivityGlyph(busyFrameIndex);
   const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
-  const statusText = mouseSelectionMode ? selectionHint : hint || (!ready ? busyText : " ");
+  const queueHint = queuedCount > 0
+    ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
+    : "";
+  const statusText = mouseSelectionMode ? selectionHint : hint || queueHint || (!ready ? busyText : " ");
 
   // ── Render ─────────────────────────────────────────────
 

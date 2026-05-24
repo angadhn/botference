@@ -13,7 +13,9 @@ import logging
 import os
 import sys
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from cli_adapters import (
@@ -33,6 +35,12 @@ from session_store import append_crash_log
 log = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=1)
+
+
+@dataclass
+class QueuedInput:
+    text: str
+    attachments: list[dict] = field(default_factory=list)
 
 
 def emit(obj: dict) -> None:
@@ -244,7 +252,10 @@ async def _wait_for_turn(
     botference: Botference,
     bridge: InkBridge,
     paths: BotferencePaths,
-) -> None:
+    *,
+    emit_ready: bool = True,
+) -> bool:
+    should_exit = False
     try:
         await task
         bridge.set_status(botference.status_snapshot())
@@ -266,8 +277,93 @@ async def _wait_for_turn(
     finally:
         if botference.quit_requested:
             emit({"type": "exit"})
+            should_exit = True
         else:
-            emit({"type": "ready"})
+            if emit_ready:
+                emit({"type": "ready"})
+    return should_exit
+
+
+class InputTurnQueue:
+    """Serialize user inputs so messages submitted during a turn run next."""
+
+    def __init__(
+        self,
+        botference: Botference,
+        bridge: InkBridge,
+        paths: BotferencePaths,
+    ) -> None:
+        self._botference = botference
+        self._bridge = bridge
+        self._paths = paths
+        self._pending: deque[QueuedInput] = deque()
+        self._runner: asyncio.Task | None = None
+        self._current_turn: asyncio.Task | None = None
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    @property
+    def is_running(self) -> bool:
+        return (
+            (self._runner is not None and not self._runner.done())
+            or (self._current_turn is not None and not self._current_turn.done())
+        )
+
+    def submit(self, text: str, attachments: list[dict]) -> None:
+        was_running = self.is_running
+        self._pending.append(QueuedInput(text=text, attachments=attachments))
+        if was_running:
+            self._emit_queue_state()
+        if not self.is_running:
+            self._runner = asyncio.create_task(self._run())
+
+    def interrupt(self) -> None:
+        cleared = len(self._pending)
+        self._pending.clear()
+        if self._current_turn is not None and not self._current_turn.done():
+            self._current_turn.cancel()
+        if cleared:
+            suffix = "" if cleared == 1 else "s"
+            self._bridge.add_room_entry(
+                "system", f"Cleared {cleared} queued message{suffix}."
+            )
+            self._emit_queue_state()
+
+    async def wait_idle(self) -> None:
+        if self._runner is not None:
+            await self._runner
+
+    def _emit_queue_state(self) -> None:
+        emit({"type": "queue", "pending": len(self._pending)})
+
+    async def _run(self) -> None:
+        while self._pending:
+            item = self._pending.popleft()
+            self._emit_queue_state()
+            self._current_turn = asyncio.create_task(
+                self._botference.handle_input(
+                    item.text,
+                    self._bridge,
+                    attachments=item.attachments,
+                )
+            )
+            should_exit = await _wait_for_turn(
+                self._current_turn,
+                self._botference,
+                self._bridge,
+                self._paths,
+                emit_ready=False,
+            )
+            self._current_turn = None
+            if should_exit:
+                self._pending.clear()
+                self._emit_queue_state()
+                return
+
+        self._emit_queue_state()
+        emit({"type": "ready"})
 
 
 async def main() -> None:
@@ -379,7 +475,7 @@ async def main() -> None:
     botference.observe = args.debug_panes
 
     bridge = InkBridge(paths)
-    current_turn: asyncio.Task | None = None
+    turn_queue = InputTurnQueue(botference, bridge, paths)
 
     # Paint the UI now; hydrate project/session data in the background.
     # The returned task is held to prevent GC of the running coroutine.
@@ -399,20 +495,13 @@ async def main() -> None:
             continue
 
         if msg.get("type") == "input":
-            if current_turn is not None and not current_turn.done():
-                bridge.add_room_entry("system", "A turn is already running.")
-                continue
             text = msg.get("text", "")
             attachments = msg.get("attachments", [])
-            current_turn = asyncio.create_task(
-                botference.handle_input(text, bridge, attachments=attachments)
-            )
-            asyncio.create_task(_wait_for_turn(current_turn, botference, bridge, paths))
+            turn_queue.submit(text, attachments)
             continue
 
         if msg.get("type") == "interrupt":
-            if current_turn is not None and not current_turn.done():
-                current_turn.cancel()
+            turn_queue.interrupt()
             continue
 
         if msg.get("type") == "permission_response":
