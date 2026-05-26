@@ -152,6 +152,24 @@ class TestParseInput:
         p = parse_input("/quit")
         assert p.kind is InputKind.QUIT
 
+    def test_slash_compact_targets_claude_harness(self):
+        p = parse_input("/compact @claude keep the plan summary")
+        assert p.kind is InputKind.HARNESS_COMMAND
+        assert p.target == "claude"
+        assert p.body == "/compact keep the plan summary"
+
+    def test_slash_goal_targets_claude_harness(self):
+        p = parse_input("/goal @claude make launch faster")
+        assert p.kind is InputKind.HARNESS_COMMAND
+        assert p.target == "claude"
+        assert p.body == "/goal make launch faster"
+
+    def test_slash_goal_without_target_keeps_usage_context(self):
+        p = parse_input("/goal make launch faster")
+        assert p.kind is InputKind.HARNESS_COMMAND
+        assert p.target == ""
+        assert p.body == "/goal make launch faster"
+
     def test_unknown_slash_becomes_message(self):
         p = parse_input("/unknown command")
         assert p.kind is InputKind.MESSAGE
@@ -446,6 +464,17 @@ class SideEffectAdapter(MockAdapter):
     async def resume(self, message: str) -> AdapterResponse:
         self._side_effect()
         return await super().resume(message)
+
+
+class NativeCommandAdapter(MockAdapter):
+    def __init__(self, responses: Optional[list[AdapterResponse]] = None):
+        super().__init__(responses or [_ok("native command sent")])
+        self.native_commands: list[str] = []
+
+    async def run_harness_command(self, command: str) -> AdapterResponse:
+        self.native_commands.append(command)
+        self.session_id = "native-claude-session"
+        return self._next()
 
 
 @dataclass
@@ -2118,6 +2147,60 @@ class TestHelpText:
         help_text = " ".join(text for _, text in ui.room_entries)
         assert "/relay" in help_text
         assert "/tag" in help_text
+        assert "/compact @claude" in help_text
+        assert "/goal @claude" in help_text
+
+
+@pytest.mark.asyncio
+class TestNativeHarnessCommands:
+    async def test_compact_sends_native_command_to_interactive_claude(self):
+        c, _, _, ui = _make_botference()
+        claude = NativeCommandAdapter([_ok("sent compact")])
+        c.claude = claude
+
+        await c.handle_input("/compact @claude keep current plan", ui)
+
+        assert claude.native_commands == ["/compact keep current plan"]
+        assert any("sent compact" in text for _, text in ui.room_entries)
+
+    async def test_goal_sends_native_command_to_interactive_claude(self):
+        c, _, _, ui = _make_botference()
+        claude = NativeCommandAdapter([_ok("sent goal")])
+        c.claude = claude
+
+        await c.handle_input("/goal @claude make startup faster", ui)
+
+        assert claude.native_commands == ["/goal make startup faster"]
+
+    async def test_native_claude_command_requires_interactive_adapter(self):
+        c, _, _, ui = _make_botference()
+
+        await c.handle_input("/compact @claude", ui)
+
+        system_text = " ".join(
+            text for speaker, text in ui.room_entries if speaker == "system"
+        )
+        assert "--claude-interactive" in system_text
+
+    async def test_native_codex_command_rejects_exec_transport(self):
+        c, _, _, ui = _make_botference()
+
+        await c.handle_input("/compact @codex", ui)
+
+        system_text = " ".join(
+            text for speaker, text in ui.room_entries if speaker == "system"
+        )
+        assert "codex exec" in system_text
+
+    async def test_native_command_without_target_shows_usage(self):
+        c, _, _, ui = _make_botference()
+
+        await c.handle_input("/goal make startup faster", ui)
+
+        system_text = " ".join(
+            text for speaker, text in ui.room_entries if speaker == "system"
+        )
+        assert "Usage: /compact @claude" in system_text
 
 
 # ── First-turn over-limit warning (task 4) ────────────────

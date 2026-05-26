@@ -67,6 +67,18 @@ export function drainStdin(stdin: NodeJS.ReadStream = process.stdin): void {
   }
 }
 
+export function disableRawMode(stdin: NodeJS.ReadStream = process.stdin): void {
+  if (!stdin.isTTY) return;
+  const tty = stdin as NodeJS.ReadStream & {
+    setRawMode?: (raw: boolean) => void;
+  };
+  try {
+    tty.setRawMode?.(false);
+  } catch {
+    // stream may already be closing
+  }
+}
+
 export function cleanupStagedImages(): void {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
   rmSync(resolve(repoRoot, ".botference", "tmp"), { recursive: true, force: true });
@@ -79,6 +91,7 @@ export function restoreTerminalSync(options: RestoreSequenceOptions): void {
     } catch {
       process.stdout.write(terminalRestoreSequence(options));
     }
+    disableRawMode();
     drainStdin();
   }
   cleanupStagedImages();

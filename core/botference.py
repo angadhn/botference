@@ -150,6 +150,7 @@ class InputKind(Enum):
     HELP = "help"
     QUIT = "quit"
     RELAY = "relay"
+    HARNESS_COMMAND = "harness_command"
     RESUME = "resume"
     RENAME = "rename"
     MODEL = "model"
@@ -193,12 +194,17 @@ _MENTION_RE = re.compile(
 # Relay command patterns
 _RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex)$", re.IGNORECASE)
 _RELAY_TARGET_RE = re.compile(r"^@?(claude|codex)$", re.IGNORECASE)
+_HARNESS_TARGET_RE = re.compile(
+    r"^@?(claude|codex)(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL
+)
 
 _SESSION_TITLE_MAX = 80
 _CODEX_DIFF_PREVIEW_LIMIT = 120_000
 
 # Commands that require a @target argument, expanded into @claude/@codex variants
-_TARGETED_COMMANDS = ("/lead", "/relay", "/tag", "/model", "/effort")
+_TARGETED_COMMANDS = (
+    "/lead", "/relay", "/tag", "/model", "/effort", "/compact", "/goal",
+)
 
 # Known effort levels (passed through to the underlying CLI)
 _CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
@@ -281,6 +287,26 @@ def parse_input(raw: str) -> ParsedInput:
                     kind=InputKind.RELAY, target=m.group(1).lower(),
                 )
             return ParsedInput(kind=InputKind.RELAY, target="", body=arg)
+
+        # Native harness slash-command passthrough. Botference owns the target
+        # selector; the live harness receives only its native command.
+        if cmd in ("/compact", "/goal"):
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            m = _HARNESS_TARGET_RE.match(arg)
+            if m:
+                target = m.group(1).lower()
+                rest = (m.group(2) or "").strip()
+                body = cmd if not rest else f"{cmd} {rest}"
+                return ParsedInput(
+                    kind=InputKind.HARNESS_COMMAND,
+                    target=target,
+                    body=body,
+                )
+            return ParsedInput(
+                kind=InputKind.HARNESS_COMMAND,
+                target="",
+                body=f"{cmd} {arg}".strip(),
+            )
 
         kind = _SLASH_COMMANDS.get(cmd)
         if kind is not None:
@@ -973,6 +999,10 @@ _CAUCUS_MIN_TURNS = 3   # each model speaks at least 3 times
 _CAUCUS_MAX_TURNS = 5   # each model speaks at most 5 times
 
 _RELAY_USAGE = "Usage: /relay @claude|@codex  (aliases: /relay-claude, /tag @claude)"
+_HARNESS_COMMAND_USAGE = (
+    "Usage: /compact @claude [instructions] or /goal @claude <objective>. "
+    "Native passthrough requires --claude-interactive."
+)
 
 # Relay tier thresholds (yield-pressure percent from adapter.context_percent)
 RELAY_TIER_SELF_MAX = 70       # < 70%: self-authored handoff
@@ -1948,6 +1978,10 @@ class Botference:
             await self._relay_model(parsed.target, ui)
             return
 
+        if parsed.kind is InputKind.HARNESS_COMMAND:
+            await self._run_harness_command(parsed.target, parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.CAUCUS:
             await self._run_caucus(parsed.body, ui)
             return
@@ -1975,6 +2009,8 @@ class Botference:
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
+            "  /compact @claude [instructions] — Send native Claude Code /compact (requires --claude-interactive)",
+            "  /goal @claude <objective> — Send native Claude Code /goal (requires --claude-interactive)",
             "  /resume [latest|number|title|id] — Switch to a saved plan session (works mid-chat; current session is auto-persisted)",
             "  /rename <name>      — Name this saved session for future /resume lookup",
             "  /permissions        — Show current planner write roots and runtime grants",
@@ -2338,6 +2374,62 @@ class Botference:
             ui, "system",
             f"{target} effort → {value} (applies on next turn)",
         )
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+
+    # ── native harness commands ───────────────────────────
+
+    async def _run_harness_command(
+        self, target: str, command: str, ui: UIPort,
+    ) -> None:
+        if target not in ("claude", "codex") or not command:
+            self._add_room_entry(ui, "system", _HARNESS_COMMAND_USAGE)
+            return
+
+        if target == "codex":
+            self._add_room_entry(
+                ui,
+                "system",
+                "Native Codex slash commands are not available through "
+                "`codex exec`. Botference can resume a Codex thread with "
+                "`codex exec resume`, but that is not the interactive Codex "
+                "slash-command layer.",
+            )
+            return
+
+        run_native = getattr(self.claude, "run_harness_command", None)
+        if run_native is None:
+            self._add_room_entry(
+                ui,
+                "system",
+                "Native Claude slash commands require Botference to be "
+                "launched with the interactive Claude tmux transport "
+                "(`--claude-interactive`).",
+            )
+            return
+
+        self._show_room_notice(
+            ui,
+            "system",
+            f"Sending native Claude command: {command}",
+        )
+        try:
+            resp = await run_native(command)
+        except Exception as exc:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Error sending native Claude command: {exc}",
+            )
+            return
+
+        if resp.session_id:
+            self.claude.session_id = resp.session_id
+        if resp.text:
+            self._add_room_entry(ui, "system", resp.text)
+        if resp.exit_code == 0:
+            self._models_initialized.add("claude")
+            self._update_pct("claude", resp, ui)
         ui.set_status(self.status_snapshot())
         self._persist_session()
 

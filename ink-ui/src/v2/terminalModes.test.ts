@@ -5,6 +5,7 @@ import {
   DISABLE_MOUSE_TRACKING,
   EXIT_ALT_SCREEN,
   SHOW_CURSOR,
+  disableRawMode,
   terminalRestoreSequence,
 } from "./terminalModes.js";
 
@@ -21,5 +22,19 @@ describe("Ink terminal cleanup sequences", () => {
     const sequence = terminalRestoreSequence({ useAltScreen: false });
     assert.equal(sequence.includes(EXIT_ALT_SCREEN), false);
     assert.ok(sequence.includes(DISABLE_MOUSE_TRACKING));
+  });
+
+  it("disables raw mode during cleanup", () => {
+    const calls: boolean[] = [];
+    const stdin = {
+      isTTY: true,
+      setRawMode(raw: boolean) {
+        calls.push(raw);
+      },
+    } as unknown as NodeJS.ReadStream;
+
+    disableRawMode(stdin);
+
+    assert.deepEqual(calls, [false]);
   });
 });

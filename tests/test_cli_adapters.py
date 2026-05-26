@@ -505,6 +505,29 @@ Reading 1 file… (ctrl+o to expand)
 
         asyncio.run(run())
 
+    def test_run_harness_command_pastes_native_slash_command(self, monkeypatch, tmp_path):
+        async def run():
+            adapter = ClaudeInteractiveTmuxAdapter(
+                debug_log_path=str(tmp_path / "debug.jsonl"),
+                session_name="botference-claude-test",
+            )
+            adapter._last_capture = "Claude\nold\n❯"
+            adapter._idle_grace = 0.0
+            adapter._capture_interval = 0.0
+            adapter._ensure_session = AsyncMock(return_value=None)
+            adapter._paste_prompt = AsyncMock(return_value=None)
+            adapter._capture = AsyncMock(return_value="Claude\nready\n❯")
+            monkeypatch.setattr("cli_adapters.asyncio.sleep", AsyncMock())
+
+            resp = await adapter.run_harness_command("/compact")
+
+            adapter._paste_prompt.assert_awaited_once_with("/compact")
+            assert resp.exit_code == 0
+            assert resp.text == "Sent native Claude command: /compact"
+            assert resp.session_id == "botference-claude-test"
+
+        asyncio.run(run())
+
 
 # ── ToolSummary tests ────────────────────────────────────────
 

@@ -106,6 +106,8 @@ interface PendingPermission {
   reason: string;
 }
 
+type StateUpdate<T> = T | ((prev: T) => T);
+
 // Project panel data shapes + row builder live in projects.ts so they can be
 // exercised by node:test without spinning up React.
 import {
@@ -617,8 +619,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   });
   const [projectsVisible, setProjectsVisible] = useState(true);
   const [projectCursor, setProjectCursor] = useState(0);
-  const [inputText, setInputText] = useState("");
-  const [cursor, setCursor] = useState(0);
+  const [inputText, setInputTextState] = useState("");
+  const [cursor, setCursorState] = useState(0);
   const [hint, setHint] = useState("");
   const [ready, setReady] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
@@ -633,7 +635,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [lastSeenCaucusCount, setLastSeenCaucusCount] = useState(0);
 
   const [desiredCol, setDesiredCol] = useState<number | null>(null);
-  const [imageAttachments, setImageAttachments] = useState<Map<number, string>>(new Map());
+  const [imageAttachments, setImageAttachmentsState] = useState<Map<number, string>>(new Map());
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [permissionChoice, setPermissionChoice] = useState<"allow" | "deny">("allow");
   const [completionCtx, setCompletionCtx] = useState<{
@@ -641,8 +643,30 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     scoped: Record<string, string[]>;
   }>({ global: [], scoped: {} });
   const nextImageId = useRef(1);
+  const inputTextRef = useRef("");
   const cursorRef = useRef(0);
-  cursorRef.current = cursor; // keep ref in sync for use in stdin filter callbacks
+  const imageAttachmentsRef = useRef<Map<number, string>>(new Map());
+  const setInputText = useCallback((update: StateUpdate<string>) => {
+    const next = typeof update === "function"
+      ? (update as (prev: string) => string)(inputTextRef.current)
+      : update;
+    inputTextRef.current = next;
+    setInputTextState(next);
+  }, []);
+  const setCursor = useCallback((update: StateUpdate<number>) => {
+    const next = typeof update === "function"
+      ? (update as (prev: number) => number)(cursorRef.current)
+      : update;
+    cursorRef.current = Math.max(0, Math.min(next, inputTextRef.current.length));
+    setCursorState(cursorRef.current);
+  }, []);
+  const setImageAttachments = useCallback((update: StateUpdate<Map<number, string>>) => {
+    const next = typeof update === "function"
+      ? (update as (prev: Map<number, string>) => Map<number, string>)(imageAttachmentsRef.current)
+      : update;
+    imageAttachmentsRef.current = next;
+    setImageAttachmentsState(next);
+  }, []);
 
   const wheelAccelRef = useRef(initWheelAccel());
   const roomScrollRef = useRef(0);
@@ -1015,7 +1039,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       const parts = pasted.split(/(\r\n|\r|\n)/);
       const insertAt = cursorRef.current;
       let insertion = "";
-      const newAttachments = new Map(imageAttachments);
+      const newAttachments = new Map(imageAttachmentsRef.current);
 
       for (const part of parts) {
         if (part === "\r\n" || part === "\r" || part === "\n") {
@@ -1044,7 +1068,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         setDesiredCol(null);
       }
     });
-  }, [imageAttachments]);
+  }, [setCursor, setImageAttachments, setInputText]);
 
   // Track last-seen entry count per pane (updates when scroll returns to bottom)
   useEffect(() => {
@@ -1364,7 +1388,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setHint("Resolve the protected write request first.");
       return;
     }
-    const stripped = inputText.trim();
+    const stripped = inputTextRef.current.trim();
     if (!stripped) {
       setHint("Enter a message or command.");
       return;
@@ -1397,8 +1421,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const proc = bridgeRef.current;
     if (proc?.stdin?.writable) {
       const msg: Record<string, unknown> = { type: "input", text: stripped };
-      if (imageAttachments.size > 0) {
-        msg.attachments = Array.from(imageAttachments.entries()).map(([id, filePath]) => ({
+      const attachments = imageAttachmentsRef.current;
+      if (attachments.size > 0) {
+        msg.attachments = Array.from(attachments.entries()).map(([id, filePath]) => ({
           id,
           path: filePath,
           type: "image",
@@ -1410,7 +1435,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [bridgeArgs.inkLegacy, inputText, focusedPane, ready, imageAttachments, pendingPermission, status.route, status.mode]);
+  }, [bridgeArgs.inkLegacy, focusedPane, ready, pendingPermission, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
   const respondToPermission = useCallback((allow: boolean) => {
     const proc = bridgeRef.current;
@@ -1439,6 +1464,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // ── Keyboard handling ──────────────────────────────────
 
   useInput((input, key) => {
+    const currentText = inputTextRef.current;
+    const currentCursor = cursorRef.current;
+
     // Ctrl+C — exit
     if (input === "c" && key.ctrl) {
       cleanup();
@@ -1553,7 +1581,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Shift+Enter is handled at the stdin filter level (onShiftEnter)
     // because terminals send raw escape sequences that Ink can't parse.
     if (key.return && key.meta) {
-      setInputText((prev) => prev.slice(0, cursor) + "\n" + prev.slice(cursor));
+      setInputText((prev) => prev.slice(0, currentCursor) + "\n" + prev.slice(currentCursor));
       setCursor((c) => c + 1);
       setDesiredCol(null);
       return;
@@ -1572,8 +1600,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     // Ctrl+U — delete to start of line
-    if (input === "u" && key.ctrl && cursor > 0) {
-      setInputText((prev) => prev.slice(cursor));
+    if (input === "u" && key.ctrl && currentCursor > 0) {
+      setInputText((prev) => prev.slice(currentCursor));
       setCursor(0);
       setDesiredCol(null);
       return;
@@ -1581,7 +1609,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Ctrl+K — delete to end of line
     if (input === "k" && key.ctrl) {
-      setInputText((prev) => prev.slice(0, cursor));
+      setInputText((prev) => prev.slice(0, currentCursor));
       setDesiredCol(null);
       return;
     }
@@ -1595,15 +1623,15 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Ctrl+E — move to end
     if (input === "e" && key.ctrl) {
-      setCursor(inputText.length);
+      setCursor(currentText.length);
       setDesiredCol(null);
       return;
     }
 
     // Backspace
     if (key.backspace || key.delete) {
-      if (cursor > 0) {
-        setInputText((prev) => prev.slice(0, cursor - 1) + prev.slice(cursor));
+      if (currentCursor > 0) {
+        setInputText((prev) => prev.slice(0, currentCursor - 1) + prev.slice(currentCursor));
         setCursor((c) => c - 1);
       }
       setDesiredCol(null);
@@ -1613,9 +1641,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Cmd+Left / Option+Left — jump word/line backward
     if (key.leftArrow && (key.meta || key.ctrl)) {
       // Jump to previous word boundary
-      let pos = cursor - 1;
-      while (pos > 0 && inputText[pos - 1] === " ") pos--;
-      while (pos > 0 && inputText[pos - 1] !== " ") pos--;
+      let pos = currentCursor - 1;
+      while (pos > 0 && currentText[pos - 1] === " ") pos--;
+      while (pos > 0 && currentText[pos - 1] !== " ") pos--;
       setCursor(Math.max(0, pos));
       setDesiredCol(null);
       return;
@@ -1623,9 +1651,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Cmd+Right / Option+Right — jump word/line forward
     if (key.rightArrow && (key.meta || key.ctrl)) {
-      let pos = cursor;
-      while (pos < inputText.length && inputText[pos] !== " ") pos++;
-      while (pos < inputText.length && inputText[pos] === " ") pos++;
+      let pos = currentCursor;
+      while (pos < currentText.length && currentText[pos] !== " ") pos++;
+      while (pos < currentText.length && currentText[pos] === " ") pos++;
       setCursor(pos);
       setDesiredCol(null);
       return;
@@ -1640,11 +1668,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Right arrow — move cursor by 1, or accept ghost text at end
     if (key.rightArrow) {
-      if (cursor === inputText.length && ghostText) {
+      if (currentCursor === currentText.length && ghostText) {
         setInputText((prev) => prev + ghostText);
         setCursor((c) => c + ghostText.length);
       } else {
-        setCursor((c) => Math.min(inputText.length, c + 1));
+        setCursor((c) => Math.min(currentText.length, c + 1));
       }
       setDesiredCol(null);
       return;
@@ -1652,10 +1680,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Up arrow — move cursor to previous line in multi-line input
     if (key.upArrow && !key.meta) {
-      const { line, col } = cursorToWrappedLineCol(inputText, cursor, inputTextWidth);
+      const { line, col } = cursorToWrappedLineCol(currentText, currentCursor, inputTextWidth);
       if (line > 0) {
         const targetCol = desiredCol ?? col;
-        setCursor(wrappedLineColToCursor(inputText, inputTextWidth, line - 1, targetCol));
+        setCursor(wrappedLineColToCursor(currentText, inputTextWidth, line - 1, targetCol));
         if (desiredCol === null) setDesiredCol(col);
       }
       return;
@@ -1663,11 +1691,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Down arrow — move cursor to next line in multi-line input
     if (key.downArrow && !key.meta) {
-      const { line, col } = cursorToWrappedLineCol(inputText, cursor, inputTextWidth);
-      const lineCount = wrapInputLines(inputText, inputTextWidth).length;
+      const { line, col } = cursorToWrappedLineCol(currentText, currentCursor, inputTextWidth);
+      const lineCount = wrapInputLines(currentText, inputTextWidth).length;
       if (line < lineCount - 1) {
         const targetCol = desiredCol ?? col;
-        setCursor(wrappedLineColToCursor(inputText, inputTextWidth, line + 1, targetCol));
+        setCursor(wrappedLineColToCursor(currentText, inputTextWidth, line + 1, targetCol));
         if (desiredCol === null) setDesiredCol(col);
       }
       return;
@@ -1695,7 +1723,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Regular character input — insert at cursor position
     if (input && !key.ctrl && !key.meta) {
-      setInputText((prev) => prev.slice(0, cursor) + input + prev.slice(cursor));
+      setInputText((prev) => prev.slice(0, currentCursor) + input + prev.slice(currentCursor));
       setCursor((c) => c + input.length);
       setDesiredCol(null);
     }

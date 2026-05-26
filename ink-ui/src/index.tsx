@@ -9,6 +9,11 @@ import {
   ENTER_ALT_SCREEN,
   restoreTerminalSync,
 } from "./v2/terminalModes.js";
+import {
+  createTerminalInputFilterState,
+  processTerminalInputChunk,
+  type MouseEventInfo,
+} from "./v2/stdinFilter.js";
 
 // ── Mouse scroll support via stdin filter ──────────────────
 // Strip SGR 1006 mouse sequences from stdin before Ink sees them.
@@ -23,12 +28,6 @@ export function onMouseScroll(handler: ScrollHandler) {
     const idx = scrollHandlers.indexOf(handler);
     if (idx >= 0) scrollHandlers.splice(idx, 1);
   };
-}
-
-export interface MouseEventInfo {
-  kind: "press" | "drag" | "release";
-  x: number;
-  y: number;
 }
 
 type MouseEventHandler = (event: MouseEventInfo) => void;
@@ -88,89 +87,27 @@ export function setMouseTrackingEnabled(enabled: boolean) {
 
 // ── Stdin filter transform ─────────────────────────────────
 
-const MOUSE_SEQ = /\x1b\[<(\d+);(\d+);(\d+)([mM])/g;
-const SHIFT_ENTER_SEQS = [
-  "\x1b[27;2;13~", // xterm modifyOtherKeys
-  "\x1b[13;2u",    // kitty protocol
-];
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
-
-let pasteBuffer: string | null = null; // non-null = inside a paste
+const terminalInputState = createTerminalInputFilterState();
 
 const stdinFilter = new Transform({
   transform(chunk, _enc, cb) {
-    let text = chunk.toString("utf-8");
-
-    // Handle mouse scroll sequences
-    MOUSE_SEQ.lastIndex = 0;
-    let m;
-    let wheelSteps = 0;
-    while ((m = MOUSE_SEQ.exec(text)) !== null) {
-      const btn = parseInt(m[1]!, 10);
-      if (btn === 64) wheelSteps += 1;
-      else if (btn === 65) wheelSteps -= 1;
-      else {
-        const x = Math.max(0, parseInt(m[2]!, 10) - 1);
-        const y = Math.max(0, parseInt(m[3]!, 10) - 1);
-        const suffix = m[4]!;
-        const kind = suffix === "m"
-          ? "release"
-          : (btn & 32) === 32
-            ? "drag"
-            : "press";
-        mouseEventHandlers.forEach((h) => h({ kind, x, y }));
-      }
+    const events = processTerminalInputChunk(
+      terminalInputState,
+      chunk.toString("utf-8"),
+    );
+    if (events.wheelSteps !== 0) {
+      scrollHandlers.forEach((h) => h(events.wheelSteps));
     }
-    if (wheelSteps !== 0) {
-      scrollHandlers.forEach((h) => h(wheelSteps));
+    events.mouseEvents.forEach((event) => {
+      mouseEventHandlers.forEach((h) => h(event));
+    });
+    for (let i = 0; i < events.shiftEnterCount; i++) {
+      shiftEnterHandlers.forEach((h) => h());
     }
-    MOUSE_SEQ.lastIndex = 0;
-    text = text.replace(MOUSE_SEQ, "");
-
-    // Handle Shift+Enter sequences — strip and dispatch
-    for (const seq of SHIFT_ENTER_SEQS) {
-      while (text.includes(seq)) {
-        text = text.replace(seq, "");
-        shiftEnterHandlers.forEach((h) => h());
-      }
-    }
-
-    // Handle bracketed paste boundaries
-    while (text.length > 0) {
-      if (pasteBuffer !== null) {
-        // Inside a paste — look for end marker
-        const endIdx = text.indexOf(PASTE_END);
-        if (endIdx >= 0) {
-          pasteBuffer += text.slice(0, endIdx);
-          const pasted = pasteBuffer;
-          pasteBuffer = null;
-          pasteHandlers.forEach((h) => h(pasted));
-          text = text.slice(endIdx + PASTE_END.length);
-        } else {
-          // End marker not yet received — buffer everything
-          pasteBuffer += text;
-          text = "";
-        }
-      } else {
-        // Outside a paste — look for start marker
-        const startIdx = text.indexOf(PASTE_START);
-        if (startIdx >= 0) {
-          // Forward text before the paste marker to Ink
-          const before = text.slice(0, startIdx);
-          if (before.length > 0) {
-            this.push(Buffer.from(before, "utf-8"));
-          }
-          pasteBuffer = "";
-          text = text.slice(startIdx + PASTE_START.length);
-        } else {
-          break; // no more paste markers
-        }
-      }
-    }
-
-    // Forward remaining non-paste, non-mouse text to Ink
-    cb(null, text.length > 0 ? Buffer.from(text, "utf-8") : undefined);
+    events.pastes.forEach((pasted) => {
+      pasteHandlers.forEach((h) => h(pasted));
+    });
+    cb(null, events.text.length > 0 ? Buffer.from(events.text, "utf-8") : undefined);
   },
 });
 
@@ -275,6 +212,11 @@ function restoreTerminal() {
   if (didRestoreTerminal) return;
   didRestoreTerminal = true;
   mouseTrackingEnabled = false;
+  try {
+    process.stdin.unpipe(stdinFilter);
+  } catch {
+    // stdin may already be torn down
+  }
   restoreTerminalSync({ useAltScreen });
 }
 

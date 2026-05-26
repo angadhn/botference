@@ -1132,6 +1132,65 @@ class ClaudeInteractiveTmuxAdapter:
     async def resume(self, message: str) -> AdapterResponse:
         return await self._run(message)
 
+    async def run_harness_command(self, command: str) -> AdapterResponse:
+        """Paste a native Claude Code slash command into the live TUI.
+
+        Slash commands such as /compact and /goal are interpreted by Claude
+        Code's interactive harness, not by the non-interactive `claude -p`
+        adapter. This method preserves that behavior by sending the command
+        directly to the tmux pane and waiting only for the UI to settle.
+        """
+        setup_error = await self._ensure_session()
+        if setup_error:
+            return setup_error
+
+        before = self._last_capture or await self._capture()
+        paste_error = await self._paste_prompt(command)
+        if paste_error:
+            return paste_error
+
+        deadline = time.monotonic() + min(float(self.timeout), 30.0)
+        last_change = time.monotonic()
+        last_capture = before
+
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self._capture_interval)
+            capture = await self._capture()
+            if capture != last_capture:
+                last_capture = capture
+                last_change = time.monotonic()
+                self._last_assistant_text = extract_tmux_assistant_text(capture)
+
+            if (
+                time.monotonic() - last_change >= self._idle_grace
+                and tmux_capture_looks_idle(capture)
+            ):
+                self._last_capture = capture
+                self._log("harness_command_complete", command)
+                return AdapterResponse(
+                    text=f"Sent native Claude command: {command}",
+                    raw_output=normalize_tmux_capture(capture),
+                    exit_code=0,
+                    session_id=self.session_id,
+                    context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                    context_tokens_reliable=False,
+                )
+
+        self._last_capture = last_capture
+        self._log("harness_command_timeout", command)
+        return AdapterResponse(
+            text=(
+                f"Sent native Claude command: {command}; timed out waiting "
+                "for Claude Code to become idle. Attach with: "
+                f"tmux attach -t {self.session_id}"
+            ),
+            raw_output=normalize_tmux_capture(last_capture),
+            exit_code=-1,
+            session_id=self.session_id,
+            context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+            context_tokens_reliable=False,
+        )
+
     async def _run(self, prompt: str) -> AdapterResponse:
         setup_error = await self._ensure_session()
         if setup_error:
