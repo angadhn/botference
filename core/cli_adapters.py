@@ -459,6 +459,7 @@ class AdapterResponse:
     turn_cached_input_tokens: int = 0  # last-turn cached input component for debugging/UI
     turn_output_tokens: int = 0  # last-turn output tokens for debugging/UI
     context_tokens_reliable: bool = True  # false when usage lacks a stable baseline
+    context_overflow: bool = False  # true when the CLI reported a context-window overflow
     session_id: str = ""  # session/thread ID for resume
     stream_id: str = ""  # UI stream ID used to replace live partial output
 
@@ -517,6 +518,33 @@ def _truncate(s: str, limit: int = 120) -> str:
     return s if len(s) <= limit else s[:limit] + "..."
 
 
+# Provider error fragments that mean "the conversation no longer fits the context
+# window". Detecting these lets the controller surface an actionable relay (which,
+# with the bounded backfill, now succeeds) instead of dead-ending on an opaque CLI
+# error — the overflow backstop that long-lived agents like pi/codex rely on.
+_OVERFLOW_PATTERNS = (
+    "prompt is too long",
+    "prompt too long",
+    "exceeds the context window",
+    "exceeds the maximum",
+    "maximum context length",
+    "context_length_exceeded",
+    "context length exceeded",
+    "request_too_large",
+    "too many tokens",
+    "input is too long",
+    "input token count",
+)
+
+
+def is_context_overflow(text: str) -> bool:
+    """True if *text* looks like a provider context-window-overflow error."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(pat in lowered for pat in _OVERFLOW_PATTERNS)
+
+
 def _delta_from_cumulative(current: int, previous: int) -> int:
     """Convert cumulative token counters into a last-turn delta."""
     if current <= 0:
@@ -526,12 +554,28 @@ def _delta_from_cumulative(current: int, previous: int) -> int:
     return current - previous
 
 
-def _structured_output_blocks(text: str, limit: int = 8000) -> list[dict]:
+# Cap structured tool-output retained in each ToolSummary (and therefore in the
+# persisted transcript / relay backfill). Tool output was previously kept at 8000
+# chars per call; with many tools per turn that bloated the transcript to 100s of KB
+# per turn, which drove context-overflow crashes, slow reloads, and render lag. The
+# full output still lives in raw_output for the debug panes — this only bounds what
+# is replayed into context and re-rendered.
+_TOOL_OUTPUT_BLOCK_LIMIT = 2000
+
+
+def _structured_output_blocks(text: str, limit: int = _TOOL_OUTPUT_BLOCK_LIMIT) -> list[dict]:
     if not text:
         return []
+    truncated = len(text) > limit
     blocks = parse_render_blocks(text[:limit])
     if all(block.get("type") == "text" for block in blocks):
         return []
+    if truncated:
+        dropped = len(text) - limit
+        blocks.append({
+            "type": "text",
+            "text": "\n[… %d more characters truncated]" % dropped,
+        })
     return blocks
 
 
@@ -860,6 +904,8 @@ class ClaudeAdapter:
             response.tool_summaries = tool_summaries
             response.raw_output = "\n".join(raw_lines)
             response.exit_code = proc.returncode or 0
+            if is_context_overflow(response.text) or is_context_overflow(stderr):
+                response.context_overflow = True
             return response
         except asyncio.CancelledError:
             with suppress(ProcessLookupError):
@@ -874,7 +920,8 @@ class ClaudeAdapter:
         """Projected next-turn occupancy as % of yield limit. 100 = yield now."""
         window = resp.context_window or _CONTEXT_WINDOWS.get(self.model, 200_000)
         base = (resp.occupancy_tokens if resp.occupancy_tokens
-                else (resp.input_tokens + resp.cache_creation_tokens))
+                else (resp.input_tokens + resp.cache_creation_tokens
+                      + resp.cache_read_tokens))
         projected = base + len(resp.text) // 4
         return percent_of_limit(projected, 0, 0, window)
 
@@ -1641,6 +1688,8 @@ class CodexAdapter:
             response.tool_summaries = deduped
             response.raw_output = "\n".join(raw_lines)
             response.exit_code = proc.returncode or 0
+            if is_context_overflow(response.text) or is_context_overflow(stderr):
+                response.context_overflow = True
             return response
         except asyncio.CancelledError:
             with suppress(ProcessLookupError):

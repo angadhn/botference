@@ -385,6 +385,34 @@ class DisplayRecord:
     text: str
 
 
+# Bound relay/late-join backfill so a freshly (re)started model session cannot be
+# handed a Room-History block large enough to overflow its context window. The
+# handoff document already carries the durable summary; the backfill only needs the
+# most-recent turns for continuity. Without this bound a relay could rebuild a
+# prompt as large as the session that triggered it — the failure that wedged long
+# sessions, where recovery itself overflowed.
+_BACKFILL_MAX_CHARS = 60_000
+
+
+def _take_tail_within_budget(blocks: list[str], max_chars: int) -> tuple[list[str], int]:
+    """Keep the most-recent blocks whose combined length fits *max_chars*.
+
+    Returns ``(kept_in_original_order, num_elided_from_front)``. At least the
+    single most-recent block is always kept, even if it alone exceeds the budget.
+    """
+    if max_chars <= 0 or not blocks:
+        return list(blocks), 0
+    kept: list[str] = []
+    total = 0
+    for block in reversed(blocks):
+        total += len(block) + 1
+        if kept and total > max_chars:
+            break
+        kept.append(block)
+    kept.reverse()
+    return kept, len(blocks) - len(kept)
+
+
 class Transcript:
     """Shared room transcript with cross-model context injection."""
 
@@ -408,27 +436,40 @@ class Transcript:
         if self.entries:
             self._last_seen[model] = self.entries[-1].turn_index
 
-    def context_since(self, model: str, user_message: str) -> str:
-        """Build context injection for *model* covering everything unseen."""
+    def _entry_block(self, e) -> str:
+        """Format one transcript entry as a backfill block (text + tool previews)."""
+        label = {"user": "User", "claude": "Claude",
+                 "codex": "Codex", "system": "System"}.get(e.speaker, e.speaker)
+        lines = [f"[{label} said:]", e.text]
+        if e.tool_summaries:
+            lines.append(f"\n[{label} explored:]")
+            for ts in e.tool_summaries:
+                out = f" -> {ts.output_preview}" if ts.output_preview else ""
+                lines.append(f"- {ts.name}({ts.input_preview}){out}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def context_since(self, model: str, user_message: str,
+                      max_chars: int = _BACKFILL_MAX_CHARS) -> str:
+        """Build context injection for *model* covering everything unseen.
+
+        History is bounded to the most-recent ``max_chars`` so a late-joining or
+        relayed session cannot be handed a backfill large enough to overflow.
+        """
         last = self._last_seen.get(model, -1)
         unseen = [e for e in self.entries
                   if e.turn_index > last and e.speaker != model]
 
         parts: list[str] = []
         if unseen:
-            parts.append("[Room update since your last response]\n")
-            for e in unseen:
-                label = {"user": "User", "claude": "Claude",
-                         "codex": "Codex", "system": "System"
-                         }.get(e.speaker, e.speaker)
-                parts.append(f"[{label} said:]")
-                parts.append(e.text)
-                if e.tool_summaries:
-                    parts.append(f"\n[{label} explored:]")
-                    for ts in e.tool_summaries:
-                        out = f" -> {ts.output_preview}" if ts.output_preview else ""
-                        parts.append(f"- {ts.name}({ts.input_preview}){out}")
-                parts.append("")
+            kept, elided = _take_tail_within_budget(
+                [self._entry_block(e) for e in unseen], max_chars)
+            header = "[Room update since your last response]\n"
+            if elided:
+                header += (f"[… {elided} earlier update(s) elided to fit "
+                           "context …]\n")
+            parts.append(header)
+            parts.extend(kept)
 
         if user_message:
             parts.append("[User says:]")
@@ -437,28 +478,28 @@ class Transcript:
         parts.append(ROOM_ROLE_SUFFIX)
         return "\n".join(parts)
 
-    def context_after(self, after_turn: int) -> str:
-        """Build backfill covering entries after a specific turn index."""
+    def context_after(self, after_turn: int,
+                      max_chars: int = _BACKFILL_MAX_CHARS) -> str:
+        """Build backfill covering entries after a specific turn index.
+
+        Bounded to the most-recent ``max_chars`` (see :meth:`context_since`).
+        """
         entries = [e for e in self.entries if e.turn_index > after_turn]
 
         parts: list[str] = []
         if entries:
-            parts.append('[Room history since relay]\n')
-            for e in entries:
-                label = {'user': 'User', 'claude': 'Claude',
-                         'codex': 'Codex', 'system': 'System'
-                         }.get(e.speaker, e.speaker)
-                parts.append(f'[{label} said:]')
-                parts.append(e.text)
-                if e.tool_summaries:
-                    parts.append(f'\n[{label} explored:]')
-                    for ts in e.tool_summaries:
-                        out = f' -> {ts.output_preview}' if ts.output_preview else ''
-                        parts.append(f'- {ts.name}({ts.input_preview}){out}')
-                parts.append('')
+            kept, elided = _take_tail_within_budget(
+                [self._entry_block(e) for e in entries], max_chars)
+            header = "[Room history since relay]\n"
+            if elided:
+                header += (f"[… {elided} earlier "
+                           f"entr{'y' if elided == 1 else 'ies'} elided to fit "
+                           "context …]\n")
+            parts.append(header)
+            parts.extend(kept)
 
         parts.append(ROOM_ROLE_SUFFIX)
-        return '\n'.join(parts)
+        return "\n".join(parts)
 
 
 _VISUAL_VERIFICATION_SUMMARY_TOKENS = (
@@ -1708,26 +1749,26 @@ class Botference:
         return saved_mode
 
     def _replay_restored_session(self, ui: UIPort) -> None:
-        for entry in self._room_history:
-            if self._is_routine_restored_system_entry(entry):
-                continue
-            self._emit_room_entry(
-                ui,
-                entry.speaker,
-                entry.text,
-                self._structured_blocks(entry.text),
-                restored=True,
-            )
-        for entry in self._caucus_history:
-            if self._is_routine_restored_system_entry(entry):
-                continue
-            self._emit_caucus_entry(
-                ui,
-                entry.speaker,
-                entry.text,
-                self._structured_blocks(entry.text),
-                restored=True,
-            )
+        room = [
+            (e.speaker, e.text, self._structured_blocks(e.text))
+            for e in self._room_history
+            if not self._is_routine_restored_system_entry(e)
+        ]
+        caucus = [
+            (e.speaker, e.text, self._structured_blocks(e.text))
+            for e in self._caucus_history
+            if not self._is_routine_restored_system_entry(e)
+        ]
+        # Fast path: bulk-restore in batches (single state update per batch).
+        # Falls back to per-entry replay for any UIPort without restore_entries.
+        bulk = getattr(ui, "restore_entries", None)
+        if callable(bulk):
+            bulk(room, caucus)
+            return
+        for speaker, text, blocks in room:
+            self._emit_room_entry(ui, speaker, text, blocks, restored=True)
+        for speaker, text, blocks in caucus:
+            self._emit_caucus_entry(ui, speaker, text, blocks, restored=True)
 
     @staticmethod
     def _is_routine_restored_system_entry(entry: DisplayRecord) -> bool:
@@ -3347,6 +3388,23 @@ class Botference:
         raw_pct = (tokens / window * 100) if (tokens is not None and window) else 0.0
 
         self._yield_pressure[model] = yield_pct if yield_pct is not None else 0.0
+
+        if getattr(resp, "context_overflow", False):
+            # The CLI reported a context-window overflow. Force maximum yield
+            # pressure so a relay uses the mechanical tier, and surface an
+            # actionable prompt. With the bounded relay backfill, /relay now
+            # rebuilds a fresh, fitting session instead of overflowing again.
+            self._yield_pressure[model] = max(
+                self._yield_pressure.get(model, 0.0), 999.0)
+            if ui is not None and model not in self._warned_overlimit_models:
+                self._warned_overlimit_models.add(model)
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    f"⚠ {model.capitalize()} hit its context-window limit. "
+                    f"Run /relay @{model} to continue in a fresh session with a "
+                    "handoff (older history is summarized, recent turns kept).",
+                )
 
         if model == "claude":
             self._claude_pct = raw_pct

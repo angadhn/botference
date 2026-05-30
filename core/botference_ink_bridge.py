@@ -105,6 +105,37 @@ class InkBridge:
             event["restored"] = True
         emit(event)
 
+    def restore_entries(
+        self,
+        room: list,
+        caucus: list,
+        *,
+        chunk_size: int = 80,
+    ) -> None:
+        """Bulk-restore historical entries in batches.
+
+        Replaces per-entry replay (one emit + render + reflow each) with a handful
+        of batched ``restore`` events the Ink UI applies in single state updates —
+        turning reload from O(N^2) into O(N). Each item is ``(speaker, text,
+        blocks_or_None)``.
+        """
+        for pane, entries in (("room", room), ("caucus", caucus)):
+            for start in range(0, len(entries), chunk_size):
+                batch = entries[start:start + chunk_size]
+                emit({
+                    "type": "restore",
+                    "pane": pane,
+                    "entries": [
+                        {
+                            "speaker": speaker,
+                            "text": text,
+                            "blocks": blocks if blocks is not None
+                            else parse_render_blocks(text),
+                        }
+                        for speaker, text, blocks in batch
+                    ],
+                })
+
     def stream_event(self, event: dict) -> None:
         payload = {"type": "stream", **event}
         with self.stream_log_path.open("a", encoding="utf-8") as f:
