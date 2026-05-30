@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -753,13 +753,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return clampSelectableRow(projectRows, prev);
     });
   }, [projectRows]);
+  // Defer the transcript-derived flattening so keystrokes (urgent state) are not
+  // blocked behind a full pane reflow while bots stream. The per-entry FlatLine
+  // cache keeps the deferred recompute cheap; together they keep the input box
+  // responsive even on long sessions.
+  const deferredRoomEntries = useDeferredValue(roomEntries);
+  const deferredCaucusEntries = useDeferredValue(caucusEntries);
   const roomFlatLines = useMemo(
-    () => preRenderLines(roomEntries, leftTextWidth),
-    [roomEntries, leftTextWidth],
+    () => preRenderLines(deferredRoomEntries, leftTextWidth),
+    [deferredRoomEntries, leftTextWidth],
   );
   const caucusFlatLines = useMemo(
-    () => preRenderLines(caucusEntries, rightTextWidth),
-    [caucusEntries, rightTextWidth],
+    () => preRenderLines(deferredCaucusEntries, rightTextWidth),
+    [deferredCaucusEntries, rightTextWidth],
   );
   const roomFlatLineCount = roomFlatLines.length;
   const caucusFlatLineCount = caucusFlatLines.length;
@@ -862,6 +868,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       }
     }, PACED_MESSAGE_INTERVAL_MS);
     pacedTimersRef.current.add(interval);
+  }, []);
+
+  // Bulk-append restored history in a single state update (one reflow), instead of
+  // one setState + render per historical entry. With the per-entry FlatLine cache
+  // this makes reload O(N) instead of the old O(N²) "stream slowly into view".
+  const appendEntries = useCallback((pane: PaneName, entries: Entry[]) => {
+    if (entries.length === 0) return;
+    const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
+    const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
+    setEntries((prev) => [...prev, ...entries]);
+    setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
   }, []);
 
   const updateStreamEntry = useCallback((
@@ -1202,6 +1219,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             restored: msg.restored === true,
           });
           break;
+        case "restore": {
+          const pane = msg.pane === "caucus" ? "caucus" : "room";
+          const rawEntries = Array.isArray(msg.entries) ? msg.entries : [];
+          const restored: Entry[] = rawEntries.map((e: Record<string, unknown>) => ({
+            speaker: e.speaker as string,
+            text: e.text as string,
+            blocks: Array.isArray(e.blocks) ? e.blocks as RenderBlock[] : undefined,
+            restored: true,
+          }));
+          appendEntries(pane, restored);
+          break;
+        }
         case "stream": {
           const pane = msg.pane === "caucus" ? "caucus" : "room";
           const streamId = typeof msg.stream_id === "string" ? msg.stream_id : "";

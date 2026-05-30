@@ -101,15 +101,26 @@ export function processTerminalInputChunk(
           wheelSteps += 1;
         } else if (btn === 65) {
           wheelSteps -= 1;
+        } else if ((btn & 64) === 64) {
+          // Horizontal wheel (66/67) and other extended/scroll buttons. Consume
+          // without emitting a press/drag — previously these fell through and a
+          // two-finger horizontal swipe was misread as a click that started a
+          // phantom text selection.
         } else {
           const x = Math.max(0, parseInt(match[2]!, 10) - 1);
           const y = Math.max(0, parseInt(match[3]!, 10) - 1);
           const suffix = match[4]!;
-          mouseEvents.push({
-            kind: suffix === "m" ? "release" : (btn & 32) === 32 ? "drag" : "press",
-            x,
-            y,
-          });
+          const isMotion = (btn & 32) === 32;
+          const heldButton = (btn & 3) !== 3; // low 2 bits: 0/1/2 = a real button, 3 = none
+          if (suffix === "m") {
+            mouseEvents.push({ kind: "release", x, y });
+          } else if (isMotion) {
+            // Only a drag if a button is actually held. Bare motion (button bits
+            // == 3, emitted by any-motion tracking) must not extend a selection.
+            if (heldButton) mouseEvents.push({ kind: "drag", x, y });
+          } else {
+            mouseEvents.push({ kind: "press", x, y });
+          }
         }
         i += match[0].length;
         continue;

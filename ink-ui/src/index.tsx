@@ -14,6 +14,8 @@ import {
   processTerminalInputChunk,
   type MouseEventInfo,
 } from "./v2/stdinFilter.js";
+// Re-export so consumers (App.tsx) can import the type from the index module.
+export type { MouseEventInfo } from "./v2/stdinFilter.js";
 
 // ── Mouse scroll support via stdin filter ──────────────────
 // Strip SGR 1006 mouse sequences from stdin before Ink sees them.

@@ -62,4 +62,39 @@ describe("Ink stdin filter", () => {
     assert.equal(event.text, "\x1b");
     assert.equal(state.pending, "");
   });
+
+  it("treats horizontal wheel (buttons 66/67) as scroll, not a press", () => {
+    const state = createTerminalInputFilterState();
+
+    const event = processTerminalInputChunk(state, "\x1b[<66;10;5M\x1b[<67;10;5M");
+
+    assert.equal(event.text, "");
+    assert.deepEqual(event.mouseEvents, []);
+  });
+
+  it("ignores bare pointer motion (no button held) so scrolling can't select", () => {
+    const state = createTerminalInputFilterState();
+    // Button code 35 = motion bit (32) + no-button (3), as emitted by any-motion
+    // tracking. It must not become a drag/press.
+    const event = processTerminalInputChunk(state, "\x1b[<35;20;8M");
+
+    assert.equal(event.text, "");
+    assert.deepEqual(event.mouseEvents, []);
+  });
+
+  it("emits a drag only while a real button is held (button 32)", () => {
+    const state = createTerminalInputFilterState();
+
+    const event = processTerminalInputChunk(state, "\x1b[<32;20;8M");
+
+    assert.deepEqual(event.mouseEvents, [{ kind: "drag", x: 19, y: 7 }]);
+  });
+
+  it("emits a release on the trailing 'm'", () => {
+    const state = createTerminalInputFilterState();
+
+    const event = processTerminalInputChunk(state, "\x1b[<0;3;4m");
+
+    assert.deepEqual(event.mouseEvents, [{ kind: "release", x: 2, y: 3 }]);
+  });
 });

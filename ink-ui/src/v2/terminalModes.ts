@@ -2,7 +2,12 @@ import { closeSync, constants as fsConstants, openSync, readSync, rmSync, writeS
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const ENABLE_MOUSE_TRACKING = "\x1b[?1006h\x1b[?1003h";
+// ?1002 = button-event tracking (report motion only WHILE a button is held), not
+// ?1003 = any-event tracking (report every motion sample). Any-event tracking turned
+// each trackpad movement into a stream of escape sequences that (a) leaked as
+// "gibberish" text whenever the input loop stalled and (b) fed phantom drag-selects.
+// ?1006 keeps SGR extended coordinates. Scroll-wheel events are still reported.
+export const ENABLE_MOUSE_TRACKING = "\x1b[?1006h\x1b[?1002h";
 export const DISABLE_MOUSE_TRACKING = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l";
 export const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
 export const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";

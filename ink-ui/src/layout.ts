@@ -1888,55 +1888,85 @@ function renderDiffBlock(
   }
 }
 
+function buildEntryLines(entry: Entry, ei: number, textWidth: number): FlatLine[] {
+  const out: FlatLine[] = [];
+  const s = entry.speaker.toLowerCase();
+  const label = SPEAKER_LABELS[s] ?? `[${entry.speaker}] `;
+  const color = SPEAKER_COLORS[s] ?? "white";
+  const body = SPEAKER_BODY_COLORS[s] ?? "white";
+  const labelWidth = stringWidth(label);
+  const indent = " ".repeat(labelWidth);
+  let visualLineIndex = 0;
+
+  const pushLine: PushFlatLine = (line) => {
+    out.push({
+      key: `${ei}-${visualLineIndex}`,
+      label: visualLineIndex === 0 ? label : indent,
+      speakerColor: color,
+      ...line,
+    });
+    visualLineIndex += 1;
+  };
+
+  const blocks = entry.blocks && entry.blocks.length > 0
+    ? entry.blocks
+    : parseRenderBlocks(entry.text);
+
+  for (const block of blocks) {
+    if (block.type === "text") {
+      renderTextBlock(block, { textWidth, labelWidth, defaultColor: body, pushLine });
+    } else if (block.type === "code") {
+      renderCodeBlock(block, { textWidth, labelWidth, pushLine });
+    } else {
+      renderDiffBlock(block, { textWidth, labelWidth, pushLine });
+    }
+  }
+
+  return out;
+}
+
+interface EntryFlatLineCacheValue {
+  text: string;
+  blocks: unknown; // entry.blocks reference, for identity comparison
+  textWidth: number;
+  baseIndex: number;
+  lines: FlatLine[];
+}
+
+// Per-entry flattening cache. Wrapping/markdown/syntax work is the dominant cost,
+// and during streaming or reload only ONE entry changes per update — the rest are
+// the same objects with the same text. Caching by entry identity turns
+// preRenderLines from O(all entries) per render into O(changed entries), which is
+// what made streaming O(1) per token and reload O(N) instead of O(N²). WeakMap so
+// dropped entries are garbage-collected.
+const entryFlatLineCache = new WeakMap<object, EntryFlatLineCacheValue>();
+
 export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] {
   const lines: FlatLine[] = [];
 
   for (let ei = 0; ei < entries.length; ei++) {
     const entry = entries[ei]!;
-    const s = entry.speaker.toLowerCase();
-    const label = SPEAKER_LABELS[s] ?? `[${entry.speaker}] `;
-    const color = SPEAKER_COLORS[s] ?? "white";
-    const body = SPEAKER_BODY_COLORS[s] ?? "white";
-    const labelWidth = stringWidth(label);
-    const indent = " ".repeat(labelWidth);
-    let visualLineIndex = 0;
-
-    const pushLine: PushFlatLine = (line) => {
-      lines.push({
-        key: `${ei}-${visualLineIndex}`,
-        label: visualLineIndex === 0 ? label : indent,
-        speakerColor: color,
-        ...line,
+    const cached = entryFlatLineCache.get(entry as object);
+    let entryLines: FlatLine[];
+    if (
+      cached
+      && cached.text === entry.text
+      && cached.blocks === entry.blocks
+      && cached.textWidth === textWidth
+      && cached.baseIndex === ei
+    ) {
+      entryLines = cached.lines;
+    } else {
+      entryLines = buildEntryLines(entry, ei, textWidth);
+      entryFlatLineCache.set(entry as object, {
+        text: entry.text,
+        blocks: entry.blocks,
+        textWidth,
+        baseIndex: ei,
+        lines: entryLines,
       });
-      visualLineIndex += 1;
-    };
-
-    const blocks = entry.blocks && entry.blocks.length > 0
-      ? entry.blocks
-      : parseRenderBlocks(entry.text);
-
-    for (const block of blocks) {
-      if (block.type === "text") {
-        renderTextBlock(block, {
-          textWidth,
-          labelWidth,
-          defaultColor: body,
-          pushLine,
-        });
-      } else if (block.type === "code") {
-        renderCodeBlock(block, {
-          textWidth,
-          labelWidth,
-          pushLine,
-        });
-      } else {
-        renderDiffBlock(block, {
-          textWidth,
-          labelWidth,
-          pushLine,
-        });
-      }
     }
+    for (let li = 0; li < entryLines.length; li++) lines.push(entryLines[li]!);
   }
 
   return lines;
