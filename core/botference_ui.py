@@ -602,7 +602,7 @@ if TEXTUAL_AVAILABLE:
 
         Scoped keys (e.g. "/model @claude ") switch the matcher into
         substring mode over the scoped option list, so typing "opus" or
-        "4-7" after "/model @claude " narrows to the right model.
+        "4-8" after "/model @claude " narrows to the right model.
         """
 
         async def get_suggestion(self, value: str) -> str | None:

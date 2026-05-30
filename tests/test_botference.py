@@ -1202,6 +1202,32 @@ class TestBotferenceDraft:
         assert len(claude.send_calls) == 1
         assert len(codex.send_calls) == 0
 
+    async def test_draft_active_project_writes_project_plan_only(self, tmp_path):
+        project = tmp_path / "projects" / "alpha-project"
+        project.mkdir(parents=True)
+        work_plan = tmp_path / "work" / "implementation-plan.md"
+        work_plan.parent.mkdir()
+        work_plan.write_text("global plan\n", encoding="utf-8")
+        c, _, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** alpha\n\n# Project Draft"),
+            ],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/project open alpha-project", ui)
+
+        await c.handle_input("/draft 0", ui)
+
+        assert project.joinpath("implementation-plan.md").read_text(encoding="utf-8") == (
+            "**Thread:** alpha\n\n# Project Draft\n"
+        )
+        assert work_plan.read_text(encoding="utf-8") == "global plan\n"
+        assert list((tmp_path / "work").glob("AI-reviewer_comments_round-*.md")) == []
+        assert len(codex.resume_calls) == 0
+        assert any("projects/alpha-project/implementation-plan.md" in t for _, t in ui.room_entries)
+
     async def test_draft_invalid_rounds_rejected(self):
         c, _, _, ui = _make_botference()
         c.lead = "@claude"
@@ -1295,6 +1321,53 @@ class TestBotferenceFinalize:
         )
         assert work.joinpath("checkpoint.md").is_file()
         assert len(claude.resume_calls) == 1
+
+    async def test_finalize_active_project_writes_project_checkpoint_only(self, tmp_path):
+        project = tmp_path / "projects" / "alpha-project"
+        review_dir = project / "reviewer-comments"
+        review_dir.mkdir(parents=True)
+        project.joinpath("implementation-plan.md").write_text(
+            "**Thread:** alpha\n\n# Draft Plan\n", encoding="utf-8"
+        )
+        review_dir.joinpath("AI-reviewer_comments_round-1.md").write_text(
+            "# Review\n\nTighten scope.\n", encoding="utf-8"
+        )
+        work = tmp_path / "work"
+        work.mkdir()
+        work.joinpath("implementation-plan.md").write_text("global plan\n", encoding="utf-8")
+        work.joinpath("checkpoint.md").write_text("global checkpoint\n", encoding="utf-8")
+        work.joinpath("AI-reviewer_comments_round-1.md").write_text(
+            "global review\n", encoding="utf-8"
+        )
+        c, _, _, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** alpha\n\n# Final Project Plan"),
+                _ok("Checkpoint - Alpha\n\n**Thread:** alpha\n"),
+            ],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/project open alpha-project", ui)
+
+        await c.handle_input("/finalize", ui)
+
+        assert project.joinpath("implementation-plan.md").read_text(encoding="utf-8") == (
+            "**Thread:** alpha\n\n# Final Project Plan\n"
+        )
+        assert "Checkpoint - Alpha" in project.joinpath("checkpoint.md").read_text(encoding="utf-8")
+        assert work.joinpath("implementation-plan.md").read_text(encoding="utf-8") == "global plan\n"
+        assert work.joinpath("checkpoint.md").read_text(encoding="utf-8") == "global checkpoint\n"
+        assert work.joinpath("AI-reviewer_comments_round-1.md").read_text(encoding="utf-8") == "global review\n"
+        assert not review_dir.joinpath("AI-reviewer_comments_round-1.md").exists()
+        assert (
+            project
+            / "archive"
+            / "reviewer-comments"
+            / "alpha"
+            / "AI-reviewer_comments_round-1.md"
+        ).is_file()
+        assert any("projects/alpha-project/checkpoint.md" in t for _, t in ui.room_entries)
 
     async def test_finalize_without_prior_sessions(self, tmp_path):
         """Bootstraps the lead session before finalizing."""
@@ -1540,6 +1613,19 @@ class TestBotferenceProjects:
         assert ui.statuses[-1].project == "CareerSwitch"
         assert any("Project context set" in text for _, text in ui.room_entries)
 
+    async def test_planning_paths_follow_active_project(self, tmp_path):
+        project = tmp_path / "projects" / "alpha-project"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        assert c._plan_path == tmp_path / "work" / "implementation-plan.md"
+        assert c._checkpoint_path == tmp_path / "work" / "checkpoint.md"
+
+        await c.handle_input("/project open alpha-project", ui)
+
+        assert c._plan_path == project / "implementation-plan.md"
+        assert c._checkpoint_path == project / "checkpoint.md"
+
     async def test_project_context_persists_in_session_payload(self, tmp_path):
         project = tmp_path / "projects" / "CareerSwitch"
         project.mkdir(parents=True)
@@ -1587,6 +1673,49 @@ class TestBotferenceProjects:
 
         assert c.active_project_id == "space-data-centers"
         assert (tmp_path / "projects" / "space-data-centers" / "PROJECT.md").exists()
+
+    async def test_project_activate_build_copies_active_plan_to_work_files(self, tmp_path):
+        project = tmp_path / "projects" / "alpha-project"
+        project.mkdir(parents=True)
+        project.joinpath("implementation-plan.md").write_text("project plan\n", encoding="utf-8")
+        project.joinpath("checkpoint.md").write_text("project checkpoint\n", encoding="utf-8")
+        work = tmp_path / "work"
+        work.mkdir()
+        work.joinpath("implementation-plan.md").write_text("global plan\n", encoding="utf-8")
+        work.joinpath("checkpoint.md").write_text("global checkpoint\n", encoding="utf-8")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project open alpha-project", ui)
+
+        await c.handle_input("/project activate-build", ui)
+
+        assert work.joinpath("implementation-plan.md").read_text(encoding="utf-8") == "project plan\n"
+        assert work.joinpath("checkpoint.md").read_text(encoding="utf-8") == "project checkpoint\n"
+        assert project.joinpath("implementation-plan.md").read_text(encoding="utf-8") == "project plan\n"
+        assert any("Activated project plan for build" in text for _, text in ui.room_entries)
+
+    async def test_project_activate_build_requires_active_project(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project activate-build", ui)
+
+        assert any("No active project" in text for _, text in ui.room_entries)
+
+    async def test_project_activate_build_requires_project_plan_and_checkpoint(self, tmp_path):
+        project = tmp_path / "projects" / "alpha-project"
+        project.mkdir(parents=True)
+        project.joinpath("implementation-plan.md").write_text("project plan\n", encoding="utf-8")
+        work = tmp_path / "work"
+        work.mkdir()
+        work.joinpath("implementation-plan.md").write_text("global plan\n", encoding="utf-8")
+        work.joinpath("checkpoint.md").write_text("global checkpoint\n", encoding="utf-8")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project open alpha-project", ui)
+
+        await c.handle_input("/project activate-build", ui)
+
+        assert work.joinpath("implementation-plan.md").read_text(encoding="utf-8") == "global plan\n"
+        assert work.joinpath("checkpoint.md").read_text(encoding="utf-8") == "global checkpoint\n"
+        assert any("Cannot activate build plan" in text for _, text in ui.room_entries)
 
     async def test_project_resume_lists_project_local_sessions(self, tmp_path):
         project = tmp_path / "projects" / "spaceship-engineering"
@@ -2402,6 +2531,34 @@ def _shell_eval_config(*args: str) -> dict[str, str]:
     return out
 
 
+def _shell_human_review_gate(mode: str, tmp_path: Path) -> str:
+    """Return whether a pending human review file gates a loop mode."""
+    repo_root = Path(__file__).resolve().parent.parent
+    review_file = tmp_path / "HUMAN_REVIEW_NEEDED.md"
+    review_file.write_text("# Human Review Needed\n\nPlease inspect this.\n", encoding="utf-8")
+    cmd = (
+        f'source "{repo_root / "lib" / "post-run.sh"}" && '
+        'if human_review_gate_pending "$MODE" "$REVIEW_FILE" "$TEMPLATE_FILE"; '
+        'then echo GATE=blocked; else echo GATE=allowed; fi'
+    )
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        env={
+            **os.environ,
+            "BOTFERENCE_HOME": str(repo_root),
+            "MODE": mode,
+            "REVIEW_FILE": str(review_file),
+            "TEMPLATE_FILE": str(repo_root / "templates" / "HUMAN_REVIEW_NEEDED.md"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, f"Shell failed: {result.stderr}"
+    line = result.stdout.strip()
+    return line.partition("=")[2]
+
+
 class TestPlanningModeRouting:
     def test_parse_loop_args_splits_plan_and_research_plan(self):
         # bare plan → freeform: no prompt file, botference mode on
@@ -2464,6 +2621,13 @@ class TestPlanningModeRouting:
         assert _shell_eval_config("research-plan")["INTERACTIVE_PLAN"] == "true"
         assert _shell_eval_config("-p", "plan")["INTERACTIVE_PLAN"] == "false"
         assert _shell_eval_config("build")["INTERACTIVE_PLAN"] == "false"
+
+    def test_human_review_gate_does_not_block_planning_modes(self, tmp_path):
+        assert _shell_human_review_gate("plan", tmp_path) == "allowed"
+        assert _shell_human_review_gate("research-plan", tmp_path) == "allowed"
+
+    def test_human_review_gate_still_blocks_build_mode(self, tmp_path):
+        assert _shell_human_review_gate("build", tmp_path) == "blocked"
 
 
 class TestInitModeLauncher:
@@ -3062,6 +3226,66 @@ true
         assert result.returncode == 0, result.stderr
         lines = set(filter(None, result.stdout.splitlines()))
         assert "work-ok" not in lines
+
+    def test_project_plan_artifacts_are_allowed_without_wide_project_writes(self, tmp_path):
+        repo_root = Path(__file__).resolve().parent.parent
+        project_dir = tmp_path / "botference"
+        project_dir.mkdir()
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": "vault-drafter",
+                    "modes": {"plan": True, "research_plan": True, "build": True},
+                    "write_roots": {"plan": ["botference"], "build": ["botference"]},
+                    "agent_overrides": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan_file = tmp_path / "projects" / "alpha-project" / "implementation-plan.md"
+        checkpoint_file = tmp_path / "projects" / "alpha-project" / "checkpoint.md"
+        review_file = (
+            tmp_path
+            / "projects"
+            / "alpha-project"
+            / "reviewer-comments"
+            / "AI-reviewer_comments_round-1.md"
+        )
+        content_file = tmp_path / "projects" / "alpha-project" / "README.md"
+        review_file.parent.mkdir(parents=True)
+        plan_file.write_text("plan\n", encoding="utf-8")
+        checkpoint_file.write_text("checkpoint\n", encoding="utf-8")
+        review_file.write_text("review\n", encoding="utf-8")
+        content_file.write_text("project content\n", encoding="utf-8")
+
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+export BOTFERENCE_HOME="{repo_root}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+init_botference_paths
+policy_path_allowed "{plan_file}" plan && echo plan-ok
+policy_path_allowed "{checkpoint_file}" plan && echo checkpoint-ok
+policy_path_allowed "{review_file}" plan && echo review-ok
+policy_path_allowed "{content_file}" plan && echo content-ok
+policy_path_allowed "{plan_file}" build && echo build-plan-ok
+true
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+        lines = set(filter(None, result.stdout.splitlines()))
+        assert "plan-ok" in lines
+        assert "checkpoint-ok" in lines
+        assert "review-ok" in lines
+        assert "content-ok" not in lines
+        assert "build-plan-ok" not in lines
 
 
 class TestPlanningPromptPolicy:

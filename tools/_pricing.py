@@ -8,6 +8,7 @@ Single source of truth — imported by botference_agent.py and scripts/usage_rep
 # OpenAI:    https://platform.openai.com/docs/pricing
 PRICING = {
     # Anthropic
+    "claude-opus-4-8":   {"input": 15.0, "output": 75.0, "cache_read": 1.5,  "cache_create": 18.75},
     "claude-opus-4-7":   {"input": 15.0, "output": 75.0, "cache_read": 1.5,  "cache_create": 18.75},
     "claude-opus-4-6":   {"input": 15.0, "output": 75.0, "cache_read": 1.5,  "cache_create": 18.75},
     "claude-sonnet-4-6": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_create": 3.75},

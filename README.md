@@ -764,7 +764,7 @@ python3 scripts/update_loc_badge.py
 | Variable | Purpose |
 |----------|---------|
 | `BOTFERENCE_HOME` | Path to this framework (auto-detected) |
-| `ANTHROPIC_MODEL` | Global model override (e.g. `claude-sonnet-4-6`) |
+| `ANTHROPIC_MODEL` | Global model override (default: `claude-opus-4-8`) |
 | `OPENAI_MODEL` | Codex participant model (default: `gpt-5.5`) |
 | `OPENAI_REASONING_EFFORT` | Codex participant reasoning effort for planner sessions (default: `high`) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |

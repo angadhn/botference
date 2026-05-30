@@ -1093,11 +1093,11 @@ class Botference:
 
     @property
     def _plan_path(self) -> Path:
-        return self.paths.work_dir / "implementation-plan.md"
+        return self._planning_scope_root() / "implementation-plan.md"
 
     @property
     def _checkpoint_path(self) -> Path:
-        return self.paths.work_dir / "checkpoint.md"
+        return self._planning_scope_root() / "checkpoint.md"
 
     @property
     def _archive_root(self) -> Path:
@@ -1108,6 +1108,17 @@ class Botference:
         if not self.active_project_id:
             return None
         return self.project_store.get(self.active_project_id)
+
+    def _planning_scope_root(self) -> Path:
+        project = self._active_project()
+        return project.root if project else self.paths.work_dir
+
+    def _planning_scope_label(self) -> str:
+        project = self._active_project()
+        return f"Project: {project.title} ({project.id})" if project else "Inbox/global"
+
+    def _planning_display_path(self, path: Path) -> str:
+        return self._relative_project_path(path)
 
     def _active_project_label(self) -> str:
         project = self._active_project()
@@ -1866,16 +1877,23 @@ class Botference:
     def _reviewer_comments_name(self, round_number: int) -> str:
         return f"AI-reviewer_comments_round-{round_number}.md"
 
+    def _reviewer_comments_root(self) -> Path:
+        project = self._active_project()
+        return project.root / "reviewer-comments" if project else self.paths.work_dir
+
     def _reviewer_comments_path(self, round_number: int) -> Path:
-        return self.paths.work_dir / self._reviewer_comments_name(round_number)
+        return self._reviewer_comments_root() / self._reviewer_comments_name(round_number)
 
     def _active_reviewer_comments_paths(self) -> list[Path]:
         return sorted(
-            self.paths.work_dir.glob("AI-reviewer_comments_round-*.md"),
+            self._reviewer_comments_root().glob("AI-reviewer_comments_round-*.md"),
             key=lambda p: self._extract_round_number(p.name),
         )
 
     def _archived_reviewer_comments_dir(self) -> Path:
+        project = self._active_project()
+        if project:
+            return project.root / "archive" / "reviewer-comments" / self._thread_slug()
         return self._archive_root / "reviewer-comments" / self._thread_slug()
 
     def _extract_round_number(self, name: str) -> int:
@@ -2002,7 +2020,7 @@ class Botference:
         self._add_room_entry(ui, "system", "\n".join([
             "Commands:",
             "  /projects          — List project folders under projects/",
-            "  /project [open <id>|clear|current|create <title>|create-from-chat]",
+            "  /project [open <id>|clear|current|create <title>|create-from-chat|activate-build]",
             "                     — Set, show, or create the active project context",
             "  /caucus <topic>     — Start a structured discussion between Claude and Codex",
             "  /lead @claude|@codex — Set who writes the plan",
@@ -2074,10 +2092,18 @@ class Botference:
                     ui,
                     "system",
                     f"Current project: {project.title} ({project.id})\n"
-                    f"Root: {self._relative_project_path(project.root)}",
+                    f"Root: {self._relative_project_path(project.root)}\n"
+                    f"Plan: {self._planning_display_path(self._plan_path)}\n"
+                    f"Checkpoint: {self._planning_display_path(self._checkpoint_path)}",
                 )
             else:
-                self._add_room_entry(ui, "system", "Current project: Inbox")
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    "Current project: Inbox\n"
+                    f"Plan: {self._planning_display_path(self._plan_path)}\n"
+                    f"Checkpoint: {self._planning_display_path(self._checkpoint_path)}",
+                )
             return
 
         parts = raw.split(None, 1)
@@ -2104,6 +2130,13 @@ class Botference:
             self._create_project(title, ui)
             return
 
+        if action == "activate-build":
+            if value:
+                self._add_room_entry(ui, "system", "Usage: /project activate-build")
+                return
+            self._activate_project_build_plan(ui)
+            return
+
         query = value if action == "open" else raw
         if not query:
             self._add_room_entry(ui, "system", "Usage: /project open <project-id>")
@@ -2124,6 +2157,7 @@ class Botference:
             ui,
             "system",
             f"Project context set to {project.title} ({project.id}).\n"
+            f"Plan writes now target {self._planning_display_path(self._plan_path)}.\n"
             f"Run /resume to see chats for this project.",
         )
 
@@ -2149,7 +2183,49 @@ class Botference:
         self._add_room_entry(
             ui,
             "system",
-            f"Created project {project.title} ({project.id}) and set it active.",
+            f"Created project {project.title} ({project.id}) and set it active.\n"
+            f"Plan writes now target {self._planning_display_path(self._plan_path)}.",
+        )
+
+    def _activate_project_build_plan(self, ui: UIPort) -> None:
+        project = self._active_project()
+        if not project:
+            self._add_room_entry(
+                ui,
+                "system",
+                "No active project. Use /project open <project-id> first.",
+            )
+            return
+
+        project_plan = project.root / "implementation-plan.md"
+        project_checkpoint = project.root / "checkpoint.md"
+        missing = [
+            self._planning_display_path(path)
+            for path in (project_plan, project_checkpoint)
+            if not path.is_file()
+        ]
+        if missing:
+            self._add_room_entry(
+                ui,
+                "system",
+                "Cannot activate build plan; missing:\n"
+                + "\n".join(f"  {path}" for path in missing),
+            )
+            return
+
+        work_plan = self.paths.work_dir / "implementation-plan.md"
+        work_checkpoint = self.paths.work_dir / "checkpoint.md"
+        work_plan.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(project_plan, work_plan)
+        shutil.copyfile(project_checkpoint, work_checkpoint)
+        self._add_room_entry(
+            ui,
+            "system",
+            "Activated project plan for build:\n"
+            f"  {self._planning_display_path(project_plan)} -> "
+            f"{self._planning_display_path(work_plan)}\n"
+            f"  {self._planning_display_path(project_checkpoint)} -> "
+            f"{self._planning_display_path(work_checkpoint)}",
         )
 
     def _show_permissions(self, ui: UIPort) -> None:
@@ -2183,6 +2259,8 @@ class Botference:
         lines = [
             f"Session: {self.session_id[:12]}",
             f"Project: {self._active_project_label()}",
+            f"Plan scope: {self._planning_scope_label()}",
+            f"Plan file: {self._planning_display_path(self._plan_path)}",
             f"Mode: {self.mode.value}",
             f"Lead: {self.lead}",
             f"Route: {self.router.current_route}",
@@ -3491,9 +3569,10 @@ class Botference:
 
         self.mode = RoomMode.DRAFT
         ui.set_mode(RoomMode.DRAFT)
+        plan_display = self._planning_display_path(self._plan_path)
         self._add_room_entry(
             ui, "system",
-            f"Drafting implementation-plan.md ({lead}, {rounds} AI review round(s))…",
+            f"Drafting {plan_display} ({lead}, {rounds} AI review round(s))…",
         )
 
         if not await self._ensure_initialized(lead, ui):
@@ -3539,7 +3618,7 @@ class Botference:
         self._write_work_file(self._plan_path, current_plan)
         self._add_room_entry(
             ui, "system",
-            f"Updated {self.paths.work_prefix}implementation-plan.md",
+            f"Updated {self._planning_display_path(self._plan_path)}",
         )
 
         next_round = self._next_reviewer_round()
@@ -3570,14 +3649,15 @@ class Botference:
             self._write_work_file(review_path, rev_resp.text)
             self._add_room_entry(
                 ui, "system",
-                f"Saved reviewer comments to {self.paths.work_prefix}{review_path.name}",
+                f"Saved reviewer comments to {self._planning_display_path(review_path)}",
             )
 
             self.mode = RoomMode.DRAFT
             ui.set_mode(RoomMode.DRAFT)
             self._add_room_entry(
                 ui, "system",
-                f"{lead_cap} is revising implementation-plan.md for round {round_number}…",
+                f"{lead_cap} is revising {self._planning_display_path(self._plan_path)} "
+                f"for round {round_number}…",
             )
             try:
                 revised_resp = await adapter.resume(
@@ -3600,7 +3680,7 @@ class Botference:
             self._write_work_file(self._plan_path, current_plan)
             self._add_room_entry(
                 ui, "system",
-                f"Updated {self.paths.work_prefix}implementation-plan.md",
+                f"Updated {self._planning_display_path(self._plan_path)}",
             )
 
         self.mode = RoomMode.PUBLIC
@@ -3610,7 +3690,7 @@ class Botference:
             ui, "system",
             (
                 "Draft complete. "
-                f"{self.paths.work_prefix}implementation-plan.md now reflects "
+                f"{self._planning_display_path(self._plan_path)} now reflects "
                 f"{rounds} AI review round(s)."
             ),
         )
@@ -3639,7 +3719,7 @@ class Botference:
         if not current_plan:
             self._add_room_entry(
                 ui, "system",
-                f"No drafted plan found at {self.paths.work_prefix}implementation-plan.md. "
+                f"No drafted plan found at {self._planning_display_path(self._plan_path)}. "
                 "Run /draft first.",
             )
             self.mode = RoomMode.PUBLIC
@@ -3651,7 +3731,8 @@ class Botference:
         if review_bundle:
             self._add_room_entry(
                 ui, "system",
-                f"{lead_cap} is finalizing implementation-plan.md and addressing all reviewer comments…",
+                f"{lead_cap} is finalizing {self._planning_display_path(self._plan_path)} "
+                "and addressing all reviewer comments…",
             )
             try:
                 final_resp = await adapter.resume(
@@ -3672,10 +3753,14 @@ class Botference:
             self._write_work_file(self._plan_path, final_plan)
             self._add_room_entry(
                 ui, "system",
-                f"Updated {self.paths.work_prefix}implementation-plan.md",
+                f"Updated {self._planning_display_path(self._plan_path)}",
             )
 
-        self._add_room_entry(ui, "system", f"{lead_cap} is creating checkpoint.md…")
+        self._add_room_entry(
+            ui,
+            "system",
+            f"{lead_cap} is creating {self._planning_display_path(self._checkpoint_path)}…",
+        )
         try:
             checkpoint_resp = await adapter.resume(checkpoint_preamble(final_plan))
         except Exception as e:
@@ -3692,14 +3777,15 @@ class Botference:
         self._write_work_file(self._checkpoint_path, checkpoint_resp.text)
         self._add_room_entry(
             ui, "system",
-            f"Updated {self.paths.work_prefix}checkpoint.md",
+            f"Updated {self._planning_display_path(self._checkpoint_path)}",
         )
 
         archived_comments = self._archive_reviewer_comments()
         if archived_comments:
             self._add_room_entry(
                 ui, "system",
-                f"Archived {archived_comments} reviewer comment file(s) to archive/reviewer-comments/{self._thread_slug()}/",
+                f"Archived {archived_comments} reviewer comment file(s) to "
+                f"{self._planning_display_path(self._archived_reviewer_comments_dir())}/",
             )
 
         self.mode = RoomMode.PUBLIC
@@ -3707,7 +3793,9 @@ class Botference:
         ui.set_status(self.status_snapshot())
         self._add_room_entry(
             ui, "system",
-            "Finalize complete. implementation-plan.md and checkpoint.md are up to date.",
+            "Finalize complete. "
+            f"{self._planning_display_path(self._plan_path)} and "
+            f"{self._planning_display_path(self._checkpoint_path)} are up to date.",
         )
 
     # ── helpers ───────────────────────────────────────────
@@ -3750,7 +3838,7 @@ def main() -> None:
     import tempfile
 
     parser = argparse.ArgumentParser(description="botference mode")
-    parser.add_argument("--anthropic-model", default="claude-sonnet-4-6")
+    parser.add_argument("--anthropic-model", default="claude-opus-4-8")
     parser.add_argument("--claude-effort", default="")
     parser.add_argument("--openai-model", default="gpt-5.5")
     parser.add_argument("--openai-effort", default="")

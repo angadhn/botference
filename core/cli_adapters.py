@@ -466,6 +466,7 @@ class AdapterResponse:
 # ── Context windows (fallback when not reported by CLI) ──────
 
 _CONTEXT_WINDOWS = {
+    "claude-opus-4-8": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,
@@ -604,7 +605,7 @@ async def _read_jsonl_lines(stream: asyncio.StreamReader, raw_lines: list,
 class ClaudeAdapter:
     """Wraps `claude -p` with session continuity via --session-id / --resume."""
 
-    def __init__(self, model: str = "claude-sonnet-4-6",
+    def __init__(self, model: str = "claude-opus-4-8",
                  tools: Optional[list] = None,
                  effort: str = "",
                  timeout: Optional[int] = None,
@@ -897,7 +898,7 @@ class ClaudeInteractiveTmuxAdapter:
 
     abort_all_on_startup_failure = True
 
-    def __init__(self, model: str = "claude-sonnet-4-6",
+    def __init__(self, model: str = "claude-opus-4-8",
                  tools: Optional[list] = None,
                  effort: str = "",
                  timeout: Optional[int] = None,

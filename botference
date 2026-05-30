@@ -292,20 +292,18 @@ while true; do
   fi
 
   # --- Pre-iteration gate check ---
-  if [ -f "$BOTFERENCE_REVIEW_FILE" ]; then
-    _gate_template="${BOTFERENCE_HOME}/templates/HUMAN_REVIEW_NEEDED.md"
-    if ! diff -q "$BOTFERENCE_REVIEW_FILE" "$_gate_template" >/dev/null 2>&1; then
-      echo ""
-      echo "╔══════════════════════════════════════════════════════════╗"
-      echo "║  HUMAN REVIEW STILL PENDING                            ║"
-      echo "╚══════════════════════════════════════════════════════════╝"
-      echo ""
-      cat "$BOTFERENCE_REVIEW_FILE"
-      echo ""
-      echo "To continue: review above, then:"
-      echo "  rm $BOTFERENCE_REVIEW_FILE && botference -p"
-      break
-    fi
+  _gate_template="${BOTFERENCE_HOME}/templates/HUMAN_REVIEW_NEEDED.md"
+  if human_review_gate_pending "$LOOP_MODE" "$BOTFERENCE_REVIEW_FILE" "$_gate_template"; then
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║  HUMAN REVIEW STILL PENDING                            ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo ""
+    cat "$BOTFERENCE_REVIEW_FILE"
+    echo ""
+    echo "To continue: review above, then:"
+    echo "  rm $BOTFERENCE_REVIEW_FILE && botference -p"
+    break
   fi
 
   ITER_START=$(date +%s)

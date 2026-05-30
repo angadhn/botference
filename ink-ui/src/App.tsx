@@ -1099,7 +1099,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const ghostText = React.useMemo(() => {
     if (!inputText) return "";
     const lower = inputText.toLowerCase();
-    // Scoped match: "/model @claude opus" -> claude-opus-4-7. Fires even when
+    // Scoped match: "/model @claude opus" -> claude-opus-4-8. Fires even when
     // only the prefix is typed (shows first option) and normalizes punctuation
     // so "5-4", "5.4", "47", "opus-4" all substring-match.
     for (const [prefix, options] of Object.entries(completionCtx.scoped)) {

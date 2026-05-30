@@ -609,6 +609,16 @@ handle_human_review_gate() {
   return 1
 }
 
+human_review_gate_pending() {
+  local mode=${1:-${LOOP_MODE:-}}
+  local review_file=${2:-${BOTFERENCE_REVIEW_FILE:-HUMAN_REVIEW_NEEDED.md}}
+  local template_file=${3:-${BOTFERENCE_HOME}/templates/HUMAN_REVIEW_NEEDED.md}
+
+  [ "$mode" = "build" ] || return 1
+  [ -f "$review_file" ] || return 1
+  ! diff -q "$review_file" "$template_file" >/dev/null 2>&1
+}
+
 restore_truncated_files() {
   local truncated
   local _review_name
