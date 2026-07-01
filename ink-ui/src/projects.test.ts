@@ -116,11 +116,10 @@ describe("buildProjectRows", () => {
     const firstSession = rows[3] as { id: string; title: string; meta: string; active: boolean };
     assert.equal(firstSession.id, "abc12345-aaaa-bbbb-cccc-ddddeeeeffff");
     assert.equal(firstSession.title, "Resume polish");
-    assert.equal(firstSession.meta, "abc12345");
+    assert.equal(firstSession.meta, "");
     assert.equal(firstSession.active, true);
     const secondSession = rows[4] as { title: string };
-    // Empty title falls back to the first 12 chars of the session id.
-    assert.equal(secondSession.title.startsWith("deadbeef"), true);
+    assert.equal(secondSession.title, "Untitled chat");
   });
 
   it("emits an empty placeholder when the active project has no sessions", () => {

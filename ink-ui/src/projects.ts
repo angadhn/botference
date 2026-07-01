@@ -72,13 +72,13 @@ export function buildProjectRows(state: ProjectPanelStateData): ProjectRow[] {
         });
       } else {
         for (const session of visibleSessions) {
-          const title = session.title || session.session_id.slice(0, 12);
+          const title = session.title || "Untitled chat";
           const truncated = title.length > 28 ? title.slice(0, 25) + "..." : title;
           rows.push({
             kind: "session",
             id: session.session_id,
             title: truncated,
-            meta: session.session_id.slice(0, 8),
+            meta: "",
             selectable: true,
             active: session.active,
           });

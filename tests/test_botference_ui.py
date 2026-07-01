@@ -118,7 +118,6 @@ class TestProjectPanel:
 
         assert "Projects" in rendered
         assert "▾ Spaceship Engineering" in rendered
-        assert "ec53fd69" in rendered
         assert "spaceship" in rendered
 
 

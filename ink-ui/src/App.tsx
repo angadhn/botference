@@ -419,7 +419,7 @@ function ProjectsPane({
                 backgroundColor={isCursor ? THEME.accent : undefined}
                 wrap="truncate-end"
               >
-                {`  ${sessionMarker} ${row.meta}  ${row.title}`}
+                {`  ${sessionMarker} ${row.title}`}
               </Text>
             </Box>
           );

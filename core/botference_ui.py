@@ -219,11 +219,11 @@ def render_project_panel(state: ProjectPanelState) -> Text:
             if project.sessions:
                 for session in project.sessions[:8]:
                     session_marker = "●" if session.active else " "
-                    title = session.title or session.session_id[:12]
+                    title = session.title or "Untitled chat"
                     if len(title) > 28:
                         title = title[:25] + "..."
                     text.append(
-                        f"  {session_marker} {session.session_id[:8]}  {title}\n",
+                        f"  {session_marker} {title}\n",
                         style="green" if session.active else "dim",
                     )
             else:
