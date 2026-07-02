@@ -17,7 +17,7 @@ resolve_model() {
     model=$(jq -r --arg a "$agent_name" '.[$a].model // empty' "$budgets_file" 2>/dev/null || true)
   fi
   if [ -z "$model" ]; then
-    model="${ANTHROPIC_MODEL:-claude-opus-4-8}"
+    model="${ANTHROPIC_MODEL:-claude-fable-5}"
   fi
   echo "$model"
 }

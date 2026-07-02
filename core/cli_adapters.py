@@ -467,6 +467,7 @@ class AdapterResponse:
 # ── Context windows (fallback when not reported by CLI) ──────
 
 _CONTEXT_WINDOWS = {
+    "claude-fable-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-opus-4-7": 1_000_000,
@@ -543,6 +544,33 @@ def is_context_overflow(text: str) -> bool:
         return False
     lowered = text.lower()
     return any(pat in lowered for pat in _OVERFLOW_PATTERNS)
+
+
+# Provider error fragments that mean "this account/key can no longer be billed".
+# These surface when a paid Claude model (e.g. the pricier Fable 5 default) has
+# exhausted the credit balance or hit a billing block, letting the controller
+# surface an actionable nudge (switch to the cheaper Opus 4.8) instead of a raw
+# CLI error. Kept specific to credit/billing phrasing to avoid matching benign
+# tool output that merely mentions "billing".
+_CREDIT_ERROR_PATTERNS = (
+    "credit balance is too low",
+    "credit balance too low",
+    "too low to access the anthropic api",
+    "insufficient credit",
+    "insufficient credits",
+    "out of credits",
+    "purchase credits",
+    "upgrade or purchase",
+    "billing_error",
+)
+
+
+def is_credit_error(text: str) -> bool:
+    """True if *text* looks like a credit-balance / billing exhaustion error."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(pat in lowered for pat in _CREDIT_ERROR_PATTERNS)
 
 
 def _delta_from_cumulative(current: int, previous: int) -> int:
@@ -649,7 +677,7 @@ async def _read_jsonl_lines(stream: asyncio.StreamReader, raw_lines: list,
 class ClaudeAdapter:
     """Wraps `claude -p` with session continuity via --session-id / --resume."""
 
-    def __init__(self, model: str = "claude-opus-4-8",
+    def __init__(self, model: str = "claude-fable-5",
                  tools: Optional[list] = None,
                  effort: str = "",
                  timeout: Optional[int] = None,
@@ -945,7 +973,7 @@ class ClaudeInteractiveTmuxAdapter:
 
     abort_all_on_startup_failure = True
 
-    def __init__(self, model: str = "claude-opus-4-8",
+    def __init__(self, model: str = "claude-fable-5",
                  tools: Optional[list] = None,
                  effort: str = "",
                  timeout: Optional[int] = None,

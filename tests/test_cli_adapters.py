@@ -25,6 +25,7 @@ from cli_adapters import (
     ClaudeInteractiveTmuxAdapter,
     CodexAdapter,
     ToolSummary,
+    is_credit_error,
     _read_jsonl_lines,
     _truncate,
     _CONTEXT_WINDOWS,
@@ -48,6 +49,30 @@ from cli_adapters import (
 )
 
 SPIKE_DIR = Path(__file__).resolve().parent / "fixtures"
+
+
+class TestIsCreditError:
+    def test_default_model_is_fable_5(self):
+        assert ClaudeAdapter().model == "claude-fable-5"
+
+    def test_detects_credit_balance_message(self):
+        assert is_credit_error(
+            "API Error: 400 Your credit balance is too low to access the "
+            "Anthropic API. Please go to Plans & Billing to upgrade or "
+            "purchase credits."
+        )
+
+    def test_detects_billing_error_type(self):
+        assert is_credit_error('{"type":"error","error":{"type":"billing_error"}}')
+
+    def test_ignores_benign_billing_mention(self):
+        assert not is_credit_error("Finished planning; the billing module looks fine.")
+
+    def test_ignores_context_overflow(self):
+        assert not is_credit_error("prompt is too long")
+
+    def test_empty(self):
+        assert not is_credit_error("")
 
 
 # ── Helpers ──────────────────────────────────────────────────

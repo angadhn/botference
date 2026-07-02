@@ -29,6 +29,7 @@ from cli_adapters import (
     CodexAdapter,
     PlannerWriteConfig,
     ToolSummary,
+    is_credit_error,
     normalize_claude_transport,
     normalize_write_roots,
     planner_write_config,
@@ -2743,6 +2744,7 @@ class Botference:
         if resp.exit_code not in (0, -1):
             detail = resp.text.strip() or f"{model} exited with code {resp.exit_code}"
             self._add_room_entry(ui, "system", f"Error starting {model}: {detail}")
+            self._maybe_credit_fallback_hint(model, resp.text, ui)
             self._models_initialized.discard(model)
             if handoff_doc:
                 self._persist_failed_relay_handoff(model)
@@ -3113,6 +3115,38 @@ class Botference:
         )
         self._persist_session()
 
+    def _maybe_credit_fallback_hint(
+        self, model: str, text: str, ui: UIPort,
+    ) -> None:
+        """If Claude reported a credit/billing exhaustion, tell the user how to
+        fall back to the cheaper Claude Opus 4.8.
+
+        The default Claude participant is Fable 5, which bills at a premium; when
+        its credit balance runs out the raw CLI error is opaque, so surface the
+        exact switch command instead. Suppressed once already on Opus 4.8 (a bare
+        balance problem there needs a top-up, not a model switch).
+        """
+        if model != "claude" or not is_credit_error(text):
+            return
+        fallback = "claude-opus-4-8"
+        if fallback in (self.claude.model or ""):
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Claude ({self.claude.model}) is out of credits / hit a billing "
+                "limit. Add credits at console.anthropic.com/settings/billing to "
+                "continue.",
+            )
+            return
+        self._add_room_entry(
+            ui,
+            "system",
+            f"Claude ({self.claude.model}) is out of credits / hit a billing "
+            f"limit. Switch to the cheaper Claude Opus 4.8 with:\n"
+            f"    /model @claude {fallback}\n"
+            f"or relaunch botference with:  --anthropic-model {fallback}",
+        )
+
     async def _send_message(
         self, parsed: ParsedInput, ui: UIPort,
         *, attachments: list | None = None,
@@ -3276,6 +3310,7 @@ class Botference:
                     f"Tip: Add {key_name}=... to .botference/.env to use API "
                     f"key auth as a fallback. See .env.example for details.",
                 )
+        self._maybe_credit_fallback_hint(model, resp.text, ui)
         return resp
 
     def _build_initial_prompt(
@@ -3896,7 +3931,7 @@ def main() -> None:
     import tempfile
 
     parser = argparse.ArgumentParser(description="botference mode")
-    parser.add_argument("--anthropic-model", default="claude-opus-4-8")
+    parser.add_argument("--anthropic-model", default="claude-fable-5")
     parser.add_argument("--claude-effort", default="")
     parser.add_argument("--openai-model", default="gpt-5.5")
     parser.add_argument("--openai-effort", default="")

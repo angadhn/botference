@@ -401,7 +401,7 @@ async def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="botference ink bridge")
-    parser.add_argument("--anthropic-model", default="claude-opus-4-8")
+    parser.add_argument("--anthropic-model", default="claude-fable-5")
     parser.add_argument("--claude-effort", default="")
     parser.add_argument("--openai-model", default="gpt-5.5")
     parser.add_argument("--openai-effort", default="")

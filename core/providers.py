@@ -44,6 +44,7 @@ class LLMResponse:
 # ── Context windows ───────────────────────────────────────────
 
 _CONTEXT_WINDOWS = {
+    "claude-fable-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-opus-4-7": 1_000_000,

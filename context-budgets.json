@@ -1,6 +1,6 @@
 {
   "plan": {
-    "model": "claude-opus-4-8",
+    "model": "claude-fable-5",
     "effort": "xhigh",
     "max_tokens": 32768
   },
