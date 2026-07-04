@@ -425,7 +425,9 @@ Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
 
 Modes:
   init              Bootstrap a project-local state directory
-  plan              Freeform planning room (botference mode by default)
+  plan              Free-form planning council: you + Claude + Codex in one
+                    room; the bots can hand each other the floor (budgeted)
+                    until the conversation returns to you
   research-plan     Structured planning with prompts/plan.md (botference mode)
   archive           Archive current thread and restore blank templates
   build             Build loop (default)
@@ -448,6 +450,7 @@ Options:
   --help, -h        Show this help and exit
 
 Supported models:
+  claude-fable-5        Anthropic Fable 5   (1M context)
   claude-opus-4-8       Anthropic Opus 4.8  (1M context)
   claude-opus-4-7       Anthropic Opus 4.7  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
@@ -463,7 +466,7 @@ Model resolution order:
   1. --anthropic-model flag
   2. ANTHROPIC_MODEL env var
   3. Per-agent model in context-budgets.json
-  4. Default: claude-opus-4-8
+  4. Default: claude-fable-5 (falls back to claude-opus-4-8 on credit errors)
 
 Environment variables:
   ANTHROPIC_MODEL          Global Anthropic model override (same as --anthropic-model)

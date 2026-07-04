@@ -331,6 +331,9 @@ excerpts still render as code blocks.
 The council behaves like a real group chat: you send a message, the addressed
 model(s) reply, and a bot's reply can hand the floor to the other bot, who
 replies immediately, recursively, until someone hands the floor back to you.
+Every bot-to-bot thread is seeded by one of your messages — the bots never
+start talking while the room is idle — but within a thread they exchange as
+many turns as the budget allows without any prompting from you.
 
 Mechanics:
 
@@ -493,6 +496,18 @@ derives a title from the first user message or task.
 
 When a resumed session includes `project_id`, Botference restores that active
 project context and updates the status line and Projects panel.
+
+**What the models actually remember after a resume:** Botference stores each
+model's native CLI session id, so on your next message a resumed model
+continues its *own* CLI session (`claude --resume <session_id>` / the Codex
+thread) — full private context, including its earlier reasoning and tool
+output, not a replay. If a model's native session is missing (resumed on
+another machine, or the CLI purged it), that model is restarted fresh with
+the shared transcript backfilled into its initial prompt — it re-reads the
+whole conversation but loses its private context. The tell: a
+`Starting claude session…` / `Starting codex session…` system message means
+that model was bootstrapped fresh with backfill; no such message means it
+picked up its native session where it left off.
 
 Unhandled plan-mode crashes are appended to `work/sessions/crash.log`.
 If you also run with debug panes, the model stream logs remain:
