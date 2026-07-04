@@ -28,7 +28,36 @@ export type ProjectRow =
   | { kind: "session"; id: string; title: string; meta: string; selectable: true; active: boolean }
   | { kind: "empty"; id: string; title: string; selectable: false };
 
-export function buildProjectRows(state: ProjectPanelStateData): ProjectRow[] {
+export interface BuildProjectRowsOptions {
+  filter?: string;
+  now?: number;
+}
+
+/** Compact relative age for a session row, e.g. "now", "5m", "3h", "2d". */
+export function relativeTime(iso: string, now = Date.now()): string {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+export function buildProjectRows(
+  state: ProjectPanelStateData,
+  options: BuildProjectRowsOptions = {},
+): ProjectRow[] {
+  const now = options.now ?? Date.now();
   const rows: ProjectRow[] = [];
   const inboxMeta = state.inbox_session_count
     ? `(${state.inbox_session_count} chats)`
@@ -62,7 +91,11 @@ export function buildProjectRows(state: ProjectPanelStateData): ProjectRow[] {
           selectable: false,
         });
       }
-      const visibleSessions = project.sessions.slice(0, 8);
+      // Strict recency: newest first regardless of controller order
+      // (ISO-8601 strings compare lexicographically; undated sink last).
+      const visibleSessions = [...project.sessions]
+        .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
+        .slice(0, 8);
       if (visibleSessions.length === 0) {
         rows.push({
           kind: "empty",
@@ -73,12 +106,12 @@ export function buildProjectRows(state: ProjectPanelStateData): ProjectRow[] {
       } else {
         for (const session of visibleSessions) {
           const title = session.title || "Untitled chat";
-          const truncated = title.length > 28 ? title.slice(0, 25) + "..." : title;
+          const truncated = title.length > 28 ? title.slice(0, 27) + "…" : title;
           rows.push({
             kind: "session",
             id: session.session_id,
             title: truncated,
-            meta: "",
+            meta: session.active ? "open" : relativeTime(session.updated_at, now),
             selectable: true,
             active: session.active,
           });
@@ -86,7 +119,16 @@ export function buildProjectRows(state: ProjectPanelStateData): ProjectRow[] {
       }
     }
   }
-  return rows;
+  return filterProjectRows(rows, options.filter ?? "");
+}
+
+/** Type-to-filter: keep selectable rows whose title matches; drop decorations. */
+export function filterProjectRows(rows: ProjectRow[], filter: string): ProjectRow[] {
+  const needle = filter.trim().toLowerCase();
+  if (!needle) return rows;
+  return rows.filter(
+    (row) => row.selectable && row.title.toLowerCase().includes(needle),
+  );
 }
 
 export function nextSelectableRow(

@@ -6,10 +6,10 @@
 > [!NOTE]
 > This README was AI-generated. I (Angadh) have skimmed and supervised its creation.
 
-Multi-LLM planning where you and the AIs collaborate in a **council** (open
-room, you steer) or the AIs hash things out in a **caucus** (private sidebar,
-they converge). The result is an `implementation-plan.md` and `checkpoint.md`
-you can take into any workflow.
+Multi-LLM planning where you and the AIs collaborate in a **council** — a
+free-form group chat where the bots can also hand each other the floor and
+hash things out directly, with you steering. The result is an
+`implementation-plan.md` and `checkpoint.md` you can take into any workflow.
 
 **The primary contribution of this repository is plan mode** — a multi-LLM
 planning session where Claude and Codex collaborate in real time. This is the
@@ -22,11 +22,11 @@ part that works well and is ready for use.
 > done, use `botference plan` and take the resulting plan into your own
 > workflow.
 
-**Ink TUI** — projects panel (left), council panel (center), caucus panel
-(right), input field and status line at the bottom. This is the primary
-interface and default planner UI:
+**Ink TUI** — projects panel (left), full-width council panel (right), input
+field and status line at the bottom. This is the primary interface and
+default planner UI:
 
-![Ink UI — council and caucus panels with status line](docs/images/ink-ui.png)
+![Ink UI — council panel with status line](docs/images/ink-ui.png)
 
 The Projects panel lists `Inbox` plus every folder under `projects/` and
 expands the active project to show its 8 most recent resumable chats. Pane
@@ -34,29 +34,23 @@ controls in Ink:
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` | Cycle focus across Council → Caucus → Projects (when visible) |
+| `Tab` / `Shift+Tab` | Toggle focus between Council and Projects (when visible) |
 | `↑` / `↓` | Navigate the Projects list while it has focus |
+| type | Filter projects and chats by title while the panel has focus (Esc clears; `/` still starts a command) |
 | `Enter` | Open the highlighted project, switch to Inbox, or resume the highlighted chat |
 | `Ctrl+P` | Toggle the Projects panel's visibility |
+
+Chats under the active project are sorted newest-first and show a compact
+age (`5m`, `3h`, `2d`); the chat you're currently in is marked `▸ … · open`.
 
 Selecting `Inbox` runs `/project clear`; selecting a project header runs
 `/project open <id>`; selecting a session row runs `/resume <session-id>`.
 You can switch sessions mid-chat — the current session is persisted on every
 turn, so you can `/resume <its-id>` to come back later.
 
-**Textual TUI** — Python-based fallback (project panel features land in Ink first):
-
-![Textual UI — council and caucus panels with status line](docs/images/textual-ui.png)
-
-The TUI has two backends:
-
-| Flag | Backend | Notes |
-|------|---------|-------|
-| `--ink` | Ink (Node.js/React) | Default. First use after clone: `cd ink-ui && npm install`. Supports app-level pane-clamped text selection, multiline input (Shift+Enter), streaming, and activity status. |
-| `--ink-legacy` | Legacy Ink | Older Ink behavior with Ctrl+Y native terminal selection. |
-| `--textual` | Textual (Python) | Fallback backend if you want the Python/Textual UI. |
-
-Both present the same council + caucus interface. Use `--claude` to skip Codex
+The Ink TUI is the only frontend. First use after clone: `cd ink-ui && npm
+install`. It supports app-level pane-clamped text selection, multiline input
+(Shift+Enter), streaming, and activity status. Use `--claude` to skip Codex
 and run a solo Claude session (no TUI, just the Claude CLI).
 
 Project-local runtime behavior and the long-term packaging direction are
@@ -70,23 +64,13 @@ expand them in `botference/project.json`.
 
 ## Approach
 
-Botference uses two metaphors for multi-LLM collaboration, shown as two panels
-in the TUI:
-
-- **Council** — an open room where you and the AIs all talk. You steer the
-  conversation, ask questions, push back, and direct who speaks. This is plan
-  mode: you're in the room with Claude and Codex, hashing out what to build.
-
-- **Caucus** — a private sidebar where the AIs talk to each other without you.
-  You kick it off with `/caucus <topic>` and the models debate, negotiate, and
-  converge on a recommendation. You get the summary and decide what to do with
-  it.
-
-The council is where decisions get made. The caucus is where the AIs work out
-their disagreements so they can bring you a coherent proposal instead of
-conflicting opinions.
-
-![Caucus complete — Claude and Codex reached agreement, lead auto-set to @codex](docs/images/caucus.png)
+Botference is built around one metaphor: the **council** — an open room where
+you and the AIs all talk, like a three-person group chat. You steer the
+conversation, ask questions, push back, and direct who speaks; the bots can
+also hand each other the floor and debate directly (budgeted, and you can
+always interrupt) until they bring you a coherent proposal instead of
+conflicting opinions. When they agree on who should write the plan, the lead
+is set automatically.
 
 ## Quick Start
 
@@ -104,8 +88,6 @@ it from the repo root with the local launcher:
 
 ```bash
 ./botference plan                          # Ink TUI (default)
-./botference plan --ink-legacy             # Legacy Ink TUI
-./botference plan --textual                # Textual fallback
 ./botference plan --claude                 # Solo Claude
 ./botference plan --claude-interactive     # Experimental: mirror interactive Claude through tmux
 ./botference research-plan                 # Structured planning in Ink (experimental)
@@ -130,9 +112,7 @@ From a target project root:
 botference init                            # Create project-local botference/ state
 botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
 botference plan                            # Council: you + Claude + Codex (Ink default)
-botference plan --ink-legacy               # Legacy Ink with Ctrl+Y native selection
 botference --project-dir=spaceship plan    # Use botference-spaceship/
-botference plan --textual                  # Use the Textual fallback instead
 botference plan --claude                   # Solo Claude (no Codex)
 botference plan --claude-interactive       # Experimental interactive-Claude tmux transport
 
@@ -204,7 +184,7 @@ This means:
 In practice, this gives you two common workflows:
 
 - greenfield work happens naturally inside `botference/`, where planning can
-  create notes, caucus exports, scratch files, and plan artifacts without
+  create notes, exports, scratch files, and plan artifacts without
   touching the project tree yet
 - brownfield work keeps the existing project read-only by default; actual
   project-file edits happen only if you explicitly widen `write_roots`,
@@ -337,7 +317,7 @@ Messages in the council panel are labelled by speaker:
 - **You** — your messages
 - **System** — the framework talking to you, not an LLM. Covers:
   - Session lifecycle (starting, relaying, or tearing down a model)
-  - Mode changes (caucus started, draft complete)
+  - Mode changes (draft started, draft complete)
   - Errors and warnings
   - Command feedback (lead set, usage info)
   - Deterministic file-write feedback (`implementation-plan.md`, reviewer comments, `checkpoint.md`)
@@ -346,17 +326,48 @@ Tool activity in the council is shown as a short folded summary under the
 model response rather than a raw command/output transcript. Deliberate code
 excerpts still render as code blocks.
 
+### Free-form planning
+
+The council behaves like a real group chat: you send a message, the addressed
+model(s) reply, and a bot's reply can hand the floor to the other bot, who
+replies immediately, recursively, until someone hands the floor back to you.
+
+Mechanics:
+
+- Every bot reply ends with a small JSON footer (stripped from the display)
+  declaring `status` (`continuing` / `converged` / `blocked`), `next`
+  (`@claude` / `@codex` / `@user`), and a one-line summary. `next: "@codex"`
+  gives Codex the floor; `next: "@user"` — or no footer and no mention —
+  returns it to you. A prose `@mention` of the other bot works as a fallback
+  if a model forgets the footer.
+- **Budgets, not hard stops.** A bot-to-bot thread gets 6 bot turns and ~8K
+  output tokens; each turn prompt shows the countdown so the models pace
+  themselves. On exhaustion the controller grants one automatic extension
+  (+3 turns / +4K tokens), then forces the floor back to you with the last
+  footer summary. The thread pauses rather than dies — reply (even just
+  "continue") and they pick up with a fresh budget.
+- **You always preempt.** If you type while the bots are talking, the thread
+  pauses at the next turn boundary and the floor is yours.
+- **Conciseness is enforced by measurement.** If a bot's turn exceeds ~400
+  output tokens, its next prompt carries a cap nudge.
+- **Writer consensus sets the lead.** The footer has an optional
+  `writer: "@claude"|"@codex"` field. When both bots vote for the same
+  writer, the lead is set automatically (a manual `/lead` always wins).
+
+Turn-based behavior is the degenerate case of free-form: a reply with no
+handoff (no footer, no mention) simply returns the floor to you.
+
 ### Commands
 
 | Command | What it does |
 |---------|-------------|
-| `/caucus <topic>` | Start a caucus — Claude and Codex debate the topic privately (3-5 rounds) and return a summary with a recommendation. If they agree on a writer, the lead is set automatically. |
-| `/lead @claude\|@codex` | Manually set which model writes the plan. You can also use `/lead auto` to let a future caucus decide. |
-| `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Reviewer comments are saved beside the plan in the Botference state directory. |
+| `/lead @claude\|@codex` | Manually set which model writes the plan. You can also use `/lead auto` to let the bots' writer consensus decide. |
+| `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Review rounds run in the council like free-form turns: the reviewer's footer can end rounds early (`converged` — sign-off, no revision needed) or pause the draft and hand the floor to you (`blocked`), and typing mid-draft pauses at the next round boundary. Reviewer comments are saved beside the plan in the Botference state directory. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
 | `/projects` | List project folders under `projects/` and show the active project marker, status, priority, chat count, and next action when known. |
 | `/project [open <id>\|clear\|current\|create <title>\|create-from-chat]` | Set, clear, show, or create the current project context. The status bar and Projects panel show the selected project; `Inbox` means no project is selected. |
+| `/project assign [<session-id-prefix>] <project-id>` | File this chat (or any saved one) under a project **without** switching the active context. Writes only to `projects/session-index.json`. |
 | `/resume [latest\|<number>\|<title>\|<session-id-prefix>]` | Restore a previously saved planning session. With a project selected, project-associated and project-local sessions are shown first, while old unassigned sessions remain visible. You can resume mid-chat — the current session is persisted on every turn, so the chat you're leaving stays recoverable via `/resume <its-id>`. Selecting a session row in the Ink Projects panel runs this command for you. |
 | `/rename <name>` | Name the current planning session for future `/resume` lookup. Sessions also get an automatic title from the first user message or task. |
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
@@ -366,8 +377,9 @@ excerpts still render as code blocks.
 
 ![/help output showing commands, messaging, aliases, and workflow](docs/images/help-commands.png)
 
-**Typical workflow:** discuss → `/caucus` → `/lead` (or let caucus decide) →
-`/draft [rounds]` → iterate with human comments as needed → `/finalize`.
+**Typical workflow:** discuss (the bots hand each other the floor and
+converge on a writer) → `/draft [rounds]` → iterate with human comments as
+needed → `/finalize`.
 
 ### Project Skills
 
@@ -387,11 +399,17 @@ containers. This is separate from a single chat session: a project can have many
 resumable planning sessions, imported work artifacts, and future build/delegation
 threads.
 
-In plan mode the TUI is laid out as `Projects | Council | Caucus`. The left
+In plan mode the TUI is laid out as `Projects | Council`. The left
 Projects panel is persistent: it shows `Inbox`, discovered projects, the active
 project marker, and the active project's resumable chats. New controller
 sessions start in `Inbox`; Botference does not create a new project until you
 ask it to.
+
+On the first message of an Inbox chat, Botference shows an arrow-key picker
+asking where the chat should live: existing projects whose title or
+next-action matches your message, "Create a new project from this chat", or
+"Stay in Inbox" (Esc dismisses). Picking a project sets it as the active
+context and files the chat there. Nothing is ever filed automatically.
 
 Run `/projects` in plan mode to list directories under `projects/`. A directory
 appears even without metadata; Botference infers its title from, in order:
@@ -456,7 +474,7 @@ maintained automatically and is safe to delete (it'll be rebuilt on next
 launch). Each snapshot includes:
 
 - the shared transcript
-- room and caucus panel history
+- council panel history
 - route, lead, mode, and status state
 - the active `project_id`, when the session belongs to a project
 - Claude `session_id` and Codex `thread_id` for native CLI resume
@@ -531,8 +549,8 @@ roots unchanged and the model must continue without writing there.
 
 ### Navigation and input
 
-The TUI has two panels: **council** (left) and **caucus** (right), with a text
-input field at the bottom.
+The TUI shows the **projects** panel (left, toggleable) and the full-width
+**council** panel, with a text input field at the bottom.
 
 - **Arrow keys do not move between panels.** Use the mouse to scroll within
   each panel.
@@ -549,19 +567,16 @@ input field at the bottom.
   such as `Prestidigitating...`, but switches to concrete activity when bridge
   events expose it, for example `Codex is reading README.md...` or
   `Claude is responding...`.
-- **Copying text in the legacy Ink backend:** run `botference plan
-  --ink-legacy`, then press **Ctrl+Y** to enter mouse
-  selection mode, then drag-select text with the mouse/trackpad and copy using
-  your terminal's normal shortcut (for example **Cmd+C** on macOS). Press
-  **Ctrl+Y** again or **Esc** to return to Botference mouse scrolling.
-  Selection mode uses the terminal's native selection, so it can select across
-  both panels; it does not clamp copied text to the active council/caucus pane.
-- **Shift+Enter** inserts a newline (Ink backend only). In the Textual backend
-  the input is single-line.
-- **Esc interrupts the current in-flight turn** in the Ink backend. It no
-  longer clears the input buffer.
-- When a protected write is requested in the Ink backend, use **Left/Right** or
-  **Tab** to switch between `Allow once` and `Deny`, then press **Enter**.
+- **Native terminal selection:** press **Ctrl+Y** to enter mouse selection
+  mode, drag-select with the mouse/trackpad, and copy using your terminal's
+  normal shortcut (for example **Cmd+C** on macOS). Press **Ctrl+Y** again or
+  **Esc** to return to Botference mouse scrolling. Native selection can span
+  panels; it does not clamp copied text to the active pane.
+- **Shift+Enter** inserts a newline.
+- **Esc interrupts the current in-flight turn.** It no longer clears the
+  input buffer.
+- When a protected write is requested, use **Left/Right** or **Tab** to switch
+  between `Allow once` and `Deny`, then press **Enter**.
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
 
@@ -578,8 +593,8 @@ The status line fields:
 
 | Field | Meaning |
 |-------|---------|
-| **Mode** | Current session state: `public` (normal chat), `caucus` (AIs debating), `draft` (lead writing), `review` (other model reviewing) |
-| **Lead** | Which model will write the plan when you `/draft` or `/finalize`. Set manually with `/lead` or auto-set by caucus consensus. |
+| **Mode** | Current session state: `public` (normal chat), `draft` (lead writing), `review` (other model reviewing) |
+| **Lead** | Which model will write the plan when you `/draft` or `/finalize`. Set manually with `/lead` or auto-set when the bots agree on a writer. |
 | **Route** | Where your next message goes (`@all`, `@claude`, or `@codex`) |
 | **Claude / Codex** | Context usage as percentage of the model's window |
 | **Observe** | Debug observation mode (off by default) |
@@ -723,7 +738,8 @@ botference/
 ├── work/                # Active thread state (checkpoint, plan, inbox)
 ├── build/               # Generated outputs, logs, runtime (gitignored)
 ├── archive/             # Archived completed threads
-├── core/                # Python modules (orchestrator, TUI, adapters, agent runner)
+├── core/                # Python modules (controller, Ink bridge, adapters, agent runner)
+├── ink-ui/              # Ink (Node.js/React) terminal UI
 ├── prompts/             # Dispatcher prompts for plan and build modes
 ├── .claude/agents/      # Agent definitions (plan, coder, orchestrator, etc.)
 ├── .claude/skills/      # Claude Code repo-local skills

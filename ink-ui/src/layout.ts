@@ -20,10 +20,8 @@ const PROJECTS_PANE_MIN_WIDTH = 18;
 export interface LayoutBudget {
   paneHeight: number;
   paneContentHeight: number;
-  leftPaneWidth: number;
-  rightPaneWidth: number;
-  leftTextWidth: number;
-  rightTextWidth: number;
+  councilPaneWidth: number;
+  councilTextWidth: number;
   projectsPaneWidth: number;
   projectsTextWidth: number;
   inputHeight: number;
@@ -45,7 +43,7 @@ export function computeLayoutBudget(
 
   // Reserve a fixed-ish left column for the Projects panel when visible.
   // Cap at one-third of the terminal so narrow windows still leave room for
-  // Council/Caucus, and refuse to draw it below the min usable width.
+  // the Council, and refuse to draw it below the min usable width.
   let projectsPaneWidth = 0;
   let projectsTextWidth = 0;
   if (options.projectsVisible) {
@@ -60,25 +58,18 @@ export function computeLayoutBudget(
     }
   }
 
-  const remainingCols = termCols - projectsPaneWidth;
-  const leftPaneWidth = Math.floor(remainingCols / 2);
-  const rightPaneWidth = remainingCols - leftPaneWidth;
-  const leftTextWidth = Math.max(
+  // The Council takes everything the Projects panel leaves behind.
+  const councilPaneWidth = termCols - projectsPaneWidth;
+  const councilTextWidth = Math.max(
     4,
-    leftPaneWidth - PANE_HORIZONTAL_BORDER - PANE_HORIZONTAL_PADDING,
-  );
-  const rightTextWidth = Math.max(
-    4,
-    rightPaneWidth - PANE_HORIZONTAL_BORDER - PANE_HORIZONTAL_PADDING,
+    councilPaneWidth - PANE_HORIZONTAL_BORDER - PANE_HORIZONTAL_PADDING,
   );
 
   return {
     paneHeight,
     paneContentHeight,
-    leftPaneWidth,
-    rightPaneWidth,
-    leftTextWidth,
-    rightTextWidth,
+    councilPaneWidth,
+    councilTextWidth,
     projectsPaneWidth,
     projectsTextWidth,
     inputHeight,

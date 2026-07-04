@@ -28,6 +28,7 @@ REQUIRED_FRONTMATTER_KEYS = frozenset({
 })
 
 VALID_MODELS = frozenset({"claude", "codex"})
+# "caucus" kept for handoff docs written before the caucus was retired.
 VALID_ROOM_MODES = frozenset({"public", "caucus", "draft", "review"})
 VALID_LEADS = frozenset({"auto", "@claude", "@codex"})
 VALID_TIERS = frozenset({"self", "cross", "mechanical"})

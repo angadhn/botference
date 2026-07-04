@@ -5,8 +5,7 @@ Test suite. Run with `pytest` from the repo root.
 
 | Test file | Covers |
 |-----------|--------|
-| `test_botference.py` | `botference.py` — parsing, routing, transcripts, caucus footer |
-| `test_botference_ui.py` | `botference_ui.py` — TUI panes, status line, transcript rendering |
+| `test_botference.py` | `botference.py` — parsing, routing, transcripts, room footer, free-form threads |
 | `test_cli_adapters.py` | `cli_adapters.py` — fixture-driven adapter parsing and session logic |
 | `test_handoff.py` | `handoff.py` — schema, validation, serialization, relay |
 | `test_paths.py` | `paths.py` — path resolution, work prefixes, handoff paths |

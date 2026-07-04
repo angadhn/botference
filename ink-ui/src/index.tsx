@@ -155,7 +155,6 @@ function parseArgs(argv: string[]) {
     debugPanes: false,
     claudeEffort: "",
     claudeTransport: process.env["BOTFERENCE_CLAUDE_TRANSPORT"] ?? "programmatic",
-    inkLegacy: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -178,12 +177,6 @@ function parseArgs(argv: string[]) {
         break;
       case "--debug-panes":
         args.debugPanes = true;
-        break;
-      case "--ink-legacy":
-        args.inkLegacy = true;
-        break;
-      case "--ink-v2":
-        args.inkLegacy = false;
         break;
       case "--claude-effort":
         args.claudeEffort = argv[++i] ?? "";

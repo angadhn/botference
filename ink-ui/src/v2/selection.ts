@@ -1,7 +1,7 @@
 import stringWidth from "string-width";
 import { computeViewportSlice, type FlatLine, type LineSegment } from "../layout.js";
 
-export type PaneName = "room" | "caucus";
+export type PaneName = "room";
 
 export interface PaneSelection {
   pane: PaneName;
@@ -25,13 +25,9 @@ export interface PaneHitTestInput {
 
 export interface PaneHitTestConfig {
   paneContentHeight: number;
-  leftPaneWidth: number;
-  leftTextWidth: number;
-  rightTextWidth: number;
+  councilTextWidth: number;
   roomFlatLines: FlatLine[];
-  caucusFlatLines: FlatLine[];
   roomScrollOffset: number;
-  caucusScrollOffset: number;
   projectsPaneWidth?: number;
   contentTop?: number;
   horizontalPadding?: number;
@@ -160,17 +156,13 @@ export function hitTestPane(
 
   const projectsWidth = config.projectsPaneWidth ?? 0;
   if (event.x < projectsWidth) return null;
-  const roomLeft = projectsWidth;
-  const caucusLeft = projectsWidth + config.leftPaneWidth;
-  const pane = event.x < caucusLeft ? "room" : "caucus";
-  const paneLeft = pane === "room" ? roomLeft : caucusLeft;
-  const textWidth = pane === "room" ? config.leftTextWidth : config.rightTextWidth;
-  const contentLeft = paneLeft + horizontalPadding;
-  const contentRight = contentLeft + textWidth - 1;
+  const pane: PaneName = "room";
+  const contentLeft = projectsWidth + horizontalPadding;
+  const contentRight = contentLeft + config.councilTextWidth - 1;
   if (event.x < contentLeft || event.x > contentRight) return null;
 
-  const flatLines = pane === "room" ? config.roomFlatLines : config.caucusFlatLines;
-  const scrollOffset = pane === "room" ? config.roomScrollOffset : config.caucusScrollOffset;
+  const flatLines = config.roomFlatLines;
+  const scrollOffset = config.roomScrollOffset;
   const { startIdx, endIdx } = computeViewportSlice(
     flatLines.length,
     config.paneContentHeight,

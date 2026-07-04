@@ -28,7 +28,7 @@ from cli_adapters import (
 )
 from paths import BotferencePaths
 from botference import Botference, WritePermissionRequest, get_completion_context
-from botference_ui import ProjectPanelState, RoomMode, StatusSnapshot
+from ui_types import ProjectPanelState, RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
 from session_store import append_crash_log
 
@@ -49,11 +49,21 @@ def emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+# Streaming text deltas are coalesced before crossing the process boundary:
+# per-chunk emits caused one Ink re-render per CLI chunk (dozens/second).
+# Buffering for a frame interval keeps typing visibly live at ~14 updates/s
+# while cutting renders by an order of magnitude.
+_STREAM_FLUSH_INTERVAL = 0.07  # seconds
+
+
 class InkBridge:
     """UIPort implementation that emits JSON-lines to stdout."""
 
     def __init__(self, paths: BotferencePaths) -> None:
         self._pending_permission: asyncio.Future[bool] | None = None
+        self._pending_choice: asyncio.Future[int | None] | None = None
+        self._stream_buffer: dict[tuple, dict] = {}
+        self._flush_handle: asyncio.TimerHandle | None = None
         self.stream_log_path = paths.session_dir / "stream-events.jsonl"
         self.stream_log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.stream_log_path.open("a", encoding="utf-8") as f:
@@ -84,31 +94,9 @@ class InkBridge:
             event["restored"] = True
         emit(event)
 
-    def add_caucus_entry(
-        self,
-        speaker: str,
-        text: str,
-        blocks: list[dict] | None = None,
-        *,
-        stream_id: str = "",
-        restored: bool = False,
-    ) -> None:
-        event = {
-            "type": "caucus",
-            "speaker": speaker,
-            "text": text,
-            "blocks": blocks if blocks is not None else parse_render_blocks(text),
-        }
-        if stream_id:
-            event["stream_id"] = stream_id
-        if restored:
-            event["restored"] = True
-        emit(event)
-
     def restore_entries(
         self,
         room: list,
-        caucus: list,
         *,
         chunk_size: int = 80,
     ) -> None:
@@ -119,28 +107,74 @@ class InkBridge:
         turning reload from O(N^2) into O(N). Each item is ``(speaker, text,
         blocks_or_None)``.
         """
-        for pane, entries in (("room", room), ("caucus", caucus)):
-            for start in range(0, len(entries), chunk_size):
-                batch = entries[start:start + chunk_size]
-                emit({
-                    "type": "restore",
-                    "pane": pane,
-                    "entries": [
-                        {
-                            "speaker": speaker,
-                            "text": text,
-                            "blocks": blocks if blocks is not None
-                            else parse_render_blocks(text),
-                        }
-                        for speaker, text, blocks in batch
-                    ],
-                })
+        for start in range(0, len(room), chunk_size):
+            batch = room[start:start + chunk_size]
+            emit({
+                "type": "restore",
+                "pane": "room",
+                "entries": [
+                    {
+                        "speaker": speaker,
+                        "text": text,
+                        "blocks": blocks if blocks is not None
+                        else parse_render_blocks(text),
+                    }
+                    for speaker, text, blocks in batch
+                ],
+            })
 
     def stream_event(self, event: dict) -> None:
         payload = {"type": "stream", **event}
         with self.stream_log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": time.time(), **payload}) + "\n")
+
+        if payload.get("kind") == "text_delta":
+            key = (
+                payload.get("stream_id"),
+                payload.get("pane"),
+                payload.get("model"),
+            )
+            buffered = self._stream_buffer.get(key)
+            if buffered is not None:
+                buffered["text"] = (
+                    str(buffered.get("text", "")) + str(payload.get("text", ""))
+                )
+            else:
+                self._stream_buffer[key] = dict(payload)
+            self._schedule_stream_flush()
+            return
+
+        # Non-delta events (start/tool/done) act as ordering barriers:
+        # flush buffered text first so the UI never sees them out of order.
+        self._flush_stream_buffer()
         emit(payload)
+
+    def _schedule_stream_flush(self) -> None:
+        if self._flush_handle is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._flush_stream_buffer()
+            return
+        self._flush_handle = loop.call_later(
+            _STREAM_FLUSH_INTERVAL, self._on_stream_flush_timer
+        )
+
+    def _on_stream_flush_timer(self) -> None:
+        self._flush_handle = None
+        self._flush_stream_buffer()
+
+    def _flush_stream_buffer(self) -> None:
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        if not self._stream_buffer:
+            return
+        buffered = list(self._stream_buffer.values())
+        self._stream_buffer.clear()
+        for payload in buffered:
+            emit(payload)
 
     def set_status(self, status: StatusSnapshot) -> None:
         emit({
@@ -218,6 +252,35 @@ class InkBridge:
             return
         self._pending_permission.set_result(allow)
 
+    async def request_choice(
+        self, prompt: str, options: list[str],
+    ) -> int | None:
+        """Show an arrow-key option picker in the Ink UI.
+
+        Returns the selected option index, or None when dismissed (Esc).
+        """
+        if self._pending_choice is not None and not self._pending_choice.done():
+            raise RuntimeError("Choice request already pending")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[int | None] = loop.create_future()
+        self._pending_choice = future
+        emit({
+            "type": "choice_request",
+            "prompt": prompt,
+            "options": list(options),
+        })
+        try:
+            return await future
+        finally:
+            self._pending_choice = None
+            emit({"type": "choice_cleared"})
+
+    def resolve_choice_request(self, index: object) -> None:
+        if self._pending_choice is None or self._pending_choice.done():
+            return
+        value = index if isinstance(index, int) and index >= 0 else None
+        self._pending_choice.set_result(value)
+
 
 async def _read_line() -> str:
     loop = asyncio.get_event_loop()
@@ -271,7 +334,6 @@ async def _send_initial_state_and_schedule_hydration(
     bridge.add_room_entry(
         "system", "Council room ready. First plain text routes to @all."
     )
-    bridge.add_caucus_entry("system", "(empty until /caucus)")
     emit({"type": "ready"})
     return asyncio.create_task(
         _hydrate_project_panel(bridge, botference, paths)
@@ -507,6 +569,9 @@ async def main() -> None:
 
     bridge = InkBridge(paths)
     turn_queue = InputTurnQueue(botference, bridge, paths)
+    # Let a free-form bot-to-bot thread yield the floor when the user has
+    # typed something mid-thread.
+    botference.pending_input_check = lambda: turn_queue.pending_count > 0
 
     # Paint the UI now; hydrate project/session data in the background.
     # The returned task is held to prevent GC of the running coroutine.
@@ -537,6 +602,10 @@ async def main() -> None:
 
         if msg.get("type") == "permission_response":
             bridge.resolve_permission_request(bool(msg.get("allow")))
+            continue
+
+        if msg.get("type") == "choice_response":
+            bridge.resolve_choice_request(msg.get("index"))
             continue
 
     _executor.shutdown(wait=False)

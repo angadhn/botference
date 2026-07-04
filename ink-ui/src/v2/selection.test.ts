@@ -20,18 +20,13 @@ function line(text: string, label = ""): FlatLine {
 }
 
 describe("Ink pane hit testing", () => {
-  it("maps terminal coordinates into council and caucus panes", () => {
+  it("maps terminal coordinates into the council pane", () => {
     const room = [line("alpha", "[Codex] ")];
-    const caucus = [line("bravo", "System: ")];
     const base = {
       paneContentHeight: 5,
-      leftPaneWidth: 40,
-      leftTextWidth: 36,
-      rightTextWidth: 36,
+      councilTextWidth: 76,
       roomFlatLines: room,
-      caucusFlatLines: caucus,
       roomScrollOffset: 0,
-      caucusScrollOffset: 0,
     };
 
     assert.deepEqual(hitTestPane({ x: 10, y: 2 }, base), {
@@ -39,11 +34,7 @@ describe("Ink pane hit testing", () => {
       lineIndex: 0,
       col: 0,
     });
-    assert.deepEqual(hitTestPane({ x: 50, y: 2 }, base), {
-      pane: "caucus",
-      lineIndex: 0,
-      col: 0,
-    });
+    assert.equal(hitTestPane({ x: 10, y: 20 }, base), null);
   });
 
   it("uses scrolled viewport rows when selecting older pane text", () => {
@@ -53,13 +44,9 @@ describe("Ink pane hit testing", () => {
       y: 2,
     }, {
       paneContentHeight: 3,
-      leftPaneWidth: 40,
-      leftTextWidth: 36,
-      rightTextWidth: 36,
+      councilTextWidth: 76,
       roomFlatLines: room,
-      caucusFlatLines: [],
       roomScrollOffset: 2,
-      caucusScrollOffset: 0,
     });
 
     assert.deepEqual(hit, {
@@ -82,7 +69,8 @@ describe("Ink pane selection", () => {
     };
 
     assert.deepEqual(selectionRangeForLine(selection, "room", 0, "alpha"), { start: 1, end: 5 });
-    assert.equal(selectionRangeForLine(selection, "caucus", 0, "alpha"), null);
+    // Lines outside the selection range render unhighlighted.
+    assert.equal(selectionRangeForLine(selection, "room", 5, "alpha"), null);
   });
 
   it("extracts selected text from wrapped rendered lines", () => {

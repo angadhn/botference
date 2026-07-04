@@ -9,13 +9,14 @@ Python modules that power the botference framework. These are the runtime compon
 
 | Module | Purpose |
 |--------|---------|
-| `botference.py` | Botference mode controller — input parsing, routing, caucus orchestration, draft/review/write pipeline |
-| `botference_ui.py` | Python/Textual backend for the status bar. The primary terminal frontend is now the Ink TUI (`ink-ui/`) |
+| `botference.py` | Botference mode controller — input parsing, routing, free-form handoffs, draft/review/write pipeline |
+| `botference_ink_bridge.py` | JSON-lines bridge between the Ink TUI (`ink-ui/`) and the controller |
+| `ui_types.py` | UI-facing dataclasses (status snapshot, project panel state) shared by controller and bridge |
 | `cli_adapters.py` | Subprocess wrappers for Claude CLI and Codex CLI — session management, output parsing |
 | `botference_agent.py` | Agent runner for build mode — loads agent prompts, registers tools, runs the tool-calling loop |
 | `fallback_agent_mcp.py` | MCP fallback agent runner — exposes per-agent tools to `claude -p` when no API key is available (Python ≥ 3.10) |
 | `providers.py` | LLM provider abstraction — Anthropic and OpenAI API clients, model detection, context windows |
-| `room_prompts.py` | Prompt templates for botference mode — room preamble, caucus turns, writer/reviewer/write phases |
+| `room_prompts.py` | Prompt templates for botference mode — room preamble, free-form protocol, writer/reviewer/write phases |
 | `handoff.py` | Handoff schema, validation, serialization, and relay generation. Manages tier selection (self-authored, cross-authored, mechanical) and session teardown |
 | `paths.py` | Centralized path resolution for all botference file locations (work dir, build dir, handoff paths, templates) |
 
@@ -23,9 +24,9 @@ Python modules that power the botference framework. These are the runtime compon
 
 ```
 botference (shell)
-  ├─ plan mode ──→ botference.py ──→ cli_adapters.py (Claude + Codex)
-  │                    │              └─ room_prompts.py (prompt templates)
-  │                    └─ botference_ui.py (TUI)
+  ├─ plan mode ──→ ink-ui/ ──→ botference_ink_bridge.py ──→ botference.py
+  │                                  │                        ├─ cli_adapters.py (Claude + Codex)
+  │                                  └─ ui_types.py           └─ room_prompts.py (prompt templates)
   │
   ├─ build mode ──→ botference_agent.py ──→ providers.py (API calls)
   │                      └─ tools/ (tool execution)

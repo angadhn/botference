@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 import botference_ink_bridge as binkb  # noqa: E402
 from botference import Botference  # noqa: E402
-from botference_ui import ProjectPanelState  # noqa: E402
+from ui_types import ProjectPanelState  # noqa: E402
 from paths import BotferencePaths  # noqa: E402
 
 # Re-use the controller scaffolding from the main test module.
@@ -42,9 +42,6 @@ class _RecordingBridge:
 
     def add_room_entry(self, *a: Any, **kw: Any) -> None:
         self.calls.append(("add_room_entry", a))
-
-    def add_caucus_entry(self, *a: Any, **kw: Any) -> None:
-        self.calls.append(("add_caucus_entry", a))
 
 
 @pytest.mark.asyncio
@@ -194,3 +191,62 @@ class TestInkBridgeInputQueue:
             {"type": "queue", "pending": 0},
             {"type": "ready"},
         ]
+
+
+@pytest.mark.asyncio
+class TestStreamCoalescing:
+    def _bridge(self, tmp_path, monkeypatch, emitted):
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        return binkb.InkBridge(c.paths)
+
+    async def test_text_deltas_coalesce_into_one_emit(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        bridge = self._bridge(tmp_path, monkeypatch, emitted)
+
+        base = {"stream_id": "s1", "pane": "room", "model": "claude"}
+        for chunk in ("Hel", "lo ", "world"):
+            bridge.stream_event({**base, "kind": "text_delta", "text": chunk})
+
+        # Nothing crosses the boundary until the flush interval elapses.
+        assert emitted == []
+        await asyncio.sleep(binkb._STREAM_FLUSH_INTERVAL + 0.05)
+
+        deltas = [e for e in emitted if e.get("kind") == "text_delta"]
+        assert len(deltas) == 1
+        assert deltas[0]["text"] == "Hello world"
+
+    async def test_non_delta_event_flushes_buffer_first(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        bridge = self._bridge(tmp_path, monkeypatch, emitted)
+
+        base = {"stream_id": "s1", "pane": "room", "model": "claude"}
+        bridge.stream_event({**base, "kind": "text_delta", "text": "partial"})
+        bridge.stream_event({**base, "kind": "done"})
+
+        kinds = [e.get("kind") for e in emitted]
+        assert kinds == ["text_delta", "done"]
+        assert emitted[0]["text"] == "partial"
+
+    async def test_streams_do_not_mix(self, tmp_path, monkeypatch):
+        emitted: list[dict] = []
+        bridge = self._bridge(tmp_path, monkeypatch, emitted)
+
+        bridge.stream_event({
+            "stream_id": "s1", "pane": "room", "model": "claude",
+            "kind": "text_delta", "text": "claude-text",
+        })
+        bridge.stream_event({
+            "stream_id": "s2", "pane": "room", "model": "codex",
+            "kind": "text_delta", "text": "codex-text",
+        })
+        await asyncio.sleep(binkb._STREAM_FLUSH_INTERVAL + 0.05)
+
+        texts = {e["text"] for e in emitted if e.get("kind") == "text_delta"}
+        assert texts == {"claude-text", "codex-text"}

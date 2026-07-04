@@ -12,7 +12,6 @@ export interface V2Activity {
 export const V2_SPINNER_VERBS = [
   "Architecting",
   "Brewing",
-  "Caucusing",
   "Cogitating",
   "Composing",
   "Conjuring",
@@ -54,9 +53,8 @@ export function normalizeV2ActivityTarget(value: unknown): V2ActivityTarget {
   return "system";
 }
 
-export function targetFromInput(input: string, currentRoute: string, mode: string): V2ActivityTarget {
+export function targetFromInput(input: string, currentRoute: string): V2ActivityTarget {
   const trimmed = input.trim().toLowerCase();
-  if (mode === "caucus") return "all";
   if (trimmed.startsWith("@claude")) return "claude";
   if (trimmed.startsWith("@codex")) return "codex";
   if (trimmed.startsWith("@all")) return "all";
@@ -66,15 +64,10 @@ export function targetFromInput(input: string, currentRoute: string, mode: strin
 
 export function createV2Activity(
   target: V2ActivityTarget,
-  mode: string,
   seed: string,
   now = Date.now(),
 ): V2Activity {
-  const verb = mode === "caucus"
-    ? "Caucusing"
-    : target === "system"
-      ? "Working"
-      : selectV2SpinnerVerb(seed);
+  const verb = target === "system" ? "Working" : selectV2SpinnerVerb(seed);
   return {
     target,
     mode: target === "system" ? "system" : "thinking",
@@ -87,10 +80,9 @@ export function createV2Activity(
 export function startV2ActivityFromInput(
   input: string,
   currentRoute: string,
-  mode: string,
   now = Date.now(),
 ): V2Activity {
-  return createV2Activity(targetFromInput(input, currentRoute, mode), mode, input, now);
+  return createV2Activity(targetFromInput(input, currentRoute), input, now);
 }
 
 function lowerFirst(text: string): string {
@@ -175,7 +167,7 @@ export function updateV2ActivityForStream(
 ): V2Activity {
   const target = normalizeV2ActivityTarget(msg.model);
   const seed = String(msg.stream_id ?? msg.model ?? now);
-  const base = current ?? createV2Activity(target, "", seed, now);
+  const base = current ?? createV2Activity(target, seed, now);
   const kind = String(msg.kind ?? "");
 
   if (kind === "tool_start") {

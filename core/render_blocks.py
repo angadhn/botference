@@ -1,4 +1,4 @@
-"""Structured transcript block parsing for Ink/Textual renderers."""
+"""Structured transcript block parsing for the Ink renderer."""
 
 from __future__ import annotations
 

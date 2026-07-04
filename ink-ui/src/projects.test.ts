@@ -3,11 +3,16 @@ import { strict as assert } from "node:assert";
 import {
   buildProjectRows,
   clampSelectableRow,
+  filterProjectRows,
   nextSelectableRow,
   projectRowCommand,
+  relativeTime,
   type ProjectPanelStateData,
   type ProjectRow,
 } from "./projects.js";
+
+// Fixed clock for deterministic relative timestamps.
+const NOW = Date.parse("2026-05-10T12:00:00Z");
 
 const empty: ProjectPanelStateData = {
   active_project_id: "",
@@ -107,7 +112,7 @@ describe("buildProjectRows", () => {
   });
 
   it("expands the active project with next-action and session rows", () => {
-    const rows = buildProjectRows(activeProject);
+    const rows = buildProjectRows(activeProject, { now: NOW });
     const kinds = rows.map((r) => r.kind);
     // Inbox, active project, next-action, two sessions, sibling project header
     assert.deepEqual(kinds, ["inbox", "project", "next", "session", "session", "project"]);
@@ -116,10 +121,35 @@ describe("buildProjectRows", () => {
     const firstSession = rows[3] as { id: string; title: string; meta: string; active: boolean };
     assert.equal(firstSession.id, "abc12345-aaaa-bbbb-cccc-ddddeeeeffff");
     assert.equal(firstSession.title, "Resume polish");
-    assert.equal(firstSession.meta, "");
+    assert.equal(firstSession.meta, "open");
     assert.equal(firstSession.active, true);
-    const secondSession = rows[4] as { title: string };
+    const secondSession = rows[4] as { title: string; meta: string };
     assert.equal(secondSession.title, "Untitled chat");
+    // 2026-05-09 → one day before NOW.
+    assert.equal(secondSession.meta, "1d");
+  });
+
+  it("sorts active-project sessions newest first regardless of input order", () => {
+    const shuffled: ProjectPanelStateData = {
+      active_project_id: "p",
+      inbox_session_count: 0,
+      projects: [{
+        id: "p",
+        title: "P",
+        status: "active",
+        next_action: "",
+        active: true,
+        session_count: 3,
+        sessions: [
+          { session_id: "old", title: "old", updated_at: "2026-05-01T00:00:00Z", active: false },
+          { session_id: "new", title: "new", updated_at: "2026-05-10T00:00:00Z", active: false },
+          { session_id: "mid", title: "mid", updated_at: "2026-05-05T00:00:00Z", active: false },
+        ],
+      }],
+    };
+    const rows = buildProjectRows(shuffled, { now: NOW });
+    const sessionIds = rows.filter((r) => r.kind === "session").map((r) => r.id);
+    assert.deepEqual(sessionIds, ["new", "mid", "old"]);
   });
 
   it("emits an empty placeholder when the active project has no sessions", () => {
@@ -128,6 +158,36 @@ describe("buildProjectRows", () => {
     assert.equal(placeholder.kind, "empty");
     assert.equal(placeholder.selectable, false);
     assert.equal(placeholder.title, "no resumable chats yet");
+  });
+
+  it("filters selectable rows by case-insensitive title match", () => {
+    const rows = buildProjectRows(activeProject, { now: NOW, filter: "resume" });
+    assert.deepEqual(
+      rows.map((r) => ({ kind: r.kind, title: r.title })),
+      [{ kind: "session", title: "Resume polish" }],
+    );
+  });
+
+  it("keeps decorations when the filter is empty", () => {
+    const unfiltered = buildProjectRows(activeProject, { now: NOW });
+    assert.deepEqual(filterProjectRows(unfiltered, "  "), unfiltered);
+  });
+});
+
+describe("relativeTime", () => {
+  it("buckets ages into compact units", () => {
+    assert.equal(relativeTime("2026-05-10T11:59:30Z", NOW), "now");
+    assert.equal(relativeTime("2026-05-10T11:15:00Z", NOW), "45m");
+    assert.equal(relativeTime("2026-05-10T07:00:00Z", NOW), "5h");
+    assert.equal(relativeTime("2026-05-07T12:00:00Z", NOW), "3d");
+    assert.equal(relativeTime("2026-04-20T12:00:00Z", NOW), "2w");
+    assert.equal(relativeTime("2026-02-10T12:00:00Z", NOW), "2mo");
+    assert.equal(relativeTime("2024-05-10T12:00:00Z", NOW), "2y");
+  });
+
+  it("returns empty for missing or invalid dates", () => {
+    assert.equal(relativeTime("", NOW), "");
+    assert.equal(relativeTime("not-a-date", NOW), "");
   });
 });
 

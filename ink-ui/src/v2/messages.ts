@@ -113,6 +113,38 @@ export function toolSegmentStreamId(
   return state.currentToolStreamId;
 }
 
+// Trailing JSON footers ({"status": ..., ...}) drive free-form routing
+// on the controller side. The controller strips them from its final entry,
+// but segmented streams keep the raw streamed text in the pane (the final
+// entry is dropped to avoid a reflow), so the footer must also be stripped
+// here when the stream completes.
+const TRAILING_JSON_FOOTER_RE = /\{[^{]*"status"[^}]*\}\s*$/;
+
+export function stripTrailingJsonFooter(text: string): string {
+  return text.replace(TRAILING_JSON_FOOTER_RE, "").trimEnd();
+}
+
+/**
+ * On stream completion, strip a trailing JSON footer from the stream's last
+ * text segment. Returns the same array when nothing changed.
+ */
+export function stripFooterFromStreamEntries<
+  T extends { streamId?: string; text: string },
+>(entries: T[], baseStreamId: string): T[] {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    const sid = entry.streamId ?? "";
+    if (sid === baseStreamId || sid.startsWith(`${baseStreamId}:text:`)) {
+      const stripped = stripTrailingJsonFooter(entry.text);
+      if (stripped === entry.text) return entries;
+      const next = entries.slice();
+      next[i] = { ...entry, text: stripped };
+      return next;
+    }
+  }
+  return entries;
+}
+
 export function isFinalEntryForSegmentedStream(
   entryStreamId: string,
   baseStreamId: string,

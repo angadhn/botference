@@ -407,9 +407,6 @@ parse_loop_args() {
         shift
         ;;
       --ink) UI_MODE="ink" ;;
-      --ink-legacy) UI_MODE="ink-legacy" ;;
-      --ink-v2) UI_MODE="ink" ;;
-      --textual) UI_MODE="textual" ;;
       --profile=*) INIT_PROFILE="${arg#--profile=}" ;;
       --no-debug-panes) DEBUG_PANES=false ;;
       --help|-h) SHOW_HELP=true ;;
@@ -442,8 +439,6 @@ Options:
   --claude-transport=<programmatic|tmux>
                     Select Claude transport for botference mode
   --ink             Use Ink (Node.js) TUI for botference mode (default)
-  --ink-legacy      Use the legacy Ink TUI with Ctrl+Y native text selection
-  --textual         Use Textual (Python) TUI for botference mode
   --no-debug-panes  Disable debug panes in botference mode
   --serial          Force serial architecture
   --parallel        Force parallel architecture

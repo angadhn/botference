@@ -12,6 +12,8 @@ import {
   toolEventId,
   toolPreviewLine,
   toolSegmentStreamId,
+  stripFooterFromStreamEntries,
+  stripTrailingJsonFooter,
 } from "./messages.js";
 
 describe("Ink message pacing", () => {
@@ -107,5 +109,29 @@ describe("Ink streamed tool stack", () => {
     assert.equal(isFinalEntryForSegmentedStream("s1:tools", "s1"), true);
     assert.equal(isFinalEntryForSegmentedStream("s1:text:0", "s1"), false);
     assert.equal(isFinalEntryForSegmentedStream("s1:tools:0", "s1"), false);
+  });
+});
+
+
+describe("Routing footer stripping", () => {
+  it("removes a trailing JSON footer", () => {
+    const text = 'Position stated.\n\n{"status": "converged", "next": "@user", "summary": "done"}';
+    assert.equal(stripTrailingJsonFooter(text), "Position stated.");
+    assert.equal(stripTrailingJsonFooter("no footer here"), "no footer here");
+  });
+
+  it("edits only the stream's last text segment", () => {
+    const entries = [
+      { streamId: "claude:room:1:text:0", text: "early segment" },
+      { streamId: "claude:room:1:tools:0", text: "Read - file" },
+      { streamId: "claude:room:1:text:1", text: 'End.\n{"status": "continuing", "next": "@codex", "summary": "s"}' },
+      { streamId: "codex:room:2:text:0", text: 'Other.\n{"status": "x", "next": "@user", "summary": "s"}' },
+    ];
+    const out = stripFooterFromStreamEntries(entries, "claude:room:1");
+    assert.equal(out[2]!.text, "End.");
+    assert.equal(out[0]!.text, "early segment");
+    assert.ok(out[3]!.text.includes('"status"'), "other streams untouched");
+    const unchanged = stripFooterFromStreamEntries(out, "claude:room:1");
+    assert.equal(unchanged, out);
   });
 });

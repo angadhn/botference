@@ -1,10 +1,10 @@
 """
 botference.py — Controller for botference mode.
 
-Command parsing, auto-routing, caucus protocol, finalize flow,
-transcript management, and mode tracking.  The TUI lives in
-botference_ui.py; this module is the headless logic layer so it can
-be tested without Textual.
+Command parsing, auto-routing, free-form handoffs, finalize flow,
+transcript management, and mode tracking.  The Ink TUI talks to this
+controller through botference_ink_bridge.py; this module is the
+headless logic layer so it can be tested without a UI.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from cli_adapters import (
 )
 from paths import BotferencePaths
 from project_store import ProjectInfo, ProjectStore
-from botference_ui import (
+from ui_types import (
     ProjectPanelProject,
     ProjectPanelSession,
     ProjectPanelState,
@@ -47,10 +47,11 @@ from botference_ui import (
 from room_prompts import (
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
-    caucus_first_turn,
-    caucus_turn,
     checkpoint_preamble,
     finalize_plan_preamble,
+    free_form_protocol,
+    free_form_resume_note,
+    free_form_turn_status,
     reviewer_preamble,
     revision_from_plan_preamble,
     room_preamble,
@@ -141,7 +142,6 @@ class InputKind(Enum):
     MESSAGE = "message"
     PROJECTS = "projects"
     PROJECT = "project"
-    CAUCUS = "caucus"
     LEAD = "lead"
     DRAFT = "draft"
     FINALIZE = "finalize"
@@ -170,7 +170,6 @@ class ParsedInput:
 _SLASH_COMMANDS = {
     "/projects": InputKind.PROJECTS,
     "/project": InputKind.PROJECT,
-    "/caucus": InputKind.CAUCUS,
     "/lead": InputKind.LEAD,
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
@@ -248,15 +247,14 @@ def get_slash_commands() -> list[str]:
 
     Sourced from _SLASH_COMMANDS plus relay/tag aliases; targeted commands
     are expanded with @claude/@codex variants (matching the /lead pattern).
-    Trailing spaces on /caucus and @mentions signal that a message body
-    follows.
+    Trailing spaces on @mentions signal that a message body follows.
     """
-    out: list[str] = ["/caucus "]
+    out: list[str] = []
     for cmd in _TARGETED_COMMANDS:
         out.append(f"{cmd} @claude")
         out.append(f"{cmd} @codex")
     for cmd in _SLASH_COMMANDS:
-        if cmd in _TARGETED_COMMANDS or cmd == "/caucus":
+        if cmd in _TARGETED_COMMANDS:
             continue
         out.append(cmd)
     out.extend(["@claude ", "@codex ", "@all "])
@@ -844,11 +842,7 @@ def _visual_verification_warning(model: str, resp: AdapterResponse) -> str:
     )
 
 
-# ── Caucus footer parsing ──────────────────────────────────
-
-_TERMINAL_STATUSES = frozenset(
-    {"ready_to_draft", "need_user_input", "blocked", "no_objection", "disagree"}
-)
+# ── Free-form room footer ─────────────────────────────────
 
 _FOOTER_FENCED_RE = re.compile(
     r"```(?:json)?\s*(\{[^`]*\})\s*```\s*$", re.DOTALL
@@ -857,35 +851,33 @@ _FOOTER_RAW_RE = re.compile(
     r'(\{[^{]*"status"[^}]*\})\s*$', re.DOTALL
 )
 
+_FF_MENTION_RE = re.compile(r"@(claude|codex|user)\b", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
-class CaucusFooter:
-    status: str        # continue | ready_to_draft | …
-    handoff_to: str    # claude | codex | user
-    writer_vote: str   # claude | codex | none
+class RoomFooter:
+    status: str    # continuing | converged | blocked
+    next: str      # @claude | @codex | @user | ""
     summary: str
-
-    @property
-    def is_terminal(self) -> bool:
-        return self.status in _TERMINAL_STATUSES
+    writer: str = ""   # @claude | @codex | "" — vote for who drafts the plan
 
     @classmethod
-    def parse(cls, text: str) -> Optional["CaucusFooter"]:
-        """Extract JSON footer from model response text."""
+    def parse(cls, text: str) -> Optional["RoomFooter"]:
+        """Extract the free-form JSON footer from model response text."""
         for regex in (_FOOTER_FENCED_RE, _FOOTER_RAW_RE):
             m = regex.search(text)
             if m:
                 try:
                     d = json.loads(m.group(1))
-                    if "status" in d:
-                        return cls(
-                            status=d.get("status", "continue"),
-                            handoff_to=d.get("handoff_to", "user"),
-                            writer_vote=d.get("writer_vote", "none"),
-                            summary=d.get("summary", ""),
-                        )
-                except (json.JSONDecodeError, KeyError):
+                except json.JSONDecodeError:
                     continue
+                if "status" in d and "next" in d:
+                    return cls(
+                        status=str(d.get("status", "continuing")),
+                        next=str(d.get("next", "")),
+                        summary=str(d.get("summary", "")),
+                        writer=str(d.get("writer", "")),
+                    )
         return None
 
     @classmethod
@@ -898,15 +890,40 @@ class CaucusFooter:
         return text
 
 
+def free_form_next_target(speaker: str, text: str) -> Optional[str]:
+    """Decide who (if anyone) gets the floor after *speaker*'s reply.
+
+    Returns "claude"/"codex" to dispatch the other bot, "user" for an
+    explicit handoff to the user, or None when the reply carries no
+    handoff (floor returns to the user silently).
+
+    Routing prefers the structured footer; prose @mentions of the other
+    participant are the fallback so a forgotten footer degrades to a
+    working handoff instead of a dead thread.
+    """
+    other = "codex" if speaker == "claude" else "claude"
+    footer = RoomFooter.parse(text)
+    if footer is not None:
+        nxt = footer.next.lstrip("@").lower()
+        if nxt == other:
+            return other
+        if nxt == "user":
+            return "user"
+        return None  # self-handoff or empty → floor opens
+    mentions = {m.lower() for m in _FF_MENTION_RE.findall(text)}
+    if other in mentions:
+        return other
+    if "user" in mentions:
+        return "user"
+    return None
+
+
 # ── UI callback protocol ──────────────────────────────────
 
 
 class UIPort(Protocol):
     """Minimal interface the controller needs from the TUI."""
     def add_room_entry(
-        self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
-    ) -> None: ...
-    def add_caucus_entry(
         self, speaker: str, text: str, blocks: Optional[list[dict]] = None,
     ) -> None: ...
     def set_status(self, status: StatusSnapshot) -> None: ...
@@ -916,6 +933,9 @@ class UIPort(Protocol):
     async def request_write_permission(
         self, request: "WritePermissionRequest",
     ) -> bool: ...
+    async def request_choice(
+        self, prompt: str, options: list[str],
+    ) -> Optional[int]: ...
 
 
 @dataclass(frozen=True)
@@ -1037,8 +1057,14 @@ def _codex_worktree_diff_blocks(
 
 # ── Botference controller ────────────────────────────────────
 
-_CAUCUS_MIN_TURNS = 3   # each model speaks at least 3 times
-_CAUCUS_MAX_TURNS = 5   # each model speaks at most 5 times
+
+# Free-form mode: bot-to-bot thread budgets. Exhaustion never kills the
+# thread — it forces the floor back to the user, who can say "continue".
+_FREE_FORM_MAX_BOT_TURNS = 6          # bot turns per thread before handoff
+_FREE_FORM_OUTPUT_TOKEN_BUDGET = 8_000  # output tokens per thread
+_FREE_FORM_EXTENSION_TURNS = 3        # one automatic extension, then handoff
+_FREE_FORM_EXTENSION_TOKENS = 4_000
+_FREE_FORM_TURN_NUDGE_TOKENS = 400    # per-turn size above which we nudge
 
 _RELAY_USAGE = "Usage: /relay @claude|@codex  (aliases: /relay-claude, /tag @claude)"
 _HARNESS_COMMAND_USAGE = (
@@ -1056,7 +1082,7 @@ _MECHANICAL_TAIL_ENTRIES = 20
 
 
 class Botference:
-    """Main controller: command dispatch, routing, caucus, finalize."""
+    """Main controller: command dispatch, routing, free-form threads, finalize."""
 
     def __init__(
         self,
@@ -1069,6 +1095,10 @@ class Botference:
     ):
         self.claude = claude
         self.codex = codex
+        # Optional callback set by the UI layer: returns True when the user
+        # has queued input, so a free-form thread yields the floor early.
+        self.pending_input_check: Optional[Callable[[], bool]] = None
+        self._ff_last_output_tokens: dict[str, int] = {}
         self.system_prompt = system_prompt
         self.task = task
         self.paths = paths or BotferencePaths.resolve()
@@ -1086,7 +1116,7 @@ class Botference:
         self.lead: str = "auto"
         self.observe: bool = True
         self._room_history: list[DisplayRecord] = []
-        self._caucus_history: list[DisplayRecord] = []
+        self._ff_writer_votes: dict[str, str] = {}  # model → "claude"/"codex" writer vote
         self._restoring_session: bool = False
 
         self._claude_pct: Optional[float] = None
@@ -1511,10 +1541,7 @@ class Botference:
                 {"speaker": entry.speaker, "text": entry.text}
                 for entry in self._room_history
             ],
-            "caucus_history": [
-                {"speaker": entry.speaker, "text": entry.text}
-                for entry in self._caucus_history
-            ],
+            "writer_votes": dict(self._ff_writer_votes),
             "transcript": [
                 {
                     "speaker": entry.speaker,
@@ -1567,7 +1594,6 @@ class Botference:
         return (
             not self.transcript.entries
             and not self._models_initialized
-            and not self._caucus_history
         )
 
     def _format_session_list(self, summaries: list) -> str:
@@ -1670,14 +1696,10 @@ class Botference:
                 for entry in payload.get("room_history", []) or []
                 if isinstance(entry, dict)
             ]
-            self._caucus_history = [
-                DisplayRecord(
-                    speaker=str(entry.get("speaker", "system")),
-                    text=str(entry.get("text", "")),
-                )
-                for entry in payload.get("caucus_history", []) or []
-                if isinstance(entry, dict)
-            ]
+            self._ff_writer_votes = {
+                str(model): str(vote)
+                for model, vote in (payload.get("writer_votes", {}) or {}).items()
+            }
 
             self.transcript = Transcript()
             transcript_entries = payload.get("transcript", []) or []
@@ -1733,6 +1755,15 @@ class Botference:
                 self._models_initialized.discard("claude")
             if not self.codex.thread_id:
                 self._models_initialized.discard("codex")
+            # Resumed models keep their native CLI sessions and never see the
+            # free-form section of the initial prompt — teach them via the
+            # shared transcript instead (once per session).
+            if self._models_initialized and not any(
+                "Free-form mode is active" in e.text
+                for e in self.transcript.entries
+                if e.speaker == "system"
+            ):
+                self.transcript.add("system", free_form_resume_note())
             self._yield_pressure = {
                 str(model): float(value)
                 for model, value in (payload.get("yield_pressure", {}) or {}).items()
@@ -1755,21 +1786,14 @@ class Botference:
             for e in self._room_history
             if not self._is_routine_restored_system_entry(e)
         ]
-        caucus = [
-            (e.speaker, e.text, self._structured_blocks(e.text))
-            for e in self._caucus_history
-            if not self._is_routine_restored_system_entry(e)
-        ]
         # Fast path: bulk-restore in batches (single state update per batch).
         # Falls back to per-entry replay for any UIPort without restore_entries.
         bulk = getattr(ui, "restore_entries", None)
         if callable(bulk):
-            bulk(room, caucus)
+            bulk(room)
             return
         for speaker, text, blocks in room:
             self._emit_room_entry(ui, speaker, text, blocks, restored=True)
-        for speaker, text, blocks in caucus:
-            self._emit_caucus_entry(ui, speaker, text, blocks, restored=True)
 
     @staticmethod
     def _is_routine_restored_system_entry(entry: DisplayRecord) -> bool:
@@ -1788,7 +1812,6 @@ class Botference:
             "Use /project open ",
             "Resumed session ",
             "Council room ready.",
-            "(empty until /caucus)",
         )
         return text.startswith(routine_prefixes)
 
@@ -2042,10 +2065,6 @@ class Botference:
             await self._run_harness_command(parsed.target, parsed.body, ui)
             return
 
-        if parsed.kind is InputKind.CAUCUS:
-            await self._run_caucus(parsed.body, ui)
-            return
-
         if parsed.kind is InputKind.DRAFT:
             await self._run_draft(ui, parsed.body)
             return
@@ -2064,8 +2083,9 @@ class Botference:
             "  /projects          — List project folders under projects/",
             "  /project [open <id>|clear|current|create <title>|create-from-chat|activate-build]",
             "                     — Set, show, or create the active project context",
-            "  /caucus <topic>     — Start a structured discussion between Claude and Codex",
-            "  /lead @claude|@codex — Set who writes the plan",
+            "  /project assign [<session-id-prefix>] <project-id>",
+            "                     — File this chat (or a saved one) under a project without switching context",
+            "  /lead @claude|@codex — Set who writes the plan (auto-set when the bots agree on a writer)",
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "  /relay @claude|@codex — Reset model session with structured handoff",
@@ -2090,7 +2110,7 @@ class Botference:
             "",
             "Aliases: /relay-claude, /relay-codex, /tag @claude, /tag @codex",
             "",
-            "Workflow: discuss → /caucus → /lead → /draft [rounds] → /finalize",
+            "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
             "",
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
             "",
@@ -2164,6 +2184,10 @@ class Botference:
             self._create_project(value, ui)
             return
 
+        if action == "assign":
+            self._assign_session_to_project(value, ui)
+            return
+
         if action == "create-from-chat":
             if value:
                 self._add_room_entry(ui, "system", "Usage: /project create-from-chat")
@@ -2202,6 +2226,148 @@ class Botference:
             f"Plan writes now target {self._planning_display_path(self._plan_path)}.\n"
             f"Run /resume to see chats for this project.",
         )
+
+    def _assign_session_to_project(self, arg: str, ui: UIPort) -> None:
+        """File a chat into a project without switching the active context.
+
+        Usage: /project assign <project-id>                (current chat)
+               /project assign <session-id-prefix> <project-id>
+        """
+        usage = ("Usage: /project assign <project-id>  or  "
+                 "/project assign <session-id-prefix> <project-id>")
+        parts = arg.split()
+        if not parts or len(parts) > 2:
+            self._add_room_entry(ui, "system", usage)
+            return
+
+        if len(parts) == 1:
+            session_id, session_label = self.session_id, "this chat"
+            project_query = parts[0]
+        else:
+            session_query, project_query = parts
+            summaries = self.session_store.list_summaries(limit=200)
+            matches = [s for s in summaries
+                       if s.session_id.startswith(session_query)]
+            if not matches:
+                self._add_room_entry(
+                    ui, "system",
+                    f"No saved session matched '{session_query}'. "
+                    "Run /resume to list sessions.",
+                )
+                return
+            if len(matches) > 1:
+                self._add_room_entry(
+                    ui, "system",
+                    f"'{session_query}' is ambiguous "
+                    f"({len(matches)} sessions match). Use a longer prefix.",
+                )
+                return
+            session_id = matches[0].session_id
+            session_label = f"'{matches[0].title or session_id[:8]}'"
+
+        project = self.project_store.get(project_query)
+        if not project:
+            self._add_room_entry(
+                ui, "system",
+                f"No project matched '{project_query}'. "
+                "Run /projects to list available projects.",
+            )
+            return
+
+        self.project_store.associate_session(project.id, session_id)
+        self._sync_project_ui(ui)
+        self._add_room_entry(
+            ui, "system",
+            f"Filed {session_label} under {project.title} ({project.id}). "
+            "The active context is unchanged — use /project open "
+            f"{project.id} to switch to it.",
+        )
+
+    _SUGGESTION_STOPWORDS = frozenset({
+        "this", "that", "with", "have", "want", "need", "like", "about",
+        "what", "when", "where", "should", "could", "would", "there",
+        "then", "them", "they", "will", "from", "into", "please", "help",
+        "make", "just", "some", "more", "think", "know", "going",
+    })
+
+    def _suggest_projects_for_text(self, text: str) -> list[ProjectInfo]:
+        """Rank existing projects by keyword overlap with *text* (top 2)."""
+        words = {
+            w for w in re.findall(r"[a-z0-9]{4,}", text.lower())
+            if w not in self._SUGGESTION_STOPWORDS
+        }
+        if not words:
+            return []
+        scored: list[tuple[int, ProjectInfo]] = []
+        for project in self.project_store.list_projects():
+            haystack = " ".join([
+                project.id.replace("-", " "),
+                project.title,
+                project.next_action,
+            ]).lower()
+            project_words = set(re.findall(r"[a-z0-9]{4,}", haystack))
+            score = len(words & project_words)
+            if score > 0:
+                scored.append((score, project))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [project for _, project in scored[:2]]
+
+    async def _maybe_suggest_project(self, body: str, ui: UIPort) -> None:
+        """On the first message of an Inbox chat, ask where to file it.
+
+        UIs that implement ``request_choice`` get an arrow-key picker;
+        others get a passive system note with ready-to-copy commands.
+        """
+        if self.active_project_id:
+            return
+        user_turns = sum(1 for e in self.transcript.entries
+                         if e.speaker == "user")
+        if user_turns != 1:
+            return
+        suggestions = self._suggest_projects_for_text(body)
+
+        request_choice = getattr(ui, "request_choice", None)
+        if request_choice is None:
+            lines = ["This chat is in Inbox."]
+            if suggestions:
+                lines.append("It might belong to:")
+                for project in suggestions:
+                    lines.append(
+                        f"  • {project.title} — /project open {project.id}"
+                    )
+            lines.append(
+                "Start a new project with /project create-from-chat, "
+                "or ignore this to stay in Inbox."
+            )
+            self._show_room_notice(ui, "system", "\n".join(lines))
+            return
+
+        options = [f"File under {p.title}" for p in suggestions]
+        options.append("Create a new project from this chat")
+        options.append("Stay in Inbox")
+        try:
+            choice = await request_choice(
+                "New chat — where should it live?", options,
+            )
+        except Exception:
+            return
+        if choice is None or not 0 <= choice < len(options):
+            return
+
+        if choice < len(suggestions):
+            project = suggestions[choice]
+            self.active_project_id = project.id
+            self._persist_session()
+            self.project_store.associate_session(project.id, self.session_id)
+            self._sync_project_ui(ui)
+            self._show_room_notice(
+                ui, "system",
+                f"Project context set to {project.title} ({project.id}).",
+            )
+        elif choice == len(suggestions):
+            title = _project_title_from_session_title(self._session_title())
+            self._create_project(title, ui)
+        # "Stay in Inbox" → nothing to do.
 
     def _create_project(self, title: str, ui: UIPort) -> None:
         try:
@@ -3054,30 +3220,6 @@ class Botference:
                 pass
         ui.add_room_entry(speaker, text, blocks)
 
-    def _emit_caucus_entry(
-        self,
-        ui: UIPort,
-        speaker: str,
-        text: str,
-        blocks: list[dict],
-        *,
-        stream_id: str = "",
-        restored: bool = False,
-    ) -> None:
-        if stream_id or restored:
-            try:
-                ui.add_caucus_entry(
-                    speaker,
-                    text,
-                    blocks,
-                    stream_id=stream_id,
-                    restored=restored,
-                )  # type: ignore[call-arg]
-                return
-            except TypeError:
-                pass
-        ui.add_caucus_entry(speaker, text, blocks)
-
     def _add_room_entry(
         self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",
     ) -> None:
@@ -3101,19 +3243,6 @@ class Botference:
             self._structured_blocks(text),
             stream_id=stream_id,
         )
-
-    def _add_caucus_entry(
-        self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",
-    ) -> None:
-        self._caucus_history.append(DisplayRecord(speaker=speaker, text=text))
-        self._emit_caucus_entry(
-            ui,
-            speaker,
-            text,
-            self._structured_blocks(text),
-            stream_id=stream_id,
-        )
-        self._persist_session()
 
     def _maybe_credit_fallback_hint(
         self, model: str, text: str, ui: UIPort,
@@ -3168,12 +3297,15 @@ class Botference:
 
         self.transcript.add("user", body)
         self._persist_session()
+        await self._maybe_suggest_project(body, ui)
 
         targets = (
             ["claude", "codex"] if route == "@all"
             else [route.lstrip("@")]
         )
 
+        last_speaker: Optional[str] = None
+        last_resp: Optional[AdapterResponse] = None
         for model in targets:
             resp = await self._send_to_model(model, body, ui)
             if resp is None and route == "@all" and model == "claude" and getattr(
@@ -3196,6 +3328,130 @@ class Botference:
                 self._update_pct(model, resp, ui)
                 ui.set_status(self.status_snapshot())
                 self._persist_session()
+                last_speaker, last_resp = model, resp
+
+        if (
+            self.mode is RoomMode.PUBLIC
+            and last_speaker is not None
+            and last_resp is not None
+        ):
+            await self._run_free_form_thread(last_speaker, last_resp, ui)
+
+    @staticmethod
+    def _response_output_tokens(resp: AdapterResponse) -> int:
+        """Best-available output-token count for budget accounting."""
+        return (
+            resp.turn_output_tokens
+            or resp.output_tokens
+            or max(1, len(resp.text) // 4)
+        )
+
+    def _record_writer_vote(
+        self, model: str, footer: RoomFooter, ui: UIPort,
+    ) -> None:
+        """Track footer `writer` votes; set the lead on bot consensus.
+
+        A vote is remembered per bot (latest wins). When both bots have
+        voted for the same writer and no lead was set manually, the lead
+        is set automatically — the free-form replacement for the old
+        caucus writer vote.
+        """
+        vote = footer.writer.lstrip("@").lower()
+        if vote not in ("claude", "codex"):
+            return
+        self._ff_writer_votes[model] = vote
+        if self.lead != "auto":
+            return
+        votes = set(self._ff_writer_votes.values())
+        if len(self._ff_writer_votes) == 2 and len(votes) == 1:
+            self.lead = f"@{vote}"
+            self._add_room_entry(
+                ui, "system", f"Writer consensus → lead set to {self.lead}"
+            )
+            ui.set_status(self.status_snapshot())
+
+    async def _run_free_form_thread(
+        self, speaker: str, resp: AdapterResponse, ui: UIPort,
+    ) -> None:
+        """Bot-to-bot floor control after a user-initiated turn.
+
+        Each bot reply may hand the floor to the other bot (footer `next`
+        or a prose @mention). The thread runs until a bot hands back to
+        @user, stops mentioning anyone, or the budget runs out. Budget
+        exhaustion grants one automatic extension, then forces the floor
+        back to the user with the last footer summary — the thread pauses
+        rather than dies, and any user reply starts a fresh budget.
+        """
+        turns = 0
+        tokens_used = self._response_output_tokens(resp)
+        max_turns = _FREE_FORM_MAX_BOT_TURNS
+        token_budget = _FREE_FORM_OUTPUT_TOKEN_BUDGET
+        extended = False
+        current_speaker, current_resp = speaker, resp
+
+        while True:
+            target = free_form_next_target(current_speaker, current_resp.text)
+            if target is None or target == "user":
+                break
+
+            if self.pending_input_check is not None and self.pending_input_check():
+                notice = ("Free-form thread paused — you have queued "
+                          "messages; the floor is yours.")
+                self._add_room_entry(ui, "system", notice)
+                self.transcript.add("system", f"[{notice}]")
+                self._persist_session()
+                break
+
+            if turns >= max_turns or tokens_used >= token_budget:
+                if not extended:
+                    extended = True
+                    max_turns += _FREE_FORM_EXTENSION_TURNS
+                    token_budget += _FREE_FORM_EXTENSION_TOKENS
+                    notice = (
+                        f"Free-form budget reached — granting one extension "
+                        f"(+{_FREE_FORM_EXTENSION_TURNS} turns, "
+                        f"+{_FREE_FORM_EXTENSION_TOKENS} tokens)."
+                    )
+                    self._add_room_entry(ui, "system", notice)
+                    self.transcript.add("system", f"[{notice}]")
+                else:
+                    footer = RoomFooter.parse(current_resp.text)
+                    summary = footer.summary if footer else ""
+                    notice = "Free-form budget exhausted — the floor returns to you."
+                    if summary:
+                        notice += f" Last status: {summary}"
+                    notice += ' Reply (e.g. "continue") to let them keep going.'
+                    self._add_room_entry(ui, "system", notice)
+                    self.transcript.add("system", f"[{notice}]")
+                    self._persist_session()
+                    break
+
+            turns += 1
+            status_note = free_form_turn_status(
+                turns,
+                max_turns,
+                tokens_used,
+                token_budget,
+                last_turn_tokens=self._ff_last_output_tokens.get(target, 0),
+                nudge_threshold=_FREE_FORM_TURN_NUDGE_TOKENS,
+            )
+            self.transcript.add("system", status_note)
+
+            next_resp = await self._send_to_model(target, "", ui)
+            if next_resp is None:
+                break
+            self.transcript.add(target, next_resp.text, next_resp.tool_summaries)
+            visual_warning = _visual_verification_warning(target, next_resp)
+            if visual_warning:
+                self._add_room_entry(ui, "system", visual_warning)
+                self.transcript.add("system", visual_warning)
+            self.transcript.mark_seen(target)
+            self._update_pct(target, next_resp, ui)
+            ui.set_status(self.status_snapshot())
+            self._persist_session()
+
+            tokens_used += self._response_output_tokens(next_resp)
+            current_speaker, current_resp = target, next_resp
 
     async def _send_to_model(
         self, model: str, message: str, ui: UIPort,
@@ -3289,8 +3545,15 @@ class Botference:
                 _tool_summary_display_blocks(resp.tool_summaries),
                 stream_id=f"{resp.stream_id}:tools" if resp.stream_id else "",
             )
-        if resp.text:
-            self._add_room_entry(ui, model, resp.text, stream_id=resp.stream_id)
+        # The JSON room footer drives routing; keep it in the transcript
+        # (models use it) but strip it from the display.
+        display_text = RoomFooter.strip_footer(resp.text)
+        if display_text:
+            self._add_room_entry(ui, model, display_text, stream_id=resp.stream_id)
+        footer = RoomFooter.parse(resp.text)
+        if footer is not None:
+            self._record_writer_vote(model, footer, ui)
+        self._ff_last_output_tokens[model] = self._response_output_tokens(resp)
         if resp.exit_code == -1:
             self._add_room_entry(
                 ui,
@@ -3327,6 +3590,7 @@ class Botference:
         name = model.capitalize()
         other = "Codex" if model == "claude" else "Claude"
         parts = [room_preamble(name, other, self._plan_write_roots_display())]
+        parts.append(free_form_protocol(name, other))
         skill_context = project_skill_context(
             model,
             [self.paths.project_root, self.paths.botference_home],
@@ -3490,153 +3754,6 @@ class Botference:
         ui.set_status(self.status_snapshot())
         return True
 
-    # ── /caucus ───────────────────────────────────────────
-
-    async def _run_caucus(self, topic: str, ui: UIPort) -> None:
-        if not topic:
-            self._add_room_entry(ui, "system", "Usage: /caucus <topic>")
-            return
-
-        self.mode = RoomMode.CAUCUS
-        ui.set_mode(RoomMode.CAUCUS)
-        self._add_caucus_entry(ui, "system", f"--- caucus: {topic} ---")
-        self._add_room_entry(ui, "system", f"Caucus started: {topic}")
-
-        # Ensure both models are initialised (with transcript backfill)
-        for model in ("claude", "codex"):
-            if not await self._ensure_initialized(model, ui):
-                self._add_room_entry(ui, "system", f"Caucus aborted — failed to start {model}.")
-                self.mode = RoomMode.PUBLIC
-                ui.set_mode(RoomMode.PUBLIC)
-                ui.set_status(self.status_snapshot())
-                return
-
-        speakers = ["claude", "codex"]
-        last_resp_text = ""
-        writer_votes: dict[str, str] = {}
-        final_footer: Optional[CaucusFooter] = None
-        caucus_error = False
-
-        for _round in range(_CAUCUS_MAX_TURNS):
-            round_footers: dict[str, CaucusFooter] = {}
-
-            for speaker in speakers:
-                adapter = self.claude if speaker == "claude" else self.codex
-                other = "Codex" if speaker == "claude" else "Claude"
-
-                turn_number = _round + 1
-                if last_resp_text:
-                    turn = caucus_turn(
-                        other, last_resp_text, topic,
-                        turn_number=turn_number,
-                        min_turns=_CAUCUS_MIN_TURNS,
-                        max_turns=_CAUCUS_MAX_TURNS,
-                    )
-                else:
-                    turn = caucus_first_turn(
-                        topic,
-                        turn_number=turn_number,
-                        min_turns=_CAUCUS_MIN_TURNS,
-                        max_turns=_CAUCUS_MAX_TURNS,
-                    )
-
-                try:
-                    resp = await self._run_adapter_streamed(
-                        adapter,
-                        speaker,
-                        "caucus",
-                        ui,
-                        lambda: adapter.resume(turn),
-                    )
-                except Exception as e:
-                    self._add_caucus_entry(ui, "system", f"Error from {speaker}: {e}")
-                    final_footer = CaucusFooter(
-                        status="blocked", handoff_to="user",
-                        writer_vote="none",
-                        summary=f"{speaker} failed: {e}",
-                    )
-                    caucus_error = True
-                    break
-
-                self._update_pct(speaker, resp, ui)
-                self.transcript.mark_seen(speaker)
-
-                footer = CaucusFooter.parse(resp.text)
-                display = (CaucusFooter.strip_footer(resp.text)
-                           if footer else resp.text)
-                self._add_caucus_entry(
-                    ui,
-                    speaker,
-                    display,
-                    stream_id=resp.stream_id,
-                )
-                visual_warning = _visual_verification_warning(speaker, resp)
-                if visual_warning:
-                    self._add_caucus_entry(ui, "system", visual_warning)
-                    self.transcript.add("system", visual_warning)
-                last_resp_text = resp.text
-
-                if footer:
-                    if footer.writer_vote != "none":
-                        writer_votes[speaker] = footer.writer_vote
-                    round_footers[speaker] = footer
-
-                ui.set_status(self.status_snapshot())
-
-            if caucus_error:
-                break
-
-            # Only check termination after both speakers have spoken
-            # and the minimum turns threshold is met (_round is 0-indexed,
-            # so _round + 1 is the number of messages each model has sent)
-            turns_completed = _round + 1
-            if turns_completed >= _CAUCUS_MIN_TURNS:
-                if any(f.is_terminal for f in round_footers.values()):
-                    final_footer = round_footers.get(
-                        speakers[-1], next(iter(round_footers.values()), None)
-                    )
-                    break
-
-        # Summary
-        summary = self._caucus_summary(topic, final_footer, writer_votes)
-        self._add_caucus_entry(ui, "system", "--- caucus ended ---")
-        self._add_room_entry(ui, "summary", summary)
-        self.transcript.add("system", f"[Caucus summary: {summary}]")
-        self._persist_session()
-
-        # Auto-lead from consensus votes
-        if self.lead == "auto" and writer_votes:
-            votes = list(writer_votes.values())
-            if len(set(votes)) == 1:
-                self.lead = f"@{votes[0]}"
-                self._add_room_entry(ui, "system", f"Writer consensus → lead set to {self.lead}")
-
-        self.mode = RoomMode.PUBLIC
-        ui.set_mode(RoomMode.PUBLIC)
-        ui.set_status(self.status_snapshot())
-
-    @staticmethod
-    def _caucus_summary(
-        topic: str,
-        footer: Optional[CaucusFooter],
-        writer_votes: dict[str, str],
-    ) -> str:
-        if footer is None:
-            return f"Caucus on '{topic}' completed (max rounds reached)."
-        if footer.status == "disagree":
-            return (f"Caucus on '{topic}' — disagreement.\n"
-                    f"{footer.summary}\nDecision needed from user.")
-        if footer.status == "need_user_input":
-            return (f"Caucus on '{topic}' — needs user input.\n"
-                    f"{footer.summary}")
-        if footer.status == "blocked":
-            return f"Caucus on '{topic}' — blocked. {footer.summary}"
-        if footer.status in ("ready_to_draft", "no_objection"):
-            v = f" Writer votes: {writer_votes}" if writer_votes else ""
-            return (f"Caucus on '{topic}' — agreement reached.{v}\n"
-                    f"{footer.summary}")
-        return f"Caucus on '{topic}' completed. {footer.summary}"
-
     # ── /draft ────────────────────────────────────────────
 
     async def _run_draft(self, ui: UIPort, draft_arg: str = "") -> None:
@@ -3644,7 +3761,8 @@ class Botference:
         if not lead:
             self._add_room_entry(
                 ui, "system",
-                "No lead set. Use /lead @claude|@codex or run /caucus first.",
+                "No lead set. Use /lead @claude|@codex, or let the bots "
+                "agree on a writer in discussion.",
             )
             return
 
@@ -3690,32 +3808,27 @@ class Botference:
                 "Update the current implementation plan based on the discussion so far.\n\n"
                 f"Current implementation plan:\n\n{current_plan}\n\n"
                 "Return the full updated implementation plan as clean markdown."
+                "\nReturn only the document markdown — do not append the room "
+                "footer; your response is written to a file verbatim."
             )
         else:
             prompt = WRITER_PREAMBLE
 
-        try:
-            resp = await adapter.resume(prompt)
-        except Exception as e:
-            self._add_room_entry(ui, "system", f"Error drafting: {e}")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+        current_plan = await self._draft_plan_turn(lead, prompt, ui)
+        if current_plan is None:
             return
 
-        self._update_pct(lead, resp, ui)
-        self._add_room_entry(ui, lead, resp.text)
-        self.transcript.add(lead, resp.text, resp.tool_summaries)
-        self._persist_session()
-        self.transcript.mark_seen(lead)
-        current_plan = resp.text
-        self._write_work_file(self._plan_path, current_plan)
-        self._add_room_entry(
-            ui, "system",
-            f"Updated {self._planning_display_path(self._plan_path)}",
-        )
-
         next_round = self._next_reviewer_round()
+        completed_rounds = 0
         for round_number in range(next_round, next_round + rounds):
+            if self.pending_input_check is not None and self.pending_input_check():
+                self._add_room_entry(
+                    ui, "system",
+                    "Draft paused — you have queued messages; the plan so far "
+                    "is saved. Run /draft again to resume review rounds.",
+                )
+                break
+
             self.mode = RoomMode.REVIEW
             ui.set_mode(RoomMode.REVIEW)
             self._add_room_entry(
@@ -3723,8 +3836,14 @@ class Botference:
                 f"{reviewer_cap} is reviewing draft round {round_number}…",
             )
             try:
-                rev_resp = await rev_adapter.resume(
-                    reviewer_preamble(lead_cap, current_plan)
+                rev_resp = await self._run_adapter_streamed(
+                    rev_adapter,
+                    reviewer,
+                    "room",
+                    ui,
+                    lambda: rev_adapter.resume(
+                        reviewer_preamble(lead_cap, current_plan)
+                    ),
                 )
             except Exception as e:
                 self._add_room_entry(ui, "system", f"Error reviewing: {e}")
@@ -3733,17 +3852,44 @@ class Botference:
                 return
 
             self._update_pct(reviewer, rev_resp, ui)
-            self._add_room_entry(ui, reviewer, rev_resp.text)
+            # The footer is flow-control metadata: keep it in the transcript,
+            # strip it from the display and the saved comments file.
+            review_footer = RoomFooter.parse(rev_resp.text)
+            review_text = RoomFooter.strip_footer(rev_resp.text)
+            self._add_room_entry(
+                ui, reviewer, review_text, stream_id=rev_resp.stream_id,
+            )
             self.transcript.add(reviewer, rev_resp.text, rev_resp.tool_summaries)
             self._persist_session()
             self.transcript.mark_seen(reviewer)
 
             review_path = self._reviewer_comments_path(round_number)
-            self._write_work_file(review_path, rev_resp.text)
+            self._write_work_file(review_path, review_text)
             self._add_room_entry(
                 ui, "system",
                 f"Saved reviewer comments to {self._planning_display_path(review_path)}",
             )
+
+            if review_footer is not None and review_footer.status == "converged":
+                completed_rounds += 1
+                self._add_room_entry(
+                    ui, "system",
+                    f"{reviewer_cap} signed off on the plan — no revision needed.",
+                )
+                break
+
+            if review_footer is not None and (
+                review_footer.status == "blocked"
+                or review_footer.next.lstrip("@").lower() == "user"
+            ):
+                summary = f" {review_footer.summary}" if review_footer.summary else ""
+                self._add_room_entry(
+                    ui, "system",
+                    f"{reviewer_cap} needs your input before revising —"
+                    f" draft paused.{summary} The comments are saved; reply in"
+                    " the room, then run /draft to revise.",
+                )
+                break
 
             self.mode = RoomMode.DRAFT
             ui.set_mode(RoomMode.DRAFT)
@@ -3752,29 +3898,18 @@ class Botference:
                 f"{lead_cap} is revising {self._planning_display_path(self._plan_path)} "
                 f"for round {round_number}…",
             )
-            try:
-                revised_resp = await adapter.resume(
-                    revision_from_plan_preamble(
-                        current_plan, reviewer_cap, rev_resp.text, round_number
-                    )
-                )
-            except Exception as e:
-                self._add_room_entry(ui, "system", f"Error revising: {e}")
-                self.mode = RoomMode.PUBLIC
-                ui.set_mode(RoomMode.PUBLIC)
-                return
-
-            self._update_pct(lead, revised_resp, ui)
-            self._add_room_entry(ui, lead, revised_resp.text)
-            self.transcript.add(lead, revised_resp.text, revised_resp.tool_summaries)
-            self._persist_session()
-            self.transcript.mark_seen(lead)
-            current_plan = revised_resp.text
-            self._write_work_file(self._plan_path, current_plan)
-            self._add_room_entry(
-                ui, "system",
-                f"Updated {self._planning_display_path(self._plan_path)}",
+            revised_plan = await self._draft_plan_turn(
+                lead,
+                revision_from_plan_preamble(
+                    current_plan, reviewer_cap, review_text, round_number
+                ),
+                ui,
+                error_label="revising",
             )
+            if revised_plan is None:
+                return
+            current_plan = revised_plan
+            completed_rounds += 1
 
         self.mode = RoomMode.PUBLIC
         ui.set_mode(RoomMode.PUBLIC)
@@ -3784,9 +3919,42 @@ class Botference:
             (
                 "Draft complete. "
                 f"{self._planning_display_path(self._plan_path)} now reflects "
-                f"{rounds} AI review round(s)."
+                f"{completed_rounds} AI review round(s)."
             ),
         )
+
+    async def _draft_plan_turn(
+        self, lead: str, prompt: str, ui: UIPort, *, error_label: str = "drafting",
+    ) -> Optional[str]:
+        """One streamed lead turn whose response becomes implementation-plan.md.
+
+        Returns the plan text written to disk, or None on error (mode is
+        reset to PUBLIC before returning). Any room footer the model appends
+        despite instructions is stripped before the file write.
+        """
+        adapter = self.claude if lead == "claude" else self.codex
+        try:
+            resp = await self._run_adapter_streamed(
+                adapter, lead, "room", ui, lambda: adapter.resume(prompt),
+            )
+        except Exception as e:
+            self._add_room_entry(ui, "system", f"Error {error_label}: {e}")
+            self.mode = RoomMode.PUBLIC
+            ui.set_mode(RoomMode.PUBLIC)
+            return None
+
+        self._update_pct(lead, resp, ui)
+        plan_text = RoomFooter.strip_footer(resp.text)
+        self._add_room_entry(ui, lead, plan_text, stream_id=resp.stream_id)
+        self.transcript.add(lead, resp.text, resp.tool_summaries)
+        self._persist_session()
+        self.transcript.mark_seen(lead)
+        self._write_work_file(self._plan_path, plan_text)
+        self._add_room_entry(
+            ui, "system",
+            f"Updated {self._planning_display_path(self._plan_path)}",
+        )
+        return plan_text
 
     # ── /finalize ─────────────────────────────────────────
 
@@ -3795,7 +3963,8 @@ class Botference:
         if not lead:
             self._add_room_entry(
                 ui, "system",
-                "No lead set. Use /lead @claude|@codex or run /caucus first.",
+                "No lead set. Use /lead @claude|@codex, or let the bots "
+                "agree on a writer in discussion.",
             )
             return
 
@@ -3828,8 +3997,11 @@ class Botference:
                 "and addressing all reviewer comments…",
             )
             try:
-                final_resp = await adapter.resume(
-                    finalize_plan_preamble(current_plan, review_bundle)
+                final_resp = await self._run_adapter_streamed(
+                    adapter, lead, "room", ui,
+                    lambda: adapter.resume(
+                        finalize_plan_preamble(current_plan, review_bundle)
+                    ),
                 )
             except Exception as e:
                 self._add_room_entry(ui, "system", f"Error finalizing plan: {e}")
@@ -3838,11 +4010,11 @@ class Botference:
                 return
 
             self._update_pct(lead, final_resp, ui)
-            self._add_room_entry(ui, lead, final_resp.text)
+            final_plan = RoomFooter.strip_footer(final_resp.text)
+            self._add_room_entry(ui, lead, final_plan, stream_id=final_resp.stream_id)
             self.transcript.add(lead, final_resp.text, final_resp.tool_summaries)
             self._persist_session()
             self.transcript.mark_seen(lead)
-            final_plan = final_resp.text
             self._write_work_file(self._plan_path, final_plan)
             self._add_room_entry(
                 ui, "system",
@@ -3855,7 +4027,10 @@ class Botference:
             f"{lead_cap} is creating {self._planning_display_path(self._checkpoint_path)}…",
         )
         try:
-            checkpoint_resp = await adapter.resume(checkpoint_preamble(final_plan))
+            checkpoint_resp = await self._run_adapter_streamed(
+                adapter, lead, "room", ui,
+                lambda: adapter.resume(checkpoint_preamble(final_plan)),
+            )
         except Exception as e:
             self._add_room_entry(ui, "system", f"Error generating checkpoint: {e}")
             self.mode = RoomMode.PUBLIC
@@ -3863,11 +4038,14 @@ class Botference:
             return
 
         self._update_pct(lead, checkpoint_resp, ui)
-        self._add_room_entry(ui, lead, checkpoint_resp.text)
+        checkpoint_text = RoomFooter.strip_footer(checkpoint_resp.text)
+        self._add_room_entry(
+            ui, lead, checkpoint_text, stream_id=checkpoint_resp.stream_id,
+        )
         self.transcript.add(lead, checkpoint_resp.text, checkpoint_resp.tool_summaries)
         self._persist_session()
         self.transcript.mark_seen(lead)
-        self._write_work_file(self._checkpoint_path, checkpoint_resp.text)
+        self._write_work_file(self._checkpoint_path, checkpoint_text)
         self._add_room_entry(
             ui, "system",
             f"Updated {self._planning_display_path(self._checkpoint_path)}",
@@ -3919,150 +4097,3 @@ class Botference:
         if self.lead == "auto":
             return None
         return self.lead.lstrip("@")
-
-
-# ── CLI entrypoint ────────────────────────────────────────
-
-
-def main() -> None:
-    """Launch botference TUI."""
-    import argparse
-    import os
-    import tempfile
-
-    parser = argparse.ArgumentParser(description="botference mode")
-    parser.add_argument("--anthropic-model", default="claude-fable-5")
-    parser.add_argument("--claude-effort", default="")
-    parser.add_argument("--openai-model", default="gpt-5.5")
-    parser.add_argument("--openai-effort", default="")
-    parser.add_argument("--system-prompt", required=True)
-    parser.add_argument("--task", required=True)
-    parser.add_argument("--debug-panes", action="store_true")
-    parser.add_argument(
-        "--claude-transport",
-        default=os.environ.get("BOTFERENCE_CLAUDE_TRANSPORT", "programmatic"),
-    )
-    args = parser.parse_args()
-
-    from botference_ui import BotferenceApp
-
-    # Load OPENAI_API_KEY from .env as a fallback (not into global env).
-    # Codex tries subscription auth first; only uses this key on rate limit.
-    _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _fallback_api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not _fallback_api_key:
-        for env_name in (".env.local", ".env"):
-            env_path = os.path.join(_project_dir, env_name)
-            if os.path.isfile(env_path):
-                with open(env_path) as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#") and "=" in line:
-                            key, _, val = line.partition("=")
-                            if key.strip() == "OPENAI_API_KEY":
-                                _fallback_api_key = val.strip().strip("'\"")
-                break
-
-    # Set up debug log files when --debug-panes is on
-    claude_log = ""
-    codex_log = ""
-    if args.debug_panes:
-        log_dir = os.environ.get(
-            "BOTFERENCE_RUN",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"),
-        )
-        os.makedirs(log_dir, exist_ok=True)
-        claude_log = os.path.join(log_dir, "debug-claude.log")
-        codex_log = os.path.join(log_dir, "debug-codex.log")
-        # Truncate previous logs
-        for p in (claude_log, codex_log):
-            with open(p, "w") as f:
-                f.write("")
-        print(f"Debug logs:\n  Claude: {claude_log}\n  Codex:  {codex_log}")
-        print("In other tmux panes, run:")
-        print(f"  tail -f {claude_log}")
-        print(f"  tail -f {codex_log}")
-        print()
-    elif normalize_claude_transport(args.claude_transport) == "tmux":
-        log_dir = os.environ.get(
-            "BOTFERENCE_RUN",
-            os.path.join(_project_dir, ".botference", "logs"),
-        )
-        os.makedirs(log_dir, exist_ok=True)
-        claude_log = os.path.join(log_dir, "debug-claude-tmux.log")
-
-    paths = BotferencePaths.resolve()
-    plan_write_roots = planner_write_roots_for_env(
-        paths.project_root, paths.work_dir, mode="plan"
-    )
-    planner_config = planner_write_config(paths.project_root, plan_write_roots)
-    claude_cls = (
-        ClaudeInteractiveTmuxAdapter
-        if normalize_claude_transport(args.claude_transport) == "tmux"
-        else ClaudeAdapter
-    )
-    claude = claude_cls(
-        model=args.anthropic_model,
-        effort=args.claude_effort,
-        tools=[
-            "Read",
-            "Glob",
-            "Grep",
-            "Bash",
-            "Write",
-            "Edit",
-            "MultiEdit",
-            "WebSearch",
-            "WebFetch",
-        ],
-        debug_log_path=claude_log,
-        cwd=planner_config.claude_cwd,
-        add_dirs=planner_config.claude_add_dirs,
-        settings=planner_config.claude_settings,
-    )
-    codex = CodexAdapter(
-        model=args.openai_model,
-        sandbox=planner_config.codex_sandbox,
-        cwd=planner_config.codex_cwd,
-        add_dirs=planner_config.codex_add_dirs,
-        reasoning_effort=args.openai_effort,
-        debug_log_path=codex_log,
-        fallback_api_key=_fallback_api_key,
-        network_access=planner_config.codex_network_access,
-    )
-    botference = Botference(
-        claude=claude, codex=codex,
-        system_prompt=args.system_prompt, task=args.task,
-        paths=paths,
-        plan_write_roots=planner_config.write_roots,
-    )
-    botference.observe = args.debug_panes
-
-    app = BotferenceApp(
-        initial_status=botference.status_snapshot(),
-        initial_projects=botference.project_panel_snapshot(),
-    )
-
-    def on_submit(text: str) -> None:
-        async def _handle() -> None:
-            try:
-                await botference.handle_input(text, app)
-            except Exception as exc:
-                append_crash_log(
-                    paths,
-                    location="botference.main.handle_input",
-                    session_id=botference.session_id,
-                    exc=exc,
-                )
-                app.add_room_entry("system", f"Unhandled controller error: {exc}")
-            app.set_projects(botference.project_panel_snapshot())
-            if botference.quit_requested:
-                app.exit()
-        app.run_worker(_handle(), exclusive=True)
-
-    app.on_submit = on_submit
-    app.run()
-
-
-if __name__ == "__main__":
-    main()

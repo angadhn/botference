@@ -2,7 +2,7 @@
 Tests for botference.py — controller logic for botference mode.
 
 Tests the deterministic parsing, routing, transcript management,
-caucus footer parsing, and Botference.handle_input dispatch with
+room footer parsing, and Botference.handle_input dispatch with
 mock adapters and UI.
 """
 
@@ -24,17 +24,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 from cli_adapters import AdapterResponse, ToolSummary
 from botference import (
     AutoRouter,
-    CaucusFooter,
     Botference,
     InputKind,
     ParsedInput,
+    RoomFooter,
     Transcript,
-    _TERMINAL_STATUSES,
+    _FREE_FORM_EXTENSION_TURNS,
+    _FREE_FORM_MAX_BOT_TURNS,
     _visual_artifacts_from_tool_summaries,
     _visual_verification_warning,
+    free_form_next_target,
     parse_input,
 )
-from botference_ui import ProjectPanelState, RoomMode, StatusSnapshot
+from ui_types import ProjectPanelState, RoomMode, StatusSnapshot
 from paths import BotferencePaths
 from project_store import ProjectStore
 from render_blocks import parse_render_blocks
@@ -82,15 +84,11 @@ class TestParseInput:
         assert p.kind is InputKind.MESSAGE
         assert p.body == ""
 
-    def test_slash_caucus(self):
+    def test_slash_caucus_retired(self):
+        # /caucus is no longer a command; unknown slashes pass through
+        # as plain messages.
         p = parse_input("/caucus Should we use microservices?")
-        assert p.kind is InputKind.CAUCUS
-        assert p.body == "Should we use microservices?"
-
-    def test_slash_caucus_no_arg(self):
-        p = parse_input("/caucus")
-        assert p.kind is InputKind.CAUCUS
-        assert p.body == ""
+        assert p.kind is InputKind.MESSAGE
 
     def test_slash_lead(self):
         p = parse_input("/lead @claude")
@@ -317,93 +315,47 @@ class TestTranscript:
         assert "DELTA_MSG" in ctx
 
 
-# ── CaucusFooter ──────────────────────────────────────────
+# ── Footer stripping ──────────────────────────────────────
 
 
-class TestCaucusFooter:
-    def test_parse_fenced_json(self):
-        text = (
-            "I think we should go with option A.\n\n"
-            '```json\n'
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "claude", "summary": "leaning toward A"}\n'
-            '```'
-        )
-        f = CaucusFooter.parse(text)
-        assert f is not None
-        assert f.status == "continue"
-        assert f.handoff_to == "codex"
-        assert f.writer_vote == "claude"
-        assert f.summary == "leaning toward A"
-        assert f.is_terminal is False
-
-    def test_parse_raw_json(self):
-        text = (
-            "Agreed on the approach.\n"
-            '{"status": "ready_to_draft", "handoff_to": "user", '
-            '"writer_vote": "codex", "summary": "consensus reached"}'
-        )
-        f = CaucusFooter.parse(text)
-        assert f is not None
-        assert f.status == "ready_to_draft"
-        assert f.is_terminal is True
-
-    def test_parse_no_footer(self):
-        assert CaucusFooter.parse("Just a regular response.") is None
-
-    def test_parse_invalid_json(self):
-        text = "Some text\n{invalid json with status}"
-        assert CaucusFooter.parse(text) is None
-
-    def test_terminal_statuses(self):
-        for status in _TERMINAL_STATUSES:
-            f = CaucusFooter(
-                status=status, handoff_to="user",
-                writer_vote="none", summary="test",
-            )
-            assert f.is_terminal is True
-
-    def test_continue_is_not_terminal(self):
-        f = CaucusFooter(
-            status="continue", handoff_to="codex",
-            writer_vote="none", summary="ongoing",
-        )
-        assert f.is_terminal is False
-
+class TestStripFooter:
     def test_strip_footer_fenced(self):
         text = (
             "Main content here.\n\n"
             '```json\n'
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "none", "summary": "test"}\n'
+            '{"status": "continuing", "next": "@codex", '
+            '"summary": "test"}\n'
             '```'
         )
-        stripped = CaucusFooter.strip_footer(text)
+        stripped = RoomFooter.strip_footer(text)
         assert "Main content here." in stripped
         assert '"status"' not in stripped
 
     def test_strip_footer_raw(self):
         text = (
             "Analysis complete.\n"
-            '{"status": "no_objection", "handoff_to": "user", '
-            '"writer_vote": "claude", "summary": "done"}'
+            '{"status": "converged", "next": "@user", "summary": "done"}'
         )
-        stripped = CaucusFooter.strip_footer(text)
+        stripped = RoomFooter.strip_footer(text)
         assert "Analysis complete." in stripped
         assert '"status"' not in stripped
 
     def test_strip_footer_no_footer(self):
         text = "No footer here."
-        assert CaucusFooter.strip_footer(text) == text
+        assert RoomFooter.strip_footer(text) == text
 
-    def test_parse_missing_optional_fields(self):
-        text = '{"status": "blocked"}'
-        f = CaucusFooter.parse(text)
-        assert f is not None
-        assert f.status == "blocked"
-        assert f.handoff_to == "user"       # default
-        assert f.writer_vote == "none"      # default
-        assert f.summary == ""              # default
+    def test_strip_legacy_caucus_footer(self):
+        # Old transcripts may still carry pre-retirement caucus footers;
+        # they don't parse as room footers but must still strip.
+        text = (
+            "Analysis complete.\n"
+            '{"status": "no_objection", "handoff_to": "user", '
+            '"writer_vote": "claude", "summary": "done"}'
+        )
+        assert RoomFooter.parse(text) is None
+        stripped = RoomFooter.strip_footer(text)
+        assert "Analysis complete." in stripped
+        assert '"status"' not in stripped
 
 
 # ── Mock adapters/UI for Botference tests ────────────────────
@@ -481,26 +433,20 @@ class NativeCommandAdapter(MockAdapter):
 class MockUI:
     """Collects all UI calls for assertions."""
     room_entries: list[tuple[str, str]] = field(default_factory=list)
-    caucus_entries: list[tuple[str, str]] = field(default_factory=list)
     room_blocks: list[list[dict] | None] = field(default_factory=list)
-    caucus_blocks: list[list[dict] | None] = field(default_factory=list)
     statuses: list[StatusSnapshot] = field(default_factory=list)
     project_states: list[ProjectPanelState] = field(default_factory=list)
     modes: list[RoomMode] = field(default_factory=list)
     permission_responses: list[bool] = field(default_factory=list)
     permission_requests: list[object] = field(default_factory=list)
+    choice_requests: list[tuple[str, list[str]]] = field(default_factory=list)
+    choice_responses: list[Optional[int]] = field(default_factory=list)
 
     def add_room_entry(
         self, speaker: str, text: str, blocks: list[dict] | None = None,
     ) -> None:
         self.room_entries.append((speaker, text))
         self.room_blocks.append(blocks)
-
-    def add_caucus_entry(
-        self, speaker: str, text: str, blocks: list[dict] | None = None,
-    ) -> None:
-        self.caucus_entries.append((speaker, text))
-        self.caucus_blocks.append(blocks)
 
     def set_status(self, status: StatusSnapshot) -> None:
         self.statuses.append(status)
@@ -514,14 +460,18 @@ class MockUI:
     def clear_panes(self) -> None:
         self.room_entries.clear()
         self.room_blocks.clear()
-        self.caucus_entries.clear()
-        self.caucus_blocks.clear()
 
     async def request_write_permission(self, request) -> bool:
         self.permission_requests.append(request)
         if self.permission_responses:
             return self.permission_responses.pop(0)
         return False
+
+    async def request_choice(self, prompt: str, options: list[str]):
+        self.choice_requests.append((prompt, list(options)))
+        if self.choice_responses:
+            return self.choice_responses.pop(0)
+        return None
 
 
 def _ok(text: str = "OK", **kw) -> AdapterResponse:
@@ -980,176 +930,6 @@ class TestBotferenceMessageRouting:
 
 
 @pytest.mark.asyncio
-class TestBotferenceCaucus:
-    async def test_caucus_no_topic_shows_usage(self):
-        c, _, _, ui = _make_botference()
-        await c.handle_input("/caucus", ui)
-        assert any("Usage" in t for _, t in ui.room_entries)
-
-    async def test_caucus_sets_mode_and_restores(self):
-        continue_footer = (
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "none", "summary": "discussing"}'
-        )
-        terminal_footer = (
-            '{"status": "no_objection", "handoff_to": "user", '
-            '"writer_vote": "claude", "summary": "agreed"}'
-        )
-        # 3 minimum rounds: 2 continue + 1 terminal per model
-        c, _, _, ui = _make_botference(
-            claude_responses=[
-                _ok("init"),
-                _ok(f"Turn text\n{continue_footer}"),
-                _ok(f"Turn text\n{continue_footer}"),
-                _ok(f"Turn text\n{terminal_footer}"),
-            ],
-            codex_responses=[
-                _ok("init"),
-                _ok(f"Turn text\n{continue_footer}"),
-                _ok(f"Turn text\n{continue_footer}"),
-                _ok(f"Turn text\n{terminal_footer}"),
-            ],
-        )
-        assert c.mode is RoomMode.PUBLIC
-        await c.handle_input("/caucus Architecture choice?", ui)
-        # Should have entered CAUCUS mode then returned to PUBLIC
-        assert RoomMode.CAUCUS in ui.modes
-        assert ui.modes[-1] is RoomMode.PUBLIC
-        assert c.mode is RoomMode.PUBLIC
-
-    async def test_caucus_summary_posted_to_room(self):
-        continue_footer = (
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "none", "summary": "still discussing"}'
-        )
-        terminal_footer = (
-            '{"status": "ready_to_draft", "handoff_to": "user", '
-            '"writer_vote": "codex", "summary": "consensus on approach"}'
-        )
-        # Provide enough responses for 3 minimum rounds + init
-        c, _, _, ui = _make_botference(
-            claude_responses=[
-                _ok("init"),
-                _ok(f"Point A\n{continue_footer}"),
-                _ok(f"Point B\n{continue_footer}"),
-                _ok(f"I agree\n{terminal_footer}"),
-            ],
-            codex_responses=[
-                _ok("init"),
-                _ok(f"Response A\n{continue_footer}"),
-                _ok(f"Response B\n{continue_footer}"),
-                _ok(f"Me too\n{terminal_footer}"),
-            ],
-        )
-        await c.handle_input("/caucus Design?", ui)
-        summary_entries = [t for s, t in ui.room_entries if s == "summary"]
-        assert len(summary_entries) >= 1
-        assert "agreement" in summary_entries[0].lower()
-
-    async def test_caucus_auto_lead_from_consensus(self):
-        continue_footer = (
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "claude", "summary": "discussing"}'
-        )
-        terminal_footer_claude = (
-            '{"status": "no_objection", "handoff_to": "user", '
-            '"writer_vote": "claude", "summary": "done"}'
-        )
-        terminal_footer_codex = (
-            '{"status": "no_objection", "handoff_to": "user", '
-            '"writer_vote": "claude", "summary": "done"}'
-        )
-        c, _, _, ui = _make_botference(
-            claude_responses=[
-                _ok("init"),
-                _ok(f"text\n{continue_footer}"),
-                _ok(f"text\n{continue_footer}"),
-                _ok(f"text\n{terminal_footer_claude}"),
-            ],
-            codex_responses=[
-                _ok("init"),
-                _ok(f"text\n{continue_footer}"),
-                _ok(f"text\n{continue_footer}"),
-                _ok(f"text\n{terminal_footer_codex}"),
-            ],
-        )
-        assert c.lead == "auto"
-        await c.handle_input("/caucus who writes?", ui)
-        assert c.lead == "@claude"
-
-    async def test_caucus_footer_stripped_in_display(self):
-        footer = (
-            '```json\n'
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "none", "summary": "ongoing"}\n'
-            '```'
-        )
-        c, _, _, ui = _make_botference(
-            claude_responses=[_ok("init"),
-                              _ok(f"My analysis is solid.\n\n{footer}"),
-                              _ok(f"Second turn.\n\n{footer}"),
-                              _ok(f"Third turn.\n\n{footer}"),
-                              _ok(f"Fourth turn.\n\n{footer}"),
-                              _ok(f"Fifth turn.\n\n{footer}")],
-            codex_responses=[_ok("init"),
-                             _ok(f"I concur.\n\n{footer}"),
-                             _ok(f"Response B.\n\n{footer}"),
-                             _ok(f"Response C.\n\n{footer}"),
-                             _ok(f"Response D.\n\n{footer}"),
-                             _ok(f"Final.\n\n{footer}")],
-        )
-        await c.handle_input("/caucus test", ui)
-        # Caucus entries should have the analysis text but not the raw JSON
-        text_entries = [t for s, t in ui.caucus_entries
-                        if s in ("claude", "codex")]
-        for t in text_entries:
-            assert '"status"' not in t
-
-    async def test_caucus_aborts_on_bootstrap_failure(self):
-        """If a model fails to start, caucus should abort cleanly."""
-        failing = MockAdapter()
-        failing.send = AsyncMock(side_effect=RuntimeError("auth failed"))
-        c, _, _, ui = _make_botference()
-        c.claude = failing  # claude will fail to init
-        await c.handle_input("/caucus test topic", ui)
-        assert c.mode is RoomMode.PUBLIC
-        assert any("aborted" in t.lower() for _, t in ui.room_entries)
-        # No caucus turns should have been attempted
-        caucus_model_entries = [s for s, _ in ui.caucus_entries
-                                if s in ("claude", "codex")]
-        assert caucus_model_entries == []
-
-    async def test_caucus_mid_turn_failure_reports_blocked(self):
-        """If a model fails mid-caucus, summary should show blocked, not max-rounds."""
-        c, claude, codex, ui = _make_botference(
-            claude_responses=[
-                _ok("init"),                     # send (ensure_initialized)
-                _ok("Claude's first caucus turn\n"
-                     '{"status": "continue", "handoff_to": "codex", '
-                     '"writer_vote": "none", "summary": "ongoing"}'),
-            ],
-            codex_responses=[
-                _ok("init"),                     # send (ensure_initialized)
-            ],
-        )
-        # Codex succeeds at init but fails on the first caucus resume
-        original_resume = codex.resume
-
-        async def fail_resume(msg):
-            raise RuntimeError("connection lost")
-
-        codex.resume = fail_resume
-
-        await c.handle_input("/caucus architecture?", ui)
-        assert c.mode is RoomMode.PUBLIC
-        # Summary should say blocked, not "max rounds reached"
-        summary_entries = [t for s, t in ui.room_entries if s == "summary"]
-        assert len(summary_entries) >= 1
-        assert "blocked" in summary_entries[0].lower()
-        assert "max rounds" not in summary_entries[0].lower()
-
-
-@pytest.mark.asyncio
 class TestBotferenceDraft:
     async def test_draft_requires_lead(self):
         c, _, _, ui = _make_botference()
@@ -1233,6 +1013,103 @@ class TestBotferenceDraft:
         c.lead = "@claude"
         await c.handle_input("/draft nope", ui)
         assert any("Usage: /draft [rounds]" in t for _, t in ui.room_entries)
+
+    async def test_reviewer_converged_footer_skips_revision(self, tmp_path):
+        converged = (
+            "# Review 1\n\nPlan is solid.\n"
+            '{"status": "converged", "next": "@user", "summary": "sign-off"}'
+        )
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** demo\n\n# Draft Plan v1"),
+                _ok("# Draft Plan v2 — should never be requested"),
+            ],
+            codex_responses=[
+                _ok("codex init"),
+                _ok(converged),
+            ],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/draft 2", ui)
+
+        # Sign-off ends the rounds: plan stays at v1, no revise turn ran.
+        assert (tmp_path / "work" / "implementation-plan.md").read_text() == (
+            "**Thread:** demo\n\n# Draft Plan v1\n"
+        )
+        # Only the draft turn resumed the lead; no revision.
+        assert len(claude.resume_calls) == 1
+        # Footer is stripped from the saved comments file.
+        comments = (tmp_path / "work" / "AI-reviewer_comments_round-1.md").read_text()
+        assert "Plan is solid." in comments
+        assert '"status"' not in comments
+        assert any("signed off" in t for _, t in ui.room_entries)
+
+    async def test_reviewer_blocked_footer_pauses_draft(self, tmp_path):
+        blocked = (
+            "# Review 1\n\nNeed the user to pick a database.\n"
+            '{"status": "blocked", "next": "@user", "summary": "DB choice needed"}'
+        )
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** demo\n\n# Draft Plan v1"),
+            ],
+            codex_responses=[
+                _ok("codex init"),
+                _ok(blocked),
+            ],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/draft 2", ui)
+
+        assert c.mode is RoomMode.PUBLIC
+        assert (tmp_path / "work" / "AI-reviewer_comments_round-1.md").is_file()
+        # No revision ran (only the draft turn resumed the lead).
+        assert len(claude.resume_calls) == 1
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("needs your input" in m for m in system_msgs)
+        assert any("DB choice needed" in m for m in system_msgs)
+
+    async def test_footer_stripped_from_written_plan(self, tmp_path):
+        # A lead that ignores the "no footer" instruction must not corrupt
+        # the plan file.
+        plan_with_footer = (
+            "**Thread:** demo\n\n# Draft Plan v1\n\n"
+            '{"status": "continuing", "next": "@codex", "summary": "drafted"}'
+        )
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok("claude init"), _ok(plan_with_footer)],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/draft 0", ui)
+        plan = (tmp_path / "work" / "implementation-plan.md").read_text()
+        assert "# Draft Plan v1" in plan
+        assert '"status"' not in plan
+
+    async def test_pending_input_pauses_draft_rounds(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("claude init"),
+                _ok("**Thread:** demo\n\n# Draft Plan v1"),
+            ],
+            codex_responses=[
+                _ok("codex init"),
+                _ok("# Review — should never be requested"),
+            ],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        c.pending_input_check = lambda: True
+        await c.handle_input("/draft 2", ui)
+
+        # Plan written, but review rounds paused before the reviewer ran.
+        assert (tmp_path / "work" / "implementation-plan.md").is_file()
+        assert list((tmp_path / "work").glob("AI-reviewer_comments_round-*.md")) == []
+        assert any("Draft paused" in t for _, t in ui.room_entries)
 
 
 @pytest.mark.asyncio
@@ -1432,7 +1309,9 @@ class TestBotferenceResume:
         assert resumed.session_id == original_session_id
         assert resumed.claude.session_id == "mock-session"
         assert resumed.router.current_route == "@claude"
-        assert len(resumed.transcript.entries) == 2
+        # user + claude entries plus the one-time free-form protocol note.
+        non_system = [e for e in resumed.transcript.entries if e.speaker != "system"]
+        assert len(non_system) == 2
         assert any("Resumed session" in text for _, text in resumed_ui.room_entries)
 
         await resumed.handle_input("follow up", resumed_ui)
@@ -1564,6 +1443,8 @@ class TestBotferenceResume:
                     ),
                 },
             ],
+            # Pre-retirement sessions carry caucus_history; it must be
+            # ignored without breaking the restore.
             "caucus_history": [
                 {"speaker": "system", "text": "(empty until /caucus)"},
                 {"speaker": "claude", "text": "caucus content"},
@@ -1574,14 +1455,12 @@ class TestBotferenceResume:
         await c.handle_input("/resume saved-session", ui)
 
         room_text = "\n".join(text for _, text in ui.room_entries)
-        caucus_text = "\n".join(text for _, text in ui.caucus_entries)
         assert "actual question" in room_text
         assert "actual answer" in room_text
         assert "Error from claude: network failed" in room_text
         assert "Project context set" not in room_text
         assert "Saved sessions for" not in room_text
-        assert "(empty until /caucus)" not in caucus_text
-        assert "caucus content" in caucus_text
+        assert "caucus content" not in room_text
 
 
 @pytest.mark.asyncio
@@ -2091,37 +1970,6 @@ class TestBotferenceProjects:
         )
 
 
-# ── Caucus summary generation ─────────────────────────────
-
-
-class TestCaucusSummary:
-    def test_summary_no_footer(self):
-        s = Botference._caucus_summary("arch", None, {})
-        assert "max rounds" in s.lower()
-
-    def test_summary_disagree(self):
-        f = CaucusFooter("disagree", "user", "none", "Can't agree on DB")
-        s = Botference._caucus_summary("db choice", f, {})
-        assert "disagreement" in s.lower()
-        assert "Can't agree" in s
-
-    def test_summary_need_user_input(self):
-        f = CaucusFooter("need_user_input", "user", "none", "Which region?")
-        s = Botference._caucus_summary("deploy", f, {})
-        assert "user input" in s.lower()
-
-    def test_summary_blocked(self):
-        f = CaucusFooter("blocked", "user", "none", "Missing creds")
-        s = Botference._caucus_summary("auth", f, {})
-        assert "blocked" in s.lower()
-
-    def test_summary_agreement(self):
-        f = CaucusFooter("ready_to_draft", "user", "claude", "Ready")
-        votes = {"claude": "claude", "codex": "claude"}
-        s = Botference._caucus_summary("plan", f, votes)
-        assert "agreement" in s.lower()
-
-
 # ── StatusSnapshot integration ────────────────────────────
 
 
@@ -2168,32 +2016,6 @@ class TestLateJoinBackfill:
         init_prompt = codex.send_calls[0]
         assert "claude turn 1" in init_prompt
         assert "first question" in init_prompt
-
-    async def test_caucus_bootstrap_includes_transcript(self):
-        """Models bootstrapped during /caucus get prior discussion."""
-        c, claude, codex, ui = _make_botference(
-            claude_responses=[
-                _ok("claude room reply"),           # send (@claude msg)
-                _ok("claude bootstrapped"),          # send (caucus ensure_init)
-                _ok("caucus turn\n"                  # resume (caucus)
-                     '{"status": "no_objection", "handoff_to": "user", '
-                     '"writer_vote": "none", "summary": "ok"}'),
-            ],
-            codex_responses=[
-                _ok("codex bootstrapped"),           # send (caucus ensure_init)
-                _ok("caucus turn\n"
-                     '{"status": "no_objection", "handoff_to": "user", '
-                     '"writer_vote": "none", "summary": "ok"}'),
-            ],
-        )
-        await c.handle_input("@claude context setup", ui)
-        # codex never seen room discussion — caucus should bootstrap it
-        await c.handle_input("/caucus architecture?", ui)
-        assert len(codex.send_calls) == 1
-        init_prompt = codex.send_calls[0]
-        # Codex's bootstrap prompt should contain the prior @claude discussion
-        assert "context setup" in init_prompt
-
 
 # ── Regression: no duplicate user message on resume (bug 3) ──
 
@@ -2381,33 +2203,33 @@ class TestContextWarnings:
 
 @pytest.mark.asyncio
 class TestContextStatusRefresh:
-    async def test_caucus_updates_status_after_each_turn(self):
-        continue_footer = (
-            '{"status": "continue", "handoff_to": "codex", '
-            '"writer_vote": "none", "summary": "discussing"}'
+    async def test_free_form_thread_updates_status_each_turn(self):
+        to_codex = (
+            'Turn text\n{"status": "continuing", "next": "@codex", '
+            '"summary": "discussing"}'
         )
-        terminal_footer = (
-            '{"status": "no_objection", "handoff_to": "user", '
-            '"writer_vote": "claude", "summary": "done"}'
+        to_claude = (
+            'Turn text\n{"status": "continuing", "next": "@claude", '
+            '"summary": "discussing"}'
+        )
+        done = (
+            'Turn text\n{"status": "converged", "next": "@user", '
+            '"summary": "done"}'
         )
         c, _, _, ui = _make_botference(
             claude_responses=[
-                _ok("init", context_window=1_000_000),
-                _ok(f"Turn text\n{continue_footer}", context_window=1_000_000),
-                _ok(f"Turn text\n{continue_footer}", context_window=1_000_000),
-                _ok(f"Turn text\n{terminal_footer}", context_window=1_000_000),
+                _ok(to_codex, context_window=1_000_000),
+                _ok(done, context_window=1_000_000),
             ],
             codex_responses=[
-                _ok("init", context_window=272_000),
-                _ok(f"Turn text\n{continue_footer}", context_window=272_000),
-                _ok(f"Turn text\n{continue_footer}", context_window=272_000),
-                _ok(f"Turn text\n{terminal_footer}", context_window=272_000),
+                _ok(to_claude, context_window=272_000),
             ],
         )
 
-        await c.handle_input("/caucus Architecture choice?", ui)
+        await c.handle_input("@claude Architecture choice?", ui)
 
-        assert len(ui.statuses) >= 9
+        # Seeding turn + 2 cascade turns each refresh the status line.
+        assert len(ui.statuses) >= 3
 
 
 
@@ -2573,16 +2395,6 @@ class TestPlanningModeRouting:
         assert rp["LOOP_MODE"] == "research-plan"
         assert rp["PROMPT_FILE"] == "prompts/plan.md"
         assert rp["BOTFERENCE_MODE"] == "true"
-
-    def test_parse_loop_args_supports_ink_legacy(self):
-        plan = _shell_parse_loop_args("plan", "--ink-legacy")
-        assert plan["LOOP_MODE"] == "plan"
-        assert plan["UI_MODE"] == "ink-legacy"
-
-    def test_parse_loop_args_keeps_ink_v2_alias(self):
-        plan = _shell_parse_loop_args("plan", "--ink-v2")
-        assert plan["LOOP_MODE"] == "plan"
-        assert plan["UI_MODE"] == "ink"
 
     def test_parse_loop_args_supports_claude_interactive_transport(self):
         plan = _shell_parse_loop_args("plan", "--claude-interactive")
@@ -4234,14 +4046,14 @@ class TestMechanicalHandoff:
     def test_mechanical_includes_mode_and_lead(self):
         """Mechanical handoff reflects current room mode and lead."""
         c, _, _, _ = _make_botference()
-        c.mode = RoomMode.CAUCUS
+        c.mode = RoomMode.DRAFT
         c.lead = "@codex"
         c.transcript.add("user", "hello")
         c._models_initialized.add("claude")
 
         body = c._relay_generate_mechanical("claude")
         assert body is not None
-        assert "caucus" in body.lower() or "Caucus" in body
+        assert "draft" in body.lower()
 
     async def test_mechanical_relay_end_to_end(self, tmp_path):
         """Full relay using mechanical tier writes valid files."""
@@ -4554,3 +4366,400 @@ class TestBootstrapFromHandoff:
         assert result is True
         assert "--- Handoff ---" not in claude.send_calls[0]
         assert live_file.exists()
+
+
+# ── Free-form mode ────────────────────────────────────────
+
+
+def _ff(text: str, status: str = "continuing", nxt: str = "",
+        summary: str = "state", writer: str = "") -> AdapterResponse:
+    """AdapterResponse ending in a free-form room footer."""
+    payload = {"status": status, "next": nxt, "summary": summary}
+    if writer:
+        payload["writer"] = writer
+    footer = json.dumps(payload)
+    return _ok(f"{text}\n\n{footer}")
+
+
+class TestRoomFooter:
+    def test_parse_raw_footer(self):
+        f = RoomFooter.parse(
+            'Position.\n\n{"status": "continuing", "next": "@codex", '
+            '"summary": "debating X"}'
+        )
+        assert f is not None
+        assert f.status == "continuing"
+        assert f.next == "@codex"
+        assert f.summary == "debating X"
+
+    def test_parse_requires_next_key(self):
+        # Caucus footers (no "next") must not parse as room footers.
+        f = RoomFooter.parse(
+            '{"status": "continue", "handoff_to": "user", '
+            '"writer_vote": "none", "summary": "s"}'
+        )
+        assert f is None
+
+    def test_strip_footer(self):
+        text = 'Position.\n\n{"status": "converged", "next": "@user", "summary": "s"}'
+        assert RoomFooter.strip_footer(text) == "Position."
+
+    def test_parse_writer_vote(self):
+        f = RoomFooter.parse(
+            'Position.\n\n{"status": "continuing", "next": "@codex", '
+            '"writer": "@claude", "summary": "s"}'
+        )
+        assert f is not None
+        assert f.writer == "@claude"
+
+    def test_writer_defaults_empty(self):
+        f = RoomFooter.parse(
+            '{"status": "continuing", "next": "@codex", "summary": "s"}'
+        )
+        assert f is not None
+        assert f.writer == ""
+
+
+class TestFreeFormNextTarget:
+    def test_footer_hands_to_other_bot(self):
+        r = _ff("Over to you.", nxt="@codex")
+        assert free_form_next_target("claude", r.text) == "codex"
+
+    def test_footer_hands_to_user(self):
+        r = _ff("Need a decision.", nxt="@user", status="blocked")
+        assert free_form_next_target("claude", r.text) == "user"
+
+    def test_footer_self_handoff_opens_floor(self):
+        r = _ff("Hmm.", nxt="@claude")
+        assert free_form_next_target("claude", r.text) is None
+
+    def test_prose_mention_fallback(self):
+        text = "I think @codex should check the schema."
+        assert free_form_next_target("claude", text) == "codex"
+
+    def test_no_mention_opens_floor(self):
+        assert free_form_next_target("claude", "All done here.") is None
+
+    def test_self_mention_ignored(self):
+        text = "As @claude I believe this is right."
+        assert free_form_next_target("claude", text) is None
+
+
+def _make_free_form_botference(
+    claude_responses: list[AdapterResponse],
+    codex_responses: list[AdapterResponse],
+) -> tuple[Botference, MockAdapter, MockAdapter, MockUI]:
+    claude = MockAdapter(claude_responses)
+    codex = MockAdapter(codex_responses)
+    ui = MockUI()
+    c = Botference(
+        claude=claude, codex=codex,
+        system_prompt="Plan an app", task="Build a thing",
+    )
+    return c, claude, codex, ui
+
+
+@pytest.mark.asyncio
+class TestFreeFormThread:
+    async def test_mention_dispatches_other_bot(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex")],
+            [_ok("Codex closing thoughts.")],
+        )
+        await c.handle_input("@claude kick off", ui)
+
+        # Codex got a turn without any user message addressed to it.
+        assert len(codex.send_calls) == 1
+        speakers = [s for s, _ in ui.room_entries]
+        assert "codex" in speakers
+
+    async def test_footer_stripped_from_display_but_kept_in_transcript(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex")],
+            [_ok("Codex closing.")],
+        )
+        await c.handle_input("@claude kick off", ui)
+
+        claude_display = [t for s, t in ui.room_entries if s == "claude"]
+        assert claude_display and '"next"' not in claude_display[0]
+        transcript_claude = [e.text for e in c.transcript.entries
+                             if e.speaker == "claude"]
+        assert '"next"' in transcript_claude[0]
+
+    async def test_no_handoff_means_single_reply(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ok("Claude has nothing to hand off.")],
+            [_ok("Codex should never speak.")],
+        )
+        await c.handle_input("@claude kick off", ui)
+        assert codex.send_calls == []
+        assert codex.resume_calls == []
+
+    async def test_user_handoff_ends_thread(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Your call.", nxt="@user", status="blocked")],
+            [_ok("Codex should never speak.")],
+        )
+        await c.handle_input("@claude kick off", ui)
+        assert codex.send_calls == []
+
+    async def test_budget_exhaustion_forces_handoff(self):
+        # Both bots always hand off to each other; only the budget stops them.
+        ping = [_ff(f"claude turn {i}", nxt="@codex") for i in range(20)]
+        pong = [_ff(f"codex turn {i}", nxt="@claude") for i in range(20)]
+        c, claude, codex, ui = _make_free_form_botference(ping, pong)
+        await c.handle_input("@claude kick off", ui)
+
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("granting one extension" in m for m in system_msgs)
+        assert any("budget exhausted" in m for m in system_msgs)
+        # Cascade turns (excluding the seeding claude reply) are capped at
+        # base + extension.
+        bot_entries = [s for s, _ in ui.room_entries if s in ("claude", "codex")]
+        assert len(bot_entries) - 1 == (
+            _FREE_FORM_MAX_BOT_TURNS + _FREE_FORM_EXTENSION_TURNS
+        )
+
+    async def test_pending_input_pauses_thread(self):
+        ping = [_ff(f"claude turn {i}", nxt="@codex") for i in range(5)]
+        pong = [_ff(f"codex turn {i}", nxt="@claude") for i in range(5)]
+        c, claude, codex, ui = _make_free_form_botference(ping, pong)
+        c.pending_input_check = lambda: True
+        await c.handle_input("@claude kick off", ui)
+
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("paused" in m for m in system_msgs)
+        # The seeding reply happened, but no cascade turns ran.
+        assert codex.send_calls == []
+
+    async def test_no_footer_no_mention_returns_floor_to_user(self):
+        # Turn-based is the degenerate case: a reply with no handoff simply
+        # ends the exchange.
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ok("Plain reply, no footer, no mention.")],
+            [_ok("Codex should never speak.")],
+        )
+        await c.handle_input("@claude kick off", ui)
+        assert codex.send_calls == []
+        assert codex.resume_calls == []
+
+
+@pytest.mark.asyncio
+class TestWriterConsensus:
+    async def test_matching_votes_set_lead(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude should write.", nxt="@codex", writer="@claude")],
+            [_ff("Agreed.", nxt="@user", status="converged", writer="@claude")],
+        )
+        assert c.lead == "auto"
+        await c.handle_input("@claude who writes?", ui)
+        assert c.lead == "@claude"
+        assert any("Writer consensus" in t for _, t in ui.room_entries)
+
+    async def test_single_vote_does_not_set_lead(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("I'd take it.", nxt="@codex", writer="@claude")],
+            [_ff("Still thinking.", nxt="@user")],
+        )
+        await c.handle_input("@claude who writes?", ui)
+        assert c.lead == "auto"
+
+    async def test_split_votes_do_not_set_lead(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("I'd take it.", nxt="@codex", writer="@claude")],
+            [_ff("No, me.", nxt="@user", writer="@codex")],
+        )
+        await c.handle_input("@claude who writes?", ui)
+        assert c.lead == "auto"
+
+    async def test_manual_lead_not_overridden(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude writes.", nxt="@codex", writer="@claude")],
+            [_ff("Agreed.", nxt="@user", status="converged", writer="@claude")],
+        )
+        c.lead = "@codex"
+        await c.handle_input("@claude who writes?", ui)
+        assert c.lead == "@codex"
+
+    async def test_latest_vote_wins_then_consensus(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [
+                _ff("Me first.", nxt="@codex", writer="@claude"),
+                _ff("Actually you take it.", nxt="@user",
+                    status="converged", writer="@codex"),
+            ],
+            [_ff("I'll write.", nxt="@claude", writer="@codex")],
+        )
+        await c.handle_input("@claude who writes?", ui)
+        assert c.lead == "@codex"
+
+
+@pytest.mark.asyncio
+class TestFreeFormResume:
+    async def test_resumed_session_gets_protocol_note(self):
+        # Session created turn-based, with both models holding native sessions.
+        c1, claude1, codex1, ui1 = _make_botference()
+        await c1.handle_input("@all hello", ui1)
+        payload = c1._session_payload()
+        assert payload["models_initialized"]
+
+        c2 = Botference(
+            claude=MockAdapter(), codex=MockAdapter(),
+            system_prompt="", task="",
+        )
+        c2._restore_from_payload(payload)
+        notes = [e.text for e in c2.transcript.entries
+                 if e.speaker == "system" and "Free-form mode is active" in e.text]
+        assert len(notes) == 1
+        # Re-restoring must not duplicate the note.
+        c2._restore_from_payload(c2._session_payload())
+        notes = [e.text for e in c2.transcript.entries
+                 if e.speaker == "system" and "Free-form mode is active" in e.text]
+        assert len(notes) == 1
+
+    async def test_fresh_session_gets_no_note(self):
+        # No models initialized yet → they'll get the full initial prompt,
+        # so no transcript note is needed.
+        c1, _, _, _ = _make_botference()
+        payload = c1._session_payload()
+
+        c2 = Botference(
+            claude=MockAdapter(), codex=MockAdapter(),
+            system_prompt="", task="",
+        )
+        c2._restore_from_payload(payload)
+        assert not any("Free-form mode is active" in e.text
+                       for e in c2.transcript.entries)
+
+
+# ── Project suggestion and /project assign ────────────────
+
+
+def _add_project(tmp_path: Path, slug: str, title: str) -> None:
+    pdir = tmp_path / "projects" / slug
+    pdir.mkdir(parents=True)
+    (pdir / "PROJECT.md").write_text(f"# {title}\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+class TestProjectSuggestion:
+    async def test_first_inbox_message_shows_picker_with_match(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude let's plan the spaceship engine bay", ui)
+
+        assert len(ui.choice_requests) == 1
+        _, options = ui.choice_requests[0]
+        assert options[0] == "File under Spaceship Engineering"
+        assert options[-2] == "Create a new project from this chat"
+        assert options[-1] == "Stay in Inbox"
+
+    async def test_picking_project_sets_context(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses = [0]
+        await c.handle_input("@claude spaceship engine plans", ui)
+
+        assert c.active_project_id == "spaceship-engineering"
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert c.session_id in str(index)
+
+    async def test_picking_new_project_creates_it(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses = [1]  # options: [file-under, create, stay]
+        await c.handle_input("@claude spaceship engine plans", ui)
+
+        assert c.active_project_id
+        assert c.active_project_id != "spaceship-engineering"
+
+    async def test_dismissing_picker_stays_in_inbox(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses = [None]
+        await c.handle_input("@claude spaceship engine plans", ui)
+
+        assert c.active_project_id == ""
+
+    async def test_no_match_still_offers_create_and_stay(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude unrelated cooking question", ui)
+
+        assert len(ui.choice_requests) == 1
+        _, options = ui.choice_requests[0]
+        assert options == [
+            "Create a new project from this chat", "Stay in Inbox",
+        ]
+
+    async def test_second_message_gets_no_picker(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, claude, _, ui = _make_botference(
+            claude_responses=[_ok("r1"), _ok("r2")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude spaceship plans", ui)
+        await c.handle_input("@claude more spaceship plans", ui)
+
+        assert len(ui.choice_requests) == 1
+
+    async def test_active_project_suppresses_picker(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.active_project_id = "spaceship-engineering"
+        await c.handle_input("@claude spaceship plans", ui)
+
+        assert ui.choice_requests == []
+
+    async def test_ui_without_picker_gets_text_note(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+
+        class BareUI(MockUI):
+            request_choice = None  # simulate a UI without picker support
+        ui = BareUI()
+
+        await c.handle_input("@claude spaceship engine plans", ui)
+        notes = [t for s, t in ui.room_entries
+                 if s == "system" and "This chat is in Inbox" in t]
+        assert len(notes) == 1
+        assert "/project open spaceship-engineering" in notes[0]
+
+
+@pytest.mark.asyncio
+class TestProjectAssign:
+    async def test_assign_current_chat(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project assign spaceship-engineering", ui)
+
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert c.session_id in str(index)
+        # Active context unchanged.
+        assert c.active_project_id == ""
+        assert any("Filed this chat" in t for s, t in ui.room_entries
+                   if s == "system")
+
+    async def test_assign_saved_session_by_prefix(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c1, _, _, ui1 = _make_botference(tmp_path=tmp_path)
+        await c1.handle_input("@claude old chat", ui1)
+        old_id = c1.session_id
+
+        c2, _, _, ui2 = _make_botference(tmp_path=tmp_path)
+        await c2.handle_input(
+            f"/project assign {old_id[:8]} spaceship-engineering", ui2,
+        )
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert old_id in str(index)
+
+    async def test_assign_unknown_project_errors(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project assign no-such-project", ui)
+        assert any("No project matched" in t for s, t in ui.room_entries
+                   if s == "system")

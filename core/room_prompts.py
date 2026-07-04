@@ -3,25 +3,14 @@ room_prompts.py — Prompt templates for botference mode.
 
 Layered prompt composition (per plan Prompt Composition):
 1. Base room preamble — "You are {name} in a shared planning room..."
-2. Caucus preamble — private coordination with footer schema
+2. Free-form room protocol — footer-driven handoffs between the bots
 3. Writer preamble — lead drafting to temp artifact
 4. Reviewer preamble — review/critique instructions
-5. Footer schema — JSON format instruction for caucus turns
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-# -- Footer schema ----------------------------------------------------------
-
-FOOTER_SCHEMA = (
-    '{"status": "continue|ready_to_draft|need_user_input|'
-    'blocked|no_objection|disagree", '
-    '"handoff_to": "claude|codex|user", '
-    '"writer_vote": "claude|codex|none", '
-    '"summary": "one-line state update"}'
-)
 
 # -- Skills -----------------------------------------------------------------
 
@@ -93,6 +82,94 @@ def project_skill_context(model: str, roots: list[str | Path]) -> str:
     return "\n".join(lines)
 
 
+# -- Free-form room protocol -------------------------------------------------
+
+FREE_FORM_FOOTER_SCHEMA = (
+    '{"status": "continuing|converged|blocked", '
+    '"next": "@claude|@codex|@user", '
+    '"writer": "@claude|@codex (optional)", '
+    '"summary": "one-line state update"}'
+)
+
+
+def free_form_protocol(name: str, other: str) -> str:
+    """Room-preamble extension for free-form (mention-driven) mode.
+
+    In free-form mode a bot's reply can hand the floor to the other bot,
+    who then replies in the same room, recursively, until someone hands
+    the floor back to the user or the thread budget runs out.
+    """
+    return (
+        "--- Free-form room protocol ---\n"
+        f"This room is free-form: you and {other} may talk directly to each "
+        "other without waiting for the user.\n"
+        f"End EVERY response with a JSON footer on its own line:\n"
+        f"{FREE_FORM_FOOTER_SCHEMA}\n"
+        f'- "next": "@{other.lower()}" hands the floor to {other}, who will '
+        "reply to you immediately. Use it when their input would genuinely "
+        "improve the plan.\n"
+        '- "next": "@user" (or omitting the footer) returns the floor to the '
+        "user. Use it when you need a human decision or the thread has "
+        "converged.\n"
+        '- "status": "converged" when you both agree, "blocked" when you '
+        'cannot make progress without the user, otherwise "continuing".\n'
+        '- "writer": include it only once you have a view on who should '
+        "draft the implementation plan. When you both name the same writer, "
+        "the lead is set automatically (the user can override with /lead).\n"
+        "Discussion discipline:\n"
+        f"- Do not agree with {other} without adding something new — if you "
+        "have nothing to add, mark converged and hand to @user.\n"
+        f"- Before accepting {other}'s proposal, name its weakest point.\n"
+        "- Keep each turn terse and precise: your position, the reason, and "
+        "one open question. No restating what was already said.\n"
+        "- The bot-to-bot thread has a turn and token budget shown to you "
+        "each turn; pace the discussion so it converges within it."
+    )
+
+
+def free_form_resume_note() -> str:
+    """One-time transcript note for sessions resumed into free-form mode.
+
+    Resumed chats keep their native CLI sessions, so the models never saw
+    the free-form section of the initial prompt — this note reaches them
+    through the shared transcript instead.
+    """
+    return (
+        "[Free-form mode is active. You and the other AI participant may "
+        "hand each other the floor: end EVERY response with a JSON footer "
+        f"{FREE_FORM_FOOTER_SCHEMA} — "
+        '"next": "@claude" or "@codex" gives the other bot the floor '
+        'immediately; "@user" (or no footer) returns it to the user. '
+        "Keep turns terse; bot-to-bot threads are budgeted.]"
+    )
+
+
+def free_form_turn_status(
+    turns_used: int,
+    max_turns: int,
+    tokens_used: int,
+    token_budget: int,
+    *,
+    last_turn_tokens: int = 0,
+    nudge_threshold: int = 0,
+) -> str:
+    """Per-turn budget countdown injected before each bot-to-bot dispatch."""
+    lines = [
+        f"[Free-form thread: bot turn {turns_used} of {max_turns}, "
+        f"~{tokens_used} of {token_budget} output tokens used. "
+        "When the budget is exhausted the floor returns to the user.]"
+    ]
+    if nudge_threshold and last_turn_tokens > nudge_threshold:
+        lines.append(
+            f"[Your last reply was ~{last_turn_tokens} output tokens; "
+            f"cap this one at ~{int(nudge_threshold * 0.75)}.]"
+        )
+    lines.append(
+        f"[End your reply with the room footer: {FREE_FORM_FOOTER_SCHEMA}]"
+    )
+    return "\n".join(lines)
+
+
 # -- Room role --------------------------------------------------------------
 
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."
@@ -120,60 +197,19 @@ def room_preamble(name: str, other: str, writable_roots: str = "(unspecified)") 
     )
 
 
-# -- Caucus -----------------------------------------------------------------
-
-def caucus_preamble(topic: str, turn_number: int, min_turns: int,
-                    max_turns: int) -> str:
-    """Private coordination turn instruction with footer schema."""
-    turns_remaining_before_exit = max(0, min_turns - turn_number)
-    return (
-        f"[Private caucus — discuss: {topic}]\n"
-        f"[Turn {turn_number} of {max_turns} — "
-        + (f"minimum {turns_remaining_before_exit} more turn(s) before "
-           f"either side may signal completion]\n\n"
-           if turns_remaining_before_exit > 0
-           else "either side may now signal completion]\n\n")
-        + "TURN-TAKING RULES:\n"
-        "- This is a structured, multi-round discussion. You speak, "
-        "then the other model speaks, alternating.\n"
-        "- Use status \"continue\" to keep the discussion going. "
-        "The other model will respond to your points.\n"
-        "- Only use a terminal status (ready_to_draft, no_objection, "
-        "need_user_input, disagree, blocked) when you genuinely have "
-        "nothing left to add AND the minimum turns have passed.\n"
-        "- Do not rush to agreement. Explore the topic thoroughly.\n\n"
-        f"End your response with a JSON footer:\n"
-        f"{FOOTER_SCHEMA}\n\n"
-        f"Be concise. Focus on the key decision points."
-    )
-
-
-def caucus_first_turn(topic: str, turn_number: int = 1,
-                     min_turns: int = 3, max_turns: int = 5) -> str:
-    """First caucus turn (no prior response)."""
-    return (
-        f"Topic: {topic}\n\n"
-        f"{caucus_preamble(topic, turn_number, min_turns, max_turns)}"
-    )
-
-
-def caucus_turn(other_name: str, other_response: str, topic: str,
-                turn_number: int = 1, min_turns: int = 3,
-                max_turns: int = 5) -> str:
-    """Subsequent caucus turn with the other model's response."""
-    return (
-        f"[{other_name}'s caucus response:]\n{other_response}"
-        f"\n\n{caucus_preamble(topic, turn_number, min_turns, max_turns)}"
-    )
-
-
 # -- Writer -----------------------------------------------------------------
+
+PLAN_ONLY_SUFFIX = (
+    "\nReturn only the document markdown — do not append the room footer; "
+    "your response is written to a file verbatim."
+)
 
 WRITER_PREAMBLE = (
     "You are the designated plan writer. Draft a complete "
     "implementation plan based on the discussion so far.\n"
     "Format as clean markdown. This is a draft for review — "
     "no files will be written yet."
+    + PLAN_ONLY_SUFFIX
 )
 
 def reviewer_preamble(lead_name: str, draft_text: str) -> str:
@@ -183,7 +219,13 @@ def reviewer_preamble(lead_name: str, draft_text: str) -> str:
         f"{draft_text}\n\n"
         f"Identify gaps, risks, or misalignments with the discussion. "
         f"Be constructive and specific. Do not rewrite the plan. "
-        f"Return review comments only as markdown."
+        f"Return review comments as markdown, then end with the room footer:\n"
+        f"{FREE_FORM_FOOTER_SCHEMA}\n"
+        '- "status": "converged" if the plan is sound as-is and needs no '
+        "revision (your comments will be recorded but no revise turn runs).\n"
+        '- "status": "blocked" with "next": "@user" if a decision only the '
+        "user can make is required before revising.\n"
+        f'- otherwise "continuing" with "next": "@{lead_name.lower()}".'
     )
 def revision_from_plan_preamble(current_plan: str, reviewer_name: str,
                                 review_text: str, round_number: int) -> str:
@@ -195,6 +237,7 @@ def revision_from_plan_preamble(current_plan: str, reviewer_name: str,
         "Rewrite the implementation plan as a complete markdown document. "
         "Address all valid reviewer comments, preserve good existing structure, "
         "and keep the thread metadata and task list coherent."
+        + PLAN_ONLY_SUFFIX
     )
 
 
@@ -208,6 +251,7 @@ def finalize_plan_preamble(current_plan: str, review_bundle: str) -> str:
         "Ensure every reviewer comment is either addressed in the plan or "
         "explicitly resolved by the plan structure. Return only the final "
         "implementation plan markdown."
+        + PLAN_ONLY_SUFFIX
     )
 
 
@@ -225,4 +269,5 @@ def checkpoint_preamble(final_plan_text: str) -> str:
         "- Last Reflection\n"
         "- Next Task\n"
         "Be concise and derive the next task from the current plan."
+        + PLAN_ONLY_SUFFIX
     )

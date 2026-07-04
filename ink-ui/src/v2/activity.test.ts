@@ -17,27 +17,26 @@ describe("Ink activity status", () => {
     assert.notEqual(v2ActivityGlyph(0), v2ActivityGlyph(1));
   });
 
-  it("targets activity from input route and mode", () => {
-    assert.equal(targetFromInput("@codex please inspect", "@all", "public"), "codex");
-    assert.equal(targetFromInput("/help", "@all", "public"), "system");
-    assert.equal(targetFromInput("hello", "@claude", "public"), "claude");
-    assert.equal(targetFromInput("hello", "@claude", "caucus"), "all");
+  it("targets activity from input and route", () => {
+    assert.equal(targetFromInput("@codex please inspect", "@all"), "codex");
+    assert.equal(targetFromInput("/help", "@all"), "system");
+    assert.equal(targetFromInput("hello", "@claude"), "claude");
   });
 
   it("formats singular and plural bot activity", () => {
     assert.match(
-      formatV2ActivityText(createV2Activity("codex", "public", "seed")),
+      formatV2ActivityText(createV2Activity("codex", "seed")),
       /^Codex is .+\.\.\.$/,
     );
-    assert.equal(
-      formatV2ActivityText(createV2Activity("all", "caucus", "seed")),
-      "Claude and Codex are caucusing...",
+    assert.match(
+      formatV2ActivityText(createV2Activity("all", "seed")),
+      /^Claude and Codex are .+\.\.\.$/,
     );
   });
 
   it("starts a deterministic activity from user input", () => {
-    const first = startV2ActivityFromInput("@claude write tests", "@all", "public", 1);
-    const second = startV2ActivityFromInput("@claude write tests", "@all", "public", 2);
+    const first = startV2ActivityFromInput("@claude write tests", "@all", 1);
+    const second = startV2ActivityFromInput("@claude write tests", "@all", 2);
     assert.equal(first.target, "claude");
     assert.equal(first.verb, second.verb);
   });

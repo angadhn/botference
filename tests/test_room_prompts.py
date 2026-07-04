@@ -8,14 +8,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 from room_prompts import (
-    FOOTER_SCHEMA,
+    FREE_FORM_FOOTER_SCHEMA,
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
-    caucus_first_turn,
-    caucus_preamble,
-    caucus_turn,
     checkpoint_preamble,
     finalize_plan_preamble,
+    free_form_protocol,
     project_skill_context,
     reviewer_preamble,
     revision_from_plan_preamble,
@@ -23,24 +21,34 @@ from room_prompts import (
 )
 
 
-# -- FOOTER_SCHEMA ----------------------------------------------------------
+# -- FREE_FORM_FOOTER_SCHEMA --------------------------------------------------
 
 
-class TestFooterSchema:
+class TestFreeFormFooterSchema:
     def test_contains_all_statuses(self):
-        for status in ("continue", "ready_to_draft", "need_user_input",
-                        "blocked", "no_objection", "disagree"):
-            assert status in FOOTER_SCHEMA
+        for status in ("continuing", "converged", "blocked"):
+            assert status in FREE_FORM_FOOTER_SCHEMA
 
     def test_contains_handoff_targets(self):
-        for target in ("claude", "codex", "user"):
-            assert target in FOOTER_SCHEMA
+        for target in ("@claude", "@codex", "@user"):
+            assert target in FREE_FORM_FOOTER_SCHEMA
 
-    def test_contains_writer_vote_field(self):
-        assert "writer_vote" in FOOTER_SCHEMA
+    def test_contains_writer_field(self):
+        assert '"writer"' in FREE_FORM_FOOTER_SCHEMA
 
     def test_contains_summary_field(self):
-        assert "summary" in FOOTER_SCHEMA
+        assert "summary" in FREE_FORM_FOOTER_SCHEMA
+
+
+class TestFreeFormProtocol:
+    def test_includes_footer_schema(self):
+        result = free_form_protocol("Claude", "Codex")
+        assert FREE_FORM_FOOTER_SCHEMA in result
+
+    def test_explains_writer_consensus(self):
+        result = free_form_protocol("Claude", "Codex")
+        assert "writer" in result
+        assert "/lead" in result
 
 
 # -- room_preamble ----------------------------------------------------------
@@ -119,60 +127,6 @@ class TestRoomRoleSuffix:
         assert ROOM_ROLE_SUFFIX.startswith("\n")
 
 
-# -- caucus_preamble --------------------------------------------------------
-
-
-class TestCaucusPreamble:
-    def test_includes_topic(self):
-        result = caucus_preamble("microservices vs monolith", 1, 3, 5)
-        assert "microservices vs monolith" in result
-
-    def test_includes_footer_schema(self):
-        result = caucus_preamble("topic", 1, 3, 5)
-        assert FOOTER_SCHEMA in result
-
-    def test_includes_instructions(self):
-        result = caucus_preamble("topic", 1, 3, 5)
-        assert "JSON footer" in result
-        assert "concise" in result.lower()
-
-
-# -- caucus_first_turn ------------------------------------------------------
-
-
-class TestCaucusFirstTurn:
-    def test_includes_topic(self):
-        result = caucus_first_turn("database choice")
-        assert "database choice" in result
-
-    def test_starts_with_topic_label(self):
-        result = caucus_first_turn("arch")
-        assert result.startswith("Topic: arch")
-
-    def test_includes_footer_schema(self):
-        result = caucus_first_turn("topic")
-        assert FOOTER_SCHEMA in result
-
-
-# -- caucus_turn ------------------------------------------------------------
-
-
-class TestCaucusTurn:
-    def test_includes_other_response(self):
-        result = caucus_turn("Claude", "I think option A", "arch")
-        assert "Claude's caucus response" in result
-        assert "I think option A" in result
-
-    def test_includes_footer_schema(self):
-        result = caucus_turn("Codex", "response text", "topic")
-        assert FOOTER_SCHEMA in result
-
-    def test_includes_preamble(self):
-        result = caucus_turn("Claude", "resp", "db choice")
-        assert "Private caucus" in result
-        assert "db choice" in result
-
-
 # -- WRITER_PREAMBLE --------------------------------------------------------
 
 
@@ -203,6 +157,22 @@ class TestReviewerPreamble:
         assert "gaps" in result.lower()
         assert "risks" in result.lower()
         assert "constructive" in result.lower()
+
+    def test_review_requests_room_footer(self):
+        result = reviewer_preamble("Claude", "draft")
+        assert FREE_FORM_FOOTER_SCHEMA in result
+        assert "converged" in result
+        assert '"next": "@claude"' in result
+
+    def test_writer_prompts_forbid_footer(self):
+        assert "do not append the room footer" in WRITER_PREAMBLE
+        assert "do not append the room footer" in revision_from_plan_preamble(
+            "plan", "Codex", "review", 1
+        )
+        assert "do not append the room footer" in finalize_plan_preamble(
+            "plan", "review"
+        )
+        assert "do not append the room footer" in checkpoint_preamble("plan")
 
     def test_tells_reviewer_not_to_rewrite_plan(self):
         result = reviewer_preamble("Claude", "draft")

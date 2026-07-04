@@ -18,10 +18,8 @@ describe("computeLayoutBudget", () => {
   it("returns correct dimensions for standard terminal", () => {
     const b = computeLayoutBudget(24, 80, 1);
     assert.equal(b.paneContentHeight, 12);
-    assert.equal(b.leftPaneWidth, 40);
-    assert.equal(b.rightPaneWidth, 40);
-    assert.equal(b.leftTextWidth, 36);
-    assert.equal(b.rightTextWidth, 36);
+    assert.equal(b.councilPaneWidth, 80);
+    assert.equal(b.councilTextWidth, 76);
   });
 
   it("grows the input viewport and shrinks panes accordingly", () => {
@@ -35,9 +33,8 @@ describe("computeLayoutBudget", () => {
 
   it("handles odd terminal width", () => {
     const b = computeLayoutBudget(24, 81, 1);
-    assert.equal(b.leftPaneWidth, 40);
-    assert.equal(b.rightPaneWidth, 41);
-    assert.equal(b.rightTextWidth, 37);
+    assert.equal(b.councilPaneWidth, 81);
+    assert.equal(b.councilTextWidth, 77);
   });
 
   it("reserves a projects column when projectsVisible=true", () => {
@@ -45,20 +42,16 @@ describe("computeLayoutBudget", () => {
     // Cap is floor(120/3)=40, target is 30 → projects width = 30.
     assert.equal(b.projectsPaneWidth, 30);
     assert.equal(b.projectsTextWidth, 26);
-    // Remaining 90 cols split evenly between Council and Caucus.
-    assert.equal(b.leftPaneWidth, 45);
-    assert.equal(b.rightPaneWidth, 45);
-    assert.equal(b.leftTextWidth, 41);
-    assert.equal(b.rightTextWidth, 41);
+    // The Council takes the remaining 90 cols.
+    assert.equal(b.councilPaneWidth, 90);
+    assert.equal(b.councilTextWidth, 86);
   });
 
   it("returns zero projects width by default", () => {
     const b = computeLayoutBudget(24, 80, 1);
     assert.equal(b.projectsPaneWidth, 0);
     assert.equal(b.projectsTextWidth, 0);
-    // Council and Caucus still split the full width like before.
-    assert.equal(b.leftPaneWidth, 40);
-    assert.equal(b.rightPaneWidth, 40);
+    assert.equal(b.councilPaneWidth, 80);
   });
 
   it("hides the projects panel when the terminal is too narrow", () => {
@@ -67,8 +60,7 @@ describe("computeLayoutBudget", () => {
     const b = computeLayoutBudget(24, 40, 1, { projectsVisible: true });
     assert.equal(b.projectsPaneWidth, 0);
     assert.equal(b.projectsTextWidth, 0);
-    assert.equal(b.leftPaneWidth, 20);
-    assert.equal(b.rightPaneWidth, 20);
+    assert.equal(b.councilPaneWidth, 40);
   });
 
   it("caps the projects column at one-third of terminal width", () => {
@@ -76,8 +68,7 @@ describe("computeLayoutBudget", () => {
     const b = computeLayoutBudget(24, 60, 1, { projectsVisible: true });
     assert.equal(b.projectsPaneWidth, 20);
     assert.equal(b.projectsTextWidth, 16);
-    assert.equal(b.leftPaneWidth, 20);
-    assert.equal(b.rightPaneWidth, 20);
+    assert.equal(b.councilPaneWidth, 40);
   });
 });
 

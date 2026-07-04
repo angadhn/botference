@@ -34,6 +34,7 @@ import {
   buildToolStackText,
   createStreamSegmentState,
   isFinalEntryForSegmentedStream,
+  stripFooterFromStreamEntries,
   nextPacedChunkEnd,
   replaceOrInsertStreamEntryBefore,
   replaceOrAppendStreamEntry,
@@ -96,7 +97,6 @@ interface BridgeArgs {
   debugPanes: boolean;
   claudeEffort: string;
   claudeTransport: string;
-  inkLegacy: boolean;
 }
 
 interface PendingPermission {
@@ -142,9 +142,8 @@ const THEME = {
 type BusyTarget = "claude" | "codex" | "all" | "system" | null;
 type BusySegment = { text: string; color: string; bold?: boolean };
 
-function resolveBusyTarget(input: string, currentRoute: string, mode: string): BusyTarget {
+function resolveBusyTarget(input: string, currentRoute: string): BusyTarget {
   const trimmed = input.trim();
-  if (mode === "caucus") return "all";
   if (trimmed.startsWith("@claude")) return "claude";
   if (trimmed.startsWith("@codex")) return "codex";
   if (trimmed.startsWith("@all")) return "all";
@@ -154,33 +153,17 @@ function resolveBusyTarget(input: string, currentRoute: string, mode: string): B
   return "all";
 }
 
-function busyLabel(target: BusyTarget, mode: string): string {
-  if (mode === "caucus") return "Claude and Codex are caucusing";
+function v2ActivityFromBusyTarget(target: BusyTarget): V2Activity {
   switch (target) {
     case "claude":
-      return "Claude is thinking";
+      return createV2Activity("claude", "claude");
     case "codex":
-      return "Codex is thinking";
+      return createV2Activity("codex", "codex");
     case "all":
-      return "Claude and Codex are thinking";
-    case "system":
-      return "Botference is working";
-    default:
-      return "Working";
-  }
-}
-
-function v2ActivityFromBusyTarget(target: BusyTarget, mode: string): V2Activity {
-  switch (target) {
-    case "claude":
-      return createV2Activity("claude", mode, "claude");
-    case "codex":
-      return createV2Activity("codex", mode, "codex");
-    case "all":
-      return createV2Activity("all", mode, "all");
+      return createV2Activity("all", "all");
     case "system":
     case null:
-      return createV2Activity("system", mode, "system");
+      return createV2Activity("system", "system");
   }
 }
 
@@ -327,6 +310,7 @@ function ProjectsPane({
   height,
   textWidth,
   viewportHeight,
+  filter = "",
 }: {
   rows: ProjectRow[];
   focused: boolean;
@@ -334,6 +318,7 @@ function ProjectsPane({
   height: number;
   textWidth: number;
   viewportHeight: number;
+  filter?: string;
 }) {
   // Keep the cursor in view by scrolling the row window when needed.
   const safeHeight = Math.max(1, viewportHeight);
@@ -357,9 +342,14 @@ function ProjectsPane({
       width={textWidth + 4}
       paddingX={1}
     >
-      <Text bold color={focused ? THEME.accentBright : THEME.textMuted}>
-        PROJECTS
+      <Text bold color={focused ? THEME.accentBright : THEME.textMuted} wrap="truncate-end">
+        {filter ? `PROJECTS ⌕ ${filter}` : "PROJECTS"}
       </Text>
+      {filter && rows.length === 0 ? (
+        <Text color={THEME.textMuted} wrap="truncate-end">
+          {"  no matches (Esc clears)"}
+        </Text>
+      ) : null}
       {visible.map((row, vi) => {
         const idx = startIdx + vi;
         const isCursor = focused && idx === cursorIndex && row.selectable;
@@ -411,15 +401,24 @@ function ProjectsPane({
           );
         }
         if (row.kind === "session") {
-          const sessionMarker = row.active ? "●" : " ";
+          const sessionMarker = row.active ? "▸" : " ";
+          const age = row.meta ? ` · ${row.meta}` : "";
           return (
             <Box key={`row-${idx}`} width="100%">
               <Text
+                bold={row.active && !dimmed}
                 color={dimmed ? THEME.textMuted : (row.active ? THEME.ready : THEME.text)}
                 backgroundColor={isCursor ? THEME.accent : undefined}
                 wrap="truncate-end"
               >
                 {`  ${sessionMarker} ${row.title}`}
+                <Text
+                  bold={false}
+                  color={dimmed ? THEME.textMuted : (row.active ? THEME.ready : THEME.statusMuted)}
+                  backgroundColor={isCursor ? THEME.accent : undefined}
+                >
+                  {age}
+                </Text>
               </Text>
             </Box>
           );
@@ -593,11 +592,44 @@ function PermissionPrompt({
   );
 }
 
+function ChoicePrompt({
+  prompt,
+  options,
+  index,
+}: {
+  prompt: string;
+  options: string[];
+  index: number;
+}) {
+  return (
+    <Box flexDirection="column" paddingX={1} width="100%">
+      <Text bold color={THEME.accentBright}>
+        {prompt}
+      </Text>
+      {options.map((option, i) => {
+        const focused = i === index;
+        return (
+          <Text
+            key={`choice-${i}`}
+            bold={focused}
+            color={focused ? THEME.ready : THEME.textMuted}
+            wrap="truncate-end"
+          >
+            {focused ? `❯ ${option}` : `  ${option}`}
+          </Text>
+        );
+      })}
+      <Text color={THEME.statusMuted} wrap="truncate-end">
+        Up/Down selects | Enter confirms | Esc dismisses
+      </Text>
+    </Box>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────
 
 export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [roomEntries, setRoomEntries] = useState<Entry[]>([]);
-  const [caucusEntries, setCaucusEntries] = useState<Entry[]>([]);
   const [status, setStatus] = useState<StatusData>({
     mode: "public",
     lead: "auto",
@@ -611,7 +643,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     codex_window: null,
     observe: true,
   });
-  const [focusedPane, setFocusedPane] = useState<"room" | "caucus" | "projects">("room");
+  const [focusedPane, setFocusedPane] = useState<"room" | "projects">("room");
   const [projectState, setProjectState] = useState<ProjectPanelStateData>({
     active_project_id: "",
     inbox_session_count: 0,
@@ -619,6 +651,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   });
   const [projectsVisible, setProjectsVisible] = useState(true);
   const [projectCursor, setProjectCursor] = useState(0);
+  const [projectFilter, setProjectFilter] = useState("");
   const [inputText, setInputTextState] = useState("");
   const [cursor, setCursorState] = useState(0);
   const [hint, setHint] = useState("");
@@ -630,14 +663,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [mouseSelectionMode, setMouseSelectionMode] = useState(false);
   const [paneSelection, setPaneSelection] = useState<PaneSelection | null>(null);
   const [roomScroll, setRoomScroll] = useState(0);
-  const [caucusScroll, setCaucusScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
-  const [lastSeenCaucusCount, setLastSeenCaucusCount] = useState(0);
 
   const [desiredCol, setDesiredCol] = useState<number | null>(null);
   const [imageAttachments, setImageAttachmentsState] = useState<Map<number, string>>(new Map());
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [permissionChoice, setPermissionChoice] = useState<"allow" | "deny">("allow");
+  const [pendingChoice, setPendingChoice] = useState<{ prompt: string; options: string[] } | null>(null);
+  const [choiceIndex, setChoiceIndex] = useState(0);
   const [completionCtx, setCompletionCtx] = useState<{
     global: string[];
     scoped: Record<string, string[]>;
@@ -670,11 +703,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   const wheelAccelRef = useRef(initWheelAccel());
   const roomScrollRef = useRef(0);
-  const caucusScrollRef = useRef(0);
   const roomScrollTargetRef = useRef(0);
-  const caucusScrollTargetRef = useRef(0);
   const roomMaxScrollRef = useRef(0);
-  const caucusMaxScrollRef = useRef(0);
   const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
   const toolStacksRef = useRef<Map<string, Map<string, string>>>(new Map());
@@ -715,9 +745,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const {
     paneHeight,
     paneContentHeight,
-    leftPaneWidth,
-    leftTextWidth,
-    rightTextWidth,
+    councilTextWidth,
     projectsPaneWidth,
     projectsTextWidth,
   } = computeLayoutBudget(rows, cols, visibleInputLines, {
@@ -728,8 +756,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // on an invisible pane.
   const projectsPaneRendered = projectsVisible && projectsPaneWidth > 0;
   const projectRows = useMemo(
-    () => buildProjectRows(projectState),
-    [projectState],
+    () => buildProjectRows(projectState, { filter: projectFilter }),
+    [projectState, projectFilter],
   );
 
   // Snap the cursor to the active row on first load, then leave it alone so
@@ -758,54 +786,36 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // cache keeps the deferred recompute cheap; together they keep the input box
   // responsive even on long sessions.
   const deferredRoomEntries = useDeferredValue(roomEntries);
-  const deferredCaucusEntries = useDeferredValue(caucusEntries);
   const roomFlatLines = useMemo(
-    () => preRenderLines(deferredRoomEntries, leftTextWidth),
-    [deferredRoomEntries, leftTextWidth],
-  );
-  const caucusFlatLines = useMemo(
-    () => preRenderLines(deferredCaucusEntries, rightTextWidth),
-    [deferredCaucusEntries, rightTextWidth],
+    () => preRenderLines(deferredRoomEntries, councilTextWidth),
+    [deferredRoomEntries, councilTextWidth],
   );
   const roomFlatLineCount = roomFlatLines.length;
-  const caucusFlatLineCount = caucusFlatLines.length;
   const roomMaxScroll = Math.max(0, roomFlatLineCount - paneContentHeight);
-  const caucusMaxScroll = Math.max(0, caucusFlatLineCount - paneContentHeight);
   roomMaxScrollRef.current = roomMaxScroll;
-  caucusMaxScrollRef.current = caucusMaxScroll;
   roomScrollRef.current = roomScroll;
-  caucusScrollRef.current = caucusScroll;
 
   const startScrollDrain = useCallback(() => {
     if (scrollTimerRef.current) return;
     scrollTimerRef.current = setInterval(() => {
       const roomTarget = clampScrollOffset(roomScrollTargetRef.current, roomMaxScrollRef.current);
-      const caucusTarget = clampScrollOffset(caucusScrollTargetRef.current, caucusMaxScrollRef.current);
       roomScrollTargetRef.current = roomTarget;
-      caucusScrollTargetRef.current = caucusTarget;
 
       const nextRoomScroll = computeSmoothScrollNext(roomScrollRef.current, roomTarget);
-      const nextCaucusScroll = computeSmoothScrollNext(caucusScrollRef.current, caucusTarget);
       roomScrollRef.current = nextRoomScroll;
-      caucusScrollRef.current = nextCaucusScroll;
       setRoomScroll(nextRoomScroll);
-      setCaucusScroll(nextCaucusScroll);
 
-      const keepDraining = (
-        nextRoomScroll !== roomTarget ||
-        nextCaucusScroll !== caucusTarget
-      );
-      if (!keepDraining && scrollTimerRef.current) {
+      if (nextRoomScroll === roomTarget && scrollTimerRef.current) {
         clearInterval(scrollTimerRef.current);
         scrollTimerRef.current = null;
       }
     }, 16);
   }, []);
 
-  const appendEntry = useCallback((pane: PaneName, entry: Entry) => {
-    const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
-    const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
-    const scrollRef = pane === "room" ? roomScrollRef : caucusScrollRef;
+  const appendEntry = useCallback((entry: Entry) => {
+    const setEntries = setRoomEntries;
+    const setScroll = setRoomScroll;
+    const scrollRef = roomScrollRef;
 
     if (entry.streamId) {
       for (const baseStreamId of completedSegmentedStreamsRef.current) {
@@ -873,24 +883,21 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // Bulk-append restored history in a single state update (one reflow), instead of
   // one setState + render per historical entry. With the per-entry FlatLine cache
   // this makes reload O(N) instead of the old O(N²) "stream slowly into view".
-  const appendEntries = useCallback((pane: PaneName, entries: Entry[]) => {
+  const appendEntries = useCallback((entries: Entry[]) => {
     if (entries.length === 0) return;
-    const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
-    const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
-    setEntries((prev) => [...prev, ...entries]);
-    setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+    setRoomEntries((prev) => [...prev, ...entries]);
+    setRoomScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
   }, []);
 
   const updateStreamEntry = useCallback((
-    pane: PaneName,
     streamId: string,
     speaker: string,
     update: (entry: Entry | undefined) => Entry | null,
     options: { beforeStreamId?: string } = {},
   ) => {
-    const setEntries = pane === "room" ? setRoomEntries : setCaucusEntries;
-    const setScroll = pane === "room" ? setRoomScroll : setCaucusScroll;
-    const scrollRef = pane === "room" ? roomScrollRef : caucusScrollRef;
+    const setEntries = setRoomEntries;
+    const setScroll = setRoomScroll;
+    const scrollRef = roomScrollRef;
 
     setEntries((prev) => {
       const index = prev.findIndex((entry) => entry.streamId === streamId);
@@ -922,46 +929,31 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         wheelSteps,
         performance.now(),
       );
-      if (focusedPane === "room") {
-        roomScrollTargetRef.current = clampScrollOffset(
-          roomScrollTargetRef.current + delta,
-          roomMaxScroll,
-        );
-      } else {
-        caucusScrollTargetRef.current = clampScrollOffset(
-          caucusScrollTargetRef.current + delta,
-          caucusMaxScroll,
-        );
-      }
+      roomScrollTargetRef.current = clampScrollOffset(
+        roomScrollTargetRef.current + delta,
+        roomMaxScroll,
+      );
       startScrollDrain();
     });
-  }, [focusedPane, roomMaxScroll, caucusMaxScroll, startScrollDrain]);
+  }, [roomMaxScroll, startScrollDrain]);
 
   const hitTestPaneForEvent = useCallback((event: MouseEventInfo): PaneHit | null => {
     return hitTestPane(event, {
       paneContentHeight,
-      leftPaneWidth,
-      leftTextWidth,
-      rightTextWidth,
+      councilTextWidth,
       roomFlatLines,
-      caucusFlatLines,
       roomScrollOffset: roomScrollRef.current,
-      caucusScrollOffset: caucusScrollRef.current,
       projectsPaneWidth: projectsPaneRendered ? projectsPaneWidth : 0,
     });
   }, [
-    caucusFlatLines,
-    leftPaneWidth,
-    leftTextWidth,
+    councilTextWidth,
     paneContentHeight,
-    rightTextWidth,
     roomFlatLines,
     projectsPaneRendered,
     projectsPaneWidth,
   ]);
 
   useEffect(() => {
-    if (bridgeArgs.inkLegacy) return undefined;
     return onMouseEvent((event) => {
       const hit = hitTestPaneForEvent(event);
       if (event.kind === "press") {
@@ -1000,13 +992,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           const finalSelection = hit && hit.pane === prev.pane
             ? { ...prev, focusLine: hit.lineIndex, focusCol: hit.col, dragging: false }
             : { ...prev, dragging: false };
-          const lines = finalSelection.pane === "room" ? roomFlatLines : caucusFlatLines;
-          void copyToClipboard(selectedTextFromLines(lines, finalSelection));
+          void copyToClipboard(selectedTextFromLines(roomFlatLines, finalSelection));
           return finalSelection;
         });
       }
     });
-  }, [bridgeArgs.inkLegacy, caucusFlatLines, hitTestPaneForEvent, roomFlatLines]);
+  }, [hitTestPaneForEvent, roomFlatLines]);
 
   useEffect(() => {
     setMouseTrackingEnabled(!mouseSelectionMode);
@@ -1027,17 +1018,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [roomMaxScroll]);
 
   useEffect(() => {
-    setCaucusScroll((prev) => clampScrollOffset(prev, caucusMaxScroll));
-    caucusScrollTargetRef.current = clampScrollOffset(caucusScrollTargetRef.current, caucusMaxScroll);
-  }, [caucusMaxScroll]);
-
-  useEffect(() => {
     if (!scrollTimerRef.current) roomScrollTargetRef.current = roomScroll;
   }, [roomScroll]);
-
-  useEffect(() => {
-    if (!scrollTimerRef.current) caucusScrollTargetRef.current = caucusScroll;
-  }, [caucusScroll]);
 
   // ── Shift+Enter — insert newline (intercepted at stdin filter level) ──
   useEffect(() => {
@@ -1092,13 +1074,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (roomScroll === 0) setLastSeenRoomCount(roomEntries.length);
   }, [roomScroll, roomEntries.length]);
 
-  useEffect(() => {
-    if (caucusScroll === 0) setLastSeenCaucusCount(caucusEntries.length);
-  }, [caucusScroll, caucusEntries.length]);
-
   const roomHasNew = roomScroll > 0 && roomEntries.length > lastSeenRoomCount;
-  const caucusHasNew = caucusScroll > 0 && caucusEntries.length > lastSeenCaucusCount;
-  const activeBusyLabel = busyLabel(busyTarget, status.mode);
   useEffect(() => {
     if (ready) {
       setBusyFrameIndex(0);
@@ -1202,16 +1178,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
       switch (msg.type) {
         case "room":
-          appendEntry("room", {
-            speaker: msg.speaker as string,
-            text: msg.text as string,
-            blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
-            streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
-            restored: msg.restored === true,
-          });
-          break;
-        case "caucus":
-          appendEntry("caucus", {
+          appendEntry({
             speaker: msg.speaker as string,
             text: msg.text as string,
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
@@ -1220,7 +1187,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           });
           break;
         case "restore": {
-          const pane = msg.pane === "caucus" ? "caucus" : "room";
           const rawEntries = Array.isArray(msg.entries) ? msg.entries : [];
           const restored: Entry[] = rawEntries.map((e: Record<string, unknown>) => ({
             speaker: e.speaker as string,
@@ -1228,17 +1194,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             blocks: Array.isArray(e.blocks) ? e.blocks as RenderBlock[] : undefined,
             restored: true,
           }));
-          appendEntries(pane, restored);
+          appendEntries(restored);
           break;
         }
         case "stream": {
-          const pane = msg.pane === "caucus" ? "caucus" : "room";
           const streamId = typeof msg.stream_id === "string" ? msg.stream_id : "";
           const speaker = typeof msg.model === "string" ? msg.model : "system";
           if (!streamId) break;
-          if (!bridgeArgs.inkLegacy) {
-            setV2Activity((prev) => updateV2ActivityForStream(prev, msg));
-          }
+          setV2Activity((prev) => updateV2ActivityForStream(prev, msg));
 
           if (msg.kind === "start") {
             streamSegmentsRef.current.set(streamId, createStreamSegmentState());
@@ -1254,7 +1217,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             streamSegmentsRef.current.set(streamId, segmentState);
             const textStreamId = textSegmentStreamId(streamId, segmentState);
             handledSegmentedStreamsRef.current.add(streamId);
-            updateStreamEntry(pane, textStreamId, speaker, (entry) => ({
+            updateStreamEntry(textStreamId, speaker, (entry) => ({
               speaker,
               text: `${entry?.text ?? ""}${delta}`,
               streamId: textStreamId,
@@ -1277,7 +1240,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             stack.set(toolId, toolPreviewLine(msg));
             toolStacksRef.current.set(toolStackStreamId, stack);
             handledSegmentedStreamsRef.current.add(streamId);
-            updateStreamEntry(pane, toolStackStreamId, speaker, () => ({
+            updateStreamEntry(toolStackStreamId, speaker, () => ({
               speaker,
               text: buildToolStackText(Array.from(stack.values())),
               streamId: toolStackStreamId,
@@ -1288,14 +1251,16 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
           if (msg.kind === "done") {
             completedSegmentedStreamsRef.current.add(streamId);
+            // The streamed text stays in the pane (the controller's stripped
+            // final entry is dropped for segmented streams), so remove any
+            // trailing routing footer from the last text segment here.
+            setRoomEntries((prev) => stripFooterFromStreamEntries(prev, streamId));
           }
           break;
         }
         case "clear_panes":
           setRoomEntries([]);
-          setCaucusEntries([]);
           setRoomScroll(0);
-          setCaucusScroll(0);
           streamSegmentsRef.current.clear();
           toolStacksRef.current.clear();
           handledSegmentedStreamsRef.current.clear();
@@ -1333,11 +1298,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "mode":
           setStatus((prev) => ({ ...prev, mode: msg.mode as string }));
-          if (msg.mode === "caucus") {
-            setFocusedPane("caucus");
-          } else {
-            setFocusedPane("room");
-          }
+          setFocusedPane("room");
           break;
         case "ready":
           setReady(true);
@@ -1374,6 +1335,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setPendingPermission(null);
           setHint("");
           break;
+        case "choice_request":
+          setPendingChoice({
+            prompt: typeof msg.prompt === "string" ? msg.prompt : "",
+            options: Array.isArray(msg.options)
+              ? (msg.options as unknown[]).map(String)
+              : [],
+          });
+          setChoiceIndex(0);
+          break;
+        case "choice_cleared":
+          setPendingChoice(null);
+          break;
         case "exit":
           cleanup();
           break;
@@ -1400,7 +1373,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     return () => {
       proc.kill();
     };
-  }, [appendEntry, bridgeArgs.inkLegacy, updateStreamEntry]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [appendEntry, updateStreamEntry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cleanup = useCallback(() => {
     if (bridgeRef.current) {
@@ -1417,13 +1390,13 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setHint("Resolve the protected write request first.");
       return;
     }
+    if (pendingChoice) {
+      setHint("Answer the pending question first (Up/Down + Enter, Esc dismisses).");
+      return;
+    }
     const stripped = inputTextRef.current.trim();
     if (!stripped) {
       setHint("Enter a message or command.");
-      return;
-    }
-    if (focusedPane === "caucus" && !stripped.startsWith("/")) {
-      setHint("Caucus focused \u2014 Shift-Tab to Council to send messages");
       return;
     }
     if (focusedPane === "projects" && !stripped.startsWith("/")) {
@@ -1433,11 +1406,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const queued = !ready;
     if (!queued) {
       setReady(false);
-      const nextBusyTarget = resolveBusyTarget(stripped, status.route, status.mode);
+      const nextBusyTarget = resolveBusyTarget(stripped, status.route);
       setBusyTarget(nextBusyTarget);
-      if (!bridgeArgs.inkLegacy) {
-        setV2Activity(startV2ActivityFromInput(stripped, status.route, status.mode));
-      }
+      setV2Activity(startV2ActivityFromInput(stripped, status.route));
       setHint("");
     } else {
       setQueuedCount((prev) => prev + 1);
@@ -1464,7 +1435,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [bridgeArgs.inkLegacy, focusedPane, ready, pendingPermission, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
+  }, [focusedPane, ready, pendingPermission, pendingChoice, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
   const respondToPermission = useCallback((allow: boolean) => {
     const proc = bridgeRef.current;
@@ -1478,6 +1449,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }) + "\n");
     setHint(allow ? "Allowing protected write..." : "Denying protected write...");
   }, [pendingPermission]);
+
+  const respondToChoice = useCallback((index: number) => {
+    const proc = bridgeRef.current;
+    if (!pendingChoice || !proc?.stdin?.writable) {
+      return;
+    }
+    proc.stdin.write(JSON.stringify({
+      type: "choice_response",
+      index,
+    }) + "\n");
+  }, [pendingChoice]);
 
   const interrupt = useCallback(() => {
     if (ready) {
@@ -1502,8 +1484,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    // Ctrl+Y — toggle native terminal text selection.
-    if (bridgeArgs.inkLegacy && input.toLowerCase() === "y" && key.ctrl) {
+    // Ctrl+Y — toggle native terminal text selection (mouse passthrough).
+    if (input.toLowerCase() === "y" && key.ctrl) {
       setMouseSelectionMode((prev) => {
         const next = !prev;
         setHint(next
@@ -1540,12 +1522,34 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
+    if (pendingChoice) {
+      const optionCount = pendingChoice.options.length;
+      if (key.upArrow) {
+        setChoiceIndex((prev) => Math.max(0, prev - 1));
+        return;
+      }
+      if (key.downArrow || key.tab) {
+        setChoiceIndex((prev) => Math.min(optionCount - 1, prev + 1));
+        return;
+      }
+      if (key.return) {
+        respondToChoice(choiceIndex);
+        return;
+      }
+      if (key.escape) {
+        respondToChoice(-1);
+        return;
+      }
+      return;
+    }
+
     // Tab / Shift+Tab — toggle pane focus
     if (input === "p" && key.ctrl) {
       setProjectsVisible((prev) => {
         const next = !prev;
-        if (!next && focusedPane === "projects") {
-          setFocusedPane("room");
+        if (!next) {
+          setProjectFilter("");
+          if (focusedPane === "projects") setFocusedPane("room");
         }
         setHint(next ? "" : "Projects panel hidden (Ctrl+P to show)");
         return next;
@@ -1554,18 +1558,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     if (key.tab) {
-      const order: Array<"room" | "caucus" | "projects"> = projectsPaneRendered
-        ? ["room", "caucus", "projects"]
-        : ["room", "caucus"];
+      if (!projectsPaneRendered) return;
+      setProjectFilter("");
       setFocusedPane((prev) => {
-        const idx = order.indexOf(prev);
-        const fromIdx = idx === -1 ? 0 : idx;
-        const step = key.shift ? -1 : 1;
-        const next = order[(fromIdx + step + order.length) % order.length]!;
-        if (next === "caucus") {
-          setHint("Caucus focused \u2014 Shift-Tab to Council to send messages");
-        } else if (next === "projects") {
-          setHint("Projects focused \u2014 \u2191/\u2193 to navigate, Enter to open, Tab to leave");
+        const next = prev === "room" ? "projects" : "room";
+        if (next === "projects") {
+          setHint("Projects focused \u2014 \u2191/\u2193 to navigate, type to filter, Enter to open, Tab to leave");
         } else {
           setHint("");
         }
@@ -1593,15 +1591,33 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           if (ready) {
             setReady(false);
             setBusyTarget("system");
-            if (!bridgeArgs.inkLegacy) {
-              setV2Activity(createV2Activity("system", status.mode, "system"));
-            }
+            setV2Activity(createV2Activity("system", "system"));
           } else {
             setQueuedCount((prev) => prev + 1);
             setHint("Queued project command.");
           }
           proc.stdin.write(JSON.stringify({ type: "input", text: command }) + "\n");
         }
+        setProjectFilter("");
+        return;
+      }
+      // Type-to-filter: printable characters narrow the list while the
+      // input box is empty; "/" still starts a slash command.
+      if ((key.backspace || key.delete) && projectFilter) {
+        setProjectFilter((prev) => prev.slice(0, -1));
+        return;
+      }
+      if (key.escape && projectFilter) {
+        setProjectFilter("");
+        return;
+      }
+      if (
+        input
+        && !key.ctrl && !key.meta && !key.return && !key.escape
+        && inputTextRef.current === ""
+        && !(projectFilter === "" && input.startsWith("/"))
+      ) {
+        setProjectFilter((prev) => prev + input);
         return;
       }
     }
@@ -1733,20 +1749,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // PageUp / PageDown — page scroll (Ctrl+B up, Ctrl+F down)
     if (input === "b" && key.ctrl) {
       const pageSize = Math.max(1, paneContentHeight);
-      if (focusedPane === "room") {
-        setRoomScroll((prev) => prev + pageSize);
-      } else {
-        setCaucusScroll((prev) => prev + pageSize);
-      }
+      setRoomScroll((prev) => prev + pageSize);
       return;
     }
     if (input === "f" && key.ctrl) {
       const pageSize = Math.max(1, paneContentHeight);
-      if (focusedPane === "room") {
-        setRoomScroll((prev) => Math.max(0, prev - pageSize));
-      } else {
-        setCaucusScroll((prev) => Math.max(0, prev - pageSize));
-      }
+      setRoomScroll((prev) => Math.max(0, prev - pageSize));
       return;
     }
 
@@ -1761,15 +1769,13 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // ── Input label ────────────────────────────────────────
 
   const inputLabel =
-    focusedPane === "caucus"
-      ? "Slash commands still work here:"
-      : focusedPane === "projects"
-        ? "Projects — Enter opens; / for commands:"
-        : "You (@claude/@codex/@all, /help):";
+    focusedPane === "projects"
+      ? "Projects — Enter opens; / for commands:"
+      : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
-  const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget, status.mode);
-  const busyText = !bridgeArgs.inkLegacy ? formatV2ActivityText(activeV2Activity) : activeBusyLabel;
+  const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget);
+  const busyText = formatV2ActivityText(activeV2Activity);
   const busySegments = buildBusySegments(busyText, busyFrameIndex);
   const busyGlyph = v2ActivityGlyph(busyFrameIndex);
   const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
@@ -1792,6 +1798,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             height={paneHeight}
             textWidth={projectsTextWidth}
             viewportHeight={paneContentHeight}
+            filter={projectFilter}
           />
         ) : null}
         <Pane
@@ -1801,22 +1808,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           focused={focusedPane === "room"}
           height={paneHeight}
           contentHeight={paneContentHeight}
-          textWidth={leftTextWidth}
+          textWidth={councilTextWidth}
           scrollOffset={roomScroll}
           hasNewMessages={roomHasNew}
-          selection={!bridgeArgs.inkLegacy ? paneSelection : null}
-        />
-        <Pane
-          title="CAUCUS"
-          pane="caucus"
-          entries={caucusEntries}
-          focused={focusedPane === "caucus"}
-          height={paneHeight}
-          contentHeight={paneContentHeight}
-          textWidth={rightTextWidth}
-          scrollOffset={caucusScroll}
-          hasNewMessages={caucusHasNew}
-          selection={!bridgeArgs.inkLegacy ? paneSelection : null}
+          selection={paneSelection}
         />
       </Box>
 
@@ -1825,6 +1820,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
         {pendingPermission ? (
           <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
+        ) : pendingChoice ? (
+          <ChoicePrompt
+            prompt={pendingChoice.prompt}
+            options={pendingChoice.options}
+            index={choiceIndex}
+          />
         ) : (
           <>
             <Text color={(hint || mouseSelectionMode) ? THEME.textMuted : THEME.statusMuted}>
@@ -1832,7 +1833,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
                 ? statusText
                 : (
                   <>
-                    {!bridgeArgs.inkLegacy ? <Text color={THEME.accentBright}>{busyGlyph} </Text> : null}
+                    <Text color={THEME.accentBright}>{busyGlyph} </Text>
                     {busySegments.map((segment, index) => (
                       <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
                         {segment.text}
