@@ -81,23 +81,28 @@ event when available, with a fallback to the `_CONTEXT_WINDOWS` table.
 
 ### Codex
 
-Codex CLI `turn.completed.usage` is treated as cumulative session usage in
-`codex exec --json`, not current-turn context occupancy. The adapter therefore
-derives explicit last-turn deltas once it has a prior cumulative sample:
+Codex CLI `turn.completed.usage` is cumulative session usage in
+`codex exec --json` — there is no native occupancy event. The adapter first
+derives last-turn deltas from the cumulative counters:
 
 - `turn_input_tokens = cumulative_input_tokens - previous_cumulative_input_tokens`
 - `turn_cached_input_tokens = cumulative_cached_input_tokens - previous_cumulative_cached_input_tokens`
 - `turn_output_tokens = cumulative_output_tokens - previous_cumulative_output_tokens`
 
-On the first Codex turn there is no previous cumulative baseline, so botference
-now treats the context display as unavailable instead of showing the raw
-cumulative total as if it were comparable to later deltas.
+It then estimates **occupancy** from the deltas. The key observation
+(verified against codex-cli 0.142): the thread re-sends the whole
+conversation on every API call, so for a turn that made a single API call
+the input delta *is* the full prompt — exact context occupancy, including
+the first turn. Each completed tool call adds one more API call, which
+inflates the delta by roughly that factor, so:
 
-When a baseline exists, the Codex context percentage uses **last-turn input
-only**:
+- tool-free turn → `occupancy = turn_input_tokens` (exact; overwrites the
+  previous estimate, so Codex auto-compaction shows up as a legitimate drop)
+- turn with k completed tool calls → `sample = turn_input_tokens / (k + 1)`,
+  and the estimate takes `max(previous, sample)` (approximate; the next
+  tool-free turn corrects it)
 
-- `projected_tokens = turn_input_tokens`
-
-`output_tokens` and tool-result estimates are intentionally excluded from the
-Codex context metric, because they inflated the status line and did not match
-the intended notion of current-turn prompt footprint.
+The displayed number and `context_percent` both use this occupancy estimate.
+This is what stops the meter oscillating: the old display showed the raw
+last-turn delta, which spiked on tool-heavy turns and dropped on short ones.
+`output_tokens` and tool-result estimates remain excluded from the metric.

@@ -2,6 +2,18 @@
 
 ## 2026-07-04
 
+- **Steadier Codex context meter.** The status line previously showed
+  Codex's raw last-turn input delta, which spiked on tool-heavy turns
+  (each internal API call re-sends the full context) and dropped on short
+  ones — hence the oscillation. `codex exec --json` exposes no native
+  occupancy event, so the adapter now estimates occupancy: a tool-free
+  turn's delta is the exact full prompt (verified against codex-cli
+  0.142) and overwrites the estimate — including downward, so
+  auto-compaction shows honestly — while tool turns contribute
+  `delta / (tool_calls + 1)` as an approximate sample. The first Codex
+  turn now shows a reading instead of "unavailable", and yield-pressure
+  warnings use the same, more faithful number.
+
 - **Free-form is now the only planning mode.** The `--free-form` flag is gone
   from the launcher, `lib/config.sh`, the Ink UI, and the bridge; the room
   footer/handoff protocol is always active. Turn-based behavior survives as

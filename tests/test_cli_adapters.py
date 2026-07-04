@@ -754,13 +754,19 @@ class TestCodexSessionIsolation:
             assert first.turn_input_tokens == 12715
             assert first.turn_cached_input_tokens == 0
             assert first.turn_output_tokens == 33
-            assert first.context_tokens_reliable is False
+            # A tool-free first turn makes exactly one API call, so its
+            # input delta is the full prompt — exact occupancy, no baseline
+            # needed.
+            assert first.occupancy_tokens == 12715
+            assert first.context_tokens_reliable is True
 
             assert second.input_tokens == 25470  # cumulative
             assert second.turn_input_tokens == 12755
             assert second.turn_cached_input_tokens == 12672
             assert second.turn_output_tokens == 64
+            assert second.occupancy_tokens == 12755
             assert second.context_tokens_reliable is True
+            assert adapter.context_tokens(second) == 12755
 
         asyncio.run(_test())
 
@@ -920,14 +926,11 @@ class TestContextPercent:
         resp = AdapterResponse(text="", context_window=272_000)
         assert adapter.context_percent(resp) == 0.0
 
-    def test_codex_context_percent_uses_last_turn_input_only(self):
-        """Codex context_percent should use last-turn input only.
-
-        Fixture: first turn cumulative input_tokens=100000, output_tokens=22400,
-        aggregated_output=9600 chars → tool_result_tokens_estimate=2400.
-        Since this is the first turn, there is no trusted baseline yet.
-        output_tokens and tool-result estimates must not force a fake
-        context percentage from the raw cumulative total."""
+    def test_codex_tool_turn_divides_input_delta_across_api_calls(self):
+        """A tool turn's input delta sums one full-context re-send per API
+        call, so raw delta would overshoot occupancy. With one completed
+        tool call the turn made ~2 API calls: occupancy ≈ 100000 / 2.
+        output_tokens and tool-result estimates stay excluded."""
 
         async def _test():
             adapter = CodexAdapter(model="gpt-5.4")
@@ -946,8 +949,58 @@ class TestContextPercent:
 
             assert resp.tool_result_tokens_estimate == 2400
             assert resp.turn_input_tokens == 100000
-            assert resp.context_tokens_reliable is False
-            assert adapter.context_percent(resp) == 0.0
+            assert resp.occupancy_tokens == 50000
+            assert resp.context_tokens_reliable is True
+            assert adapter.context_tokens(resp) == 50000
+            # 50000 / (272000 * 0.45) * 100 ≈ 40.85
+            assert adapter.context_percent(resp) == pytest.approx(
+                50000 / (272000 * 0.45) * 100
+            )
+
+        asyncio.run(_test())
+
+    def test_codex_tool_free_turn_overwrites_tool_turn_estimate(self):
+        """A tool-free turn's delta is exact occupancy and replaces the
+        approximate estimate from an earlier tool turn — even downward
+        (which is how Codex auto-compaction shows up)."""
+
+        async def _test():
+            adapter = CodexAdapter(model="gpt-5.4")
+
+            tool_turn = AsyncMock()
+            tool_turn.returncode = 0
+            tool_turn.stdout = _make_reader(
+                '{"type":"thread.started","thread_id":"t1"}\n'
+                '{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"x","exit_code":0}}\n'
+                '{"type":"turn.completed","usage":{"input_tokens":90000,"cached_input_tokens":0,"output_tokens":10}}\n'
+            )
+            tool_turn.stderr = _make_reader("")
+            tool_turn.wait = AsyncMock(return_value=0)
+            tool_turn.kill = MagicMock()
+
+            clean_turn = AsyncMock()
+            clean_turn.returncode = 0
+            clean_turn.stdout = _make_reader(
+                '{"type":"thread.started","thread_id":"t1"}\n'
+                '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"OK"}}\n'
+                '{"type":"turn.completed","usage":{"input_tokens":122000,"cached_input_tokens":0,"output_tokens":15}}\n'
+            )
+            clean_turn.stderr = _make_reader("")
+            clean_turn.wait = AsyncMock(return_value=0)
+            clean_turn.kill = MagicMock()
+
+            with patch(
+                "asyncio.create_subprocess_exec",
+                side_effect=[tool_turn, clean_turn],
+            ):
+                first = await adapter.send("do tool things")
+                second = await adapter.resume("just answer")
+
+            # Tool turn: 2 API calls → approximate sample 90000 // 2.
+            assert first.occupancy_tokens == 45000
+            # Clean turn: delta 122000 - 90000 = 32000, exact — overwrites
+            # the approximation instead of taking a max.
+            assert second.occupancy_tokens == 32000
 
         asyncio.run(_test())
 

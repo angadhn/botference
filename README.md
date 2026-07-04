@@ -618,9 +618,12 @@ Note: `@claude` in the input field is who you're *talking to* — the **Lead** i
 the status bar is who will *write the plan*. These are independent.
 
 > [!WARNING]
-> Claude reports a point-in-time occupancy snapshot. Codex uses a last-turn
-> prompt-footprint proxy derived from cumulative counters, so the first Codex
-> turn has no trusted baseline and will show as unavailable.
+> Claude reports a point-in-time occupancy snapshot. Codex has no native
+> occupancy signal, so Botference estimates it: tool-free turns give an exact
+> reading (the thread re-sends the full conversation per API call), while
+> tool-heavy turns get an approximation that the next tool-free turn
+> corrects. Expect the Codex figure to be steady but occasionally a turn
+> behind.
 
 ## Overview
 

@@ -1407,6 +1407,7 @@ class CodexAdapter:
         self._last_cumulative_input_tokens: int = 0
         self._last_cumulative_cached_input_tokens: int = 0
         self._last_cumulative_output_tokens: int = 0
+        self._occupancy_tokens: int = 0
         self.stream_callback = stream_callback
 
     def _emit_stream(self, event: dict[str, Any]) -> None:
@@ -1513,6 +1514,7 @@ class CodexAdapter:
         self._last_cumulative_input_tokens = 0
         self._last_cumulative_cached_input_tokens = 0
         self._last_cumulative_output_tokens = 0
+        self._occupancy_tokens = 0
         return await self._run(self._build_send_cmd(prompt))
 
     async def resume(self, message: str) -> AdapterResponse:
@@ -1558,6 +1560,7 @@ class CodexAdapter:
         text_parts = []
         tool_summaries = []
         raw_lines = []
+        completed_tool_call_ids: set[str] = set()
         response = AdapterResponse(text="", session_id=self.thread_id)
         debug_file = (open(self.debug_log_path, "a")
                       if self.debug_log_path else None)
@@ -1588,6 +1591,7 @@ class CodexAdapter:
                                     "text": text,
                                 })
                     elif itype == "command_execution":
+                        completed_tool_call_ids.add(item_id or f"tool-{len(completed_tool_call_ids)}")
                         agg_output = item.get("aggregated_output", "")
                         response.tool_result_tokens_estimate += len(agg_output) // 4
                         ts = ToolSummary(
@@ -1648,7 +1652,31 @@ class CodexAdapter:
                     response.turn_cached_input_tokens = _delta_from_cumulative(
                         cumulative_cached, prev_cumulative_cached
                     )
-                    response.context_tokens_reliable = baseline_available
+                    # Occupancy estimate. The thread re-sends the whole
+                    # conversation on every API call, so for a turn with a
+                    # single call the input delta IS the full prompt — exact
+                    # context occupancy. Each tool call adds one more API
+                    # call, inflating the delta by roughly that factor, so
+                    # tool turns only get an approximate sample; the next
+                    # tool-free turn overwrites with an exact reading (which
+                    # also tracks Codex auto-compaction shrinking the thread).
+                    api_calls = 1 + len(completed_tool_call_ids)
+                    occupancy_sample = response.turn_input_tokens // api_calls
+                    if isolated:
+                        response.occupancy_tokens = (
+                            occupancy_sample if api_calls == 1 else 0
+                        )
+                    else:
+                        if api_calls == 1:
+                            self._occupancy_tokens = occupancy_sample
+                        else:
+                            self._occupancy_tokens = max(
+                                self._occupancy_tokens, occupancy_sample
+                            )
+                        response.occupancy_tokens = self._occupancy_tokens
+                    response.context_tokens_reliable = (
+                        bool(response.occupancy_tokens) or baseline_available
+                    )
                     response.context_window = _CONTEXT_WINDOWS.get(
                         self.model, 200_000
                     )
@@ -1729,15 +1757,19 @@ class CodexAdapter:
             raise
 
     def context_percent(self, resp: AdapterResponse) -> float:
-        """Projected next-turn usage as % of yield limit. 100 = yield now."""
+        """Estimated context occupancy as % of yield limit. 100 = yield now."""
         if not resp.context_tokens_reliable:
             return 0.0
         window = resp.context_window or _CONTEXT_WINDOWS.get(self.model, 200_000)
-        turn_input = resp.turn_input_tokens or resp.input_tokens
-        return percent_of_limit(turn_input, 0, 0, window)
+        occupancy = (resp.occupancy_tokens
+                     or resp.turn_input_tokens
+                     or resp.input_tokens)
+        return percent_of_limit(occupancy, 0, 0, window)
 
     def context_tokens(self, resp: AdapterResponse) -> Optional[int]:
-        """Current context occupancy in tokens (for display)."""
+        """Estimated context occupancy in tokens (for display)."""
         if not resp.context_tokens_reliable:
             return None
-        return resp.turn_input_tokens or resp.input_tokens
+        return (resp.occupancy_tokens
+                or resp.turn_input_tokens
+                or resp.input_tokens)

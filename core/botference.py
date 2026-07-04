@@ -2115,7 +2115,7 @@ class Botference:
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
             "",
             "Claude context shows prompt occupancy / context window size.",
-            "Codex shows a last-turn prompt-footprint proxy once it has a baseline.",
+            "Codex shows estimated occupancy (exact after tool-free turns).",
         ]))
 
     # ── /projects / /project ─────────────────────────────
