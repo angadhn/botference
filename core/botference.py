@@ -47,6 +47,7 @@ from ui_types import (
 from room_prompts import (
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
+    adopt_room_note,
     checkpoint_preamble,
     finalize_plan_preamble,
     free_form_protocol,
@@ -142,6 +143,7 @@ class InputKind(Enum):
     MESSAGE = "message"
     PROJECTS = "projects"
     PROJECT = "project"
+    ADOPT = "adopt"
     LEAD = "lead"
     DRAFT = "draft"
     FINALIZE = "finalize"
@@ -170,6 +172,7 @@ class ParsedInput:
 _SLASH_COMMANDS = {
     "/projects": InputKind.PROJECTS,
     "/project": InputKind.PROJECT,
+    "/adopt": InputKind.ADOPT,
     "/lead": InputKind.LEAD,
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
@@ -916,6 +919,85 @@ def free_form_next_target(speaker: str, text: str) -> Optional[str]:
     if "user" in mentions:
         return "user"
     return None
+
+
+# ── Native Claude Code session discovery (/adopt) ─────────
+
+
+@dataclass(frozen=True)
+class NativeClaudeSession:
+    session_id: str
+    mtime: float
+    snippet: str
+
+
+def _native_session_snippet(path: Path) -> str:
+    """First real user message in a native Claude Code session log."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "user" or event.get("isSidechain"):
+                    continue
+                message = event.get("message") or {}
+                content = message.get("content")
+                text = ""
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text = str(part.get("text", ""))
+                            break
+                text = " ".join(text.split())
+                # Skip harness wrappers (slash-command echoes, caveats).
+                if text and not text.startswith("<"):
+                    return text
+    except OSError:
+        pass
+    return ""
+
+
+def list_native_claude_sessions(
+    projects_dir: Path, *, limit: int = 8,
+) -> list[NativeClaudeSession]:
+    """Recent native Claude Code chats under ~/.claude/projects/<cwd-slug>/."""
+    if not projects_dir.is_dir():
+        return []
+    files = sorted(
+        projects_dir.glob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    sessions: list[NativeClaudeSession] = []
+    for path in files:
+        snippet = _native_session_snippet(path)
+        if not snippet:
+            continue  # empty or unparseable chat — nothing to adopt
+        sessions.append(NativeClaudeSession(
+            session_id=path.stem,
+            mtime=path.stat().st_mtime,
+            snippet=snippet,
+        ))
+        if len(sessions) >= limit:
+            break
+    return sessions
+
+
+def _age_label(mtime: float, now: Optional[float] = None) -> str:
+    """Compact age for picker rows, e.g. "5m", "3h", "2d"."""
+    import time as _time
+    seconds = max(0, int((now if now is not None else _time.time()) - mtime))
+    if seconds < 60:
+        return "now"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
 
 
 # ── UI callback protocol ──────────────────────────────────
@@ -2065,6 +2147,10 @@ class Botference:
             await self._run_harness_command(parsed.target, parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.ADOPT:
+            await self._run_adopt(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.DRAFT:
             await self._run_draft(ui, parsed.body)
             return
@@ -2085,6 +2171,7 @@ class Botference:
             "                     — Set, show, or create the active project context",
             "  /project assign [<session-id-prefix>] <project-id>",
             "                     — File this chat (or a saved one) under a project without switching context",
+            "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
             "  /lead @claude|@codex — Set who writes the plan (auto-set when the bots agree on a writer)",
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
@@ -3753,6 +3840,106 @@ class Botference:
         self.transcript.mark_seen(model)
         ui.set_status(self.status_snapshot())
         return True
+
+    # ── /adopt ────────────────────────────────────────────
+
+    def _native_claude_projects_dir(self) -> Path:
+        """Native Claude Code session store for the planner's working dir."""
+        cwd = getattr(self.claude, "cwd", "") or str(self.paths.project_root)
+        slug = str(Path(cwd).resolve()).replace("/", "-")
+        return Path.home() / ".claude" / "projects" / slug
+
+    async def _run_adopt(self, arg: str, ui: UIPort) -> None:
+        """Attach a pre-existing native Claude Code chat as this room's
+        Claude session, then have Claude brief the room so Codex can join."""
+        if "claude" in self._models_initialized or self.claude.session_id:
+            self._add_room_entry(
+                ui, "system",
+                "Claude already has a live session in this chat — /adopt "
+                "needs a fresh chat (restart, or /resume another).",
+            )
+            return
+
+        projects_dir = self._native_claude_projects_dir()
+        sessions = list_native_claude_sessions(projects_dir)
+        # Hide chats botference itself created for this session store.
+        own_ids = {self.session_id}
+        sessions = [s for s in sessions if s.session_id not in own_ids]
+        prefix = arg.strip().lower()
+        if prefix:
+            sessions = [s for s in sessions if s.session_id.startswith(prefix)]
+        if not sessions:
+            self._add_room_entry(
+                ui, "system",
+                f"No native Claude Code chats found in {projects_dir} "
+                + (f"matching '{prefix}'." if prefix else
+                   "(run /adopt from the folder where you had the chat)."),
+            )
+            return
+
+        chosen: Optional[NativeClaudeSession] = None
+        if prefix and len(sessions) == 1:
+            chosen = sessions[0]
+        else:
+            request_choice = getattr(ui, "request_choice", None)
+            if request_choice is None:
+                listing = "\n".join(
+                    f"  {s.session_id[:8]}  ({_age_label(s.mtime)})  {s.snippet[:60]}"
+                    for s in sessions
+                )
+                self._add_room_entry(
+                    ui, "system",
+                    "Native Claude Code chats here:\n" + listing
+                    + "\nRun /adopt <id-prefix> to pick one.",
+                )
+                return
+            labels = [
+                f"{_age_label(s.mtime)} — {s.snippet[:70]}"
+                for s in sessions
+            ]
+            index = await request_choice(
+                "Adopt which Claude Code chat?", labels,
+            )
+            if index is None or not (0 <= index < len(sessions)):
+                self._add_room_entry(ui, "system", "Adopt cancelled.")
+                return
+            chosen = sessions[index]
+
+        self.claude.session_id = chosen.session_id
+        self._models_initialized.add("claude")
+        name = "Claude"
+        other = "Codex"
+        self.transcript.add(
+            "system",
+            adopt_room_note(name, other, self._plan_write_roots_display()),
+        )
+        self._add_room_entry(
+            ui, "system",
+            f"Adopted Claude Code chat {chosen.session_id[:8]} "
+            f"({_age_label(chosen.mtime)} old: “{chosen.snippet[:60]}…”). "
+            "Asking Claude for a room handoff…",
+        )
+        self._persist_session()
+
+        resp = await self._send_to_model("claude", "", ui)
+        if resp is None or resp.exit_code != 0:
+            # Adoption failed (e.g. the native session no longer resumes);
+            # roll back so the room stays usable.
+            self.claude.session_id = ""
+            self._models_initialized.discard("claude")
+            self._add_room_entry(
+                ui, "system",
+                "Adopt failed — the native session did not resume. "
+                "The room is back to a fresh state.",
+            )
+            self._persist_session()
+            return
+        self.transcript.add("claude", resp.text, resp.tool_summaries)
+        self.transcript.mark_seen("claude")
+        self._update_pct("claude", resp, ui)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+        await self._run_free_form_thread("claude", resp, ui)
 
     # ── /draft ────────────────────────────────────────────
 

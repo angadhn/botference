@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-07-05
+
+- **`/adopt` — bring an existing Claude Code chat into the council.** Lists
+  recent native `claude` sessions for the current folder in the arrow-key
+  picker (or `/adopt <id-prefix>` directly). The chosen chat becomes the
+  room's Claude session with its full native context; Claude receives the
+  room protocol and writes a handoff summary into the shared transcript, so
+  Codex late-joins already briefed. Failed adoptions roll back cleanly.
+
 ## 2026-07-04
 
 - **Steadier Codex context meter.** The status line previously showed

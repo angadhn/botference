@@ -127,6 +127,26 @@ def free_form_protocol(name: str, other: str) -> str:
     )
 
 
+def adopt_room_note(name: str, other: str, writable_roots: str) -> str:
+    """Transcript note for a native CLI chat adopted into the council.
+
+    The adopted session never saw the botference initial prompt, so this
+    note carries the room context, the free-form protocol, and the
+    handoff request that briefs the other participant.
+    """
+    return (
+        f"[This conversation has been connected to a shared planning room "
+        f"(botference). You are {name}; the room also has {other} (another "
+        f"AI) and the human user you have been talking to.\n"
+        f"{free_form_protocol(name, other)}\n"
+        f"Room write rules now apply: only write inside these roots: "
+        f"{writable_roots}.\n"
+        f"First task: write a concise handoff so {other} can join this "
+        "conversation mid-stream — the goal, decisions made, current "
+        "state, and open questions. Then hand the floor back to @user.]"
+    )
+
+
 def free_form_resume_note() -> str:
     """One-time transcript note for sessions resumed into free-form mode.
 

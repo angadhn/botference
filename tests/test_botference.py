@@ -4727,6 +4727,132 @@ class TestProjectSuggestion:
         assert "/project open spaceship-engineering" in notes[0]
 
 
+# ── /adopt — native Claude Code chat adoption ─────────────
+
+
+def _write_native_session(directory: Path, session_id: str, first_user: str,
+                          mtime: float) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.jsonl"
+    lines = [
+        json.dumps({"type": "mode", "mode": "normal"}),
+        json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "<command-name>/model</command-name>"},
+        }),
+        json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": first_user},
+        }),
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.utime(path, (mtime, mtime))
+
+
+class TestListNativeClaudeSessions:
+    def test_lists_newest_first_with_snippets(self, tmp_path):
+        from botference import list_native_claude_sessions
+        _write_native_session(tmp_path, "aaa-old", "Fix the parser bug", 1_700_000_000)
+        _write_native_session(tmp_path, "bbb-new", "Draft the launch plan", 1_700_000_100)
+        sessions = list_native_claude_sessions(tmp_path)
+        assert [s.session_id for s in sessions] == ["bbb-new", "aaa-old"]
+        assert sessions[0].snippet == "Draft the launch plan"
+
+    def test_skips_wrapper_only_and_missing_dir(self, tmp_path):
+        from botference import list_native_claude_sessions
+        d = tmp_path / "store"
+        d.mkdir()
+        (d / "junk.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "<local-command-caveat>x"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        assert list_native_claude_sessions(d) == []
+        assert list_native_claude_sessions(tmp_path / "nope") == []
+
+
+def _adopt_setup(tmp_path, claude_responses):
+    c, claude, codex, ui = _make_botference(
+        claude_responses=claude_responses,
+        codex_responses=[_ok("Codex reply")],
+        tmp_path=tmp_path,
+    )
+    store = tmp_path / "native-claude"
+    _write_native_session(store, "cafe0001-aaaa", "Refactor the exporter", 1_700_000_100)
+    _write_native_session(store, "beef0002-bbbb", "Write the grant proposal", 1_700_000_000)
+    c._native_claude_projects_dir = lambda: store
+    return c, claude, codex, ui
+
+
+@pytest.mark.asyncio
+class TestAdopt:
+    async def test_adopt_via_picker_attaches_and_briefs_room(self, tmp_path):
+        handoff = _ff("Handoff: we were refactoring the exporter.",
+                      nxt="@user", status="converged", summary="handoff done")
+        c, claude, codex, ui = _adopt_setup(tmp_path, [handoff])
+        ui.choice_responses.append(0)  # newest first → cafe0001
+
+        await c.handle_input("/adopt", ui)
+
+        assert c.claude.session_id == "cafe0001-aaaa"
+        assert "claude" in c._models_initialized
+        # Claude was resumed (not sent a fresh initial prompt) with the
+        # room/adoption note in context.
+        assert claude.send_calls == []
+        assert len(claude.resume_calls) == 1
+        assert "shared planning room" in claude.resume_calls[0]
+        assert "handoff" in claude.resume_calls[0].lower()
+        # The handoff landed in the shared transcript for Codex's backfill.
+        assert any(e.speaker == "claude" and "exporter" in e.text
+                   for e in c.transcript.entries)
+        # Footer stripped from the display.
+        display = [t for s, t in ui.room_entries if s == "claude"]
+        assert display and '"next"' not in display[0]
+        prompt, labels = ui.choice_requests[0]
+        assert "Adopt" in prompt
+        assert any("Refactor the exporter" in label for label in labels)
+
+    async def test_adopt_by_prefix_skips_picker(self, tmp_path):
+        c, claude, codex, ui = _adopt_setup(
+            tmp_path, [_ff("Handoff.", nxt="@user")],
+        )
+        await c.handle_input("/adopt beef", ui)
+        assert c.claude.session_id == "beef0002-bbbb"
+        assert ui.choice_requests == []
+
+    async def test_adopt_guard_when_claude_active(self, tmp_path):
+        c, claude, codex, ui = _adopt_setup(tmp_path, [_ok("hi")])
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("/adopt", ui)
+        assert any("needs a fresh chat" in t for _, t in ui.room_entries)
+
+    async def test_adopt_no_sessions_notice(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c._native_claude_projects_dir = lambda: tmp_path / "empty"
+        await c.handle_input("/adopt", ui)
+        assert any("No native Claude Code chats" in t for _, t in ui.room_entries)
+
+    async def test_adopt_rolls_back_on_failed_resume(self, tmp_path):
+        c, claude, codex, ui = _adopt_setup(
+            tmp_path, [_ok("Error: no such session", exit_code=1)],
+        )
+        ui.choice_responses.append(0)
+        await c.handle_input("/adopt", ui)
+        assert c.claude.session_id == ""
+        assert "claude" not in c._models_initialized
+        assert any("Adopt failed" in t for _, t in ui.room_entries)
+
+    async def test_adopt_dismissed_picker_cancels(self, tmp_path):
+        c, claude, codex, ui = _adopt_setup(tmp_path, [_ok("unused")])
+        ui.choice_responses.append(None)
+        await c.handle_input("/adopt", ui)
+        assert c.claude.session_id == ""
+        assert claude.resume_calls == []
+        assert any("cancelled" in t.lower() for _, t in ui.room_entries)
+
+
 @pytest.mark.asyncio
 class TestProjectAssign:
     async def test_assign_current_chat(self, tmp_path):
