@@ -399,8 +399,12 @@ skills under `.agents/skills/<skill-name>/SKILL.md` and Claude skills under
 request, it is instructed to read the relevant `SKILL.md` before responding.
 
 For shared behavior, keep the same `name` and `description` frontmatter in both
-directories. The built-in `grill-me` skill follows this layout, so prompts like
-"grill me on this plan" can trigger the same workflow for either participant.
+directories. The built-in skills follow this layout: `grill-me` (stress-test a
+plan with hard questions), `tufte-viz`, and `review-doc` — when a bot produces
+a document that exists to be read and reacted to (like an implementation
+plan), it can render it as a self-contained HTML page with Google-Docs-style
+margin commenting and an "Export feedback" button, and feed your feedback file
+back into the next revision.
 
 ### Project Portfolio
 

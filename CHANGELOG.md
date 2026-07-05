@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-07-06
+
+- **Built-in `review-doc` skill.** Both bots now discover a skill for
+  rendering review documents (implementation plans, proposals) as
+  self-contained HTML with Google-Docs-style margin commenting and
+  feedback export — highlight, comment, export, hand the feedback file
+  back to the council. Vendored under `.claude/skills/` and
+  `.agents/skills/` like `grill-me`.
+
 ## 2026-07-05
 
 - **Chat lifecycle commands.** `/new [title]` starts a fresh chat in place

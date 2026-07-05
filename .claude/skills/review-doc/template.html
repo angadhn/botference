@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}} · review</title>
+<style>
+  /* Anthropic-flavoured reading surface, matched to the Orbital
+   * Flight School textbook: warm near-black (or warm paper in light
+   * mode), cream humanist serif prose, coral (#d97757) accent used
+   * with restraint. System font stacks only — no web fonts. */
+  :root {
+    --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
+    --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
+    --hl: rgba(240, 195, 120, 0.55); --hl-active: rgba(228, 166, 80, 0.8);
+    --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+    --serif: "Iowan Old Style", "Source Serif Pro", Charter, "Apple Garamond",
+      "Hoefler Text", Georgia, ui-serif, serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
+      --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
+      --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+      --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--serif); font-size: 17px; line-height: 1.75;
+    font-feature-settings: "kern", "liga", "onum";
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    position: sticky; top: 0; z-index: 30; display: flex; gap: 10px;
+    align-items: center; padding: 10px 20px; background: var(--bg);
+    border-bottom: 1px solid var(--line); font-family: var(--sans);
+  }
+  header h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.01em; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--heading); }
+  header .hint { font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
+  header button {
+    font: 600 12px/1 var(--sans); padding: 7px 12px; border-radius: 6px;
+    border: 1px solid var(--card-line); background: var(--card);
+    color: var(--fg); cursor: pointer; white-space: nowrap;
+  }
+  header button.primary { background: var(--accent); border-color: var(--accent); color: #fff8f2; }
+  header button:hover { border-color: var(--accent); }
+  header button.primary:hover { background: var(--accent-hover); }
+  #count { font-size: 12px; color: var(--muted); }
+  .layout { display: flex; justify-content: center; gap: 28px; padding: 32px 20px 120px; }
+  article { max-width: 720px; min-width: 0; flex: 0 1 720px; }
+  aside { width: 300px; flex: 0 0 300px; position: relative; }
+  @media (max-width: 1080px) { aside { width: 240px; flex-basis: 240px; } }
+
+  article h1 { font-size: 36px; font-weight: 500; line-height: 1.15; letter-spacing: -0.012em; margin: 8px 0 22px; color: var(--heading); }
+  article h2 { font-size: 23px; font-weight: 500; line-height: 1.3; letter-spacing: -0.005em; margin: 44px 0 14px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--heading); }
+  article h3 { font-size: 18px; font-weight: 600; margin: 32px 0 10px; color: var(--heading); }
+  article p, article li { font-size: 17px; }
+  article p { margin: 0 0 1.3rem; }
+  article code { font-family: var(--mono); background: var(--rail); border: 1px solid var(--card-line); border-radius: 4px; padding: 1px 5px; font-size: 82%; }
+  article pre { background: var(--rail); border: 1px solid var(--card-line); border-radius: 8px; padding: 14px; overflow-x: auto; }
+  article pre code { background: none; border: none; padding: 0; font-size: 13.5px; line-height: 1.6; }
+  article blockquote { margin: 14px 0; padding: 4px 18px; border-left: 3px solid var(--accent); color: var(--muted); font-style: italic; }
+  article table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 15px; display: block; overflow-x: auto; font-family: var(--sans); line-height: 1.55; }
+  article th, article td { border: 1px solid var(--card-line); padding: 8px 11px; text-align: left; vertical-align: top; }
+  article th { background: var(--rail); color: var(--heading); font-weight: 600; font-size: 13px; letter-spacing: 0.02em; }
+  article img { max-width: 100%; }
+  article hr { border: none; border-top: 1px solid var(--line); margin: 30px 0; }
+  article a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(217, 119, 87, 0.35); text-decoration-thickness: 1px; }
+  article a:hover { color: var(--accent-hover); text-decoration-color: var(--accent); }
+  article strong { color: var(--heading); }
+
+  mark.hl { background: var(--hl); color: inherit; border-bottom: 2px solid var(--hl-active); cursor: pointer; padding: 0; }
+  mark.hl.active { background: var(--hl-active); }
+
+  #selpop {
+    position: absolute; z-index: 40; display: none; padding: 8px 13px;
+    background: var(--accent); color: #fff8f2; border-radius: 8px;
+    font: 600 13px/1 var(--sans); cursor: pointer; user-select: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.3);
+  }
+  #selpop:hover { background: var(--accent-hover); }
+  .card {
+    position: absolute; left: 0; width: 100%; background: var(--card);
+    border: 1px solid var(--card-line); border-radius: 10px; padding: 10px 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08); transition: top .15s ease;
+    font-family: var(--sans);
+  }
+  .card.active { border-color: var(--accent); box-shadow: 0 4px 14px rgba(0,0,0,.2); }
+  .card .quote {
+    font-size: 11.5px; color: var(--muted); border-left: 2px solid var(--accent);
+    padding-left: 8px; margin-bottom: 6px; max-height: 3.2em; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; font-family: var(--serif); font-style: italic;
+  }
+  .card .quote.unanchored::after { content: " (text changed — unanchored)"; color: var(--accent); font-style: normal; }
+  .card textarea {
+    width: 100%; min-height: 54px; resize: vertical; border: 1px solid var(--card-line);
+    border-radius: 6px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 var(--sans); padding: 6px 8px;
+  }
+  .card textarea:focus { outline: none; border-color: var(--accent); }
+  .card .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+  .card .meta time { font-size: 11px; color: var(--muted); }
+  .card .meta button { font: 600 11px/1 var(--sans); border: none; background: none; color: var(--muted); cursor: pointer; }
+  .card .meta button:hover { color: var(--accent-hover); }
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--heading); color: var(--bg); padding: 9px 16px; border-radius: 8px;
+    font: 500 13px/1.4 var(--sans); display: none; z-index: 50;
+  }
+</style>
+</head>
+<body data-docid="{{DOCID}}">
+<header>
+  <h1>{{TITLE}} <span class="hint">· review copy</span></h1>
+  <span id="count"></span>
+  <button id="general">+ General comment</button>
+  <button id="copyfb">Copy feedback</button>
+  <button id="export" class="primary">Export feedback ⬇</button>
+</header>
+<div class="layout">
+  <article id="doc">
+{{CONTENT}}
+  </article>
+  <aside id="rail"></aside>
+</div>
+<div id="selpop">💬 Comment</div>
+<div id="toast"></div>
+<script>
+(function () {
+  'use strict';
+  var doc = document.getElementById('doc');
+  var rail = document.getElementById('rail');
+  var selpop = document.getElementById('selpop');
+  var DOCID = document.body.dataset.docid || 'review-doc';
+  var KEY = 'review-comments:' + DOCID;
+  var comments = []; // {id, quote, prefix, suffix, text, ts, general, anchored}
+
+  function load() {
+    try { comments = JSON.parse(localStorage.getItem(KEY) || '[]'); }
+    catch (e) { comments = []; }
+  }
+  function save() { localStorage.setItem(KEY, JSON.stringify(comments)); updateCount(); }
+  function updateCount() {
+    document.getElementById('count').textContent =
+      comments.length ? comments.length + ' comment' + (comments.length > 1 ? 's' : '') : '';
+  }
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg; t.style.display = 'block';
+    clearTimeout(t._h); t._h = setTimeout(function () { t.style.display = 'none'; }, 2200);
+  }
+
+  /* ---- text offset mapping ------------------------------------- */
+  function textNodesIn(root) {
+    var out = [], w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var n; while ((n = w.nextNode())) out.push(n);
+    return out;
+  }
+  function globalOffset(node, off) {
+    var sum = 0, nodes = textNodesIn(doc);
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i] === node) return sum + off;
+      sum += nodes[i].data.length;
+    }
+    return -1;
+  }
+  function rangeFromOffsets(start, end) {
+    var nodes = textNodesIn(doc), sum = 0, r = document.createRange(), sSet = false;
+    for (var i = 0; i < nodes.length; i++) {
+      var len = nodes[i].data.length;
+      if (!sSet && start < sum + len) { r.setStart(nodes[i], start - sum); sSet = true; }
+      if (sSet && end <= sum + len) { r.setEnd(nodes[i], end - sum); return r; }
+      sum += len;
+    }
+    return null;
+  }
+  function findOffsets(c) {
+    var full = doc.textContent, from = 0, best = -1, bestScore = -1;
+    while (true) {
+      var idx = full.indexOf(c.quote, from);
+      if (idx === -1) break;
+      var score = 0;
+      if (c.prefix && full.slice(Math.max(0, idx - c.prefix.length), idx) === c.prefix) score += 2;
+      if (c.suffix && full.substr(idx + c.quote.length, c.suffix.length) === c.suffix) score += 2;
+      if (score > bestScore) { bestScore = score; best = idx; }
+      from = idx + 1;
+    }
+    return best === -1 ? null : { start: best, end: best + c.quote.length };
+  }
+
+  /* ---- highlighting --------------------------------------------- */
+  function wrapRange(range, cid) {
+    var nodes = textNodesIn(doc).filter(function (n) {
+      var r = document.createRange(); r.selectNodeContents(n);
+      return range.compareBoundaryPoints(Range.END_TO_START, r) < 0 &&
+             range.compareBoundaryPoints(Range.START_TO_END, r) > 0;
+    });
+    nodes.forEach(function (n) {
+      var s = (n === range.startContainer) ? range.startOffset : 0;
+      var e = (n === range.endContainer) ? range.endOffset : n.data.length;
+      if (e <= s) return;
+      var target = n;
+      if (s > 0) target = target.splitText(s);
+      if (e - s < target.data.length) target.splitText(e - s);
+      var mark = document.createElement('mark');
+      mark.className = 'hl'; mark.dataset.cid = cid;
+      target.parentNode.replaceChild(mark, target);
+      mark.appendChild(target);
+    });
+  }
+  function unwrap(cid) {
+    doc.querySelectorAll('mark.hl[data-cid="' + cid + '"]').forEach(function (m) {
+      while (m.firstChild) m.parentNode.insertBefore(m.firstChild, m);
+      m.remove();
+    });
+    doc.normalize();
+  }
+  function anchor(c) {
+    var pos = findOffsets(c);
+    if (!pos) { c.anchored = false; return; }
+    var r = rangeFromOffsets(pos.start, pos.end);
+    if (!r) { c.anchored = false; return; }
+    wrapRange(r, c.id);
+    c.anchored = true;
+  }
+
+  /* ---- cards ----------------------------------------------------- */
+  function cardEl(c) { return rail.querySelector('.card[data-cid="' + c.id + '"]'); }
+  function buildCard(c, focus) {
+    var el = document.createElement('div');
+    el.className = 'card'; el.dataset.cid = c.id;
+    var q = document.createElement('div');
+    q.className = 'quote' + (c.general ? '' : (c.anchored ? '' : ' unanchored'));
+    q.textContent = c.general ? 'General comment' : c.quote;
+    var ta = document.createElement('textarea');
+    ta.value = c.text || ''; ta.placeholder = 'Your note…';
+    ta.addEventListener('input', function () { c.text = ta.value; save(); });
+    var meta = document.createElement('div'); meta.className = 'meta';
+    var time = document.createElement('time');
+    time.textContent = new Date(c.ts).toLocaleString();
+    var del = document.createElement('button'); del.textContent = 'delete';
+    del.addEventListener('click', function () {
+      unwrap(c.id);
+      comments = comments.filter(function (x) { return x.id !== c.id; });
+      el.remove(); save(); layout();
+    });
+    meta.appendChild(time); meta.appendChild(del);
+    el.appendChild(q); el.appendChild(ta); el.appendChild(meta);
+    el.addEventListener('mouseenter', function () { setActive(c.id, true); });
+    el.addEventListener('mouseleave', function () { setActive(c.id, false); });
+    rail.appendChild(el);
+    if (focus) ta.focus();
+    return el;
+  }
+  function setActive(cid, on) {
+    doc.querySelectorAll('mark.hl[data-cid="' + cid + '"]').forEach(function (m) {
+      m.classList.toggle('active', on);
+    });
+    var el = cardEl({ id: cid }); if (el) el.classList.toggle('active', on);
+  }
+  function layout() {
+    var railTop = rail.getBoundingClientRect().top + window.scrollY;
+    var items = comments.map(function (c) {
+      var m = doc.querySelector('mark.hl[data-cid="' + c.id + '"]');
+      var top = m ? m.getBoundingClientRect().top + window.scrollY - railTop : 0;
+      return { c: c, top: Math.max(0, top) };
+    }).sort(function (a, b) { return a.top - b.top || a.c.ts - b.c.ts; });
+    var y = 0;
+    items.forEach(function (it) {
+      var el = cardEl(it.c); if (!el) return;
+      var t = Math.max(it.top, y);
+      el.style.top = t + 'px';
+      y = t + el.offsetHeight + 10;
+    });
+    rail.style.minHeight = (y + 40) + 'px';
+  }
+
+  /* ---- selection → comment --------------------------------------- */
+  var pendingRange = null;
+  document.addEventListener('mouseup', function (e) {
+    if (selpop.contains(e.target)) return;
+    setTimeout(function () {
+      var sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) { selpop.style.display = 'none'; return; }
+      var r = sel.getRangeAt(0);
+      if (!doc.contains(r.commonAncestorContainer)) { selpop.style.display = 'none'; return; }
+      if (!r.toString().trim()) { selpop.style.display = 'none'; return; }
+      pendingRange = r.cloneRange();
+      var rect = r.getBoundingClientRect();
+      selpop.style.display = 'block';
+      selpop.style.left = (rect.left + window.scrollX + rect.width / 2 - selpop.offsetWidth / 2) + 'px';
+      selpop.style.top = (rect.top + window.scrollY - selpop.offsetHeight - 8) + 'px';
+    }, 0);
+  });
+  selpop.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  selpop.addEventListener('click', function () {
+    if (!pendingRange) return;
+    var full = doc.textContent;
+    var start = globalOffset(pendingRange.startContainer, pendingRange.startOffset);
+    var end = globalOffset(pendingRange.endContainer, pendingRange.endOffset);
+    if (start < 0 || end <= start) return;
+    var c = {
+      id: 'c' + Date.now() + Math.floor(Math.random() * 999),
+      quote: full.slice(start, end),
+      prefix: full.slice(Math.max(0, start - 32), start),
+      suffix: full.slice(end, end + 32),
+      text: '', ts: Date.now(), general: false, anchored: true
+    };
+    wrapRange(pendingRange, c.id);
+    comments.push(c); save();
+    buildCard(c, true); layout();
+    selpop.style.display = 'none';
+    window.getSelection().removeAllRanges();
+    pendingRange = null;
+  });
+  doc.addEventListener('click', function (e) {
+    var m = e.target.closest && e.target.closest('mark.hl');
+    if (!m) return;
+    var el = cardEl({ id: m.dataset.cid });
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setActive(m.dataset.cid, true);
+      setTimeout(function () { setActive(m.dataset.cid, false); }, 1400);
+      var ta = el.querySelector('textarea'); if (ta) ta.focus();
+    }
+  });
+
+  /* ---- general comments + export ---------------------------------- */
+  document.getElementById('general').addEventListener('click', function () {
+    var c = { id: 'c' + Date.now(), quote: '', prefix: '', suffix: '',
+              text: '', ts: Date.now(), general: true, anchored: false };
+    comments.push(c); save(); buildCard(c, true); layout();
+  });
+  function feedbackMd() {
+    var title = document.title.replace(/ · review$/, '');
+    var lines = ['# Feedback on ' + title, '', '_Exported ' + new Date().toLocaleString() + ' · ' + comments.length + ' comment(s)_', ''];
+    comments.forEach(function (c, i) {
+      lines.push('## ' + (i + 1) + (c.general ? ' — general' : ''));
+      if (!c.general) lines.push('> ' + c.quote.replace(/\n/g, '\n> '), '');
+      lines.push(c.text.trim() || '(no note text)', '', '---', '');
+    });
+    return lines.join('\n');
+  }
+  document.getElementById('export').addEventListener('click', function () {
+    if (!comments.length) { toast('No comments yet — highlight some text first.'); return; }
+    var blob = new Blob([feedbackMd()], { type: 'text/markdown' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = DOCID + '.feedback.md';
+    a.click(); URL.revokeObjectURL(a.href);
+    toast('Feedback exported — hand the file to Claude.');
+  });
+  document.getElementById('copyfb').addEventListener('click', function () {
+    if (!comments.length) { toast('No comments yet.'); return; }
+    navigator.clipboard.writeText(feedbackMd()).then(function () { toast('Feedback copied to clipboard.'); });
+  });
+
+  /* ---- boot -------------------------------------------------------- */
+  load();
+  comments.forEach(function (c) { if (!c.general) anchor(c); buildCard(c, false); });
+  updateCount(); layout();
+  window.addEventListener('resize', layout);
+  window.addEventListener('load', layout);
+})();
+</script>
+</body>
+</html>
