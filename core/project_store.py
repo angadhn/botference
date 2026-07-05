@@ -269,6 +269,27 @@ class ProjectStore:
             return
         self._write_json(path, data)
 
+    def dissociate_session(self, session_id: str) -> None:
+        """Drop a chat from the project index (e.g. when it is deleted)."""
+        session_id = session_id.strip()
+        if not session_id:
+            return
+        path = self.projects_root / "session-index.json"
+        data = _load_json(path)
+        sessions = data.get("sessions")
+        if not isinstance(sessions, list):
+            return
+        kept = [
+            raw for raw in sessions
+            if not (isinstance(raw, dict)
+                    and str(raw.get("session_id") or raw.get("id") or "").strip()
+                    == session_id)
+        ]
+        if len(kept) == len(sessions):
+            return
+        data["sessions"] = kept
+        self._write_json(path, data)
+
     def _upsert_portfolio_entry(self, entry: dict[str, Any]) -> None:
         path = self.projects_root / "portfolio.json"
         data = _load_json(path)

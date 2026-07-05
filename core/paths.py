@@ -115,6 +115,11 @@ class BotferencePaths:
             work_dir = Path(os.environ["BOTFERENCE_WORK_DIR"])
         elif project_dir != project_root:
             work_dir = project_dir
+        elif (project_root / "project.json").is_file():
+            # cwd IS a botference state dir (someone launched from inside
+            # it). Use it directly — the legacy `work/` fallback below would
+            # silently start a second session store at <state>/work/sessions.
+            work_dir = project_root
         elif (project_root / "work").is_dir():
             work_dir = project_root / "work"
         else:

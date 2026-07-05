@@ -144,6 +144,9 @@ class InputKind(Enum):
     PROJECTS = "projects"
     PROJECT = "project"
     ADOPT = "adopt"
+    NEW = "new"
+    FILE = "file"
+    DELETE = "delete"
     LEAD = "lead"
     DRAFT = "draft"
     FINALIZE = "finalize"
@@ -173,6 +176,10 @@ _SLASH_COMMANDS = {
     "/projects": InputKind.PROJECTS,
     "/project": InputKind.PROJECT,
     "/adopt": InputKind.ADOPT,
+    "/new": InputKind.NEW,
+    "/file": InputKind.FILE,
+    "/add-to-project": InputKind.FILE,
+    "/delete": InputKind.DELETE,
     "/lead": InputKind.LEAD,
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
@@ -1662,6 +1669,17 @@ class Botference:
     def _persist_session(self) -> None:
         if self._restoring_session:
             return
+        # Lazy creation: an untouched chat never hits disk. Constructor and
+        # /new call this as a no-op; the first user message (or a /rename,
+        # or deliberately opening a project) creates the file. Kills the
+        # empty-session litter that used to accumulate one file per launch.
+        if (
+            not self.transcript.entries
+            and not self._models_initialized
+            and not self.custom_title
+            and not self.active_project_id
+        ):
+            return
         try:
             self.updated_at = iso_now()
             self.session_store.save(self.session_id, self._session_payload())
@@ -2151,6 +2169,18 @@ class Botference:
             await self._run_adopt(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.NEW:
+            self._start_new_chat(parsed.body, ui)
+            return
+
+        if parsed.kind is InputKind.FILE:
+            await self._run_file(parsed.body, ui)
+            return
+
+        if parsed.kind is InputKind.DELETE:
+            await self._run_delete(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.DRAFT:
             await self._run_draft(ui, parsed.body)
             return
@@ -2165,21 +2195,30 @@ class Botference:
 
     def _show_help(self, ui: UIPort) -> None:
         self._add_room_entry(ui, "system", "\n".join([
-            "Commands:",
+            "Chat lifecycle:",
+            "  /new [title]        — Start a fresh chat here (current one is saved)",
+            "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
+            "  /file [<project-id>] — File this chat under a project (picker without args; alias /add-to-project)",
+            "  /rename <name>      — Name this chat for future /resume lookup",
+            "  /resume [latest|number|title|id] — Switch to a saved chat (works mid-chat; current chat is auto-saved)",
+            "  /delete [<id-prefix>] — Delete a saved chat (picker + confirm)",
+            "",
+            "Projects:",
             "  /projects          — List project folders under projects/",
             "  /project [open <id>|clear|current|create <title>|create-from-chat|activate-build]",
             "                     — Set, show, or create the active project context",
             "  /project assign [<session-id-prefix>] <project-id>",
             "                     — File this chat (or a saved one) under a project without switching context",
-            "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
+            "",
+            "Planning:",
             "  /lead @claude|@codex — Set who writes the plan (auto-set when the bots agree on a writer)",
             "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
+            "",
+            "Session management:",
             "  /relay @claude|@codex — Reset model session with structured handoff",
             "  /compact @claude [instructions] — Send native Claude Code /compact (requires --claude-interactive)",
             "  /goal @claude <objective> — Send native Claude Code /goal (requires --claude-interactive)",
-            "  /resume [latest|number|title|id] — Switch to a saved plan session (works mid-chat; current session is auto-persisted)",
-            "  /rename <name>      — Name this saved session for future /resume lookup",
             "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
             "  /auth [claude|codex|all] — Check local CLI auth status",
@@ -3940,6 +3979,177 @@ class Botference:
         ui.set_status(self.status_snapshot())
         self._persist_session()
         await self._run_free_form_thread("claude", resp, ui)
+
+    # ── chat lifecycle: /new, /file, /delete ──────────────
+
+    def _start_new_chat(self, title: str, ui: UIPort) -> None:
+        """Persist the current chat and start a fresh one in place.
+
+        The active project context is kept — a new chat inside a project
+        stays in that project. Both model sessions start clean.
+        """
+        old_label = self._session_title()
+        had_content = bool(self.transcript.entries)
+        self._persist_session()
+
+        self.session_id = str(uuid.uuid4())
+        self.created_at = iso_now()
+        self.updated_at = self.created_at
+        self.custom_title = _clean_session_title(title) if title.strip() else ""
+        self.transcript = Transcript()
+        self.router = AutoRouter()
+        self.mode = RoomMode.PUBLIC
+        self.lead = "auto"
+        self._room_history = []
+        self._ff_writer_votes = {}
+        self._ff_last_output_tokens = {}
+        self._models_initialized = set()
+        self._warned_overlimit_models = set()
+        self._yield_pressure = {}
+        self._relay_boundary = {}
+        self._pending_relay_handoffs = {}
+        self._claude_pct = self._codex_pct = None
+        self._claude_tokens = self._claude_window = None
+        self._codex_tokens = self._codex_window = None
+        self.claude.session_id = ""
+        self.codex.thread_id = ""
+
+        ui.clear_panes()
+        ui.set_mode(self.mode)
+        ui.set_status(self.status_snapshot())
+        self._sync_project_ui(ui)
+        note = "Started a new chat"
+        if self.custom_title:
+            note += f": {self.custom_title}"
+        if had_content:
+            note += f". The previous chat ({old_label}) is saved — /resume brings it back."
+        else:
+            note += "."
+        self._show_room_notice(ui, "system", note)
+        # Lazy persist: the new chat only hits disk once something happens.
+        self._persist_session()
+
+    async def _run_file(self, arg: str, ui: UIPort) -> None:
+        """File the current chat under a project (picker when no args)."""
+        if arg.strip():
+            self._assign_session_to_project(arg, ui)
+            return
+
+        projects = self.project_store.list_projects()
+        request_choice = getattr(ui, "request_choice", None)
+        if request_choice is None:
+            self._add_room_entry(
+                ui, "system",
+                "Usage: /file <project-id>  (see /projects for ids)",
+            )
+            return
+        options = [f"File under {p.title}" for p in projects]
+        options.append("Create a new project from this chat")
+        options.append("Cancel")
+        choice = await request_choice("File this chat where?", options)
+        if choice is None or not 0 <= choice < len(options) or choice == len(options) - 1:
+            return
+        if choice < len(projects):
+            project = projects[choice]
+            self.project_store.associate_session(project.id, self.session_id)
+            self._persist_session()
+            self._sync_project_ui(ui)
+            self._add_room_entry(
+                ui, "system",
+                f"Filed this chat under {project.title} ({project.id}).",
+            )
+            return
+        title = _project_title_from_session_title(self._session_title())
+        self._create_project(title, ui)
+
+    async def _run_delete(self, arg: str, ui: UIPort) -> None:
+        """Delete a saved chat (picker + confirm; deleting the current chat
+        rolls into a fresh one)."""
+        prefix = arg.strip()
+        request_choice = getattr(ui, "request_choice", None)
+
+        candidates = [
+            s for s in self.session_store.list_summaries(limit=200)
+        ]
+        if prefix:
+            matches = [s for s in candidates
+                       if s.session_id.startswith(prefix)]
+            if not matches and self.session_id.startswith(prefix):
+                target_id, target_label = self.session_id, self._session_title()
+            elif len(matches) == 1:
+                target_id = matches[0].session_id
+                target_label = matches[0].title or target_id[:8]
+            elif not matches:
+                self._add_room_entry(
+                    ui, "system",
+                    f"No saved chat matched '{prefix}'. /resume lists them.",
+                )
+                return
+            else:
+                self._add_room_entry(
+                    ui, "system",
+                    f"'{prefix}' is ambiguous ({len(matches)} chats). "
+                    "Use a longer prefix.",
+                )
+                return
+        else:
+            if request_choice is None:
+                self._add_room_entry(
+                    ui, "system",
+                    "Usage: /delete <session-id-prefix>  (/resume lists ids)",
+                )
+                return
+            recent = candidates[:8]
+            if not recent:
+                self._add_room_entry(ui, "system", "No saved chats to delete.")
+                return
+            labels = [
+                ("(this chat) " if s.session_id == self.session_id else "")
+                + f"{s.title or s.session_id[:8]}"
+                for s in recent
+            ]
+            labels.append("Cancel")
+            index = await request_choice("Delete which chat?", labels)
+            if index is None or not 0 <= index < len(recent):
+                return
+            target_id = recent[index].session_id
+            target_label = recent[index].title or target_id[:8]
+
+        if request_choice is not None:
+            confirm = await request_choice(
+                f"Delete “{target_label}” permanently? This cannot be undone.",
+                ["Delete it", "Cancel"],
+            )
+            if confirm != 0:
+                self._add_room_entry(ui, "system", "Delete cancelled.")
+                return
+        elif not prefix or len(prefix) < 8:
+            self._add_room_entry(
+                ui, "system",
+                "No picker available to confirm — pass at least 8 characters "
+                "of the id: /delete <longer-prefix>",
+            )
+            return
+
+        self.session_store.delete(target_id)
+        self.project_store.dissociate_session(target_id)
+        if target_id == self.session_id:
+            # The chat we're sitting in is gone — roll into a fresh one
+            # without re-persisting the old id.
+            self._restoring_session = True
+            try:
+                self.transcript = Transcript()
+                self.custom_title = ""
+                self._models_initialized = set()
+            finally:
+                self._restoring_session = False
+            self._start_new_chat("", ui)
+            self._add_room_entry(
+                ui, "system", f"Deleted this chat ({target_label}).",
+            )
+        else:
+            self._sync_project_ui(ui)
+            self._add_room_entry(ui, "system", f"Deleted “{target_label}”.")
 
     # ── /draft ────────────────────────────────────────────
 

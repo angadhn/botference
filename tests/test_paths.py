@@ -58,6 +58,17 @@ class TestBotferencePathsResolve:
         assert p.work_dir == tmp_path
         assert p.work_prefix == ""
 
+    def test_resolve_inside_state_dir_does_not_nest_work(self, tmp_path):
+        """Launching from INSIDE a botference state dir must not spawn a
+        second session store at <state>/work — this split real user data."""
+        (tmp_path / "project.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "work").mkdir()  # decoy: would have won before the guard
+        p = BotferencePaths.resolve(
+            botference_home=tmp_path, project_root=tmp_path,
+        )
+        assert p.work_dir == tmp_path
+        assert p.session_dir == tmp_path / "sessions"
+
     def test_resolve_with_build_dir(self, tmp_path):
         """build/ subdir detected → build_dir points there."""
         (tmp_path / "build").mkdir()

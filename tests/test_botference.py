@@ -490,6 +490,9 @@ def _make_botference(
     if tmp_path is not None:
         work_dir = tmp_path / "work"
         work_dir.mkdir(exist_ok=True)
+        # Sessions persist lazily now, so tests that seed session files
+        # directly need the directory to exist up front.
+        (work_dir / "sessions").mkdir(exist_ok=True)
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir(exist_ok=True)
         repo_root = Path(__file__).resolve().parent.parent
@@ -4725,6 +4728,171 @@ class TestProjectSuggestion:
                  if s == "system" and "This chat is in Inbox" in t]
         assert len(notes) == 1
         assert "/project open spaceship-engineering" in notes[0]
+
+
+# ── chat lifecycle: /new, /file, /delete + lazy persist ───
+
+
+@pytest.mark.asyncio
+class TestChatLifecycle:
+    async def test_lazy_persist_no_file_until_first_message(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("hi")], tmp_path=tmp_path,
+        )
+        session_file = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        assert not session_file.exists()
+        await c.handle_input("@claude hello", ui)
+        assert session_file.exists()
+
+    async def test_new_starts_fresh_chat_and_keeps_old_resumable(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok("first reply"), _ok("second chat reply")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        old_id = c.session_id
+
+        await c.handle_input("/new auth planning", ui)
+
+        assert c.session_id != old_id
+        assert c.custom_title == "auth planning"
+        assert c.transcript.entries == []
+        assert c.claude.session_id == ""
+        assert c._models_initialized == set()
+        # Old chat is still on disk and resumable.
+        assert (tmp_path / "work" / "sessions" / f"{old_id}.json").exists()
+        # New chat is lazy — its file appears only after content...
+        new_file = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        assert new_file.exists()  # (has a custom title → persisted)
+
+    async def test_new_untitled_does_not_touch_disk(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("first reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("/new", ui)
+        assert not (tmp_path / "work" / "sessions" / f"{c.session_id}.json").exists()
+
+    async def test_new_keeps_project_context(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("/project open spaceship-engineering", ui)
+        await c.handle_input("/new", ui)
+        assert c.active_project_id == "spaceship-engineering"
+
+    async def test_file_picker_files_current_chat(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        ui.choice_responses.append(0)
+        await c.handle_input("/file", ui)
+
+        prompt, options = ui.choice_requests[-1]
+        assert "File this chat" in prompt
+        assert any("Spaceship Engineering" in o for o in options)
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert any(e["session_id"] == c.session_id
+                   and e["project"] == "spaceship-engineering"
+                   for e in index["sessions"])
+
+    async def test_file_with_arg_delegates_to_assign(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/add-to-project spaceship-engineering", ui)
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert any(e["session_id"] == c.session_id for e in index["sessions"])
+
+    async def test_delete_by_prefix_with_confirm(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        first, _, _, ui1 = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await first.handle_input("@claude hello", ui1)
+        await first.handle_input("/file spaceship-engineering", ui1)
+        victim_id = first.session_id
+
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(0)  # "Delete it"
+        await c.handle_input(f"/delete {victim_id[:8]}", ui)
+
+        assert not (tmp_path / "work" / "sessions" / f"{victim_id}.json").exists()
+        # The project index entry is cleaned up too — no dangling ids.
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert all(e["session_id"] != victim_id for e in index["sessions"])
+        assert any("Deleted" in t for _, t in ui.room_entries)
+
+    async def test_delete_confirm_cancel_keeps_chat(self, tmp_path):
+        first, _, _, ui1 = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await first.handle_input("@claude hello", ui1)
+        victim_id = first.session_id
+
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(1)  # "Cancel"
+        await c.handle_input(f"/delete {victim_id[:8]}", ui)
+        assert (tmp_path / "work" / "sessions" / f"{victim_id}.json").exists()
+
+    async def test_delete_current_chat_rolls_into_new(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        old_id = c.session_id
+        ui.choice_responses.append(0)  # confirm
+        await c.handle_input(f"/delete {old_id[:8]}", ui)
+
+        assert c.session_id != old_id
+        assert c.transcript.entries == []
+        assert not (tmp_path / "work" / "sessions" / f"{old_id}.json").exists()
+
+    async def test_delete_picker_lists_recent_chats(self, tmp_path):
+        first, _, _, ui1 = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await first.handle_input("/rename victim chat", ui1)
+        await first.handle_input("@claude hello", ui1)
+
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.extend([0, 0])  # pick first, then confirm
+        await c.handle_input("/delete", ui)
+        prompt, options = ui.choice_requests[0]
+        assert "Delete which chat" in prompt
+        assert any("victim chat" in o for o in options)
+
+
+class TestPruneEmpty:
+    def test_prunes_only_old_empty_sessions(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        sessions = tmp_path / "work" / "sessions"
+        old_empty = sessions / "old-empty.json"
+        old_empty.write_text(json.dumps({"transcript": []}), encoding="utf-8")
+        os.utime(old_empty, (1_600_000_000, 1_600_000_000))
+        fresh_empty = sessions / "fresh-empty.json"
+        fresh_empty.write_text(json.dumps({"transcript": []}), encoding="utf-8")
+        old_real = sessions / "old-real.json"
+        old_real.write_text(
+            json.dumps({"transcript": [{"speaker": "user", "text": "hi"}]}),
+            encoding="utf-8",
+        )
+        os.utime(old_real, (1_600_000_000, 1_600_000_000))
+
+        removed = c.session_store.prune_empty()
+
+        assert removed == 1
+        assert not old_empty.exists()
+        assert fresh_empty.exists()
+        assert old_real.exists()
 
 
 # ── /adopt — native Claude Code chat adoption ─────────────

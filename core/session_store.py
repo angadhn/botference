@@ -131,6 +131,44 @@ class SessionStore:
 
     def delete(self, session_id: str) -> None:
         self.paths.session_state_file(session_id).unlink(missing_ok=True)
+        if self._metadata_cache is not None and session_id in self._metadata_cache:
+            del self._metadata_cache[session_id]
+            self._save_metadata_index(self._metadata_cache)
+
+    def prune_empty(self, *, max_age_seconds: float = 86_400.0) -> int:
+        """Delete zero-transcript session files older than *max_age_seconds*.
+
+        Empty sessions are launch corpses — nothing a user could resume.
+        The age guard protects a chat that is open right now in another
+        process but hasn't received its first message yet. Returns the
+        number of files removed.
+        """
+        import time as _time
+        session_dir = self.paths.session_dir
+        if not session_dir.is_dir():
+            return 0
+        cutoff = _time.time() - max_age_seconds
+        removed = 0
+        for path in session_dir.glob("*.json"):
+            if path.name.startswith("."):
+                continue
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            transcript = payload.get("transcript", [])
+            if isinstance(transcript, list) and len(transcript) >= 1:
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+        if removed and self._metadata_cache is not None:
+            self._metadata_cache = None  # force rebuild on next read
+        return removed
 
     def _load_metadata_index(self) -> dict[str, SessionMetadata]:
         path = self._metadata_index_path

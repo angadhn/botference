@@ -2,6 +2,20 @@
 
 ## 2026-07-05
 
+- **Chat lifecycle commands.** `/new [title]` starts a fresh chat in place
+  (previous chat stays saved and resumable; project context is kept).
+  `/file` opens a project picker to file the current chat (alias
+  `/add-to-project`; `/file <project-id>` for direct hits). `/delete`
+  opens a picker of recent chats — always with a confirm step — cleans the
+  project index, and deleting the current chat rolls into a fresh one.
+  `/help` is regrouped around the lifecycle.
+- **No more empty-session litter.** Sessions are created lazily: a chat
+  only hits disk on its first message (or `/rename`, or opening a
+  project). On launch, day-old zero-transcript session files are swept
+  automatically. Also fixed: launching botference from *inside* a state
+  directory (e.g. `cd botference && botference plan`) used to silently
+  start a second session store at `<state>/work/sessions` — a path guard
+  now keeps a state dir from nesting another store.
 - **`/adopt` — bring an existing Claude Code chat into the council.** Lists
   recent native `claude` sessions for the current folder in the arrow-key
   picker (or `/adopt <id-prefix>` directly). The chosen chat becomes the

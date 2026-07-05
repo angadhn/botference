@@ -299,6 +299,9 @@ async def _hydrate_project_panel(
     startup until/unless a later turn refreshes it.
     """
     try:
+        # Sweep launch corpses (empty, day-old session files) before the
+        # snapshot so their ghosts never reach the panel counts.
+        await asyncio.to_thread(botference.session_store.prune_empty)
         snapshot = await asyncio.to_thread(botference.project_panel_snapshot)
     except asyncio.CancelledError:
         raise
