@@ -734,6 +734,15 @@ class ClaudeAdapter:
         self.session_id = str(uuid.uuid4())
         return await self._run(prompt, resume=False)
 
+    def adopt_native_session(self, session_id: str) -> bool:
+        """Continue an existing native Claude Code chat (/adopt).
+
+        Returns True: the session is live immediately — the next call must
+        be resume(). Passing "" rolls an adoption back.
+        """
+        self.session_id = session_id
+        return True
+
     async def resume(self, message: str) -> AdapterResponse:
         """Follow-up message in existing session."""
         if not self.session_id:
@@ -1004,6 +1013,7 @@ class ClaudeInteractiveTmuxAdapter:
         self.stream_callback = stream_callback
         self.session_id = session_name
         self.window_name = tmux_safe_name(window_name, max_len=32)
+        self._resume_native_id = ""  # /adopt: resume this chat in the pane
         self._last_capture = ""
         self._last_assistant_text = ""
         self._capture_interval = float(
@@ -1061,11 +1071,23 @@ class ClaudeInteractiveTmuxAdapter:
             raise RuntimeError(f"{' '.join(args)} failed: {err.strip() or out.strip()}")
         return proc.returncode or 0, out, err
 
+    def adopt_native_session(self, session_id: str) -> bool:
+        """Resume an existing native chat when the pane starts (/adopt).
+
+        Returns False: nothing is live yet — the first send() launches the
+        interactive pane with `claude --resume <id>`. Passing "" rolls an
+        adoption back.
+        """
+        self._resume_native_id = session_id
+        return False
+
     def _build_claude_command(self) -> str:
         # Keep the interactive transport close to a normal `claude` session.
         # The programmatic adapter owns strict tool/settings enforcement; this
         # mirror path should let Claude Code ask for permissions normally.
         cmd = ["claude", "--model", normalize_interactive_claude_model(self.model)]
+        if self._resume_native_id:
+            cmd += ["--resume", self._resume_native_id]
         if self.session_id:
             cmd += ["--name", self.session_id]
         if self.effort:

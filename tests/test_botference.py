@@ -5021,6 +5021,59 @@ class TestAdopt:
         assert any("cancelled" in t.lower() for _, t in ui.room_entries)
 
 
+class DeferredAdoptAdapter(MockAdapter):
+    """Tmux-transport shape: adoption arms the launch command; the pane
+    (and the resumed chat) only comes alive on the first send()."""
+
+    def __init__(self, responses=None):
+        super().__init__(responses)
+        self.adopted: list[str] = []
+
+    def adopt_native_session(self, session_id: str) -> bool:
+        self.adopted.append(session_id)
+        return False
+
+
+@pytest.mark.asyncio
+class TestAdoptInteractiveTransport:
+    async def test_deferred_adoption_bootstraps_via_send(self, tmp_path):
+        c, _, codex, ui = _adopt_setup(
+            tmp_path, [_ff("Handoff from the old chat.", nxt="@user")],
+        )
+        claude = DeferredAdoptAdapter(
+            [_ff("Handoff from the old chat.", nxt="@user")],
+        )
+        c.claude = claude
+        ui.choice_responses.append(0)
+
+        await c.handle_input("/adopt", ui)
+
+        assert claude.adopted == ["cafe0001-aaaa"]
+        # Deferred transport: the pane starts via send() with the full
+        # initial prompt (which backfills the adoption/handoff note).
+        assert len(claude.send_calls) == 1
+        assert claude.resume_calls == []
+        assert "handoff" in claude.send_calls[0].lower()
+        assert "claude" in c._models_initialized
+        assert any(e.speaker == "claude" and "old chat" in e.text
+                   for e in c.transcript.entries)
+
+    async def test_deferred_adoption_rolls_back_on_failure(self, tmp_path):
+        c, _, codex, ui = _adopt_setup(tmp_path, [_ok("unused")])
+        claude = DeferredAdoptAdapter(
+            [_ok("Error: no conversation found", exit_code=1)],
+        )
+        c.claude = claude
+        ui.choice_responses.append(0)
+
+        await c.handle_input("/adopt", ui)
+
+        # Rollback clears the armed resume id (adopt("")).
+        assert claude.adopted == ["cafe0001-aaaa", ""]
+        assert "claude" not in c._models_initialized
+        assert any("Adopt failed" in t for _, t in ui.room_entries)
+
+
 @pytest.mark.asyncio
 class TestProjectAssign:
     async def test_assign_current_chat(self, tmp_path):

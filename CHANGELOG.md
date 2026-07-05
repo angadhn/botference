@@ -16,6 +16,11 @@
   directory (e.g. `cd botference && botference plan`) used to silently
   start a second session store at `<state>/work/sessions` — a path guard
   now keeps a state dir from nesting another store.
+- **`/adopt` works under `--claude-interactive`.** The tmux pane now
+  launches as `claude --resume <adopted chat>`, so botference steers a
+  real, attachable Claude Code session resumed from your past chat —
+  watch it live with `tmux attach`. (The programmatic transport remains
+  the more robust path; the interactive mirror is still experimental.)
 - **`/adopt` — bring an existing Claude Code chat into the council.** Lists
   recent native `claude` sessions for the current folder in the arrow-key
   picker (or `/adopt <id-prefix>` directly). The chosen chat becomes the

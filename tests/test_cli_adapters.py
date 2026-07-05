@@ -416,6 +416,26 @@ Reading 1 file… (ctrl+o to expand)
         assert "--session-id" not in cmd
         assert "--settings" not in cmd
         assert "--add-dir" not in cmd
+        assert "--resume" not in cmd
+
+    def test_build_command_resumes_adopted_native_chat(self, tmp_path):
+        adapter = ClaudeInteractiveTmuxAdapter(
+            model="claude-sonnet-4-6",
+            cwd=str(tmp_path),
+            session_name="botference-claude-test",
+        )
+        # Deferred adoption: nothing live until the pane starts.
+        assert adapter.adopt_native_session("cafe0001-aaaa") is False
+        cmd = adapter._build_claude_command()
+        assert "--resume cafe0001-aaaa" in cmd
+        # Rollback clears the armed resume.
+        adapter.adopt_native_session("")
+        assert "--resume" not in adapter._build_claude_command()
+
+    def test_programmatic_adopt_is_live_immediately(self):
+        adapter = ClaudeAdapter(model="claude-sonnet-4-6")
+        assert adapter.adopt_native_session("cafe0001-aaaa") is True
+        assert adapter.session_id == "cafe0001-aaaa"
 
     def test_ensure_session_starts_tmux_when_missing(self, monkeypatch, tmp_path):
         async def run():

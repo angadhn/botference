@@ -3944,8 +3944,18 @@ class Botference:
                 return
             chosen = sessions[index]
 
-        self.claude.session_id = chosen.session_id
-        self._models_initialized.add("claude")
+        # Programmatic transport: the native session is live immediately
+        # (True → next call resumes it). Tmux transport: the pane launches
+        # with `claude --resume <id>` on the first send (False → let the
+        # normal bootstrap start it, initial prompt included).
+        adopt = getattr(self.claude, "adopt_native_session", None)
+        if adopt is not None:
+            live_now = adopt(chosen.session_id)
+        else:
+            self.claude.session_id = chosen.session_id
+            live_now = True
+        if live_now:
+            self._models_initialized.add("claude")
         name = "Claude"
         other = "Codex"
         self.transcript.add(
@@ -3964,7 +3974,10 @@ class Botference:
         if resp is None or resp.exit_code != 0:
             # Adoption failed (e.g. the native session no longer resumes);
             # roll back so the room stays usable.
-            self.claude.session_id = ""
+            if adopt is not None:
+                adopt("")
+            else:
+                self.claude.session_id = ""
             self._models_initialized.discard("claude")
             self._add_room_entry(
                 ui, "system",
