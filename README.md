@@ -2,6 +2,9 @@
 
 [![Tracked code LOC](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/angadhn/botference/main/docs/badges/loc.json)](#tracked-code-loc)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4)](https://github.com/sponsors/angadhn)
+
+**Website:** [botference.com](https://botference.com) · If botference is useful to you, consider [sponsoring its development](https://github.com/sponsors/angadhn).
 
 > [!NOTE]
 > This README was AI-generated. I (Angadh) have skimmed and supervised its creation.

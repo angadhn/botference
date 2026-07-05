@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Botference — one room, three minds</title>
+<meta name="description" content="Botference is a multi-LLM planning council: you, Claude, and Codex in one terminal room. The bots debate each other directly and hand you an implementation plan.">
+<meta property="og:title" content="Botference — one room, three minds">
+<meta property="og:description" content="A planning council for your terminal: you, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
+<meta property="og:image" content="https://botference.com/ink-ui.png">
+<meta property="og:url" content="https://botference.com">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🏛️</text></svg>">
+<style>
+  :root {
+    --bg: #0b0e12;
+    --panel: #11161d;
+    --border: #1f2937;
+    --text: #d7dde6;
+    --muted: #8b98a9;
+    --accent: #34d399;
+    --accent2: #22d3ee;
+    --claude: #7aa2f7;
+    --codex: #9ece6a;
+    --you: #2ac3de;
+    --warn: #e0af68;
+    --max: 1060px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(11,14,18,.85); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav { display: flex; align-items: center; gap: 20px; height: 56px; }
+  nav .logo { font-weight: 700; color: var(--text); letter-spacing: .5px; }
+  nav .logo span { color: var(--accent); }
+  nav .links { margin-left: auto; display: flex; gap: 18px; font-size: 14px; }
+  .btn {
+    display: inline-block; padding: 10px 18px; border-radius: 8px;
+    border: 1px solid var(--border); color: var(--text); font-size: 15px;
+    transition: transform .08s ease, border-color .12s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #04110b; font-weight: 700; }
+  .btn.sponsor { border-color: #db61a2; color: #f3a5cd; }
+  .btn.sponsor:hover { border-color: #f3a5cd; }
+  nav .btn { padding: 6px 12px; font-size: 13px; }
+
+  .hero { padding: 88px 0 48px; text-align: center; }
+  .hero h1 {
+    font-size: clamp(30px, 5.4vw, 54px); line-height: 1.15; font-weight: 800;
+    letter-spacing: -1px;
+  }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .hero p.sub {
+    margin: 20px auto 0; max-width: 680px; color: var(--muted); font-size: 17px;
+  }
+  .hero .actors { margin-top: 14px; font-size: 15px; }
+  .actors b { font-weight: 700; }
+  .actors .you { color: var(--you); } .actors .claude { color: var(--claude); } .actors .codex { color: var(--codex); }
+  .cta { margin-top: 34px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+
+  .install {
+    margin: 40px auto 0; max-width: 560px; text-align: left;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 18px; font-size: 15px; color: var(--text);
+    display: flex; align-items: center; gap: 10px; overflow-x: auto;
+  }
+  .install .dollar { color: var(--accent); user-select: none; }
+  .install code { white-space: nowrap; }
+
+  .shot { padding: 46px 0 8px; }
+  .term {
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    background: #121212; box-shadow: 0 24px 80px rgba(0,0,0,.55);
+  }
+  .term .bar {
+    display: flex; align-items: center; gap: 7px; padding: 10px 14px;
+    background: #171d25; border-bottom: 1px solid var(--border);
+  }
+  .term .bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .term .bar i:nth-child(1){background:#ff5f57}.term .bar i:nth-child(2){background:#febc2e}.term .bar i:nth-child(3){background:#28c840}
+  .term .bar span { margin-left: 8px; color: var(--muted); font-size: 12px; }
+  .term img { display: block; width: 100%; height: auto; }
+  .caption { text-align: center; color: var(--muted); font-size: 13px; padding: 14px 0 0; }
+
+  section.features { padding: 72px 0 12px; }
+  h2 { font-size: 26px; letter-spacing: -.5px; margin-bottom: 8px; }
+  h2::before { content: "## "; color: var(--accent); }
+  .lede { color: var(--muted); margin-bottom: 34px; max-width: 720px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 22px;
+  }
+  .card h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .card h3 code { color: var(--accent2); }
+  .card p { color: var(--muted); font-size: 14px; }
+  .card .k { color: var(--accent); }
+
+  section.how { padding: 72px 0 12px; }
+  .transcript {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 24px; font-size: 14.5px; overflow-x: auto;
+  }
+  .transcript .line { padding: 3px 0; white-space: pre-wrap; }
+  .transcript .you { color: var(--you); font-weight: 700; }
+  .transcript .claude { color: var(--claude); font-weight: 700; }
+  .transcript .codex { color: var(--codex); font-weight: 700; }
+  .transcript .sys { color: var(--warn); }
+  .transcript .dim { color: var(--muted); }
+
+  section.quick { padding: 72px 0 12px; }
+  .steps { counter-reset: step; display: grid; gap: 12px; }
+  .step {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 22px; display: flex; gap: 18px; align-items: baseline;
+  }
+  .step::before {
+    counter-increment: step; content: "0" counter(step);
+    color: var(--accent); font-weight: 800; font-size: 18px;
+  }
+  .step code { color: var(--accent2); }
+  .step p { color: var(--muted); font-size: 14px; }
+  .step b { color: var(--text); }
+
+  section.support { padding: 80px 0; text-align: center; }
+  .support .box {
+    background: linear-gradient(180deg, #131a22, #10151c);
+    border: 1px solid var(--border); border-radius: 14px; padding: 44px 28px;
+  }
+  .support p { color: var(--muted); max-width: 620px; margin: 12px auto 26px; }
+
+  footer { border-top: 1px solid var(--border); padding: 30px 0 44px; color: var(--muted); font-size: 13px; }
+  footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+  footer .spacer { margin-left: auto; }
+
+  @media (max-width: 640px) {
+    .hero { padding-top: 56px; }
+    nav .links a.hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <a class="logo" href="#">botference<span>_</span></a>
+      <div class="links">
+        <a class="hide-sm" href="#features">features</a>
+        <a class="hide-sm" href="#how">how it works</a>
+        <a class="hide-sm" href="#quickstart">quickstart</a>
+        <a class="btn" href="https://github.com/angadhn/botference">GitHub</a>
+        <a class="btn sponsor" href="https://github.com/sponsors/angadhn">♥ Sponsor</a>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+
+    <div class="hero">
+      <h1>One room.<br><em>Three minds.</em></h1>
+      <p class="sub">
+        Botference is a planning council for your terminal: a free-form group chat
+        where the AIs debate each other directly — and hand you an implementation
+        plan you can take anywhere.
+      </p>
+      <p class="actors">
+        <b class="you">you</b> steer · <b class="claude">Claude Code</b> argues ·
+        <b class="codex">Codex</b> pushes back
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#quickstart">Get started</a>
+        <a class="btn" href="https://github.com/angadhn/botference">Star on GitHub</a>
+      </div>
+      <div class="install">
+        <span class="dollar">$</span>
+        <code>git clone https://github.com/angadhn/botference && cd botference && ./botference plan</code>
+      </div>
+    </div>
+
+    <div class="shot">
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i><span>botference plan — council</span></div>
+        <img src="ink-ui.png" alt="Botference Ink TUI: projects panel and council room where Claude and Codex debate a planning question" loading="lazy">
+      </div>
+      <p class="caption">The council, live: Codex opens by naming the weakest point in Claude's framing. That's the point.</p>
+    </div>
+
+    <section class="features" id="features">
+      <h2>Why a council?</h2>
+      <p class="lede">
+        One model tells you what you want to hear. Two models with permission to
+        disagree — and a human holding the floor — produce plans that survive contact
+        with reality.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3>Free-form, like a real group chat</h3>
+          <p>A bot's reply can hand the floor to the other bot, recursively, until the
+          thread converges and returns to you. No turn ceremony — just <span class="k">@mentions</span>
+          and a structured handoff protocol under the hood.</p>
+        </div>
+        <div class="card">
+          <h3>Budgeted debate, never runaway</h3>
+          <p>Bot-to-bot threads get a turn and token budget with a visible countdown.
+          Typing interrupts at the next turn boundary. Exhaustion pauses — it never
+          kills a thread. <span class="k">You are the pressure valve.</span></p>
+        </div>
+        <div class="card">
+          <h3>Plans as artifacts</h3>
+          <p><code>/draft</code> makes the lead model write <code>implementation-plan.md</code>,
+          the other model reviews it in the open room, and <code>/finalize</code> produces a
+          <code>checkpoint.md</code>. Deterministic files, reviewable diffs.</p>
+        </div>
+        <div class="card">
+          <h3>Adopt your Claude Code chats</h3>
+          <p><code>/adopt</code> continues a pre-existing native Claude Code conversation
+          inside the council — Claude keeps its full memory, writes a handoff, and Codex
+          joins mid-stream, already briefed.</p>
+        </div>
+        <div class="card">
+          <h3>Projects, not chat soup</h3>
+          <p>A persistent projects panel files chats where they belong. Resume any
+          session with native CLI context intact — both models pick up exactly where
+          they left off.</p>
+        </div>
+        <div class="card">
+          <h3>Consensus picks the writer</h3>
+          <p>When both models vote for the same plan writer during discussion, the lead
+          is set automatically. Override any time with <code>/lead</code>. You always get
+          the last word.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="how" id="how">
+      <h2>How it works</h2>
+      <p class="lede">You talk. They talk to each other. Files come out.</p>
+      <div class="transcript">
+        <div class="line"><span class="you">[You]</span> @all Should the export pipeline be streaming or batch?</div>
+        <div class="line"><span class="claude">[Claude]</span> Streaming: memory stays flat and users see progress. Weak point — retry semantics get harder. @codex, your take on failure handling?</div>
+        <div class="line"><span class="codex">[Codex]</span> Streaming's retries are solvable with checkpointed offsets. The real risk is schema drift mid-stream. I'd write the plan around a chunked hybrid. <span class="dim">writer: @codex</span></div>
+        <div class="line"><span class="claude">[Claude]</span> Agreed on chunked hybrid — converged. <span class="dim">writer: @codex</span></div>
+        <div class="line"><span class="sys">System:</span> Writer consensus → lead set to @codex</div>
+        <div class="line"><span class="you">[You]</span> /draft</div>
+        <div class="line"><span class="sys">System:</span> Updated implementation-plan.md · Claude is reviewing draft round 1…</div>
+      </div>
+    </section>
+
+    <section class="quick" id="quickstart">
+      <h2>Quickstart</h2>
+      <p class="lede">Prereqs: the <b>Claude Code</b> and <b>Codex</b> CLIs, authenticated; Python 3; Node + npm.</p>
+      <div class="steps">
+        <div class="step"><div>
+          <b>Clone and install the UI</b>
+          <p><code>git clone https://github.com/angadhn/botference && cd botference/ink-ui && npm install</code></p>
+        </div></div>
+        <div class="step"><div>
+          <b>Start a council in your project</b>
+          <p><code>cd your-project && botference init && botference plan</code> — or run <code>./botference plan</code> straight from the checkout to try it.</p>
+        </div></div>
+        <div class="step"><div>
+          <b>Plan out loud</b>
+          <p>Ask both minds anything. Let them argue. <code>/draft</code> when it converges, <code>/finalize</code> when you're happy. Take <code>implementation-plan.md</code> into any workflow you like.</p>
+        </div></div>
+      </div>
+    </section>
+
+    <section class="support" id="support">
+      <div class="box">
+        <h2>Support the build</h2>
+        <p>
+          Botference is MIT-licensed and built in the open. If the council saves you
+          planning hours — or you just want more of this to exist — sponsorship keeps
+          the development moving.
+        </p>
+        <a class="btn sponsor" href="https://github.com/sponsors/angadhn">♥ Sponsor on GitHub</a>
+        &nbsp;
+        <a class="btn" href="https://github.com/angadhn/botference">Read the source</a>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Angadh Nanjangud · MIT License</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/angadhn/botference">GitHub</a>
+    <a href="https://github.com/angadhn/botference/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+  </div>
+</footer>
+
+</body>
+</html>
