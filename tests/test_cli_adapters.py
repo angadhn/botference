@@ -27,6 +27,7 @@ from cli_adapters import (
     ToolSummary,
     is_credit_error,
     _read_jsonl_lines,
+    _stream_json_user_message,
     _truncate,
     _CONTEXT_WINDOWS,
     build_tmux_paste_payload,
@@ -2105,3 +2106,103 @@ class TestCodexStdinDevnull:
             )
 
         asyncio.run(_test())
+
+
+# ── Steering (mid-turn user message injection) ──────────────
+
+
+class TestClaudeSteering:
+    def test_build_cmd_uses_stream_json_input(self):
+        c = ClaudeAdapter(model="claude-haiku-4-5")
+        c.session_id = "sid"
+        cmd = c._build_cmd(resume=False)
+        assert cmd[cmd.index("--input-format") + 1] == "stream-json"
+
+    def test_stream_json_user_message_framing(self):
+        line = _stream_json_user_message("hi ✨")
+        assert line.endswith(b"\n")
+        payload = json.loads(line.decode("utf-8"))
+        assert payload["type"] == "user"
+        assert payload["message"]["role"] == "user"
+        assert payload["message"]["content"] == [
+            {"type": "text", "text": "hi ✨"}
+        ]
+
+    def test_steer_without_active_turn_returns_false(self):
+        assert ClaudeAdapter().steer("x") is False
+
+    def test_steer_writes_framed_message_to_active_stdin(self):
+        c = ClaudeAdapter()
+        writes: list[bytes] = []
+
+        class FakeStdin:
+            def is_closing(self):
+                return False
+
+            def write(self, data):
+                writes.append(data)
+
+        c._steer_stdin = FakeStdin()
+        assert c.steer("also do X") is True
+        payload = json.loads(writes[0].decode("utf-8"))
+        assert payload["message"]["content"][0]["text"] == "also do X"
+
+    def test_steer_refused_when_stdin_closing(self):
+        c = ClaudeAdapter()
+
+        class ClosingStdin:
+            def is_closing(self):
+                return True
+
+            def write(self, data):
+                raise AssertionError("must not write to a closing stdin")
+
+        c._steer_stdin = ClosingStdin()
+        assert c.steer("x") is False
+
+    def test_close_steer_stdin_clears_and_closes(self):
+        c = ClaudeAdapter()
+        closed: list[bool] = []
+
+        class FakeStdin:
+            def is_closing(self):
+                return False
+
+            def close(self):
+                closed.append(True)
+
+        c._steer_stdin = FakeStdin()
+        c._close_steer_stdin()
+        assert closed == [True]
+        assert c._steer_stdin is None
+        assert c.steer("x") is False
+
+
+class TestTmuxSteering:
+    def test_steer_refused_when_idle(self):
+        adapter = ClaudeInteractiveTmuxAdapter(session_name="session")
+        assert adapter.steer("x") is False
+
+    def test_steer_pastes_into_pane_when_turn_active(self):
+        async def _test():
+            adapter = ClaudeInteractiveTmuxAdapter(session_name="session")
+            pastes: list[str] = []
+
+            async def fake_paste(text):
+                pastes.append(text)
+                return None
+
+            adapter._paste_prompt = fake_paste
+            adapter._turn_active = True
+            assert adapter.steer("go left instead") is True
+            # The paste runs as a fire-and-forget task.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert pastes == ["go left instead"]
+
+        asyncio.run(_test())
+
+    def test_steer_refused_outside_event_loop(self):
+        adapter = ClaudeInteractiveTmuxAdapter(session_name="session")
+        adapter._turn_active = True
+        assert adapter.steer("x") is False

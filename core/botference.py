@@ -1227,6 +1227,7 @@ class Botference:
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
         self._quit_requested: bool = False
         self._stream_seq: int = 0
+        self._active_steer_model: str = ""  # model whose room turn is in flight
         roots = plan_write_roots
         if roots is None:
             roots = planner_write_roots_for_env(
@@ -2244,6 +2245,10 @@ class Botference:
             "  @codex <msg>        — Send to Codex only",
             "  @all <msg>          — Send to both",
             "  <msg>               — Auto-routed (first message → @all, then sticky)",
+            "",
+            "Typing while Claude is working steers its current turn (read after",
+            "its next tool call, like Claude Code). Codex can't be steered —",
+            "messages typed during its turns queue for the next turn.",
             "",
             "Aliases: /relay-claude, /relay-codex, /tag @claude, /tag @codex",
             "",
@@ -3614,7 +3619,49 @@ class Botference:
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp
 
+    def steer_active(self, raw: str, ui: UIPort) -> str:
+        """Try to inject user input into the currently-running bot turn.
+
+        Mirrors Claude Code's steering: a message typed while a bot works
+        is read after its current tool call instead of waiting in the
+        queue. Returns the steered model's name, or "" when the input
+        should take the normal queued-turn path (no room turn in flight,
+        slash command, @mention of another participant, or a transport
+        without steering support — Codex's exec mode has none).
+        """
+        model = self._active_steer_model
+        if not model:
+            return ""
+        parsed = parse_input(raw)
+        if parsed.kind is not InputKind.MESSAGE or not parsed.body:
+            return ""
+        if parsed.target and parsed.target != f"@{model}":
+            return ""
+        adapter = self.claude if model == "claude" else self.codex
+        steer = getattr(adapter, "steer", None)
+        if steer is None or not steer(
+            f"[User interjects mid-turn:]\n{parsed.body}"
+        ):
+            return ""
+        # Recorded before the bot's reply so the shared transcript keeps
+        # true order; if the turn dies before the bot reads it, the entry
+        # stays unseen and reaches the model next turn via backfill.
+        self.transcript.add("user", parsed.body)
+        self._add_room_entry(ui, "user", f"(↪@{model}) {parsed.body}")
+        return model
+
     async def _send_to_model(
+        self, model: str, message: str, ui: UIPort,
+    ) -> Optional[AdapterResponse]:
+        # Mark the active speaker so input typed mid-turn can be steered
+        # into this turn (bridge submit → steer_active).
+        self._active_steer_model = model
+        try:
+            return await self._send_to_model_inner(model, message, ui)
+        finally:
+            self._active_steer_model = ""
+
+    async def _send_to_model_inner(
         self, model: str, message: str, ui: UIPort,
     ) -> Optional[AdapterResponse]:
         adapter = self.claude if model == "claude" else self.codex

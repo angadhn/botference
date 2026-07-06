@@ -194,6 +194,94 @@ class TestInkBridgeInputQueue:
 
 
 @pytest.mark.asyncio
+class TestSteeringSubmit:
+    async def _running_queue(self, tmp_path, monkeypatch, emitted):
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        release = asyncio.Event()
+        handled: list[str] = []
+
+        async def handle_input(text, bridge, attachments=None):
+            handled.append(text)
+            await release.wait()
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        return c, queue, release, handled
+
+    async def test_mid_turn_input_steers_instead_of_queueing(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        c, queue, release, handled = await self._running_queue(
+            tmp_path, monkeypatch, emitted
+        )
+        steered: list[str] = []
+        c.steer_active = lambda text, ui: (steered.append(text), "claude")[1]
+
+        queue.submit("first", [])
+        await asyncio.sleep(0)
+        queue.submit("also consider X", [])
+        assert steered == ["also consider X"]
+        assert not any(
+            e == {"type": "queue", "pending": 1} for e in emitted
+        ), "steered input must not enter the queue"
+
+        release.set()
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert handled == ["first"], "steered input must not run as a turn"
+
+    async def test_steer_decline_falls_back_to_queue(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        c, queue, release, handled = await self._running_queue(
+            tmp_path, monkeypatch, emitted
+        )
+        c.steer_active = lambda text, ui: ""
+
+        queue.submit("first", [])
+        await asyncio.sleep(0)
+        queue.submit("second", [])
+        release.set()
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert handled == ["first", "second"]
+
+    async def test_attachments_never_steer(self, tmp_path, monkeypatch):
+        emitted: list[dict] = []
+        c, queue, release, handled = await self._running_queue(
+            tmp_path, monkeypatch, emitted
+        )
+        c.steer_active = lambda text, ui: (_ for _ in ()).throw(
+            AssertionError("attachments must take the queued path")
+        )
+
+        queue.submit("first", [])
+        await asyncio.sleep(0)
+        queue.submit("look at this", [{"id": 1, "path": "/tmp/a.png"}])
+        release.set()
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert handled == ["first", "look at this"]
+
+    async def test_idle_submit_does_not_attempt_steer(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        c, queue, release, handled = await self._running_queue(
+            tmp_path, monkeypatch, emitted
+        )
+        c.steer_active = lambda text, ui: (_ for _ in ()).throw(
+            AssertionError("idle input must not try to steer")
+        )
+        release.set()
+        queue.submit("first", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert handled == ["first"]
+
+
+@pytest.mark.asyncio
 class TestNotifyEmission:
     def _setup(self, tmp_path, monkeypatch, emitted):
         monkeypatch.setenv(

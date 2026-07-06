@@ -2,6 +2,14 @@
 
 ## 2026-07-06
 
+- **Steering: typing during a Claude turn now reaches Claude mid-turn**,
+  matching native Claude Code behavior — the message is injected into the
+  running session (stdin on the programmatic transport via
+  `--input-format stream-json`; a pane paste under `--claude-interactive`)
+  and read after the current tool call. Steered messages display as
+  `(↪@claude)` and enter the shared transcript so Codex sees them next
+  turn. Slash commands, other-target @mentions, attachments, and Codex
+  turns keep the existing queue (`codex exec` accepts no mid-run input).
 - **Desktop notifications when the bots finish.** After a turn or
   bot-to-bot thread lasting ≥5s, and whenever a bot blocks on a
   write-permission prompt, botference emits a terminal notification

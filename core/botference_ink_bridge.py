@@ -428,6 +428,13 @@ class InputTurnQueue:
         )
 
     def submit(self, text: str, attachments: list[dict]) -> None:
+        # Mid-turn input first tries steering — injected into the active
+        # bot's in-flight turn (read after its current tool call), like
+        # typing in Claude Code. Falls through to the queue when the turn
+        # isn't steerable (Codex, drafts, slash commands, other targets).
+        if self.is_running and not attachments:
+            if self._botference.steer_active(text, self._bridge):
+                return
         was_running = self.is_running
         self._pending.append(QueuedInput(text=text, attachments=attachments))
         if was_running:

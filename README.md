@@ -392,6 +392,24 @@ handoff (no footer, no mention) simply returns the floor to you.
 converge on a writer) → `/draft [rounds]` → iterate with human comments as
 needed → `/finalize`.
 
+### Steering — typing while the bots work
+
+Messages typed during a **Claude** turn are steered into that turn, exactly
+like typing in Claude Code itself: the message is injected into the running
+session and Claude reads it after its current tool call, adjusting course
+without losing in-flight work. Steered messages show as `(↪@claude)` in the
+council and land in the shared transcript, so Codex sees them at its next
+turn too. This works on both transports — the programmatic adapter injects
+over stdin; under `--claude-interactive` the text is pasted into the live
+tmux pane, where Claude Code's own queued-message handling takes over.
+
+Not everything steers: messages `@`-addressed to a bot that isn't currently
+speaking, slash commands, messages with image attachments, and anything
+typed during a **Codex** turn take the normal queue and run as the next
+turn (`codex exec` accepts no input once launched). During bot-to-bot
+free-form threads the same rule applies — steer Claude mid-turn, and
+anything queued pauses the thread at the next turn boundary as before.
+
 ### Desktop notifications
 
 Council turns can run for minutes, so botference pings you when it's your

@@ -524,6 +524,90 @@ class TestBotferenceQuit:
         assert any("Exiting" in t for _, t in ui.room_entries)
 
 
+class SteerableAdapter(MockAdapter):
+    """MockAdapter with steering support (like the real ClaudeAdapter)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.steer_calls: list[str] = []
+        self.steer_ok = True
+
+    def steer(self, text: str) -> bool:
+        if not self.steer_ok:
+            return False
+        self.steer_calls.append(text)
+        return True
+
+
+@pytest.mark.asyncio
+class TestSteering:
+    def _council(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        steerable = SteerableAdapter([_ok("hi")])
+        c.claude = steerable
+        return c, steerable, ui
+
+    async def test_no_active_turn_falls_through(self, tmp_path):
+        c, steerable, ui = self._council(tmp_path)
+        assert c.steer_active("hello", ui) == ""
+        assert steerable.steer_calls == []
+
+    async def test_plain_message_steers_active_claude(self, tmp_path):
+        c, steerable, ui = self._council(tmp_path)
+        c._active_steer_model = "claude"
+        assert c.steer_active("also check the tests", ui) == "claude"
+        assert steerable.steer_calls == [
+            "[User interjects mid-turn:]\nalso check the tests"
+        ]
+        user_entries = [e for e in c.transcript.entries if e.speaker == "user"]
+        assert user_entries[-1].text == "also check the tests"
+        assert ("user", "(↪@claude) also check the tests") in ui.room_entries
+
+    async def test_explicit_target_match_steers(self, tmp_path):
+        c, steerable, ui = self._council(tmp_path)
+        c._active_steer_model = "claude"
+        assert c.steer_active("@claude ship it", ui) == "claude"
+        assert steerable.steer_calls == ["[User interjects mid-turn:]\nship it"]
+
+    async def test_other_target_and_commands_fall_through(self, tmp_path):
+        c, steerable, ui = self._council(tmp_path)
+        c._active_steer_model = "claude"
+        assert c.steer_active("@codex what do you think?", ui) == ""
+        assert c.steer_active("@all everyone stop", ui) == ""
+        assert c.steer_active("/status", ui) == ""
+        assert c.steer_active("", ui) == ""
+        assert steerable.steer_calls == []
+        assert not [e for e in c.transcript.entries if e.speaker == "user"]
+
+    async def test_codex_turns_are_not_steerable(self, tmp_path):
+        # Production CodexAdapter has no steer() — exec mode reads the
+        # prompt once at launch. MockAdapter mirrors that.
+        c, _, ui = self._council(tmp_path)
+        c._active_steer_model = "codex"
+        assert c.steer_active("hello", ui) == ""
+
+    async def test_transport_refusal_falls_through_cleanly(self, tmp_path):
+        c, steerable, ui = self._council(tmp_path)
+        c._active_steer_model = "claude"
+        steerable.steer_ok = False
+        assert c.steer_active("hello", ui) == ""
+        # Nothing recorded — the message takes the queued-turn path.
+        assert not [e for e in c.transcript.entries if e.speaker == "user"]
+
+    async def test_send_to_model_sets_and_clears_active_model(self, tmp_path):
+        c, _, ui = self._council(tmp_path)
+        seen: list[str] = []
+
+        async def inner(model, message, inner_ui):
+            seen.append(c._active_steer_model)
+            return None
+
+        c._send_to_model_inner = inner
+        await c._send_to_model("claude", "hi", ui)
+        assert seen == ["claude"]
+        assert c._active_steer_model == ""
+
+
 @pytest.mark.asyncio
 class TestNotifyCommand:
     def _settings(self, tmp_path, monkeypatch) -> Path:

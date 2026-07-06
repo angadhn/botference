@@ -674,6 +674,15 @@ async def _read_jsonl_lines(stream: asyncio.StreamReader, raw_lines: list,
 # ── Claude Adapter ───────────────────────────────────────────
 
 
+def _stream_json_user_message(text: str) -> bytes:
+    """Frame a user message for `claude -p --input-format stream-json`."""
+    return (json.dumps({
+        "type": "user",
+        "message": {"role": "user",
+                    "content": [{"type": "text", "text": text}]},
+    }) + "\n").encode("utf-8")
+
+
 class ClaudeAdapter:
     """Wraps `claude -p` with session continuity via --session-id / --resume."""
 
@@ -699,6 +708,7 @@ class ClaudeAdapter:
         self.settings = settings
         self.session_id: str = ""
         self.stream_callback = stream_callback
+        self._steer_stdin: Optional[asyncio.StreamWriter] = None
 
     def _emit_stream(self, event: dict[str, Any]) -> None:
         if not self.stream_callback:
@@ -716,6 +726,10 @@ class ClaudeAdapter:
             cmd += ["--session-id", self.session_id]
         cmd += [
             "--output-format", "stream-json",
+            # stream-json *input* keeps stdin open during the turn so the
+            # user can steer — inject messages Claude reads after its
+            # current tool call, like typing in the interactive UI.
+            "--input-format", "stream-json",
             "--include-partial-messages",
             "--verbose",
             "--model", self.model,
@@ -768,9 +782,11 @@ class ClaudeAdapter:
                 exit_code=127,
             )
 
-        proc.stdin.write(prompt.encode("utf-8"))
+        proc.stdin.write(_stream_json_user_message(prompt))
         await proc.stdin.drain()
-        proc.stdin.close()
+        # stdin stays open for mid-turn steering; closed when the result
+        # event lands (the CLI exits on stdin EOF after finishing).
+        self._steer_stdin = proc.stdin
 
         text_parts = []
         streamed_text: dict[str, str] = {}
@@ -899,6 +915,9 @@ class ClaudeAdapter:
                         response.context_window = _CONTEXT_WINDOWS.get(
                             self.model, 200_000
                         )
+                    # The turn is over — no more steering; closing stdin
+                    # lets the CLI exit (ending this drain loop on EOF).
+                    self._close_steer_stdin()
 
         try:
             try:
@@ -952,6 +971,30 @@ class ClaudeAdapter:
             if debug_file:
                 debug_file.close()
             raise
+        finally:
+            self._close_steer_stdin()
+
+    def steer(self, text: str) -> bool:
+        """Inject a user message into the in-flight turn.
+
+        Claude Code reads it after the current tool call — the same
+        steering behavior as typing into the interactive UI mid-turn.
+        Returns False when no turn is running (caller queues normally).
+        """
+        stdin = self._steer_stdin
+        if stdin is None or stdin.is_closing():
+            return False
+        try:
+            stdin.write(_stream_json_user_message(text))
+        except Exception:
+            return False
+        return True
+
+    def _close_steer_stdin(self) -> None:
+        stdin, self._steer_stdin = self._steer_stdin, None
+        if stdin is not None:
+            with suppress(Exception):
+                stdin.close()
 
     def context_percent(self, resp: AdapterResponse) -> float:
         """Projected next-turn occupancy as % of yield limit. 100 = yield now."""
@@ -1025,6 +1068,8 @@ class ClaudeInteractiveTmuxAdapter:
         self._capture_start = os.environ.get(
             "BOTFERENCE_CLAUDE_TMUX_CAPTURE_START", "-120"
         )
+        self._turn_active = False
+        self._steer_tasks: set[asyncio.Task] = set()
 
     @property
     def tmux_target(self) -> str:
@@ -1225,10 +1270,39 @@ class ClaudeInteractiveTmuxAdapter:
         return None
 
     async def send(self, prompt: str) -> AdapterResponse:
-        return await self._run(prompt)
+        try:
+            return await self._run(prompt)
+        finally:
+            self._turn_active = False
 
     async def resume(self, message: str) -> AdapterResponse:
-        return await self._run(message)
+        try:
+            return await self._run(message)
+        finally:
+            self._turn_active = False
+
+    def steer(self, text: str) -> bool:
+        """Best-effort mid-turn injection: paste into the live pane.
+
+        Claude Code's interactive harness natively reads input typed
+        during a turn after the current tool call. Fire-and-forget — if
+        the paste fails, the message still reaches the model next turn
+        via the transcript backfill.
+        """
+        if not self._turn_active:
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        task = loop.create_task(self._steer_paste(text))
+        self._steer_tasks.add(task)
+        task.add_done_callback(self._steer_tasks.discard)
+        return True
+
+    async def _steer_paste(self, text: str) -> None:
+        with suppress(Exception):
+            await self._paste_prompt(text)
 
     async def run_harness_command(self, command: str) -> AdapterResponse:
         """Paste a native Claude Code slash command into the live TUI.
@@ -1301,6 +1375,9 @@ class ClaudeInteractiveTmuxAdapter:
         paste_error = await self._paste_prompt(prompt)
         if paste_error:
             return paste_error
+        # Only steerable once the prompt paste finished — a concurrent
+        # steer paste before this point would garble the input box.
+        self._turn_active = True
 
         collected = ""
         emitted_chunks: set[str] = set()
