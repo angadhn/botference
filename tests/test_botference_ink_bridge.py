@@ -194,6 +194,141 @@ class TestInkBridgeInputQueue:
 
 
 @pytest.mark.asyncio
+class TestNotifyEmission:
+    def _setup(self, tmp_path, monkeypatch, emitted):
+        monkeypatch.setenv(
+            "BOTFERENCE_SETTINGS_FILE", str(tmp_path / "user-settings.json")
+        )
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        return c
+
+    async def test_notify_emitted_before_ready_after_long_turn(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        c = self._setup(tmp_path, monkeypatch, emitted)
+        monkeypatch.setattr(binkb, "_NOTIFY_MIN_TURN_SECONDS", 0.0)
+
+        async def handle_input(text, bridge, attachments=None):
+            pass
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        queue.submit("hello", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+
+        kinds = [e.get("type") for e in emitted]
+        assert "notify" in kinds
+        assert kinds.index("notify") < kinds.index("ready")
+        notify = next(e for e in emitted if e.get("type") == "notify")
+        assert notify["title"] == "botference"
+        assert "floor is yours" in notify["body"]
+
+    async def test_no_notify_when_disabled(self, tmp_path, monkeypatch):
+        emitted: list[dict] = []
+        c = self._setup(tmp_path, monkeypatch, emitted)
+        monkeypatch.setattr(binkb, "_NOTIFY_MIN_TURN_SECONDS", 0.0)
+        c.notify = False
+
+        async def handle_input(text, bridge, attachments=None):
+            pass
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        queue.submit("hello", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+
+        assert not any(e.get("type") == "notify" for e in emitted)
+
+    async def test_no_notify_for_short_turns(self, tmp_path, monkeypatch):
+        # Default threshold: an instant command never pings.
+        emitted: list[dict] = []
+        c = self._setup(tmp_path, monkeypatch, emitted)
+
+        async def handle_input(text, bridge, attachments=None):
+            pass
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        queue.submit("/help", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+
+        assert not any(e.get("type") == "notify" for e in emitted)
+
+    async def test_no_notify_after_interrupt(self, tmp_path, monkeypatch):
+        # An interrupt means the user is at the keyboard — stay silent.
+        emitted: list[dict] = []
+        c = self._setup(tmp_path, monkeypatch, emitted)
+        monkeypatch.setattr(binkb, "_NOTIFY_MIN_TURN_SECONDS", 0.0)
+
+        started = asyncio.Event()
+
+        async def handle_input(text, bridge, attachments=None):
+            started.set()
+            await asyncio.Event().wait()  # blocks until cancelled
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        queue.submit("hello", [])
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        queue.interrupt()
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+
+        assert not any(e.get("type") == "notify" for e in emitted)
+        assert any(e.get("type") == "ready" for e in emitted)
+
+    async def test_permission_request_pings_when_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        from botference import WritePermissionRequest
+
+        emitted: list[dict] = []
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        bridge.notify_enabled = lambda: True
+
+        request = WritePermissionRequest(
+            request_id="r1", model="claude",
+            path="src/app.py", reason="edit",
+        )
+        task = asyncio.create_task(bridge.request_write_permission(request))
+        await asyncio.sleep(0)
+        bridge.resolve_permission_request(True)
+        assert await asyncio.wait_for(task, timeout=2.0) is True
+
+        notify = next(e for e in emitted if e.get("type") == "notify")
+        assert "@claude" in notify["body"]
+        assert "src/app.py" in notify["body"]
+
+    async def test_permission_request_silent_when_disabled(
+        self, tmp_path, monkeypatch
+    ):
+        from botference import WritePermissionRequest
+
+        emitted: list[dict] = []
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+
+        request = WritePermissionRequest(
+            request_id="r1", model="claude",
+            path="src/app.py", reason="edit",
+        )
+        task = asyncio.create_task(bridge.request_write_permission(request))
+        await asyncio.sleep(0)
+        bridge.resolve_permission_request(False)
+        assert await asyncio.wait_for(task, timeout=2.0) is False
+
+        assert not any(e.get("type") == "notify" for e in emitted)
+
+
+@pytest.mark.asyncio
 class TestStreamCoalescing:
     def _bridge(self, tmp_path, monkeypatch, emitted):
         monkeypatch.setattr(

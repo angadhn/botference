@@ -37,6 +37,7 @@ from cli_adapters import (
 )
 from paths import BotferencePaths
 from project_store import ProjectInfo, ProjectStore
+from user_settings import load_user_settings, save_user_setting
 from ui_types import (
     ProjectPanelProject,
     ProjectPanelSession,
@@ -152,6 +153,7 @@ class InputKind(Enum):
     FINALIZE = "finalize"
     PERMISSIONS = "permissions"
     STATUS = "status"
+    NOTIFY = "notify"
     AUTH = "auth"
     HELP = "help"
     QUIT = "quit"
@@ -187,6 +189,7 @@ _SLASH_COMMANDS = {
     "/rename": InputKind.RENAME,
     "/permissions": InputKind.PERMISSIONS,
     "/status": InputKind.STATUS,
+    "/notify": InputKind.NOTIFY,
     "/auth": InputKind.AUTH,
     "/model": InputKind.MODEL,
     "/effort": InputKind.EFFORT,
@@ -1204,6 +1207,9 @@ class Botference:
         self.mode = RoomMode.PUBLIC
         self.lead: str = "auto"
         self.observe: bool = True
+        # Desktop notification on turn completion — a user preference, not
+        # chat state, so it persists globally rather than per-session.
+        self.notify: bool = bool(load_user_settings().get("notify", True))
         self._room_history: list[DisplayRecord] = []
         self._ff_writer_votes: dict[str, str] = {}  # model → "claude"/"codex" writer vote
         self._restoring_session: bool = False
@@ -2126,6 +2132,10 @@ class Botference:
             self._show_permissions(ui)
             return
 
+        if parsed.kind is InputKind.NOTIFY:
+            self._run_notify(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.AUTH:
             self._show_auth_status(parsed.body, ui)
             return
@@ -2221,6 +2231,7 @@ class Botference:
             "  /goal @claude <objective> — Send native Claude Code /goal (requires --claude-interactive)",
             "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
+            "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
@@ -2583,6 +2594,29 @@ class Botference:
         ])
         self._add_room_entry(ui, "system", "\n".join(lines))
 
+    # ── /notify ───────────────────────────────────────────
+
+    def _run_notify(self, arg: str, ui: UIPort) -> None:
+        """/notify [on|off] — desktop notification when the bots finish."""
+        raw = arg.strip().lower()
+        if raw in ("on", "off"):
+            self.notify = raw == "on"
+        elif not raw:
+            self.notify = not self.notify
+        else:
+            self._add_room_entry(ui, "system", "Usage: /notify [on|off]")
+            return
+        save_user_setting("notify", self.notify)
+        if self.notify:
+            message = (
+                "Notifications on — your terminal will post a desktop "
+                "notification when the bots finish a turn (most terminals "
+                "only show it while the window is unfocused)."
+            )
+        else:
+            message = "Notifications off."
+        self._add_room_entry(ui, "system", message)
+
     # ── /status ───────────────────────────────────────────
 
     def _show_status(self, ui: UIPort) -> None:
@@ -2601,6 +2635,7 @@ class Botference:
             f"Claude: {c_pct} ({c})  (session {self.claude.session_id or '-'})",
             f"Codex:  {x_pct} ({x})  (thread {self.codex.thread_id or '-'})",
             f"Observe: {'on' if self.observe else 'off'}",
+            f"Notifications: {'on' if self.notify else 'off'}",
             f"Turns: {len(self.transcript.entries)}",
         ]
         self._add_room_entry(ui, "system", "\n".join(lines))

@@ -2,6 +2,15 @@
 
 ## 2026-07-06
 
+- **Desktop notifications when the bots finish.** After a turn or
+  bot-to-bot thread lasting ≥5s, and whenever a bot blocks on a
+  write-permission prompt, botference emits a terminal notification
+  escape (OSC 777 on Ghostty/WezTerm/foot, OSC 9 elsewhere,
+  tmux-passthrough aware) and your terminal posts the native desktop
+  notification — typically only while the window is unfocused. On by
+  default; `/notify off` disables it, persisted per-user in
+  `~/.botference/settings.json`. Esc-interrupting a turn suppresses the
+  ping.
 - **Built-in `review-doc` skill.** Both bots now discover a skill for
   rendering review documents (implementation plans, proposals) as
   self-contained HTML with Google-Docs-style margin commenting and

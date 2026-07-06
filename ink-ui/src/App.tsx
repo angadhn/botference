@@ -30,6 +30,7 @@ import {
   type MouseEventInfo,
 } from "./index.js";
 import { copyToClipboard } from "./v2/clipboard.js";
+import { sendDesktopNotification } from "./v2/notify.js";
 import {
   buildToolStackText,
   createStreamSegmentState,
@@ -1346,6 +1347,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "choice_cleared":
           setPendingChoice(null);
+          break;
+        case "notify":
+          sendDesktopNotification(
+            typeof msg.title === "string" ? msg.title : "botference",
+            typeof msg.body === "string" ? msg.body : "",
+          );
           break;
         case "exit":
           cleanup();

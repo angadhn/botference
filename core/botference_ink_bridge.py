@@ -17,6 +17,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from cli_adapters import (
     ClaudeAdapter,
@@ -55,11 +56,22 @@ def emit(obj: dict) -> None:
 # while cutting renders by an order of magnitude.
 _STREAM_FLUSH_INTERVAL = 0.07  # seconds
 
+# Desktop notifications only fire for turns long enough that the user has
+# plausibly looked away — instant commands (/help, /status) never ping.
+_NOTIFY_MIN_TURN_SECONDS = 5.0
+
+
+def _emit_notify(body: str) -> None:
+    """Ask the Ink process to post a desktop notification via the terminal."""
+    emit({"type": "notify", "title": "botference", "body": body})
+
 
 class InkBridge:
     """UIPort implementation that emits JSON-lines to stdout."""
 
     def __init__(self, paths: BotferencePaths) -> None:
+        # Overridden in main() to read the controller's /notify preference.
+        self.notify_enabled: "Callable[[], bool]" = lambda: False
         self._pending_permission: asyncio.Future[bool] | None = None
         self._pending_choice: asyncio.Future[int | None] | None = None
         self._stream_buffer: dict[tuple, dict] = {}
@@ -241,6 +253,13 @@ class InkBridge:
             "path": request.path,
             "reason": request.reason,
         })
+        # A pending permission blocks the whole turn — worth a ping even
+        # though the bots have not finished yet.
+        if self.notify_enabled():
+            _emit_notify(
+                f"@{request.model} is waiting for write permission: "
+                f"{request.path}"
+            )
         try:
             return await future
         finally:
@@ -395,6 +414,7 @@ class InputTurnQueue:
         self._pending: deque[QueuedInput] = deque()
         self._runner: asyncio.Task | None = None
         self._current_turn: asyncio.Task | None = None
+        self._interrupted = False
 
     @property
     def pending_count(self) -> int:
@@ -416,6 +436,7 @@ class InputTurnQueue:
             self._runner = asyncio.create_task(self._run())
 
     def interrupt(self) -> None:
+        self._interrupted = True
         cleared = len(self._pending)
         self._pending.clear()
         if self._current_turn is not None and not self._current_turn.done():
@@ -435,6 +456,8 @@ class InputTurnQueue:
         emit({"type": "queue", "pending": len(self._pending)})
 
     async def _run(self) -> None:
+        batch_started = time.monotonic()
+        self._interrupted = False
         while self._pending:
             item = self._pending.popleft()
             self._emit_queue_state()
@@ -459,7 +482,20 @@ class InputTurnQueue:
                 return
 
         self._emit_queue_state()
+        self._maybe_notify(time.monotonic() - batch_started)
         emit({"type": "ready"})
+
+    def _maybe_notify(self, elapsed: float) -> None:
+        """Ping when a long-enough turn batch finishes uninterrupted.
+
+        An interrupt means the user is at the keyboard; short batches mean
+        they never had a reason to look away.
+        """
+        if self._interrupted or elapsed < _NOTIFY_MIN_TURN_SECONDS:
+            return
+        if not getattr(self._botference, "notify", False):
+            return
+        _emit_notify("The bots have finished — the floor is yours.")
 
 
 async def main() -> None:
@@ -571,6 +607,7 @@ async def main() -> None:
     botference.observe = args.debug_panes
 
     bridge = InkBridge(paths)
+    bridge.notify_enabled = lambda: botference.notify
     turn_queue = InputTurnQueue(botference, bridge, paths)
     # Let a free-form bot-to-bot thread yield the floor when the user has
     # typed something mid-thread.

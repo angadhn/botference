@@ -382,6 +382,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/rename <name>` | Name the current planning session for future `/resume` lookup. Sessions also get an automatic title from the first user message or task. |
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
 | `/status` | Show context usage, lead, mode, and session state. |
+| `/notify [on\|off]` | Toggle the desktop notification posted when the bots finish (see [Desktop notifications](#desktop-notifications)). No argument flips the current state; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
 
@@ -390,6 +391,23 @@ handoff (no footer, no mention) simply returns the floor to you.
 **Typical workflow:** discuss (the bots hand each other the floor and
 converge on a writer) → `/draft [rounds]` → iterate with human comments as
 needed → `/finalize`.
+
+### Desktop notifications
+
+Council turns can run for minutes, so botference pings you when it's your
+turn again: after a turn (or bot-to-bot thread) that ran at least ~5 seconds
+finishes, and whenever a bot is blocked waiting on a write-permission
+prompt. Notifications are on by default; `/notify off` disables them.
+
+There is no daemon or OS integration — botference emits a standard terminal
+escape sequence and your terminal posts the native notification, the same
+mechanism Claude Code and Codex use. Ghostty, iTerm2, WezTerm, kitty, foot,
+and Windows Terminal all support it (Ghostty and WezTerm get a titled
+notification via OSC 777; others get OSC 9), and it passes through tmux.
+Most terminals only show the notification while the window is unfocused —
+if you're already looking at the council, nothing pops up. Interrupting a
+turn with Esc also suppresses the ping, since you're clearly at the
+keyboard.
 
 ### Project Skills
 

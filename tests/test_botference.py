@@ -525,6 +525,58 @@ class TestBotferenceQuit:
 
 
 @pytest.mark.asyncio
+class TestNotifyCommand:
+    def _settings(self, tmp_path, monkeypatch) -> Path:
+        settings = tmp_path / "user-settings.json"
+        monkeypatch.setenv("BOTFERENCE_SETTINGS_FILE", str(settings))
+        return settings
+
+    async def test_notify_defaults_on(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert c.notify is True
+
+    async def test_notify_off_persists_across_instances(
+        self, tmp_path, monkeypatch
+    ):
+        settings = self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/notify off", ui)
+        assert c.notify is False
+        assert json.loads(settings.read_text())["notify"] is False
+        assert any(
+            "Notifications off" in t for s, t in ui.room_entries if s == "system"
+        )
+
+        c2, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert c2.notify is False
+
+    async def test_notify_bare_toggles(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/notify", ui)
+        assert c.notify is False
+        await c.handle_input("/notify", ui)
+        assert c.notify is True
+
+    async def test_notify_bad_arg_shows_usage(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/notify loud", ui)
+        assert c.notify is True
+        assert any(
+            "Usage: /notify" in t for s, t in ui.room_entries if s == "system"
+        )
+
+    async def test_status_shows_notify_state(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/status", ui)
+        status_text = "\n".join(t for s, t in ui.room_entries if s == "system")
+        assert "Notifications: on" in status_text
+
+
+@pytest.mark.asyncio
 class TestBotferenceStatus:
     async def test_status_shows_info(self):
         c, _, _, ui = _make_botference()
