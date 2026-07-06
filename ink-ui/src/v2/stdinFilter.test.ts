@@ -97,4 +97,34 @@ describe("Ink stdin filter", () => {
 
     assert.deepEqual(event.mouseEvents, [{ kind: "release", x: 2, y: 3 }]);
   });
+
+  it("turns Ctrl+Z (0x1a) into a suspend request and strips it from the text", () => {
+    const state = createTerminalInputFilterState();
+
+    const event = processTerminalInputChunk(state, "ab\x1acd");
+
+    assert.equal(event.text, "abcd");
+    assert.equal(event.suspendCount, 1);
+  });
+
+  it("counts each Ctrl+Z press separately", () => {
+    const state = createTerminalInputFilterState();
+
+    const event = processTerminalInputChunk(state, "\x1a\x1a");
+
+    assert.equal(event.text, "");
+    assert.equal(event.suspendCount, 2);
+  });
+
+  it("does not treat 0x1a inside a bracketed paste as a suspend request", () => {
+    const state = createTerminalInputFilterState();
+
+    const event = processTerminalInputChunk(
+      state,
+      "\x1b[200~has\x1acontrol\x1b[201~",
+    );
+
+    assert.equal(event.suspendCount, 0);
+    assert.deepEqual(event.pastes, ["has\x1acontrol"]);
+  });
 });

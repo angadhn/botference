@@ -7,7 +7,10 @@ import {
   ENABLE_BRACKETED_PASTE,
   ENABLE_MOUSE_TRACKING,
   ENTER_ALT_SCREEN,
+  createSuspendResumeController,
   restoreTerminalSync,
+  terminalRestoreSequence,
+  writeTerminalSequenceSync,
 } from "./v2/terminalModes.js";
 import {
   createTerminalInputFilterState,
@@ -74,10 +77,20 @@ export function onShiftEnter(handler: ShiftEnterHandler) {
 
 // ── Mouse tracking terminal mode ───────────────────────────
 
+// True once the final terminal restore has run (any exit path). Declared here
+// because setMouseTrackingEnabled consults it and runs at module load.
+let didRestoreTerminal = false;
+
 let mouseTrackingEnabled = false;
 
 export function setMouseTrackingEnabled(enabled: boolean) {
   if (!process.stdout.isTTY || mouseTrackingEnabled === enabled) return;
+  // Never re-enable after the final terminal restore. Ink's own exit hook
+  // unmounts the React tree AFTER our process 'exit' restore has run, and an
+  // App effect cleanup calls setMouseTrackingEnabled(true) — without this
+  // guard that re-enables mouse tracking on the way out and the shell prompt
+  // receives escape-sequence garbage on every mouse move.
+  if (enabled && didRestoreTerminal) return;
   mouseTrackingEnabled = enabled;
   if (enabled) {
     process.stdout.write(ENABLE_MOUSE_TRACKING);
@@ -109,6 +122,12 @@ const stdinFilter = new Transform({
     events.pastes.forEach((pasted) => {
       pasteHandlers.forEach((h) => h(pasted));
     });
+    if (events.suspendCount > 0 && process.stdout.isTTY) {
+      // Ctrl+Z arrives as a raw 0x1a byte while stdin is in raw mode (ISIG is
+      // off), so the terminal never sends SIGTSTP itself. Translate it into a
+      // real SIGTSTP so the suspend path (terminal restore + job stop) runs.
+      process.kill(process.pid, "SIGTSTP");
+    }
     cb(null, events.text.length > 0 ? Buffer.from(events.text, "utf-8") : undefined);
   },
 });
@@ -201,8 +220,6 @@ if (useAltScreen) {
   process.stdout.write(ENTER_ALT_SCREEN);
 }
 
-let didRestoreTerminal = false;
-
 function restoreTerminal() {
   if (didRestoreTerminal) return;
   didRestoreTerminal = true;
@@ -217,7 +234,8 @@ function restoreTerminal() {
 
 // Guarantee terminal modes are restored on ANY exit path.
 // process.on('exit') fires for normal exits, SIGINT, SIGTERM, uncaught errors,
-// and process.exit() calls — it's the last-resort cleanup.
+// and process.exit() calls — it's the last-resort cleanup. Handlers here may
+// only perform synchronous work (async writes never flush after 'exit').
 process.on("exit", () => {
   restoreTerminal();
 });
@@ -227,6 +245,65 @@ process.on("SIGINT", () => {
 });
 process.on("SIGTERM", () => {
   process.exit(0);
+});
+process.on("SIGHUP", () => {
+  // Terminal went away; still run the 'exit' restore so a reattached tty
+  // (e.g. tmux) is left clean.
+  process.exit(0);
+});
+
+// ── Suspend/resume (Ctrl+Z → SIGTSTP, fg → SIGCONT) ────────
+// Without this, SIGTSTP stops the process while mouse tracking, bracketed
+// paste, and the alt screen are still enabled — the shell then receives raw
+// escape sequences on every mouse move ("garbage in the prompt").
+
+const suspendController = createSuspendResumeController(
+  { useAltScreen },
+  {
+    write: writeTerminalSequenceSync,
+    setRawMode: (raw: boolean) => {
+      process.stdin.setRawMode?.(raw);
+    },
+    isRaw: () =>
+      (process.stdin as NodeJS.ReadStream & { isRaw?: boolean }).isRaw === true,
+    isExiting: () => didRestoreTerminal,
+    getMouseTracking: () => mouseTrackingEnabled,
+    raiseSigtstp: () => {
+      // Drop our handler so SIGTSTP regains its default disposition (stop),
+      // then re-deliver it to the WHOLE foreground process group (pid 0) —
+      // the launcher shell script and the Python bridge must stop too, or the
+      // interactive shell never notices the job is suspended. This mirrors
+      // what the terminal driver does for Ctrl+Z when ISIG is enabled.
+      // The SIGCONT handler reinstalls us when the job is resumed.
+      process.removeListener("SIGTSTP", onSigtstp);
+      try {
+        process.kill(0, "SIGTSTP");
+      } catch {
+        process.kill(process.pid, "SIGTSTP");
+      }
+    },
+    onResume: () => {
+      try {
+        // The alt screen was reset while suspended; force a full repaint.
+        inkApp?.clear();
+        inkApp?.rerender(<App bridgeArgs={bridgeArgs} />);
+      } catch {
+        // app not mounted yet — nothing to repaint
+      }
+    },
+  },
+);
+
+function onSigtstp() {
+  suspendController.suspend();
+}
+
+process.on("SIGTSTP", onSigtstp);
+process.on("SIGCONT", () => {
+  if (!process.listeners("SIGTSTP").includes(onSigtstp)) {
+    process.on("SIGTSTP", onSigtstp);
+  }
+  suspendController.resume();
 });
 
 // Log uncaught errors visibly before exit
@@ -245,7 +322,15 @@ process.on("unhandledRejection", (err) => {
 
 const bridgeArgs = parseArgs(process.argv);
 
-render(<App bridgeArgs={bridgeArgs} />, {
+const inkApp = render(<App bridgeArgs={bridgeArgs} />, {
   exitOnCtrlC: false,
   stdin: stdinFilter as unknown as NodeJS.ReadStream,
+});
+
+// Backstop: registered AFTER render() so it runs after Ink's own exit hook
+// (Node fires 'exit' listeners in registration order). Ink's hook unmounts the
+// React tree, which can write to stdout after our first restore ran; re-issue
+// the mode disables last so nothing can leak past them. Sync writes only.
+process.on("exit", () => {
+  writeTerminalSequenceSync(terminalRestoreSequence({ useAltScreen: false }));
 });

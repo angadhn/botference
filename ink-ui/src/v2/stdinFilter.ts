@@ -15,7 +15,15 @@ export interface TerminalInputEvents {
   mouseEvents: MouseEventInfo[];
   shiftEnterCount: number;
   pastes: string[];
+  /**
+   * Ctrl+Z presses (raw 0x1a bytes outside a paste). With stdin in raw mode
+   * the terminal never generates SIGTSTP itself, so the caller must translate
+   * these into a real suspend.
+   */
+  suspendCount: number;
 }
+
+const CTRL_Z = "\x1a";
 
 export const SHIFT_ENTER_SEQS = [
   "\x1b[27;2;13~",
@@ -59,6 +67,7 @@ export function processTerminalInputChunk(
   const mouseEvents: MouseEventInfo[] = [];
   let shiftEnterCount = 0;
   const pastes: string[] = [];
+  let suspendCount = 0;
 
   while (i < text.length) {
     if (state.pasteBuffer !== null) {
@@ -137,6 +146,12 @@ export function processTerminalInputChunk(
       break;
     }
 
+    if (text[i] === CTRL_Z) {
+      suspendCount += 1;
+      i += 1;
+      continue;
+    }
+
     output += text[i];
     i += 1;
   }
@@ -151,5 +166,6 @@ export function processTerminalInputChunk(
     mouseEvents,
     shiftEnterCount,
     pastes,
+    suspendCount,
   };
 }
