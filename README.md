@@ -95,6 +95,7 @@ it from the repo root with the local launcher:
 ./botference plan --claude-interactive     # Experimental: mirror interactive Claude through tmux
 ./botference research-plan                 # Structured planning in Ink (experimental)
 ./botference --help
+man docs/man/botference.1                  # Man page (launcher + in-session commands)
 ```
 
 Do **not** run `botference init` in the Botference source repo. This checkout
@@ -352,8 +353,10 @@ Mechanics:
   (+3 turns / +4K tokens), then forces the floor back to you with the last
   footer summary. The thread pauses rather than dies — reply (even just
   "continue") and they pick up with a fresh budget.
-- **You always preempt.** If you type while the bots are talking, the thread
-  pauses at the next turn boundary and the floor is yours.
+- **You always preempt.** Typing while Claude is speaking steers its current
+  turn in place (see [Steering](#steering--typing-while-the-bots-work));
+  anything else you type pauses the thread at the next turn boundary and
+  the floor is yours.
 - **Conciseness is enforced by measurement.** If a bot's turn exceeds ~400
   output tokens, its next prompt carries a cap nudge.
 - **Writer consensus sets the lead.** The footer has an optional

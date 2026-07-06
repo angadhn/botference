@@ -1,0 +1,127 @@
+.TH BOTFERENCE 1 "July 2026" "botference" "User Commands"
+.SH NAME
+botference \- a multi-LLM planning council for the terminal
+.SH SYNOPSIS
+.B botference
+[\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR|\fBbuild\fR] [\fIiterations\fR]
+.SH DESCRIPTION
+.B botference
+puts you, Claude Code, and Codex in one terminal room. The bots debate
+each other in free-form exchanges \- handing the floor back and forth on a
+budget \- while you steer, until the council converges on an
+implementation plan written by an agreed lead.
+.PP
+Planning sessions are persistent: chats are saved, resumable, and can be
+filed under projects. Pre-existing native Claude Code chats can be adopted
+into the council with
+.BR /adopt .
+.SH MODES
+.TP
+.B init
+Bootstrap a project-local state directory.
+.TP
+.B plan
+Free-form planning council: you + Claude + Codex in one room; the bots can
+hand each other the floor (budgeted) until the conversation returns to you.
+.TP
+.B research-plan
+Structured planning with prompts/plan.md.
+.TP
+.B archive
+Archive the current thread and restore blank templates.
+.TP
+.B build
+Build loop (default), optionally capped at \fIiterations\fR.
+.SH OPTIONS
+.TP
+.B \-p
+Non-interactive (pipe) mode.
+.TP
+.BI \-\-anthropic-model= name
+Override the Anthropic model (Claude participant).
+.TP
+.B \-\-claude
+Solo Claude mode (skip Codex).
+.TP
+.B \-\-claude-interactive
+Experimental: mirror a real interactive Claude Code session through tmux;
+botference becomes the steering layer over an attachable session.
+.TP
+.BI \-\-claude-transport= programmatic|tmux
+Select the Claude transport for planning mode.
+.TP
+.BI \-\-project-dir= slug
+Project-local state directory slug (default: botference).
+.TP
+.BI \-\-run-tag= tag
+Tag for this run (used in logs).
+.TP
+.BI \-\-profile= name
+Init profile (default: vault-drafter).
+.TP
+.B \-\-help
+Show launcher help and exit.
+.SH IN-SESSION COMMANDS
+Inside a planning session, commands start with a slash. Run
+.B /help
+in the room for the authoritative list. Highlights:
+.TP
+.B /new /adopt /file /rename /resume /delete
+Chat lifecycle: start fresh, continue a native Claude Code chat here,
+file under a project, name, switch, or delete chats (picker-driven).
+.TP
+.B /lead /draft /finalize
+Planning: set (or let the bots vote on) the plan writer, draft
+implementation-plan.md with AI review rounds, and finalize with a
+checkpoint.
+.TP
+.B /relay /compact /goal /permissions /status /auth /model /effort
+Session management, including per-participant model and effort switches.
+.TP
+.B /notify [on|off]
+Desktop notification (via your terminal) when the bots finish a turn.
+Persists per-user.
+.PP
+Plain text is auto-routed;
+.BR @claude ,
+.BR @codex ,
+and
+.B @all
+address participants directly. Typing while Claude is working
+.I steers
+its current turn (the message is read after its current tool call, as in
+native Claude Code); messages during Codex turns queue for the next turn.
+Esc interrupts the current turn.
+.SH FILES
+.TP
+.I <project>/botference/
+Project-local state: sessions, projects, plans, logs.
+.TP
+.I ~/.botference/settings.json
+Per-user preferences (e.g. notifications).
+.SH ENVIRONMENT
+.BR ANTHROPIC_MODEL ,
+.BR OPENAI_MODEL ,
+.BR OPENAI_REASONING_EFFORT ,
+.BR ANTHROPIC_API_KEY ,
+.BR OPENAI_API_KEY ,
+.BR BOTFERENCE_HOME ,
+.BR BOTFERENCE_PROJECT_DIR_NAME .
+See \fBbotference --help\fR for details.
+.SH EXAMPLES
+.TP
+.B botference init
+Bootstrap botference/ in this project.
+.TP
+.B botference plan
+Open the planning council.
+.TP
+.B botference plan --claude-interactive
+Council with a real, tmux-attachable Claude Code session.
+.TP
+.B botference --anthropic-model=claude-sonnet-4-6 plan
+Override the Claude participant model.
+.SH SEE ALSO
+Full documentation: README.md in the repository, and
+.UR https://botference.com
+.UE .

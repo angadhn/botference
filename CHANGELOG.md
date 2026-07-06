@@ -19,6 +19,13 @@
   default; `/notify off` disables it, persisted per-user in
   `~/.botference/settings.json`. Esc-interrupting a turn suppresses the
   ping.
+- **Man page + doc sync.** New `docs/man/botference.1` (launcher modes,
+  options, in-session command highlights, files, environment); README's
+  stale "typing pauses the thread" bullet updated for steering; `/help`
+  screenshot re-captured. Also fixed: a full pytest run used to litter
+  hundreds of session files into the repo's own `work/sessions` store —
+  a conftest guard now redirects default path resolution into each
+  test's tmp dir.
 - **Built-in `review-doc` skill.** Both bots now discover a skill for
   rendering review documents (implementation plans, proposals) as
   self-contained HTML with Google-Docs-style margin commenting and
