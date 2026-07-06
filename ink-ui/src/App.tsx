@@ -33,6 +33,7 @@ import { copyToClipboard } from "./v2/clipboard.js";
 import { sendDesktopNotification } from "./v2/notify.js";
 import {
   buildToolStackText,
+  capDisplayEntries,
   createStreamSegmentState,
   isFinalEntryForSegmentedStream,
   stripFooterFromStreamEntries,
@@ -813,6 +814,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }, 16);
   }, []);
 
+  const nextPacedEntryIdRef = useRef(1);
+
   const appendEntry = useCallback((entry: Entry) => {
     const setEntries = setRoomEntries;
     const setScroll = setRoomScroll;
@@ -827,27 +830,29 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           return;
         }
       }
-      setEntries((prev) => replaceOrAppendStreamEntry(prev, entry));
+      setEntries((prev) => capDisplayEntries(replaceOrAppendStreamEntry(prev, entry)));
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
     }
 
     if (shouldAppendImmediately(entry)) {
-      setEntries((prev) => [...prev, entry]);
+      setEntries((prev) => capDisplayEntries([...prev, entry]));
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
     }
 
     const finalText = entry.text;
     const finalBlocks = entry.blocks;
-    let entryIndex: number | null = null;
-    setEntries((prev) => {
-      entryIndex = prev.length;
-      return [
-        ...prev,
-        { speaker: entry.speaker, text: "" },
-      ];
-    });
+    // The reveal ticks look the placeholder up by a synthetic stream id, not
+    // by array index: the display log may be trimmed (or cleared) while the
+    // reveal is in flight, and a stale index would then rewrite the wrong
+    // entry. If the placeholder is gone, the reveal simply stops.
+    const pacedStreamId = `paced:${nextPacedEntryIdRef.current}`;
+    nextPacedEntryIdRef.current += 1;
+    setEntries((prev) => capDisplayEntries([
+      ...prev,
+      { speaker: entry.speaker, text: "", streamId: pacedStreamId },
+    ]));
     setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
 
     let visibleEnd = 0;
@@ -856,15 +861,15 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       const done = visibleEnd >= finalText.length;
 
       setEntries((prev) => {
-        const index = entryIndex ?? prev.length - 1;
-        entryIndex = index;
-        if (index < 0 || index >= prev.length) return prev;
+        const index = prev.findIndex((e) => e.streamId === pacedStreamId);
+        if (index === -1) return prev;
 
         const next = [...prev];
         next[index] = {
           speaker: entry.speaker,
           text: finalText.slice(0, visibleEnd),
           blocks: done ? finalBlocks : undefined,
+          streamId: pacedStreamId,
         };
         return next;
       });
@@ -886,7 +891,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // this makes reload O(N) instead of the old O(N²) "stream slowly into view".
   const appendEntries = useCallback((entries: Entry[]) => {
     if (entries.length === 0) return;
-    setRoomEntries((prev) => [...prev, ...entries]);
+    setRoomEntries((prev) => capDisplayEntries([...prev, ...entries]));
     setRoomScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
   }, []);
 
@@ -909,9 +914,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       }
       if (index === -1) {
         if (options.beforeStreamId) {
-          return replaceOrInsertStreamEntryBefore(prev, updated, options.beforeStreamId);
+          return capDisplayEntries(
+            replaceOrInsertStreamEntryBefore(prev, updated, options.beforeStreamId),
+          );
         }
-        return [...prev, updated];
+        return capDisplayEntries([...prev, updated]);
       }
       const next = [...prev];
       next[index] = updated;
@@ -1152,13 +1159,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     });
     bridgeRef.current = proc;
 
-    // Capture stderr so bridge errors surface in the room pane
+    // Capture stderr so bridge errors surface in the room pane. Capped like
+    // every other append — a crash-looping bridge can spew stderr forever.
     const stderrRl = createInterface({ input: proc.stderr! });
     stderrRl.on("line", (line: string) => {
-      setRoomEntries((prev) => [
+      setRoomEntries((prev) => capDisplayEntries([
         ...prev,
         { speaker: "system", text: `[bridge stderr] ${line}` },
-      ]);
+      ]));
     });
 
     proc.on("error", (err) => {
@@ -1168,20 +1176,15 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       ]);
     });
 
-    const rl = createInterface({ input: proc.stdout! });
-    rl.on("line", (line: string) => {
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        return;
-      }
+    const asString = (value: unknown, fallback = ""): string =>
+      typeof value === "string" ? value : fallback;
 
+    const handleBridgeEvent = (msg: Record<string, unknown>) => {
       switch (msg.type) {
         case "room":
           appendEntry({
-            speaker: msg.speaker as string,
-            text: msg.text as string,
+            speaker: asString(msg.speaker, "system"),
+            text: asString(msg.text),
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
             streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
             restored: msg.restored === true,
@@ -1189,12 +1192,16 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "restore": {
           const rawEntries = Array.isArray(msg.entries) ? msg.entries : [];
-          const restored: Entry[] = rawEntries.map((e: Record<string, unknown>) => ({
-            speaker: e.speaker as string,
-            text: e.text as string,
-            blocks: Array.isArray(e.blocks) ? e.blocks as RenderBlock[] : undefined,
-            restored: true,
-          }));
+          const restored: Entry[] = rawEntries
+            .filter((e: unknown): e is Record<string, unknown> => (
+              typeof e === "object" && e !== null
+            ))
+            .map((e: Record<string, unknown>) => ({
+              speaker: asString(e.speaker, "system"),
+              text: asString(e.text),
+              blocks: Array.isArray(e.blocks) ? e.blocks as RenderBlock[] : undefined,
+              restored: true,
+            }));
           appendEntries(restored);
           break;
         }
@@ -1363,6 +1370,26 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             { speaker: "system", text: `Bridge error: ${msg.message}` },
           ]);
           break;
+      }
+    };
+
+    const rl = createInterface({ input: proc.stdout! });
+    rl.on("line", (line: string) => {
+      let msg: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+        msg = parsed as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      // One malformed event must never throw out of readline's callback —
+      // that would be an uncaught exception and kill the entire UI process.
+      try {
+        handleBridgeEvent(msg);
+      } catch {
+        // Drop the event; the next one is processed normally.
       }
     });
 

@@ -433,3 +433,66 @@ describe("shouldAutoScroll", () => {
     assert.equal(shouldAutoScroll(5), false);
   });
 });
+
+describe("preRenderLines stability guards", () => {
+  it("survives pathologically nested inline markdown without throwing", () => {
+    // 40K interleaved bold/italic openers used to recurse once per nesting
+    // level — deep enough to overflow the stack and kill the UI process.
+    const depth = 20_000;
+    const text = "**_".repeat(depth) + "core" + "_**".repeat(depth);
+    const entries = [{ speaker: "claude", text }];
+    const lines = preRenderLines(entries, 60);
+    assert.ok(lines.length > 0);
+    assert.ok(lines.some((line) => line.text.includes("core")));
+  });
+
+  it("falls back to plain text when an entry carries malformed blocks", () => {
+    const entries = [{
+      speaker: "claude",
+      text: "recoverable body text",
+      // lines: null makes the code renderer throw — the guard must degrade
+      // to plain text instead of crashing the whole render pass.
+      blocks: [{ type: "code", header: null, language: null, leadingBlankLines: 0, lines: null }] as never,
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0]!.text, "recoverable body text");
+    assert.equal(lines[0]!.label, "[Claude] ");
+  });
+
+  it("tolerates entries with non-string speaker/text from a malformed event", () => {
+    const entries = [
+      { speaker: undefined, text: undefined },
+      { speaker: 7, text: 42 },
+    ] as never[];
+    const lines = preRenderLines(entries, 60);
+    assert.ok(lines.length >= 2);
+  });
+
+  it("keeps cached lines and keys stable when the display log is trimmed from the front", () => {
+    const entries = [
+      { speaker: "user", text: "first" },
+      { speaker: "claude", text: "second" },
+      { speaker: "codex", text: "third" },
+    ];
+    const before = preRenderLines(entries, 60);
+    const trimmed = entries.slice(1);
+    const after = preRenderLines(trimmed, 60);
+
+    // Same FlatLine objects (cache hit) and same React keys — trimming older
+    // scrollback must not invalidate or remount everything below the cut.
+    assert.equal(after[0], before[1]);
+    assert.equal(after[1], before[2]);
+    assert.equal(after[0]!.key, before[1]!.key);
+  });
+
+  it("assigns unique keys across distinct entries with identical content", () => {
+    const entries = [
+      { speaker: "user", text: "same" },
+      { speaker: "user", text: "same" },
+    ];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines.length, 2);
+    assert.notEqual(lines[0]!.key, lines[1]!.key);
+  });
+});

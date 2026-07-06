@@ -2,7 +2,11 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   buildToolStackText,
+  capDisplayEntries,
   createStreamSegmentState,
+  DISPLAY_TRIM_KEEP,
+  MAX_DISPLAY_ENTRIES,
+  PACED_MESSAGE_MAX_CHARS,
   isFinalEntryForSegmentedStream,
   replaceOrInsertStreamEntryBefore,
   replaceOrAppendStreamEntry,
@@ -133,5 +137,38 @@ describe("Routing footer stripping", () => {
     assert.ok(out[3]!.text.includes('"status"'), "other streams untouched");
     const unchanged = stripFooterFromStreamEntries(out, "claude:room:1");
     assert.equal(unchanged, out);
+  });
+});
+
+describe("Paced reveal size cap", () => {
+  it("lands huge messages whole instead of typing them for minutes", () => {
+    assert.equal(shouldPaceEntry("claude", "x".repeat(PACED_MESSAGE_MAX_CHARS)), true);
+    assert.equal(shouldPaceEntry("claude", "x".repeat(PACED_MESSAGE_MAX_CHARS + 1)), false);
+    assert.equal(shouldAppendImmediately({
+      speaker: "codex",
+      text: "y".repeat(1_000_000),
+    }), true);
+  });
+});
+
+describe("capDisplayEntries", () => {
+  it("returns the same array while under the cap", () => {
+    const entries = [{ speaker: "user", text: "a" }];
+    assert.equal(capDisplayEntries(entries), entries);
+  });
+
+  it("trims to the keep size once the cap is exceeded", () => {
+    const entries = Array.from({ length: 12 }, (_, i) => ({ n: i }));
+    const capped = capDisplayEntries(entries, 10, 8);
+    assert.equal(capped.length, 8);
+    assert.equal(capped[0]!.n, 4);
+    assert.equal(capped[capped.length - 1]!.n, 11);
+  });
+
+  it("keeps chunky trims so identity stays stable between trims", () => {
+    // Just below the cap: untouched (same reference, caches stay hot).
+    const nearCap = Array.from({ length: 10 }, (_, i) => ({ n: i }));
+    assert.equal(capDisplayEntries(nearCap, 10, 8), nearCap);
+    assert.ok(MAX_DISPLAY_ENTRIES > DISPLAY_TRIM_KEEP);
   });
 });

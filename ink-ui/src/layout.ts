@@ -1263,10 +1263,19 @@ function findClosingMarker(line: string, marker: string, start: number): number 
   return -1;
 }
 
+// Nested emphasis recurses; pathological input (a paste full of interleaved
+// markers) could otherwise recurse to a stack overflow that kills the UI
+// process. Beyond this depth the text renders unstyled, which is fine.
+const MAX_INLINE_MARKDOWN_DEPTH = 8;
+
 function parseInlineMarkdownSegments(
   rawLine: string,
   baseStyle: Omit<LineSegment, "text">,
+  depth = 0,
 ): LineSegment[] {
+  if (depth > MAX_INLINE_MARKDOWN_DEPTH) {
+    return [{ text: rawLine, ...baseStyle }];
+  }
   const segments: LineSegment[] = [];
   let line = rawLine;
   let activeBaseStyle = baseStyle;
@@ -1339,7 +1348,7 @@ function parseInlineMarkdownSegments(
           : marker === "~~"
             ? { strikethrough: true }
             : { bold: true };
-        for (const segment of parseInlineMarkdownSegments(inner, mergeInlineStyle(activeBaseStyle, style))) {
+        for (const segment of parseInlineMarkdownSegments(inner, mergeInlineStyle(activeBaseStyle, style), depth + 1)) {
           const { text, ...segmentStyle } = segment;
           pushMergedSegment(segments, text, segmentStyle);
         }
@@ -1360,7 +1369,7 @@ function parseInlineMarkdownSegments(
       const close = findClosingMarker(line, char, index + 1);
       if (close > index + 1 && !/\s/.test(line[close - 1]!)) {
         const inner = line.slice(index + 1, close);
-        for (const segment of parseInlineMarkdownSegments(inner, mergeInlineStyle(activeBaseStyle, { italic: true }))) {
+        for (const segment of parseInlineMarkdownSegments(inner, mergeInlineStyle(activeBaseStyle, { italic: true }), depth + 1)) {
           const { text, ...segmentStyle } = segment;
           pushMergedSegment(segments, text, segmentStyle);
         }
@@ -1879,10 +1888,11 @@ function renderDiffBlock(
   }
 }
 
-function buildEntryLines(entry: Entry, ei: number, textWidth: number): FlatLine[] {
+function buildEntryLines(entry: Entry, entryId: number, textWidth: number): FlatLine[] {
   const out: FlatLine[] = [];
-  const s = entry.speaker.toLowerCase();
-  const label = SPEAKER_LABELS[s] ?? `[${entry.speaker}] `;
+  const speakerRaw = typeof entry.speaker === "string" ? entry.speaker : String(entry.speaker ?? "system");
+  const s = speakerRaw.toLowerCase();
+  const label = SPEAKER_LABELS[s] ?? `[${speakerRaw}] `;
   const color = SPEAKER_COLORS[s] ?? "white";
   const body = SPEAKER_BODY_COLORS[s] ?? "white";
   const labelWidth = stringWidth(label);
@@ -1891,7 +1901,7 @@ function buildEntryLines(entry: Entry, ei: number, textWidth: number): FlatLine[
 
   const pushLine: PushFlatLine = (line) => {
     out.push({
-      key: `${ei}-${visualLineIndex}`,
+      key: `e${entryId}-${visualLineIndex}`,
       label: visualLineIndex === 0 ? label : indent,
       speakerColor: color,
       ...line,
@@ -1899,17 +1909,32 @@ function buildEntryLines(entry: Entry, ei: number, textWidth: number): FlatLine[
     visualLineIndex += 1;
   };
 
-  const blocks = entry.blocks && entry.blocks.length > 0
-    ? entry.blocks
-    : parseRenderBlocks(entry.text);
+  const text = typeof entry.text === "string" ? entry.text : String(entry.text ?? "");
+  try {
+    const blocks = entry.blocks && entry.blocks.length > 0
+      ? entry.blocks
+      : parseRenderBlocks(text);
 
-  for (const block of blocks) {
-    if (block.type === "text") {
-      renderTextBlock(block, { textWidth, labelWidth, defaultColor: body, pushLine });
-    } else if (block.type === "code") {
-      renderCodeBlock(block, { textWidth, labelWidth, pushLine });
-    } else {
-      renderDiffBlock(block, { textWidth, labelWidth, pushLine });
+    for (const block of blocks) {
+      if (block.type === "text") {
+        renderTextBlock(block, { textWidth, labelWidth, defaultColor: body, pushLine });
+      } else if (block.type === "code") {
+        renderCodeBlock(block, { textWidth, labelWidth, pushLine });
+      } else {
+        renderDiffBlock(block, { textWidth, labelWidth, pushLine });
+      }
+    }
+  } catch {
+    // Crash guard: pathological content (malformed blocks from the bridge,
+    // adversarial markdown, absurd single messages) must degrade to plain
+    // text, never take down the whole UI render.
+    out.length = 0;
+    visualLineIndex = 0;
+    const contentWidth = Math.max(4, textWidth - labelWidth);
+    for (const rawLine of text.split("\n")) {
+      for (const wrapped of wrapText(rawLine, contentWidth)) {
+        pushLine({ text: wrapped, bodyColor: body });
+      }
     }
   }
 
@@ -1920,7 +1945,6 @@ interface EntryFlatLineCacheValue {
   text: string;
   blocks: unknown; // entry.blocks reference, for identity comparison
   textWidth: number;
-  baseIndex: number;
   lines: FlatLine[];
 }
 
@@ -1931,6 +1955,23 @@ interface EntryFlatLineCacheValue {
 // what made streaming O(1) per token and reload O(N) instead of O(N²). WeakMap so
 // dropped entries are garbage-collected.
 const entryFlatLineCache = new WeakMap<object, EntryFlatLineCacheValue>();
+
+// React keys must be stable per entry but independent of the entry's position,
+// so the display log can be trimmed from the front (bounded scrollback) without
+// invalidating every cached line below the cut. Ids are assigned once per entry
+// object and live in a WeakMap alongside the flat-line cache.
+const entryRenderIdCache = new WeakMap<object, number>();
+let nextEntryRenderId = 1;
+
+function entryRenderId(entry: object): number {
+  let id = entryRenderIdCache.get(entry);
+  if (id === undefined) {
+    id = nextEntryRenderId;
+    nextEntryRenderId += 1;
+    entryRenderIdCache.set(entry, id);
+  }
+  return id;
+}
 
 export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] {
   const lines: FlatLine[] = [];
@@ -1944,16 +1985,14 @@ export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] 
       && cached.text === entry.text
       && cached.blocks === entry.blocks
       && cached.textWidth === textWidth
-      && cached.baseIndex === ei
     ) {
       entryLines = cached.lines;
     } else {
-      entryLines = buildEntryLines(entry, ei, textWidth);
+      entryLines = buildEntryLines(entry, entryRenderId(entry as object), textWidth);
       entryFlatLineCache.set(entry as object, {
         text: entry.text,
         blocks: entry.blocks,
         textWidth,
-        baseIndex: ei,
         lines: entryLines,
       });
     }

@@ -237,6 +237,12 @@ _DEFAULT_PLAN_ALLOWED_HOSTS = (
     "codeload.github.com",
     "objects.githubusercontent.com",
     "api.github.com",
+    # Reference lookups (Wikimedia blocks some AI fetchers; the Claude
+    # participant falls back to sandboxed curl, which needs these hosts).
+    "wikipedia.org",
+    "*.wikipedia.org",
+    "wikimedia.org",
+    "*.wikimedia.org",
 )
 
 

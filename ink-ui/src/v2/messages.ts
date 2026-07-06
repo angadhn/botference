@@ -8,12 +8,17 @@ export interface V2Entry {
 export const PACED_MESSAGE_MIN_CHARS = 240;
 export const PACED_MESSAGE_INTERVAL_MS = 35;
 export const PACED_MESSAGE_CHUNK_CHARS = 48;
+// Above this size the paced reveal stops being an effect and becomes a hang:
+// the reveal re-parses the growing prefix every tick (O(n²/chunk) total) and
+// a 1MB message would "type" for over ten minutes. Huge messages land whole.
+export const PACED_MESSAGE_MAX_CHARS = 6000;
 
 export function shouldPaceEntry(speaker: string, text: string): boolean {
   const normalizedSpeaker = speaker.toLowerCase();
   return (
     (normalizedSpeaker === "claude" || normalizedSpeaker === "codex")
     && text.length >= PACED_MESSAGE_MIN_CHARS
+    && text.length <= PACED_MESSAGE_MAX_CHARS
     && !text.startsWith("Explored\n")
   );
 }
@@ -34,6 +39,23 @@ export function nextPacedChunkEnd(text: string, start: number): number {
   }
 
   return hardEnd;
+}
+
+// The in-memory display log is a scrollback window, not the durable record
+// (that's the session file). Without a cap, roomEntries — and every cached
+// flat line derived from it — grows for the life of the chat, degrading each
+// full reflow (terminal resize) and memory use. Trimming in chunks keeps the
+// array identity stable between trims so per-entry render caches stay hot.
+export const MAX_DISPLAY_ENTRIES = 2400;
+export const DISPLAY_TRIM_KEEP = 2000;
+
+export function capDisplayEntries<T>(
+  entries: T[],
+  max: number = MAX_DISPLAY_ENTRIES,
+  keep: number = DISPLAY_TRIM_KEEP,
+): T[] {
+  if (entries.length <= max) return entries;
+  return entries.slice(entries.length - keep);
 }
 
 export function replaceOrAppendStreamEntry<T extends { streamId?: string }>(

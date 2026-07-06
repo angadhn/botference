@@ -2,6 +2,33 @@
 
 ## 2026-07-06
 
+- **Clean terminal on every exit.** Ctrl+C (and any other exit) used to
+  leave mouse tracking enabled — Ink's unmount re-enabled it *after* the
+  restore ran — so mouse movement sprayed escape garbage into the shell;
+  Ctrl+Z had no handler at all (and under raw mode never even reached the
+  app). Now: the final restore wins the unmount race and a backstop exit
+  hook re-issues the disables last; Ctrl+Z synchronously restores the
+  terminal, suspends the whole process group, and `fg` re-enters all
+  modes and repaints; SIGHUP restores too. Verified byte-for-byte in tmux.
+- **Long-chat reliability.** Session saves are ~4x faster (compact JSON;
+  ~70ms at 10K entries, was ~300ms blocking the loop on every message);
+  resuming a huge chat replays only the last 2000 entries (full history
+  stays in the session file); the UI display log is capped (~2400
+  entries) with trim-stable render caching; `stream-events.jsonl` and
+  `crash.log` rotate instead of growing forever. Crash guards: a
+  malformed bridge event, non-object JSON line, deeply-nested markdown
+  bomb, or giant pasted message can no longer kill the TUI or the bridge
+  (renders degrade gracefully; huge messages skip the typing reveal).
+- **Claude can reach Wikimedia now.** Two blocks fixed: the Claude
+  participant's Bash sandbox only allowed GitHub hosts (curl to
+  wikipedia.org failed outright — Codex has full network, hence the
+  asymmetry), and Claude Code's WebFetch refuses some wikimedia domains.
+  wikipedia/wikimedia hosts joined the sandbox allowlist and Claude's
+  initial prompt now carries a short fallback: on a WebFetch 403 /
+  anti-bot / domain-verification failure, curl the URL via Bash instead.
+  Verified end-to-end against commons.wikimedia.org and
+  upload.wikimedia.org.
+
 - **Steering: typing during a Claude turn now reaches Claude mid-turn**,
   matching native Claude Code behavior — the message is injected into the
   running session (stdin on the programmatic transport via

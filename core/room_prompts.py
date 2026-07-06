@@ -190,6 +190,29 @@ def free_form_turn_status(
     return "\n".join(lines)
 
 
+# -- Web access fallback ------------------------------------------------------
+
+
+def web_access_note(model: str) -> str:
+    """Model-specific web-access guidance for the initial prompt.
+
+    Claude Code's WebFetch is blocked by some sites (e.g. Wikimedia returns
+    403 / anti-bot errors, or domain verification fails); the Codex CLI
+    fetches the same URLs fine, so only the Claude participant needs the
+    curl fallback.
+    """
+    if model.lower() != "claude":
+        return ""
+    return (
+        "--- Web access fallback ---\n"
+        "If WebFetch fails on a URL (403, anti-bot block, or a domain "
+        "verification error), do not give up: fetch it via Bash with "
+        '`curl -sL -A "botference/1.0 (planning council)" <url>` '
+        "(truncate long pages, e.g. `| head -c 20000`). "
+        "Use WebSearch when you only need to discover sources."
+    )
+
+
 # -- Room role --------------------------------------------------------------
 
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."

@@ -473,3 +473,79 @@ class TestStreamCoalescing:
 
         texts = {e["text"] for e in emitted if e.get("kind") == "text_delta"}
         assert texts == {"claude-text", "codex-text"}
+
+
+class TestDecodeStdinLine:
+    def test_valid_object_parses(self):
+        msg = binkb.decode_stdin_line('{"type": "input", "text": "hi"}\n')
+        assert msg == {"type": "input", "text": "hi"}
+
+    def test_malformed_json_returns_none(self):
+        assert binkb.decode_stdin_line("{not json") is None
+
+    def test_non_dict_json_returns_none(self):
+        # A bare scalar/array used to raise AttributeError on msg.get(...)
+        # in the input loop, killing the bridge process mid-session.
+        assert binkb.decode_stdin_line("5") is None
+        assert binkb.decode_stdin_line('"input"') is None
+        assert binkb.decode_stdin_line("[1, 2]") is None
+        assert binkb.decode_stdin_line("null") is None
+
+    def test_blank_line_returns_none(self):
+        assert binkb.decode_stdin_line("   \n") is None
+
+
+class TestStreamLogRotation:
+    def _bridge(self, tmp_path, monkeypatch, emitted):
+        monkeypatch.setattr(
+            binkb, "emit", lambda obj: emitted.append(dict(obj))
+        )
+        return binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+
+    def test_stream_log_rotates_at_size_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(binkb, "_STREAM_LOG_MAX_BYTES", 2_000)
+        emitted: list[dict] = []
+        bridge = self._bridge(tmp_path, monkeypatch, emitted)
+
+        base = {"stream_id": "s1", "pane": "room", "model": "claude"}
+        for i in range(50):
+            bridge.stream_event({**base, "kind": "done", "n": i, "pad": "x" * 100})
+
+        log_path = bridge.stream_log_path
+        rotated = log_path.with_name(log_path.name + ".1")
+        assert rotated.exists()
+        assert log_path.stat().st_size <= 2_000 + 512
+        # The most recent event is always in the live log.
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        assert json.loads(lines[-1])["n"] == 49
+        # Rotation never splits a line — both generations stay valid JSONL.
+        for line in rotated.read_text(encoding="utf-8").splitlines():
+            json.loads(line)
+
+    def test_stream_log_counter_resumes_from_existing_file(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        first = self._bridge(tmp_path, monkeypatch, emitted)
+        base = {"stream_id": "s1", "pane": "room", "model": "claude"}
+        first.stream_event({**base, "kind": "done"})
+        size_after_first = first.stream_log_path.stat().st_size
+
+        second = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        # A relaunched bridge picks up the on-disk size, so the rotation
+        # threshold applies to the file as a whole, not per-process writes.
+        assert second._stream_log_bytes > size_after_first
+
+    def test_stream_log_write_failure_does_not_break_turn(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        bridge = self._bridge(tmp_path, monkeypatch, emitted)
+        # Point the log at an unwritable location: stream_event must still
+        # emit to the UI instead of raising into the controller turn.
+        bridge.stream_log_path = tmp_path / "missing-dir" / "x" / "log.jsonl"
+        bridge.stream_event({
+            "stream_id": "s1", "pane": "room", "model": "claude",
+            "kind": "done",
+        })
+        assert any(e.get("kind") == "done" for e in emitted)

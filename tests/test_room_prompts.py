@@ -18,6 +18,7 @@ from room_prompts import (
     reviewer_preamble,
     revision_from_plan_preamble,
     room_preamble,
+    web_access_note,
 )
 
 
@@ -114,6 +115,25 @@ class TestProjectSkillContext:
         assert str(
             (tmp_path / ".claude" / "skills" / "grill-me" / "SKILL.md").resolve()
         ) in result
+
+
+# -- web_access_note ----------------------------------------------------------
+
+
+class TestWebAccessNote:
+    def test_claude_gets_curl_fallback_guidance(self):
+        result = web_access_note("claude")
+        assert "WebFetch" in result
+        assert "403" in result
+        assert "curl -sL" in result
+        assert "botference/1.0" in result
+        assert "WebSearch" in result
+
+    def test_model_name_is_case_insensitive(self):
+        assert web_access_note("Claude") == web_access_note("claude")
+
+    def test_codex_gets_no_note(self):
+        assert web_access_note("codex") == ""
 
 
 # -- ROOM_ROLE_SUFFIX -------------------------------------------------------

@@ -60,6 +60,12 @@ _STREAM_FLUSH_INTERVAL = 0.07  # seconds
 # plausibly looked away — instant commands (/help, /status) never ping.
 _NOTIFY_MIN_TURN_SECONDS = 5.0
 
+# stream-events.jsonl records every stream event for every turn — it grows
+# without bound in a long-lived work dir unless rotated. When the file
+# exceeds the cap it rotates to stream-events.jsonl.1 (one previous
+# generation kept), bounding total disk use to ~2x the cap.
+_STREAM_LOG_MAX_BYTES = 16 * 1024 * 1024
+
 
 def _emit_notify(body: str) -> None:
     """Ask the Ink process to post a desktop notification via the terminal."""
@@ -78,12 +84,36 @@ class InkBridge:
         self._flush_handle: asyncio.TimerHandle | None = None
         self.stream_log_path = paths.session_dir / "stream-events.jsonl"
         self.stream_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.stream_log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "ts": time.time(),
-                "type": "stream_log_opened",
-                "path": str(self.stream_log_path),
-            }) + "\n")
+        try:
+            self._stream_log_bytes = self.stream_log_path.stat().st_size
+        except OSError:
+            self._stream_log_bytes = 0
+        self._append_stream_log({
+            "ts": time.time(),
+            "type": "stream_log_opened",
+            "path": str(self.stream_log_path),
+        })
+
+    def _append_stream_log(self, obj: dict) -> None:
+        """Append one JSON line to the stream log, rotating at the size cap.
+
+        Log-keeping is diagnostics, not product behavior: any OSError (full
+        disk, read-only fs) is swallowed so it can never fail a live turn.
+        """
+        line = json.dumps(obj) + "\n"
+        try:
+            if self._stream_log_bytes >= _STREAM_LOG_MAX_BYTES:
+                self.stream_log_path.replace(
+                    self.stream_log_path.with_name(
+                        self.stream_log_path.name + ".1"
+                    )
+                )
+                self._stream_log_bytes = 0
+            with self.stream_log_path.open("a", encoding="utf-8") as f:
+                f.write(line)
+            self._stream_log_bytes += len(line.encode("utf-8"))
+        except OSError:
+            pass
 
     def add_room_entry(
         self,
@@ -137,8 +167,7 @@ class InkBridge:
 
     def stream_event(self, event: dict) -> None:
         payload = {"type": "stream", **event}
-        with self.stream_log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": time.time(), **payload}) + "\n")
+        self._append_stream_log({"ts": time.time(), **payload})
 
         if payload.get("kind") == "text_delta":
             key = (
@@ -304,6 +333,20 @@ class InkBridge:
 async def _read_line() -> str:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_executor, sys.stdin.readline)
+
+
+def decode_stdin_line(raw: str) -> dict | None:
+    """Parse one stdin line into a bridge message dict, or None.
+
+    Anything that is not a JSON object is dropped: a malformed or non-dict
+    payload (e.g. a bare number) must never crash the input loop — that
+    would take the whole controller down mid-session.
+    """
+    try:
+        msg = json.loads(raw.strip())
+    except json.JSONDecodeError:
+        return None
+    return msg if isinstance(msg, dict) else None
 
 
 async def _hydrate_project_panel(
@@ -632,9 +675,8 @@ async def main() -> None:
         if not raw:
             break
 
-        try:
-            msg = json.loads(raw.strip())
-        except json.JSONDecodeError:
+        msg = decode_stdin_line(raw)
+        if msg is None:
             continue
 
         if msg.get("type") == "input":

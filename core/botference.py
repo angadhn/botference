@@ -58,6 +58,7 @@ from room_prompts import (
     revision_from_plan_preamble,
     room_preamble,
     project_skill_context,
+    web_access_note,
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
@@ -404,6 +405,12 @@ class DisplayRecord:
 # prompt as large as the session that triggered it — the failure that wedged long
 # sessions, where recovery itself overflowed.
 _BACKFILL_MAX_CHARS = 60_000
+
+# On resume, only this many room-history entries are replayed into the UI.
+# The Ink side keeps a bounded display log anyway (older entries would be
+# trimmed on arrival), so replaying more only slows resume down. The complete
+# history remains in the session file and in self._room_history.
+_REPLAY_MAX_ENTRIES = 2_000
 
 
 def _take_tail_within_budget(blocks: list[str], max_chars: int) -> tuple[list[str], int]:
@@ -1888,11 +1895,28 @@ class Botference:
         return saved_mode
 
     def _replay_restored_session(self, ui: UIPort) -> None:
-        room = [
-            (e.speaker, e.text, self._structured_blocks(e.text))
-            for e in self._room_history
+        display = [
+            e for e in self._room_history
             if not self._is_routine_restored_system_entry(e)
         ]
+        # Replay only the most-recent tail into the UI. A multi-thousand-entry
+        # replay makes resume O(minutes) (block parsing + render) for scrollback
+        # nobody reads; the full record stays in the session file and in
+        # self._room_history, so nothing durable is lost.
+        elided = max(0, len(display) - _REPLAY_MAX_ENTRIES)
+        if elided:
+            display = display[-_REPLAY_MAX_ENTRIES:]
+        room = [
+            (e.speaker, e.text, self._structured_blocks(e.text))
+            for e in display
+        ]
+        if elided:
+            notice = (
+                f"[… {elided} earlier entr{'y' if elided == 1 else 'ies'} not "
+                "replayed — the full transcript is preserved in the session "
+                "file …]"
+            )
+            room.insert(0, ("system", notice, self._structured_blocks(notice)))
         # Fast path: bulk-restore in batches (single state update per batch).
         # Falls back to per-entry replay for any UIPort without restore_entries.
         bulk = getattr(ui, "restore_entries", None)
@@ -3799,6 +3823,9 @@ class Botference:
         other = "Codex" if model == "claude" else "Claude"
         parts = [room_preamble(name, other, self._plan_write_roots_display())]
         parts.append(free_form_protocol(name, other))
+        web_note = web_access_note(model)
+        if web_note:
+            parts.append(web_note)
         skill_context = project_skill_context(
             model,
             [self.paths.project_root, self.paths.botference_home],

@@ -5246,3 +5246,122 @@ class TestProjectAssign:
         await c.handle_input("/project assign no-such-project", ui)
         assert any("No project matched" in t for s, t in ui.room_entries
                    if s == "system")
+
+
+# ── Long-chat stability: replay cap, persistence format, crash log ──
+
+
+class _BulkRestoreUI(MockUI):
+    """MockUI with bulk restore support (like the real InkBridge)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.restored: list[tuple[str, str, object]] = []
+
+    def restore_entries(self, room: list, *, chunk_size: int = 80) -> None:
+        self.restored.extend(room)
+
+
+class TestReplayCap:
+    def _controller_with_history(self, tmp_path, count: int):
+        from botference import DisplayRecord
+
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c._room_history = [
+            DisplayRecord(speaker="claude", text=f"entry {i}")
+            for i in range(count)
+        ]
+        return c
+
+    def test_short_history_replays_in_full(self, tmp_path):
+        c = self._controller_with_history(tmp_path, 5)
+        ui = _BulkRestoreUI()
+        c._replay_restored_session(ui)
+        assert len(ui.restored) == 5
+        assert ui.restored[0][1] == "entry 0"
+
+    def test_huge_history_replays_only_the_tail(self, tmp_path):
+        from botference import _REPLAY_MAX_ENTRIES
+
+        total = _REPLAY_MAX_ENTRIES + 50
+        c = self._controller_with_history(tmp_path, total)
+        ui = _BulkRestoreUI()
+        c._replay_restored_session(ui)
+
+        # Capped tail plus one elision notice at the top.
+        assert len(ui.restored) == _REPLAY_MAX_ENTRIES + 1
+        speaker, text, _ = ui.restored[0]
+        assert speaker == "system"
+        assert "50 earlier entries not replayed" in text
+        # Most-recent entry always survives.
+        assert ui.restored[-1][1] == f"entry {total - 1}"
+        # In-memory history is untouched — only the UI replay is capped.
+        assert len(c._room_history) == total
+
+    def test_cap_applies_to_per_entry_fallback_ui(self, tmp_path):
+        from botference import _REPLAY_MAX_ENTRIES
+
+        total = _REPLAY_MAX_ENTRIES + 10
+        c = self._controller_with_history(tmp_path, total)
+        ui = MockUI()  # no restore_entries → per-entry replay path
+        c._replay_restored_session(ui)
+        assert len(ui.room_entries) == _REPLAY_MAX_ENTRIES + 1
+        assert "10 earlier entries not replayed" in ui.room_entries[0][1]
+
+
+@pytest.mark.asyncio
+class TestSessionFileFormat:
+    async def test_session_file_is_compact_json_and_round_trips(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("naïve reply — ünïcode ✓")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude first question", ui)
+
+        session_path = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        raw = session_path.read_text(encoding="utf-8")
+        # Full-session rewrites happen on every room entry; the file must be
+        # compact (single JSON line + trailing newline), not pretty-printed.
+        assert raw.count("\n") == 1
+        payload = json.loads(raw)
+        assert payload["session_id"] == c.session_id
+        assert any(
+            "naïve reply" in entry["text"] for entry in payload["transcript"]
+        )
+
+
+class TestCrashLogRotation:
+    def _paths(self, tmp_path):
+        return BotferencePaths.resolve(work_dir=tmp_path)
+
+    def test_crash_log_rotates_at_size_cap(self, tmp_path, monkeypatch):
+        import session_store
+
+        monkeypatch.setattr(session_store, "_CRASH_LOG_MAX_BYTES", 200)
+        paths = self._paths(tmp_path)
+        for i in range(5):
+            session_store.append_crash_log(
+                paths,
+                location=f"test.location.{i}",
+                session_id="s1",
+                exc=ValueError("x" * 120),
+            )
+
+        crash = paths.session_crash_log
+        rotated = crash.with_name(crash.name + ".1")
+        assert rotated.exists()
+        assert crash.stat().st_size <= 200 + 1024  # cap plus one entry
+        # Every surviving line is intact JSON (rotation never splits a line).
+        for line in crash.read_text(encoding="utf-8").splitlines():
+            assert json.loads(line)["error_type"] == "ValueError"
+
+    def test_crash_log_below_cap_never_rotates(self, tmp_path):
+        import session_store
+
+        paths = self._paths(tmp_path)
+        session_store.append_crash_log(
+            paths, location="test", session_id="s1", exc=ValueError("boom"),
+        )
+        crash = paths.session_crash_log
+        assert crash.exists()
+        assert not crash.with_name(crash.name + ".1").exists()
