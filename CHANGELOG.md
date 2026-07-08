@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## 2026-07-08
+
+- **Crash tracking.** UI (Node) exceptions now persist to
+  `.botference/ink-crash.log` with stack traces; the launcher runs node
+  with `--report-on-fatalerror` so even V8 out-of-memory aborts — which
+  no in-process handler can catch — leave a report in
+  `.botference/crash-reports/`; Python exceptions already landed in
+  `<sessions>/crash.log`. The next launch surfaces fresh crash evidence
+  in the room ("A previous run appears to have crashed"), once. Also
+  fixed: the launcher captured `rm`'s exit code instead of the TUI's, so
+  crashes reported as clean exits.
+- **Terminal restore backstop in the launcher.** A hard crash (OOM
+  abort, SIGKILL) can never run in-process cleanup — the launcher now
+  unconditionally disables mouse reporting / bracketed paste / alt
+  screen and runs `stty sane` after the TUI exits, so no crash leaves
+  the shell spraying mouse escapes.
+- **Nested-store regression fixed at the launcher layer.** Launching
+  from inside a state dir (e.g. `cd botference && botference plan`)
+  re-split the session store: `lib/config.sh` exported a
+  `BOTFERENCE_WORK_DIR` pointing at the legacy `work/` leftover, which
+  overrides the core/paths.py guard. The shell now applies the same
+  project.json rule. (A chat stranded in the nested store by this bug
+  was migrated back to the canonical `sessions/`.)
+- **`/agents` — user-gated subagents for Claude.** The Claude
+  participant has no Task (subagent) tool by default and is instructed
+  to *suggest* subagents and wait; `/agents on` grants the tool from its
+  next turn (enforced at the CLI tool-list level, not by prompt),
+  `/agents off` revokes, the grant persists with the chat across
+  `/resume`, and `/new` resets it. Codex has no subagent facility.
+
 ## 2026-07-06
 
 - **Clean terminal on every exit.** Ctrl+C (and any other exit) used to

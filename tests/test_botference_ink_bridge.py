@@ -44,6 +44,69 @@ class _RecordingBridge:
         self.calls.append(("add_room_entry", a))
 
 
+class TestFreshCrashArtifacts:
+    def test_reports_fresh_artifacts_once(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        crash_dir = tmp_path / ".botference"
+        crash_dir.mkdir()
+        ink_crash = crash_dir / "ink-crash.log"
+        ink_crash.write_text('{"kind":"uncaughtException"}\n')
+        reports = crash_dir / "crash-reports"
+        reports.mkdir()
+        (reports / "report.20260708.json").write_text("{}")
+
+        fresh = binkb._fresh_crash_artifacts(c.paths)
+        assert str(ink_crash) in fresh
+        assert any("report.20260708.json" in p for p in fresh)
+
+        # Marker recorded — a second launch stays quiet.
+        assert binkb._fresh_crash_artifacts(c.paths) == []
+
+    def test_new_crash_after_marker_is_reported_again(self, tmp_path):
+        import os
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        crash_dir = tmp_path / ".botference"
+        crash_dir.mkdir()
+        ink_crash = crash_dir / "ink-crash.log"
+        ink_crash.write_text("first\n")
+        assert binkb._fresh_crash_artifacts(c.paths) != []
+        assert binkb._fresh_crash_artifacts(c.paths) == []
+
+        # A later crash bumps the mtime past the marker.
+        future = time.time() + 60
+        os.utime(ink_crash, (future, future))
+        assert binkb._fresh_crash_artifacts(c.paths) == [str(ink_crash)]
+
+    def test_quiet_when_no_artifacts(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert binkb._fresh_crash_artifacts(c.paths) == []
+
+
+@pytest.mark.asyncio
+class TestCrashNoticeAtStartup:
+    async def test_startup_surfaces_crash_evidence(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(binkb, "emit", lambda obj: None)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        crash_dir = tmp_path / ".botference"
+        crash_dir.mkdir()
+        (crash_dir / "ink-crash.log").write_text("boom\n")
+
+        bridge = _RecordingBridge()
+        task = await binkb._send_initial_state_and_schedule_hydration(
+            bridge, c, c.paths
+        )
+        await asyncio.wait_for(task, timeout=2.0)
+
+        notices = [
+            a[1] for name, a in bridge.calls
+            if name == "add_room_entry" and "crashed" in str(a[1])
+        ]
+        assert notices, "startup must surface fresh crash artifacts"
+        assert "ink-crash.log" in notices[0]
+
+
 @pytest.mark.asyncio
 class TestInkBridgeStartup:
     async def test_ready_emitted_before_project_snapshot_completes(

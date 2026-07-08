@@ -72,6 +72,44 @@ def _emit_notify(body: str) -> None:
     emit({"type": "notify", "title": "botference", "body": body})
 
 
+def _fresh_crash_artifacts(paths: BotferencePaths) -> list[str]:
+    """Crash artifacts newer than the last time the user was told.
+
+    The TUI logs UI crashes to .botference/ink-crash.log, node writes fatal
+    (OOM/abort) reports to .botference/crash-reports/, and the controller/
+    bridge log Python exceptions to <sessions>/crash.log. Surfacing them at
+    the next launch turns "the app crashed and I have no idea why" into a
+    pointer at the evidence. A marker file records what was already shown.
+    """
+    root = paths.project_root
+    marker = root / ".botference" / "crash-notice.seen"
+    try:
+        seen = marker.stat().st_mtime
+    except OSError:
+        seen = 0.0
+    candidates = [
+        root / ".botference" / "ink-crash.log",
+        paths.session_crash_log,
+    ]
+    reports_dir = root / ".botference" / "crash-reports"
+    if reports_dir.is_dir():
+        candidates.extend(sorted(reports_dir.glob("*.json")))
+    fresh: list[str] = []
+    for path in candidates:
+        try:
+            if path.stat().st_mtime > seen:
+                fresh.append(str(path))
+        except OSError:
+            continue
+    if fresh:
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError:
+            pass
+    return fresh
+
+
 class InkBridge:
     """UIPort implementation that emits JSON-lines to stdout."""
 
@@ -399,6 +437,13 @@ async def _send_initial_state_and_schedule_hydration(
     bridge.add_room_entry(
         "system", "Council room ready. First plain text routes to @all."
     )
+    fresh_crashes = _fresh_crash_artifacts(paths)
+    if fresh_crashes:
+        bridge.add_room_entry(
+            "system",
+            "A previous run appears to have crashed. Evidence:\n"
+            + "\n".join(f"  {p}" for p in fresh_crashes),
+        )
     emit({"type": "ready"})
     return asyncio.create_task(
         _hydrate_project_panel(bridge, botference, paths)

@@ -81,6 +81,10 @@ Session management, including per-participant model and effort switches.
 .B /notify [on|off]
 Desktop notification (via your terminal) when the bots finish a turn.
 Persists per-user.
+.TP
+.B /agents [on|off]
+Grant/revoke the Claude participant's subagent (Task) tool. Off by
+default per chat; Claude suggests it and waits for approval.
 .PP
 Plain text is auto-routed;
 .BR @claude ,
@@ -99,6 +103,11 @@ Project-local state: sessions, projects, plans, logs.
 .TP
 .I ~/.botference/settings.json
 Per-user preferences (e.g. notifications).
+.TP
+.I <cwd>/.botference/ink-crash.log, <cwd>/.botference/crash-reports/
+UI crash evidence (exceptions; fatal V8/OOM reports). Python-side
+exceptions land in <work>/sessions/crash.log. Fresh evidence is
+surfaced at the next launch.
 .SH ENVIRONMENT
 .BR ANTHROPIC_MODEL ,
 .BR OPENAI_MODEL ,

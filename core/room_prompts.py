@@ -213,6 +213,28 @@ def web_access_note(model: str) -> str:
     )
 
 
+# -- Subagents (user-gated) ---------------------------------------------------
+
+
+def subagents_note(model: str) -> str:
+    """Tell the Claude participant subagents exist but are user-gated.
+
+    The Task tool is deliberately absent from Claude's default tool list;
+    the user grants it per-chat with /agents on. Codex has no subagent
+    facility, so it gets no note.
+    """
+    if model.lower() != "claude":
+        return ""
+    return (
+        "--- Subagents ---\n"
+        "You start WITHOUT the Task (subagent) tool. If a piece of work "
+        "would genuinely benefit from parallel subagents, say so and ask "
+        "the user to grant them with `/agents on` — never assume the "
+        "grant. Once granted, Task appears in your tools on your next "
+        "turn; the user can revoke it with `/agents off`."
+    )
+
+
 # -- Room role --------------------------------------------------------------
 
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."

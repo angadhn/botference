@@ -58,6 +58,7 @@ from room_prompts import (
     revision_from_plan_preamble,
     room_preamble,
     project_skill_context,
+    subagents_note,
     web_access_note,
 )
 from datetime import datetime as _dt, timezone as _tz
@@ -155,6 +156,7 @@ class InputKind(Enum):
     PERMISSIONS = "permissions"
     STATUS = "status"
     NOTIFY = "notify"
+    AGENTS = "agents"
     AUTH = "auth"
     HELP = "help"
     QUIT = "quit"
@@ -191,6 +193,7 @@ _SLASH_COMMANDS = {
     "/permissions": InputKind.PERMISSIONS,
     "/status": InputKind.STATUS,
     "/notify": InputKind.NOTIFY,
+    "/agents": InputKind.AGENTS,
     "/auth": InputKind.AUTH,
     "/model": InputKind.MODEL,
     "/effort": InputKind.EFFORT,
@@ -1634,6 +1637,7 @@ class Botference:
             "route": self.router.current_route,
             "router_had_first_turn": self.router._had_first_turn,
             "observe": self.observe,
+            "claude_subagents": self._claude_subagents_enabled(),
             "base_plan_write_roots": self._serialize_write_roots(
                 self._base_plan_write_roots
             ),
@@ -1779,6 +1783,7 @@ class Botference:
             self.lead = str(payload.get("lead", "auto"))
             self.active_project_id = str(payload.get("project_id", "") or "")
             self.observe = bool(payload.get("observe", self.observe))
+            self._set_claude_subagents(bool(payload.get("claude_subagents")))
             self.router.current_route = str(payload.get("route", "@all"))
             self.router._had_first_turn = bool(payload.get("router_had_first_turn", False))
             saved_base_roots = payload.get("base_plan_write_roots")
@@ -2161,6 +2166,10 @@ class Botference:
             self._run_notify(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.AGENTS:
+            self._run_agents(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.AUTH:
             self._show_auth_status(parsed.body, ui)
             return
@@ -2257,6 +2266,7 @@ class Botference:
             "  /permissions        — Show current planner write roots and runtime grants",
             "  /status             — Show context %, lead, mode, sessions",
             "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
+            "  /agents [on|off]    — Grant/revoke Claude's subagent (Task) tool (off by default, per-chat; Claude may suggest it)",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
@@ -2646,6 +2656,65 @@ class Botference:
             message = "Notifications off."
         self._add_room_entry(ui, "system", message)
 
+    # ── /agents ───────────────────────────────────────────
+
+    _SUBAGENT_TOOL = "Task"
+
+    def _claude_subagents_enabled(self) -> bool:
+        return self._SUBAGENT_TOOL in getattr(self.claude, "tools", [])
+
+    def _set_claude_subagents(self, enabled: bool) -> None:
+        if isinstance(self.claude, ClaudeInteractiveTmuxAdapter):
+            return
+        tools = getattr(self.claude, "tools", None)
+        if tools is None:
+            return
+        if enabled and self._SUBAGENT_TOOL not in tools:
+            tools.append(self._SUBAGENT_TOOL)
+        elif not enabled and self._SUBAGENT_TOOL in tools:
+            tools.remove(self._SUBAGENT_TOOL)
+
+    def _run_agents(self, arg: str, ui: UIPort) -> None:
+        """/agents [on|off] — grant/revoke Claude's subagent (Task) tool.
+
+        Enforcement is hard, not prompt-level: the tool list is passed to
+        the CLI on every turn, so an ungranted Claude simply does not have
+        Task. Off by default in every chat; Claude is told to suggest the
+        grant when subagents would help. Codex has no subagent facility.
+        """
+        if isinstance(self.claude, ClaudeInteractiveTmuxAdapter):
+            self._add_room_entry(
+                ui, "system",
+                "/agents is not available under --claude-interactive — the "
+                "native session manages its own tools.",
+            )
+            return
+        raw = arg.strip().lower().lstrip("@")
+        if raw in ("claude",):
+            raw = ""
+        if raw == "on":
+            self._set_claude_subagents(True)
+            self._persist_session()
+            self._add_room_entry(
+                ui, "system",
+                "Subagents granted — Claude gets the Task tool from its "
+                "next turn (this chat only). Revoke with /agents off.",
+            )
+        elif raw == "off":
+            self._set_claude_subagents(False)
+            self._persist_session()
+            self._add_room_entry(ui, "system", "Subagents revoked for Claude.")
+        elif not raw:
+            state = "granted" if self._claude_subagents_enabled() else "off"
+            self._add_room_entry(
+                ui, "system",
+                f"Subagents (Claude Task tool): {state}. "
+                "Use /agents on|off to change. Codex has no subagent "
+                "facility.",
+            )
+        else:
+            self._add_room_entry(ui, "system", "Usage: /agents [on|off]")
+
     # ── /status ───────────────────────────────────────────
 
     def _show_status(self, ui: UIPort) -> None:
@@ -2665,6 +2734,7 @@ class Botference:
             f"Codex:  {x_pct} ({x})  (thread {self.codex.thread_id or '-'})",
             f"Observe: {'on' if self.observe else 'off'}",
             f"Notifications: {'on' if self.notify else 'off'}",
+            f"Subagents: {'granted' if self._claude_subagents_enabled() else 'off'} (Claude Task tool)",
             f"Turns: {len(self.transcript.entries)}",
         ]
         self._add_room_entry(ui, "system", "\n".join(lines))
@@ -3826,6 +3896,9 @@ class Botference:
         web_note = web_access_note(model)
         if web_note:
             parts.append(web_note)
+        agents_note = subagents_note(model)
+        if agents_note:
+            parts.append(agents_note)
         skill_context = project_skill_context(
             model,
             [self.paths.project_root, self.paths.botference_home],
@@ -4135,6 +4208,7 @@ class Botference:
         self._codex_tokens = self._codex_window = None
         self.claude.session_id = ""
         self.codex.thread_id = ""
+        self._set_claude_subagents(False)  # grants are per-chat
 
         ui.clear_panes()
         ui.set_mode(self.mode)

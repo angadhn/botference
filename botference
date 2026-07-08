@@ -390,6 +390,12 @@ while true; do
       _ink_sys=$(mktemp); _ink_task=$(mktemp)
       printf '%s' "$PLAN_SYSTEM" > "$_ink_sys"
       printf '%s' "$PROMPT" > "$_ink_task"
+      # Fatal-error diagnostics: --report-on-fatalerror catches crashes no
+      # JS handler can (e.g. V8 out-of-memory aborts) and writes a report
+      # file, so "the app crashed and I have no idea why" has evidence.
+      _crash_dir="${BOTFERENCE_PROJECT_ROOT}/.botference/crash-reports"
+      mkdir -p "$_crash_dir" 2>/dev/null || true
+      NODE_OPTIONS="${NODE_OPTIONS:-} --report-on-fatalerror --report-directory=$_crash_dir" \
       "$INK_NODE_BIN" "${BOTFERENCE_HOME}/ink-ui/dist/bin.js" \
         --anthropic-model "$CLI_MODEL" \
         --openai-model "$OPENAI_MODEL" \
@@ -399,8 +405,21 @@ while true; do
         --system-prompt-file "$_ink_sys" \
         --task-file "$_ink_task" \
         $DEBUG_FLAG
-      rm -f "$_ink_sys" "$_ink_task"
       EXIT_CODE=$?
+      rm -f "$_ink_sys" "$_ink_task"
+      # Belt-and-braces terminal restore: a hard crash (OOM abort, SIGKILL)
+      # never runs the TUI's own cleanup, leaving mouse reporting enabled —
+      # scrolling then sprays escape sequences into the shell. Always
+      # disable the modes the TUI may have enabled; all are no-ops on a
+      # clean exit.
+      printf '\033[?1003l\033[?1002l\033[?1000l\033[?1006l\033[?2004l\033[?1049l\033[?25h' 2>/dev/null || true
+      stty sane 2>/dev/null || true
+      if [ "$EXIT_CODE" -ne 0 ]; then
+        echo "botference TUI exited abnormally (code $EXIT_CODE). Crash evidence:"
+        echo "  - ${BOTFERENCE_PROJECT_ROOT}/.botference/ink-crash.log (UI exceptions)"
+        echo "  - $_crash_dir (fatal V8/OOM reports)"
+        echo "  - ${BOTFERENCE_WORK_DIR}/sessions/crash.log (controller/bridge exceptions)"
+      fi
 
       if ! plan_audit_changed_files "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"; then
         echo ""

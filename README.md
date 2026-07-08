@@ -386,6 +386,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/notify [on\|off]` | Toggle the desktop notification posted when the bots finish (see [Desktop notifications](#desktop-notifications)). No argument flips the current state; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. |
+| `/agents [on\|off]` | Grant or revoke the Claude participant's **subagent** (Task) tool. Off by default in every chat: Claude is instructed to *suggest* subagents when a task would benefit and wait for your approval — and the gate is enforced at the tool level (the CLI is simply not given the Task tool until you grant it), not by prompt alone. The grant persists with the chat across `/resume` and resets on `/new`. Codex has no subagent facility; not available under `--claude-interactive`. |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
 
@@ -429,6 +430,21 @@ Most terminals only show the notification while the window is unfocused —
 if you're already looking at the council, nothing pops up. Interrupting a
 turn with Esc also suppresses the ping, since you're clearly at the
 keyboard.
+
+### Crash evidence
+
+If the TUI ever dies, the next launch prints a "previous run appears to
+have crashed" notice pointing at the evidence. Three places record it:
+
+- `<cwd>/.botference/ink-crash.log` — UI (Node) exceptions, with stack traces
+- `<cwd>/.botference/crash-reports/` — fatal V8 reports (e.g. out-of-memory
+  aborts, which no in-process handler can catch; enabled via
+  `--report-on-fatalerror`)
+- `<work>/sessions/crash.log` — controller/bridge (Python) exceptions
+
+The launcher also unconditionally restores terminal modes after the TUI
+exits, so even a hard crash (OOM, `kill -9`) can no longer leave your
+shell spraying mouse escape sequences.
 
 ### Project Skills
 

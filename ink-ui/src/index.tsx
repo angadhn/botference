@@ -1,6 +1,8 @@
 import React from "react";
 import { render } from "ink";
 import { Transform } from "node:stream";
+import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import path from "node:path";
 import App from "./App";
 import {
   DISABLE_MOUSE_TRACKING,
@@ -306,15 +308,60 @@ process.on("SIGCONT", () => {
   suspendController.resume();
 });
 
+// ── Crash logging ──────────────────────────────────────────
+// The console.error below scrolls away with the terminal; persist every
+// UI crash to .botference/ink-crash.log so "the app crashed and I have
+// no idea why" always has evidence. (Fatal V8 aborts like OOM never reach
+// these handlers — the launcher runs node with --report-on-fatalerror to
+// cover those.)
+
+const CRASH_LOG_DIR = path.join(process.cwd(), ".botference");
+const CRASH_LOG_PATH = path.join(CRASH_LOG_DIR, "ink-crash.log");
+const CRASH_LOG_MAX_BYTES = 1024 * 1024;
+
+function logCrash(kind: string, err: unknown): void {
+  // Synchronous by design: crash handlers run right before process.exit,
+  // where async writes never flush. Must never mask the crash itself.
+  try {
+    mkdirSync(CRASH_LOG_DIR, { recursive: true });
+    try {
+      if (statSync(CRASH_LOG_PATH).size >= CRASH_LOG_MAX_BYTES) {
+        renameSync(CRASH_LOG_PATH, `${CRASH_LOG_PATH}.1`);
+      }
+    } catch {
+      // no log yet
+    }
+    const detail = err instanceof Error
+      ? `${err.message}\n${err.stack ?? ""}`
+      : String(err);
+    appendFileSync(
+      CRASH_LOG_PATH,
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        pid: process.pid,
+        node: process.version,
+        kind,
+        detail,
+      }) + "\n",
+    );
+  } catch {
+    // e.g. read-only cwd — the console.error below still fires
+  }
+}
+
 // Log uncaught errors visibly before exit
 process.on("uncaughtException", (err) => {
   restoreTerminal();
+  logCrash("uncaughtException", err);
   console.error("Ink TUI crashed:", err);
+  console.error(`(recorded in ${CRASH_LOG_PATH})`);
   process.exit(1);
 });
 process.on("unhandledRejection", (err) => {
   restoreTerminal();
+  logCrash("unhandledRejection", err);
   console.error("Ink TUI unhandled rejection:", err);
+  console.error(`(recorded in ${CRASH_LOG_PATH})`);
   process.exit(1);
 });
 

@@ -37,7 +37,13 @@ init_botference_paths() {
     BOTFERENCE_ARCHIVE_DIR="${BOTFERENCE_PROJECT_ROOT}/archive"
     # Migration shim: working files
     # Prefer work/ when present; fall back to project root for legacy layouts.
-    if [ -d "${BOTFERENCE_PROJECT_ROOT}/work" ]; then
+    # But a project.json in the project root means the cwd IS a botference
+    # state dir (launched from inside it) — use it directly, or the exported
+    # BOTFERENCE_WORK_DIR silently nests a second session store at work/
+    # (this env var overrides the equivalent guard in core/paths.py).
+    if [ -f "${BOTFERENCE_PROJECT_ROOT}/project.json" ]; then
+      BOTFERENCE_WORK_DIR="${BOTFERENCE_PROJECT_ROOT}"
+    elif [ -d "${BOTFERENCE_PROJECT_ROOT}/work" ]; then
       BOTFERENCE_WORK_DIR="${BOTFERENCE_PROJECT_ROOT}/work"
     else
       BOTFERENCE_WORK_DIR="${BOTFERENCE_PROJECT_ROOT}"
