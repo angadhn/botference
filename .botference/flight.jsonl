@@ -1,2 +1,0 @@
-{"ts":"2026-07-09T16:02:40.025Z","kind":"start","up_s":0,"rss_mb":107,"heap_mb":24,"heap_limit_mb":4144,"last":"startup","events":0}
-{"ts":"2026-07-09T16:02:51.136Z","kind":"stop","up_s":11,"rss_mb":112,"heap_mb":25,"heap_limit_mb":4144,"last":"bridge:exit","events":12}
