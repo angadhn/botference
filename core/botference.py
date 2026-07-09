@@ -110,24 +110,28 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _STAGING_DIR = _REPO_ROOT / ".botference" / "tmp" / "attachments"
 
 
-def stage_attachments(attachments: list[dict]) -> list[str]:
+def stage_attachments(attachments: list[dict]) -> tuple[list[str], list[str]]:
     """Copy image files to a repo-local staging dir.
 
-    Returns a list of staged file paths (content-addressed).
-    Claude can read these with its Read tool — no --file flag or
-    session token needed.
+    Returns (staged_paths, missing_paths). Staged names are
+    content-addressed; Claude can read them with its Read tool — no
+    --file flag or session token needed. Missing paths are returned so
+    the caller can TELL the user — silently dropping them is how pastes
+    used to reach the bots as bare "[image N]" placeholders.
     """
     if not attachments:
-        return []
+        return [], []
     _STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
     staged: list[str] = []
+    missing: list[str] = []
     for att in attachments:
         if att.get("type") != "image":
             continue
-        src = Path(att["path"])
+        src = Path(str(att["path"])).expanduser()
         if not src.is_file():
             log.warning("Attachment not found: %s", src)
+            missing.append(str(src))
             continue
         # Content-addressed name: <sha256[:16]>.<ext>
         sha = hashlib.sha256(src.read_bytes()).hexdigest()[:16]
@@ -136,7 +140,7 @@ def stage_attachments(attachments: list[dict]) -> list[str]:
         if not dst.exists():
             shutil.copy2(src, dst)
         staged.append(str(dst))
-    return staged
+    return staged, missing
 
 
 # ── Input parsing ──────────────────────────────────────────
@@ -2289,6 +2293,8 @@ class Botference:
             "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
             "",
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
+            "Images: drag files in (or Finder Cmd+C → Cmd+V) to attach by path — several at",
+            "once works. Ctrl+V attaches a raw copied image (screenshot, browser Copy Image).",
             "",
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows estimated occupancy (exact after tool-free turns).",
@@ -3547,11 +3553,19 @@ class Botference:
 
         # Stage image attachments to repo-local tmp dir so agents
         # can read them as normal files — no --file flag or tokens needed.
-        staged = stage_attachments(attachments or [])
+        staged, missing = stage_attachments(attachments or [])
+        if missing:
+            names = ", ".join(Path(p).name for p in missing)
+            self._add_room_entry(
+                ui, "system",
+                f"⚠ {len(missing)} attached image(s) could not be found and "
+                f"were NOT sent to the bots: {names}",
+            )
         body = parsed.body
         if staged:
             refs = "\n".join(
-                f"[Attached image: {p}]" for p in staged
+                f"[Attached image: {p} — view it with your file-reading tool]"
+                for p in staged
             )
             body = f"{body}\n\n{refs}"
 

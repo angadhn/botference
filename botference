@@ -395,6 +395,11 @@ while true; do
       # file, so "the app crashed and I have no idea why" has evidence.
       _crash_dir="${BOTFERENCE_PROJECT_ROOT}/.botference/crash-reports"
       mkdir -p "$_crash_dir" 2>/dev/null || true
+      # Run ledger: every launch writes a start line, every exit an end line
+      # with the real exit code — "it crashes all the time" becomes countable,
+      # and a start with no matching end means a hard kill.
+      _ledger="${BOTFERENCE_PROJECT_ROOT}/.botference/run-ledger.jsonl"
+      echo "{\"event\":\"run_start\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"pid\":$$,\"cwd\":\"$(pwd)\"}" >> "$_ledger" 2>/dev/null || true
       NODE_OPTIONS="${NODE_OPTIONS:-} --report-on-fatalerror --report-directory=$_crash_dir" \
       "$INK_NODE_BIN" "${BOTFERENCE_HOME}/ink-ui/dist/bin.js" \
         --anthropic-model "$CLI_MODEL" \
@@ -407,6 +412,7 @@ while true; do
         $DEBUG_FLAG
       EXIT_CODE=$?
       rm -f "$_ink_sys" "$_ink_task"
+      echo "{\"event\":\"run_end\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"pid\":$$,\"exit_code\":$EXIT_CODE}" >> "$_ledger" 2>/dev/null || true
       # Belt-and-braces terminal restore: a hard crash (OOM abort, SIGKILL)
       # never runs the TUI's own cleanup, leaving mouse reporting enabled —
       # scrolling then sprays escape sequences into the shell. Always

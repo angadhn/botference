@@ -81,6 +81,47 @@ class TestFreshCrashArtifacts:
         c, _, _, _ = _make_botference(tmp_path=tmp_path)
         assert binkb._fresh_crash_artifacts(c.paths) == []
 
+    def _ledger(self, tmp_path, lines):
+        crash_dir = tmp_path / ".botference"
+        crash_dir.mkdir(exist_ok=True)
+        (crash_dir / "run-ledger.jsonl").write_text(
+            "\n".join(json.dumps(rec) for rec in lines) + "\n"
+        )
+
+    def test_ledger_abnormal_exit_is_reported(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        self._ledger(tmp_path, [
+            {"event": "run_start", "ts": "2026-07-08T10:00:00Z", "pid": 1},
+            {"event": "run_end", "ts": "2026-07-08T10:30:00Z", "pid": 1,
+             "exit_code": 1},
+            {"event": "run_start", "ts": "2026-07-09T09:00:00Z", "pid": 2},
+        ])
+        fresh = binkb._fresh_crash_artifacts(c.paths)
+        assert any("1 run(s) ended abnormally" in line for line in fresh)
+        # Marker recorded — quiet on the next check.
+        assert binkb._fresh_crash_artifacts(c.paths) == []
+
+    def test_ledger_hard_kill_counts_but_live_run_does_not(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        self._ledger(tmp_path, [
+            # Hard-killed run: start with no end.
+            {"event": "run_start", "ts": "2026-07-08T10:00:00Z", "pid": 1},
+            # The live run reading the ledger: newest dangling start.
+            {"event": "run_start", "ts": "2026-07-09T09:00:00Z", "pid": 2},
+        ])
+        fresh = binkb._fresh_crash_artifacts(c.paths)
+        assert any("1 run(s) ended abnormally" in line for line in fresh)
+
+    def test_ledger_clean_runs_stay_quiet(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        self._ledger(tmp_path, [
+            {"event": "run_start", "ts": "2026-07-08T10:00:00Z", "pid": 1},
+            {"event": "run_end", "ts": "2026-07-08T10:30:00Z", "pid": 1,
+             "exit_code": 0},
+            {"event": "run_start", "ts": "2026-07-09T09:00:00Z", "pid": 2},
+        ])
+        assert binkb._fresh_crash_artifacts(c.paths) == []
+
 
 @pytest.mark.asyncio
 class TestCrashNoticeAtStartup:

@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -72,6 +73,51 @@ def _emit_notify(body: str) -> None:
     emit({"type": "notify", "title": "botference", "body": body})
 
 
+def _abnormal_runs_since(root: Path, seen: float) -> str:
+    """Summarize abnormal exits from the launcher's run ledger.
+
+    The ledger pairs run_start/run_end lines by pid. A nonzero exit code is
+    abnormal; so is a start with no end (hard kill) — except the newest
+    start, which is the run reading this. Catches deaths that leave no
+    other artifact (SIGKILL, terminal close).
+    """
+    ledger = root / ".botference" / "run-ledger.jsonl"
+    try:
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    open_starts: list[tuple[object, float]] = []
+    abnormal = 0
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        try:
+            ts = datetime.fromisoformat(
+                str(rec.get("ts", "")).replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            continue
+        event = rec.get("event")
+        if event == "run_start":
+            open_starts.append((rec.get("pid"), ts))
+        elif event == "run_end":
+            pid = rec.get("pid")
+            open_starts = [s for s in open_starts if s[0] != pid]
+            if rec.get("exit_code") not in (0, None) and ts > seen:
+                abnormal += 1
+    for _pid, ts in open_starts[:-1]:
+        if ts > seen:
+            abnormal += 1
+    if not abnormal:
+        return ""
+    return (
+        f"{abnormal} run(s) ended abnormally since the last check "
+        f"(full history: {ledger})."
+    )
+
+
 def _fresh_crash_artifacts(paths: BotferencePaths) -> list[str]:
     """Crash artifacts newer than the last time the user was told.
 
@@ -101,6 +147,9 @@ def _fresh_crash_artifacts(paths: BotferencePaths) -> list[str]:
                 fresh.append(str(path))
         except OSError:
             continue
+    run_summary = _abnormal_runs_since(root, seen)
+    if run_summary:
+        fresh.append(run_summary)
     if fresh:
         try:
             marker.parent.mkdir(parents=True, exist_ok=True)

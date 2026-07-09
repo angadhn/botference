@@ -19,6 +19,7 @@ import {
   processTerminalInputChunk,
   type MouseEventInfo,
 } from "./v2/stdinFilter.js";
+import { createFlightRecorder } from "./v2/flightRecorder.js";
 // Re-export so consumers (App.tsx) can import the type from the index module.
 export type { MouseEventInfo } from "./v2/stdinFilter.js";
 
@@ -349,8 +350,24 @@ function logCrash(kind: string, err: unknown): void {
   }
 }
 
+// Flight recorder: heartbeat breadcrumbs (memory, last activity) so a run
+// that dies with no exception still leaves a story in flight.jsonl.
+export const flightRecorder = createFlightRecorder({
+  filePath: path.join(CRASH_LOG_DIR, "flight.jsonl"),
+});
+flightRecorder.start();
+process.on("exit", () => {
+  flightRecorder.stop();
+});
+
+// Exposed so App.tsx can record bridge deaths alongside UI crashes.
+export function recordCrashEvidence(kind: string, err: unknown): void {
+  logCrash(kind, err);
+}
+
 // Log uncaught errors visibly before exit
 process.on("uncaughtException", (err) => {
+  flightRecorder.note("uncaughtException", { flush: true });
   restoreTerminal();
   logCrash("uncaughtException", err);
   console.error("Ink TUI crashed:", err);

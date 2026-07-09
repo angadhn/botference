@@ -609,6 +609,68 @@ class TestSteering:
 
 
 @pytest.mark.asyncio
+class TestAttachmentStaging:
+    async def test_missing_attachment_is_reported_not_silently_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(
+            "@claude look at this",
+            ui,
+            attachments=[{
+                "id": 1,
+                "path": str(tmp_path / "Screenshot 2026-07-08.png"),
+                "type": "image",
+            }],
+        )
+        warnings = [
+            t for s, t in ui.room_entries
+            if s == "system" and "could not be found" in t
+        ]
+        assert warnings, "missing attachments must be surfaced to the user"
+        assert "Screenshot 2026-07-08.png" in warnings[0]
+
+    async def test_multiple_attachments_all_reach_the_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        one = tmp_path / "one.png"
+        two = tmp_path / "two shot.png"
+        one.write_bytes(b"PNG-1")
+        two.write_bytes(b"PNG-2")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(
+            "@claude here are both",
+            ui,
+            attachments=[
+                {"id": 1, "path": str(one), "type": "image"},
+                {"id": 2, "path": str(two), "type": "image"},
+            ],
+        )
+        user_entries = [
+            e.text for e in c.transcript.entries if e.speaker == "user"
+        ]
+        assert user_entries
+        assert user_entries[-1].count("[Attached image:") == 2
+        assert "file-reading tool" in user_entries[-1]
+
+    async def test_tilde_paths_are_expanded(self, tmp_path, monkeypatch):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        pic = tmp_path / "pic.png"
+        pic.write_bytes(b"PNG")
+        staged, missing = bf.stage_attachments(
+            [{"id": 1, "path": "~/pic.png", "type": "image"}]
+        )
+        assert missing == []
+        assert len(staged) == 1
+
+
+@pytest.mark.asyncio
 class TestAgentsCommand:
     async def test_default_off_and_status(self, tmp_path):
         c, claude, _, ui = _make_botference(tmp_path=tmp_path)

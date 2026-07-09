@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## 2026-07-09
+
+- **Image attachments actually work now.** Pastes with backslash-escaped
+  spaces (every macOS screenshot name), quoted paths, `file://` URLs, and
+  several paths on one line (multi-file drag-drop, Finder Cmd+C → Cmd+V)
+  all parse into attachments; nonexistent paths stay visible as text
+  instead of becoming dead `[image N]` placeholders, and attachments
+  missing at send time are reported in the room instead of silently
+  dropped (both failure modes found in a real transcript). New: **Ctrl+V**
+  attaches a raw image from the macOS clipboard (screenshot Cmd+C,
+  browser "Copy Image") — terminals can't deliver image data through
+  normal paste. `~` paths expand on the Python side too.
+- **Flight recorder + run ledger.** The launcher logs every run's start
+  and real exit code to `.botference/run-ledger.jsonl` (hard kills show
+  as starts without ends; abnormal runs are counted in the next launch's
+  crash notice). The UI writes heartbeat breadcrumbs to
+  `.botference/flight.jsonl` — memory usage with >85% heap-pressure
+  flagging, last bridge activity — and a dying Python bridge is now
+  recorded to ink-crash.log with its exit code.
+
 ## 2026-07-08
 
 - **Crash tracking.** UI (Node) exceptions now persist to

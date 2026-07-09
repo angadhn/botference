@@ -431,16 +431,44 @@ if you're already looking at the council, nothing pops up. Interrupting a
 turn with Esc also suppresses the ping, since you're clearly at the
 keyboard.
 
+### Attaching images
+
+Three ways to get images to the bots (all support several at once):
+
+- **Drag files** from Finder into the terminal — the paths are parsed
+  (including escaped spaces in screenshot names, quotes, and `file://`
+  URLs) and become `[image N]` attachments.
+- **Finder Cmd+C → Cmd+V** — copied files paste as paths and attach the
+  same way.
+- **Ctrl+V** — attaches a *raw* image from the clipboard (a screenshot
+  taken with Cmd+Shift+Ctrl+4, or a browser "Copy Image"). Terminals only
+  deliver text through normal paste, so raw image data has its own key.
+
+Only paths that actually exist become attachments; a bad path stays
+visible as text, and any attachment that can't be found at send time is
+reported in the room instead of silently dropped. Claude views attached
+images with its Read tool; Codex receives the file path (its CLI cannot
+view image content mid-session).
+
 ### Crash evidence
 
 If the TUI ever dies, the next launch prints a "previous run appears to
-have crashed" notice pointing at the evidence. Three places record it:
+have crashed" notice pointing at the evidence:
 
-- `<cwd>/.botference/ink-crash.log` — UI (Node) exceptions, with stack traces
+- `<cwd>/.botference/ink-crash.log` — UI (Node) exceptions and bridge
+  deaths, with stack traces
 - `<cwd>/.botference/crash-reports/` — fatal V8 reports (e.g. out-of-memory
   aborts, which no in-process handler can catch; enabled via
   `--report-on-fatalerror`)
 - `<work>/sessions/crash.log` — controller/bridge (Python) exceptions
+- `<cwd>/.botference/run-ledger.jsonl` — every launch and exit with the
+  real exit code; a start with no matching end means a hard kill. Abnormal
+  runs are counted in the startup notice even when they left no other
+  trace.
+- `<cwd>/.botference/flight.jsonl` — the flight recorder: a heartbeat
+  every 15s with memory usage (flagging >85% heap pressure) and the last
+  activity, so a run that dies with no exception still leaves a story in
+  its final breadcrumbs.
 
 The launcher also unconditionally restores terminal modes after the TUI
 exits, so even a hard crash (OOM, `kill -9`) can no longer leave your

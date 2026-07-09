@@ -31,6 +31,8 @@ import {
 } from "./index.js";
 import { copyToClipboard } from "./v2/clipboard.js";
 import { sendDesktopNotification } from "./v2/notify.js";
+import { saveClipboardImage, tokenizePaste } from "./v2/attachments.js";
+import { flightRecorder, recordCrashEvidence } from "./index.js";
 import {
   buildToolStackText,
   capDisplayEntries,
@@ -1040,31 +1042,23 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, []);
 
   // ── Paste handler — detect image file paths ──────────────
+  // Drag-drop and Finder Cmd+C deliver paths that may be backslash-escaped
+  // (spaces in screenshot names), quoted, file:// URLs, or several on one
+  // line. Only paths that actually exist become attachments; anything else
+  // stays visible as text instead of turning into a dead "[image N]".
   useEffect(() => {
     return onPaste((pasted) => {
-      const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
-      const parts = pasted.split(/(\r\n|\r|\n)/);
       const insertAt = cursorRef.current;
       let insertion = "";
       const newAttachments = new Map(imageAttachmentsRef.current);
 
-      for (const part of parts) {
-        if (part === "\r\n" || part === "\r" || part === "\n") {
-          insertion += "\n";
-          continue;
-        }
-
-        const trimmed = part.trim();
-        if (
-          trimmed &&
-          (trimmed.startsWith("/") || trimmed.startsWith("~")) &&
-          IMAGE_EXTS.test(trimmed)
-        ) {
+      for (const token of tokenizePaste(pasted)) {
+        if (token.type === "image") {
           const id = nextImageId.current++;
-          newAttachments.set(id, trimmed);
+          newAttachments.set(id, token.value);
           insertion += `[image ${id}]`;
         } else {
-          insertion += part;
+          insertion += token.value;
         }
       }
 
@@ -1387,6 +1381,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       // One malformed event must never throw out of readline's callback —
       // that would be an uncaught exception and kill the entire UI process.
       try {
+        flightRecorder.note(`bridge:${String((msg as { type?: unknown }).type ?? "?")}`);
         handleBridgeEvent(msg);
       } catch {
         // Drop the event; the next one is processed normally.
@@ -1394,7 +1389,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     });
 
     proc.on("close", (code) => {
+      flightRecorder.note(`bridge_exit:${code}`, { flush: true });
       if (code !== 0 && code !== null) {
+        recordCrashEvidence(
+          "bridge_exit",
+          new Error(`Python bridge exited with code ${code}`),
+        );
         setRoomEntries((prev) => [
           ...prev,
           { speaker: "system", text: `Bridge exited with code ${code}. Press Ctrl+C to exit.` },
@@ -1454,6 +1454,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     const proc = bridgeRef.current;
     if (proc?.stdin?.writable) {
+      flightRecorder.note("user_submit");
       const msg: Record<string, unknown> = { type: "input", text: stripped };
       const attachments = imageAttachmentsRef.current;
       if (attachments.size > 0) {
@@ -1515,6 +1516,34 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Ctrl+C — exit
     if (input === "c" && key.ctrl) {
       cleanup();
+      return;
+    }
+
+    // Ctrl+V — attach a raw image from the macOS clipboard (screenshot
+    // Cmd+C, browser "Copy Image"). Terminals only deliver text through
+    // Cmd+V paste, so raw image data needs this side channel; file paths
+    // (drag-drop, Finder Cmd+C) keep going through the normal paste path.
+    if (input === "v" && key.ctrl) {
+      setHint("Checking the clipboard for an image…");
+      void saveClipboardImage().then((saved) => {
+        if (!saved) {
+          setHint(
+            "No image on the clipboard — Ctrl+V attaches a copied image; "
+            + "Cmd+V pastes text and file paths.",
+          );
+          return;
+        }
+        const id = nextImageId.current++;
+        const next = new Map(imageAttachmentsRef.current);
+        next.set(id, saved);
+        setImageAttachments(next);
+        const c = cursorRef.current;
+        const placeholder = `[image ${id}]`;
+        setInputText((prev) => prev.slice(0, c) + placeholder + prev.slice(c));
+        setCursor(c + placeholder.length);
+        setDesiredCol(null);
+        setHint("Image attached from clipboard.");
+      });
       return;
     }
 
