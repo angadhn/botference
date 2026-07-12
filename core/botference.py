@@ -229,7 +229,7 @@ _TARGETED_COMMANDS = (
 
 # Known effort levels (passed through to the underlying CLI)
 _CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
-_CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high")
+_CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max")
 
 
 def _known_claude_models() -> list[str]:

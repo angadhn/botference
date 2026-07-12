@@ -1295,11 +1295,11 @@ class TestCommandConstruction:
 
     def test_codex_probe_cmd_uses_explicit_model_and_read_only_sandbox(self):
         x = CodexAdapter(model="gpt-5-latest", cwd="/repo/botference")
-        cmd = x._build_probe_cmd("gpt-5.5")
+        cmd = x._build_probe_cmd("gpt-5.6-sol")
         assert cmd[:2] == ["codex", "exec"]
         assert cmd[cmd.index("--sandbox") + 1] == "read-only"
         assert cmd[cmd.index("--cd") + 1] == "/repo/botference"
-        assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
+        assert cmd[cmd.index("-m") + 1] == "gpt-5.6-sol"
 
     def test_codex_resume_cmd_includes_cd_when_configured(self):
         x = CodexAdapter(cwd="/repo/botference")
@@ -1529,7 +1529,7 @@ class TestRawOutputCapture:
 
 
 class TestCodexModelAliasResolution:
-    def test_gpt_5_latest_uses_gpt_5_5_when_probe_succeeds(self):
+    def test_gpt_5_latest_uses_gpt_5_6_sol_when_probe_succeeds(self):
         async def _test():
             adapter = CodexAdapter(model="gpt-5-latest")
             adapter._run_once = AsyncMock(side_effect=[
@@ -1540,16 +1540,16 @@ class TestCodexModelAliasResolution:
             resp = await adapter.send("test")
 
             assert resp.text == "done"
-            assert adapter.model == "gpt-5.5"
+            assert adapter.model == "gpt-5.6-sol"
             assert adapter._run_once.await_count == 2
             probe_cmd = adapter._run_once.await_args_list[0].args[0]
             send_cmd = adapter._run_once.await_args_list[1].args[0]
-            assert probe_cmd[probe_cmd.index("-m") + 1] == "gpt-5.5"
-            assert send_cmd[send_cmd.index("-m") + 1] == "gpt-5.5"
+            assert probe_cmd[probe_cmd.index("-m") + 1] == "gpt-5.6-sol"
+            assert send_cmd[send_cmd.index("-m") + 1] == "gpt-5.6-sol"
 
         asyncio.run(_test())
 
-    def test_gpt_5_latest_falls_back_to_gpt_5_4_when_probe_fails(self):
+    def test_gpt_5_latest_falls_back_to_gpt_5_5_when_probe_fails(self):
         async def _test():
             adapter = CodexAdapter(model="gpt-5-latest")
             adapter._run_once = AsyncMock(side_effect=[
@@ -1561,14 +1561,14 @@ class TestCodexModelAliasResolution:
             resp = await adapter.send("test")
 
             assert resp.text == "done"
-            assert adapter.model == "gpt-5.4"
+            assert adapter.model == "gpt-5.5"
             assert adapter._run_once.await_count == 3
             first_probe = adapter._run_once.await_args_list[0].args[0]
             second_probe = adapter._run_once.await_args_list[1].args[0]
             send_cmd = adapter._run_once.await_args_list[2].args[0]
-            assert first_probe[first_probe.index("-m") + 1] == "gpt-5.5"
-            assert second_probe[second_probe.index("-m") + 1] == "gpt-5.4"
-            assert send_cmd[send_cmd.index("-m") + 1] == "gpt-5.4"
+            assert first_probe[first_probe.index("-m") + 1] == "gpt-5.6-sol"
+            assert second_probe[second_probe.index("-m") + 1] == "gpt-5.5"
+            assert send_cmd[send_cmd.index("-m") + 1] == "gpt-5.5"
 
         asyncio.run(_test())
 

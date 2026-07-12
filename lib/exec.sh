@@ -236,6 +236,7 @@ resolve_context_window() {
   local model="${1:-claude-opus-4-8}"
   case "$model" in
     gpt-5-latest) echo 272000 ;;
+    gpt-5.6*) echo 1050000 ;;
     gpt-5.5*) echo 258000 ;;
     gpt-5.4*) echo 272000 ;;
     gpt-4o|gpt-4o-mini) echo 128000 ;;

@@ -480,6 +480,9 @@ _CONTEXT_WINDOWS = {
     "claude-sonnet-4-6": 1_000_000,
     "claude-haiku-4-5": 200_000,
     "gpt-5-latest": 272_000,
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
     "gpt-5.5": 258_000,
     "gpt-5.4": 272_000,
     "gpt-4o": 128_000,
@@ -490,8 +493,8 @@ _CONTEXT_WINDOWS = {
 
 _CODEX_MODEL_ALIASES = {
     # Probe the current Codex/OpenAI path for the newest GPT-5 release we want
-    # to use, but fall back to GPT-5.4 until that model is actually live there.
-    "gpt-5-latest": ("gpt-5.5", "gpt-5.4"),
+    # to use, but fall back to the previous release when it isn't live there.
+    "gpt-5-latest": ("gpt-5.6-sol", "gpt-5.5"),
 }
 
 _CODEX_MODEL_PROBE_PROMPT = "Reply with exactly OK."
@@ -1483,7 +1486,7 @@ class ClaudeInteractiveTmuxAdapter:
 class CodexAdapter:
     """Wraps `codex exec` with session continuity via thread_id resume."""
 
-    def __init__(self, model: str = "gpt-5.5",
+    def __init__(self, model: str = "gpt-5.6-sol",
                  sandbox: str = "read-only",
                  cwd: str = "",
                  add_dirs: Optional[list[str]] = None,

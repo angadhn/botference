@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 2026-07-12
+
+- **GPT-5.6 Sol is the default Codex participant.** OpenAI's new GPT-5.6
+  family (Sol flagship / Terra cheaper / Luna fastest, all 1.05M context,
+  GA July 9) is wired in: `gpt-5.6-sol` is the default everywhere
+  (launcher, bridge, adapter), all three appear in `/model @codex`
+  completions with correct context windows, the new `max` reasoning
+  effort joins `/effort @codex`, and `gpt-5-latest` now probes Sol first
+  (falling back to gpt-5.5). Requires codex-cli ≥ 0.144 — older CLIs get
+  a server error telling you to upgrade (`brew upgrade --cask codex`).
+
 ## 2026-07-09
 
 - **Image attachments actually work now.** Pastes with backslash-escaped

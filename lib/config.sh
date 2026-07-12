@@ -461,6 +461,9 @@ Supported models:
   claude-opus-4-7       Anthropic Opus 4.7  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
   claude-haiku-4-5      Anthropic Haiku 4.5  (200k context)
+  gpt-5.6-sol           OpenAI GPT-5.6 Sol   (1.05M context; default Codex participant)
+  gpt-5.6-terra         OpenAI GPT-5.6 Terra (1.05M context, cheaper)
+  gpt-5.6-luna          OpenAI GPT-5.6 Luna  (1.05M context, fastest)
   gpt-5.5               OpenAI GPT-5.5       (258k context on high effort)
   gpt-5-latest          OpenAI GPT-5 latest  (probes gpt-5.5, falls back to gpt-5.4)
   gpt-5.4               OpenAI GPT-5.4       (272k context)
@@ -476,7 +479,7 @@ Model resolution order:
 
 Environment variables:
   ANTHROPIC_MODEL          Global Anthropic model override (same as --anthropic-model)
-  OPENAI_MODEL           OpenAI participant model (default: gpt-5.5)
+  OPENAI_MODEL           OpenAI participant model (default: gpt-5.6-sol)
   OPENAI_REASONING_EFFORT Codex participant reasoning effort in planner sessions (default: high)
   BOTFERENCE_HOME          Path to botference framework install
   BOTFERENCE_PROJECT_DIR_NAME Project-local state directory slug/name (default: botference)

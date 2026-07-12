@@ -648,7 +648,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="botference ink bridge")
     parser.add_argument("--anthropic-model", default="claude-fable-5")
     parser.add_argument("--claude-effort", default="")
-    parser.add_argument("--openai-model", default="gpt-5.5")
+    parser.add_argument("--openai-model", default="gpt-5.6-sol")
     parser.add_argument("--openai-effort", default="")
     parser.add_argument("--system-prompt-file", required=True)
     parser.add_argument("--task-file", required=True)
