@@ -647,7 +647,9 @@ async def main() -> None:
 
     parser = argparse.ArgumentParser(description="botference ink bridge")
     parser.add_argument("--anthropic-model", default="claude-fable-5")
-    parser.add_argument("--claude-effort", default="")
+    # Both participants run at high effort by default — explicit rather
+    # than trusting each CLI's own default to stay "high" forever.
+    parser.add_argument("--claude-effort", default="high")
     parser.add_argument("--openai-model", default="gpt-5.6-sol")
     parser.add_argument("--openai-effort", default="")
     parser.add_argument("--system-prompt-file", required=True)
