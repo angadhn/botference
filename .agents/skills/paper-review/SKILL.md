@@ -70,6 +70,13 @@ Build these, testable at every step against the live paper:
      hangs under the comment thread that prompted it.
    - `review/state/ack.json` (bot-owned): last processed timestamp per
      bot.
+   - **Threads are two-way.** Every thread (and every card) must offer
+     a reply box to the human viewer — including under bot replies. A
+     human reply is written to *their own* `users/<handle>.json` under
+     the same card/comment id (a `thread` array of `{ts, text}`); the
+     UI renders one merged, chronological thread from all user files +
+     `threads.json`. No dead ends: if a bot can say it, a human can
+     answer it, and vice versa.
    - `server.mjs` adds `GET /data` (all state merged) and `GET /events`
      (SSE). Watch `suggestions.json`, `state/`, and `site/`; on state
      change the browser refetches `/data` and re-renders the margin in
