@@ -80,6 +80,11 @@ Build these, testable at every step against the live paper:
    - A comment is saved as you type (debounced mirror), with resolved
      comments archived to a "Resolved" list (GDocs-style), never
      deleted by workflow.
+   - **Author filter.** The margin fills up fast with multiple humans +
+     bots: provide filter chips (one per participant — each human
+     handle, each bot, "all") that show only the selected authors'
+     comment threads and their replies. Filter state is local to each
+     viewer (localStorage), never shared.
 
 ## File ownership (never write another writer's file)
 
