@@ -49,8 +49,12 @@ Build these, testable at every step against the live paper:
      `GET /whoami`; the browser's live mirror writes only *that* file.
    - The UI merges every `users/*.json`: own comments editable, other
      users' read-only, each card labeled with the handle.
-   - `review/state/` stays gitignored **except** `state/users/`, which
-     is committed — that's how comments travel through the repo.
+   - Git split: everything conversational is **committed** so it travels
+     through the repo to collaborators without botference —
+     `state/users/*.json`, `state/threads.json`, `suggestions.json`.
+     Only runtime files are gitignored: `state/ack.json`,
+     `state/summon.json`, live-mirror/journal files, and `site/` (build
+     product; collaborators rebuild locally).
    - `review/submit.mjs`: commits (optionally `--push`) the caller's
      own user file, so a collaborator without botference can
      clone → comment in the browser → submit.
