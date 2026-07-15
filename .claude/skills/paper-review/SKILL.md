@@ -97,7 +97,10 @@ Build these, testable at every step against the live paper:
    writes. Primary transport: the owner tunnels their running server
    (`cloudflared tunnel --url localhost:<port>`) so a machineless
    collaborator comments on the owner's live page and gets bot replies
-   over SSE in real time.
+   over SSE in real time. On `--hosted` startup, print the ready-to-run
+   tunnel command for this project's port (e.g. `cloudflared tunnel
+   --url http://localhost:<port>`) so sharing is copy-paste; one
+   server+tunnel per project, each with its own URL and password.
    **Hard security requirement (tunnel-exposed):** the server must
    serve *only* `review/site/` and the configured figures dir (keep and
    test the path-traversal guard — reject any resolved path outside
