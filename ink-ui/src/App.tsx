@@ -199,7 +199,7 @@ function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
 function Pane({
   title,
   pane,
-  entries,
+  flatLines,
   focused,
   height,
   contentHeight,
@@ -210,7 +210,10 @@ function Pane({
 }: {
   title: string;
   pane: PaneName;
-  entries: Entry[];
+  // Pre-rendered flat visual lines. Computed once by the parent (from the
+  // deferred transcript) so the urgent render path never re-flattens the
+  // whole transcript — Pane only slices the viewport out of it.
+  flatLines: FlatLine[];
   focused: boolean;
   height: number;
   contentHeight: number;
@@ -219,12 +222,6 @@ function Pane({
   hasNewMessages: boolean;
   selection: PaneSelection | null;
 }) {
-  // Pre-render entries to flat visual lines
-  const flatLines = useMemo(
-    () => preRenderLines(entries, textWidth),
-    [entries, textWidth],
-  );
-
   // Viewport slicing — bottom-anchored (0 = bottom, scroll up = older)
   const { startIdx, endIdx, clampedScroll } = computeViewportSlice(
     flatLines.length,
@@ -1867,7 +1864,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         <Pane
           title="COUNCIL"
           pane="room"
-          entries={roomEntries}
+          flatLines={roomFlatLines}
           focused={focusedPane === "room"}
           height={paneHeight}
           contentHeight={paneContentHeight}

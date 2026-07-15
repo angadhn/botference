@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-07-15
+
+- **Fixed the TUI's 4GB out-of-memory crashes.** Root cause: the Ink UI
+  loaded React's *development* reconciler (NODE_ENV was never set), which
+  records a `performance.measure()` — with a props-diff payload — for
+  every component render; Node retains every user-timing entry for the
+  life of the process, so long busy/streaming sessions leaked ~1MB/s
+  until the ~4GB heap ceiling (three OOM aborts on 2026-07-15).
+  `dist/bin.js` is now a loader that pins `NODE_ENV=production` before
+  React is imported, the launcher sets it too, and a periodic user-timing
+  purge keeps even deliberate dev-mode runs bounded. Also: the launcher
+  gives node `--max-old-space-size=8192` headroom, the syntax-highlight
+  cache is capped (it minted a new entry per stream flush while code
+  blocks streamed), the transcript pane no longer re-flattens the whole
+  transcript on the urgent render path (the flatten now happens once, on
+  the deferred path — less flicker while streaming), and after an
+  abnormal TUI exit the launcher drains buffered mouse escape sequences
+  so they can't replay into the shell as garbage.
+
 ## 2026-07-12
 
 - **GPT-5.6 Sol is the default Codex participant.** OpenAI's new GPT-5.6

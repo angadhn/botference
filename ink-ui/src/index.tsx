@@ -20,6 +20,7 @@ import {
   type MouseEventInfo,
 } from "./v2/stdinFilter.js";
 import { createFlightRecorder } from "./v2/flightRecorder.js";
+import { startUserTimingPurge } from "./v2/perfHygiene.js";
 // Re-export so consumers (App.tsx) can import the type from the index module.
 export type { MouseEventInfo } from "./v2/stdinFilter.js";
 
@@ -356,6 +357,12 @@ export const flightRecorder = createFlightRecorder({
   filePath: path.join(CRASH_LOG_DIR, "flight.jsonl"),
 });
 flightRecorder.start();
+
+// Node's user-timing buffer is unbounded and React's dev reconciler logs a
+// performance.measure per component render — purge periodically so even a
+// dev-mode run (npm run dev) can't accumulate entries until OOM. dist/bin.js
+// pins NODE_ENV=production, which removes the emitter entirely.
+startUserTimingPurge();
 process.on("exit", () => {
   flightRecorder.stop();
 });

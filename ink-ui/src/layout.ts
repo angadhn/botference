@@ -928,7 +928,18 @@ const HLJS_LANGUAGE_ALIASES: Record<string, string> = {
   md: "markdown",
   markdown: "markdown",
 };
+// Keyed by full line text, so it grows for the life of the process — and
+// during code-block streaming every flush re-highlights the growing last
+// line, minting a new key per tick. Cap it; a clear on overflow is fine
+// because entries are cheap to recompute and the per-entry FlatLine cache
+// keeps committed lines from being re-highlighted at all.
+const HIGHLIGHT_CACHE_MAX_ENTRIES = 10_000;
 const highlightCache = new Map<string, LineSegment[]>();
+
+/** Test hook: current number of cached highlighted lines. */
+export function highlightCacheSize(): number {
+  return highlightCache.size;
+}
 
 function makeSegment(
   text: string,
@@ -1165,6 +1176,7 @@ function highlightCodeLineWithHighlightJs(
       ignoreIllegals: true,
     }).value;
     const parsed = parseHighlightedHtml(html, baseBackgroundColor);
+    if (highlightCache.size >= HIGHLIGHT_CACHE_MAX_ENTRIES) highlightCache.clear();
     highlightCache.set(cacheKey, parsed);
     return parsed.map((segment) => ({ ...segment }));
   } catch {

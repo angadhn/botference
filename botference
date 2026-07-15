@@ -400,7 +400,14 @@ while true; do
       # and a start with no matching end means a hard kill.
       _ledger="${BOTFERENCE_PROJECT_ROOT}/.botference/run-ledger.jsonl"
       echo "{\"event\":\"run_start\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"pid\":$$,\"cwd\":\"$(pwd)\"}" >> "$_ledger" 2>/dev/null || true
-      NODE_OPTIONS="${NODE_OPTIONS:-} --report-on-fatalerror --report-directory=$_crash_dir" \
+      # --max-old-space-size=8192: headroom over Node's ~4GB default so even
+      # pathological sessions (huge restored transcript + long streaming
+      # turns) don't hit the heap ceiling. NODE_ENV=production selects React's
+      # production reconciler (dist/bin.js also pins this): the dev build logs
+      # a performance.measure per component render and Node retains every
+      # user-timing entry forever — the 4GB OOM crashes of 2026-07-15.
+      NODE_ENV="${NODE_ENV:-production}" \
+      NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=8192 --report-on-fatalerror --report-directory=$_crash_dir" \
       "$INK_NODE_BIN" "${BOTFERENCE_HOME}/ink-ui/dist/bin.js" \
         --anthropic-model "$CLI_MODEL" \
         --openai-model "$OPENAI_MODEL" \
@@ -421,6 +428,13 @@ while true; do
       printf '\033[?1003l\033[?1002l\033[?1000l\033[?1006l\033[?2004l\033[?1049l\033[?25h' 2>/dev/null || true
       stty sane 2>/dev/null || true
       if [ "$EXIT_CODE" -ne 0 ]; then
+        # Drain input buffered while the TUI was dying (mouse reports sent
+        # with tracking still on sit in the tty queue and would otherwise be
+        # replayed into the shell as garbage like "65;67;26M"). Integer -t
+        # only: macOS ships bash 3.2, which lacks -t 0 polling. Worst case
+        # this pauses one second on an already-abnormal exit.
+        while read -r -t 1 -n 10000 _junk 2>/dev/null; do :; done || true
+        unset _junk 2>/dev/null || true
         echo "botference TUI exited abnormally (code $EXIT_CODE). Crash evidence:"
         echo "  - ${BOTFERENCE_PROJECT_ROOT}/.botference/ink-crash.log (UI exceptions)"
         echo "  - $_crash_dir (fatal V8/OOM reports)"
