@@ -157,6 +157,18 @@ Build these, testable at every step against the live paper:
      (POST `/chatbox`). A server-side `--chat` with no UI wiring is not
      P3 done (this exact gap shipped once: 2026-07-15, the user tagged
      @claude and nothing happened).
+   - **Inline-first, minimal chrome (user decision 2026-07-15).** The
+     margin thread is the primary — and default only — bot surface: the
+     working indicator and the streaming reply render *inside the
+     thread card under the user's comment*, not in a side panel. The
+     chat panel is collapsed to a small toggle by default and exists
+     only for unanchored conversation; it must never be required to
+     see or follow an anchored reply. Raw bridge/turn debug text stays
+     out of the default view entirely.
+   - **Mentions fire only on explicit confirm.** A tag becomes a turn
+     only when the user saves/confirms the comment (Done/Enter) —
+     never on input, change, or paste events. (Shipped bug 2026-07-15:
+     pasting text containing @claude summoned the bot mid-composition.)
    - **Visible activity, end to end.** The viewer must always be able
      to tell the invited bot is doing what it was asked: on submit show
      "queued" on that comment; on `turn-start` show a working indicator
