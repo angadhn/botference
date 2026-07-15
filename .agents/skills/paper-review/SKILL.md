@@ -77,6 +77,12 @@ Build these, testable at every step against the live paper:
      UI renders one merged, chronological thread from all user files +
      `threads.json`. No dead ends: if a bot can say it, a human can
      answer it, and vice versa.
+   - **You can always edit your own words.** Every entry a human owns —
+     comments, decisions notes, thread replies — is editable and
+     deletable in place by that human (and only by them; other users'
+     and bots' entries are read-only). Edits update `{ts, edited: true}`
+     in their own user file. Bots must treat an edited entry newer than
+     their ack as new input.
    - `server.mjs` adds `GET /data` (all state merged) and `GET /events`
      (SSE). Watch `suggestions.json`, `state/`, and `site/`; on state
      change the browser refetches `/data` and re-renders the margin in
