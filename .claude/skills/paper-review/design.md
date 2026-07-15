@@ -43,6 +43,43 @@ A collaborator **without** bots needs no botference: clone, run
 `review/submit.mjs` commits their comments. You pull → their comments
 appear → your bots can reply to them like yours.
 
+## V1.5: everyone on the same URL, without building a website
+
+Real case: the Acta student's laptop died; git-local collaboration is
+out and both collaborators should look at *the same rendered page*.
+The review server already is a website — V1.5 is a **hosted mode of
+the same server**, not a new product:
+
+`server.mjs --hosted` adds: a shared password (env var, HTTP basic
+auth), a one-time "who are you" handle picker per browser (stored in
+localStorage; writes only `users/<that-handle>.json`), and rate-limited
+writes. Two transports, same code:
+
+- **A. Tunnel from the owner's machine (default, zero infra).**
+  Owner runs the server + `cloudflared tunnel --url localhost:<port>`
+  and shares the URL + password. Everyone shares one live page: the
+  collaborator's comments land on the owner's disk, the owner's local
+  bots reply, SSE pushes replies to every open browser in seconds.
+  Constraint: owner's machine must be on.
+- **B. Free-tier deploy (always-on).** Same server on Fly/Render with
+  the repo as its database: it pulls on start, commits+pushes comment
+  files with a deploy key. Pushes touching `review/state/users/*.json`
+  (or a manual `workflow_dispatch` button) trigger
+  `.github/workflows/review-round.yml`, which runs Claude Code headless
+  (`anthropics/claude-code-action` / `claude -p`, auth from a repo
+  secret — `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, never a
+  key in the tree) to execute the round protocol and push
+  `threads.json` replies; the server pulls and SSE-updates browsers.
+  Hard guardrail in prompt AND workflow permissions: CI rounds are
+  reply-and-suggest only — never edit paper sources; apply/commit stay
+  local and human-triggered.
+
+The round protocol is thus one contract across three runtimes: local
+botference bots, CI rounds, and (later) V2 cloud agents. GitHub
+Codespaces remains a fallback for a machineless collaborator who needs
+a terminal. V2 below only replaces hosting/auth (GitHub login instead
+of shared password), nothing else.
+
 ## Product track: local-first, cloud-second
 
 What comments 11–12 describe is a product: drag a document in, discuss
@@ -115,6 +152,7 @@ frontend is replaceable — a web frontend is that same observation.)
 | P2 | Bot replies + live SSE margin + resolved tab; `submit.mjs` for botless collaborators |
 | P3 | Bridge frontend: conversational scaffold, tagged comments → turns, session resume/fresh, chat panel |
 | P4 | Apply / Commit / Revert + per-agent-colored inline tracked changes with Finalize |
+| V1.5 | `server.mjs --hosted` (password + handle picker) shared via tunnel; optional free-tier deploy + `review-round.yml` CI round (reply-and-suggest only) |
 | V2 | Cloud deployment: GitHub login, server-synced comments, bring-your-own-sub agents + shared project agent |
 
 Ships in botference-main: engine in `frontends/review/`, protocol in

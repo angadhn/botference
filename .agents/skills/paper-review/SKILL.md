@@ -90,6 +90,18 @@ Build these, testable at every step against the live paper:
      comment threads and their replies. Filter state is local to each
      viewer (localStorage), never shared.
 
+5. **Hosted mode (V1.5 — same URL for every collaborator).**
+   `server.mjs --hosted`: HTTP basic auth from a `REVIEW_PASSWORD` env
+   var, a one-time handle picker per browser (localStorage; that
+   browser writes only `users/<that-handle>.json`), rate-limited
+   writes. Primary transport: the owner tunnels their running server
+   (`cloudflared tunnel --url localhost:<port>`) so a machineless
+   collaborator comments on the owner's live page and gets bot replies
+   over SSE in real time. See design.md §V1.5 for the optional
+   always-on deploy + `review-round.yml` CI round (reply-and-suggest
+   only, auth from a repo secret, never a key in the tree, never
+   editing paper sources).
+
 ## File ownership (never write another writer's file)
 
 | File | Writer |
