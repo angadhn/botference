@@ -150,6 +150,21 @@ Build these, testable at every step against the live paper:
      collaborators' tagged comments queue for the owner to release —
      bots must not be summonable by non-owners by default.
 
+7. **P4 — Apply / Commit / Revert in the UI (green-lit 2026-07-15).**
+   Owner-only buttons (never shown to non-owner handles in hosted mode):
+   - Per accepted card and as "Apply all accepted": **Apply** runs
+     `apply.mjs` — deterministic unique-span replacement of
+     `current_text` in `source_file`, bib entries appended atomically;
+     ambiguous/drifted spans flagged `needs_manual_resolution`, never
+     guessed. Rebuild follows; the page reloads via SSE and the card
+     shows "applied, uncommitted".
+   - **Commit** (after the owner has read the applied render) commits
+     the round in the paper repo with a message listing applied card
+     ids; **Revert** restores the pre-apply state via git. Apply and
+     commit are always separate clicks.
+   - These buttons drive the same chat/bridge path as P3 (an apply
+     turn), so the transcript records every apply/commit/revert.
+
 ## File ownership (never write another writer's file)
 
 | File | Writer |
