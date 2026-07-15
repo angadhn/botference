@@ -17,12 +17,14 @@ if (major(process.versions.node) < 18) {
   nodeBin = fallbackNode;
 }
 
+const isTestFile = (name) => name.endsWith(".test.ts") || name.endsWith(".test.tsx");
+
 const testFiles = [
   ...readdirSync("src")
-    .filter((name) => name.endsWith(".test.ts"))
+    .filter(isTestFile)
     .map((name) => join("src", name)),
   ...readdirSync(join("src", "v2"))
-    .filter((name) => name.endsWith(".test.ts"))
+    .filter(isTestFile)
     .map((name) => join("src", "v2", name)),
 ].sort();
 

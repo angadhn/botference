@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-07-16
+
+- **Fixed the TUI flickering during bot turns.** Two compounding causes:
+  the app rendered at exactly the terminal height, which pushes Ink onto
+  its fullscreen fallback — a `clearTerminal` (full screen + scrollback
+  erase) and complete repaint on *every* render — and the busy-spinner
+  animation ticked app-level state every 70ms, re-rendering the entire
+  tree (~130 components) and triggering that full repaint ~14×/s all
+  through a streaming turn (measured: 29 full-screen clears and ~67 KB/s
+  of terminal writes per 2s). Now the frame stays one row under the
+  terminal height, Ink's incremental renderer diffs per line and rewrites
+  only lines that changed, the spinner is an isolated `<BusyLine>`
+  component that owns its animation frame (nothing else re-renders, and
+  it ticks at a calmer 150ms), and transcript rows are memoized against
+  the per-entry flat-line cache so a stream flush re-renders only the
+  changed row. After: zero full-screen repaints, zero row re-renders per
+  spinner tick, ~1 KB/s written while busy (~60× less). Render-path
+  regression tests pin all of this down (`ink-ui/src/panes.test.tsx`).
+
 ## 2026-07-15
 
 - **Fixed the TUI's 4GB out-of-memory crashes.** Root cause: the Ink UI

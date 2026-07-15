@@ -396,6 +396,12 @@ const bridgeArgs = parseArgs(process.argv);
 const inkApp = render(<App bridgeArgs={bridgeArgs} />, {
   exitOnCtrlC: false,
   stdin: stdinFilter as unknown as NodeJS.ReadStream,
+  // Per-line output diffing: rewrite only the terminal lines whose content
+  // changed instead of erasing and repainting the whole frame every render.
+  // Together with the frame staying under the terminal height (see frameRows
+  // in App.tsx — at full height Ink falls back to clearTerminal repaints),
+  // this is what keeps streaming turns visually calm.
+  incrementalRendering: true,
 });
 
 // Backstop: registered AFTER render() so it runs after Ink's own exit hook

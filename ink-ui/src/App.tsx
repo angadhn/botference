@@ -9,16 +9,13 @@ import {
   clampScrollOffset,
   computeLayoutBudget,
   computeSmoothScrollNext,
-  computeViewportSlice,
   computeWheelScrollDelta,
   initWheelAccel,
-  truncateTitle,
   preRenderLines,
   shouldAutoScroll,
   cursorToWrappedLineCol,
   wrappedLineColToCursor,
   wrapInputLines,
-  type FlatLine,
   type RenderBlock,
 } from "./layout.js";
 import {
@@ -51,19 +48,17 @@ import {
   PACED_MESSAGE_INTERVAL_MS,
 } from "./v2/messages.js";
 import {
-  applySelectionHighlight,
   hitTestPane,
   selectedTextFromLines,
   type PaneHit,
-  type PaneName,
   type PaneSelection,
 } from "./v2/selection.js";
+import { BusyLine, Pane, THEME } from "./panes.js";
 import {
   createV2Activity,
   formatV2ActivityText,
   startV2ActivityFromInput,
   updateV2ActivityForStream,
-  v2ActivityGlyph,
   type V2Activity,
 } from "./v2/activity.js";
 
@@ -130,21 +125,7 @@ import {
 // (type: "slash_commands") so they stay in sync with the canonical
 // dispatcher in core/botference.py.
 
-const THEME = {
-  chrome: "gray",
-  chromeMuted: "gray",
-  accent: "cyan",
-  accentBright: "cyanBright",
-  warning: "yellow",
-  danger: "red",
-  text: "white",
-  textMuted: "grayBright",
-  statusMuted: "gray",
-  ready: "green",
-};
-
 type BusyTarget = "claude" | "codex" | "all" | "system" | null;
-type BusySegment = { text: string; color: string; bold?: boolean };
 
 function resolveBusyTarget(input: string, currentRoute: string): BusyTarget {
   const trimmed = input.trim();
@@ -171,140 +152,12 @@ function v2ActivityFromBusyTarget(target: BusyTarget): V2Activity {
   }
 }
 
-function buildBusySegments(text: string, frameIndex: number): BusySegment[] {
-  const chars = Array.from(text);
-  if (chars.length === 0) return [{ text: "", color: THEME.textMuted }];
-
-  const cyclePadding = 10;
-  const cycleLength = chars.length + cyclePadding * 2;
-  const glimmerIndex = (frameIndex % cycleLength) - cyclePadding;
-
-  return chars.map((char, index) => {
-    const distance = Math.abs(index - glimmerIndex);
-    if (distance === 0) {
-      return { text: char, color: "white", bold: true };
-    }
-    if (distance <= 1) {
-      return { text: char, color: "grayBright" };
-    }
-    if (distance <= 2) {
-      return { text: char, color: THEME.textMuted };
-    }
-    return { text: char, color: THEME.textMuted };
-  });
-}
-
 // ── Sub-components ─────────────────────────────────────────
+// The transcript Pane and the animated BusyLine live in panes.tsx (imported
+// above) so they can be unit-tested without this module's ./index.js side
+// effects, and so the spinner tick never re-renders the app tree.
 
-function Pane({
-  title,
-  pane,
-  flatLines,
-  focused,
-  height,
-  contentHeight,
-  textWidth,
-  scrollOffset,
-  hasNewMessages,
-  selection,
-}: {
-  title: string;
-  pane: PaneName;
-  // Pre-rendered flat visual lines. Computed once by the parent (from the
-  // deferred transcript) so the urgent render path never re-flattens the
-  // whole transcript — Pane only slices the viewport out of it.
-  flatLines: FlatLine[];
-  focused: boolean;
-  height: number;
-  contentHeight: number;
-  textWidth: number;
-  scrollOffset: number;
-  hasNewMessages: boolean;
-  selection: PaneSelection | null;
-}) {
-  // Viewport slicing — bottom-anchored (0 = bottom, scroll up = older)
-  const { startIdx, endIdx, clampedScroll } = computeViewportSlice(
-    flatLines.length,
-    contentHeight,
-    scrollOffset,
-  );
-  const visibleLines = flatLines.slice(startIdx, endIdx);
-
-  const badge = hasNewMessages ? " ↓ new" : undefined;
-  const displayTitle = truncateTitle(title, clampedScroll, textWidth, badge);
-  const dimmed = !focused;
-
-  return (
-    <Box
-      flexGrow={1}
-      flexShrink={1}
-      flexBasis="50%"
-      flexDirection="column"
-      borderStyle={focused ? "bold" : "single"}
-      borderColor={focused ? THEME.accent : THEME.chrome}
-      overflow="hidden"
-      height={height}
-      paddingX={1}
-    >
-      <Text bold color={focused ? THEME.accentBright : THEME.textMuted}>
-        {displayTitle}
-      </Text>
-      {visibleLines.map((line, visibleIndex) => {
-        const lineIndex = startIdx + visibleIndex;
-        const selectedSegments = applySelectionHighlight(line, selection, pane, lineIndex);
-        return (
-        <Box key={line.key} width="100%">
-          <Text
-            bold
-            color={dimmed ? THEME.textMuted : line.speakerColor}
-            wrap="truncate-end"
-          >
-            {line.label}
-          </Text>
-          <Box
-            flexGrow={1}
-            backgroundColor={dimmed ? undefined : (line.bodyBackgroundColor ?? line.gutterBackgroundColor)}
-          >
-            {line.gutter ? (
-              <Text
-                color={dimmed ? THEME.chromeMuted : (line.gutterColor ?? THEME.textMuted)}
-                backgroundColor={dimmed ? undefined : (line.gutterBackgroundColor ?? line.bodyBackgroundColor)}
-                wrap="truncate-end"
-              >
-                {line.gutter}
-              </Text>
-            ) : null}
-            <Text
-              bold={line.bodyBold && !dimmed}
-              color={dimmed ? THEME.chromeMuted : line.bodyColor}
-              backgroundColor={dimmed ? undefined : line.bodyBackgroundColor}
-              wrap="truncate-end"
-            >
-              {selectedSegments
-                ? selectedSegments.map((segment, index) => (
-                  <Text
-                    key={`${line.key}-${index}`}
-                    color={dimmed ? THEME.chromeMuted : (segment.color ?? line.bodyColor)}
-                    backgroundColor={dimmed ? undefined : (segment.backgroundColor ?? line.bodyBackgroundColor)}
-                    bold={!dimmed && segment.bold}
-                    italic={!dimmed && segment.italic}
-                    underline={!dimmed && segment.underline}
-                    strikethrough={!dimmed && segment.strikethrough}
-                  >
-                    {segment.text}
-                  </Text>
-                ))
-                : line.text}
-            </Text>
-          </Box>
-        </Box>
-        );
-      })}
-    </Box>
-  );
-}
-
-function ProjectsPane({
+const ProjectsPane = React.memo(function ProjectsPane({
   rows,
   focused,
   cursorIndex,
@@ -435,7 +288,7 @@ function ProjectsPane({
       })}
     </Box>
   );
-}
+});
 
 function ContextPercent({ pct }: {
   pct: number | null;
@@ -451,7 +304,7 @@ function ContextPercent({ pct }: {
 
 const MIN_VISIBLE_INPUT_LINES = 1;
 
-function InputRenderer({
+const InputRenderer = React.memo(function InputRenderer({
   text,
   cursor,
   ghostText,
@@ -529,9 +382,9 @@ function InputRenderer({
       })}
     </Box>
   );
-}
+});
 
-function StatusBar({
+const StatusBar = React.memo(function StatusBar({
   status,
 }: {
   status: StatusData;
@@ -547,7 +400,7 @@ function StatusBar({
       </Text>
     </Box>
   );
-}
+});
 
 function PermissionPrompt({
   request,
@@ -659,7 +512,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [ready, setReady] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
   const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
-  const [busyFrameIndex, setBusyFrameIndex] = useState(0);
   const [v2Activity, setV2Activity] = useState<V2Activity | null>(null);
   const [mouseSelectionMode, setMouseSelectionMode] = useState(false);
   const [paneSelection, setPaneSelection] = useState<PaneSelection | null>(null);
@@ -717,6 +569,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const { stdout } = useStdout();
   const rows = stdout?.rows ?? 24;
   const cols = stdout?.columns ?? 80;
+  // Render one line SHORT of the terminal height. When Ink's frame height
+  // reaches stdout.rows it switches to a fullscreen path that repaints with
+  // ansiEscapes.clearTerminal (full clear + scrollback erase) on EVERY render
+  // instead of diffing lines — that full-screen flash ~14×/s was the streaming
+  // flicker. One reserved row keeps us on the incremental diffing path.
+  const frameRows = Math.max(4, rows - 1);
   const inputTextWidth = Math.max(8, cols - 4);
   const wrappedInputLines = useMemo(
     () => wrapInputLines(inputText, inputTextWidth),
@@ -732,7 +590,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [cursor, inputText.length, inputTextWidth, wrappedInputLines]);
   const maxVisibleInputLines = Math.max(
     MIN_VISIBLE_INPUT_LINES,
-    Math.min(12, Math.floor(rows * 0.35)),
+    Math.min(12, Math.floor(frameRows * 0.35)),
   );
   const visibleInputLines = Math.max(
     MIN_VISIBLE_INPUT_LINES,
@@ -749,7 +607,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     councilTextWidth,
     projectsPaneWidth,
     projectsTextWidth,
-  } = computeLayoutBudget(rows, cols, visibleInputLines, {
+  } = computeLayoutBudget(frameRows, cols, visibleInputLines, {
     projectsVisible,
   });
   // If the budget refused to draw the panel (e.g. terminal too narrow), treat
@@ -1074,16 +932,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [roomScroll, roomEntries.length]);
 
   const roomHasNew = roomScroll > 0 && roomEntries.length > lastSeenRoomCount;
-  useEffect(() => {
-    if (ready) {
-      setBusyFrameIndex(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      setBusyFrameIndex((prev) => prev + 1);
-    }, 70);
-    return () => clearInterval(interval);
-  }, [ready]);
+  // NOTE: the busy-spinner animation is NOT app state. <BusyLine> (panes.tsx)
+  // owns the frame interval so a tick re-renders one status line, not the app.
 
   // ── Ghost text (autocomplete) ──────────────────────────
 
@@ -1836,8 +1686,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget);
   const busyText = formatV2ActivityText(activeV2Activity);
-  const busySegments = buildBusySegments(busyText, busyFrameIndex);
-  const busyGlyph = v2ActivityGlyph(busyFrameIndex);
   const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
   const queueHint = queuedCount > 0
     ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
@@ -1847,7 +1695,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // ── Render ─────────────────────────────────────────────
 
   return (
-    <Box flexDirection="column" height={rows}>
+    <Box flexDirection="column" height={frameRows}>
       {/* Panes */}
       <Box flexDirection="row" flexGrow={1} marginBottom={1}>
         {projectsPaneRendered ? (
@@ -1891,16 +1739,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             <Text color={(hint || mouseSelectionMode) ? THEME.textMuted : THEME.statusMuted}>
               {mouseSelectionMode || hint || ready
                 ? statusText
-                : (
-                  <>
-                    <Text color={THEME.accentBright}>{busyGlyph} </Text>
-                    {busySegments.map((segment, index) => (
-                      <Text key={`busy-${index}`} color={segment.color} bold={segment.bold}>
-                        {segment.text}
-                      </Text>
-                    ))}
-                  </>
-                )}
+                : <BusyLine text={busyText} />}
             </Text>
             <Text color={THEME.text}>{inputLabel}</Text>
             <Box
