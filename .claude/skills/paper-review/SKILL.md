@@ -125,6 +125,31 @@ Build these, testable at every step against the live paper:
    only, auth from a repo secret, never a key in the tree, never
    editing paper sources).
 
+6. **P3 — no terminal round-trips (green-lit 2026-07-15).** The review
+   server becomes a botference frontend so the user never returns to
+   the TUI mid-review:
+   - `server.mjs --chat` spawns the bridge as a child process:
+     `python3 $BOTFERENCE_HOME/core/botference_ink_bridge.py` with the
+     workspace as `BOTFERENCE_PROJECT_ROOT` (read
+     `core/botference_ink_bridge.py` and `lib/config.sh` in
+     `$BOTFERENCE_HOME` first — the protocol is JSON lines: user input
+     on stdin, room entries/stream events on stdout; resume the
+     existing session via the session store rather than starting cold).
+   - A browser comment tagged `@claude` / `@codex` / `@all` (and the
+     🚩 batch) is composed into a user turn and written to the bridge's
+     stdin; bot output streams into a sidebar chat panel (which also
+     gets a free-text box). Bots keep writing `threads.json` /
+     `suggestions.json` exactly as in rounds — the SSE path is
+     unchanged.
+   - Hard rule: one frontend per session — refuse `--chat` (with a
+     clear message) if the TUI currently has the session open, and
+     vice versa document that the TUI must not attach while `--chat`
+     runs.
+   - In `--hosted` mode, only the owner's browser (first authenticated
+     handle, or a `?owner` token) may send turns to the bridge;
+     collaborators' tagged comments queue for the owner to release —
+     bots must not be summonable by non-owners by default.
+
 ## File ownership (never write another writer's file)
 
 | File | Writer |
