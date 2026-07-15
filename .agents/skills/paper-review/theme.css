@@ -1,0 +1,34 @@
+/* paper-review theme tokens — Anthropic-flavoured reading surface,
+ * lifted from the user's review-doc skill (keep visual parity with it).
+ * Warm paper in light mode, warm near-black in dark; humanist serif
+ * prose; coral (#d97757) accent used with restraint; system fonts only.
+ * Apply via CSS variables; support BOTH schemes with
+ * @media (prefers-color-scheme: dark). */
+:root {
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
+  --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
+  --hl: rgba(240, 195, 120, 0.55); --hl-active: rgba(228, 166, 80, 0.8);
+  --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
+  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+  --serif: "Iowan Old Style", "Source Serif Pro", Charter, "Apple Garamond",
+    "Hoefler Text", Georgia, ui-serif, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
+    --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
+    --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+    --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
+    --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+  }
+}
+/* Baseline usage notes:
+ * body: font-family var(--serif); 17px/1.75; background var(--bg); color var(--fg).
+ * Headings: var(--heading); h2 with a top hairline border var(--line).
+ * Comment highlights: mark background var(--hl), bottom border var(--hl-active).
+ * Cards: var(--card) on the rail var(--rail), border var(--card-line), 10px radius.
+ * Per-agent suggestion colors (P4 tracked changes) must be chosen to read
+ * on BOTH schemes; Claude = the coral accent family, Codex = a blue of
+ * equal weight; humans get muted variants. */

@@ -102,6 +102,16 @@ Build these, testable at every step against the live paper:
      handle, each bot, "all") that show only the selected authors'
      comment threads and their replies. Filter state is local to each
      viewer (localStorage), never shared.
+   - **Responsive layout.** Resizing the window must reflow, not break:
+     no fixed multi-column grid; on narrow viewports the margin rail
+     collapses to inline affordances (tap a highlight to open its
+     thread) instead of disappearing; the chat panel becomes a toggle.
+     Re-run card positioning on every resize.
+   - **Theming.** Adopt the design tokens in `theme.css` next to this
+     file (Anthropic-flavoured: warm paper/near-black, humanist serif
+     prose, coral accent, light AND dark via `prefers-color-scheme`) so
+     the review site matches the user's other review tooling. Replace
+     the prototype's Palatino/#8b0000 stylesheet.
 
 5. **Hosted mode (V1.5 — same URL for every collaborator).**
    `server.mjs --hosted`: HTTP basic auth from a `REVIEW_PASSWORD` env
