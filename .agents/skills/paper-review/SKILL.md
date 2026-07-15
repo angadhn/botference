@@ -141,6 +141,21 @@ Build these, testable at every step against the live paper:
      gets a free-text box). Bots keep writing `threads.json` /
      `suggestions.json` exactly as in rounds — the SSE path is
      unchanged.
+   - **The browser UI half is mandatory, not optional:** detect
+     `@claude`/`@codex`/`@all` in a saved comment/reply and POST it to
+     `/mention`; render the sidebar chat panel with its free-text box
+     (POST `/chatbox`). A server-side `--chat` with no UI wiring is not
+     P3 done (this exact gap shipped once: 2026-07-15, the user tagged
+     @claude and nothing happened).
+   - **Visible activity, end to end.** The viewer must always be able
+     to tell the invited bot is doing what it was asked: on submit show
+     "queued" on that comment; on `turn-start` show a working indicator
+     ("Claude is on it…") on the thread *and* in the chat panel; stream
+     the turn text live; clear on `turn-end` when the reply lands in
+     the thread. Every failure is surfaced in place — a 409 (server not
+     in `--chat`), a bridge exit, a rejected mention — never a silent
+     no-op. The chat.mjs SSE events (turn-start/stream/turn-end/
+     bridge-log/bridge-exit) already carry everything needed.
    - Hard rule: one frontend per session — refuse `--chat` (with a
      clear message) if the TUI currently has the session open, and
      vice versa document that the TUI must not attach while `--chat`
