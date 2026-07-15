@@ -97,6 +97,16 @@ Build these, testable at every step against the live paper:
    - A comment is saved as you type (debounced mirror), with resolved
      comments archived to a "Resolved" list (GDocs-style), never
      deleted by workflow.
+   - **Every author is visually distinct at a glance (user
+     2026-07-15).** Each participant gets a stable accent color used
+     consistently everywhere they appear: comment-card left border +
+     author label, thread entries, filter chip, and (P4) inline
+     tracked changes. Claude = coral family, Codex = an equal-weight
+     blue, humans = muted distinct hues; colors must read in both
+     themes. Cards must not look interchangeable: bot suggestion cards,
+     bot replies, and human comments each get a distinct visual
+     treatment (badge + accent), while sharing the theme.css baseline
+     (spacing, radius, typography) for a polished, non-IDE feel.
    - **Author filter.** The margin fills up fast with multiple humans +
      bots: provide filter chips (one per participant — each human
      handle, each bot, "all") that show only the selected authors'
@@ -111,7 +121,13 @@ Build these, testable at every step against the live paper:
      file (Anthropic-flavoured: warm paper/near-black, humanist serif
      prose, coral accent, light AND dark via `prefers-color-scheme`) so
      the review site matches the user's other review tooling. Replace
-     the prototype's Palatino/#8b0000 stylesheet.
+     the prototype's Palatino/#8b0000 stylesheet. Include a **visible
+     theme toggle** (light / dark / system) in the sidebar, persisted
+     per browser in localStorage — `prefers-color-scheme` is only the
+     default, never a cage (user 2026-07-15: "just in this dark mode
+     forever" is unacceptable for daytime reading). Implement by
+     stamping `data-theme` on the root element with CSS overrides that
+     win over the media query in both directions.
 
 5. **Hosted mode (V1.5 — same URL for every collaborator).**
    `server.mjs --hosted`: HTTP basic auth from a `REVIEW_PASSWORD` env
@@ -164,7 +180,10 @@ Build these, testable at every step against the live paper:
      chat panel is collapsed to a small toggle by default and exists
      only for unanchored conversation; it must never be required to
      see or follow an anchored reply. Raw bridge/turn debug text stays
-     out of the default view entirely.
+     out of the default view entirely. When the panel IS open it must
+     participate in the layout (content reflows) — never overlay or
+     clip the comment rail or the paper (shipped bug 2026-07-15: the
+     fixed-position panel covered the margin cards).
    - **Mentions fire only on explicit confirm.** A tag becomes a turn
      only when the user saves/confirms the comment (Done/Enter) —
      never on input, change, or paste events. (Shipped bug 2026-07-15:
