@@ -97,7 +97,14 @@ Build these, testable at every step against the live paper:
    writes. Primary transport: the owner tunnels their running server
    (`cloudflared tunnel --url localhost:<port>`) so a machineless
    collaborator comments on the owner's live page and gets bot replies
-   over SSE in real time. See design.md §V1.5 for the optional
+   over SSE in real time.
+   **Hard security requirement (tunnel-exposed):** the server must
+   serve *only* `review/site/` and the configured figures dir (keep and
+   test the path-traversal guard — reject any resolved path outside
+   them), accept POSTs *only* to the state endpoints with size limits,
+   never list directories, and never expose paper sources, git, or
+   anything else on the machine. A visitor with the URL + password can
+   read the rendered paper and comment — nothing more. See design.md §V1.5 for the optional
    always-on deploy + `review-round.yml` CI round (reply-and-suggest
    only, auth from a repo secret, never a key in the tree, never
    editing paper sources).
