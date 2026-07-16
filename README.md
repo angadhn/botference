@@ -190,6 +190,8 @@ engine files without touching your config, comments, or suggestions.
   `design.md` next to it records the architecture.
 - Requires `pandoc`. Serving by hand still works: `node
   review/server.mjs --chat` from the project, then open the printed URL.
+- Shell completion: zsh — add `fpath=($BOTFERENCE_HOME/completions $fpath)`
+  before `compinit`; bash — `source $BOTFERENCE_HOME/completions/botference.bash`.
 
 ## Project Scoping
 
