@@ -153,6 +153,25 @@ There is no extra “run it once from the framework repo” step. The framework
 path is resolved at launch time from `BOTFERENCE_HOME` or from the `botference`
 script you actually invoked.
 
+## Document Review (paper-review)
+
+Botference ships a Google-Docs-style review interface for LaTeX (and
+Markdown) sources: the paper renders as commentable HTML, margin
+comments become bot turns when you tag `@claude`/`@codex`/`@all`, bots
+reply in threads and post accept/reject suggestion cards, and accepted
+changes are applied to the sources deterministically with separate
+Apply / Commit / Revert steps. Multi-human collaboration works through
+git (per-user comment files) or a password-protected tunnel
+(`--hosted`).
+
+- Engine: `frontends/review/` (document-agnostic; copied into each
+  project's `review/` at setup).
+- Setup + usage: ask your bots to "set up paper review in <dir>" — the
+  `paper-review` skill (`.claude/skills/paper-review/SKILL.md`) has the
+  full contract; `design.md` next to it records the architecture.
+- Requires `pandoc`. Run `node review/server.mjs --chat` from the
+  project and open the printed URL.
+
 ## Project Scoping
 
 In a project initialized with `botference init`, the local policy lives in

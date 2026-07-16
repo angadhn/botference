@@ -2,6 +2,13 @@
 
 ## 2026-07-16
 
+- **New: document-review frontend (`frontends/review/`) + `paper-review`
+  skill.** Google-Docs-style review of rendered LaTeX/Markdown: margin
+  comments, @-mention bot turns via the bridge, threaded replies,
+  agent-colored suggestion cards, deterministic apply with separate
+  Apply/Commit/Revert, per-user git-synced comments, and a hosted mode
+  (password + tunnel) for collaborators without botference. Built and
+  verified against a live Acta Astronautica paper.
 - **Fixed the TUI flickering during bot turns.** Two compounding causes:
   the app rendered at exactly the terminal height, which pushes Ink onto
   its fullscreen fallback — a `clearTerminal` (full screen + scrollback

@@ -1,0 +1,225 @@
+/* paper-review UI — themed per .claude/skills/paper-review/theme.css (light+dark). */
+:root {
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
+  --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
+  --hl: rgba(240, 195, 120, 0.55); --hl-active: rgba(228, 166, 80, 0.8);
+  --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
+  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+  --serif: "Iowan Old Style", "Source Serif Pro", Charter, "Apple Garamond",
+    "Hoefler Text", Georgia, ui-serif, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --claude: #d97757; --codex: #4a86c8; --bad: #b3403a; --ok: var(--rev-line);
+  --author-l: 0.52; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
+    --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
+    --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+    --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
+    --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+    --author-l: 0.72; color-scheme: dark;
+  }
+}
+/* explicit theme (sidebar toggle stamps data-theme on <html>): these override
+   prefers-color-scheme in BOTH directions; absence of data-theme = system */
+:root[data-theme="light"] {
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
+  --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
+  --hl: rgba(240, 195, 120, 0.55); --hl-active: rgba(228, 166, 80, 0.8);
+  --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
+  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+  --author-l: 0.52; color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
+  --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
+  --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+  --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
+  --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+  --author-l: 0.72; color-scheme: dark;
+}
+* { box-sizing: border-box }
+body { margin: 0; display: grid; grid-template-columns: 210px minmax(0, 46rem) minmax(280px, 1fr);
+  gap: 2rem; font: 17px/1.75 var(--serif); color: var(--fg); background: var(--bg) }
+nav.toc { position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 1.2rem 0 1.2rem 1.2rem;
+  background: var(--rail); border-right: 1px solid var(--card-line); font: .82rem/1.6 var(--sans) }
+nav.toc h2 { font: 700 .72rem var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 .6rem }
+nav.toc a { display: block; color: var(--fg); text-decoration: none; padding: .25rem 0 }
+nav.toc a[data-current] { font-weight: 700; color: var(--accent) }
+.toc-foot { margin-top: 2rem; padding-right: 1rem }
+.toc-foot button { font: .78rem var(--sans); display: block; width: 100%; margin-top: .45rem; padding: .4rem .7rem;
+  cursor: pointer; background: var(--card); color: var(--fg); border: 1px solid var(--card-line); border-radius: 8px }
+#export-btn { background: var(--accent); color: #fff; border-color: var(--accent) }
+#export-btn:hover { background: var(--accent-hover) }
+#progress { margin-top: .6rem; color: var(--muted); font-size: .75rem }
+#progress a { color: var(--accent) }
+/* ---- ambient presence strip (sticky sidebar): connection + chat mode only ---- */
+#presence { margin-top: .5rem; font: .72rem/1.7 var(--sans) }
+#presence .conn { color: var(--rev-line) }
+#presence .conn.err { color: var(--accent) }
+#presence .conn.down { color: var(--bad) }
+#presence .chatmode { color: var(--muted); font-size: .64rem; text-transform: uppercase; letter-spacing: .06em }
+/* ---- GDocs-style presence avatars: fixed top-right cluster, one circle per
+   collaborator (agents now; humans can join later). Ring space is always
+   reserved by the wrapper, so the working ring causes no layout shift. ---- */
+#avatars { position: fixed; top: .75rem; right: 1rem; z-index: 15; display: flex; gap: .45rem }
+#avatars .avatar-ring { width: 42px; height: 42px; padding: 4px; border-radius: 50%; position: relative;
+  opacity: .55; transition: opacity .2s }
+#avatars .avatar-ring::before { content: ''; position: absolute; inset: 1px; border-radius: 50%;
+  border: 2px dashed transparent }
+#avatars .avatar-ring.working { opacity: 1; cursor: pointer }
+#avatars .avatar-ring.working::before { border-color: var(--author, var(--accent)); animation: spin 1s linear infinite }
+#avatars .avatar { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+  border-radius: 50%; background: var(--author, var(--muted)); color: #fff;
+  user-select: none; box-shadow: 0 1px 4px rgba(0,0,0,.25) }
+#avatars .avatar svg { width: 60%; height: 60%; display: block }
+/* Changes widget: pinned at the top of the sidebar, directly under the section
+   list (outside .toc-foot, so it carries its own button styling) */
+#apply-bar { margin: 1rem 1rem .4rem 0; padding: .1rem 0 }
+#apply-bar.attention { border-left: 3px solid var(--accent); padding-left: .5rem; border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent) }
+#apply-bar button { font: .78rem var(--sans); display: block; width: 100%; margin-top: .45rem; padding: .4rem .7rem;
+  cursor: pointer; background: var(--card); color: var(--fg); border: 1px solid var(--rev-line); border-radius: 8px }
+#apply-bar .chg-state { font: .72rem/1.5 var(--sans); color: var(--fg) }
+#apply-bar .chg-state.muted { color: var(--muted) }
+#apply-bar .chg-state.ok { color: var(--rev-line) }
+#apply-bar .chg-state.fade { animation: chg-fade 8s ease-in forwards }
+@keyframes chg-fade { 0%, 70% { opacity: 1 } 100% { opacity: 0 } }
+#apply-bar .chg-legend { font: .64rem/1.5 var(--sans); color: var(--muted) }
+#apply-bar .chg-oob { font: .66rem/1.5 var(--sans); color: var(--accent); margin-top: .3rem }
+#apply-bar .chg-oob button { border-color: var(--accent); width: auto; padding: .2rem .55rem; font-size: .68rem }
+#apply-bar #revert-round { border-color: var(--bad) }
+.badge.apply-badge { color: var(--rev-line); border: 1px solid var(--rev-line); background: var(--rev); margin-left: .4rem }
+#handle-picker input { width: 100%; font: .82rem var(--sans); padding: .35rem .5rem; margin: .3rem 0;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--card-line); border-radius: 8px }
+#handle-picker button { background: var(--accent); color: #fff; border-color: var(--accent) }
+main { padding: 2.5rem 0; min-width: 0 }
+article h1 { font-size: 1.7rem; font-weight: 600; color: var(--heading) }
+article h2 { color: var(--heading); border-top: 1px solid var(--line); padding-top: .8rem }
+article h3, article h4 { color: var(--heading) }
+article img { max-width: 100%; height: auto; display: block; margin: 0 auto;
+  background: #fff; border-radius: 6px }
+article figure { margin: 1.8rem 0 }
+article figcaption { font: .82rem/1.5 var(--sans); color: var(--muted); margin-top: .5rem }
+article table { border-collapse: collapse; font-size: .85rem; display: block; overflow-x: auto; max-width: 100% }
+article td, article th { border-top: 1px solid var(--card-line); border-bottom: 1px solid var(--card-line); padding: .3rem .6rem }
+.xref, article a { color: var(--accent); text-decoration: none }
+.xref-unresolved { border-bottom: 1px dashed var(--bad); cursor: help }
+mark { background: var(--hl); color: inherit }
+mark.user-hl { background: var(--hl); cursor: pointer; border-bottom: 2px solid var(--hl-active) }
+mark.user-hl:hover, mark.user-hl.theirs:hover { background: var(--hl-active) }
+mark.user-hl { background: color-mix(in srgb, var(--author, var(--hl-active)) 20%, transparent); border-bottom-color: var(--author, var(--hl-active)) }
+mark.user-hl.theirs { background: color-mix(in srgb, var(--author, var(--codex)) 20%, transparent); border-bottom-color: var(--author, var(--codex)) }
+abbr { text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: help }
+.card-anchor { display: inline-block; width: 0; height: 1em; vertical-align: text-top }
+.eqno { float: right; color: var(--muted); font-size: .85rem }
+math { font-size: 1.05em }
+p[data-cid]:hover, figure[data-cid]:hover { background: color-mix(in srgb, var(--hl) 40%, transparent); cursor: context-menu }
+.has-comment { background: color-mix(in srgb, var(--hl) 60%, transparent); box-shadow: inset 3px 0 0 var(--hl-active); padding-left: .4rem }
+.has-card { box-shadow: inset 3px 0 0 var(--card-line); padding-left: .4rem }
+.pager { display: flex; justify-content: space-between; margin: 3rem 0; font: italic .95rem var(--serif) }
+.pager a { color: var(--accent); text-decoration: none }
+
+/* ---- margin rail ---- */
+aside#margin { position: relative; padding: 2.5rem 1.2rem 2.5rem 0; min-width: 0 }
+.card { position: absolute; left: 0; right: 1rem; border: 1px solid var(--card-line); border-left: 3px solid var(--author, var(--muted));
+  background: var(--card); padding: .6rem .75rem; font: .78rem/1.5 var(--sans); border-radius: 0 10px 10px 0;
+  transition: box-shadow .15s; color: var(--fg) }
+.card:hover, .card.active { box-shadow: 0 3px 14px rgba(0,0,0,.18); z-index: 5 }
+.card .who { font: 700 .68rem var(--sans); text-transform: uppercase; letter-spacing: .05em; color: var(--muted) }
+/* per-author identity: the label wears the same accent as the card edge */
+.who .author { color: var(--author, var(--muted)) }
+/* bot suggestion cards get a faint author-tinted wash so they never read as human comments */
+.card.t-suggestion { background: color-mix(in srgb, var(--author, var(--muted)) 4%, var(--card)) }
+.badge.type-badge { color: var(--author, var(--muted)); border: 1px solid color-mix(in srgb, var(--author, var(--muted)) 35%, transparent);
+  background: color-mix(in srgb, var(--author, var(--muted)) 8%, transparent) }
+.badge.bot-badge { color: var(--author, var(--muted)); background: color-mix(in srgb, var(--author, var(--muted)) 12%, transparent) }
+.card .diff del { background: color-mix(in srgb, var(--bad) 18%, transparent); text-decoration: line-through }
+.card .diff ins { background: var(--rev); text-decoration: none; border-bottom: 1px solid var(--rev-line) }
+.card .why { color: var(--muted); font-style: italic; margin: .3rem 0 }
+.card .ctext { white-space: pre-wrap }
+.card .keys code { font: .7rem var(--mono); background: var(--rail); padding: .05rem .3rem; border-radius: 4px }
+.card .acts { margin-top: .4rem; display: flex; gap: .35rem; flex-wrap: wrap }
+.card .acts button, .rebtn { font: .7rem var(--sans); padding: .18rem .55rem; cursor: pointer;
+  border: 1px solid var(--card-line); background: var(--card); color: var(--fg); border-radius: 6px }
+.card .acts button:hover, .rebtn:hover { border-color: var(--accent); color: var(--accent) }
+.card textarea, .reply textarea { width: 100%; font: .8rem/1.5 var(--sans); margin-top: .3rem; min-height: 3em;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--card-line); border-radius: 6px; padding: .35rem }
+.card .state { font: 700 .68rem var(--sans) }
+/* decision state shows in the STATE line + wash; the left edge stays the author's */
+.card.s-accepted { background: color-mix(in srgb, var(--rev-line) 6%, var(--card)) } .card.s-accepted .state { color: var(--rev-line) }
+.card.s-rejected { opacity: .65 } .card.s-rejected .state { color: var(--bad) }
+.card.composing { box-shadow: 0 3px 14px rgba(0,0,0,.22); z-index: 6 }
+.card.working { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent) }
+.badge { font: .62rem var(--sans); text-transform: uppercase; letter-spacing: .04em;
+  background: var(--rail); border-radius: 6px; padding: .08rem .4rem; margin-left: .3rem; color: var(--muted) }
+.thread { margin-top: .45rem; border-top: 1px dotted var(--card-line); padding-top: .35rem }
+/* thread entries: every author wears their own accent; bot replies are visibly
+   distinct (stronger tint + badge) from human replies, on the same baseline */
+.reply { margin: .3rem 0; padding: .35rem .5rem; border-radius: 8px;
+  background: color-mix(in srgb, var(--author, var(--muted)) 6%, var(--rail));
+  border-left: 2px solid color-mix(in srgb, var(--author, var(--muted)) 50%, transparent); font-size: .76rem }
+.reply .who { display: block; margin-bottom: .1rem }
+.reply .who .edited { font: italic .62rem var(--sans); color: var(--muted); margin-left: .3rem; text-transform: none; letter-spacing: 0 }
+.reply.bot { background: color-mix(in srgb, var(--author, var(--muted)) 11%, var(--card)); border-left-color: var(--author, var(--muted)) }
+.reply.streaming { border-left-style: dashed }
+.reply.streaming .stream-text { white-space: pre-wrap; margin: .15rem 0 0; font: .76rem/1.5 var(--serif);
+  max-height: 15rem; overflow-y: auto }
+.rebtn { border: 0; background: none; color: var(--muted); float: right }
+.thread-reply { float: none; display: block; margin-top: .25rem }
+.nested { margin-top: .45rem; border: 1px solid var(--card-line); border-left: 3px solid var(--author, var(--muted));
+  padding: .4rem .5rem; border-radius: 0 8px 8px 0; background: var(--card) }
+.status-chip { font: .68rem var(--sans); color: var(--muted); margin-top: .3rem }
+.status-chip.err { color: var(--bad) }
+.status-chip .spin { display: inline-block; animation: spin 1s linear infinite }
+@keyframes spin { to { transform: rotate(360deg) } }
+#author-chips { margin-bottom: .6rem }
+#theme-toggle { margin-top: .6rem }
+.chip-label { font: .66rem var(--sans); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .25rem }
+.chip { font: .72rem var(--sans); margin: 0 .2rem .25rem 0; padding: .14rem .55rem; cursor: pointer;
+  display: inline-flex; align-items: center; gap: .3rem;
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 999px; color: var(--muted) }
+.chip .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--author, var(--muted)); flex: none }
+.chip.on { background: color-mix(in srgb, var(--author, var(--accent)) 16%, var(--card));
+  color: var(--fg); border-color: var(--author, var(--accent)) }
+#sel-pop { position: fixed; z-index: 20; font: .8rem var(--sans); padding: .35rem .7rem; background: var(--heading);
+  color: var(--bg); border: 0; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.3) }
+
+/* ---- sidebar toasts: system status + unanchored/off-page permission and
+   choice interrupts, pinned above the presence strip (no chat panel exists) ---- */
+#toasts { margin-top: .6rem; font: .72rem/1.5 var(--sans) }
+#toasts .toast { display: flex; gap: .4rem; align-items: baseline; justify-content: space-between;
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 8px;
+  padding: .35rem .5rem; margin-bottom: .3rem; color: var(--muted) }
+#toasts .toast.err { border-color: var(--bad); color: var(--bad) }
+#toasts .toast-x { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; font: .7rem var(--sans); flex: none }
+#toasts .toast-x:hover { color: var(--accent) }
+#toasts .perm-card { margin: .3rem 0 }
+.perm-card .who { font: 700 .66rem var(--sans); text-transform: uppercase; color: var(--muted) }
+.choice-card { border-color: var(--card-line) }
+.perm-card { margin: .45rem 0; padding: .5rem .6rem; border-radius: 8px; border: 1px solid var(--bad); background: var(--card);
+  font: .72rem/1.5 var(--sans) }
+.perm-card button { font: .75rem var(--sans); margin: .3rem .3rem 0 0; padding: .25rem .7rem; border-radius: 6px;
+  cursor: pointer; border: 1px solid var(--card-line); background: var(--card); color: var(--fg) }
+.perm-card button.allow { background: var(--rev); border-color: var(--rev-line) }
+
+/* ---- responsive: collapse rail to tap-to-open ---- */
+@media (max-width: 1100px) {
+  body { grid-template-columns: 1fr; gap: 0 }
+  /* smaller avatar cluster; the toc bar reserves right space so nothing overlaps */
+  #avatars { top: .45rem; right: .6rem; gap: .3rem }
+  #avatars .avatar-ring { width: 30px; height: 30px; padding: 3px }
+  nav.toc { position: static; height: auto; display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: center;
+    padding: .6rem 5.2rem .6rem 1rem; border-right: 0; border-bottom: 1px solid var(--card-line) }
+  nav.toc h2 { display: none }
+  .toc-foot { margin: 0; display: flex; gap: .4rem; flex-wrap: wrap; align-items: center }
+  .toc-foot button { width: auto; margin: 0 }
+  main { padding: 1.2rem 1rem }
+  aside#margin { display: none }
+  aside#margin.sheet-open { display: block; position: fixed; inset: auto 0 0 0; max-height: 70vh; overflow-y: auto;
+    background: var(--rail); border-top: 2px solid var(--accent); padding: 1rem; z-index: 25 }
+  aside#margin.sheet-open .card { position: static; margin-bottom: .6rem; display: none }
+  aside#margin.sheet-open .card.active { display: block }
+}
