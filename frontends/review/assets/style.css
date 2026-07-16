@@ -187,6 +187,32 @@ aside#margin { position: relative; padding: 2.5rem 1.2rem 2.5rem 0; min-width: 0
 #sel-pop { position: fixed; z-index: 20; font: .8rem var(--sans); padding: .35rem .7rem; background: var(--heading);
   color: var(--bg); border: 0; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.3) }
 
+/* ---- inline tracked changes (suggesting mode): agent-colored del/ins in the
+   body; deletions stay readable (thin strike, most of the ink kept) ---- */
+del.tc-del { text-decoration: line-through; text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--author, var(--muted)) 75%, transparent);
+  background: color-mix(in srgb, var(--author, var(--muted)) 9%, transparent);
+  color: color-mix(in srgb, var(--fg) 72%, transparent); cursor: pointer; border-radius: 2px }
+ins.tc-ins { text-decoration: none; background: color-mix(in srgb, var(--author, var(--muted)) 14%, transparent);
+  border-left: 2px solid var(--author, var(--muted)); padding: 0 .12em; margin-left: .15em;
+  cursor: pointer; border-radius: 2px }
+del.tc-del:hover, ins.tc-ins:hover { background: color-mix(in srgb, var(--author, var(--muted)) 24%, transparent) }
+/* accepted-but-unapplied: body reads as the future text — solid ins, no del */
+del.tc-del.tc-accepted { display: none }
+ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
+  background: color-mix(in srgb, var(--author, var(--muted)) 18%, transparent) }
+#tc-pop { position: fixed; z-index: 21; max-width: 270px; background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 10px; padding: .5rem .6rem; font: .74rem/1.5 var(--sans);
+  box-shadow: 0 4px 18px rgba(0,0,0,.28) }
+#tc-pop .who { font: 700 .66rem var(--sans); text-transform: uppercase; letter-spacing: .05em }
+#tc-pop .who .author { color: var(--author, var(--muted)) }
+#tc-pop .why { color: var(--muted); font-style: italic; margin: .25rem 0 }
+#tc-pop .acts { display: flex; gap: .3rem; margin-top: .35rem }
+#tc-pop button { font: .7rem var(--sans); padding: .2rem .55rem; cursor: pointer; border: 1px solid var(--card-line);
+  background: var(--card); color: var(--fg); border-radius: 6px }
+#tc-pop button:hover { border-color: var(--accent); color: var(--accent) }
+#tc-toggle { margin-top: .6rem }
+
 /* ---- sidebar toasts: system status + unanchored/off-page permission and
    choice interrupts, pinned above the presence strip (no chat panel exists) ---- */
 #toasts { margin-top: .6rem; font: .72rem/1.5 var(--sans) }

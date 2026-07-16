@@ -22,6 +22,9 @@
   const LIVE = location.protocol.startsWith('http');
   let ME = null, OTHERS = {}, THREADS = {}, SUGG = window.SUGGESTIONS || [];
   let showResolved = false, pendingRender = false;
+  // inline tracked changes (suggesting mode): viewer-local toggle, default on
+  const TKEY = KEY + '-inline-changes';
+  let inlineChanges = localStorage.getItem(TKEY) !== '0';
 
   // author filter chips: viewer-local, never shared
   const FKEY = KEY + '-filter';
@@ -200,7 +203,8 @@
   document.querySelectorAll('#paper p, #paper figure').forEach((el, i) => {
     el.dataset.cid = `${slug}-blk-${i}`;
     el.addEventListener('click', e => {
-      if (e.target.closest('a,abbr,button,textarea')) return;
+      if (e.target.closest('a,abbr,button,textarea,del.tc-del,ins.tc-ins')) return; // tc-* opens the change popover
+
       const mk = e.target.closest('mark.user-hl');
       if (mk) { activateCard(mk.dataset.cardId); return; }
       if (window.getSelection() && !window.getSelection().isCollapsed) return;
@@ -512,12 +516,87 @@
         save(d); rerender();
       });
     });
+    unwrapTracked();   // restore pristine text before quote-wrapping scans it
     markCommented();
+    wrapTracked();     // no-op when the sidebar toggle is off
     renderChips();
     renderProgress();
     renderApplyBar();
   }
   function rerender() { render(); position(); }
+
+  // ---- inline tracked changes (GDocs suggesting mode): pending suggestion
+  // cards whose current_text matches EXACTLY ONCE in this page's rendered text
+  // render in the body as <del>(struck original)</del><ins>(proposal)</ins> in
+  // the authoring agent's accent. Ambiguous or unlocatable spans stay margin-
+  // only — placement is never guessed. Idempotent like markCommented: every
+  // render unwraps and re-wraps.
+  function unwrapTracked() {
+    document.querySelectorAll('#paper ins.tc-ins').forEach(x => x.remove()); // generated text, not source
+    document.querySelectorAll('#paper del.tc-del').forEach(m => {
+      const p = m.parentNode;
+      while (m.firstChild) p.insertBefore(m.firstChild, m);
+      m.remove(); p.normalize();
+    });
+  }
+  function wrapTracked() {
+    if (!inlineChanges) return;
+    const d = store();
+    const blocks = [...document.querySelectorAll('#paper [data-cid]')];
+    for (const c of SUGG) {
+      if (c.section !== slug || !c.current_text || APPLY.applied[c.id]) continue;
+      const st = (d[c.id] || {}).status;
+      if (st === 'rejected') continue; // margin card only
+      let host = null, count = 0;
+      for (const blk of blocks) {
+        const n = blk.textContent.split(c.current_text).length - 1;
+        count += n;
+        if (n && !host) host = blk;
+        if (count > 1) break;
+      }
+      if (count !== 1 || !host) continue;
+      wrapChange(host, c, st === 'accepted');
+    }
+  }
+  function wrapChange(blockEl, c, accepted) {
+    const text = c.current_text;
+    const idx = blockEl.textContent.indexOf(text);
+    if (idx < 0) return;
+    const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
+    let pos = 0; const segs = [];
+    while (walker.nextNode()) {
+      const n = walker.currentNode, len = n.textContent.length;
+      if (idx < pos + len && idx + text.length > pos) {
+        segs.push({ n, start: Math.max(idx - pos, 0), end: Math.min(idx + text.length - pos, len) });
+      }
+      pos += len;
+    }
+    if (!segs.length) return;
+    const color = authorColor(cardAuthors(c)[0]);
+    const tip = accepted ? 'accepted — pending apply' : `suggested by ${c.author || 'bot'} — click to review`;
+    let lastDel = null; // segs are wrapped in reverse, so the first wrapped is the final segment
+    for (const { n, start, end } of segs.reverse()) {
+      const r = document.createRange();
+      r.setStart(n, start); r.setEnd(n, end);
+      const del = document.createElement('del');
+      del.className = 'tc-del' + (accepted ? ' tc-accepted' : '');
+      del.dataset.tc = c.id;
+      del.style.setProperty('--author', color);
+      del.title = tip;
+      try { r.surroundContents(del); } catch (e) { continue; }
+      if (!lastDel) lastDel = del;
+    }
+    if (!lastDel) return;
+    if (c.proposed_text) { // empty proposal = pure deletion, del alone suffices
+      const ins = document.createElement('ins');
+      ins.className = 'tc-ins' + (accepted ? ' tc-accepted' : '');
+      ins.dataset.tc = c.id;
+      ins.style.setProperty('--author', color);
+      ins.title = tip;
+      ins.textContent = c.proposed_text;
+      lastDel.after(ins);
+    }
+  }
 
   // --- P4 sidebar: apply-all / commit / revert (owner) + hosted pending queue ---
   function doApply(ids, all) {
@@ -738,7 +817,52 @@
     if (pending) openComposer(pending);
     pending = null;
   });
-  window.addEventListener('scroll', () => { pop.hidden = true; }, { passive: true });
+
+  // ---- tracked-change popover: click an inline del/ins -> author + rationale +
+  // accept / reject / open card. Decisions write the SAME store entry as the
+  // margin-card buttons (single source of truth). No dialogs.
+  const tcPop = document.createElement('div');
+  tcPop.id = 'tc-pop'; tcPop.hidden = true;
+  document.body.appendChild(tcPop);
+  function showTcPop(id, x, y) {
+    const c = SUGG.find(s => s.id === id);
+    if (!c) return;
+    const st = (store()[id] || {}).status;
+    const rat = String(c.rationale || '').split('\n')[0].slice(0, 140);
+    tcPop.innerHTML = `<div class="who" style="--author:${authorColor(cardAuthors(c)[0])}"><span class="author">${esc(c.author || 'bot')}</span>${st ? `<span class="badge">${esc(st)}</span>` : ''}</div>
+      ${rat ? `<div class="why">${esc(rat)}</div>` : ''}
+      <div class="acts"><button data-tcact="accepted">✓ accept</button><button data-tcact="rejected">✗ reject</button><button data-tcact="card">open card</button></div>`;
+    tcPop.dataset.id = id;
+    tcPop.style.left = Math.max(Math.min(x, window.innerWidth - 280), 8) + 'px';
+    tcPop.style.top = Math.min(y + 8, window.innerHeight - 120) + 'px';
+    tcPop.hidden = false;
+  }
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('#tc-pop [data-tcact]');
+    if (btn) {
+      const id = tcPop.dataset.id;
+      tcPop.hidden = true;
+      if (btn.dataset.tcact === 'card') {
+        activateCard(id);
+        const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        const d = store(); d[id] = d[id] || {};
+        d[id].status = btn.dataset.tcact;
+        save(d); rerender();
+      }
+      return;
+    }
+    if (e.target.closest('#tc-pop')) return;
+    const t = e.target.closest('del.tc-del, ins.tc-ins');
+    if (t && t.dataset.tc) {
+      const r = t.getBoundingClientRect();
+      showTcPop(t.dataset.tc, r.left, r.bottom);
+      return;
+    }
+    tcPop.hidden = true;
+  });
+  window.addEventListener('scroll', () => { pop.hidden = true; tcPop.hidden = true; }, { passive: true });
 
   // --- progress + sidebar controls ---
   function renderProgress() {
@@ -804,6 +928,23 @@
   });
   renderTheme();
   foot.appendChild(themeBar);
+
+  // inline tracked-changes toggle (viewer-local; heavy rounds can get noisy)
+  const tcBar = document.createElement('div');
+  tcBar.id = 'tc-toggle';
+  const renderTcToggle = () => {
+    tcBar.innerHTML = '<div class="chip-label">inline changes</div>' + ['on', 'off'].map(m =>
+      `<button class="chip${(inlineChanges ? 'on' : 'off') === m ? ' on' : ''}" data-tc-opt="${m}">${m}</button>`).join('');
+  };
+  tcBar.addEventListener('click', e => {
+    const b = e.target.closest('[data-tc-opt]');
+    if (!b) return;
+    inlineChanges = b.dataset.tcOpt === 'on';
+    localStorage.setItem(TKEY, inlineChanges ? '1' : '0');
+    renderTcToggle(); rerender();
+  });
+  renderTcToggle();
+  foot.appendChild(tcBar);
 
   if (LIVE) {
     const flag = document.createElement('button');
