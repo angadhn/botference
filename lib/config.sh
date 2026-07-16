@@ -428,6 +428,7 @@ parse_loop_args() {
 show_help() {
   cat <<'HELP'
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
+       botference review [dir] [--hosted] [--port N] [--no-chat] [--upgrade]
 
 Modes:
   init              Bootstrap a project-local state directory
@@ -437,6 +438,13 @@ Modes:
   research-plan     Structured planning with prompts/plan.md (botference mode)
   archive           Archive current thread and restore blank templates
   build             Build loop (default)
+  review            Set up + serve the document-review interface in a document
+                    repo (dir defaults to cwd). First run copies the engine into
+                    <dir>/review/, detects the config, and builds the site; every
+                    run serves it with the bot bridge (--no-chat for comments
+                    only, --hosted for a shared password-protected URL, --upgrade
+                    to refresh engine files). Requires pandoc. See
+                    'botference review --help'.
 
 Options:
   -p                Non-interactive (pipe) mode
@@ -497,6 +505,8 @@ Examples:
   botference archive                                  # Archive current thread state
   botference plan --anthropic-model=claude-sonnet-4-6 # Override Anthropic model
   OPENAI_MODEL=o3 botference plan                     # Override OpenAI model
+  botference review                                   # Review interface for the paper in cwd
+  botference review ~/papers/acta --no-chat --port 4280
   botference -p build                                 # Non-interactive build loop
   botference --anthropic-model=claude-sonnet-4-6 -p  # Build with Sonnet
   botference -p build 10                              # Build for max 10 iterations

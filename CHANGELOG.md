@@ -2,6 +2,18 @@
 
 ## 2026-07-16
 
+- **New: `botference review` subcommand** — one command to set up and
+  serve the document-review interface from any document repo:
+  `botference review [dir] [--hosted] [--port N] [--no-chat]
+  [--upgrade]`. First run copies the engine into `<dir>/review/`,
+  auto-detects `review.config.json` (master file, sections, bib,
+  abbreviations, todo macros, figures dir, free port — summary echoed
+  for eyeballing; `scripts/review-detect.mjs`), appends the review
+  gitignore block idempotently, and builds the site; every run rebuilds
+  when sources changed and execs `node review/server.mjs --chat`
+  (Ctrl-C stops it). `--upgrade` refreshes only engine files, never
+  config/state/suggestions/site. Requires `pandoc` (friendly error if
+  missing). Launcher-side: `lib/review.sh`.
 - **New: document-review frontend (`frontends/review/`) + `paper-review`
   skill.** Google-Docs-style review of rendered LaTeX/Markdown: margin
   comments, @-mention bot turns via the bridge, threaded replies,

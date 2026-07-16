@@ -22,6 +22,17 @@ source "${BOTFERENCE_HOME}/lib/monitor.sh"
 source "${BOTFERENCE_HOME}/lib/post-run.sh"
 source "${BOTFERENCE_HOME}/lib/exec.sh"
 
+# --- review mode: set up + serve the document-review interface ---
+# Handled before the loop machinery: it runs in a document repo, not a
+# botference project, and execs the node server (Ctrl-C stops it cleanly).
+if [ "${1:-}" = "review" ]; then
+  shift
+  source "${BOTFERENCE_HOME}/lib/review.sh"
+  export BOTFERENCE_ACTIVE_MODE="review"
+  run_review_mode "$@"
+  exit $?
+fi
+
 parse_loop_args "$@"
 export BOTFERENCE_ACTIVE_MODE="$LOOP_MODE"
 

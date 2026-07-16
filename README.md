@@ -164,13 +164,32 @@ Apply / Commit / Revert steps. Multi-human collaboration works through
 git (per-user comment files) or a password-protected tunnel
 (`--hosted`).
 
+One command from your document repo:
+
+```bash
+botference review                # set up (first run) + build + serve, bots on
+botference review [dir] [--hosted] [--port N] [--no-chat] [--upgrade]
+```
+
+The first run copies the engine into `<dir>/review/`, auto-detects the
+document configuration (master file, sections, bib, figures — echoed so
+you can correct `review/review.config.json` if it guessed wrong), adds
+the gitignore block, builds the site, and prints next steps: commit
+`review/` and `.gitignore` to share the interface; collaborators run
+`node review/server.mjs`, then `node review/submit.mjs --push`.
+Subsequent runs rebuild only when sources changed, then serve.
+`--no-chat` serves without the bot bridge, `--hosted` adds
+`REVIEW_PASSWORD` auth for a shared URL, and `--upgrade` refreshes the
+engine files without touching your config, comments, or suggestions.
+
 - Engine: `frontends/review/` (document-agnostic; copied into each
   project's `review/` at setup).
-- Setup + usage: ask your bots to "set up paper review in <dir>" — the
-  `paper-review` skill (`.claude/skills/paper-review/SKILL.md`) has the
-  full contract; `design.md` next to it records the architecture.
-- Requires `pandoc`. Run `node review/server.mjs --chat` from the
-  project and open the printed URL.
+- Bot-driven setup also works: ask your bots to "set up paper review in
+  <dir>" — the `paper-review` skill
+  (`.claude/skills/paper-review/SKILL.md`) has the full contract;
+  `design.md` next to it records the architecture.
+- Requires `pandoc`. Serving by hand still works: `node
+  review/server.mjs --chat` from the project, then open the printed URL.
 
 ## Project Scoping
 

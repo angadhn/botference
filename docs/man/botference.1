@@ -4,6 +4,9 @@ botference \- a multi-LLM planning council for the terminal
 .SH SYNOPSIS
 .B botference
 [\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR|\fBbuild\fR] [\fIiterations\fR]
+.br
+.B botference review
+[\fIdir\fR] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-chat\fR] [\fB\-\-upgrade\fR]
 .SH DESCRIPTION
 .B botference
 puts you, Claude Code, and Codex in one terminal room. The bots debate
@@ -32,6 +35,19 @@ Archive the current thread and restore blank templates.
 .TP
 .B build
 Build loop (default), optionally capped at \fIiterations\fR.
+.TP
+.B review \fR[\fIdir\fR]
+Set up and serve the document-review interface (Google-Docs-style
+comments on rendered LaTeX/Markdown, with the bots replying in threads)
+in a document repo; \fIdir\fR defaults to the current directory. The
+first run copies the engine into \fIdir\fR/review/, auto-detects the
+document configuration into review/review.config.json (echoed for
+eyeballing), adds the gitignore block, and builds the site; every run
+serves it until Ctrl-C. Requires \fBpandoc\fR. Flags:
+\fB\-\-port\fR \fIN\fR serves on port \fIN\fR; \fB\-\-no-chat\fR serves
+without the bot bridge; \fB\-\-hosted\fR enables shared-URL mode
+(REVIEW_PASSWORD basic auth); \fB\-\-upgrade\fR refreshes engine files
+without touching review.config.json, state/, suggestions.json, or site/.
 .SH OPTIONS
 .TP
 .B \-p
@@ -127,6 +143,9 @@ Open the planning council.
 .TP
 .B botference plan --claude-interactive
 Council with a real, tmux-attachable Claude Code session.
+.TP
+.B botference review ~/papers/acta
+Set up and serve the document-review interface for a paper.
 .TP
 .B botference --anthropic-model=claude-sonnet-4-6 plan
 Override the Claude participant model.
