@@ -23,9 +23,11 @@ _botference() {
   case ${words[2]} in
     review)
       _arguments \
+        '--share[hosted mode + cloudflared tunnel: one shareable URL + password]' \
         '--hosted[password-protected hosted mode (REVIEW_PASSWORD)]' \
         '--port[server port]:port' \
-        '--no-chat[serve without the bot bridge]' \
+        '--agents[force the agent bridge on]' \
+        '--no-agents[serve without the agent bridge (comments only)]' \
         '--upgrade[refresh engine files in an existing review/]' \
         '*:document repo:_files -/'
       ;;

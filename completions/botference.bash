@@ -11,7 +11,7 @@ _botference() {
   case "${COMP_WORDS[1]}" in
     review)
       case "$cur" in
-        -*) COMPREPLY=( $(compgen -W "--hosted --port --no-chat --upgrade" -- "$cur") ) ;;
+        -*) COMPREPLY=( $(compgen -W "--share --hosted --port --agents --no-agents --upgrade" -- "$cur") ) ;;
         *)  COMPREPLY=( $(compgen -d -- "$cur") ) ;;
       esac ;;
     plan|research-plan|build)

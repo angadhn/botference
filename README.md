@@ -167,20 +167,38 @@ git (per-user comment files) or a password-protected tunnel
 One command from your document repo:
 
 ```bash
-botference review                # set up (first run) + build + serve, bots on
-botference review [dir] [--hosted] [--port N] [--no-chat] [--upgrade]
+botference review                # set up (first run) + build + serve; agents auto-detected
+botference review --share        # hosted + tunnel: one URL + password to send around
+botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
 ```
 
 The first run copies the engine into `<dir>/review/`, auto-detects the
 document configuration (master file, sections, bib, figures — echoed so
 you can correct `review/review.config.json` if it guessed wrong), adds
-the gitignore block, builds the site, and prints next steps: commit
-`review/` and `.gitignore` to share the interface; collaborators run
-`node review/server.mjs`, then `node review/submit.mjs --push`.
-Subsequent runs rebuild only when sources changed, then serve.
-`--no-chat` serves without the bot bridge, `--hosted` adds
+the gitignore block, builds the site, and prints next steps. Subsequent
+runs rebuild only when sources changed, then serve. Agents are on by
+default when the machine can run them: the launcher checks for `python3`
+plus a `claude`/`codex` CLI on PATH and prints `agents: on (claude,
+codex detected)` — or serves read-and-comment only with an explanation
+when they're missing. `--no-agents` forces the bridge off, `--agents`
+forces it on (clear error if impossible), `--hosted` adds
 `REVIEW_PASSWORD` auth for a shared URL, and `--upgrade` refreshes the
 engine files without touching your config, comments, or suggestions.
+
+Two ways to bring in collaborators:
+
+- **Live URL** (`--share`): serves hosted mode behind a cloudflared
+  quick tunnel — respects `REVIEW_PASSWORD` or generates one — and
+  prints `share this: <url>   password: <pw>`. Guests pick a handle,
+  read, and comment; their agent summons queue for you to release.
+  Ctrl-C stops server and tunnel together. Without `cloudflared` it
+  prints an install hint and keeps serving locally. For a stable URL
+  across sessions, configure a named tunnel (docs link in the man page).
+- **Git sync**: commit `review/` and `.gitignore`; collaborators clone
+  and either install botference and run the identical `botference
+  review` (agents auto-detected — without the CLIs they still read and
+  comment) or use plain `node review/server.mjs`, then commit their
+  comments back with `node review/submit.mjs --push`.
 
 - Engine: `frontends/review/` (document-agnostic; copied into each
   project's `review/` at setup).

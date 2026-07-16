@@ -7,7 +7,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { ApplyEngine } from './apply.mjs';
 
 const REVIEW = path.dirname(new URL(import.meta.url).pathname);
@@ -125,6 +125,7 @@ function mergedData(req) {
     me: who(req),
     hosted: HOSTED,
     owner,
+    owner_handle: HANDLE, // additive (2026-07): honest guest queue labels
     users,
     threads: readJSON(path.join(STATE, 'threads.json'), {}),
     suggestions: readJSON(path.join(REVIEW, 'suggestions.json'), []),
@@ -158,6 +159,26 @@ function acceptedIds() {
 
 // collaborator mentions in hosted mode queue here until the owner releases them
 const PENDING = path.join(STATE, 'pending-mentions.json');
+
+// section a card lives on, for human-readable notification text
+function cardSection(id) {
+  const sc = readJSON(path.join(REVIEW, 'suggestions.json'), []).find(c => c.id === id);
+  if (sc && sc.section) return sc.section;
+  for (const f of fs.existsSync(USERS) ? fs.readdirSync(USERS) : []) {
+    const v = (readJSON(path.join(USERS, f), {}).decisions || {})[id];
+    if (v && v.section) return v.section;
+  }
+  return id || 'the review';
+}
+// owner nudge: a guest summons entered the pending queue. macOS only (osascript);
+// best-effort — a missing/failing osascript must never crash the server.
+function notifyOwner(text) {
+  if (process.platform !== 'darwin') return;
+  try {
+    const safe = String(text).slice(0, 200).replace(/[\\"]/g, ' ');
+    execFile('osascript', ['-e', `display notification "${safe}" with title "botference review"`], () => { });
+  } catch { }
+}
 
 // server-side edited:true stamping — the user file is what bots read, so the
 // stamps live here, not in the browser. Comments: ts refresh + edited on text
@@ -284,7 +305,10 @@ function chatEndpoint(req, res, url) {
           // collaborators cannot summon bots directly: queue for the owner to release
           const m = { mention_id: data.mention_id, target_id: data.target_id, author: who(req) || 'collaborator', text: data.text };
           const pending = readJSON(PENDING, []);
-          if (!pending.find(x => x.mention_id === m.mention_id)) { pending.push(m); fs.writeFileSync(PENDING, JSON.stringify(pending, null, 1)); }
+          if (!pending.find(x => x.mention_id === m.mention_id)) {
+            pending.push(m); fs.writeFileSync(PENDING, JSON.stringify(pending, null, 1));
+            notifyOwner(`review: ${m.author} requested agents on ${cardSection(m.target_id)}`);
+          }
           res.writeHead(200, JSON_HEAD).end('{"queued":false,"pending":true,"reason":"queued for the owner to release"}');
           return;
         }

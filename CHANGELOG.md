@@ -2,6 +2,29 @@
 
 ## 2026-07-16
 
+- **`botference review`: agents on by default, detected — plus
+  `--share`.** The launcher now decides the bot bridge from actual
+  capability (python3 + a `claude`/`codex` CLI on PATH) instead of an
+  always-on `--chat`: capable machines serve with agents and print
+  `agents: on (claude, codex detected)`; machines without the CLIs serve
+  read-and-comment with a friendly explanation (comments sync via git;
+  agents reply elsewhere). `--no-agents` opts out, `--agents` forces on
+  with a clear error when impossible (`--chat`/`--no-chat` remain as
+  silent deprecated aliases). New `botference review --share`: hosted
+  mode behind a cloudflared quick tunnel — respects `REVIEW_PASSWORD` or
+  generates one, prints `share this: <url>   password: <pw>`, Ctrl-C
+  tears down server + tunnel together; missing cloudflared degrades to a
+  local serve with an install hint. Hosted honesty/awareness fixes: a
+  guest's queued mention chip now reads "queued — waiting for
+  <owner-handle> to approve" (server exposes `owner_handle` in `/data`);
+  when the server disappears, guests get a prominent-but-calm banner
+  (comments are safe in the browser, will sync if the URL returns, can
+  be exported) while the owner keeps the quiet presence strip; and a
+  guest summons entering the pending queue fires a macOS desktop
+  notification to the owner (osascript, best-effort). Docs, man page,
+  completions, and the paper-review skill updated to the new command
+  story.
+
 - **Review engine: TikZ figures render.** Pandoc drops `tikzpicture`
   environments, so papers whose figures are drawn in LaTeX showed no
   figures at all (seen live: three TikZ diagrams). The builder now

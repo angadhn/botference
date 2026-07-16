@@ -17,9 +17,9 @@ you how to USE the system.
 
 **Preferred: `botference review [dir]`** — one command does all of the
 below (engine copy, detection via `scripts/review-detect.mjs` with an
-echoed summary, gitignore, build, serve; `--hosted`, `--port N`,
-`--no-chat`, `--upgrade`). Use the manual steps only when the launcher
-isn't available:
+echoed summary, gitignore, build, serve; `--share`, `--hosted`,
+`--port N`, `--no-agents`, `--upgrade`). Use the manual steps only when
+the launcher isn't available:
 
 1. Copy the engine from the reference implementation into
    `<dir>/review/`: `build.mjs`, `server.mjs`, `chat.mjs`, `apply.mjs`,
@@ -43,18 +43,33 @@ isn't available:
 
 ## Running it
 
-- `node review/server.mjs` — static + comment mirror, no bots.
-- `node review/server.mjs --chat` — bots: @-tagged comments become
-  turns (spawns the botference bridge; needs `BOTFERENCE_HOME` or the
-  config's `bridge.core_dir`).
-- `node review/server.mjs --hosted --chat` — adds `REVIEW_PASSWORD`
-  basic auth, per-browser handle picker, rate limits, owner-only
-  summons; prints the `cloudflared tunnel` command to share one URL
-  with collaborators. The server serves ONLY `review/site/` + the
+> Sync note: the workspace copies of this skill at
+> `<vault>/botference/.claude/skills/paper-review/SKILL.md` and
+> `<vault>/botference/.agents/skills/paper-review/SKILL.md` are plain
+> copies of this file — when you edit it (either copy in botference-main
+> or those), update all four.
+
+- `botference review` — build + serve; **agents are on by default when
+  the machine can run them** (python3 + a `claude`/`codex` CLI on
+  PATH — the launcher prints `agents: on (…)` or an `agents: off`
+  explanation). `--no-agents` forces off; `--agents` forces on (clear
+  error if impossible).
+- `botference review --share` — hosted mode behind a cloudflared quick
+  tunnel: respects `REVIEW_PASSWORD` or generates one, prints
+  `share this: <url>   password: <pw>`; Ctrl-C stops server + tunnel
+  together. Missing cloudflared → install hint, keeps serving locally.
+- Manual (no launcher): `node review/server.mjs` — static + comment
+  mirror, no bots; `--chat` adds the bot bridge (needs
+  `BOTFERENCE_HOME` or the config's `bridge.core_dir`); `--hosted` adds
+  `REVIEW_PASSWORD` basic auth, per-browser handle picker, rate limits,
+  owner-only summons. The server serves ONLY `review/site/` + the
   figures dir (path-traversal guarded) — keep it that way.
-- Collaborator without botference: clone → `node review/server.mjs` →
-  comment → `node review/submit.mjs [--push]` (commits only their own
-  `state/users/<handle>.json`). Or they use the owner's hosted URL.
+- Collaborator options: the owner's `--share` URL (read + comment;
+  their agent summons queue for the owner to release), or clone the
+  repo and run the identical `botference review` (agents auto-detected;
+  without the CLIs they still read and comment), or plain
+  `node review/server.mjs` — then `node review/submit.mjs [--push]`
+  (commits only their own `state/users/<handle>.json`).
 - The server is long-lived and owned by the human; don't leave your own
   test servers running.
 

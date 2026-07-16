@@ -428,7 +428,7 @@ parse_loop_args() {
 show_help() {
   cat <<'HELP'
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
-       botference review [dir] [--hosted] [--port N] [--no-chat] [--upgrade]
+       botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
 
 Modes:
   init              Bootstrap a project-local state directory
@@ -441,9 +441,11 @@ Modes:
   review            Set up + serve the document-review interface in a document
                     repo (dir defaults to cwd). First run copies the engine into
                     <dir>/review/, detects the config, and builds the site; every
-                    run serves it with the bot bridge (--no-chat for comments
-                    only, --hosted for a shared password-protected URL, --upgrade
-                    to refresh engine files). Requires pandoc. See
+                    run serves it. Agents turn on automatically when python3 and
+                    a claude/codex CLI are on PATH (--no-agents forces off,
+                    --agents forces on; --share tunnels a password-protected URL
+                    via cloudflared, --hosted for hosted mode without the tunnel,
+                    --upgrade to refresh engine files). Requires pandoc. See
                     'botference review --help'.
 
 Options:
@@ -505,8 +507,9 @@ Examples:
   botference archive                                  # Archive current thread state
   botference plan --anthropic-model=claude-sonnet-4-6 # Override Anthropic model
   OPENAI_MODEL=o3 botference plan                     # Override OpenAI model
-  botference review                                   # Review interface for the paper in cwd
-  botference review ~/papers/acta --no-chat --port 4280
+  botference review                                   # Review interface for the paper in cwd (agents auto-detected)
+  botference review --share                           # One shareable tunnel URL + password for collaborators
+  botference review ~/papers/acta --no-agents --port 4280
   botference -p build                                 # Non-interactive build loop
   botference --anthropic-model=claude-sonnet-4-6 -p  # Build with Sonnet
   botference -p build 10                              # Build for max 10 iterations

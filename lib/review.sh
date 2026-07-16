@@ -12,18 +12,27 @@ REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs submit.mjs init-con
 
 review_usage() {
   cat <<'HELP'
-Usage: botference review [dir] [--hosted] [--port N] [--no-chat] [--upgrade]
+Usage: botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
 
 Set up (first run) and serve the document-review interface in a document
 repo. dir defaults to the current directory. First run copies the engine
 into <dir>/review/, detects the document configuration, and builds the
 site; every run serves it (Ctrl-C stops the server).
 
+Agents (the bot bridge) turn on automatically when the machine can run
+them: python3 plus at least one agent CLI (claude or codex) on PATH.
+Without them the site still serves for reading and commenting.
+
 Options:
   --port N     Serve on port N (overrides the port in review.config.json)
-  --hosted     Shared-URL mode: REVIEW_PASSWORD basic auth, per-browser
-               handle picker, owner-gated bots/apply
-  --no-chat    Serve without the bot bridge (comments only)
+  --share      Hosted mode + a cloudflared quick tunnel: respects
+               REVIEW_PASSWORD (or generates one and prints it), prints a
+               shareable https URL; Ctrl-C stops server and tunnel together
+  --hosted     Shared-URL mode without the tunnel: REVIEW_PASSWORD basic
+               auth, per-browser handle picker, owner-gated bots/apply
+  --agents     Force the agent bridge on (errors if python3 or an agent
+               CLI is missing)
+  --no-agents  Serve without the agent bridge (comments only)
   --upgrade    Refresh engine files (build/server/chat/apply/submit/
                init-config .mjs, bridge-system-prompt.md, SCHEMA.md,
                assets/*) from the framework copy — never touches
@@ -59,14 +68,16 @@ review_ensure_gitignore() {
 }
 
 run_review_mode() {
-  local dir="" hosted=false chat=true upgrade=false port="" arg
+  local dir="" hosted=false share=false agents="auto" upgrade=false port="" arg
   while [ "$#" -gt 0 ]; do
     arg=$1
     shift
     case "$arg" in
       --hosted) hosted=true ;;
-      --no-chat) chat=false ;;
-      --chat) chat=true ;;
+      --share) share=true; hosted=true ;;
+      # --chat/--no-chat are silent deprecated aliases of --agents/--no-agents
+      --no-agents|--no-chat) agents="off" ;;
+      --agents|--chat) agents="on" ;;
       --upgrade) upgrade=true ;;
       --port=*) port="${arg#--port=}" ;;
       --port)
@@ -96,9 +107,10 @@ run_review_mode() {
     echo "Error: --port expects a number, got '$port'." >&2
     return 2
   fi
-  if $hosted && [ -z "${REVIEW_PASSWORD:-}" ]; then
+  if $hosted && ! $share && [ -z "${REVIEW_PASSWORD:-}" ]; then
     echo "Error: --hosted requires REVIEW_PASSWORD to be set, e.g." >&2
     echo "  REVIEW_PASSWORD=… botference review --hosted" >&2
+    echo "(or use --share, which generates one and opens a tunnel for you)" >&2
     return 1
   fi
 
@@ -161,9 +173,35 @@ run_review_mode() {
     echo ""
     echo "  First-time setup complete. Next steps:"
     echo "    - commit review/ and .gitignore to share the interface with collaborators"
-    echo "    - collaborators run: node review/server.mjs, then node review/submit.mjs --push"
+    echo "    - collaborators run 'botference review' (agents auto-detected) or plain"
+    echo "      'node review/server.mjs', then 'node review/submit.mjs --push'"
+    echo "    - or share one live URL instead: botference review --share"
     echo ""
   fi
+
+  # --- agent capability: the bridge needs python3 + at least one agent CLI.
+  # PATH presence is the proxy (auth validity is not cheaply checkable); if a
+  # CLI exists but auth fails later, the in-page bridge-exit error surfaces it.
+  local clis="" have_python=false agents_on=false
+  command -v claude >/dev/null 2>&1 && clis="claude"
+  command -v codex >/dev/null 2>&1 && clis="${clis:+$clis, }codex"
+  command -v python3 >/dev/null 2>&1 && have_python=true
+  case "$agents" in
+    on)
+      if ! $have_python; then
+        echo "Error: --agents: 'python3' not found on PATH — the agent bridge runs on it." >&2
+        return 1
+      fi
+      if [ -z "$clis" ]; then
+        echo "Error: --agents: no 'claude' or 'codex' CLI found on PATH." >&2
+        echo "  Install one (and log in) to enable agents, or drop --agents." >&2
+        return 1
+      fi
+      agents_on=true
+      ;;
+    off) agents_on=false ;;
+    *) if $have_python && [ -n "$clis" ]; then agents_on=true; fi ;;
+  esac
 
   local url_port
   if [ -n "$port" ]; then
@@ -175,10 +213,77 @@ run_review_mode() {
   fi
 
   local server_args=()
-  if $chat; then server_args+=(--chat); fi
+  if $agents_on; then server_args+=(--chat); fi
   if $hosted; then server_args+=(--hosted); fi
 
+  if $share && [ -z "${REVIEW_PASSWORD:-}" ]; then
+    REVIEW_PASSWORD=$(node -e 'console.log(require("crypto").randomBytes(8).toString("hex"))') || return 1
+    echo "  REVIEW_PASSWORD not set — generated one for this session: ${REVIEW_PASSWORD}"
+  fi
+  if $hosted; then export REVIEW_PASSWORD; fi
+
   echo "  Review interface: http://localhost:${url_port}/  (Ctrl-C stops the server)"
+  if $agents_on; then
+    echo "  agents: on (${clis} detected)"
+  elif [ "$agents" = "off" ]; then
+    echo "  agents: off (--no-agents)"
+  elif [ -z "$clis" ]; then
+    echo "  agents: off — no claude/codex CLI on this machine. You can read and comment;"
+    echo "  comments sync via git (commit with: node review/submit.mjs --push). Agents"
+    echo "  reply on a machine that has them, or live if the owner shares a hosted"
+    echo "  review URL. To enable agents here, install the Claude or Codex CLI and log in."
+  else
+    echo "  agents: off — 'python3' not found on PATH (the agent bridge runs on it)."
+    echo "  You can read and comment; comments sync via git (node review/submit.mjs --push)."
+  fi
   cd "$dir" || return 1
-  exec node review/server.mjs ${server_args[@]+"${server_args[@]}"}
+
+  if ! $share; then
+    exec node review/server.mjs ${server_args[@]+"${server_args[@]}"}
+  fi
+
+  # --- --share: managed server + cloudflared quick tunnel, torn down together ---
+  node review/server.mjs ${server_args[@]+"${server_args[@]}"} &
+  local server_pid=$!
+  local tunnel_pid=""
+  # Ctrl-C (or TERM) takes the server and the tunnel down as one unit;
+  # cloudflared's graceful shutdown drains for up to 30s, so follow with -9
+  trap '[ -n "$tunnel_pid" ] && kill "$tunnel_pid" 2>/dev/null; kill "$server_pid" 2>/dev/null; sleep 1; [ -n "$tunnel_pid" ] && kill -9 "$tunnel_pid" 2>/dev/null; exit 130' INT TERM
+
+  if command -v cloudflared >/dev/null 2>&1; then
+    local tunnel_log share_url=""
+    tunnel_log=$(mktemp "${TMPDIR:-/tmp}/review-tunnel.XXXXXX")
+    cloudflared tunnel --url "http://localhost:${url_port}" >"$tunnel_log" 2>&1 &
+    tunnel_pid=$!
+    local _i
+    for _i in $(seq 1 60); do
+      share_url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$tunnel_log" | head -1) || true
+      if [ -n "$share_url" ]; then break; fi
+      kill -0 "$tunnel_pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    if [ -n "$share_url" ]; then
+      echo ""
+      echo "  share this: ${share_url}   password: ${REVIEW_PASSWORD}"
+      echo "  (for a stable URL across sessions, configure a named cloudflared tunnel —"
+      echo "   see the man page for the docs link)"
+      echo ""
+    else
+      echo "  cloudflared did not produce a trycloudflare URL — its log: $tunnel_log" >&2
+      echo "  Still serving locally at http://localhost:${url_port}/  password: ${REVIEW_PASSWORD}" >&2
+    fi
+  else
+    echo "  cloudflared not found — no public URL. Install it (e.g. 'brew install cloudflared')" >&2
+    echo "  or tunnel by hand:  cloudflared tunnel --url http://localhost:${url_port}" >&2
+    echo "  Serving locally in the meantime: http://localhost:${url_port}/  password: ${REVIEW_PASSWORD}" >&2
+  fi
+  local rc=0
+  wait "$server_pid" || rc=$?
+  if [ -n "$tunnel_pid" ]; then
+    kill "$tunnel_pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$tunnel_pid" 2>/dev/null || true
+  fi
+  trap - INT TERM
+  return "$rc"
 }

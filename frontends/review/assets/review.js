@@ -61,7 +61,7 @@
       history.replaceState(null, '', location.pathname + ([...q].length ? '?' + q : ''));
     }
   }
-  let HOSTED_MODE = false, IS_OWNER = true, APPLY = { applied: {}, flagged: {}, round: null }, PENDING_M = [];
+  let HOSTED_MODE = false, IS_OWNER = true, OWNER_HANDLE = null, APPLY = { applied: {}, flagged: {}, round: null }, PENDING_M = [];
   let SRC_DIRTY = null, lastCommit = null; // null = server predates the source_dirty field
   const idHeaders = () => {
     const h = {};
@@ -74,6 +74,7 @@
     ME = j.me; THREADS = j.threads || {}; SUGG = j.suggestions || SUGG;
     OTHERS = Object.fromEntries(Object.entries(j.users || {}).filter(([h]) => h !== j.me));
     HOSTED_MODE = !!j.hosted; IS_OWNER = j.owner !== false;
+    OWNER_HANDLE = j.owner_handle || OWNER_HANDLE; // additive field; older servers omit it
     if (j.apply) APPLY = j.apply;
     PENDING_M = j.pending_mentions || [];
     // additive server fields; a server predating them simply doesn't send them —
@@ -124,7 +125,25 @@
   // fixed top-right avatar cluster (GDocs-style). Idle = dimmed static avatar;
   // working = ~1s rotating dashed ring in the agent's accent (ring space is
   // reserved, so no layout shift). The verb line is the hover tooltip.
+  // guest-facing server-gone banner: when the SSE stream died AND the probe
+  // failed, a NON-owner (hosted guest) gets a prominent-but-calm banner — the
+  // sidebar strip alone is easy to miss when your host has walked away. The
+  // owner keeps the presence-strip-only behavior (they know their own server).
+  // Before /data ever succeeded, hosted/owner are unknown: a picked handle
+  // without an owner token is the guest heuristic.
+  function renderServerGone() {
+    const guest = HOSTED_MODE ? !IS_OWNER
+      : (!!localStorage.getItem(HKEY) && !localStorage.getItem(OKEY));
+    let b = document.getElementById('server-gone');
+    if (!(serverDead && guest)) { if (b) b.remove(); return; }
+    if (b) return;
+    b = document.createElement('div');
+    b.id = 'server-gone';
+    b.textContent = 'server unreachable — your comments are saved in this browser and will sync if this URL comes back. You can also export them (sidebar) and email/commit them.';
+    document.body.appendChild(b);
+  }
   function renderPresence() {
+    renderServerGone();
     const el = document.getElementById('presence');
     if (el) {
       const [cls, txt] = connState();
@@ -1064,6 +1083,8 @@
       .then(async r => {
         const j = await r.json().catch(() => ({}));
         if (r.status === 409) { setChatMode(false); chip(targetId, 'server not started with --chat', true); toast('Restart the server as: node review/server.mjs --chat', true); return; }
+        // hosted guest: the summons sits in the owner's approval queue — say so honestly
+        if (j.pending) { chip(targetId, `queued — waiting for ${esc(OWNER_HANDLE || 'the owner')} to approve`); return; }
         if (!r.ok || j.queued === false) { chip(targetId, `mention rejected${j.reason ? ': ' + j.reason : ''}`, true); return; }
         chip(targetId, `queued${j.position > 1 ? ' (#' + j.position + ')' : ''} — waiting for agents`);
       })

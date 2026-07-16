@@ -61,6 +61,12 @@ nav.toc a[data-current] { font-weight: 700; color: var(--accent) }
 #presence .conn.err { color: var(--accent) }
 #presence .conn.down { color: var(--bad) }
 #presence .chatmode { color: var(--muted); font-size: .64rem; text-transform: uppercase; letter-spacing: .06em }
+/* guest-facing server-gone banner (hosted non-owners): prominent but calm —
+   fixed top strip in card colors with an accent edge, no motion, no overlay */
+#server-gone { position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+  padding: .55rem 1.2rem; text-align: center; font: .8rem/1.5 var(--sans);
+  color: var(--fg); background: var(--card); border-bottom: 2px solid var(--accent);
+  box-shadow: 0 1px 6px rgba(0,0,0,.18) }
 /* ---- GDocs-style presence avatars: fixed top-right cluster, one circle per
    collaborator (agents now; humans can join later). Ring space is always
    reserved by the wrapper, so the working ring causes no layout shift. ---- */

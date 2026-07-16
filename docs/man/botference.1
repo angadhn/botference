@@ -6,7 +6,7 @@ botference \- a multi-LLM planning council for the terminal
 [\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR|\fBbuild\fR] [\fIiterations\fR]
 .br
 .B botference review
-[\fIdir\fR] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-chat\fR] [\fB\-\-upgrade\fR]
+[\fIdir\fR] [\fB\-\-share\fR] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
 .SH DESCRIPTION
 .B botference
 puts you, Claude Code, and Codex in one terminal room. The bots debate
@@ -43,9 +43,18 @@ in a document repo; \fIdir\fR defaults to the current directory. The
 first run copies the engine into \fIdir\fR/review/, auto-detects the
 document configuration into review/review.config.json (echoed for
 eyeballing), adds the gitignore block, and builds the site; every run
-serves it until Ctrl-C. Requires \fBpandoc\fR. Flags:
-\fB\-\-port\fR \fIN\fR serves on port \fIN\fR; \fB\-\-no-chat\fR serves
-without the bot bridge; \fB\-\-hosted\fR enables shared-URL mode
+serves it until Ctrl-C. Requires \fBpandoc\fR. The agent bridge turns on
+automatically when the machine can run it \- python3 plus at least one
+agent CLI (claude or codex) on PATH \- and the launcher prints which
+agents it detected; without them the site serves read-and-comment only.
+Flags: \fB\-\-port\fR \fIN\fR serves on port \fIN\fR;
+\fB\-\-no-agents\fR forces the bridge off and \fB\-\-agents\fR forces it
+on (erroring if impossible); \fB\-\-share\fR serves hosted mode behind a
+cloudflared quick tunnel, respecting REVIEW_PASSWORD or generating a
+password, and prints one shareable URL (for a stable URL across
+sessions, configure a named tunnel:
+https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/);
+\fB\-\-hosted\fR enables shared-URL mode without the tunnel
 (REVIEW_PASSWORD basic auth); \fB\-\-upgrade\fR refreshes engine files
 without touching review.config.json, state/, suggestions.json, or site/.
 .SH OPTIONS
@@ -146,6 +155,10 @@ Council with a real, tmux-attachable Claude Code session.
 .TP
 .B botference review ~/papers/acta
 Set up and serve the document-review interface for a paper.
+.TP
+.B botference review --share
+Serve the review hosted behind a cloudflared quick tunnel: prints one
+shareable URL plus a password.
 .TP
 .B botference --anthropic-model=claude-sonnet-4-6 plan
 Override the Claude participant model.
