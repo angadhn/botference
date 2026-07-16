@@ -25,6 +25,11 @@
   // inline tracked changes (suggesting mode): viewer-local toggle, default on
   const TKEY = KEY + '-inline-changes';
   let inlineChanges = localStorage.getItem(TKEY) !== '0';
+  // focus mode: every card renders as a collapsed one-liner; exactly ONE thread
+  // is expanded at a time (accordion). Persisted so SSE re-renders and the
+  // apply-flow page reload land back on the same focused thread.
+  const FOKEY = KEY + '-focus';
+  let FOCUSED = localStorage.getItem(FOKEY) || null;
 
   // author filter chips: viewer-local, never shared
   const FKEY = KEY + '-filter';
@@ -208,8 +213,12 @@
   function jumpToActive() {
     const tid = PRESENCE.tid;
     if (!tid) return;
-    const card = document.querySelector(`.card[data-id="${CSS.escape(tid)}"]`);
-    if (card) { activateCard(tid); card.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+    if (document.querySelector(`.card[data-id="${CSS.escape(tid)}"]`)) {
+      activateCard(tid); // focuses (rerenders), so re-query the fresh card node
+      const card = document.querySelector(`.card[data-id="${CSS.escape(tid)}"]`);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     const sec = sectionOf(tid);
     const a = sec && document.querySelector(`nav.toc a[data-slug="${CSS.escape(sec)}"]`);
     if (a) location.href = a.getAttribute('href');
@@ -361,7 +370,7 @@
     // narrow viewport: the margin rail is a tap-to-open bottom sheet — open it
     // so the composer is actually visible (full-width, textarea + done in reach)
     const openedSheet = isNarrow() && !margin.classList.contains('sheet-open');
-    if (isNarrow()) margin.classList.add('sheet-open');
+    if (isNarrow()) setSheet(true);
     const anchorEl = document.getElementById(id) || document.querySelector(`[data-cid="${anchorInfo.anchor}"]`);
     if (anchorEl) div.style.top = Math.max(anchorEl.getBoundingClientRect().top + window.scrollY - 60, 0) + 'px';
     const ta = div.querySelector('textarea');
@@ -383,7 +392,7 @@
       if (discard) { const d = store(); delete d[id]; save(d); }
       else if (ta.value.trim()) { persist(); confirmMention(id, id, ta.value.trim()); }
       else if (!existingId) { const d = store(); delete d[id]; save(d); }
-      if (openedSheet) margin.classList.remove('sheet-open');
+      if (openedSheet) setSheet(false);
       div.remove(); rerender();
     };
     ta.addEventListener('keydown', e => {
@@ -502,21 +511,42 @@
       }).catch(() => toast('Reopen failed — is the server the current version? (restart it)', true));
   }
 
+  // collapsed one-liner (focus mode default): author dot + name, status,
+  // anchored-text excerpt, first words of the LATEST entry, and an explicit
+  // "view thread ›" affordance — the rail reads as a scannable index
+  function collapsedHtml(c, dec) {
+    const th = mergedThread(c.id);
+    const last = th[th.length - 1];
+    const excerpt = String(c.quote || c.excerpt || c.anchor_text || c.current_text || '').slice(0, 60);
+    const lastLine = String((last && last.text) || c.comment || c.text || c.proposed_text || '').split('\n')[0].slice(0, 70);
+    const st = c.type === 'user-comment' ? (c.resolved ? 'resolved' : 'open') : (dec.status || 'pending');
+    return `<div class="mini">
+      <span class="dot"></span><span class="mini-author">${esc(cardAuthors(c)[0])}</span>
+      <span class="badge st-${esc(st)}">${esc(st)}</span>${(ACTIVITY[c.id] || {}).working ? '<span class="spin">◐</span>' : ''}
+      ${excerpt ? `<span class="mini-quote">“${esc(excerpt)}”</span>` : ''}
+      ${lastLine ? `<span class="mini-last">${esc(lastLine)}</span>` : ''}
+      <span class="mini-thread">view thread${th.length ? ` · ${th.length} repl${th.length === 1 ? 'y' : 'ies'}` : ''} ›</span>
+    </div>`;
+  }
+
   function render() {
     if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') { pendingRender = true; return; }
-    margin.innerHTML = '';
+    // sheet chrome (narrow viewports): grab-handle + ✕, re-injected every render
+    margin.innerHTML = '<div id="sheet-head"><span class="grab"></span><button id="sheet-close" title="close">✕</button></div>';
     const dcs = store();
     pageCards().forEach(c => {
       const dec = c.type === 'user-comment' ? {} : (dcs[c.id] || {});
       const div = document.createElement('div');
       const kind = c.type === 'user-comment' ? 'comment' : 'suggestion';
-      div.className = `card t-${kind} s-${c.type === 'user-comment' ? (c.mine ? 'mine' : 'theirs') : (dec.status || 'pending')}`;
+      const focused = c.id === FOCUSED;
+      div.className = `card t-${kind} s-${c.type === 'user-comment' ? (c.mine ? 'mine' : 'theirs') : (dec.status || 'pending')} ${focused ? 'focused' : 'collapsed'}`;
       div.style.setProperty('--author', authorColor(cardAuthors(c)[0]));
       if ((ACTIVITY[c.id] || {}).working) div.classList.add('working');
       div.dataset.id = c.id;
-      div.innerHTML = cardHtml(c, dec);
+      div.innerHTML = focused ? cardHtml(c, dec) : collapsedHtml(c, dec);
       margin.appendChild(div);
       div.addEventListener('click', e => {
+        if (!focused) { e.stopPropagation(); activateCard(c.id); return; } // expand (accordion)
         const act = e.target.dataset && e.target.dataset.act;
         if (!act) { activateCard(c.id, true); return; }
         const target = e.target.dataset.target || c.id; // nested cards carry their own id
@@ -761,14 +791,19 @@
     });
   }
 
+  // focus a thread: expands its card (collapsing any other), highlights its
+  // body anchor, and on narrow viewports opens the bottom sheet on it
+  function setFocus(id) {
+    FOCUSED = id || null;
+    if (FOCUSED) localStorage.setItem(FOKEY, FOCUSED); else localStorage.removeItem(FOKEY);
+    rerender();
+  }
   function activateCard(id, fromCard) {
-    document.querySelectorAll('.card').forEach(x => x.classList.toggle('active', x.dataset.id === id));
-    if (window.matchMedia('(max-width:1100px)').matches && !fromCard) {
-      margin.classList.add('sheet-open'); // narrow rail: tap block -> bottom-sheet thread
-      margin.addEventListener('click', e => { if (e.target === margin) margin.classList.remove('sheet-open'); }, { once: true });
-    }
+    if (FOCUSED !== id) setFocus(id); // rerenders: this card expanded, others collapsed
+    if (isNarrow() && !fromCard) setSheet(true); // narrow rail: bottom-sheet on the thread
     if (fromCard) {
-      const a = document.getElementById(id) || document.querySelector(`mark.user-hl[data-card-id="${id}"]`);
+      // re-query AFTER the focus rerender — marks are rebuilt by markCommented
+      const a = document.getElementById(id) || document.querySelector(`mark.user-hl[data-card-id="${CSS.escape(id)}"]`);
       if (a) a.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }
@@ -801,8 +836,9 @@
       while (m.firstChild) p.insertBefore(m.firstChild, m);
       m.remove(); p.normalize();
     });
-    document.querySelectorAll('.has-comment, .has-card').forEach(el => el.classList.remove('has-comment', 'has-card'));
+    document.querySelectorAll('.has-comment, .has-card, .focused-anchor').forEach(el => el.classList.remove('has-comment', 'has-card', 'focused-anchor'));
     pageCards().forEach(c => {
+      const focused = c.id === FOCUSED; // the focused thread's body anchor gets a stronger tint
       if (c.type === 'user-comment') {
         const el = document.querySelector(`[data-cid="${c.anchor}"]`);
         if (!el) return;
@@ -810,15 +846,21 @@
           document.querySelectorAll(`mark.user-hl[data-card-id="${CSS.escape(c.id)}"]`).forEach(mk => {
             mk.style.setProperty('--author', authorColor(c.author));
             if (!c.mine) mk.classList.add('theirs');
+            if (focused) mk.classList.add('focused');
           });
           el.dataset.cardId = el.dataset.cardId || c.id;
           return;
         }
         el.classList.add('has-comment'); el.dataset.cardId = c.id;
+        if (focused) el.classList.add('focused-anchor');
       } else {
         const a = document.getElementById(c.id);
         const blk = a && a.closest('p, figure, li, h1, h2, h3');
-        if (blk) { blk.classList.add('has-card'); if (!blk.dataset.cardId) blk.dataset.cardId = c.id; }
+        if (blk) {
+          blk.classList.add('has-card');
+          if (!blk.dataset.cardId) blk.dataset.cardId = c.id;
+          if (focused) blk.classList.add('focused-anchor');
+        }
       }
     });
   }
@@ -907,7 +949,7 @@
       const id = tcPop.dataset.id;
       tcPop.hidden = true;
       if (btn.dataset.tcact === 'card') {
-        activateCard(id);
+        activateCard(id); // focuses (rerenders); query the fresh card node after
         const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
         if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } else {
@@ -940,7 +982,7 @@
   const drawer = document.createElement('div');
   drawer.id = 'mob-drawer'; drawer.hidden = true;
   document.body.append(fab, drawer);
-  fab.addEventListener('click', () => { renderDrawer(); drawer.hidden = false; });
+  fab.addEventListener('click', openDrawer);
   function sectionCounts() { // open items per section, across the whole paper
     const counts = {};
     const bump = s => { if (s) counts[s] = (counts[s] || 0) + 1; };
@@ -959,9 +1001,10 @@
     return `<div class="mob-entry" data-mob-id="${esc(c.id)}" style="--author:${authorColor(cardAuthors(c)[0])}">
       <span class="dot"></span>
       <div class="mob-body">
-        <div class="mob-meta">${esc(c.author || 'bot')}${th.length ? ` · ${th.length} repl${th.length === 1 ? 'y' : 'ies'}` : ''}${working ? ' · <span class="spin">◐</span> working' : ''}</div>
+        <div class="mob-meta">${esc(c.author || 'bot')}${working ? ' · <span class="spin">◐</span> working' : ''}</div>
         ${excerpt ? `<div class="mob-quote">“${esc(excerpt)}”</div>` : ''}
         ${first ? `<div class="mob-first">${esc(first)}</div>` : ''}
+        <div class="mob-thread-link">view thread${th.length ? ` · ${th.length} repl${th.length === 1 ? 'y' : 'ies'}` : ''} ›</div>
       </div>${reopenBtn}</div>`;
   }
   function renderDrawer() {
@@ -971,14 +1014,14 @@
       const s = a.dataset.slug, n = counts[s] || 0;
       return n ? `<a href="${esc(a.getAttribute('href'))}"${s === slug ? ' data-current="1"' : ''}>${esc(a.textContent.trim())} ${n}</a>` : '';
     }).filter(Boolean).join(' · ');
-    drawer.innerHTML = `<div class="mob-head">💬 ${open.length} open on this section<button id="mob-close" title="close">✕</button></div>
+    drawer.innerHTML = `<div class="grab"></div><div class="mob-head">💬 ${open.length} open on this section<button id="mob-close" title="close">✕</button></div>
       ${navLinks ? `<div class="mob-nav">${navLinks}</div>` : ''}
       <div class="mob-chips">${chipsHtml()}</div>
       <div class="mob-list">${open.map(drawerEntry).join('') || '<div class="mob-empty">no open comments on this section</div>'}</div>
       ${res.length ? `<div class="mob-res-head">resolved (${res.length})</div><div class="mob-list">${res.map(drawerEntry).join('')}</div>` : ''}`;
   }
   drawer.addEventListener('click', e => {
-    if (e.target.id === 'mob-close') { drawer.hidden = true; return; }
+    if (e.target.id === 'mob-close') { closeDrawer(); return; }
     const chipBtn = e.target.closest('.chip[data-p]');
     if (chipBtn) { toggleAuthorChip(chipBtn.dataset.p); renderDrawer(); return; }
     const ro = e.target.closest('[data-mob-reopen]');
@@ -991,8 +1034,8 @@
     const entry = e.target.closest('[data-mob-id]');
     if (entry) {
       const id = entry.dataset.mobId;
-      drawer.hidden = true;
-      activateCard(id); // narrow: opens the margin bottom-sheet on this card
+      closeDrawer();
+      activateCard(id); // focuses the thread; narrow: opens the bottom-sheet on it
       const c = [...allCards(false), ...allCards(true)].find(x => x.id === id) || {};
       const a = document.getElementById(id)
         || document.querySelector(`mark.user-hl[data-card-id="${CSS.escape(id)}"]`)
@@ -1004,6 +1047,45 @@
     fab.textContent = `💬 ${allCards(false).length} open`;
     if (!drawer.hidden) renderDrawer();
   }
+
+  // --- dismissal chrome: every sheet/drawer closes via ✕, dimmed-backdrop tap,
+  // swipe-down on the grab handle, and Esc — the sheet-open state can never
+  // trap the user. Esc (and outside-click) also collapses the focused thread.
+  const backdrop = document.createElement('div');
+  backdrop.id = 'backdrop'; backdrop.hidden = true;
+  document.body.appendChild(backdrop);
+  const syncBackdrop = () => { backdrop.hidden = !(margin.classList.contains('sheet-open') || !drawer.hidden); };
+  function setSheet(open) { margin.classList.toggle('sheet-open', open); syncBackdrop(); }
+  function openDrawer() { renderDrawer(); drawer.hidden = false; syncBackdrop(); }
+  function closeDrawer() { drawer.hidden = true; syncBackdrop(); }
+  backdrop.addEventListener('click', () => { setSheet(false); closeDrawer(); });
+  margin.addEventListener('click', e => { if (e.target.id === 'sheet-close') { e.stopPropagation(); setSheet(false); } });
+  function swipeDownClose(container, zoneSel, close) {
+    let y0 = null;
+    container.addEventListener('touchstart', e => {
+      y0 = e.target.closest(zoneSel) ? e.touches[0].clientY : null;
+    }, { passive: true });
+    container.addEventListener('touchmove', e => {
+      if (y0 != null && e.touches[0].clientY - y0 > 60) { y0 = null; close(); }
+    }, { passive: true });
+  }
+  swipeDownClose(margin, '#sheet-head', () => setSheet(false));
+  swipeDownClose(drawer, '.mob-head, .grab', closeDrawer);
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || (e.target && e.target.tagName === 'TEXTAREA')) return; // composers own their Esc
+    if (!drawer.hidden) { closeDrawer(); return; }
+    if (margin.classList.contains('sheet-open')) { setSheet(false); return; }
+    if (FOCUSED) setFocus(null);
+  });
+  // clicking outside the rail (and outside the sidebar controls / overlays /
+  // anchored blocks) collapses the focused thread back into the stack
+  document.addEventListener('click', e => {
+    if (!FOCUSED) return;
+    if (e.target.closest('#margin, mark.user-hl, nav.toc, #sel-pop, #sel-pill, #tc-pop, #mob-drawer, #mob-fab, #backdrop, #avatars, #toasts, .perm-card')) return;
+    const blk = e.target.closest('[data-cid]');
+    if (blk && blk.dataset.cardId) return; // anchored block: its own handler re-focuses
+    setFocus(null);
+  });
 
   // --- progress + sidebar controls ---
   function renderProgress() {
@@ -1197,6 +1279,9 @@
     a.working = !err && /queued|working|sending|landing|writing/i.test(text || '');
     if (!text && !Object.keys(a.streams).length && !a.perm && !a.choice) delete ACTIVITY[cardId];
     syncActivity(cardId);
+    // collapsed cards have no .thread for syncActivity to hit: toggle their glow directly
+    const mini = document.querySelector(`.card.collapsed[data-id="${CSS.escape(cardId)}"]`);
+    if (mini) { mini.classList.toggle('working', !!(ACTIVITY[cardId] || {}).working); positionSoon(); }
   }
   function maybeMention(targetId, text, mentionId) {
     if (!LIVE || !MENTION_RE.test(text)) return;

@@ -491,23 +491,71 @@ test('mobile UX: touch-selection pill, composer sheet, comments drawer (happy-do
   }
   w.SUGGESTIONS = [{ id: 's1', type: 'rewrite', section: slug, author: 'claude', text: 'Tighten this.', rationale: 'clarity' }];
   w.BUILD_META = { slug: 'mobile-fixture' };
+  // a user comment with a quote that exists in the abstract text, so a body
+  // highlight (mark.user-hl) is wrapped and can be clicked to focus its thread
+  w.localStorage.setItem('review-mobile-fixture', JSON.stringify({
+    uc1: { status: 'user-comment', comment: 'is this the right term?', section: slug, anchor: `${slug}-blk-0`, quote: 'SATSYS collisions' },
+  }));
   vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(dir, 'review', 'site', 'assets', 'review.js'), 'utf8'), w);
+
+  // --- focus mode default: every card is a collapsed one-liner, no thread UI
+  assert.equal(doc.querySelectorAll('#margin .thread').length, 0, 'default: no thread visible');
+  assert.equal(doc.querySelectorAll('#margin .card.collapsed').length, 2, 'both cards collapsed');
+  assert.match(doc.querySelector('.card.collapsed[data-id="s1"] .mini-thread').textContent,
+    /view thread/, 'explicit "view thread ›" affordance on collapsed cards');
 
   // --- comments overview: FAB counts open cards; drawer lists + closes on tap
   const fab = doc.getElementById('mob-fab');
   assert.ok(fab, 'overview FAB exists');
-  assert.match(fab.textContent, /1 open/);
+  assert.match(fab.textContent, /2 open/);
   fab.click();
   const drawer = doc.getElementById('mob-drawer');
   assert.equal(drawer.hasAttribute('hidden'), false, 'drawer opens from the FAB');
   assert.match(drawer.textContent, /claude/, 'entry shows the author');
   assert.match(drawer.textContent, /Tighten this\./, 'entry shows the first line');
+  assert.match(drawer.querySelector('[data-mob-id="s1"] .mob-thread-link').textContent,
+    /view thread/, 'drawer entries carry the thread affordance');
   assert.ok(drawer.querySelector('.chip[data-p="all"]'), 'author filter chips render in the drawer');
   const entry = drawer.querySelector('[data-mob-id="s1"]');
   assert.ok(entry, 'drawer lists the open card');
   entry.click();
   assert.equal(drawer.hasAttribute('hidden'), true, 'tapping an entry closes the drawer');
+
+  // --- drawer tap lands FOCUSED (accordion) with the bottom sheet open on it
+  assert.ok(doc.querySelector('.card.focused[data-id="s1"]'), 'drawer tap focuses the thread');
+  assert.ok(doc.querySelector('.card.focused[data-id="s1"] .acts'), 'focused card shows the full UI');
+  assert.equal(doc.querySelectorAll('.card.focused').length, 1, 'exactly one expanded card');
+  assert.ok(doc.getElementById('margin').classList.contains('sheet-open'), 'narrow: sheet opens on the thread');
+
+  // --- sheet/drawer dismissal: ✕, backdrop, Esc — never trapped
+  const backdrop = doc.getElementById('backdrop');
+  assert.equal(backdrop.hasAttribute('hidden'), false, 'dimmed backdrop shows behind the sheet');
+  doc.getElementById('sheet-close').click();
+  assert.equal(doc.getElementById('margin').classList.contains('sheet-open'), false, 'sheet closes via ✕');
+  assert.equal(backdrop.hasAttribute('hidden'), true, 'backdrop hides with it');
+  fab.click();
+  assert.equal(drawer.hasAttribute('hidden'), false);
+  backdrop.click();
+  assert.equal(drawer.hasAttribute('hidden'), true, 'backdrop tap closes the drawer');
+
+  // --- focus accordion: highlight click expands; drawer swaps; Esc collapses
+  const mk = doc.querySelector('mark.user-hl[data-card-id="uc1"]');
+  assert.ok(mk, 'user-comment quote is highlighted in the body');
+  mk.click();
+  assert.ok(doc.querySelector('.card.focused[data-id="uc1"]'), 'clicking the highlight expands its thread');
+  assert.ok(doc.querySelector('.card.focused[data-id="uc1"] .thread'), 'expanded card has the thread UI');
+  assert.ok(doc.querySelector('.card.collapsed[data-id="s1"]'), 'the other card stays collapsed');
+  assert.ok(doc.querySelector('mark.user-hl[data-card-id="uc1"].focused'), 'focused highlight gets the stronger tint');
+  fab.click();
+  drawer.querySelector('[data-mob-id="s1"]').click(); // swap focus via the drawer index
+  assert.ok(doc.querySelector('.card.focused[data-id="s1"]'), 'second tap swaps focus');
+  assert.ok(doc.querySelector('.card.collapsed[data-id="uc1"]'), 'previous thread collapses');
+  assert.equal(doc.querySelectorAll('mark.user-hl.focused').length, 0, 'old highlight loses the focus tint');
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape' })); // 1st: closes the sheet
+  assert.equal(doc.getElementById('margin').classList.contains('sheet-open'), false, 'Esc closes the sheet');
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape' })); // 2nd: collapses the focus
+  assert.equal(doc.querySelectorAll('.card.focused').length, 0, 'Esc collapses back to the stack');
 
   // --- touch selection: selectionchange (no mouseup) -> bottom pill -> composer
   const blk = doc.querySelector('#paper [data-cid]');

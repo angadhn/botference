@@ -136,7 +136,24 @@ aside#margin { position: relative; padding: 2.5rem 1.2rem 2.5rem 0; min-width: 0
 .card { position: absolute; left: 0; right: 1rem; border: 1px solid var(--card-line); border-left: 3px solid var(--author, var(--muted));
   background: var(--card); padding: .6rem .75rem; font: .78rem/1.5 var(--sans); border-radius: 0 10px 10px 0;
   transition: box-shadow .15s; color: var(--fg) }
-.card:hover, .card.active { box-shadow: 0 3px 14px rgba(0,0,0,.18); z-index: 5 }
+.card:hover { box-shadow: 0 3px 14px rgba(0,0,0,.18); z-index: 5 }
+/* focus mode: one expanded thread at a time — elevation + the author accent */
+.card.focused { box-shadow: 0 6px 24px rgba(0,0,0,.26); z-index: 6; border-left-width: 4px }
+.card.collapsed { cursor: pointer; padding: .4rem .6rem }
+.card.collapsed .mini { display: flex; flex-wrap: wrap; gap: .1rem .4rem; align-items: baseline; font: .72rem/1.45 var(--sans) }
+.mini .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--author, var(--muted)); flex: none; align-self: center }
+.mini-author { font-weight: 700; text-transform: uppercase; font-size: .64rem; letter-spacing: .05em; color: var(--author, var(--muted)) }
+.mini .badge { margin-left: 0 }
+.mini .badge.st-accepted { color: var(--rev-line); border: 1px solid var(--rev-line); background: var(--rev) }
+.mini .badge.st-rejected { color: var(--bad) }
+.mini .badge.st-resolved, .mini .badge.st-open { color: var(--muted) }
+.mini .spin { display: inline-block; animation: spin 1s linear infinite; color: var(--accent) }
+.mini-quote { color: var(--muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; flex-basis: 100% }
+.mini-last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; flex-basis: 100% }
+.mini-thread { color: var(--accent); font-size: .68rem; flex-basis: 100% }
+/* the focused thread's body anchor gets a stronger tint — only while focused */
+mark.user-hl.focused { background: color-mix(in srgb, var(--author, var(--hl-active)) 42%, transparent) }
+.focused-anchor { background: color-mix(in srgb, var(--hl) 75%, transparent); box-shadow: inset 4px 0 0 var(--accent) }
 .card .who { font: 700 .68rem var(--sans); text-transform: uppercase; letter-spacing: .05em; color: var(--muted) }
 /* per-author identity: the label wears the same accent as the card edge */
 .who .author { color: var(--author, var(--muted)) }
@@ -241,7 +258,7 @@ ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
 .perm-card button.allow { background: var(--rev); border-color: var(--rev-line) }
 
 /* ---- mobile-only elements: hidden on desktop, media-query gated below ---- */
-#sel-pill, #mob-fab, #mob-drawer { display: none }
+#sel-pill, #mob-fab, #mob-drawer, #backdrop, #sheet-head { display: none }
 
 /* ---- responsive: collapse rail to tap-to-open ---- */
 @media (max-width: 1100px) {
@@ -257,9 +274,19 @@ ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
   main { padding: 1.2rem 1rem }
   aside#margin { display: none }
   aside#margin.sheet-open { display: block; position: fixed; inset: auto 0 0 0; max-height: 70vh; overflow-y: auto;
-    background: var(--rail); border-top: 2px solid var(--accent); padding: 1rem; z-index: 25 }
+    overscroll-behavior: contain; background: var(--rail); border-top: 2px solid var(--accent);
+    border-radius: 14px 14px 0 0; padding: .4rem 1rem 1rem; z-index: 25 }
   aside#margin.sheet-open .card { position: static; margin-bottom: .6rem; display: none }
-  aside#margin.sheet-open .card.active, aside#margin.sheet-open .card.composing { display: block }
+  aside#margin.sheet-open .card.focused, aside#margin.sheet-open .card.composing { display: block }
+  /* sheet chrome: grab handle (swipe-down closes) + always-visible ✕ */
+  aside#margin.sheet-open #sheet-head { display: flex; align-items: center; justify-content: center;
+    position: sticky; top: 0; background: var(--rail); z-index: 1; padding: .45rem 0 .55rem; touch-action: none }
+  #sheet-head .grab, #mob-drawer .grab { width: 44px; height: 5px; border-radius: 3px; background: var(--muted); opacity: .55 }
+  #sheet-head #sheet-close { position: absolute; right: 0; top: 0; border: 0; background: none; color: var(--muted);
+    font: 1.1rem var(--sans); padding: .35rem .7rem; min-height: 44px; cursor: pointer }
+  #mob-drawer .grab { margin: 0 auto .5rem }
+  /* dimmed backdrop behind any open sheet/drawer; tapping it closes them */
+  #backdrop:not([hidden]) { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 24 }
   /* 16px inputs: iOS zooms the page on focus below that */
   .card textarea, .reply textarea { font-size: 16px }
 
@@ -299,6 +326,7 @@ ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
   .mob-quote { color: var(--muted); font-style: italic; font-size: .78rem;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
   .mob-first { font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .mob-thread-link { color: var(--accent); font-size: .75rem; margin-top: .15rem }
   .mob-res-head { margin-top: .8rem; font: 700 .72rem var(--sans); text-transform: uppercase; color: var(--muted) }
   .mob-empty { color: var(--muted); padding: .6rem 0 }
 }
