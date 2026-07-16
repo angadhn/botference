@@ -182,7 +182,6 @@ Build these, testable at every step against the live paper:
      the thread card under the user's comment. Unanchored conversation
      belongs in the botference TUI, not the review page. Raw
      bridge/turn debug text never appears anywhere in the UI.
-   - **Strict mention routing.** A comment tagging one bot routes to
      that bot alone; the other bot must not take the floor via the
      free-form footer on review turns (bridge-system-prompt rule).
      Only @all engages both.
