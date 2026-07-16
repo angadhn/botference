@@ -2,6 +2,24 @@
 
 ## 2026-07-16
 
+- **Review engine: whitespace/smart-quote-tolerant span matching.** Live
+  field failure: suggestion cards carry single-spaced ASCII `current_text`
+  while rendered paragraphs wrap lines and use pandoc's typographic
+  quotes, so exact `indexOf` matching silently skipped inline tracked
+  changes — and would have wrongly flagged applies as
+  `needs_manual_resolution`. New shared `assets/span-match.js` (browser
+  global + CJS): matching collapses `\s+` runs to one space and folds
+  curly quotes to ASCII on both sides — uniqueness counting included —
+  with an index map back to true raw offsets so the in-page `<del>/<ins>`
+  wrap (review.js) and the source replacement (apply.mjs) always operate
+  on the original text. Verified against the live Acta data: both
+  `rw-abstract-modeling-step*` cards go from 0 matches to exactly 1 on
+  the built abstract page.
+- **Review engine: masthead title fallback.** Papers without `\title{}`
+  (seen live) left the masthead empty with no recourse: config gains an
+  optional `title` key that wins over the `\title{}` parse, and detect
+  emits `"title": ""` plus a summary note telling the user to fill it in
+  (never guessed from headers).
 - **Review engine: single-file LaTeX papers.** A configured section file
   containing two or more `\section` commands (typically the master of a
   paper that is not split into `\input` files) is now split at build time

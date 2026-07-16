@@ -47,6 +47,14 @@ if (main) {
   cfg.main = main;
   const mainSrc = stripComments(read(path.join(ROOT, main)));
 
+  // masthead title: build.mjs parses \title{} from the master each build; when
+  // the paper has none, emit an empty "title" for the user to fill in (an
+  // explicit config title always wins over the \title parse). Never guessed.
+  if (!/\\title\s*\{/.test(mainSrc)) {
+    cfg.title = '';
+    notes.push('no \\title{} in the master — the masthead will be empty; set "title" in review/review.config.json to name the paper');
+  }
+
   // sections from \input/\include order
   const sections = [];
   for (const m of mainSrc.matchAll(/\\(?:input|include)\s*\{([^}]+)\}/g)) {

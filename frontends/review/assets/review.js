@@ -540,34 +540,34 @@
     });
   }
   function wrapTracked() {
-    if (!inlineChanges) return;
+    // matching is whitespace-tolerant (assets/span-match.js): cards carry
+    // single-spaced current_text while rendered paragraphs wrap lines
+    if (!inlineChanges || !window.SpanMatch) return;
     const d = store();
     const blocks = [...document.querySelectorAll('#paper [data-cid]')];
     for (const c of SUGG) {
       if (c.section !== slug || !c.current_text || APPLY.applied[c.id]) continue;
       const st = (d[c.id] || {}).status;
       if (st === 'rejected') continue; // margin card only
-      let host = null, count = 0;
+      let host = null, span = null, count = 0;
       for (const blk of blocks) {
-        const n = blk.textContent.split(c.current_text).length - 1;
-        count += n;
-        if (n && !host) host = blk;
+        const spans = window.SpanMatch.findSpans(blk.textContent, c.current_text, 2);
+        count += spans.length;
+        if (spans.length && !host) { host = blk; span = spans[0]; }
         if (count > 1) break;
       }
       if (count !== 1 || !host) continue;
-      wrapChange(host, c, st === 'accepted');
+      wrapChange(host, c, span, st === 'accepted');
     }
   }
-  function wrapChange(blockEl, c, accepted) {
-    const text = c.current_text;
-    const idx = blockEl.textContent.indexOf(text);
-    if (idx < 0) return;
+  function wrapChange(blockEl, c, span, accepted) {
+    const idx = span.start, end = span.end;
     const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
     let pos = 0; const segs = [];
     while (walker.nextNode()) {
       const n = walker.currentNode, len = n.textContent.length;
-      if (idx < pos + len && idx + text.length > pos) {
-        segs.push({ n, start: Math.max(idx - pos, 0), end: Math.min(idx + text.length - pos, len) });
+      if (idx < pos + len && end > pos) {
+        segs.push({ n, start: Math.max(idx - pos, 0), end: Math.min(end - pos, len) });
       }
       pos += len;
     }

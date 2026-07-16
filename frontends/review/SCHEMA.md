@@ -9,6 +9,7 @@ Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-spe
 | `slug` | short project id; keys browser storage and exports |
 | `format` | `latex` · `markdown` — selects the renderer |
 | `main` | master file (LaTeX: the `\documentclass` file; paper title is parsed from it each build) |
+| `title` | optional masthead override; wins over the `\title{}` parse. Detect emits `"title": ""` when the master has no `\title{}` — fill it in to name the paper |
 | `sections` | ordered `[{file, title, split?}]`. A LaTeX file containing **two or more `\section` commands is auto-split at build time** into one page per section (single-file papers): content between `\begin{document}` and the first `\section` becomes an Abstract/Front Matter page, and each chunk is re-wrapped with the preamble so `\newcommand` macros keep working. The split is recomputed from the source every build (nothing stored); set `"split": false` on an entry to opt out |
 | `bib` | list of `.bib` files (optional) |
 | `abbreviations` | file defining `\newacronym` (optional) |
@@ -55,7 +56,7 @@ Figure handling at build: every `<img>` src is resolved against the repo root an
 
 **Two-way threads:** every card/comment id can carry a conversation. Bot entries live in `state/threads.json[id]` (`{author, ts, text, suggestion_id?}`); each human's replies live in their *own* `users/<handle>.json` under `decisions[id].thread` (`[{ts, text}]`, author implied by the file). The UI merges all sources chronologically by `ts` and offers an inline reply box on every card and thread entry — a reply only ever appends to the viewer's own file.
 
-Apply rules (Task 2+): accepted cards are applied to LaTeX by unique-span replacement only, atomically with any `bib_entries`; ambiguous/drifted spans are flagged `needs_manual_resolution`, never guessed.
+Apply rules (Task 2+): accepted cards are applied to LaTeX by unique-span replacement only, atomically with any `bib_entries`; ambiguous/drifted spans are flagged `needs_manual_resolution`, never guessed. Span matching (shared `assets/span-match.js`, used by both the in-page tracked-changes renderer and apply) is whitespace- and smart-quote-tolerant: `\s+` runs collapse to one space and curly quotes fold to ASCII on both sides for matching *and* uniqueness counting, while the actual wrap/replacement uses true offsets in the raw text.
 
 ## Known limitations (accepted for review surface)
 

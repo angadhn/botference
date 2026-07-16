@@ -219,9 +219,14 @@ function postprocess(html) {
     .replace(/@@EQN\|(\d+)@@/g, '<span class="eqno">($1)</span>');
 }
 
-// paper title, parsed from the main source each build so a retitle flows through
+// paper title: an explicit config "title" wins (papers without \title{} —
+// detect emits "title": "" for those); otherwise parsed from the main source
+// each build so a retitle flows through
 let PAPER_TITLE = '';
-if (CFG.main) {
+if (CFG.title) {
+  PAPER_TITLE = String(CFG.title).trim()
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+} else if (CFG.main) {
   try {
     const main = fs.readFileSync(path.join(ROOT, CFG.main), 'utf8');
     const m = /\\title\s*\{/.exec(main);
@@ -251,6 +256,7 @@ function page(title, slug, body, prev, next) {
 </main>
 <aside id="margin"></aside>
 <script src="suggestions.js"></script>
+<script src="assets/span-match.js"></script>
 <script src="assets/review.js"></script>
 </body></html>`;
 }

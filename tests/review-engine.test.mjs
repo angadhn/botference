@@ -293,6 +293,93 @@ test('multi-file paper with legacy figures_dir config: unchanged behavior (regre
   });
 });
 
+test('span matching is whitespace-tolerant with true raw offsets', async () => {
+  const { findSpans } = (await import(path.join(ENGINE, 'assets', 'span-match.js'))).default;
+
+  // single-spaced needle vs newline-wrapped haystack (the live failure shape)
+  const hay = 'The optimization problem is solved\nto generate   trajectories.';
+  const spans = findSpans(hay, 'is solved to generate trajectories.');
+  assert.equal(spans.length, 1);
+  const { start, end } = spans[0];
+  assert.equal(hay.slice(start, end), 'is solved\nto generate   trajectories.');
+  assert.equal(start, hay.indexOf('is solved'));
+  assert.equal(end, hay.length); // ends on the final matched char, exclusive
+
+  // needle with newlines/multi-space vs single-spaced haystack (both normalize)
+  assert.equal(findSpans('a b c', 'a\n  b\tc').length, 1);
+
+  // smart quotes fold both ways (pandoc renders ' as ’, " as “”)
+  const smart = 'the manipulator’s “end-effector”\nprior to collision';
+  const sq = findSpans(smart, `manipulator's "end-effector" prior`);
+  assert.equal(sq.length, 1);
+  assert.equal(smart.slice(sq[0].start, sq[0].end), 'manipulator’s “end-effector”\nprior');
+  assert.equal(findSpans("plain 'ascii' source", 'plain ‘ascii’ source').length, 1);
+
+  // uniqueness counting is normalized: 'x y' twice, once wrapped
+  assert.equal(findSpans('x y ... x\ny', 'x y').length, 2);
+
+  // no match / empty needle
+  assert.equal(findSpans(hay, 'not present').length, 0);
+  assert.equal(findSpans(hay, '  \n ').length, 0);
+});
+
+test('apply engine: whitespace-tolerant unique-span replacement', async t => {
+  const dir = scaffold('apply', {
+    'main.tex': 'Preamble line.\nThe optimization problem is solved\nto generate  optimal trajectories here.\nTail. dup one\ndup  one end.\n',
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  installEngine(dir);
+  fs.writeFileSync(path.join(dir, 'review', 'review.config.json'),
+    JSON.stringify({ slug: 't', format: 'latex', main: 'main.tex', sections: [{ file: 'main.tex', title: 'T' }] }));
+  fs.mkdirSync(path.join(dir, 'review', 'state'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'review', 'suggestions.json'), JSON.stringify([
+    { id: 'c1', type: 'rewrite', section: '00-t', author: 'claude', source_file: 'main.tex',
+      current_text: 'is solved to generate optimal trajectories here.', proposed_text: 'is solved to yield paths here.' },
+    { id: 'c2', type: 'rewrite', section: '00-t', author: 'claude', source_file: 'main.tex',
+      current_text: 'dup one', proposed_text: 'X' },
+  ]));
+  const { ApplyEngine } = await import(path.join(dir, 'review', 'apply.mjs'));
+  const engine = new ApplyEngine({ reviewDir: path.join(dir, 'review'),
+    cfg: JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8')) });
+
+  // c1: card text is single-spaced, source wraps the line — must still apply
+  // at true offsets; c2: ambiguity counting must also be normalized
+  const r = engine.apply(['c1', 'c2']);
+  assert.deepEqual(r.applied, ['c1']);
+  assert.equal(r.flagged.length, 1);
+  assert.match(r.flagged[0].reason, /ambiguous \(2 matches\)/);
+  const after = fs.readFileSync(path.join(dir, 'main.tex'), 'utf8');
+  assert.match(after, /The optimization problem is solved to yield paths here\.\nTail\./);
+  assert.doesNotMatch(after, /optimal trajectories/);
+});
+
+test('masthead title: config "title" wins; detect notes a missing \\title{}', async t => {
+  const dir = scaffold('title', {
+    'main.tex': `\\documentclass{article}
+\\begin{document}
+Body before sections.
+\\section{One}\\label{sec:one}
+First.
+\\section{Two}
+Second, see~\\ref{sec:one}.
+\\end{document}
+`,
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const out = runDetect(dir);
+  assert.match(out, /no \\title\{\} in the master/);
+  const cfgFile = path.join(dir, 'review', 'review.config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  assert.equal(cfg.title, '');
+  cfg.title = 'A Hand-Named Paper';
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 1));
+  installEngine(dir);
+  runBuild(dir);
+  const page = readSite(dir, '01-one.html');
+  assert.match(page, /class="masthead"[^>]*>A Hand-Named Paper</);
+  assert.match(page, /assets\/span-match\.js/); // matcher ships on every page
+});
+
 test('multi-file paper: detect still finds \\input sections (regression)', async t => {
   const dir = scaffold('multi-detect', MULTI);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

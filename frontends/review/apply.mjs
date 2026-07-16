@@ -8,6 +8,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+// whitespace-tolerant span matching, shared with the browser (review.js)
+import SpanMatch from './assets/span-match.js';
+const { findSpans } = SpanMatch;
 
 export class ApplyEngine {
   constructor({ reviewDir, cfg }) {
@@ -39,10 +42,13 @@ export class ApplyEngine {
     if (!file.startsWith(this.root + path.sep)) return { ok: false, reason: 'source_file escapes the repo' };
     if (!fs.existsSync(file)) return { ok: false, reason: `${card.source_file} not found` };
     const text = fs.readFileSync(file, 'utf8');
-    const n = text.split(card.current_text).length - 1;
-    if (n === 0) return { ok: false, reason: 'span not found — source drifted since the card was written' };
-    if (n > 1) return { ok: false, reason: `span ambiguous (${n} matches)` };
-    return { ok: true, file, after: text.replace(card.current_text, card.proposed_text ?? '') };
+    // whitespace-tolerant: cards carry single-spaced spans, LaTeX wraps lines;
+    // matching normalizes \s+ runs, the replacement uses true raw offsets
+    const spans = findSpans(text, card.current_text, 10);
+    if (spans.length === 0) return { ok: false, reason: 'span not found — source drifted since the card was written' };
+    if (spans.length > 1) return { ok: false, reason: `span ambiguous (${spans.length}${spans.length === 10 ? '+' : ''} matches)` };
+    const { start, end } = spans[0];
+    return { ok: true, file, after: text.slice(0, start) + (card.proposed_text ?? '') + text.slice(end) };
   }
 
   // bib entries whose keys are not already present; null = nothing to add
