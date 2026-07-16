@@ -2,6 +2,7 @@
 // Generic review-site builder: renders configured sections to commentable HTML.
 // All document-specific values come from review.config.json. Read-only w.r.t. sources.
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -102,11 +103,98 @@ function expandSections(list) {
 }
 const SECTIONS = expandSections(CFG.sections).map((s, i) => ({ ...s, slug: slugify(s.title, i) }));
 
+// --- TikZ figures: pandoc drops tikzpicture environments, so each one is
+// compiled to SVG (standalone doc reusing the paper's preamble minus page-
+// layout packages) and swapped in as a synthetic \includegraphics token —
+// the wrapping figure/caption/label stay with pandoc, so global figure
+// numbering and refs are untouched. SVGs are cached by content hash under
+// site/tikz/; compile failures or a missing toolchain degrade to the
+// fig-placeholder pattern and a build warning, never a broken build.
+const TIKZ = { count: 0, failed: 0, dir: path.join(OUT, 'tikz') };
+const _tools = new Map();
+function hasTool(cmd) {
+  if (!_tools.has(cmd)) {
+    // pdftocairo only understands -v; the others accept --version
+    try { execFileSync(cmd, [cmd === 'pdftocairo' ? '-v' : '--version'], { stdio: 'ignore' }); _tools.set(cmd, true); }
+    catch { _tools.set(cmd, false); }
+  }
+  return _tools.get(cmd);
+}
+let _tikzPre;
+function tikzPreamble() {
+  if (_tikzPre !== undefined) return _tikzPre;
+  let pre = '';
+  try {
+    const src = fs.readFileSync(path.join(ROOT, CFG.main), 'utf8');
+    const at = src.indexOf('\\begin{document}');
+    pre = (at === -1 ? '' : src.slice(0, at))
+      .replace(/(?<!\\)%.*$/gm, '')
+      .replace(/\\documentclass(\[[^\]]*\])?\s*\{[^}]*\}/, '')
+      // page-layout packages make no sense (or error) under standalone;
+      // combined \usepackage{a,fancyhdr,b} lists keep their other packages
+      .replace(/\\usepackage\s*(\[[^\]]*\])?\s*\{([^}]*)\}/g, (m, opt, list) => {
+        const pkgs = list.split(',').map(s => s.trim()).filter(Boolean);
+        const keep = pkgs.filter(p => !/^(geometry|fancyhdr|fullpage|hyperref)$/.test(p));
+        if (!keep.length) return '';
+        return keep.length === pkgs.length ? m : `\\usepackage{${keep.join(',')}}`;
+      })
+      .split('\n').filter(l =>
+        !/\\(pagestyle|thispagestyle|fancyhf|fancyhead|fancyfoot|[lcr]head|[lcr]foot)\b/.test(l) &&
+        !/\\(head|foot)rulewidth\b/.test(l)).join('\n');
+  } catch { }
+  _tikzPre = pre;
+  return pre;
+}
+function compileTikz(body) {
+  const doc = `\\documentclass[tikz,border=2pt]{standalone}\n${tikzPreamble()}\n\\begin{document}\n${body}\n\\end{document}\n`;
+  const hash = crypto.createHash('sha256').update(doc).digest('hex').slice(0, 16);
+  const svg = path.join(TIKZ.dir, `${hash}.svg`);
+  if (fs.existsSync(svg)) return hash; // rebuilds skip unchanged pictures
+  if (!hasTool('pdflatex')) {
+    figWarnings.add('pdflatex not found on PATH — TikZ figures shown as placeholders');
+    return null;
+  }
+  const conv = hasTool('pdftocairo') ? 'pdftocairo' : hasTool('dvisvgm') ? 'dvisvgm' : null;
+  if (!conv) {
+    figWarnings.add('no PDF→SVG converter found (pdftocairo or dvisvgm) — TikZ figures shown as placeholders');
+    return null;
+  }
+  fs.mkdirSync(TIKZ.dir, { recursive: true });
+  const tmp = fs.mkdtempSync(path.join(TIKZ.dir, '.build-'));
+  try {
+    fs.writeFileSync(path.join(tmp, 'fig.tex'), doc);
+    execFileSync('pdflatex', ['-interaction=nonstopmode', '-halt-on-error', 'fig.tex'],
+      { cwd: tmp, stdio: 'pipe', timeout: 60000 });
+    if (conv === 'pdftocairo') {
+      execFileSync('pdftocairo', ['-svg', 'fig.pdf', 'fig.svg'], { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+    } else {
+      execFileSync('dvisvgm', ['--pdf', 'fig.pdf', '-o', 'fig.svg'], { cwd: tmp, stdio: 'pipe', timeout: 30000 });
+    }
+    fs.copyFileSync(path.join(tmp, 'fig.svg'), svg);
+    return hash;
+  } catch (e) {
+    const texErr = String(e.stdout || '').split('\n').find(l => l.startsWith('!'));
+    figWarnings.add(`tikzpicture failed to compile: ${texErr || String(e.message).slice(0, 120)}`);
+    return null;
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+function extractTikz(src) {
+  return src.replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g, m => {
+    TIKZ.count++;
+    const hash = compileTikz(m);
+    if (!hash) { TIKZ.failed++; return '\\includegraphics{__tikzfail__}'; }
+    return `\\includegraphics{__tikz_${hash}__}`;
+  });
+}
+
 const todos = [];
 let EQC = 0; const eqNum = {};
 
 // --- LaTeX preprocessing: extract todo annotations, fix constructs pandoc rejects ---
 function preprocessLatex(src, slug) {
+  src = extractTikz(src); // first, so no later rewrite touches TikZ code
   const macroNames = Object.keys(CFG.todo_macros || {});
   if (macroNames.length) {
     const todoRe = new RegExp('\\\\(' + macroNames.join('|') + ')(\\[[^\\]]*\\])?\\s*\\{', 'g');
@@ -193,6 +281,12 @@ const encPath = p => p.split('/').map(encodeURIComponent).join('/');
 function rewriteImages(html) {
   return html.replace(/<img\b([^>]*?)\bsrc="([^"]+)"([^>]*)>/g, (tag, pre, src, post) => {
     if (/^(https?:|data:|\.\.\/)/.test(src)) return tag;
+    // synthetic TikZ tokens: compiled SVGs live inside site/tikz/
+    const tz = /^__tikz_([0-9a-f]+)__$/.exec(src);
+    if (tz) return `<img class="tikz-fig"${pre}src="tikz/${tz[1]}.svg"${post}>`;
+    if (src === '__tikzfail__') {
+      return '<span class="fig-placeholder">TikZ figure could not be rendered — see build warnings (the PDF remains the figure of record)</span>';
+    }
     figTotal++;
     const hit = resolveFigure(decodeURIComponent(src));
     if (!hit) {
@@ -326,5 +420,6 @@ fs.writeFileSync(path.join(OUT, 'suggestions.js'),
   'window.SUGGESTIONS=' + JSON.stringify(cards) + ';\nwindow.BUILD_META=' + JSON.stringify(meta) + ';');
 fs.writeFileSync(path.join(OUT, 'index.html'), `<meta http-equiv="refresh" content="0;url=${SECTIONS[0].slug}.html">`);
 if (figTotal) console.log(`figures: ${figResolved}/${figTotal} resolved`);
+if (TIKZ.count) console.log(`tikz: ${TIKZ.count - TIKZ.failed}/${TIKZ.count} compiled to SVG`);
 for (const w of figWarnings) console.warn(`warning: ${w}`);
 console.log(`done: ${todos.length} legacy annotation cards extracted`);

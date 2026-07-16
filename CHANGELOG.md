@@ -2,6 +2,20 @@
 
 ## 2026-07-16
 
+- **Review engine: TikZ figures render.** Pandoc drops `tikzpicture`
+  environments, so papers whose figures are drawn in LaTeX showed no
+  figures at all (seen live: three TikZ diagrams). The builder now
+  extracts each `tikzpicture` (figure-wrapped or bare), compiles it as a
+  `documentclass[tikz]{standalone}` document reusing the paper's
+  preamble (minus geometry/fancyhdr/hyperref and header/footer commands,
+  so `\usetikzlibrary`/`\definecolor`/`\newcommand` all work) with
+  `pdflatex` + `pdftocairo -svg` (fallback `dvisvgm --pdf`), caches the
+  SVG by content hash under `site/tikz/`, and swaps it in as a synthetic
+  `\includegraphics` so the wrapping figure/caption/label survive pandoc
+  — global figure numbering and cross-page refs included. Compile
+  failures or a missing toolchain degrade to the fig-placeholder pattern
+  with a one-line build warning; the build never breaks. Build summary
+  prints `tikz: N/M compiled to SVG`.
 - **Review engine: whitespace/smart-quote-tolerant span matching.** Live
   field failure: suggestion cards carry single-spaced ASCII `current_text`
   while rendered paragraphs wrap lines and use pandoc's typographic

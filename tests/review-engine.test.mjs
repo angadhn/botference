@@ -7,7 +7,7 @@
 // Run:  node --test tests/review-engine.test.mjs     (needs pandoc + git)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -58,8 +58,12 @@ function installEngine(dir) {
 }
 
 const runDetect = dir => execFileSync(process.execPath, [DETECT, dir], { encoding: 'utf8' });
-const runBuild = dir => execFileSync(process.execPath, [path.join(dir, 'review', 'build.mjs')],
-  { cwd: dir, encoding: 'utf8' });
+const runBuild = dir => { // stdout + stderr: build warnings go to stderr
+  const r = spawnSync(process.execPath, [path.join(dir, 'review', 'build.mjs')],
+    { cwd: dir, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`build failed:\n${r.stdout}\n${r.stderr}`);
+  return r.stdout + r.stderr;
+};
 const readSite = (dir, f) => fs.readFileSync(path.join(dir, 'review', 'site', f), 'utf8');
 const htmlPages = dir => fs.readdirSync(path.join(dir, 'review', 'site'))
   .filter(f => f.endsWith('.html') && f !== 'index.html').sort();
@@ -378,6 +382,77 @@ Second, see~\\ref{sec:one}.
   const page = readSite(dir, '01-one.html');
   assert.match(page, /class="masthead"[^>]*>A Hand-Named Paper</);
   assert.match(page, /assets\/span-match\.js/); // matcher ships on every page
+});
+
+const hasTool = (cmd, flag = '--version') => {
+  try { execFileSync(cmd, [flag], { stdio: 'ignore' }); return true; } catch { return false; }
+};
+const TIKZ_TOOLCHAIN = hasTool('pdflatex') && (hasTool('pdftocairo', '-v') || hasTool('dvisvgm'));
+
+test('tikz figures compile to SVG; failures degrade to placeholders',
+  { skip: TIKZ_TOOLCHAIN ? false : 'pdflatex + pdftocairo/dvisvgm not on PATH' }, async t => {
+  const dir = scaffold('tikz', {
+    'main.tex': `\\documentclass[11pt]{article}
+\\usepackage[margin=1in]{geometry}
+\\usepackage{xcolor,fancyhdr,tikz}
+\\usetikzlibrary{arrows.meta,positioning}
+\\pagestyle{fancy}
+\\lhead{Draft}
+\\definecolor{myblue}{RGB}{25,73,102}
+\\title{Tikz Paper}
+\\begin{document}
+\\section{Diagrams}\\label{sec:d}
+A figure-wrapped picture using preamble colors and libraries:
+\\begin{figure}[h]\\centering
+\\begin{tikzpicture}
+\\node[draw,fill=myblue!20] (a) {A};
+\\node[draw,right=1cm of a] (b) {B};
+\\draw[-{Latex}] (a) -- (b);
+\\end{tikzpicture}
+\\caption{Two nodes.}\\label{fig:nodes}
+\\end{figure}
+Bare picture: \\begin{tikzpicture}\\draw (0,0) circle (0.3);\\end{tikzpicture} done.
+\\begin{figure}[h]\\centering
+\\begin{tikzpicture}\\node {\\undefinedmacroxyz};\\end{tikzpicture}
+\\caption{Deliberately broken.}\\label{fig:broken}
+\\end{figure}
+
+\\section{Refs}
+See Fig.~\\ref{fig:nodes}.
+\\end{document}
+`,
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  const out = runBuild(dir);
+  assert.match(out, /tikz: 2\/3 compiled to SVG/);
+  assert.match(out, /warning: tikzpicture failed to compile/);
+
+  const svgs = fs.readdirSync(path.join(dir, 'review', 'site', 'tikz')).filter(f => f.endsWith('.svg'));
+  assert.equal(svgs.length, 2);
+  const page = readSite(dir, '00-diagrams.html');
+  const imgs = [...page.matchAll(/<img class="tikz-fig"[^>]*src="(tikz\/[0-9a-f]+\.svg)"/g)];
+  assert.equal(imgs.length, 2, 'both good pictures render as SVG imgs');
+  assert.match(page, /id="fig:nodes"/); // label survives on the figure img
+  assert.match(page, /Two nodes\./);    // caption kept by pandoc
+  assert.match(page, /fig-placeholder">TikZ figure could not be rendered/);
+  assert.match(page, /Deliberately broken\./); // broken figure's caption identifies it
+  // cross-page ref to the tikz figure resolves with global numbering
+  assert.match(readSite(dir, '01-refs.html'), /href="00-diagrams\.html#fig:nodes"[^>]*>Fig\. 1/);
+
+  // rebuild reuses the cache (mtimes unchanged), and the server serves the SVGs
+  const before = svgs.map(f => fs.statSync(path.join(dir, 'review', 'site', 'tikz', f)).mtimeMs);
+  runBuild(dir);
+  const after = svgs.map(f => fs.statSync(path.join(dir, 'review', 'site', 'tikz', f)).mtimeMs);
+  assert.deepEqual(after, before, 'cached SVGs are not recompiled');
+  await withServer(dir, async base => {
+    for (const [, src] of imgs) {
+      const r = await fetch(`${base}/${src}`);
+      assert.equal(r.status, 200, `${src} serves`);
+      assert.equal(r.headers.get('content-type'), 'image/svg+xml');
+    }
+  });
 });
 
 test('multi-file paper: detect still finds \\input sections (regression)', async t => {
