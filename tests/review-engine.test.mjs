@@ -1,0 +1,304 @@
+// Review-engine end-to-end tests: detect + build + serve on fixture papers.
+// Covers the single-file-paper shape (virtual section splitting, figure
+// resolution across dirs, extensionless \includegraphics, PDF placeholders)
+// and the pre-split multi-file shape with a legacy figures_dir config
+// (regression: the Acta-shaped config must keep working verbatim).
+//
+// Run:  node --test tests/review-engine.test.mjs     (needs pandoc + git)
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+
+const HOME = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const ENGINE = path.join(HOME, 'frontends', 'review');
+const DETECT = path.join(HOME, 'scripts', 'review-detect.mjs');
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64');
+
+function freePort() {
+  // ephemeral port from the OS; never the conventional deployment port 4177
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port;
+      srv.close(() => port === 4177 ? resolve(freePort()) : resolve(port));
+    });
+  });
+}
+
+function scaffold(name, files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `review-${name}-`));
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['add', '-A'], { cwd: dir });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { cwd: dir });
+  return dir;
+}
+
+function installEngine(dir) {
+  const rd = path.join(dir, 'review');
+  fs.mkdirSync(path.join(rd, 'assets'), { recursive: true });
+  for (const f of fs.readdirSync(ENGINE)) {
+    if (f === 'assets' || f === 'site' || f === 'state') continue;
+    fs.copyFileSync(path.join(ENGINE, f), path.join(rd, f));
+  }
+  for (const f of fs.readdirSync(path.join(ENGINE, 'assets'))) {
+    fs.copyFileSync(path.join(ENGINE, 'assets', f), path.join(rd, 'assets', f));
+  }
+}
+
+const runDetect = dir => execFileSync(process.execPath, [DETECT, dir], { encoding: 'utf8' });
+const runBuild = dir => execFileSync(process.execPath, [path.join(dir, 'review', 'build.mjs')],
+  { cwd: dir, encoding: 'utf8' });
+const readSite = (dir, f) => fs.readFileSync(path.join(dir, 'review', 'site', f), 'utf8');
+const htmlPages = dir => fs.readdirSync(path.join(dir, 'review', 'site'))
+  .filter(f => f.endsWith('.html') && f !== 'index.html').sort();
+
+async function withServer(dir, fn) {
+  const port = await freePort();
+  const proc = spawn(process.execPath, [path.join(dir, 'review', 'server.mjs')],
+    { cwd: dir, env: { ...process.env, PORT: String(port) } });
+  let out = '';
+  proc.stdout.on('data', c => { out += c; });
+  proc.stderr.on('data', c => { out += c; });
+  try {
+    const deadline = Date.now() + 15000;
+    while (!/Review live at/.test(out)) {
+      if (Date.now() > deadline) throw new Error(`server did not start:\n${out}`);
+      await new Promise(r => setTimeout(r, 100));
+    }
+    await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    proc.kill();
+  }
+}
+
+// ---------------------------------------------------------------- fixtures
+
+const SINGLE = {
+  'main.tex': `\\documentclass{article}
+\\usepackage{graphicx}
+\\graphicspath{{Figures/}}
+\\newcommand{\\satsys}{SATSYS}
+\\title{Single File Test Paper\\\\ \\large With a Broken-Line Subtitle}
+\\begin{document}
+\\maketitle
+\\begin{abstract}
+We study \\satsys{} collisions in a single-file paper.
+\\end{abstract}
+
+\\section{Introduction}\\label{sec:intro}
+Opening text with an extensionless graphicspath figure.
+\\begin{figure}
+\\includegraphics{plot1}
+\\caption{First plot.}\\label{fig:plot1}
+\\end{figure}
+An equation:
+\\begin{equation}\\label{eq:one}
+a = b + c
+\\end{equation}
+
+\\section{System Modeling}\\label{sec:model}
+% \\section{Commented Out} -- a comment must not create a page boundary
+Modeling text with a figure outside the graphics path.
+\\begin{figure}
+\\includegraphics{img/diagram}
+\\caption{Diagram.}\\label{fig:diagram}
+\\end{figure}
+
+\\section{Results}\\label{sec:results}
+\\begin{equation}\\label{eq:two}
+x = y
+\\end{equation}
+A PDF-only figure:
+\\begin{figure}
+\\includegraphics{schematic}
+\\caption{Schematic.}\\label{fig:schem}
+\\end{figure}
+
+\\section{Conclusion}\\label{sec:conc}
+As shown in Section~\\ref{sec:intro}, Eq.~\\ref{eq:one} and Fig.~\\ref{fig:plot1} hold.
+\\end{document}
+`,
+  'Figures/plot1.png': PNG,
+  'img/diagram.png': PNG,
+  'Figures/schematic.pdf': '%PDF-1.4\n%dummy\n',
+};
+
+const MULTI = {
+  'master.tex': `\\documentclass{article}
+\\usepackage{graphicx}
+\\title{Multi File Test Paper}
+\\begin{document}
+\\input{tex/intro}
+\\input{tex/methods}
+\\input{tex/conclusion}
+\\end{document}
+`,
+  'tex/intro.tex': `\\section{Introduction}\\label{sec:intro}
+Intro text.
+\\begin{figure}
+\\includegraphics{Figures/a.png}
+\\caption{A figure.}\\label{fig:a}
+\\end{figure}
+\\begin{equation}\\label{eq:base}
+E = mc^2
+\\end{equation}
+`,
+  'tex/methods.tex': `\\section{Methods}\\label{sec:methods}
+\\begin{equation}\\label{eq:second}
+F = ma
+\\end{equation}
+`,
+  'tex/conclusion.tex': `\\section{Conclusion}\\label{sec:conc}
+See Section~\\ref{sec:intro} and Eq.~\\ref{eq:base}.
+`,
+  'Figures/a.png': PNG,
+};
+
+// legacy Acta-shaped config: figures_dir as a string — must keep working verbatim
+const MULTI_CFG = {
+  slug: 'multi-test', format: 'latex', main: 'master.tex',
+  sections: [
+    { file: 'tex/intro.tex', title: '1. Introduction' },
+    { file: 'tex/methods.tex', title: '2. Methods' },
+    { file: 'tex/conclusion.tex', title: '3. Conclusion' },
+  ],
+  figures_dir: 'Figures', port: 4177,
+};
+
+// ------------------------------------------------------------------ tests
+
+test('single-file paper: detect summarizes split + figure dirs', async t => {
+  const dir = scaffold('single-detect', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const out = runDetect(dir);
+  assert.match(out, /single-file paper: 4 \\section commands/);
+  assert.match(out, /figure dirs:\s+Figures, img/);
+  assert.match(out, /figures:\s+3 referenced, 3 resolved/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.deepEqual(cfg.figures_dirs, ['Figures', 'img']);
+  assert.equal(cfg.sections.length, 1);
+  assert.notEqual(cfg.port, 4177);
+  // multi-line \title with \\ and \large slugs/echoes sanely
+  assert.equal(cfg.sections[0].title, 'Single File Test Paper With a Broken-Line Subtitle');
+  // paper has no bib, abbreviations, or todo macros: keys absent, summary says (none)
+  assert.equal(cfg.bib, undefined);
+  assert.equal(cfg.abbreviations, undefined);
+  assert.equal(cfg.todo_macros, undefined);
+  assert.match(out, /bib:\s+\(none\)/);
+  assert.match(out, /abbreviations:\s+\(none\)/);
+});
+
+test('single-file paper: build splits, numbers globally, resolves figures; server serves all dirs', async t => {
+  const dir = scaffold('single', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  const buildOut = runBuild(dir);
+  assert.match(buildOut, /split main\.tex: 4 section pages \+ front matter/);
+  assert.match(buildOut, /figures: 3\/3 resolved/);
+
+  // N sections + 1 front-matter page, slugged and TOC'd like multi-file papers
+  const pages = htmlPages(dir);
+  assert.deepEqual(pages, ['00-abstract.html', '01-introduction.html',
+    '02-system-modeling.html', '03-results.html', '04-conclusion.html']);
+  const abstract = readSite(dir, '00-abstract.html');
+  assert.equal((abstract.match(/data-slug="/g) || []).length - 1, 5, 'TOC lists all 5 pages');
+  assert.match(abstract, /SATSYS/); // \newcommand from preamble expands on split pages
+  // masthead: multi-line \title cleaned of \\ and \large
+  assert.match(abstract, /Single File Test Paper With a Broken-Line Subtitle/);
+  assert.doesNotMatch(abstract, /\\large/);
+
+  // figures: graphicspath + extensionless refs rewritten to real files
+  const intro = readSite(dir, '01-introduction.html');
+  assert.match(intro, /src="\.\.\/\.\.\/Figures\/plot1\.png"/);
+  const modeling = readSite(dir, '02-system-modeling.html');
+  assert.match(modeling, /src="\.\.\/\.\.\/img\/diagram\.png"/);
+  assert.doesNotMatch(modeling, /Commented Out/);
+
+  // PDF-only figure -> placeholder, not a broken <img>
+  const results = readSite(dir, '03-results.html');
+  assert.match(results, /fig-placeholder/);
+  assert.match(results, /schematic\.pdf/);
+  assert.doesNotMatch(results, /<img[^>]*schematic/);
+
+  // global equation numbering is monotonic across virtual pages
+  assert.match(intro, /class="eqno"\>\(1\)/);
+  assert.match(results, /class="eqno"\>\(2\)/);
+
+  // cross-page refs from the last section link back to earlier pages
+  const conc = readSite(dir, '04-conclusion.html');
+  assert.match(conc, /href="01-introduction\.html#sec:intro"/);
+  assert.match(conc, /href="01-introduction\.html#eq:one"[^>]*>Eq\. \(1\)/);
+  assert.match(conc, /href="01-introduction\.html#fig:plot1"[^>]*>Fig\. 1/);
+
+  await withServer(dir, async base => {
+    for (const p of pages) {
+      const r = await fetch(`${base}/${p}`);
+      assert.equal(r.status, 200, `${p} serves`);
+    }
+    for (const [u, mime] of [['/Figures/plot1.png', 'image/png'],
+                             ['/img/diagram.png', 'image/png'],
+                             ['/Figures/schematic.pdf', 'application/pdf']]) {
+      const r = await fetch(base + u);
+      assert.equal(r.status, 200, `${u} serves`);
+      assert.equal(r.headers.get('content-type'), mime);
+    }
+    // path traversal out of a figure dir stays blocked (raw request —
+    // fetch would normalize the ".." away client-side)
+    const { port } = new URL(base);
+    const status = await new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: '/Figures/%2e%2e/main.tex' },
+        r => { r.resume(); resolve(r.statusCode); }).on('error', reject);
+    });
+    assert.equal(status, 403);
+  });
+});
+
+test('multi-file paper with legacy figures_dir config: unchanged behavior (regression)', async t => {
+  const dir = scaffold('multi', MULTI);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  installEngine(dir);
+  fs.writeFileSync(path.join(dir, 'review', 'review.config.json'),
+    JSON.stringify(MULTI_CFG, null, 1));
+  runBuild(dir);
+
+  const pages = htmlPages(dir);
+  assert.deepEqual(pages, ['00-introduction.html', '01-methods.html', '02-conclusion.html'],
+    'single-\\section files are never split');
+  const intro = readSite(dir, '00-introduction.html');
+  assert.equal((intro.match(/data-slug="/g) || []).length - 1, 3, 'TOC lists 3 pages');
+  assert.match(intro, /src="\.\.\/\.\.\/Figures\/a\.png"/);
+  assert.match(intro, /class="eqno"\>\(1\)/);
+  assert.match(readSite(dir, '01-methods.html'), /class="eqno"\>\(2\)/);
+  assert.match(readSite(dir, '02-conclusion.html'), /href="00-introduction\.html#sec:intro"/);
+  assert.match(readSite(dir, '02-conclusion.html'), /href="00-introduction\.html#eq:base"[^>]*>Eq\. \(1\)/);
+
+  await withServer(dir, async base => {
+    assert.equal((await fetch(`${base}/00-introduction.html`)).status, 200);
+    const fig = await fetch(`${base}/Figures/a.png`);
+    assert.equal(fig.status, 200);
+    assert.equal(fig.headers.get('content-type'), 'image/png');
+  });
+});
+
+test('multi-file paper: detect still finds \\input sections (regression)', async t => {
+  const dir = scaffold('multi-detect', MULTI);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const out = runDetect(dir);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.deepEqual(cfg.sections.map(s => s.file), ['tex/intro.tex', 'tex/methods.tex', 'tex/conclusion.tex']);
+  assert.deepEqual(cfg.figures_dirs, ['Figures']);
+  assert.doesNotMatch(out, /single-file paper/);
+});

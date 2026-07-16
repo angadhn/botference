@@ -10,5 +10,6 @@ Test suite. Run with `pytest` from the repo root.
 | `test_handoff.py` | `handoff.py` — schema, validation, serialization, relay |
 | `test_paths.py` | `paths.py` — path resolution, work prefixes, handoff paths |
 | `test_room_prompts.py` | `room_prompts.py` — prompt template assembly |
+| `review-engine.test.mjs` | review engine (detect + build + server) on generated single-file and multi-file fixture papers — run with `node --test tests/review-engine.test.mjs` (needs pandoc) |
 
 Fixtures live in `tests/fixtures/`.

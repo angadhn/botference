@@ -102,6 +102,9 @@ article h3, article h4 { color: var(--heading) }
 article img { max-width: 100%; height: auto; display: block; margin: 0 auto;
   background: #fff; border-radius: 6px }
 article figure { margin: 1.8rem 0 }
+.fig-placeholder { display: block; margin: 1.2rem auto; padding: 1rem 1.2rem; max-width: 80%;
+  border: 1px dashed var(--card-line); border-radius: 6px; color: var(--muted);
+  font: italic .85rem/1.5 var(--sans); text-align: center }
 article figcaption { font: .82rem/1.5 var(--sans); color: var(--muted); margin-top: .5rem }
 article table { border-collapse: collapse; font-size: .85rem; display: block; overflow-x: auto; max-width: 100% }
 article td, article th { border-top: 1px solid var(--card-line); border-bottom: 1px solid var(--card-line); padding: .3rem .6rem }

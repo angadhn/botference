@@ -12,7 +12,10 @@ const CFG = JSON.parse(fs.readFileSync(path.join(REVIEW, 'review.config.json'), 
 
 const slugify = (t, i) => String(i).padStart(2, '0') + '-' +
   t.replace(/^[\d.\s]+/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-const SECTIONS = CFG.sections.map((s, i) => ({ ...s, slug: slugify(s.title, i) }));
+
+// figure dirs: figures_dirs (array) with legacy figures_dir (string) still honored
+const FIG_DIRS = [...new Set([].concat(CFG.figures_dirs ?? CFG.figures_dir ?? [])
+  .map(d => String(d).replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean))];
 
 // --- optional acronym map (\newacronym{key}{SHORT}{long form}) ---
 const ACR = {};
@@ -41,6 +44,63 @@ function replaceMacro(src, re, wrap) {
   }
   return out + src.slice(last);
 }
+
+// --- virtual sections: a configured LaTeX file holding several \section
+// commands (single-file papers) is split at \section boundaries into one page
+// each. The split is recomputed from the source on every build — no offsets
+// are stored in the config, so edits to the file can never desync it.
+// Opt out per entry with "split": false.
+function sectionMarks(src) {
+  const marks = [];
+  let off = 0;
+  for (const line of src.split('\n')) {
+    const cut = line.search(/(?<!\\)%/);
+    const eff = cut === -1 ? line : line.slice(0, cut);
+    for (const m of eff.matchAll(/\\section\*?(?:\[[^\]]*\])?\s*\{/g)) {
+      const arg = braceArg(src, off + m.index + m[0].length - 1);
+      if (arg) marks.push({ offset: off + m.index, title: arg.text.replace(/\s+/g, ' ').trim() });
+    }
+    off += line.length + 1;
+  }
+  return marks;
+}
+// LaTeX title text -> plain page title (strip commands/braces, escape HTML)
+const cleanTitle = t => t.replace(/\\([&%#_$])/g, '$1').replace(/\\\\/g, ' ')
+  .replace(/\\[a-zA-Z]+\*?\s*/g, '').replace(/[{}~]/g, ' ').replace(/\s+/g, ' ').trim()
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function expandSections(list) {
+  if (CFG.format !== 'latex') return list;
+  const out = [];
+  for (const s of list) {
+    const src = fs.readFileSync(path.join(ROOT, s.file), 'utf8');
+    // chunk within the document body only; every chunk is re-wrapped in the
+    // full preamble + \begin{document}…\end{document} so it parses as a
+    // complete document (pandoc rejects an unterminated \begin{document})
+    // and preamble \newcommand macros keep working on every page
+    const beginM = /\\begin\{document\}/.exec(src);
+    const bodyStart = beginM ? beginM.index + beginM[0].length : 0;
+    const endM = /\\end\{document\}/.exec(src);
+    const body = src.slice(bodyStart, endM ? endM.index : src.length);
+    const wrap = beginM ? c => src.slice(0, bodyStart) + '\n' + c + '\n\\end{document}\n' : c => c;
+    const marks = s.split === false ? [] : sectionMarks(body);
+    if (marks.length < 2) { out.push({ ...s }); continue; }
+    const front = body.slice(0, marks[0].offset);
+    const frontBody = front
+      .replace(/(?<!\\)%.*$/gm, '')
+      .replace(/\\(maketitle|tableofcontents|listoffigures|listoftables|linenumbers|modulolinenumbers)(\[[^\]]*\])?/g, '');
+    if (frontBody.trim()) {
+      out.push({ file: s.file, source: wrap(front),
+        title: /\\begin\{abstract\}|\\abstract\s*\{/.test(front) ? 'Abstract' : 'Front Matter' });
+    }
+    marks.forEach((m, j) => {
+      const end = j + 1 < marks.length ? marks[j + 1].offset : body.length;
+      out.push({ file: s.file, title: cleanTitle(m.title) || `Section ${j + 1}`, source: wrap(body.slice(m.offset, end)) });
+    });
+    console.log(`split ${s.file}: ${marks.length} section pages${frontBody.trim() ? ' + front matter' : ''}`);
+  }
+  return out;
+}
+const SECTIONS = expandSections(CFG.sections).map((s, i) => ({ ...s, slug: slugify(s.title, i) }));
 
 const todos = [];
 let EQC = 0; const eqNum = {};
@@ -113,14 +173,50 @@ const RENDERERS = {
 const renderer = RENDERERS[CFG.format];
 if (!renderer) throw new Error(`no renderer for format "${CFG.format}"`);
 
+// --- figures: resolve every <img> src against the repo and the configured
+// figure dirs (\graphicspath semantics), probing extensions for extensionless
+// \includegraphics refs. PDF-only and missing figures become placeholders
+// instead of broken <img> tags.
+const IMG_EXTS = ['', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp', '.pdf'];
+const figWarnings = new Set();
+let figResolved = 0, figTotal = 0;
+function resolveFigure(src) {
+  const clean = src.replace(/^\.\//, '');
+  const bases = [clean, ...FIG_DIRS.map(d => `${d}/${clean}`)];
+  const exts = path.extname(clean) ? [''] : IMG_EXTS;
+  for (const b of bases) for (const e of exts) {
+    try { if (fs.statSync(path.join(ROOT, b + e)).isFile()) return b + e; } catch { }
+  }
+  return null;
+}
+const encPath = p => p.split('/').map(encodeURIComponent).join('/');
+function rewriteImages(html) {
+  return html.replace(/<img\b([^>]*?)\bsrc="([^"]+)"([^>]*)>/g, (tag, pre, src, post) => {
+    if (/^(https?:|data:|\.\.\/)/.test(src)) return tag;
+    figTotal++;
+    const hit = resolveFigure(decodeURIComponent(src));
+    if (!hit) {
+      figWarnings.add(`figure not found on disk: ${src} (searched repo root${FIG_DIRS.length ? ' and ' + FIG_DIRS.join(', ') : ''})`);
+      return `<span class="fig-placeholder">missing figure: ${src}</span>`;
+    }
+    figResolved++;
+    if (hit.toLowerCase().endsWith('.pdf')) {
+      return `<span class="fig-placeholder">figure ${path.basename(hit)} is a PDF — not renderable inline; <a href="../../${encPath(hit)}">open the file</a></span>`;
+    }
+    if (!FIG_DIRS.some(d => hit.startsWith(d + '/'))) {
+      figWarnings.add(`figure ${hit} lies outside the configured figure dirs (${FIG_DIRS.join(', ') || 'none'}) — add its dir to figures_dirs in review.config.json so the server can serve it`);
+    }
+    return `<img${pre}src="../../${encPath(hit)}"${post}>`;
+  });
+}
+
 function postprocess(html) {
-  return html
+  return rewriteImages(html)
     .replace(/@@CARD\|([\w-]+)@@/g, '<span class="card-anchor" id="$1"></span>')
     .replace(/@@HLS@@/g, '<mark>').replace(/@@HLE@@/g, '</mark>')
     .replace(/@@ABBR\|([^|]*)\|([^@]*)@@/g, '<abbr title="$2">$1</abbr>')
     .replace(/@@EQA\|([^@]+)@@/g, '<span class="eq-anchor" id="$1"></span>')
-    .replace(/@@EQN\|(\d+)@@/g, '<span class="eqno">($1)</span>')
-    .replace(new RegExp(`src="${CFG.figures_dir}/`, 'g'), `src="../../${CFG.figures_dir}/`);
+    .replace(/@@EQN\|(\d+)@@/g, '<span class="eqno">($1)</span>');
 }
 
 // paper title, parsed from the main source each build so a retitle flows through
@@ -130,9 +226,7 @@ if (CFG.main) {
     const main = fs.readFileSync(path.join(ROOT, CFG.main), 'utf8');
     const m = /\\title\s*\{/.exec(main);
     const arg = m && braceArg(main, m.index + m[0].length - 1);
-    if (arg) PAPER_TITLE = arg.text.replace(/(?<!\\)%[^\n]*/g, '').replace(/\\\\/g, ' ')
-      .replace(/\s+/g, ' ').trim()
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (arg) PAPER_TITLE = cleanTitle(arg.text.replace(/(?<!\\)%[^\n]*/g, ''));
   } catch { }
 }
 
@@ -168,7 +262,7 @@ for (const f of fs.readdirSync(path.join(REVIEW, 'assets'))) {
   fs.copyFileSync(path.join(REVIEW, 'assets', f), path.join(OUT, 'assets', f));
 }
 const built = SECTIONS.map(s => {
-  const raw = fs.readFileSync(path.join(ROOT, s.file), 'utf8');
+  const raw = s.source ?? fs.readFileSync(path.join(ROOT, s.file), 'utf8');
   const tmp = path.join(OUT, `.${s.slug}.tmp`);
   fs.writeFileSync(tmp, renderer.preprocess(raw, s.slug));
   const html = execFileSync('pandoc', [...renderer.pandocArgs, tmp], { cwd: ROOT, encoding: 'utf8' });
@@ -215,7 +309,7 @@ fs.writeFileSync(suggFile, JSON.stringify(cards, null, 1));
 let git = 'unknown';
 try {
   const rev = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
-  const srcPaths = [...new Set([CFG.main, CFG.abbreviations, CFG.figures_dir, ...(CFG.bib || []),
+  const srcPaths = [...new Set([CFG.main, CFG.abbreviations, ...FIG_DIRS, ...(CFG.bib || []),
     ...CFG.sections.map(s => s.file)].filter(Boolean))];
   const dirty = execFileSync('git', ['status', '--porcelain', '--', ...srcPaths], { cwd: ROOT, encoding: 'utf8' }).trim() ? '-dirty' : '';
   git = rev + dirty;
@@ -225,4 +319,6 @@ const meta = { site_version: 3, slug: CFG.slug, built_at: new Date().toISOString
 fs.writeFileSync(path.join(OUT, 'suggestions.js'),
   'window.SUGGESTIONS=' + JSON.stringify(cards) + ';\nwindow.BUILD_META=' + JSON.stringify(meta) + ';');
 fs.writeFileSync(path.join(OUT, 'index.html'), `<meta http-equiv="refresh" content="0;url=${SECTIONS[0].slug}.html">`);
+if (figTotal) console.log(`figures: ${figResolved}/${figTotal} resolved`);
+for (const w of figWarnings) console.warn(`warning: ${w}`);
 console.log(`done: ${todos.length} legacy annotation cards extracted`);

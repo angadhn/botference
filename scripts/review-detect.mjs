@@ -33,6 +33,7 @@ const main = masters[0] || null;
 
 const cfg = { slug: path.basename(ROOT).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'review' };
 const notes = [];
+let figStats = null; // {referenced, resolved} — latex only, for the summary
 
 function sectionTitle(file, fallback) {
   const src = stripComments(read(file));
@@ -57,8 +58,17 @@ if (main) {
   }
   if (!sections.length) {
     const t = /\\title\s*\{([^}]*)\}/.exec(mainSrc);
-    sections.push({ file: main, title: (t && t[1].trim()) || prettify(main) });
-    notes.push('no \\input/\\include found — reviewing the master file as one section');
+    const cleanTitle = s => s.replace(/\\\\/g, ' ').replace(/\\[a-zA-Z]+\*?\s*/g, '')
+      .replace(/[{}~]/g, ' ').replace(/\s+/g, ' ').trim();
+    sections.push({ file: main, title: (t && cleanTitle(t[1])) || prettify(main) });
+    // count section commands in the document body only (not preamble helpers)
+    const body = mainSrc.slice(mainSrc.indexOf('\\begin{document}') + 1 || 0);
+    const nSec = (body.match(/\\section\*?(?:\[[^\]]*\])?\s*\{/g) || []).length;
+    if (nSec >= 2) {
+      notes.push(`single-file paper: ${nSec} \\section commands found — the build splits it into ${nSec} section pages (plus a front-matter/abstract page)`);
+    } else {
+      notes.push('no \\input/\\include found — reviewing the master file as one section');
+    }
   }
   cfg.sections = sections;
 
@@ -99,11 +109,46 @@ if (main) {
   }
   if (Object.keys(todoMacros).length) cfg.todo_macros = todoMacros;
 
-  // figures dir: \graphicspath, else a conventional directory name
-  const gp = /\\graphicspath\s*\{\s*\{([^}]*)\}/.exec(mainSrc);
-  cfg.figures_dir = (gp && gp[1].replace(/\/$/, '')) ||
-    ['Figures', 'figures', 'figs', 'images', 'img'].find(d => fs.existsSync(path.join(ROOT, d))) ||
-    'Figures';
+  // figure dirs: every \graphicspath entry + dirs referenced by \includegraphics
+  // arguments across the scanned sources, else a conventional directory name
+  const figDirs = new Set();
+  const normDir = d => d.trim().replace(/^\.\//, '').replace(/\/+$/, '');
+  const gp = /\\graphicspath\s*\{((?:\s*\{[^}]*\}\s*)+)\}/.exec(mainSrc);
+  if (gp) for (const d of gp[1].matchAll(/\{([^}]*)\}/g)) {
+    const dir = normDir(d[1]);
+    if (dir && fs.existsSync(path.join(ROOT, dir))) figDirs.add(dir);
+  }
+  const figRefs = [];
+  for (const f of scanned) {
+    const abs = path.join(ROOT, f);
+    if (!fs.existsSync(abs)) continue;
+    for (const m of stripComments(read(abs)).matchAll(/\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
+      figRefs.push(m[1].trim().replace(/^\.\//, ''));
+    }
+  }
+  const exts = ['', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp', '.pdf'];
+  const resolveFig = arg => {
+    for (const b of [arg, ...[...figDirs].map(d => `${d}/${arg}`)]) {
+      for (const e of exts) {
+        try { if (fs.statSync(path.join(ROOT, b + e)).isFile()) return b + e; } catch { }
+      }
+    }
+    return null;
+  };
+  let figResolved = 0;
+  for (const arg of figRefs) {
+    const hit = resolveFig(arg);
+    if (!hit) continue;
+    figResolved++;
+    const dir = path.dirname(hit);
+    if (dir !== '.') figDirs.add(dir);
+  }
+  if (!figDirs.size) {
+    const conv = ['Figures', 'figures', 'figs', 'images', 'img'].find(d => fs.existsSync(path.join(ROOT, d)));
+    figDirs.add(conv || 'Figures');
+  }
+  cfg.figures_dirs = [...figDirs];
+  figStats = { referenced: figRefs.length, resolved: figResolved };
 } else {
   const mdFiles = rootFiles.filter(f => f.endsWith('.md')).sort();
   if (!mdFiles.length) {
@@ -116,7 +161,7 @@ if (main) {
     const m = /^#\s+(.+)$/m.exec(read(path.join(ROOT, f)));
     return { file: f, title: (m && m[1].trim()) || prettify(f) };
   });
-  cfg.figures_dir = ['Figures', 'figures', 'images', 'img'].find(d => fs.existsSync(path.join(ROOT, d))) || 'Figures';
+  cfg.figures_dirs = [['Figures', 'figures', 'images', 'img'].find(d => fs.existsSync(path.join(ROOT, d))) || 'Figures'];
   notes.push('no LaTeX master found — falling back to markdown sections');
 }
 
@@ -142,7 +187,14 @@ for (const s of cfg.sections) console.log(`    - ${s.file}  (${s.title})`);
 console.log(`  bib:           ${(cfg.bib || []).join(', ') || '(none)'}`);
 console.log(`  abbreviations: ${cfg.abbreviations || '(none)'}`);
 console.log(`  todo macros:   ${Object.keys(cfg.todo_macros || {}).join(', ') || '(none)'}`);
-console.log(`  figures dir:   ${cfg.figures_dir}`);
+console.log(`  figure dirs:   ${cfg.figures_dirs.join(', ')}`);
+if (figStats) {
+  console.log(`  figures:       ${figStats.referenced} referenced, ${figStats.resolved} resolved on disk`);
+  if (figStats.referenced && !figStats.resolved) {
+    console.log('  WARNING: zero referenced figures resolve on disk — figures will render as placeholders.');
+    console.log('           Fix figures_dirs in review/review.config.json (or the image files) and rebuild.');
+  }
+}
 console.log(`  port:          ${cfg.port}`);
 for (const n of notes) console.log(`  note: ${n}`);
 console.log('edit review/review.config.json if any of this guessed wrong.');

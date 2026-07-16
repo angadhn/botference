@@ -1,6 +1,24 @@
 # Review site — card & decision schema (v3, generic multi-user engine)
 
-Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-specific values live in `review/review.config.json` (format/renderer, main file, sections, bib, todo macros, figures dir, port); engine files contain no paper-specific strings. Regenerate with `node review/build.mjs` (reads sources; never writes to them).
+Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-specific values live in `review/review.config.json`; engine files contain no paper-specific strings. Regenerate with `node review/build.mjs` (reads sources; never writes to them).
+
+## Config (`review/review.config.json`)
+
+| key | notes |
+|---|---|
+| `slug` | short project id; keys browser storage and exports |
+| `format` | `latex` · `markdown` — selects the renderer |
+| `main` | master file (LaTeX: the `\documentclass` file; paper title is parsed from it each build) |
+| `sections` | ordered `[{file, title, split?}]`. A LaTeX file containing **two or more `\section` commands is auto-split at build time** into one page per section (single-file papers): content between `\begin{document}` and the first `\section` becomes an Abstract/Front Matter page, and each chunk is re-wrapped with the preamble so `\newcommand` macros keep working. The split is recomputed from the source every build (nothing stored); set `"split": false` on an entry to opt out |
+| `bib` | list of `.bib` files (optional) |
+| `abbreviations` | file defining `\newacronym` (optional) |
+| `todo_macros` | `{macroName: author}` for legacy `\todo*` extraction (optional) |
+| `figures_dirs` | **array** of figure directories, detected from `\graphicspath` and `\includegraphics` arguments; every dir is served (path-guarded) and rewritten in built pages. Back-compat: the legacy `figures_dir` (single string) is still read everywhere — existing configs keep working verbatim |
+| `port` | server port (`PORT` env and `--port` override) |
+| `legacy_storage_keys` | old browser-storage keys to migrate (optional) |
+| `bridge` | bot-bridge block, owned by `init-config.mjs` |
+
+Figure handling at build: every `<img>` src is resolved against the repo root and each figure dir with LaTeX `\graphicspath` semantics, probing `.png/.jpg/.jpeg/.svg/.gif/.webp/.pdf` for extensionless `\includegraphics` refs. PDF-only and missing figures render as labeled placeholders instead of broken images.
 
 ## How to review
 

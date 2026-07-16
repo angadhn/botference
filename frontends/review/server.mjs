@@ -16,10 +16,16 @@ const CFG = JSON.parse(fs.readFileSync(path.join(REVIEW, 'review.config.json'), 
 const SITE = path.join(REVIEW, 'site');
 const STATE = path.join(REVIEW, 'state');
 const USERS = path.join(STATE, 'users');
-const FIGURES = path.resolve(ROOT, CFG.figures_dir || 'Figures');
+// figure dirs: figures_dirs (array) with legacy figures_dir (string) still honored;
+// longest prefix first so nested dirs (tex/Figures vs Figures) match correctly
+const FIG_DIRS = [...new Set([].concat(CFG.figures_dirs ?? CFG.figures_dir ?? 'Figures')
+  .map(d => String(d).replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean))]
+  .sort((a, b) => b.length - a.length);
 fs.mkdirSync(USERS, { recursive: true });
 const PORT = process.env.PORT || CFG.port || 4177;
-const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png' };
+const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.svg': 'image/svg+xml', '.webp': 'image/webp', '.pdf': 'application/pdf' };
 
 // --- identity: git-based handle, computed once at boot ---
 function gitConfig(key) {
@@ -418,12 +424,12 @@ export function handler(req, res) {
     return;
   }
   const p = url === '/' ? '/index.html' : decodeURIComponent(url);
-  const figPrefix = `/${CFG.figures_dir}/`;
-  const isFigure = p.includes(figPrefix);
-  const file = isFigure
-    ? path.resolve(FIGURES, p.split(figPrefix)[1])
+  const figDir = FIG_DIRS.find(d => p.includes(`/${d}/`));
+  const figBase = figDir && path.resolve(ROOT, figDir);
+  const file = figDir
+    ? path.resolve(figBase, p.split(`/${figDir}/`)[1])
     : path.resolve(SITE, p.replace(/^\/+/, ''));
-  if (!isInside(file, isFigure ? FIGURES : SITE)) { res.writeHead(403).end(); return; }
+  if (!isInside(file, figDir ? figBase : SITE)) { res.writeHead(403).end(); return; }
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404).end('not found'); return; }
     res.writeHead(200, {

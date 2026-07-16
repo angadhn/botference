@@ -2,6 +2,36 @@
 
 ## 2026-07-16
 
+- **Review engine: single-file LaTeX papers.** A configured section file
+  containing two or more `\section` commands (typically the master of a
+  paper that is not split into `\input` files) is now split at build time
+  into virtual sections — one rendered page per `\section`, plus an
+  Abstract/Front Matter page for content before the first section — with
+  the same slugs, TOC, global equation/figure/table numbering, and
+  cross-page ref resolution as multi-file papers. Each chunk is re-wrapped
+  with the paper's preamble so `\newcommand` macros keep expanding; the
+  split is recomputed from the source every build (nothing stored in
+  config; `"split": false` on a section entry opts out). Multi-line
+  `\title{...\\ \large ...}` values are cleaned for the masthead/TOC.
+- **Review engine: figures.** Config gains `figures_dirs` (array),
+  detected from every `\graphicspath` entry *and* the directories that
+  `\includegraphics` arguments actually resolve to; the server serves all
+  of them (each path-guarded) and the builder rewrites `<img>` srcs
+  against any of them, probing png/jpg/jpeg/svg/gif/webp/pdf for
+  extensionless refs. PDF-only and missing figures render as labeled
+  placeholders instead of broken images; jpeg/svg/gif/webp/pdf MIME types
+  added. The legacy `figures_dir` (string) key keeps working verbatim —
+  existing configs need no edits (Acta site output verified
+  byte-identical).
+- **Review detection summary** (`scripts/review-detect.mjs`) now reports
+  the single-file split ("N \section commands — the build splits it…"),
+  the figure dirs found, referenced/resolved figure counts, and warns
+  loudly when zero referenced figures resolve on disk.
+- **Review engine tests**: `node --test tests/review-engine.test.mjs`
+  runs detect + build + a live server against generated single-file and
+  multi-file fixture papers (split pages, TOC, cross-page refs, global
+  numbering, figure serving over HTTP, traversal guard, legacy-config
+  regression). Never binds port 4177.
 - **Shell completions** for the launcher (`completions/_botference` zsh,
   `completions/botference.bash`) covering all modes incl. `review`.
 - **New: `botference review` subcommand** — one command to set up and
