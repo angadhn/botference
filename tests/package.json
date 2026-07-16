@@ -1,0 +1,8 @@
+{
+  "name": "botference-tests",
+  "private": true,
+  "description": "Dev-only dependencies for the node --test suites (happy-dom for the review-engine DOM smoke tests). The review engine itself stays dependency-free; tests that need happy-dom skip with a hint when it is not installed.",
+  "devDependencies": {
+    "happy-dom": "^20.10.6"
+  }
+}

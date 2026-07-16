@@ -455,6 +455,90 @@ See Fig.~\\ref{fig:nodes}.
   });
 });
 
+// happy-dom lives in tests/package.json (dev-only; the engine ships no deps) —
+// tests that need it skip with a hint when it is not installed
+let HAPPY = false;
+try { await import('happy-dom'); HAPPY = true; } catch { }
+
+test('mobile UX: touch-selection pill, composer sheet, comments drawer (happy-dom smoke)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const dir = scaffold('mobile', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const html = readSite(dir, '00-abstract.html');
+
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  // GlobalWindow is a vm-compatible global: review.js runs inside it exactly
+  // as in a browser (a 390px-wide one, so the narrow-viewport paths engage)
+  const w = new GlobalWindow({ url: 'file:///paper/00-abstract.html', width: 390, height: 844 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  // strip external <script src> tags (file:// fetches don't resolve here);
+  // review.js is evaluated manually below, after globals/stubs are in place
+  doc.write(html.replace(/<script[^>]*src=[^>]*>\s*<\/script>/g, ''));
+  const slug = doc.body.getAttribute('data-slug');
+  assert.ok(slug, 'built page carries data-slug');
+  // stubs review.js needs that happy-dom may not provide
+  if (!w.CSS || !w.CSS.escape) {
+    w.CSS = { escape: s => String(s).replace(/[^a-zA-Z0-9_-]/g, ch => '\\' + ch) };
+  }
+  if (!w.matchMedia('(max-width: 1100px)').matches) {
+    // happy-dom version can't evaluate the query against window width: stub it
+    w.matchMedia = q => ({ matches: /max-width/.test(q), media: q, addEventListener() { }, removeEventListener() { } });
+  }
+  w.SUGGESTIONS = [{ id: 's1', type: 'rewrite', section: slug, author: 'claude', text: 'Tighten this.', rationale: 'clarity' }];
+  w.BUILD_META = { slug: 'mobile-fixture' };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(dir, 'review', 'site', 'assets', 'review.js'), 'utf8'), w);
+
+  // --- comments overview: FAB counts open cards; drawer lists + closes on tap
+  const fab = doc.getElementById('mob-fab');
+  assert.ok(fab, 'overview FAB exists');
+  assert.match(fab.textContent, /1 open/);
+  fab.click();
+  const drawer = doc.getElementById('mob-drawer');
+  assert.equal(drawer.hasAttribute('hidden'), false, 'drawer opens from the FAB');
+  assert.match(drawer.textContent, /claude/, 'entry shows the author');
+  assert.match(drawer.textContent, /Tighten this\./, 'entry shows the first line');
+  assert.ok(drawer.querySelector('.chip[data-p="all"]'), 'author filter chips render in the drawer');
+  const entry = drawer.querySelector('[data-mob-id="s1"]');
+  assert.ok(entry, 'drawer lists the open card');
+  entry.click();
+  assert.equal(drawer.hasAttribute('hidden'), true, 'tapping an entry closes the drawer');
+
+  // --- touch selection: selectionchange (no mouseup) -> bottom pill -> composer
+  const blk = doc.querySelector('#paper [data-cid]');
+  assert.ok(blk, 'paper blocks are id-stamped');
+  w.getSelection = () => ({ // stubbed Selection: happy-dom's is minimal
+    isCollapsed: false, rangeCount: 1,
+    toString: () => 'collisions in a single-file paper',
+    getRangeAt: () => ({
+      commonAncestorContainer: blk,
+      getBoundingClientRect: () => ({ left: 10, top: 300, width: 80, bottom: 320 }),
+    }),
+  });
+  doc.dispatchEvent(new w.Event('selectionchange'));
+  await new Promise(r => setTimeout(r, 450)); // past the 300ms debounce
+  const pill = doc.getElementById('sel-pill');
+  assert.ok(pill, 'selection pill exists');
+  assert.equal(pill.hasAttribute('hidden'), false, 'pill appears for a touch selection');
+  assert.equal(doc.getElementById('sel-pop').hasAttribute('hidden'), true,
+    'desktop floating popover stays hidden on narrow viewports');
+  pill.click();
+  const ta = doc.querySelector('#margin .card.composing textarea');
+  assert.ok(ta, 'tapping the pill opens the composer');
+  assert.ok(doc.getElementById('margin').classList.contains('sheet-open'),
+    'margin opens as a bottom sheet so the composer is visible');
+  // collapsing the selection hides the pill again
+  w.getSelection = () => ({ isCollapsed: true, rangeCount: 0, toString: () => '' });
+  doc.dispatchEvent(new w.Event('selectionchange'));
+  await new Promise(r => setTimeout(r, 450));
+  assert.equal(pill.hasAttribute('hidden'), true, 'pill hides when the selection collapses');
+});
+
 test('multi-file paper: detect still finds \\input sections (regression)', async t => {
   const dir = scaffold('multi-detect', MULTI);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

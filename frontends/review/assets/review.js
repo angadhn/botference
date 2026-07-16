@@ -48,6 +48,7 @@
 
   const store = () => JSON.parse(localStorage.getItem(KEY) || '{}');
   const setStore = d => localStorage.setItem(KEY, JSON.stringify(d));
+  const isNarrow = () => window.matchMedia('(max-width: 1100px)').matches;
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   // hosted identity: per-browser handle + (owner only) the ?owner=… token, sent
@@ -249,12 +250,13 @@
     }
     return out;
   }
-  function pageCards() {
+  function allCards(resolved) {
     const sugg = SUGG.filter(c => c.section === slug && !c.reply_to);
     const all = [...sugg, ...ownComments(), ...otherComments()];
-    return all.filter(c => !!c.resolved === showResolved)
+    return all.filter(c => !!c.resolved === !!resolved)
       .filter(c => authorFilter.has('all') || cardAuthors(c).some(a => authorFilter.has(a)));
   }
+  const pageCards = () => allCards(showResolved);
   function participants() {
     const s = new Set();
     if (ME) s.add(String(ME).toLowerCase());
@@ -356,6 +358,10 @@
       <div class="acts"><button data-act="done">done</button><button data-act="discard">discard</button></div>`;
     div.style.setProperty('--author', authorColor(ME || 'you'));
     margin.appendChild(div);
+    // narrow viewport: the margin rail is a tap-to-open bottom sheet — open it
+    // so the composer is actually visible (full-width, textarea + done in reach)
+    const openedSheet = isNarrow() && !margin.classList.contains('sheet-open');
+    if (isNarrow()) margin.classList.add('sheet-open');
     const anchorEl = document.getElementById(id) || document.querySelector(`[data-cid="${anchorInfo.anchor}"]`);
     if (anchorEl) div.style.top = Math.max(anchorEl.getBoundingClientRect().top + window.scrollY - 60, 0) + 'px';
     const ta = div.querySelector('textarea');
@@ -377,6 +383,7 @@
       if (discard) { const d = store(); delete d[id]; save(d); }
       else if (ta.value.trim()) { persist(); confirmMention(id, id, ta.value.trim()); }
       else if (!existingId) { const d = store(); delete d[id]; save(d); }
+      if (openedSheet) margin.classList.remove('sheet-open');
       div.remove(); rerender();
     };
     ta.addEventListener('keydown', e => {
@@ -485,6 +492,16 @@
     ta.focus({ preventScroll: true });
   }
 
+  // owner-only server write to the author's own file; resolved -> false,
+  // status and thread untouched. The users/ watcher SSE refreshes peers.
+  function reopenOther(id, handle) {
+    api('/reopen', { method: 'POST', body: JSON.stringify({ id, handle }) })
+      .then(r => r.json()).then(j => {
+        if (!j.ok) { toast(`Reopen failed${j.reason ? ': ' + j.reason : ''} — the author can reopen it themselves.`, true); return; }
+        return api('/data').then(r => r.json()).then(jj => { adoptData(jj); rerender(); });
+      }).catch(() => toast('Reopen failed — is the server the current version? (restart it)', true));
+  }
+
   function render() {
     if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') { pendingRender = true; return; }
     margin.innerHTML = '';
@@ -520,16 +537,7 @@
           if (!c.mine) return;
           const d = store(); d[c.id].resolved = !d[c.id].resolved; save(d); rerender(); return;
         }
-        if (act === 'reopen-other') {
-          // owner-only server write to the author's own file; resolved -> false,
-          // status and thread untouched. The users/ watcher SSE refreshes peers.
-          api('/reopen', { method: 'POST', body: JSON.stringify({ id: target, handle: e.target.dataset.handle }) })
-            .then(r => r.json()).then(j => {
-              if (!j.ok) { toast(`Reopen failed${j.reason ? ': ' + j.reason : ''} — the author can reopen it themselves.`, true); return; }
-              return api('/data').then(r => r.json()).then(jj => { adoptData(jj); rerender(); });
-            }).catch(() => toast('Reopen failed — is the server the current version? (restart it)', true));
-          return;
-        }
+        if (act === 'reopen-other') { reopenOther(target, e.target.dataset.handle); return; }
         const d = store(); d[target] = d[target] || {};
         d[target].status = act === 'pending' ? undefined : act;
         save(d); rerender();
@@ -541,6 +549,7 @@
     renderChips();
     renderProgress();
     renderApplyBar();
+    renderMobile();
   }
   function rerender() { render(); position(); }
 
@@ -714,23 +723,28 @@
     inp.focus({ preventScroll: true });
   }
 
+  // author-filter chips render in the sidebar AND inside the mobile drawer;
+  // both share the same markup + toggle so the filter stays one piece of state
+  const chipsHtml = () => {
+    const parts = ['all', ...participants()];
+    return '<div class="chip-label">show authors</div>' +
+      parts.map(p => `<button class="chip${authorFilter.has(p) ? ' on' : ''}" data-p="${esc(p)}" style="--author:${p === 'all' ? 'var(--accent)' : authorColor(p)}"><span class="dot"></span>${esc(p)}</button>`).join('');
+  };
+  function toggleAuthorChip(p) {
+    if (p === 'all') authorFilter = new Set(['all']);
+    else {
+      authorFilter.delete('all');
+      authorFilter.has(p) ? authorFilter.delete(p) : authorFilter.add(p);
+      if (!authorFilter.size) authorFilter = new Set(['all']);
+    }
+    saveFilter(); rerender();
+  }
   function renderChips() {
     const foot = document.querySelector('.toc-foot');
     let bar = document.getElementById('author-chips');
     if (!bar) { bar = document.createElement('div'); bar.id = 'author-chips'; foot.insertBefore(bar, foot.firstChild); }
-    const parts = ['all', ...participants()];
-    bar.innerHTML = '<div class="chip-label">show authors</div>' +
-      parts.map(p => `<button class="chip${authorFilter.has(p) ? ' on' : ''}" data-p="${esc(p)}" style="--author:${p === 'all' ? 'var(--accent)' : authorColor(p)}"><span class="dot"></span>${esc(p)}</button>`).join('');
-    bar.querySelectorAll('.chip').forEach(b => b.addEventListener('click', () => {
-      const p = b.dataset.p;
-      if (p === 'all') authorFilter = new Set(['all']);
-      else {
-        authorFilter.delete('all');
-        authorFilter.has(p) ? authorFilter.delete(p) : authorFilter.add(p);
-        if (!authorFilter.size) authorFilter = new Set(['all']);
-      }
-      saveFilter(); rerender();
-    }));
+    bar.innerHTML = chipsHtml();
+    bar.querySelectorAll('.chip').forEach(b => b.addEventListener('click', () => toggleAuthorChip(b.dataset.p)));
   }
 
   function position() {
@@ -809,22 +823,31 @@
     });
   }
 
-  // --- selection popover ---
+  // --- selection -> comment ---
+  // shared: the current selection as anchor info, or null when it isn't a
+  // usable in-paper selection
+  function currentSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim() || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    const node = range.commonAncestorContainer;
+    const blk = (node.nodeType === 1 ? node : node.parentElement)?.closest('[data-cid]');
+    if (!blk) return null;
+    return { anchor: blk.dataset.cid, quote: sel.toString(), excerpt: sel.toString().slice(0, 100), range };
+  }
+  let pending = null;
+  // desktop: floating popover near the selection (mouseup, unchanged behavior)
   const pop = document.createElement('button');
   pop.id = 'sel-pop'; pop.textContent = '💬 Comment'; pop.hidden = true;
   document.body.appendChild(pop);
-  let pending = null;
   document.addEventListener('mouseup', e => {
     if (e.target === pop) return;
     setTimeout(() => {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || !sel.toString().trim()) { pop.hidden = true; return; }
-      const range = sel.getRangeAt(0);
-      const node = range.commonAncestorContainer;
-      const blk = (node.nodeType === 1 ? node : node.parentElement).closest('[data-cid]');
-      if (!blk) { pop.hidden = true; return; }
-      pending = { anchor: blk.dataset.cid, quote: sel.toString(), excerpt: sel.toString().slice(0, 100) };
-      const r = range.getBoundingClientRect();
+      if (isNarrow()) return; // narrow viewports use the bottom pill below
+      const info = currentSelection();
+      if (!info) { pop.hidden = true; return; }
+      pending = { anchor: info.anchor, quote: info.quote, excerpt: info.excerpt };
+      const r = info.range.getBoundingClientRect();
       pop.style.left = Math.max(r.left + r.width / 2 - 45, 8) + 'px';
       pop.style.top = (r.top - 38) + 'px';
       pop.hidden = false;
@@ -833,6 +856,28 @@
   pop.addEventListener('mousedown', e => e.preventDefault());
   pop.addEventListener('click', () => {
     pop.hidden = true;
+    if (pending) openComposer(pending);
+    pending = null;
+  });
+  // touch: iOS/Android selection handles fire no mouseup, and the native
+  // callout obscures floating buttons near the selection — so narrow viewports
+  // get a fixed bottom pill instead, driven by selectionchange (debounced) +
+  // touchend. It hides itself the moment the selection collapses.
+  const selPill = document.createElement('button');
+  selPill.id = 'sel-pill'; selPill.textContent = '💬 Comment on selection'; selPill.hidden = true;
+  document.body.appendChild(selPill);
+  let selTimer = null;
+  function updateSelPill() {
+    const info = isNarrow() ? currentSelection() : null;
+    if (!info) { selPill.hidden = true; return; }
+    pending = { anchor: info.anchor, quote: info.quote, excerpt: info.excerpt };
+    selPill.hidden = false;
+  }
+  const selSoon = () => { clearTimeout(selTimer); selTimer = setTimeout(updateSelPill, 300); };
+  document.addEventListener('selectionchange', selSoon);
+  document.addEventListener('touchend', selSoon, { passive: true });
+  selPill.addEventListener('click', () => {
+    selPill.hidden = true;
     if (pending) openComposer(pending);
     pending = null;
   });
@@ -882,6 +927,83 @@
     tcPop.hidden = true;
   });
   window.addEventListener('scroll', () => { pop.hidden = true; tcPop.hidden = true; }, { passive: true });
+
+  // ---- mobile comments overview: a fixed "💬 N open" FAB (narrow viewports
+  // only, CSS-gated) opening an 85vh bottom-sheet drawer that lists every
+  // thread on this section — author accent, anchored-text excerpt, first line,
+  // reply count, live working indicator — plus the author filter chips, a
+  // resolved section (reopen works), and per-section open counts for
+  // cross-section review. Tapping an entry closes the drawer and lands on the
+  // highlight with its thread open (the existing tap-a-highlight flow).
+  const fab = document.createElement('button');
+  fab.id = 'mob-fab';
+  const drawer = document.createElement('div');
+  drawer.id = 'mob-drawer'; drawer.hidden = true;
+  document.body.append(fab, drawer);
+  fab.addEventListener('click', () => { renderDrawer(); drawer.hidden = false; });
+  function sectionCounts() { // open items per section, across the whole paper
+    const counts = {};
+    const bump = s => { if (s) counts[s] = (counts[s] || 0) + 1; };
+    SUGG.filter(c => !c.reply_to && !c.resolved).forEach(c => bump(c.section));
+    Object.values(store()).forEach(v => { if (v.status === 'user-comment' && !v.resolved) bump(v.section); });
+    Object.values(OTHERS).forEach(dec => Object.values(dec).forEach(v => { if (v.status === 'user-comment' && !v.resolved) bump(v.section); }));
+    return counts;
+  }
+  function drawerEntry(c) {
+    const th = mergedThread(c.id);
+    const excerpt = String(c.quote || c.excerpt || c.anchor_text || c.current_text || '').slice(0, 80);
+    const first = String(c.comment || c.text || c.proposed_text || '').split('\n')[0].slice(0, 100);
+    const working = (ACTIVITY[c.id] || {}).working || PRESENCE.tid === c.id;
+    const reopenBtn = c.resolved && (c.mine || IS_OWNER)
+      ? `<button class="rebtn" data-mob-reopen="${esc(c.id)}" data-mine="${c.mine ? '1' : ''}" data-handle="${esc(c.author)}">↩ reopen</button>` : '';
+    return `<div class="mob-entry" data-mob-id="${esc(c.id)}" style="--author:${authorColor(cardAuthors(c)[0])}">
+      <span class="dot"></span>
+      <div class="mob-body">
+        <div class="mob-meta">${esc(c.author || 'bot')}${th.length ? ` · ${th.length} repl${th.length === 1 ? 'y' : 'ies'}` : ''}${working ? ' · <span class="spin">◐</span> working' : ''}</div>
+        ${excerpt ? `<div class="mob-quote">“${esc(excerpt)}”</div>` : ''}
+        ${first ? `<div class="mob-first">${esc(first)}</div>` : ''}
+      </div>${reopenBtn}</div>`;
+  }
+  function renderDrawer() {
+    const open = allCards(false), res = allCards(true);
+    const counts = sectionCounts();
+    const navLinks = [...document.querySelectorAll('nav.toc a[data-slug]')].map(a => {
+      const s = a.dataset.slug, n = counts[s] || 0;
+      return n ? `<a href="${esc(a.getAttribute('href'))}"${s === slug ? ' data-current="1"' : ''}>${esc(a.textContent.trim())} ${n}</a>` : '';
+    }).filter(Boolean).join(' · ');
+    drawer.innerHTML = `<div class="mob-head">💬 ${open.length} open on this section<button id="mob-close" title="close">✕</button></div>
+      ${navLinks ? `<div class="mob-nav">${navLinks}</div>` : ''}
+      <div class="mob-chips">${chipsHtml()}</div>
+      <div class="mob-list">${open.map(drawerEntry).join('') || '<div class="mob-empty">no open comments on this section</div>'}</div>
+      ${res.length ? `<div class="mob-res-head">resolved (${res.length})</div><div class="mob-list">${res.map(drawerEntry).join('')}</div>` : ''}`;
+  }
+  drawer.addEventListener('click', e => {
+    if (e.target.id === 'mob-close') { drawer.hidden = true; return; }
+    const chipBtn = e.target.closest('.chip[data-p]');
+    if (chipBtn) { toggleAuthorChip(chipBtn.dataset.p); renderDrawer(); return; }
+    const ro = e.target.closest('[data-mob-reopen]');
+    if (ro) {
+      const id = ro.dataset.mobReopen;
+      if (ro.dataset.mine) { const d = store(); if (d[id]) { d[id].resolved = false; save(d); rerender(); } }
+      else reopenOther(id, ro.dataset.handle);
+      renderDrawer(); return;
+    }
+    const entry = e.target.closest('[data-mob-id]');
+    if (entry) {
+      const id = entry.dataset.mobId;
+      drawer.hidden = true;
+      activateCard(id); // narrow: opens the margin bottom-sheet on this card
+      const c = [...allCards(false), ...allCards(true)].find(x => x.id === id) || {};
+      const a = document.getElementById(id)
+        || document.querySelector(`mark.user-hl[data-card-id="${CSS.escape(id)}"]`)
+        || (c.anchor && document.querySelector(`[data-cid="${CSS.escape(c.anchor)}"]`));
+      if (a) a.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+  function renderMobile() {
+    fab.textContent = `💬 ${allCards(false).length} open`;
+    if (!drawer.hidden) renderDrawer();
+  }
 
   // --- progress + sidebar controls ---
   function renderProgress() {

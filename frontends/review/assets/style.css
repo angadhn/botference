@@ -240,6 +240,9 @@ ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
   cursor: pointer; border: 1px solid var(--card-line); background: var(--card); color: var(--fg) }
 .perm-card button.allow { background: var(--rev); border-color: var(--rev-line) }
 
+/* ---- mobile-only elements: hidden on desktop, media-query gated below ---- */
+#sel-pill, #mob-fab, #mob-drawer { display: none }
+
 /* ---- responsive: collapse rail to tap-to-open ---- */
 @media (max-width: 1100px) {
   body { grid-template-columns: 1fr; gap: 0 }
@@ -256,5 +259,46 @@ ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
   aside#margin.sheet-open { display: block; position: fixed; inset: auto 0 0 0; max-height: 70vh; overflow-y: auto;
     background: var(--rail); border-top: 2px solid var(--accent); padding: 1rem; z-index: 25 }
   aside#margin.sheet-open .card { position: static; margin-bottom: .6rem; display: none }
-  aside#margin.sheet-open .card.active { display: block }
+  aside#margin.sheet-open .card.active, aside#margin.sheet-open .card.composing { display: block }
+  /* 16px inputs: iOS zooms the page on focus below that */
+  .card textarea, .reply textarea { font-size: 16px }
+
+  /* touch selection -> fixed bottom pill (the native selection callout obscures
+     floating buttons near the selection); ≥44px touch target */
+  #sel-pill { display: block; position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(.9rem + env(safe-area-inset-bottom, 0px)); z-index: 28;
+    min-height: 44px; padding: .6rem 1.15rem; font: .95rem var(--sans); background: var(--accent); color: #fff;
+    border: 0; border-radius: 999px; box-shadow: 0 4px 16px rgba(0,0,0,.35); cursor: pointer }
+  #sel-pill[hidden] { display: none }
+
+  /* comments-overview FAB + bottom-sheet drawer */
+  #mob-fab { display: block; position: fixed; right: .8rem; bottom: calc(.9rem + env(safe-area-inset-bottom, 0px));
+    z-index: 27; min-height: 44px; padding: .55rem 1rem; font: .9rem var(--sans);
+    background: var(--card); color: var(--fg); border: 1px solid var(--accent); border-radius: 999px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.3); cursor: pointer }
+  #mob-drawer { display: block; position: fixed; left: 0; right: 0; bottom: 0; max-height: 85vh;
+    overflow-y: auto; overscroll-behavior: contain; z-index: 31; background: var(--rail);
+    border-top: 2px solid var(--accent); border-radius: 14px 14px 0 0;
+    padding: .8rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px)); font: .85rem/1.5 var(--sans);
+    box-shadow: 0 -8px 30px rgba(0,0,0,.3) }
+  #mob-drawer[hidden] { display: none }
+  .mob-head { font-weight: 700; color: var(--heading); display: flex; justify-content: space-between; align-items: center }
+  #mob-close { border: 0; background: none; color: var(--muted); font: 1.1rem var(--sans);
+    padding: .2rem .6rem; cursor: pointer; min-height: 44px }
+  .mob-nav { font-size: .78rem; color: var(--muted); margin: .3rem 0 }
+  .mob-nav a { color: var(--accent); text-decoration: none }
+  .mob-nav a[data-current] { font-weight: 700 }
+  .mob-chips { margin: .3rem 0 .1rem }
+  .mob-entry { display: flex; gap: .55rem; align-items: flex-start; padding: .55rem .3rem;
+    border-bottom: 1px solid var(--card-line); cursor: pointer }
+  .mob-entry .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--author, var(--muted));
+    flex: none; margin-top: .35rem }
+  .mob-entry .mob-body { flex: 1; min-width: 0 }
+  .mob-meta { font: 700 .68rem var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--author, var(--muted)) }
+  .mob-meta .spin { display: inline-block; animation: spin 1s linear infinite }
+  .mob-quote { color: var(--muted); font-style: italic; font-size: .78rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .mob-first { font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .mob-res-head { margin-top: .8rem; font: 700 .72rem var(--sans); text-transform: uppercase; color: var(--muted) }
+  .mob-empty { color: var(--muted); padding: .6rem 0 }
 }

@@ -1,5 +1,7 @@
 build/
 archive/
+tests/node_modules/
+tests/package-lock.json
 work/iteration_count
 work/handoffs/
 work/handoff-claude.md
