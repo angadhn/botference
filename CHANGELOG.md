@@ -2,6 +2,19 @@
 
 ## 2026-07-16
 
+- **Hosted review: in-page password gate instead of the browser
+  basic-auth popup.** Unauthenticated document requests get a minimal,
+  theme-consistent gate page (paper title, one password field, both
+  color schemes); the correct password sets an HMAC-signed
+  `review_auth` cookie (HttpOnly, SameSite=Lax, Secure behind the
+  https tunnel, 7-day lifetime, secret persisted in gitignored
+  `state/.auth-secret`) and redirects to the requested page — wrong
+  passwords re-render the gate with a calm error and share the
+  existing per-IP POST rate limit. JSON/SSE/asset requests get plain
+  401 JSON (no `WWW-Authenticate` header anywhere, so no popup), and
+  `Authorization: Basic` with any username still works for curl/tools
+  (documented in SCHEMA.md).
+
 - **`botference review`: agents on by default, detected — plus
   `--share`.** The launcher now decides the bot bridge from actual
   capability (python3 + a `claude`/`codex` CLI on PATH) instead of an

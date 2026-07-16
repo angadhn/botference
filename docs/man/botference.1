@@ -55,7 +55,9 @@ password, and prints one shareable URL (for a stable URL across
 sessions, configure a named tunnel:
 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/);
 \fB\-\-hosted\fR enables shared-URL mode without the tunnel
-(REVIEW_PASSWORD basic auth); \fB\-\-upgrade\fR refreshes engine files
+(REVIEW_PASSWORD, entered on an in-page password gate; tools may send
+Basic auth with any username instead); \fB\-\-upgrade\fR refreshes
+engine files
 without touching review.config.json, state/, suggestions.json, or site/.
 .SH OPTIONS
 .TP

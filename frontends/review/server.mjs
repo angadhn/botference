@@ -51,17 +51,130 @@ if (HOSTED) {
   try { OWNER_TOKEN = fs.readFileSync(tokenFile, 'utf8').trim(); } catch { }
   if (!OWNER_TOKEN) { OWNER_TOKEN = crypto.randomBytes(12).toString('hex'); fs.writeFileSync(tokenFile, OWNER_TOKEN); }
 }
+// hosted auth cookie: HMAC-signed expiry, keyed by a per-deployment secret
+// (runtime file, gitignored) — stateless to validate, survives server restarts
+const AUTH_TTL_MS = 7 * 24 * 3600 * 1000; // 7 days
+const secretFile = path.join(STATE, '.auth-secret');
+let AUTH_SECRET = '';
+if (HOSTED) {
+  try { AUTH_SECRET = fs.readFileSync(secretFile, 'utf8').trim(); } catch { }
+  if (!AUTH_SECRET) { AUTH_SECRET = crypto.randomBytes(24).toString('hex'); fs.writeFileSync(secretFile, AUTH_SECRET); }
+}
 const safeEqual = (a, b) => {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
   return crypto.timingSafeEqual(ha, hb);
 };
+// browsers authenticate through the /auth password gate (cookie below); curl
+// and other tools may keep sending Authorization: Basic with ANY username
 function authorized(req) {
   if (!HOSTED) return true;
   const m = /^Basic (.+)$/.exec(req.headers.authorization || '');
-  if (!m) return false;
-  const pass = Buffer.from(m[1], 'base64').toString('utf8').split(':').slice(1).join(':');
-  return safeEqual(pass, PASSWORD);
+  if (m) {
+    const pass = Buffer.from(m[1], 'base64').toString('utf8').split(':').slice(1).join(':');
+    return safeEqual(pass, PASSWORD);
+  }
+  return validAuthCookie(req);
+}
+function cookieOf(req, name) {
+  for (const part of String(req.headers.cookie || '').split(/; */)) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i) === name) return part.slice(i + 1);
+  }
+  return '';
+}
+function validAuthCookie(req) {
+  const [exp, mac] = cookieOf(req, 'review_auth').split('.');
+  if (!exp || !mac || !/^\d+$/.test(exp) || Date.now() > Number(exp)) return false;
+  return safeEqual(mac, crypto.createHmac('sha256', AUTH_SECRET).update(exp).digest('hex'));
+}
+const escHtml = s => String(s ?? '').replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// gate title: explicit config title wins (as in build.mjs); else parse \title{}
+// from the master, cleaned of TeX; else a neutral fallback. Computed at boot.
+function paperTitle() {
+  if (CFG.title) return CFG.title;
+  try {
+    const m = /\\title\s*\{([^}]*)\}/.exec(fs.readFileSync(path.join(ROOT, CFG.main), 'utf8'));
+    if (m) {
+      const t = m[1].replace(/\\\\/g, ' ').replace(/\\[a-zA-Z]+\s*/g, '').replace(/[{}~]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
+      if (t) return t;
+    }
+  } catch { }
+  return 'Document review';
+}
+const GATE_TITLE = HOSTED ? paperTitle() : '';
+// minimal password gate, theme-consistent with assets/style.css in both schemes
+function gatePage(next, bad) {
+  const title = escHtml(GATE_TITLE);
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>
+:root { --bg:#faf7f0; --fg:#2a2419; --muted:#8a7f6d; --card:#ffffff; --line:#e7dfd1;
+  --accent:#d97757; --accent-hover:#c05f3f }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#1a1712; --fg:#e8dfd1; --muted:#9c917e; --card:#241f18;
+    --line:rgba(217,119,87,.24); --accent-hover:#e8896d }
+}
+body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+  background:var(--bg); color:var(--fg);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif }
+form { background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:2rem 2.2rem; width:min(22rem,88vw); box-shadow:0 2px 14px rgba(0,0,0,.1) }
+h1 { font-size:1.05rem; margin:0 0 .3rem }
+p { margin:.2rem 0 1.1rem; color:var(--muted); font-size:.85rem }
+input[type=password] { width:100%; box-sizing:border-box; padding:.55rem .7rem; font-size:1rem;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg) }
+button { margin-top:.85rem; width:100%; padding:.55rem; font-size:1rem; border:none;
+  border-radius:8px; background:var(--accent); color:#fff; cursor:pointer }
+button:hover { background:var(--accent-hover) }
+.err { color:var(--accent); font-size:.85rem; margin:.7rem 0 0 }
+</style></head><body>
+<form method="POST" action="/auth">
+<h1>${title}</h1>
+<p>This review is password-protected.</p>
+<input type="password" name="password" placeholder="password" autofocus autocomplete="current-password" aria-label="password">
+<input type="hidden" name="next" value="${escHtml(next)}">
+<button>enter</button>
+${bad ? '<div class="err">wrong password — try again</div>' : ''}
+</form></body></html>`;
+}
+const safeNext = n => (n && n.startsWith('/') && !n.startsWith('//')) ? n : '/';
+const GATE_HEAD = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+// POST /auth: the gate form. Correct password -> signed cookie + redirect to the
+// requested page; wrong -> the gate again with a calm error. Rate-limited with
+// the shared per-IP POST window (checked before this in the handler).
+function authEndpoint(req, res) {
+  let body = '';
+  req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+  req.on('end', () => {
+    const form = new URLSearchParams(body);
+    const next = safeNext(form.get('next'));
+    if (!safeEqual(form.get('password') || '', PASSWORD)) {
+      res.writeHead(401, GATE_HEAD).end(gatePage(next, true));
+      return;
+    }
+    const exp = String(Date.now() + AUTH_TTL_MS);
+    const mac = crypto.createHmac('sha256', AUTH_SECRET).update(exp).digest('hex');
+    // Secure when the browser reached us over https (the tunnel forwards the proto)
+    const secure = String(req.headers['x-forwarded-proto'] || '').includes('https') ? '; Secure' : '';
+    res.writeHead(303, {
+      'set-cookie': `review_auth=${exp}.${mac}; Max-Age=${Math.floor(AUTH_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+      location: next,
+    }).end();
+  });
+}
+// unauthenticated: document/HTML requests get the gate form; everything a
+// script fetches (JSON endpoints, SSE, assets) gets plain 401 JSON. No
+// WWW-Authenticate header anywhere — that's what popped the browser dialog.
+function denied(req, res) {
+  if (req.method === 'GET' && /text\/html/.test(req.headers.accept || '')) {
+    res.writeHead(401, GATE_HEAD).end(gatePage(safeNext(req.url), false));
+    return;
+  }
+  res.writeHead(401, JSON_HEAD).end('{"ok":false,"error":"auth required"}');
 }
 // identity: local mode = the machine's git handle; hosted = the handle the
 // browser picked once (header), never trusted to be the owner's without the token
@@ -328,12 +441,17 @@ const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-sto
 
 export function handler(req, res) {
   const url = req.url.split('?')[0];
-  if (!authorized(req)) {
-    res.writeHead(401, { 'www-authenticate': 'Basic realm="review"', 'content-type': 'text/plain' }).end('auth required');
-    return;
-  }
+  // rate limit first: it must also cover unauthenticated /auth attempts
   if (req.method === 'POST' && rateLimited(req)) {
     res.writeHead(429, JSON_HEAD).end('{"ok":false,"error":"rate limited — slow down"}');
+    return;
+  }
+  if (HOSTED && req.method === 'POST' && url === '/auth') {
+    authEndpoint(req, res);
+    return;
+  }
+  if (!authorized(req)) {
+    denied(req, res);
     return;
   }
   if (req.method === 'GET' && url === '/whoami') {

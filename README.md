@@ -182,8 +182,10 @@ plus a `claude`/`codex` CLI on PATH and prints `agents: on (claude,
 codex detected)` — or serves read-and-comment only with an explanation
 when they're missing. `--no-agents` forces the bridge off, `--agents`
 forces it on (clear error if impossible), `--hosted` adds
-`REVIEW_PASSWORD` auth for a shared URL, and `--upgrade` refreshes the
-engine files without touching your config, comments, or suggestions.
+`REVIEW_PASSWORD` auth for a shared URL (an in-page password gate, no
+browser popup; tools can still send basic auth with any username), and
+`--upgrade` refreshes the engine files without touching your config,
+comments, or suggestions.
 
 Two ways to bring in collaborators:
 
