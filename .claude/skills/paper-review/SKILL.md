@@ -115,7 +115,7 @@ Build these, testable at every step against the live paper:
    - **Responsive layout.** Resizing the window must reflow, not break:
      no fixed multi-column grid; on narrow viewports the margin rail
      collapses to inline affordances (tap a highlight to open its
-     thread) instead of disappearing; the chat panel becomes a toggle.
+     thread) instead of disappearing.
      Re-run card positioning on every resize.
    - **Theming.** Adopt the design tokens in `theme.css` next to this
      file (Anthropic-flavoured: warm paper/near-black, humanist serif
@@ -173,17 +173,19 @@ Build these, testable at every step against the live paper:
      (POST `/chatbox`). A server-side `--chat` with no UI wiring is not
      P3 done (this exact gap shipped once: 2026-07-15, the user tagged
      @claude and nothing happened).
-   - **Inline-first, minimal chrome (user decision 2026-07-15).** The
-     margin thread is the primary — and default only — bot surface: the
-     working indicator and the streaming reply render *inside the
-     thread card under the user's comment*, not in a side panel. The
-     chat panel is collapsed to a small toggle by default and exists
-     only for unanchored conversation; it must never be required to
-     see or follow an anchored reply. Raw bridge/turn debug text stays
-     out of the default view entirely. When the panel IS open it must
-     participate in the layout (content reflows) — never overlay or
-     clip the comment rail or the paper (shipped bug 2026-07-15: the
-     fixed-position panel covered the margin cards).
+   - **Comments are the ONLY conversation surface (user decision
+     2026-07-16, supersedes the earlier chat-panel design).** There is
+     no chat panel: all discussion — human and bot — happens in margin
+     comment threads, Google-Docs style ("we can discuss the paper
+     through comments anyway; managing so many conversations becomes
+     hard"). The working indicator and streaming reply render inside
+     the thread card under the user's comment. Unanchored conversation
+     belongs in the botference TUI, not the review page. Raw
+     bridge/turn debug text never appears anywhere in the UI.
+   - **Strict mention routing.** A comment tagging one bot routes to
+     that bot alone; the other bot must not take the floor via the
+     free-form footer on review turns (bridge-system-prompt rule).
+     Only @all engages both.
    - **Mentions fire only on explicit confirm.** A tag becomes a turn
      only when the user saves/confirms the comment (Done/Enter) —
      never on input, change, or paste events. (Shipped bug 2026-07-15:
