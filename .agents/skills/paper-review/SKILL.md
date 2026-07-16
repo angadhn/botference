@@ -188,6 +188,14 @@ Build these, testable at every step against the live paper:
      only when the user saves/confirms the comment (Done/Enter) —
      never on input, change, or paste events. (Shipped bug 2026-07-15:
      pasting text containing @claude summoned the bot mid-composition.)
+   - **Ambient presence strip (user 2026-07-16).** A persistent, small
+     status element (sidebar or header) always shows: connection state
+     (● live / ○ sync failed / ✕ server down), whether chat mode is on,
+     and per-agent presence with an animated spinner + botference's
+     whimsical verbs ("Claude is crystallizing…", "Codex is
+     responding…") in each agent's accent color — visible from
+     anywhere on the page even when the active thread is off-screen or
+     on another section. Idle agents show as quiet dots, not text.
    - **Visible activity, end to end.** The viewer must always be able
      to tell the invited bot is doing what it was asked: on submit show
      "queued" on that comment; on `turn-start` show a working indicator
