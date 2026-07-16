@@ -1,0 +1,43 @@
+#compdef botference
+# zsh completion for the botference launcher.
+# Install: add to fpath before compinit, e.g.
+#   fpath=($BOTFERENCE_HOME/completions $fpath)
+
+_botference() {
+  local -a modes
+  modes=(
+    'init:bootstrap a project-local state directory'
+    'plan:free-form planning council (Claude + Codex TUI)'
+    'research-plan:structured planning with prompts/plan.md'
+    'archive:archive current thread, restore blank templates'
+    'build:build loop (default)'
+    'review:set up + serve the document-review interface'
+    'help:show usage'
+  )
+
+  if (( CURRENT == 2 )); then
+    _describe -t modes 'botference mode' modes
+    return
+  fi
+
+  case ${words[2]} in
+    review)
+      _arguments \
+        '--hosted[password-protected hosted mode (REVIEW_PASSWORD)]' \
+        '--port[server port]:port' \
+        '--no-chat[serve without the bot bridge]' \
+        '--upgrade[refresh engine files in an existing review/]' \
+        '*:document repo:_files -/'
+      ;;
+    plan|research-plan|build)
+      _arguments \
+        '-p[non-interactive pipe mode]' \
+        '--claude[solo Claude mode]' \
+        '--claude-interactive[Claude via tmux transport]' \
+        '--claude-transport=[claude transport]:transport:(programmatic tmux)' \
+        '*:iterations'
+      ;;
+  esac
+}
+
+_botference "$@"

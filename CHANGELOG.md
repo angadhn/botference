@@ -2,6 +2,8 @@
 
 ## 2026-07-16
 
+- **Shell completions** for the launcher (`completions/_botference` zsh,
+  `completions/botference.bash`) covering all modes incl. `review`.
 - **New: `botference review` subcommand** — one command to set up and
   serve the document-review interface from any document repo:
   `botference review [dir] [--hosted] [--port N] [--no-chat]
