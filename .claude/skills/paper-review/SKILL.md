@@ -15,6 +15,12 @@ you how to USE the system.
 
 ## Setting up a new project ("set up paper review in <dir>")
 
+**Preferred: `botference review [dir]`** — one command does all of the
+below (engine copy, detection via `scripts/review-detect.mjs` with an
+echoed summary, gitignore, build, serve; `--hosted`, `--port N`,
+`--no-chat`, `--upgrade`). Use the manual steps only when the launcher
+isn't available:
+
 1. Copy the engine from the reference implementation into
    `<dir>/review/`: `build.mjs`, `server.mjs`, `chat.mjs`, `apply.mjs`,
    `submit.mjs`, `init-config.mjs`, `bridge-system-prompt.md`,
