@@ -182,9 +182,13 @@ Build these, testable at every step against the live paper:
      the thread card under the user's comment. Unanchored conversation
      belongs in the botference TUI, not the review page. Raw
      bridge/turn debug text never appears anywhere in the UI.
-     that bot alone; the other bot must not take the floor via the
-     free-form footer on review turns (bridge-system-prompt rule).
-     Only @all engages both.
+   - **Strict-but-social mention routing (user 2026-07-16).** A comment
+     tagging one bot routes to that bot alone; the free-form footer
+     handoff is disabled on review turns. To involve the other agent, a
+     bot @-tags it in its own thread reply — the server turns that into
+     a normal mention turn on the same thread (visible, on-record,
+     depth-capped at 1 per thread per round). @all from a human engages
+     both.
    - **Mentions fire only on explicit confirm.** A tag becomes a turn
      only when the user saves/confirms the comment (Done/Enter) —
      never on input, change, or paste events. (Shipped bug 2026-07-15:
