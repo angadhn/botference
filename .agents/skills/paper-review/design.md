@@ -167,3 +167,17 @@ Ships in botference-main: engine in `frontends/review/`, protocol in
    beats choice.)
 3. Green light to start P1 on the Acta paper, or another doc round
    first?
+
+## Roadmap: branded stable URLs (parked 2026-07-17, decided)
+
+`<name>.botference.com` subdomains as the blessed --share URL for
+botference users: the project domain's DNS is on Cloudflare, so named
+tunnels per user need no new infrastructure and no cost (free tier).
+Decided: this is the on-ramp to V2 — identity/URLs first, hosting
+later. Client support ships via BOTFERENCE_TUNNEL (named-tunnel run in
+the shared --share helper). Remaining to build when picked up: a
+provisioning script the domain owner runs to mint a subdomain (tunnel
+create + route dns + credential handoff), docs for the one-time
+cloudflared login, and a decision on terms/abuse handling before any
+self-serve signup. Caveat recorded: user subdomains serve user
+machines' content under the project brand.
