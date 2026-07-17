@@ -193,3 +193,11 @@ Refinement: identity via social login rather than free-form claims —
 subdomain + comment identity. Eliminates squatting and a bespoke
 account system; aligns with the earlier decision to trust GitHub
 identity for collaborators.
+
+Council collab mode (parked 2026-07-17): multi-human plan sessions via
+the --share URL+password — per-human identity (handle picker, labeled/
+colored messages), input queue with honest typing/queued states, room
+prompt updated for multiple humans (address by name; @user = any
+human), owner-gated bot summons for guests (mirror the review model).
+Plumbing (SSE fan-out, gate, bridge single-input queue) already exists;
+this is identity + attribution + prompt work.
