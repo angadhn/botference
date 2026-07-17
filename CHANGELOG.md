@@ -2,6 +2,41 @@
 
 ## 2026-07-17
 
+- **`botference plan --web` / `--share`: the planning council in the
+  browser (and on your phone).** A new web frontend
+  (`frontends/council/`) serves PLAN mode as a claude.ai-shaped chat
+  app: left sidebar with projects and their chats (click = the
+  equivalent slash command: `/resume <id>`, `/project open <id>`,
+  `/new`), a streaming transcript (author-styled messages, the room
+  footer JSON hidden), a slash-command autocomplete popover driven by
+  the bridge's `completion_context` (global + scoped completions, so
+  `/model @claude …` offers models), inline choice/permission cards
+  with the review frontend's default-deny/dismiss 120s timers, per-agent
+  busy avatars, a status strip (project · route · context %), and a
+  segmented light/system/dark theme control. Mobile-first: sidebar as a
+  slide-over behind a hamburger, 16px inputs, safe-area padding.
+  `--web` serves locally; `--share` adds an in-page password gate
+  (HMAC cookie + per-IP rate limiting, the review machinery) plus a
+  cloudflared tunnel and prints `share this: <url>   password: <pw>`
+  (`COUNCIL_PASSWORD` respected, generated otherwise). `--share
+  --no-auth` explicitly skips the gate for an open URL, with a
+  prominent warning at launch and a dismissible banner in the page —
+  never the default. The server spawns its own bridge (JSONL protocol
+  unchanged), replays coalesced event history to reconnecting browsers,
+  and refuses a second web frontend per workspace via
+  `.botference/council-web.lock`; the Ink TUI remains the default
+  `botference plan`. Tests: `tests/council-web.test.mjs` (server boot,
+  SSE replay, verbatim slash input delivery against a stubbed JSONL
+  bridge, the gate, `--no-auth`, the lock, and a happy-dom UI smoke).
+
+- **Stable share URLs via named cloudflared tunnels** for BOTH
+  `plan --share` and `review --share`: set
+  `BOTFERENCE_TUNNEL=<your-tunnel-name>` (created once with
+  `cloudflared tunnel login/create/route dns`) and `--share` runs the
+  named tunnel instead of a random quick one;
+  `BOTFERENCE_TUNNEL_URL` is printed as the share URL when set. Tunnel
+  mechanics extracted into `lib/tunnel.sh`, shared by both frontends.
+
 - **Fixed the botched panel borders the flicker fix introduced.** Ink's
   experimental `incrementalRendering` (enabled yesterday) corrupts its
   cursor bookkeeping whenever the frame's line count shifts (input area

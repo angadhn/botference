@@ -213,6 +213,44 @@ Two ways to bring in collaborators:
 - Shell completion: zsh — add `fpath=($BOTFERENCE_HOME/completions $fpath)`
   before `compinit`; bash — `source $BOTFERENCE_HOME/completions/botference.bash`.
 
+## Plan From The Browser / Your Phone
+
+The planning council also runs as a chat web app (claude.ai-shaped:
+sidebar with projects and chats, streaming transcript, slash commands
+with autocomplete, choice/permission cards inline):
+
+```bash
+botference plan --web       # serve locally, open the printed URL
+botference plan --share     # + password gate + cloudflared tunnel: one
+                            #   https URL + password — open it on your phone
+botference plan --share --no-auth   # skip the password gate (open URL).
+                            #   ⚠ anyone with the URL can drive your agents,
+                            #   which read/write files on this machine — URLs
+                            #   leak. Prefer the default password.
+```
+
+The Ink TUI stays the default `botference plan`. The web server spawns
+its own bridge session — do not open the same session in the TUI and
+the browser at once (a second web server per workspace is refused via
+`.botference/council-web.lock`). `--port N` picks the port
+(default 4187); `COUNCIL_PASSWORD` fixes the password (generated per
+session otherwise). Engine: `frontends/council/`.
+
+For a **stable share URL** across sessions (both `plan --share` and
+`review --share`), create a named cloudflared tunnel once and point
+botference at it:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create <your-tunnel-name>
+cloudflared tunnel route dns <your-tunnel-name> council.example.com
+export BOTFERENCE_TUNNEL=<your-tunnel-name>
+export BOTFERENCE_TUNNEL_URL=https://council.example.com   # printed as the share URL
+```
+
+Without `BOTFERENCE_TUNNEL`, `--share` uses a quick tunnel with a
+random `trycloudflare.com` URL.
+
 ## Project Scoping
 
 In a project initialized with `botference init`, the local policy lives in

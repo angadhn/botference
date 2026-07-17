@@ -31,7 +31,19 @@ _botference() {
         '--upgrade[refresh engine files in an existing review/]' \
         '*:document repo:_files -/'
       ;;
-    plan|research-plan|build)
+    plan)
+      _arguments \
+        '-p[non-interactive pipe mode]' \
+        '--claude[solo Claude mode]' \
+        '--claude-interactive[Claude via tmux transport]' \
+        '--claude-transport=[claude transport]:transport:(programmatic tmux)' \
+        '--web[council chat in the browser instead of the TUI]' \
+        '--share[browser council + password gate + cloudflared tunnel]' \
+        '--no-auth[with --share: skip the password gate (open URL — risky)]' \
+        '--port=[web server port]:port' \
+        '*:iterations'
+      ;;
+    research-plan|build)
       _arguments \
         '-p[non-interactive pipe mode]' \
         '--claude[solo Claude mode]' \

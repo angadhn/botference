@@ -5,6 +5,9 @@ botference \- a multi-LLM planning council for the terminal
 .B botference
 [\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR|\fBbuild\fR] [\fIiterations\fR]
 .br
+.B botference plan
+[\fB\-\-web\fR|\fB\-\-share\fR [\fB\-\-no-auth\fR]] [\fB\-\-port\fR \fIN\fR]
+.br
 .B botference review
 [\fIdir\fR] [\fB\-\-share\fR] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
 .SH DESCRIPTION
@@ -26,6 +29,18 @@ Bootstrap a project-local state directory.
 .B plan
 Free-form planning council: you + Claude + Codex in one room; the bots can
 hand each other the floor (budgeted) until the conversation returns to you.
+With \fB\-\-web\fR the council serves as a chat web app in the browser
+instead of the Ink TUI (sidebar with projects and chats, streaming
+transcript, slash commands with autocomplete, choice/permission cards);
+\fB\-\-share\fR additionally puts it behind an in-page password gate
+(COUNCIL_PASSWORD, generated when unset) and a cloudflared tunnel, and
+prints one shareable https URL plus the password \- open it on a phone.
+\fB\-\-share \-\-no-auth\fR skips the password gate entirely: no password
+means anyone with the URL can drive your agents, which can read and write
+files on this machine; URLs leak (link previews, chat logs) \- prefer the
+default password. \fB\-\-port\fR \fIN\fR picks the web port (default
+4187). The web server spawns its own bridge session; do not open the same
+session in the TUI and the browser at once.
 .TP
 .B research-plan
 Structured planning with prompts/plan.md.
@@ -50,10 +65,9 @@ agents it detected; without them the site serves read-and-comment only.
 Flags: \fB\-\-port\fR \fIN\fR serves on port \fIN\fR;
 \fB\-\-no-agents\fR forces the bridge off and \fB\-\-agents\fR forces it
 on (erroring if impossible); \fB\-\-share\fR serves hosted mode behind a
-cloudflared quick tunnel, respecting REVIEW_PASSWORD or generating a
-password, and prints one shareable URL (for a stable URL across
-sessions, configure a named tunnel:
-https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/);
+cloudflared tunnel, respecting REVIEW_PASSWORD or generating a
+password, and prints one shareable URL (see NAMED TUNNELS below for a
+stable URL across sessions);
 \fB\-\-hosted\fR enables shared-URL mode without the tunnel
 (REVIEW_PASSWORD, entered on an in-page password gate; tools may send
 Basic auth with any username instead); \fB\-\-upgrade\fR refreshes
@@ -76,6 +90,24 @@ botference becomes the steering layer over an attachable session.
 .TP
 .BI \-\-claude-transport= programmatic|tmux
 Select the Claude transport for planning mode.
+.TP
+.B \-\-web
+Plan mode only: serve the council chat web app locally instead of the
+Ink TUI and print the URL (nothing opens automatically).
+.TP
+.B \-\-share
+Plan mode only: \fB\-\-web\fR plus the password gate and a cloudflared
+tunnel; prints "share this: <url>   password: <pw>".
+.TP
+.B \-\-no-auth
+With \fBplan \-\-share\fR only: skip the password gate. Never the
+default. Prints a prominent warning at launch and shows a dismissible
+warning banner in the served page: no password means anyone with the
+URL can drive your agents, which can read and write files on this
+machine; URLs leak. Prefer the default password.
+.TP
+.BI \-\-port " N"
+Port for \fBplan \-\-web\fR/\fB\-\-share\fR (default: 4187).
 .TP
 .BI \-\-project-dir= slug
 Project-local state directory slug (default: botference).
@@ -135,6 +167,29 @@ Per-user preferences (e.g. notifications).
 UI crash evidence (exceptions; fatal V8/OOM reports). Python-side
 exceptions land in <work>/sessions/crash.log. Fresh evidence is
 surfaced at the next launch.
+.SH NAMED TUNNELS
+Both
+.B plan --share
+and
+.B review --share
+use a cloudflared quick tunnel by default \- a fresh random
+trycloudflare.com URL each session. For a stable URL, create a named
+tunnel once:
+.PP
+.nf
+  cloudflared tunnel login
+  cloudflared tunnel create <your-tunnel-name>
+  cloudflared tunnel route dns <your-tunnel-name> council.example.com
+  export BOTFERENCE_TUNNEL=<your-tunnel-name>
+  export BOTFERENCE_TUNNEL_URL=https://council.example.com
+.fi
+.PP
+With
+.B BOTFERENCE_TUNNEL
+set, \-\-share runs \fBcloudflared tunnel run\fR against that tunnel
+(mapping it to the local port) instead of a quick tunnel;
+.B BOTFERENCE_TUNNEL_URL
+is printed as the share URL when set.
 .SH ENVIRONMENT
 .BR ANTHROPIC_MODEL ,
 .BR OPENAI_MODEL ,
@@ -142,7 +197,11 @@ surfaced at the next launch.
 .BR ANTHROPIC_API_KEY ,
 .BR OPENAI_API_KEY ,
 .BR BOTFERENCE_HOME ,
-.BR BOTFERENCE_PROJECT_DIR_NAME .
+.BR BOTFERENCE_PROJECT_DIR_NAME ,
+.BR COUNCIL_PASSWORD ,
+.BR REVIEW_PASSWORD ,
+.BR BOTFERENCE_TUNNEL ,
+.BR BOTFERENCE_TUNNEL_URL .
 See \fBbotference --help\fR for details.
 .SH EXAMPLES
 .TP
@@ -154,6 +213,12 @@ Open the planning council.
 .TP
 .B botference plan --claude-interactive
 Council with a real, tmux-attachable Claude Code session.
+.TP
+.B botference plan --web
+The same council as a chat web app in your browser.
+.TP
+.B botference plan --share
+Browser council tunneled to your phone: one https URL + password.
 .TP
 .B botference review ~/papers/acta
 Set up and serve the document-review interface for a paper.

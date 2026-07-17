@@ -372,6 +372,10 @@ parse_loop_args() {
   BOTFERENCE_MODE=false
   DEBUG_PANES=false
   UI_MODE="ink"
+  WEB_MODE=false
+  SHARE_MODE=false
+  NO_AUTH_MODE=false
+  WEB_PORT=""
   CLAUDE_TRANSPORT="${BOTFERENCE_CLAUDE_TRANSPORT:-programmatic}"
   INIT_PROFILE="vault-drafter"
   PROJECT_DIR_NAME="${BOTFERENCE_PROJECT_DIR_NAME:-botference}"
@@ -413,12 +417,37 @@ parse_loop_args() {
         shift
         ;;
       --ink) UI_MODE="ink" ;;
+      --web) WEB_MODE=true ;;
+      --share) WEB_MODE=true; SHARE_MODE=true ;;
+      --no-auth) NO_AUTH_MODE=true ;;
+      --port=*) WEB_PORT="${arg#--port=}" ;;
+      --port)
+        if [ "$#" -eq 0 ]; then
+          echo "Error: --port requires a number." >&2
+          return 2
+        fi
+        WEB_PORT="$1"
+        shift
+        ;;
       --profile=*) INIT_PROFILE="${arg#--profile=}" ;;
       --no-debug-panes) DEBUG_PANES=false ;;
       --help|-h) SHOW_HELP=true ;;
       [0-9]*) MAX_ITERATIONS="$arg" ;;
     esac
   done
+
+  if $WEB_MODE && [ "$LOOP_MODE" != "plan" ]; then
+    echo "Error: --web/--share apply to plan mode only (botference plan --web)." >&2
+    return 2
+  fi
+  if $NO_AUTH_MODE && ! $SHARE_MODE; then
+    echo "Error: --no-auth only makes sense with --share." >&2
+    return 2
+  fi
+  if [ -n "$WEB_PORT" ] && ! [[ "$WEB_PORT" =~ ^[0-9]+$ ]]; then
+    echo "Error: --port expects a number, got '$WEB_PORT'." >&2
+    return 2
+  fi
 
   BOTFERENCE_PROJECT_DIR_NAME=$(normalize_project_dir_name "$PROJECT_DIR_NAME") || return $?
   BOTFERENCE_CLAUDE_TRANSPORT="$CLAUDE_TRANSPORT"
@@ -428,6 +457,7 @@ parse_loop_args() {
 show_help() {
   cat <<'HELP'
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
+       botference plan [--web|--share [--no-auth]] [--port N]
        botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
 
 Modes:
@@ -457,6 +487,18 @@ Options:
   --claude-transport=<programmatic|tmux>
                     Select Claude transport for botference mode
   --ink             Use Ink (Node.js) TUI for botference mode (default)
+  --web             Plan mode in the browser instead of the TUI: serves the
+                    council chat web app locally and prints the URL
+  --share           Like --web, plus a password gate and a cloudflared tunnel:
+                    prints one shareable https URL + password (use it from
+                    your phone). Set BOTFERENCE_TUNNEL=<your-tunnel-name> for
+                    a stable URL via a named cloudflared tunnel.
+  --no-auth         With --share only: skip the password gate entirely.
+                    ⚠ no password: anyone with this URL can drive your
+                    agents, which can read and write files on this machine.
+                    URLs leak (link previews, chat logs). Prefer the default
+                    password.
+  --port=<n>        Port for --web/--share (default: 4187)
   --no-debug-panes  Disable debug panes in botference mode
   --serial          Force serial architecture
   --parallel        Force parallel architecture
@@ -495,12 +537,20 @@ Environment variables:
   BOTFERENCE_PROJECT_DIR_NAME Project-local state directory slug/name (default: botference)
   ANTHROPIC_API_KEY     API key for Anthropic models
   OPENAI_API_KEY        API key for OpenAI models
+  COUNCIL_PASSWORD      Password for plan --share (generated when unset)
+  BOTFERENCE_TUNNEL     Named cloudflared tunnel for --share (stable URL);
+                        one-time setup: cloudflared tunnel login / create /
+                        route dns (see the man page)
+  BOTFERENCE_TUNNEL_URL The hostname routed to that tunnel (printed as the
+                        share URL when set)
 
 Examples:
   botference init                                     # Bootstrap botference/ in this project
   botference init --project-dir=spaceship             # Bootstrap botference-spaceship/ instead
   botference --project-dir=spaceship plan             # Use botference-spaceship/
   botference plan                                     # Freeform planning room
+  botference plan --web                               # The same room in your browser
+  botference plan --share                             # Browser room tunneled to your phone (password printed)
   botference plan --claude                            # Solo Claude freeform planning
   botference research-plan                            # Structured planning (botference)
   botference research-plan --claude                   # Structured planning (solo Claude)

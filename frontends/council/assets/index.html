@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>botference council</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div id="backdrop" hidden></div>
+
+<aside id="side" aria-label="chats and projects">
+  <div class="side-head">
+    <span class="brand">botference <em>council</em></span>
+    <button id="side-close" aria-label="close sidebar">✕</button>
+  </div>
+  <button id="new-chat">＋&ensp;New chat</button>
+  <nav id="projects" aria-label="projects and chats"></nav>
+  <div class="side-foot">
+    <div id="theme-toggle"></div>
+  </div>
+</aside>
+
+<main>
+  <header id="top">
+    <button id="burger" aria-label="open sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <div id="statusbar" aria-live="polite">
+      <span id="st-conn" class="conn">connecting…</span>
+      <span id="st-project"></span>
+      <span id="st-route"></span>
+      <span id="st-ctx"></span>
+    </div>
+    <div id="avatars" aria-label="participants"></div>
+  </header>
+
+  <div id="noauth-banner" role="alert" hidden>
+    <span>⚠ no password: anyone with this URL can drive your agents, which can
+    read and write files on this machine. URLs leak (link previews, chat logs).
+    Prefer the default password.</span>
+    <button id="noauth-x" aria-label="dismiss warning">dismiss</button>
+  </div>
+
+  <div id="chat" tabindex="-1">
+    <div id="empty">
+      <div class="empty-marks" aria-hidden="true"></div>
+      <h1>Let a chat begin.</h1>
+      <p>You, Claude, and Codex in one room.<br>
+      Plain text goes to <code>@all</code> — or address <code>@claude</code>,
+      <code>@codex</code>, or type <code>/</code> for commands.</p>
+    </div>
+    <div id="transcript" class="chat-col" aria-live="polite"></div>
+  </div>
+
+  <button id="jump" hidden>↓ latest</button>
+
+  <footer id="composer">
+    <div class="chat-col">
+      <div id="complete" role="listbox" hidden></div>
+      <div id="queue-note" hidden></div>
+      <div class="composer-box">
+        <textarea id="input" rows="1" enterkeyhint="send"
+          placeholder="Message the council…" aria-label="message"></textarea>
+        <div class="composer-row">
+          <button id="stop" hidden>◼ stop</button>
+          <span class="composer-hint">Enter to send · Shift+Enter for a new line</span>
+          <button id="send" aria-label="send" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </footer>
+</main>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

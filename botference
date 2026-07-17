@@ -394,6 +394,33 @@ while true; do
         echo "$OPENAI_API_KEY" | codex login --with-api-key 2>/dev/null || true
       fi
 
+      # --- web frontend: --web/--share serve the council chat in a browser
+      # instead of launching the Ink TUI (frontends/council/) ---
+      if ${WEB_MODE:-false}; then
+        echo "Launching Botference Council (web) - Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${OPENAI_REASONING_EFFORT:+  openai-effort=$OPENAI_REASONING_EFFORT}"
+        ensure_bridge_python
+        source "${BOTFERENCE_HOME}/lib/council.sh"
+        EXIT_CODE=0
+        run_council_web || EXIT_CODE=$?
+        if ! plan_audit_changed_files "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"; then
+          echo ""
+          echo "✗ Plan audit failed — unauthorized files changed:"
+          sed 's/^/  - /' "$PLAN_VIOLATIONS"
+          echo "  Build is blocked until these changes are resolved."
+          EXIT_CODE=1
+        elif [ "$EXIT_CODE" -eq 0 ]; then
+          if ! plan_commit_and_push_changes "$PLAN_ALLOWED"; then
+            EXIT_CODE=1
+          fi
+        fi
+        rm -f "$PLAN_SNAPSHOT" "$PLAN_ALLOWED" "$PLAN_VIOLATIONS"
+        if [ "$EXIT_CODE" -eq 0 ]; then
+          echo ""
+          echo "=== Council session complete. Run 'build' to start executing. ==="
+        fi
+        break
+      fi
+
       echo "Launching Botference Council - Claude=$CLI_MODEL  Codex=$OPENAI_MODEL${EFFORT_FLAG:+  effort=${EFFORT_FLAG#--effort }}${OPENAI_REASONING_EFFORT:+  openai-effort=$OPENAI_REASONING_EFFORT}${DEBUG_FLAG:+  debug=on}  ui=$UI_MODE  claude-transport=$CLAUDE_TRANSPORT"
       ensure_bridge_python
       ensure_ink_ui_dist

@@ -242,48 +242,34 @@ run_review_mode() {
     exec node review/server.mjs ${server_args[@]+"${server_args[@]}"}
   fi
 
-  # --- --share: managed server + cloudflared quick tunnel, torn down together ---
+  # --- --share: managed server + cloudflared tunnel, torn down together ---
+  # (tunnel mechanics shared with plan --share: lib/tunnel.sh; a named tunnel
+  # via BOTFERENCE_TUNNEL gives a stable URL instead of a random quick one)
+  source "${BOTFERENCE_HOME}/lib/tunnel.sh"
   node review/server.mjs ${server_args[@]+"${server_args[@]}"} &
   local server_pid=$!
-  local tunnel_pid=""
   # Ctrl-C (or TERM) takes the server and the tunnel down as one unit;
-  # cloudflared's graceful shutdown drains for up to 30s, so follow with -9
-  trap '[ -n "$tunnel_pid" ] && kill "$tunnel_pid" 2>/dev/null; kill "$server_pid" 2>/dev/null; sleep 1; [ -n "$tunnel_pid" ] && kill -9 "$tunnel_pid" 2>/dev/null; exit 130' INT TERM
+  # cloudflared's graceful shutdown drains for up to 30s (stop_share_tunnel
+  # follows with -9)
+  trap 'stop_share_tunnel; kill "$server_pid" 2>/dev/null; exit 130' INT TERM
 
-  if command -v cloudflared >/dev/null 2>&1; then
-    local tunnel_log share_url=""
-    tunnel_log=$(mktemp "${TMPDIR:-/tmp}/review-tunnel.XXXXXX")
-    cloudflared tunnel --url "http://localhost:${url_port}" >"$tunnel_log" 2>&1 &
-    tunnel_pid=$!
-    local _i
-    for _i in $(seq 1 60); do
-      share_url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$tunnel_log" | head -1) || true
-      if [ -n "$share_url" ]; then break; fi
-      kill -0 "$tunnel_pid" 2>/dev/null || break
-      sleep 0.5
-    done
-    if [ -n "$share_url" ]; then
-      echo ""
-      echo "  share this: ${share_url}   password: ${REVIEW_PASSWORD}"
-      echo "  (for a stable URL across sessions, configure a named cloudflared tunnel —"
-      echo "   see the man page for the docs link)"
-      echo ""
-    else
-      echo "  cloudflared did not produce a trycloudflare URL — its log: $tunnel_log" >&2
-      echo "  Still serving locally at http://localhost:${url_port}/  password: ${REVIEW_PASSWORD}" >&2
-    fi
+  local tunnel_log
+  tunnel_log=$(mktemp "${TMPDIR:-/tmp}/review-tunnel.XXXXXX")
+  if start_share_tunnel "$url_port" "$tunnel_log"; then
+    print_share_line "${REVIEW_PASSWORD}" "$url_port" "$tunnel_log"
   else
-    echo "  cloudflared not found — no public URL. Install it (e.g. 'brew install cloudflared')" >&2
-    echo "  or tunnel by hand:  cloudflared tunnel --url http://localhost:${url_port}" >&2
+    if [ -n "${BOTFERENCE_TUNNEL:-}" ]; then
+      echo "  BOTFERENCE_TUNNEL is set ('${BOTFERENCE_TUNNEL}') but 'cloudflared' is not installed —" >&2
+      echo "  install it (e.g. 'brew install cloudflared') to use your named tunnel." >&2
+    else
+      echo "  cloudflared not found — no public URL. Install it (e.g. 'brew install cloudflared')" >&2
+      echo "  or tunnel by hand:  cloudflared tunnel --url http://localhost:${url_port}" >&2
+    fi
     echo "  Serving locally in the meantime: http://localhost:${url_port}/  password: ${REVIEW_PASSWORD}" >&2
   fi
   local rc=0
   wait "$server_pid" || rc=$?
-  if [ -n "$tunnel_pid" ]; then
-    kill "$tunnel_pid" 2>/dev/null || true
-    sleep 1
-    kill -9 "$tunnel_pid" 2>/dev/null || true
-  fi
+  stop_share_tunnel
   trap - INT TERM
   return "$rc"
 }

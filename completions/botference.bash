@@ -14,7 +14,9 @@ _botference() {
         -*) COMPREPLY=( $(compgen -W "--share --hosted --port --agents --no-agents --upgrade" -- "$cur") ) ;;
         *)  COMPREPLY=( $(compgen -d -- "$cur") ) ;;
       esac ;;
-    plan|research-plan|build)
+    plan)
+      COMPREPLY=( $(compgen -W "-p --claude --claude-interactive --claude-transport=programmatic --claude-transport=tmux --web --share --no-auth --port=" -- "$cur") ) ;;
+    research-plan|build)
       COMPREPLY=( $(compgen -W "-p --claude --claude-interactive --claude-transport=programmatic --claude-transport=tmux" -- "$cur") ) ;;
   esac
 }
