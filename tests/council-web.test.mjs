@@ -28,7 +28,7 @@ function freePort() {
   });
 }
 
-async function startServer({ hosted = false, noauth = false } = {}) {
+async function startServer({ hosted = false, noauth = false, env = {} } = {}) {
   const port = await freePort();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'council-'));
   const rx = path.join(root, 'rx.txt');
@@ -43,6 +43,7 @@ async function startServer({ hosted = false, noauth = false } = {}) {
       BOTFERENCE_HOME: HOME,
       COUNCIL_BRIDGE_CMD: JSON.stringify([process.execPath, FAKE, rx]),
       COUNCIL_PASSWORD: hosted && !noauth ? 'test-pw' : '',
+      ...env,
     },
   });
   let out = '';
@@ -220,6 +221,66 @@ test('second server on the same workspace is refused (council-web.lock)', async 
   const code = await new Promise(res => proc.on('exit', res));
   assert.equal(code, 1);
   assert.match(err, /another council web server/);
+});
+
+test('SSE transport hygiene: padded flushed first chunk, proxy headers, comment heartbeat', async t => {
+  // proxies/CDN edges (cloudflared quick tunnels included) buffer small first
+  // chunks and idle streams: /events must open with an ~2KB comment pad,
+  // anti-buffering headers, and a periodic comment heartbeat
+  const s = await startServer({ env: { SSE_HEARTBEAT_MS: '120' } });
+  t.after(s.stop);
+  const http = await import('node:http');
+  const { headers, firstChunk, body } = await new Promise((resolve, reject) => {
+    const req = http.get({ host: '127.0.0.1', port: s.port, path: '/events' }, r => {
+      let first = null, all = '';
+      r.on('data', c => { const str = c.toString('utf8'); if (first === null) first = str; all += str; });
+      setTimeout(() => { req.destroy(); resolve({ headers: r.headers, firstChunk: first, body: all }); }, 600);
+    });
+    req.on('error', reject);
+  });
+  assert.equal(headers['content-type'], 'text/event-stream');
+  assert.equal(headers['cache-control'], 'no-store');
+  assert.equal(headers['x-accel-buffering'], 'no');
+  assert.match(headers.connection || '', /keep-alive/i);
+  // first bytes are an SSE comment pad of >= 2KB, ahead of any data event
+  assert.equal(firstChunk[0], ':', 'stream opens with a comment pad');
+  const padEnd = body.indexOf('\n\n');
+  assert.ok(padEnd >= 2048, `pad is >= 2KB (got ${padEnd})`);
+  assert.ok(body.indexOf(':') < body.indexOf('data:'), 'pad precedes the first event');
+  assert.match(body, /data: \{"type":"hello"/, 'hello arrives after the pad');
+  // >= 2 heartbeats in 600ms at a 120ms interval
+  const beats = (body.match(/: ping\n\n/g) || []).length;
+  assert.ok(beats >= 2, `comment heartbeats flow (got ${beats})`);
+});
+
+test('WebSocket transport: hello + history replay + live events; gate enforced when hosted', async t => {
+  // WS is the primary browser transport because cloudflared buffers streamed
+  // HTTP bodies (SSE stalls through tunnels); it must carry the same events
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => c.close());
+  const hello = await c.next(e => e.type === 'hello');
+  assert.equal(hello.noauth, false);
+  await c.next(e => e.type === 'projects');           // history replayed over WS
+  await c.next(e => e.type === 'completion_context');
+  await post(s.base, '/input', { text: '/status' });  // live events flow over WS
+  await c.next(e => e.type === 'user_echo' && e.text === '/status');
+  await c.next(e => e.type === 'room' && e.speaker === 'claude' && e.text === 'echo: /status');
+
+  // hosted: the upgrade request passes the same gate as every HTTP request
+  const h = await startServer({ hosted: true });
+  t.after(h.stop);
+  await assert.rejects(wsConnect({ host: '127.0.0.1', port: h.port }), /401/);
+  const auth = await fetch(`${h.base}/auth`, {
+    method: 'POST', body: 'password=test-pw&next=%2F', redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  });
+  const cookie = auth.headers.get('set-cookie').split(';')[0];
+  const gated = await wsConnect({ host: '127.0.0.1', port: h.port, headers: { cookie } });
+  t.after(() => gated.close());
+  await gated.next(e => e.type === 'hello');
 });
 
 // ---------------------------------------------------------------- tunnel

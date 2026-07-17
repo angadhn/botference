@@ -9,6 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { ApplyEngine } from './apply.mjs';
+import { attachWs } from './ws.mjs';
 
 const REVIEW = path.dirname(new URL(import.meta.url).pathname);
 const ROOT = path.resolve(REVIEW, '..');
@@ -328,8 +329,40 @@ function stampEdits(prev, next) {
 // --- SSE ---
 const clients = new Set();
 let pingTimer = null;
-function broadcast(type) {
-  for (const res of clients) res.write(`data: ${JSON.stringify({ type })}\n\n`);
+// SSE through proxies/CDN edges (the --share cloudflared tunnel included):
+// flush headers at once, disable Nagle, and pad the first chunk past typical
+// edge buffering thresholds with an SSE comment (EventSource ignores comment
+// lines) — otherwise the edge holds the response and the browser sees zero
+// events (the "sidebar stuck at loading through the tunnel" failure).
+const SSE_HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
+const SSE_PAD = ':' + ' '.repeat(2048) + '\n\n';
+function sseOpen(res) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-store',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  if (res.socket && typeof res.socket.setNoDelay === 'function') res.socket.setNoDelay(true);
+  res.write(SSE_PAD);
+}
+const wsClients = new Set(); // WebSocket connections (primary through tunnels)
+// every live event goes to both transports; WS clients get the bare JSON
+function pushAll(obj) {
+  const json = JSON.stringify(obj);
+  for (const res of clients) res.write(`data: ${json}\n\n`);
+  for (const ws of wsClients) ws.send(json);
+}
+function broadcast(type) { pushAll({ type }); }
+// heartbeat: keeps tunnel/proxy connections warm and lets dead clients
+// surface — an SSE comment (EventSource ignores it) and a WS ping event
+function ensureHeartbeat() {
+  if (pingTimer) return;
+  pingTimer = setInterval(() => {
+    for (const res of clients) res.write(': ping\n\n');
+    for (const ws of wsClients) ws.send('{"type":"ping"}');
+  }, SSE_HEARTBEAT_MS).unref();
 }
 let debounce = {};
 function fire(type) {
@@ -382,7 +415,7 @@ async function startChat() {
   const { BridgeChat } = await import('./chat.mjs');
   chat = new BridgeChat({
     reviewDir: REVIEW, cfg: CFG,
-    onEvent: obj => { for (const res of clients) res.write(`data: ${JSON.stringify({ type: 'chat', ...obj })}\n\n`); },
+    onEvent: obj => pushAll({ type: 'chat', ...obj }),
   });
   chat.start();
   console.log('chat mode: bridge spawned; @claude/@codex/@all comments become turns');
@@ -463,11 +496,11 @@ export function handler(req, res) {
     return;
   }
   if (req.method === 'GET' && url === '/events') {
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+    sseOpen(res);
     res.write('data: {"type":"hello"}\n\n');
     clients.add(res);
     req.on('close', () => clients.delete(res));
-    if (!pingTimer) pingTimer = setInterval(() => broadcast('ping'), 30000).unref();
+    ensureHeartbeat();
     return;
   }
   // legacy single-user endpoint: serve own user file so old clients keep working
@@ -583,7 +616,20 @@ export function handler(req, res) {
 
 if (process.env.REVIEW_NO_LISTEN !== '1') {
   startWatchers();
-  http.createServer(handler).listen(PORT, '127.0.0.1', () => {
+  const server = http.createServer(handler);
+  // WS is the browser's primary live-event transport (SSE is the fallback):
+  // same auth gate as every request, same hello as /events
+  attachWs(server, {
+    path: '/ws',
+    authorize: authorized,
+    onOpen(ws) {
+      ws.send('{"type":"hello"}');
+      wsClients.add(ws);
+      ws.onclose = () => wsClients.delete(ws);
+      ensureHeartbeat();
+    },
+  });
+  server.listen(PORT, '127.0.0.1', () => {
     console.log(`Review live at http://localhost:${PORT} — you are "${HANDLE}"; state in review/state/users/`);
     if (HOSTED) {
       console.log(`hosted mode: share the URL + password. Tunnel it with:\n  cloudflared tunnel --url http://localhost:${PORT}`);

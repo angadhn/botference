@@ -2,6 +2,30 @@
 
 ## 2026-07-17
 
+- **Fixed live events never arriving through `--share` tunnels (council
+  AND review).** Field bug: through a cloudflared quick tunnel,
+  `GET /events` returned 200 with correct headers but zero body bytes —
+  the phone saw "loading…" forever. Root cause, isolated with a minimal
+  SSE origin: cloudflared (observed on 2026.1.1, QUIC and http2
+  transports alike) buffers a streamed response body until the response
+  *ends* — a 2KB first-chunk pad, `flushHeaders()`, `X-Accel-Buffering:
+  no`, and `setNoDelay` (all now in place anyway, they matter for other
+  proxies) cannot help. Fix: a dependency-free WebSocket transport
+  (`frontends/review/ws.mjs`, RFC 6455 server side, shared by both
+  frontends and shipped with review engine copies — `--upgrade` picks it
+  up) — cloudflared proxies WS upgrades unbuffered. Both browser clients
+  now connect WS-first (`/ws`, same auth gate, same hello/replay as
+  `/events`) and fall back to SSE when WS never opens (old servers,
+  WS-hostile middleboxes). SSE itself hardened: padded flushed first
+  chunk + 15s comment heartbeats on both servers (`SSE_HEARTBEAT_MS`
+  overridable). Verified through real quick tunnels: council WS
+  delivered hello + full history replay in 222ms and live turn events in
+  340ms; review WS delivered hello in 191ms and a live `state` fan-out
+  in 546ms — where SSE through the same tunnels delivered zero bytes in
+  20s. Tests: WS handshake/replay/live-events/auth + SSE transport
+  hygiene in both suites, with a raw WS test client fixture
+  (`tests/fixtures/ws-client.mjs`).
+
 - **`botference plan --web` / `--share`: the planning council in the
   browser (and on your phone).** A new web frontend
   (`frontends/council/`) serves PLAN mode as a claude.ai-shaped chat

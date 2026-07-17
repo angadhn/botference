@@ -1216,14 +1216,17 @@
       syncState = 'err'; serverDead = true; renderPresence();
     });
 
-    const es = new EventSource('/events');
-    es.onopen = () => { if (sseDown || serverDead) { sseDown = false; serverDead = false; renderPresence(); } };
-    es.onerror = () => { sseDown = true; renderPresence(); probeServer(); };
+    // live transport: WebSocket first, SSE fallback. WS is primary because
+    // proxies/CDN edges (the --share cloudflared tunnel included) buffer
+    // streamed HTTP bodies — SSE headers arrive but no events ever do —
+    // while WebSocket upgrades are proxied unbuffered.
     let refetching = false;
-    es.onmessage = ev => {
-      if (sseDown || serverDead) { sseDown = false; serverDead = false; renderPresence(); }
-      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    const liveUp = () => { if (sseDown || serverDead) { sseDown = false; serverDead = false; renderPresence(); } };
+    const liveMsg = data => {
+      liveUp();
+      let msg; try { msg = JSON.parse(data); } catch { return; }
       const type = msg.type;
+      if (type === 'ping') return;
       if (type === 'chat') { chatEvent(msg); return; }
       if (type === 'site') { location.reload(); return; }
       if (type !== 'state' || refetching) return;
@@ -1231,6 +1234,33 @@
       api('/data').then(r => r.json()).then(j => { adoptData(j); rerender(); })
         .finally(() => { refetching = false; });
     };
+    const liveDown = () => { sseDown = true; renderPresence(); probeServer(); };
+    let wsRetryMs = 2000;
+    function connectSSE() {
+      const es = new EventSource('/events'); // reconnects on its own
+      es.onopen = liveUp;
+      es.onerror = liveDown;
+      es.onmessage = ev => liveMsg(ev.data);
+    }
+    function connectLive() {
+      let sock;
+      try {
+        sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+      } catch { connectSSE(); return; }
+      let opened = false;
+      sock.onopen = () => { opened = true; wsRetryMs = 2000; liveUp(); };
+      sock.onmessage = ev => liveMsg(ev.data);
+      sock.onerror = () => { };
+      sock.onclose = () => {
+        // never got open: something between us and the server blocks WS
+        // (or an old server without /ws) — fall back to SSE for good
+        if (!opened) { connectSSE(); return; }
+        liveDown();
+        setTimeout(connectLive, wsRetryMs);
+        wsRetryMs = Math.min(wsRetryMs * 2, 15000);
+      };
+    }
+    connectLive();
     // deferred re-render after typing finishes
     document.addEventListener('focusout', () => {
       if (pendingRender) { pendingRender = false; setTimeout(rerender, 100); }

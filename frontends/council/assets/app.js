@@ -490,25 +490,51 @@
     }
   }
 
-  // ── SSE ──
-  let es = null, retryMs = 1000;
+  // ── live transport: WebSocket first, SSE fallback ──
+  // WS is primary because proxies/CDN edges (the --share cloudflared tunnel
+  // included) buffer streamed HTTP bodies — SSE headers arrive but no events
+  // ever do — while WebSocket upgrades are proxied unbuffered.
+  let retryMs = 1000;
   function setConn(cls, txt) { els.conn.className = `conn ${cls}`; els.conn.textContent = txt; }
-  function connect() {
+  function resetView() {
     // reconnect replays server history from scratch: start clean
     els.transcript.innerHTML = '';
     state.streams = {};
     updateEmpty();
-    es = new EventSource('/events');
-    es.onopen = () => { retryMs = 1000; setConn('ok', '● live'); };
-    es.onmessage = e => {
-      let ev; try { ev = JSON.parse(e.data); } catch { return; }
-      if (ev.type !== 'ping') handle(ev);
+  }
+  function onLine(data) {
+    let ev; try { ev = JSON.parse(data); } catch { return; }
+    if (ev.type !== 'ping') handle(ev);
+  }
+  function scheduleReconnect() {
+    setConn('err', '○ reconnecting…');
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 15000);
+  }
+  function connect() {
+    resetView();
+    let sock;
+    try {
+      sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    } catch { connectSSE(); return; }
+    let opened = false;
+    sock.onopen = () => { opened = true; retryMs = 1000; setConn('ok', '● live'); };
+    sock.onmessage = e => onLine(e.data);
+    sock.onerror = () => { };
+    sock.onclose = () => {
+      // never got open: something between us and the server blocks WS — use SSE
+      if (!opened) { connectSSE(); return; }
+      scheduleReconnect();
     };
+  }
+  function connectSSE() {
+    resetView();
+    const es = new EventSource('/events');
+    es.onopen = () => { retryMs = 1000; setConn('ok', '● live'); };
+    es.onmessage = e => onLine(e.data);
     es.onerror = () => {
       es.close();
-      setConn('err', '○ reconnecting…');
-      setTimeout(connect, retryMs);
-      retryMs = Math.min(retryMs * 2, 15000);
+      scheduleReconnect();
     };
   }
 

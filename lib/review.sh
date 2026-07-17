@@ -8,7 +8,7 @@
 # Engine files owned by $BOTFERENCE_HOME/frontends/review/. --upgrade
 # refreshes exactly these (plus assets/*) and never touches the
 # per-project files: review.config.json, state/, suggestions.json, site/.
-REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs submit.mjs init-config.mjs bridge-system-prompt.md SCHEMA.md"
+REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs submit.mjs init-config.mjs ws.mjs bridge-system-prompt.md SCHEMA.md"
 
 review_usage() {
   cat <<'HELP'
@@ -34,7 +34,7 @@ Options:
                CLI is missing)
   --no-agents  Serve without the agent bridge (comments only)
   --upgrade    Refresh engine files (build/server/chat/apply/submit/
-               init-config .mjs, bridge-system-prompt.md, SCHEMA.md,
+               init-config/ws .mjs, bridge-system-prompt.md, SCHEMA.md,
                assets/*) from the framework copy — never touches
                review.config.json, state/, suggestions.json, or site/
   --help, -h   Show this help

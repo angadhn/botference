@@ -18,6 +18,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+// WS transport shared with the review engine: cloudflared buffers streamed
+// HTTP bodies (SSE arrives header-only through tunnels), WebSockets don't
+import { attachWs } from '../review/ws.mjs';
 
 const COUNCIL = path.dirname(new URL(import.meta.url).pathname);
 const ASSETS = path.join(COUNCIL, 'assets');
@@ -169,7 +172,8 @@ function acquireLock() {
 // --- SSE clients + event history (replayed to newly connected clients so a
 // page reload keeps the transcript). Consecutive text deltas of one stream are
 // coalesced in the history, so replay stays small even after long turns.
-const clients = new Set();
+const clients = new Set();     // SSE responses
+const wsClients = new Set();   // WebSocket connections (primary through tunnels)
 const history = [];
 const HISTORY_MAX = 4000;
 function pushHistory(ev) {
@@ -186,9 +190,12 @@ function pushHistory(ev) {
 }
 function broadcast(ev) {
   pushHistory(ev);
-  const line = `data: ${JSON.stringify(ev)}\n\n`;
+  const json = JSON.stringify(ev);
+  const line = `data: ${json}\n\n`;
   for (const res of clients) res.write(line);
+  for (const ws of wsClients) ws.send(json);
 }
+const helloEvent = () => ({ type: 'hello', hosted: HOSTED, noauth: NO_AUTH, bridge: !!(bridge && bridge.available) });
 
 // --- the bridge child ---------------------------------------------------
 let bridge = null;
@@ -291,6 +298,23 @@ class Bridge {
 }
 
 // --- HTTP ---------------------------------------------------------------
+// SSE through proxies/CDN edges (cloudflared included): flush headers at
+// once, disable Nagle, and pad the first chunk past typical edge buffering
+// thresholds with an SSE comment (EventSource ignores comment lines) —
+// otherwise the edge holds the response and the browser sees zero events.
+const SSE_HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
+const SSE_PAD = ':' + ' '.repeat(2048) + '\n\n';
+function sseOpen(res) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-store',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  if (res.socket && typeof res.socket.setNoDelay === 'function') res.socket.setNoDelay(true);
+  res.write(SSE_PAD);
+}
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png' };
 function serveFile(res, file) {
   fs.readFile(file, (err, buf) => {
@@ -331,8 +355,8 @@ export function handler(req, res) {
     return;
   }
   if (req.method === 'GET' && url === '/events') {
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ type: 'hello', hosted: HOSTED, noauth: NO_AUTH, bridge: !!(bridge && bridge.available) })}\n\n`);
+    sseOpen(res);
+    res.write(`data: ${JSON.stringify(helloEvent())}\n\n`);
     for (const ev of history) res.write(`data: ${JSON.stringify(ev)}\n\n`);
     clients.add(res);
     req.on('close', () => clients.delete(res));
@@ -382,10 +406,28 @@ export function handler(req, res) {
 if (process.env.COUNCIL_NO_LISTEN !== '1') {
   bridge = new Bridge();
   bridge.start();
-  http.createServer(handler).listen(PORT, '127.0.0.1', () => {
+  const server = http.createServer(handler);
+  // WS is the browser's primary live-event transport (SSE is the fallback):
+  // same auth gate as every request, same hello + history replay as /events
+  attachWs(server, {
+    path: '/ws',
+    authorize: authorized,
+    onOpen(ws) {
+      ws.send(JSON.stringify(helloEvent()));
+      for (const ev of history) ws.send(JSON.stringify(ev));
+      wsClients.add(ws);
+      ws.onclose = () => wsClients.delete(ws);
+    },
+  });
+  server.listen(PORT, '127.0.0.1', () => {
     console.log(`Council live at http://localhost:${PORT} — workspace: ${ROOT}`);
     if (GATED) console.log('hosted mode: password-gated (COUNCIL_PASSWORD)');
     if (NO_AUTH && HOSTED) console.log('WARNING: --no-auth — this server answers ANYONE who reaches it');
   });
-  setInterval(() => { for (const res of clients) res.write('data: {"type":"ping"}\n\n'); }, 30000).unref();
+  // heartbeat: keeps tunnel/proxy connections warm and lets dead clients
+  // surface — an SSE comment (EventSource ignores it) and a WS ping event
+  setInterval(() => {
+    for (const res of clients) res.write(': ping\n\n');
+    for (const ws of wsClients) ws.send('{"type":"ping"}');
+  }, SSE_HEARTBEAT_MS).unref();
 }

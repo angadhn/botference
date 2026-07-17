@@ -68,10 +68,10 @@ const readSite = (dir, f) => fs.readFileSync(path.join(dir, 'review', 'site', f)
 const htmlPages = dir => fs.readdirSync(path.join(dir, 'review', 'site'))
   .filter(f => f.endsWith('.html') && f !== 'index.html').sort();
 
-async function withServer(dir, fn) {
+async function withServer(dir, fn, env = {}) {
   const port = await freePort();
   const proc = spawn(process.execPath, [path.join(dir, 'review', 'server.mjs')],
-    { cwd: dir, env: { ...process.env, PORT: String(port) } });
+    { cwd: dir, env: { ...process.env, PORT: String(port), ...env } });
   let out = '';
   proc.stdout.on('data', c => { out += c; });
   proc.stderr.on('data', c => { out += c; });
@@ -295,6 +295,44 @@ test('multi-file paper with legacy figures_dir config: unchanged behavior (regre
     assert.equal(fig.status, 200);
     assert.equal(fig.headers.get('content-type'), 'image/png');
   });
+});
+
+test('SSE transport hygiene: /events opens with a flushed 2KB comment pad + heartbeat (tunnel-proxy safe)', async t => {
+  // regression for the --share field bug: cloudflared (and other edges)
+  // buffer small first chunks and idle streams, so a bare "hello" never
+  // reached the browser — the page sat at "loading…" through the tunnel
+  const dir = scaffold('sse', MULTI);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  installEngine(dir);
+  fs.writeFileSync(path.join(dir, 'review', 'review.config.json'),
+    JSON.stringify(MULTI_CFG, null, 1));
+  await withServer(dir, async base => {
+    const { port } = new URL(base);
+    const { headers, body } = await new Promise((resolve, reject) => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/events' }, r => {
+        let all = '';
+        r.on('data', c => { all += c; });
+        setTimeout(() => { req.destroy(); resolve({ headers: r.headers, body: all }); }, 600);
+      });
+      req.on('error', reject);
+    });
+    assert.equal(headers['content-type'], 'text/event-stream');
+    assert.equal(headers['x-accel-buffering'], 'no');
+    assert.match(headers.connection || '', /keep-alive/i);
+    assert.equal(body[0], ':', 'stream opens with a comment pad');
+    assert.ok(body.indexOf('\n\n') >= 2048, 'pad is >= 2KB');
+    assert.match(body, /data: \{"type":"hello"\}/, 'hello arrives after the pad');
+    assert.ok((body.match(/: ping\n\n/g) || []).length >= 2, 'comment heartbeats flow');
+
+    // WS transport (primary through tunnels, where SSE is edge-buffered):
+    // hello on connect, heartbeat pings as JSON events
+    const { wsConnect } = await import('./fixtures/ws-client.mjs');
+    const c = await wsConnect({ host: '127.0.0.1', port });
+    try {
+      await c.next(e => e.type === 'hello');
+      await c.next(e => e.type === 'ping');
+    } finally { c.close(); }
+  }, { SSE_HEARTBEAT_MS: '120' });
 });
 
 test('span matching is whitespace-tolerant with true raw offsets', async () => {
