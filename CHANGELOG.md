@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 2026-07-17
+
+- **Fixed the botched panel borders the flicker fix introduced.** Ink's
+  experimental `incrementalRendering` (enabled yesterday) corrupts its
+  cursor bookkeeping whenever the frame's line count shifts (input area
+  growing, projects panel toggling): the whole frame lands one row low,
+  leaving an orphaned border line floating above the panel tops and the
+  busy line overstruck into the divider. Reproduced deterministically
+  with a virtual-terminal probe and disabled — the standard writer
+  repaints the frame as one atomic write bracketed in DEC 2026
+  synchronized-update markers, which keeps the flicker win: still zero
+  full-screen `clearTerminal` repaints, still an O(1) busy tick
+  (~34 KB/s while busy vs the broken 67 KB/s + 14 screen-clears/s; the
+  incremental writer's 1 KB/s was not worth corrupted frames). A new
+  screen-consistency test interprets Ink's actual ANSI output into a
+  virtual screen and asserts it stays byte-identical to a fresh render
+  across line-count churn (`ink-ui/src/renderScreen.test.tsx`).
+
 ## 2026-07-16
 
 - **Hosted review: in-page password gate instead of the browser

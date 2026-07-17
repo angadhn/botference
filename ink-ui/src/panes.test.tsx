@@ -79,12 +79,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function mount(element: React.ReactElement) {
   const stdout = new FakeStdout();
   const stdin = new FakeStdin();
+  // Standard (non-incremental) writer, matching production: incremental mode
+  // shipped a stale-line regression (see renderScreen.test.tsx) and is off.
   const app = render(element, {
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
     exitOnCtrlC: false,
     patchConsole: false,
-    incrementalRendering: true,
   });
   return { app, stdout };
 }
