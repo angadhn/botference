@@ -188,3 +188,8 @@ Cloudflare API (mint tunnel, route DNS, return credential). Registry
 can start as a controlled JSON store behind a tiny Workers endpoint;
 usernames double as comment handles and future V2 identity. Still
 parked with the rest of this section.
+Refinement: identity via social login rather than free-form claims —
+"sign in with GitHub (or similar)" and the verified handle becomes the
+subdomain + comment identity. Eliminates squatting and a bespoke
+account system; aligns with the earlier decision to trust GitHub
+identity for collaborators.
