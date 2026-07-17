@@ -505,6 +505,16 @@ test('mobile UX: touch-selection pill, composer sheet, comments drawer (happy-do
   assert.match(doc.querySelector('.card.collapsed[data-id="s1"] .mini-thread').textContent,
     /view thread/, 'explicit "view thread ›" affordance on collapsed cards');
 
+  // --- polish: segmented theme control, avatar pill, spotlight off by default
+  const segDark = doc.querySelector('#theme-toggle .seg-btn[data-theme-opt="dark"]');
+  assert.ok(segDark && segDark.querySelector('svg'), 'segmented icon theme control renders');
+  segDark.click();
+  assert.equal(doc.documentElement.getAttribute('data-theme'), 'dark', 'segment click stamps data-theme');
+  doc.querySelector('#theme-toggle .seg-btn[data-theme-opt="system"]').click();
+  assert.equal(doc.documentElement.getAttribute('data-theme'), null, 'system segment clears data-theme');
+  assert.equal(doc.querySelectorAll('#avatars .avatar-ring').length, 2, 'avatar pill cluster renders (offline too)');
+  assert.equal(doc.body.classList.contains('spotlight'), false, 'no spotlight while nothing is focused');
+
   // --- comments overview: FAB counts open cards; drawer lists + closes on tap
   const fab = doc.getElementById('mob-fab');
   assert.ok(fab, 'overview FAB exists');
@@ -526,6 +536,7 @@ test('mobile UX: touch-selection pill, composer sheet, comments drawer (happy-do
   assert.ok(doc.querySelector('.card.focused[data-id="s1"]'), 'drawer tap focuses the thread');
   assert.ok(doc.querySelector('.card.focused[data-id="s1"] .acts'), 'focused card shows the full UI');
   assert.equal(doc.querySelectorAll('.card.focused').length, 1, 'exactly one expanded card');
+  assert.ok(doc.body.classList.contains('spotlight'), 'focusing applies the spotlight class');
   assert.ok(doc.getElementById('margin').classList.contains('sheet-open'), 'narrow: sheet opens on the thread');
 
   // --- sheet/drawer dismissal: ✕, backdrop, Esc — never trapped
@@ -556,6 +567,7 @@ test('mobile UX: touch-selection pill, composer sheet, comments drawer (happy-do
   assert.equal(doc.getElementById('margin').classList.contains('sheet-open'), false, 'Esc closes the sheet');
   doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape' })); // 2nd: collapses the focus
   assert.equal(doc.querySelectorAll('.card.focused').length, 0, 'Esc collapses back to the stack');
+  assert.equal(doc.body.classList.contains('spotlight'), false, 'spotlight lifts when focus collapses');
 
   // --- touch selection: selectionchange (no mouseup) -> bottom pill -> composer
   const blk = doc.querySelector('#paper [data-cid]');

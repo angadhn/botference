@@ -531,6 +531,8 @@
 
   function render() {
     if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') { pendingRender = true; return; }
+    // spotlight: while a thread is focused, everything else recedes (CSS)
+    document.body.classList.toggle('spotlight', !!FOCUSED);
     // sheet chrome (narrow viewports): grab-handle + ✕, re-injected every render
     margin.innerHTML = '<div id="sheet-head"><span class="grab"></span><button id="sheet-close" title="close">✕</button></div>';
     const dcs = store();
@@ -637,7 +639,7 @@
       const r = document.createRange();
       r.setStart(n, start); r.setEnd(n, end);
       const del = document.createElement('del');
-      del.className = 'tc-del' + (accepted ? ' tc-accepted' : '');
+      del.className = 'tc-del' + (accepted ? ' tc-accepted' : '') + (c.id === FOCUSED ? ' focused' : '');
       del.dataset.tc = c.id;
       del.style.setProperty('--author', color);
       del.title = tip;
@@ -647,7 +649,7 @@
     if (!lastDel) return;
     if (c.proposed_text) { // empty proposal = pure deletion, del alone suffices
       const ins = document.createElement('ins');
-      ins.className = 'tc-ins' + (accepted ? ' tc-accepted' : '');
+      ins.className = 'tc-ins' + (accepted ? ' tc-accepted' : '') + (c.id === FOCUSED ? ' focused' : '');
       ins.dataset.tc = c.id;
       ins.style.setProperty('--author', color);
       ins.title = tip;
@@ -778,7 +780,7 @@
   }
 
   function position() {
-    let cursor = 0;
+    let cursor = 72; // clear the avatar pill: no card starts under it at scroll-top
     pageCards().forEach(c => {
       const el = document.querySelector(`.card[data-id="${c.id}"]`);
       if (!el) return;
@@ -1134,13 +1136,21 @@
   });
   foot.appendChild(imp);
 
-  // visible light/dark/system theme toggle (persisted per browser)
+  // theme control: compact segmented icon control (sun / auto / moon), inline
+  // SVG only — quiet, labeled for screen readers, persisted per browser
+  const THEME_ICONS = {
+    light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M19.4 4.6l-1.8 1.8M6.4 17.6l-1.8 1.8"/></svg>',
+    system: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/></svg>',
+    dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a7 7 0 0 0 10 10Z"/></svg>',
+  };
   const themeBar = document.createElement('div');
   themeBar.id = 'theme-toggle';
   const renderTheme = () => {
     const cur = localStorage.getItem(THEME_KEY) || 'system';
-    themeBar.innerHTML = '<div class="chip-label">theme</div>' + ['light', 'system', 'dark'].map(m =>
-      `<button class="chip${m === cur ? ' on' : ''}" data-theme-opt="${m}">${m}</button>`).join('');
+    themeBar.innerHTML = '<div class="chip-label">theme</div><div class="seg" role="group" aria-label="theme">' +
+      ['light', 'system', 'dark'].map(m =>
+        `<button class="seg-btn${m === cur ? ' on' : ''}" data-theme-opt="${m}" title="${m} theme" aria-label="${m} theme" aria-pressed="${m === cur}">${THEME_ICONS[m]}</button>`).join('') +
+      '</div>';
   };
   themeBar.addEventListener('click', e => {
     const b = e.target.closest('[data-theme-opt]');
@@ -1169,6 +1179,15 @@
   renderTcToggle();
   foot.appendChild(tcBar);
 
+  // GDocs-style collaborator cluster: pill-chromed, top-right on every page
+  // (idle avatars offline too); container stays generic so human collaborators
+  // can join it later
+  const av = document.createElement('div');
+  av.id = 'avatars';
+  document.body.appendChild(av);
+  av.addEventListener('click', e => { if (e.target.closest('.avatar-ring.working')) jumpToActive(); });
+  renderPresence();
+
   if (LIVE) {
     const flag = document.createElement('button');
     flag.id = 'flag-btn'; flag.textContent = '🚩 Flag for agents';
@@ -1181,12 +1200,6 @@
     const strip = document.createElement('div');
     strip.id = 'presence';
     foot.appendChild(flag); foot.appendChild(strip);
-    // GDocs-style collaborator cluster, fixed top-right on every page; container
-    // stays generic so human collaborators can join it later
-    const av = document.createElement('div');
-    av.id = 'avatars';
-    document.body.appendChild(av);
-    av.addEventListener('click', e => { if (e.target.closest('.avatar-ring.working')) jumpToActive(); });
     renderPresence();
 
     // boot: adopt own server-side state this browser lacks, load others/threads, then push
