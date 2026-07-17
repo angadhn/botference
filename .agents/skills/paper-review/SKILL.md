@@ -6,10 +6,7 @@ description: Set up and run the botference document-review interface (Google-Doc
 # paper-review — GDocs-style review of rendered sources, with bots
 
 The engine is built and battle-tested. **Canonical engine:
-`$BOTFERENCE_HOME/frontends/review/`** (ships with botference; on this
-machine the first deployment also lives in
-`projects/ActaAstonautica_Collision_Paper/review/` as a working
-example). Architecture, decision history, and the unbuilt roadmap (CI
+`$BOTFERENCE_HOME/frontends/review/`** (ships with botference). Architecture, decision history, and the unbuilt roadmap (CI
 rounds, cloud version): `design.md` next to this file. This file tells
 you how to USE the system.
 

@@ -12,7 +12,7 @@ botference review <dir-or-file>   # detect, confirm in chat, build, serve, open
 ```
 
 - **Conversational scaffold, not flags.** On first run the page opens
-  with a bot message in the chat panel: "I found `AsciNanjangud_Acta.tex`
+  with a bot message in the chat panel: "I found `paper.tex`
   — it has `\documentclass` and inputs 7 sections, so I think it's the
   master file. Render these for review?" You approve (or correct it) in
   the chat, then it builds. Detection first, your confirmation always.
@@ -45,7 +45,7 @@ appear → your bots can reply to them like yours.
 
 ## V1.5: everyone on the same URL, without building a website
 
-Real case: the Acta student's laptop died; git-local collaboration is
+Real case: a collaborator with no usable computer; git-local collaboration is
 out and both collaborators should look at *the same rendered page*.
 The review server already is a website — V1.5 is a **hosted mode of
 the same server**, not a new product:
