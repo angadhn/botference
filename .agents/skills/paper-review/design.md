@@ -201,3 +201,7 @@ prompt updated for multiple humans (address by name; @user = any
 human), owner-gated bot summons for guests (mirror the review model).
 Plumbing (SSE fan-out, gate, bridge single-input queue) already exists;
 this is identity + attribution + prompt work.
+Trust tiers (2026-07-17): known people get manual free grants (social
+vouching); strangers pay a nominal fee — payment-as-identity, an abuse
+filter before it is revenue. The same billing pipeline later serves
+hosted V2, where real subscription pricing becomes plausible.
