@@ -135,3 +135,14 @@ never kill the human's running server (verify on a throwaway port);
 grep engine files clean of document-specific strings; if a change
 touches document sources, compile the document (e.g. `latexmk -pdf`)
 and inspect the output before claiming done.
+
+## Long-lived processes (servers, tunnels)
+
+To serve or tunnel anything that must outlive your turn, use
+`botference service start <name> -- <command…>` — or the one-shot
+`botference review --share --service` / `botference plan --share
+--service`, which run the whole share (server + tunnel) as a managed
+service, print the `share this: <url>   password: <pw>` line, and
+return control. **Never bare background processes** (`&`, `nohup`,
+`setsid` by hand): they die with your turn's process-group teardown.
+Manage what you started with `botference service list|logs|stop`.

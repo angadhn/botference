@@ -9,7 +9,10 @@ botference \- a multi-LLM planning council for the terminal
 [\fB\-\-web\fR|\fB\-\-share\fR [\fB\-\-no-auth\fR]] [\fB\-\-port\fR \fIN\fR]
 .br
 .B botference review
-[\fIdir\fR] [\fB\-\-share\fR] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
+[\fIdir\fR] [\fB\-\-share\fR [\fB\-\-service\fR]] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
+.br
+.B botference service
+\fBstart\fR \fIname\fR \fB\-\-\fR \fIcommand\fR… | \fBstop\fR \fIname\fR|\fB\-\-all\fR | \fBlist\fR | \fBlogs\fR \fIname\fR [\fB\-n\fR \fIN\fR]
 .SH DESCRIPTION
 .B botference
 puts you, Claude Code, and Codex in one terminal room. The bots debate
@@ -73,6 +76,31 @@ stable URL across sessions);
 Basic auth with any username instead); \fB\-\-upgrade\fR refreshes
 engine files
 without touching review.config.json, state/, suggestions.json, or site/.
+.TP
+.B service
+Managed long-lived processes (dev servers, share tunnels) that survive
+the shell \- and the whole process group \- that started them: the
+sanctioned, auditable way for agents inside botference sessions to
+leave something running after their turn ends (anything they background
+with a bare \fB&\fR or \fBnohup\fR dies with the turn's process-group
+teardown).
+.B start
+\fIname\fR \fB\-\-\fR \fIcommand\fR… forks \fIcommand\fR into its own
+session and process group with stdin from /dev/null and stdout+stderr
+appended to \fI.botference/logs/service-<name>.log\fR (rotated to .1
+past ~5MB), records {name, pid, pgid, command, started, cwd, log} in
+the per-workspace ledger \fI.botference/services.json\fR (atomic
+writes), and refuses duplicate running names; stale entries with dead
+pids are reaped on every invocation. \fIname\fR is [a-z0-9-], max 32
+chars.
+.B stop
+\fIname\fR (or \fB\-\-all\fR) TERMs the service's process group,
+escalates to KILL after 5 seconds, and removes the ledger entry.
+.B list
+prints name, pid, uptime, alive/dead, command, and log path.
+.B logs
+\fIname\fR [\fB\-n\fR \fIN\fR] tails the service log (default 50
+lines).
 .SH OPTIONS
 .TP
 .B \-p
@@ -98,6 +126,18 @@ Ink TUI and print the URL (nothing opens automatically).
 .B \-\-share
 Plan mode only: \fB\-\-web\fR plus the password gate and a cloudflared
 tunnel; prints "share this: <url>   password: <pw>".
+.TP
+.B \-\-service
+With \fB\-\-share\fR only (both \fBplan\fR and \fBreview\fR): run the
+whole share (server + tunnel) under the managed service lifecycle
+instead of in the foreground \- the launcher waits (bounded) for the
+canonical "share this: <url>   password: <pw>" line to appear in the
+service log, prints it, and returns control with the share still up.
+Service names: \fBcouncil-share\fR (plan) and \fBreview-share\fR
+(review); stop with \fBbotference service stop\fR \fIname\fR.
+Re-running while the service is up reprints its last share line. This
+is the flag agents should use to stand up a share that outlives their
+turn.
 .TP
 .B \-\-no-auth
 With \fBplan \-\-share\fR only: skip the password gate. Never the
@@ -162,6 +202,11 @@ Project-local state: sessions, projects, plans, logs.
 .TP
 .I ~/.botference/settings.json
 Per-user preferences (e.g. notifications).
+.TP
+.I <cwd>/.botference/services.json, <cwd>/.botference/logs/service-<name>.log
+Managed-service ledger and per-service logs (see
+.BR service ).
+Per workspace, gitignored by convention; never committed.
 .TP
 .I <cwd>/.botference/ink-crash.log, <cwd>/.botference/crash-reports/
 UI crash evidence (exceptions; fatal V8/OOM reports). Python-side
@@ -229,6 +274,14 @@ Set up and serve the document-review interface for a paper.
 .B botference review --share
 Serve the review hosted behind a cloudflared quick tunnel: prints one
 shareable URL plus a password.
+.TP
+.B botference review --share --service
+The same share as managed service 'review-share': prints the share
+line, then returns control with server and tunnel still up.
+.TP
+.B botference service start docs -- python3 -m http.server 8000
+Keep a throwaway server alive past the current shell (and past an
+agent's turn); stop it later with \fBbotference service stop docs\fR.
 .TP
 .B botference --anthropic-model=claude-sonnet-4-6 plan
 Override the Claude participant model.

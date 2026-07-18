@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## 2026-07-18
+
+- **`botference service` — managed long-lived processes that survive
+  the shell (and an agent's turn).** New `lib/service.sh` + launcher
+  dispatch. Motivation: bots inside botference sessions could not stand
+  up a review/council share on request — anything they backgrounded
+  died with their turn's process-group teardown (and launchctl is
+  sandbox-denied). The fix is a sanctioned, auditable lifecycle, not
+  loosened cleanup. `service start <name> -- <command…>` (name
+  `[a-z0-9-]{1,32}`) forks the command into its own session and process
+  group (python3 fork + setsid, stdin `</dev/null`, stdout+stderr →
+  `.botference/logs/service-<name>.log` with ~5MB rotation), so no
+  parent death, SIGHUP, or process-group SIGKILL reaches it; records
+  `{name, pid, pgid, command, started, cwd, log}` in the per-workspace
+  ledger `.botference/services.json` (atomic tmp+rename writes, pgid
+  match as a pid-reuse guard); refuses duplicate running names; reaps
+  stale dead entries on every invocation. `service list` (name, pid,
+  uptime, alive/dead, command, log), `service logs <name> [-n N]`,
+  `service stop <name>|--all` (TERM the process group, KILL after 5s,
+  drop the entry). Convenience wiring — what agents should use:
+  `botference review --share --service` and `botference plan --share
+  --service` run the whole share (server + tunnel) under the service
+  lifecycle (`review-share` / `council-share`), print the canonical
+  `share this: <url>   password: <pw>` line (parsed from the service
+  log with a bounded 90s wait), then return control; re-running while
+  up reprints the last share line (idempotent for agents). Verified end
+  to end: a real `review --share --service` on a throwaway repo printed
+  its tunnel URL and returned; the group held launcher + node server +
+  cloudflared; `service stop` took down all three and freed the port.
+  Tests (`tests/service.test.mjs`, 9 cases): the agent-death simulation
+  (service started inside a child bash whose entire process group is
+  then SIGKILLed — service must survive, then die on `service stop`),
+  duplicate refusal, stale reaping + name reuse, logs tail, `stop
+  --all`, TERM→KILL escalation, input validation, instant-death
+  detection, share-line parsing/idempotency. `review`'s gitignore block
+  now also ignores `.botference/` in document repos. Docs: README
+  ("Long-Running Services"), launcher help, man page, completions
+  (bash + zsh, incl. service-name completion from the ledger), and the
+  paper-review skill now instructs bots to use `botference service` —
+  never bare background processes — for anything that must outlive
+  their turn.
+
 ## 2026-07-17
 
 - **Fixed live events never arriving through `--share` tunnels (council

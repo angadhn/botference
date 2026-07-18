@@ -11,5 +11,6 @@ Test suite. Run with `pytest` from the repo root.
 | `test_paths.py` | `paths.py` — path resolution, work prefixes, handoff paths |
 | `test_room_prompts.py` | `room_prompts.py` — prompt template assembly |
 | `review-engine.test.mjs` | review engine (detect + build + server) on generated single-file and multi-file fixture papers — run with `node --test tests/review-engine.test.mjs` (needs pandoc) |
+| `service.test.mjs` | `lib/service.sh` (`botference service`) — survival of the starter's process-group SIGKILL, duplicate refusal, stale reaping, logs, stop --all, TERM→KILL escalation, share-line parsing — run with `node --test tests/service.test.mjs` (binds no ports) |
 
 Fixtures live in `tests/fixtures/`.

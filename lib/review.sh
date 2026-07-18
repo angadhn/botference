@@ -12,7 +12,7 @@ REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs submit.mjs init-con
 
 review_usage() {
   cat <<'HELP'
-Usage: botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
+Usage: botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
 
 Set up (first run) and serve the document-review interface in a document
 repo. dir defaults to the current directory. First run copies the engine
@@ -30,6 +30,11 @@ Options:
                shareable https URL; Ctrl-C stops server and tunnel together
   --hosted     Shared-URL mode without the tunnel: REVIEW_PASSWORD basic
                auth, per-browser handle picker, owner-gated bots/apply
+  --service    With --share: run the whole share (server + tunnel) as a
+               managed service ('review-share') instead of in the
+               foreground — prints the "share this: URL password" line,
+               then returns control. Stop with
+               'botference service stop review-share'.
   --agents     Force the agent bridge on (errors if python3 or an agent
                CLI is missing)
   --no-agents  Serve without the agent bridge (comments only)
@@ -53,7 +58,9 @@ review_copy_engine() {
 # Idempotently appends only the missing lines of the review gitignore block.
 review_ensure_gitignore() {
   local gi=$1 line added=false
-  for line in 'review/site/' 'review/state/*' '!review/state/users' '!review/state/threads.json'; do
+  # .botference/: per-workspace service ledger + logs (botference service,
+  # review --share --service) — never committed
+  for line in 'review/site/' 'review/state/*' '!review/state/users' '!review/state/threads.json' '.botference/'; do
     if [ ! -f "$gi" ] || ! grep -qxF "$line" "$gi"; then
       if [ -s "$gi" ] && [ -n "$(tail -c 1 "$gi")" ]; then
         echo >> "$gi"  # file lacks a trailing newline
@@ -63,18 +70,24 @@ review_ensure_gitignore() {
     fi
   done
   if $added; then
-    echo "  Updated .gitignore (review/site/ and review/state/* ignored, except users/ and threads.json)"
+    echo "  Updated .gitignore (review/site/, review/state/* except users/ and threads.json, and .botference/ ignored)"
   fi
 }
 
 run_review_mode() {
-  local dir="" hosted=false share=false agents="auto" upgrade=false port="" arg
+  local dir="" hosted=false share=false service=false agents="auto" upgrade=false port="" arg
+  # args minus --service, for the service re-exec below
+  local passthrough=() _pt
+  for _pt in "$@"; do
+    [ "$_pt" = "--service" ] || passthrough+=("$_pt")
+  done
   while [ "$#" -gt 0 ]; do
     arg=$1
     shift
     case "$arg" in
       --hosted) hosted=true ;;
       --share) share=true; hosted=true ;;
+      --service) service=true ;;
       # --chat/--no-chat are silent deprecated aliases of --agents/--no-agents
       --no-agents|--no-chat) agents="off" ;;
       --agents|--chat) agents="on" ;;
@@ -107,6 +120,10 @@ run_review_mode() {
     echo "Error: --port expects a number, got '$port'." >&2
     return 2
   fi
+  if $service && ! $share; then
+    echo "Error: --service requires --share (botference review --share --service)." >&2
+    return 2
+  fi
   if $hosted && ! $share && [ -z "${REVIEW_PASSWORD:-}" ]; then
     echo "Error: --hosted requires REVIEW_PASSWORD to be set, e.g." >&2
     echo "  REVIEW_PASSWORD=… botference review --hosted" >&2
@@ -134,6 +151,15 @@ run_review_mode() {
     echo "Error: 'pandoc' not found on PATH — the review site builder renders with it." >&2
     echo "  Install it (e.g. 'brew install pandoc') and rerun." >&2
     return 1
+  fi
+
+  # --- --share --service: re-run this exact share detached, under the
+  # managed service lifecycle; print the "share this:" line, then return ---
+  if $service; then
+    source "${BOTFERENCE_HOME}/lib/service.sh"
+    run_share_as_service "review-share" "${BOTFERENCE_HOME}/botference" review \
+      ${passthrough[@]+"${passthrough[@]}"}
+    return $?
   fi
 
   local review_dir="$dir/review"

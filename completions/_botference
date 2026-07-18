@@ -12,6 +12,7 @@ _botference() {
     'archive:archive current thread, restore blank templates'
     'build:build loop (default)'
     'review:set up + serve the document-review interface'
+    'service:managed long-lived processes (servers, tunnels)'
     'help:show usage'
   )
 
@@ -24,6 +25,7 @@ _botference() {
     review)
       _arguments \
         '--share[hosted mode + cloudflared tunnel: one shareable URL + password]' \
+        '--service[with --share: run the share as a managed service, then return control]' \
         '--hosted[password-protected hosted mode (REVIEW_PASSWORD)]' \
         '--port[server port]:port' \
         '--agents[force the agent bridge on]' \
@@ -39,6 +41,7 @@ _botference() {
         '--claude-transport=[claude transport]:transport:(programmatic tmux)' \
         '--web[council chat in the browser instead of the TUI]' \
         '--share[browser council + password gate + cloudflared tunnel]' \
+        '--service[with --share: run the share as a managed service, then return control]' \
         '--no-auth[with --share: skip the password gate (open URL — risky)]' \
         '--port=[web server port]:port' \
         '*:iterations'
@@ -50,6 +53,26 @@ _botference() {
         '--claude-interactive[Claude via tmux transport]' \
         '--claude-transport=[claude transport]:transport:(programmatic tmux)' \
         '*:iterations'
+      ;;
+    service)
+      local -a svc_cmds svc_names
+      svc_cmds=(
+        'start:start <name> -- <command…> detached (survives the shell)'
+        'stop:stop a service (TERM the group, KILL after 5s) or --all'
+        'list:table of services (name, pid, uptime, alive/dead, command, log)'
+        'logs:tail a service log'
+        'help:show service usage'
+      )
+      if (( CURRENT == 3 )); then
+        _describe -t svc-cmds 'service command' svc_cmds
+        return
+      fi
+      # service names from the per-workspace ledger (cheap sed, no jq)
+      svc_names=( ${(f)"$(sed -n 's/.*"name":[[:space:]]*"\([^"]*\)".*/\1/p' .botference/services.json 2>/dev/null)"} )
+      case ${words[3]} in
+        stop) _describe -t svc-names 'service' svc_names; compadd -- --all ;;
+        logs) _describe -t svc-names 'service' svc_names ;;
+      esac
       ;;
   esac
 }

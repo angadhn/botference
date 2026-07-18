@@ -33,12 +33,35 @@ if [ "${1:-}" = "review" ]; then
   exit $?
 fi
 
+# --- service mode: managed long-lived processes (servers, tunnels) ---
+# Also handled before the loop machinery: it only touches the per-workspace
+# ledger under .botference/ and returns immediately.
+if [ "${1:-}" = "service" ]; then
+  shift
+  source "${BOTFERENCE_HOME}/lib/service.sh"
+  export BOTFERENCE_ACTIVE_MODE="service"
+  run_service_mode "$@"
+  exit $?
+fi
+
 parse_loop_args "$@"
 export BOTFERENCE_ACTIVE_MODE="$LOOP_MODE"
 
 if $SHOW_HELP; then
   show_help
   exit 0
+fi
+
+# --- plan --share --service: run the whole share (server + tunnel) as a
+# managed service, print the "share this:" line, then return control ---
+if ${SERVICE_MODE:-false}; then
+  source "${BOTFERENCE_HOME}/lib/service.sh"
+  _svc_args=()
+  for _svc_a in "$@"; do
+    [ "$_svc_a" = "--service" ] || _svc_args+=("$_svc_a")
+  done
+  run_share_as_service "council-share" "${BOTFERENCE_HOME}/botference" ${_svc_args[@]+"${_svc_args[@]}"}
+  exit $?
 fi
 
 if [ "$LOOP_MODE" = "init" ]; then

@@ -374,6 +374,7 @@ parse_loop_args() {
   UI_MODE="ink"
   WEB_MODE=false
   SHARE_MODE=false
+  SERVICE_MODE=false
   NO_AUTH_MODE=false
   WEB_PORT=""
   CLAUDE_TRANSPORT="${BOTFERENCE_CLAUDE_TRANSPORT:-programmatic}"
@@ -419,6 +420,7 @@ parse_loop_args() {
       --ink) UI_MODE="ink" ;;
       --web) WEB_MODE=true ;;
       --share) WEB_MODE=true; SHARE_MODE=true ;;
+      --service) SERVICE_MODE=true ;;
       --no-auth) NO_AUTH_MODE=true ;;
       --port=*) WEB_PORT="${arg#--port=}" ;;
       --port)
@@ -444,6 +446,10 @@ parse_loop_args() {
     echo "Error: --no-auth only makes sense with --share." >&2
     return 2
   fi
+  if $SERVICE_MODE && ! $SHARE_MODE; then
+    echo "Error: --service requires --share (botference plan --share --service)." >&2
+    return 2
+  fi
   if [ -n "$WEB_PORT" ] && ! [[ "$WEB_PORT" =~ ^[0-9]+$ ]]; then
     echo "Error: --port expects a number, got '$WEB_PORT'." >&2
     return 2
@@ -457,8 +463,9 @@ parse_loop_args() {
 show_help() {
   cat <<'HELP'
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
-       botference plan [--web|--share [--no-auth]] [--port N]
-       botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
+       botference plan [--web|--share [--no-auth] [--service]] [--port N]
+       botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
+       botference service <start|stop|list|logs> …
 
 Modes:
   init              Bootstrap a project-local state directory
@@ -477,6 +484,16 @@ Modes:
                     via cloudflared, --hosted for hosted mode without the tunnel,
                     --upgrade to refresh engine files). Requires pandoc. See
                     'botference review --help'.
+  service           Managed long-lived processes (servers, tunnels) that
+                    survive the shell — and the whole process group — that
+                    started them (the sanctioned way for agents to leave
+                    something running after their turn ends):
+                      service start <name> -- <command…>   ([a-z0-9-] name)
+                      service stop <name> | stop --all
+                      service list
+                      service logs <name> [-n N]
+                    Ledger: .botference/services.json; logs under
+                    .botference/logs/. See 'botference service help'.
 
 Options:
   -p                Non-interactive (pipe) mode
@@ -493,6 +510,12 @@ Options:
                     prints one shareable https URL + password (use it from
                     your phone). Set BOTFERENCE_TUNNEL=<your-tunnel-name> for
                     a stable URL via a named cloudflared tunnel.
+  --service         With --share only (plan and review): run the whole share
+                    (server + tunnel) as a managed service instead of in the
+                    foreground — prints the usual "share this: URL password"
+                    line, then returns control. Service names: council-share
+                    (plan) / review-share (review). Stop with
+                    'botference service stop <name>'.
   --no-auth         With --share only: skip the password gate entirely.
                     ⚠ no password: anyone with this URL can drive your
                     agents, which can read and write files on this machine.
@@ -560,6 +583,10 @@ Examples:
   botference review                                   # Review interface for the paper in cwd (agents auto-detected)
   botference review --share                           # One shareable tunnel URL + password for collaborators
   botference review ~/papers/acta --no-agents --port 4280
+  botference review --share --service                 # Share as a managed service; returns control
+  botference service start docs -- python3 -m http.server 8000
+  botference service list                             # name, pid, uptime, alive/dead, command, log
+  botference service stop docs
   botference -p build                                 # Non-interactive build loop
   botference --anthropic-model=claude-sonnet-4-6 -p  # Build with Sonnet
   botference -p build 10                              # Build for max 10 iterations

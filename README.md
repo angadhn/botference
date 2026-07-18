@@ -251,6 +251,46 @@ export BOTFERENCE_TUNNEL_URL=https://council.example.com   # printed as the shar
 Without `BOTFERENCE_TUNNEL`, `--share` uses a quick tunnel with a
 random `trycloudflare.com` URL.
 
+## Long-Running Services
+
+Anything started in a shell — including by an agent inside a botference
+session — dies when that shell's process group is torn down at the end
+of the turn. `botference service` is the sanctioned, auditable way to
+leave a server or tunnel running:
+
+```bash
+botference service start <name> -- <command…>   # detached; survives the shell
+botference service list                         # name, pid, uptime, alive/dead, command, log
+botference service logs <name> [-n N]           # tail the service log
+botference service stop <name>                  # TERM the group, KILL after 5s
+botference service stop --all
+```
+
+`start` fully detaches the command (own session and process group,
+stdin from `/dev/null`, stdout+stderr appended to the service log with
+simple ~5MB rotation), records `{name, pid, pgid, command, started,
+cwd, log}` in the per-workspace ledger `.botference/services.json`
+(atomic writes), and refuses duplicate running names; stale entries
+with dead pids are reaped on every invocation. Names are `[a-z0-9-]`,
+max 32 chars. Ledger and logs live under `<workspace>/.botference/`
+(gitignored by convention — `botference review` adds the ignore block
+for document repos).
+
+The share flows compose with it — **this is what to ask your bots
+for** when you want a live review or council link stood up mid-session:
+
+```bash
+botference review --share --service   # review share (server + tunnel) as service 'review-share'
+botference plan --share --service     # council share as service 'council-share'
+```
+
+Both print the usual `share this: <url>   password: <pw>` line (parsed
+from the service log with a bounded wait) and then return control, so
+an agent can stand up a share on request and end its turn with the
+tunnel still up. Re-running while the service is up reprints its last
+share line. Stop with `botference service stop review-share` (resp.
+`council-share`).
+
 ## Project Scoping
 
 In a project initialized with `botference init`, the local policy lives in
