@@ -14,6 +14,8 @@
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
     input: $('input'), send: $('send'), stop: $('stop'), complete: $('complete'),
     queueNote: $('queue-note'),
+    attach: $('attach'), file: $('file'), attStrip: $('att-strip'),
+    toast: $('toast'), sync: $('sync'),
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -66,7 +68,29 @@
     ctx: { global: [], scoped: {} },
     projects: null,
     openProjects: new Set(),
+    inServerReplay: true,  // between (re)connect and the server's replay_done boundary
+    replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
+    pendingSwitch: null,   // session id of an in-flight sidebar chat switch
+    currentSid: null,      // active session id (from 'projects' events)
+    atts: [],              // composer attachments: {id, path, url, thumb, status}
   };
+  // one bridge = one live chat: switching IS a /resume that replaces server
+  // state. So this is an honest client-side cache of the last few rendered
+  // transcripts — instant optimistic paint on switch-back, reconciled when
+  // the authoritative replay lands. Bounded LRU.
+  const CACHE_MAX = 5;
+  const sessionCache = new Map(); // sid -> {html, scrollTop, atBottom}
+  function cachePut(sid, entry) {
+    if (!sid) return;
+    sessionCache.delete(sid);
+    sessionCache.set(sid, entry);
+    while (sessionCache.size > CACHE_MAX) sessionCache.delete(sessionCache.keys().next().value);
+  }
+  function cacheGet(sid) {
+    const e = sessionCache.get(sid);
+    if (e) { sessionCache.delete(sid); sessionCache.set(sid, e); } // LRU touch
+    return e || null;
+  }
 
   function renderAvatars() {
     els.avatars.innerHTML = AGENTS.map(a => {
@@ -93,6 +117,32 @@
   const stripFooter = t => String(t)
     .replace(FOOTER_FENCED, '').replace(FOOTER_RAW, '').replace(FOOTER_PARTIAL, '').trimEnd();
 
+  // escape + autolink raw prose (no fences, no inline code): URLs become
+  // real anchors so nobody has to screenshot a tunnel link off a phone.
+  // Linkifying happens on the RAW text with each piece escaped separately,
+  // so escaping can never be bypassed and code spans are never touched.
+  function linkedEsc(raw) {
+    const s = String(raw);
+    let out = '', last = 0, m;
+    const re = /https?:\/\/[^\s<>"']+/g;
+    while ((m = re.exec(s))) {
+      const url = m[0].replace(/[.,;:!?)\]}]+$/, ''); // trailing punctuation is prose
+      out += esc(s.slice(last, m.index));
+      out += `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+      last = m.index + url.length;
+    }
+    return out + esc(s.slice(last));
+  }
+  function inlineFmt(raw) {
+    // inline code split on the raw text, prose parts escaped+linkified
+    const parts = String(raw).split(/`([^`\n]+)`/);
+    let html = '';
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) html += `<code>${esc(parts[i])}</code>`;
+      else html += linkedEsc(parts[i]).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    }
+    return html;
+  }
   function fmt(text) {
     // fences first (on raw text), then inline formatting on the prose parts
     const parts = String(text).split(/```([\s\S]*?)```/);
@@ -102,34 +152,95 @@
         const body = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
         html += `<pre><code>${esc(body)}</code></pre>`;
       } else {
-        html += esc(parts[i])
-          .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-          .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        html += inlineFmt(parts[i]);
       }
     }
     return html;
   }
+  // system lines (tunnel share lines included): linkify, and give
+  // "password: <token>" a tap-to-copy chip — phones can't select from
+  // a transcript comfortably, so copying must be one tap
+  function sysFmt(raw) {
+    return linkedEsc(raw).replace(/(password:\s*)(\S+)/gi, (all, label, pw) =>
+      `${label}<button class="copy-chip" data-copy="${pw}" title="copy password">${pw}<span class="chip-ic" aria-hidden="true">⧉</span></button>`);
+  }
+
+  // ── copy affordances: chips + inline code are tap-to-copy ──
+  let toastTimer = null;
+  function toast(msg) {
+    if (!els.toast) return;
+    els.toast.textContent = msg;
+    els.toast.hidden = false;
+    els.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { els.toast.classList.remove('show'); els.toast.hidden = true; }, 1600);
+  }
+  function copyText(t) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return; // no API: selection still works
+    navigator.clipboard.writeText(t).then(() => toast('copied ✓')).catch(() => { });
+  }
+  els.chat.addEventListener('click', e => {
+    const sel = window.getSelection && window.getSelection();
+    if (sel && String(sel).length) return; // user is selecting, not tapping
+    const chip = e.target.closest('.copy-chip');
+    if (chip) { copyText(chip.dataset.copy); return; }
+    const code = e.target.closest('.msg .body code');
+    if (code && !code.closest('pre')) copyText(code.textContent);
+  });
 
   function updateEmpty() {
     els.empty.hidden = els.transcript.children.length > 0;
   }
-  const pinned = () => els.chat.scrollTop + els.chat.clientHeight >= els.chat.scrollHeight - 90;
+  // During a chat switch the authoritative replay renders into an offscreen
+  // buffer (the previous/cached transcript stays visible — no blank flash)
+  // and is swapped in when the replay completes.
+  let replayBuffer = null;
+  const container = () => replayBuffer || els.transcript;
+  const raf = typeof window.requestAnimationFrame === 'function'
+    ? cb => window.requestAnimationFrame(cb) : cb => setTimeout(cb, 16);
+  const atBottom = () => els.chat.scrollTop + els.chat.clientHeight >= els.chat.scrollHeight - 90;
+  // While a replay streams in, the "did the user scroll up?" heuristic is
+  // meaningless (the user did nothing — the layout is moving under them),
+  // so it is suppressed entirely and the view stays pinned.
+  const replayActive = () => state.inServerReplay || state.replaying;
+  const pinned = () => replayActive() || atBottom();
+  function pinBottom() { els.chat.scrollTop = els.chat.scrollHeight; els.jump.hidden = true; }
+  // pin now AND after layout settles (fonts, images, status strip): a late
+  // reflow after the last scroll write is exactly what used to leave the
+  // transcript parked at a weird mid-scroll anchor
+  function settleBottom() {
+    pinBottom();
+    raf(() => raf(pinBottom));
+  }
   function follow(wasPinned) {
-    if (wasPinned) { els.chat.scrollTop = els.chat.scrollHeight; els.jump.hidden = true; }
+    if (replayBuffer) return; // offscreen render: nothing to scroll
+    if (wasPinned) pinBottom();
     else els.jump.hidden = false;
   }
-  els.chat.addEventListener('scroll', () => { if (pinned()) els.jump.hidden = true; });
-  els.jump.addEventListener('click', () => {
-    els.chat.scrollTop = els.chat.scrollHeight; els.jump.hidden = true;
-  });
+  els.chat.addEventListener('scroll', () => { if (atBottom()) els.jump.hidden = true; });
+  els.jump.addEventListener('click', () => pinBottom());
+  // late layout shifts (image loads, font swaps) re-assert the bottom as
+  // long as the user hasn't deliberately scrolled up (jump pill hidden)
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => {
+      if (replayActive() || els.jump.hidden) {
+        if (!atBottom()) pinBottom();
+      }
+    }).observe(els.transcript);
+  }
 
-  function addMsg(speaker, text, { streaming = false } = {}) {
+  const attThumbs = atts => (atts && atts.length)
+    ? `<div class="att-row">${atts.map(a =>
+      `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`).join('')}</div>`
+    : '';
+
+  function addMsg(speaker, text, { streaming = false, attachments = [] } = {}) {
     const wasPinned = pinned();
     const div = document.createElement('div');
     const who = String(speaker || 'system').toLowerCase();
     if (who === 'user') {
       div.className = 'msg user';
-      div.innerHTML = `<div class="body">${fmt(text)}</div>`;
+      div.innerHTML = `${attThumbs(attachments)}<div class="body">${fmt(text)}</div>`;
     } else if (who === 'claude' || who === 'codex') {
       div.className = `msg ${who}${streaming ? ' streaming' : ''}`;
       div.innerHTML = `<div class="who">${avatarHtml(who)}<span>${who}</span></div><div class="body">${fmt(text)}</div>`;
@@ -137,11 +248,13 @@
       // multi-line system output (/help, /status, resume lists) reads better
       // as a left-aligned block than a centered whisper
       div.className = `msg system${/\n/.test(text) ? ' block' : ''}`;
-      div.innerHTML = `<div class="body">${esc(text)}</div>`;
+      div.innerHTML = `<div class="body">${sysFmt(text)}</div>`;
     }
-    els.transcript.appendChild(div);
-    updateEmpty();
-    follow(wasPinned);
+    container().appendChild(div);
+    if (!replayBuffer) {
+      updateEmpty();
+      follow(wasPinned);
+    }
     return div;
   }
 
@@ -206,10 +319,9 @@
       liveCard = div;
       settleCard(i >= 0 ? `you picked: ${ev.options[i]}` : 'dismissed');
     });
-    els.transcript.appendChild(div);
+    container().appendChild(div);
     liveCard = div;
-    updateEmpty();
-    follow(wasPinned);
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
   }
   function permissionCard(ev) {
     settleCard();
@@ -227,10 +339,9 @@
     div.querySelector('.deny').addEventListener('click', () => {
       post('/permission', { allow: false }); liveCard = div; settleCard('denied');
     });
-    els.transcript.appendChild(div);
+    container().appendChild(div);
     liveCard = div;
-    updateEmpty();
-    follow(wasPinned);
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
   }
 
   // ── sidebar ──
@@ -283,11 +394,64 @@
     }
     // sidebar affordances send the equivalent slash command — one code path
     if (act === 'inbox') sendInput('/resume');
-    if (act === 'resume') sendInput('/resume ' + b.dataset.sid);
+    if (act === 'resume') switchTo(b.dataset.sid);
     if (act === 'activate') sendInput('/project open ' + b.dataset.pid);
     closeSide();
   });
-  els.newChat.addEventListener('click', () => { sendInput('/new'); closeSide(); });
+  els.newChat.addEventListener('click', () => { snapshotCurrent(); sendInput('/new'); closeSide(); });
+
+  // ── chat switching: optimistic render from cache, reconcile on replay ──
+  // The server drives ONE bridge session, so a switch is a real /resume
+  // round trip. What we can make instant is the paint: snapshot the outgoing
+  // transcript, restore the cached one (if we have it) immediately, and let
+  // the authoritative replay land in an offscreen buffer that swaps in when
+  // 'ready' arrives. First visits keep the old chat + a syncing pill —
+  // never a blank flash.
+  function snapshotCurrent() {
+    if (!state.currentSid || replayBuffer || !els.transcript.children.length) return;
+    cachePut(state.currentSid, {
+      html: els.transcript.innerHTML,
+      scrollTop: els.chat.scrollTop,
+      atBottom: atBottom(),
+    });
+  }
+  function setSyncing(on) { if (els.sync) els.sync.hidden = !on; }
+  function switchTo(sid) {
+    if (!sid) return;
+    if (sid === state.currentSid && !state.pendingSwitch) return; // already live: nothing to do
+    snapshotCurrent();
+    state.pendingSwitch = sid;
+    const cached = cacheGet(sid);
+    if (cached) {
+      els.transcript.innerHTML = cached.html;
+      updateEmpty();
+      if (cached.atBottom) pinBottom();
+      else { els.chat.scrollTop = cached.scrollTop; els.jump.hidden = atBottom(); }
+    }
+    setSyncing(true);
+    sendInput('/resume ' + sid);
+  }
+  // replay-buffer completion: swap the freshly replayed transcript in and
+  // decide the landing scroll — same content as the cached paint keeps the
+  // user's place, anything else lands pinned at the bottom
+  function flushReplayBuffer() {
+    if (!replayBuffer) return;
+    const sid = state.pendingSwitch;
+    const cached = sid ? sessionCache.get(sid) : null;
+    const buf = replayBuffer;
+    replayBuffer = null;
+    const sameAsCached = !!cached && cached.html === buf.innerHTML;
+    els.transcript.innerHTML = '';
+    while (buf.firstChild) els.transcript.appendChild(buf.firstChild);
+    updateEmpty();
+    if (sameAsCached && !cached.atBottom) els.jump.hidden = atBottom();
+    else settleBottom();
+  }
+  function endSwitch() {
+    flushReplayBuffer();
+    state.pendingSwitch = null;
+    setSyncing(false);
+  }
 
   // mobile slide-over / desktop collapse
   const narrow = () => window.matchMedia('(max-width: 900px)').matches;
@@ -363,7 +527,81 @@
     els.input.style.height = 'auto';
     els.input.style.height = Math.min(els.input.scrollHeight, 157) + 'px';
   }
-  function syncSend() { els.send.disabled = !els.input.value.trim(); }
+  function syncSend() { els.send.disabled = !els.input.value.trim() && !state.atts.length; }
+
+  // ── image attachments: picker (camera+library on iOS via accept=image/*),
+  // clipboard paste, drag-drop. Uploaded eagerly so send is instant and the
+  // server validates early; thumbnails with ✕ until sent. ──
+  const IMG_LIMIT = 4, IMG_MAX_BYTES = 10 * 1024 * 1024;
+  function renderAtts() {
+    if (!els.attStrip) return;
+    els.attStrip.hidden = !state.atts.length;
+    els.attStrip.innerHTML = state.atts.map((a, i) =>
+      `<div class="att${a.status === 'up' ? ' uploading' : ''}">
+        <img src="${esc(a.thumb)}" alt="">
+        <button class="att-x" data-x="${i}" aria-label="remove image">✕</button></div>`).join('');
+  }
+  async function addFiles(files) {
+    for (const f of Array.from(files || [])) {
+      if (!(f && (/^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|heic)$/i.test(f.name || '')))) continue;
+      if (state.atts.length >= IMG_LIMIT) { toast(`${IMG_LIMIT} images max per message`); break; }
+      if (f.size > IMG_MAX_BYTES) { toast('image too large (10MB max)'); continue; }
+      const item = { id: '', path: '', url: '', thumb: URL.createObjectURL(f), status: 'up' };
+      state.atts.push(item);
+      renderAtts(); syncSend();
+      let r = null;
+      try {
+        const resp = await fetch('/upload', {
+          method: 'POST',
+          headers: { 'content-type': f.type || 'application/octet-stream' },
+          body: f,
+        });
+        if (resp.status === 401) { location.reload(); return; }
+        r = await resp.json();
+      } catch { }
+      if (r && r.ok && r.attachment) Object.assign(item, r.attachment, { status: 'ok' });
+      else {
+        state.atts = state.atts.filter(x => x !== item);
+        URL.revokeObjectURL(item.thumb);
+        toast(r && r.error ? `upload failed: ${r.error}` : 'upload failed');
+      }
+      renderAtts(); syncSend();
+    }
+  }
+  function clearAtts() {
+    for (const a of state.atts) URL.revokeObjectURL(a.thumb);
+    state.atts = [];
+    renderAtts(); syncSend();
+  }
+  if (els.attach && els.file) {
+    els.attach.addEventListener('click', () => els.file.click());
+    els.file.addEventListener('change', () => { addFiles(els.file.files); els.file.value = ''; });
+    els.attStrip.addEventListener('click', e => {
+      const b = e.target.closest('[data-x]');
+      if (!b) return;
+      const [a] = state.atts.splice(Number(b.dataset.x), 1);
+      if (a) URL.revokeObjectURL(a.thumb);
+      renderAtts(); syncSend();
+    });
+    els.input.addEventListener('paste', e => {
+      const items = (e.clipboardData && e.clipboardData.items) || [];
+      const files = Array.from(items)
+        .filter(i => i.kind === 'file' && /^image\//.test(i.type))
+        .map(i => i.getAsFile()).filter(Boolean);
+      if (files.length) { e.preventDefault(); addFiles(files); }
+    });
+    const box = document.querySelector('.composer-box');
+    for (const t of ['dragenter', 'dragover']) {
+      box.addEventListener(t, e => { e.preventDefault(); box.classList.add('drag'); });
+    }
+    box.addEventListener('dragleave', () => box.classList.remove('drag'));
+    box.addEventListener('drop', e => {
+      e.preventDefault();
+      box.classList.remove('drag');
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    });
+  }
+
   els.input.addEventListener('input', () => { autosize(); refreshCompletions(); syncSend(); });
   els.input.addEventListener('keydown', e => {
     if (!els.complete.hidden) {
@@ -379,12 +617,16 @@
   });
   function submit() {
     const text = els.input.value.trim();
-    if (!text) return;
+    const ready = state.atts.filter(a => a.status === 'ok');
+    if (!text && !ready.length) return;
+    if (state.atts.some(a => a.status === 'up')) { toast('still uploading…'); return; }
     els.input.value = '';
     autosize();
     refreshCompletions();
+    // exact bridge attachment schema — what the Ink TUI sends: {id, path, type:'image'}
+    sendInput(text, ready.map(a => ({ id: a.id, path: a.path, type: 'image' })));
+    clearAtts();
     syncSend();
-    sendInput(text);
   }
   els.send.addEventListener('click', submit);
   els.stop.addEventListener('click', () => post('/interrupt', {}));
@@ -399,8 +641,8 @@
       return await r.json();
     } catch { return null; }
   }
-  async function sendInput(text) {
-    const r = await post('/input', { text });
+  async function sendInput(text, attachments = []) {
+    const r = await post('/input', { text, attachments });
     if (r && r.ok === false && r.error) addMsg('system', `not sent: ${r.error}`);
     else setBusy(true);
   }
@@ -434,7 +676,10 @@
         }
         break;
       case 'user_echo':
-        addMsg('user', ev.text);
+        // the echo of a sidebar-initiated /resume is switch plumbing, not
+        // conversation — don't paint it over the optimistic transcript
+        if (state.pendingSwitch && ev.text === '/resume ' + state.pendingSwitch) { setBusy(true); break; }
+        addMsg('user', ev.text, { attachments: ev.attachments || [] });
         setBusy(true);
         break;
       case 'status':
@@ -447,14 +692,28 @@
           els.stCtx.textContent = bits.join(' · ');
         }
         break;
-      case 'projects':
+      case 'projects': {
         state.projects = ev;
+        let active = null;
+        for (const pr of ev.projects || []) {
+          for (const s of pr.sessions || []) if (s.active) active = s.session_id;
+        }
+        state.currentSid = active;
         renderProjects();
         break;
+      }
       case 'completion_context':
         state.ctx = { global: ev.global || [], scoped: ev.scoped || {} };
         break;
       case 'ready':
+        // a buffered switch replay ends at the bridge's LIVE idle boundary —
+        // 'ready' events replayed from server history don't count (the
+        // connect replay ends at replay_done instead)
+        if (!state.inServerReplay) {
+          if (replayBuffer) endSwitch();
+          else if (state.pendingSwitch) { state.pendingSwitch = null; setSyncing(false); }
+          if (state.replaying) { state.replaying = false; settleBottom(); }
+        }
         setBusy(false);
         settleCard();
         state.streams = {};
@@ -466,10 +725,24 @@
         els.queueNote.textContent = state.queued ? `${state.queued} message${state.queued > 1 ? 's' : ''} queued` : '';
         break;
       case 'clear_panes':
-        els.transcript.innerHTML = '';
         state.streams = {};
         liveCard = null;
-        updateEmpty();
+        state.replaying = true; // a restore replay follows: pin, no heuristics
+        if (state.pendingSwitch && els.transcript.children.length) {
+          // sidebar switch: keep the optimistic (or outgoing) transcript on
+          // screen and build the authoritative one offscreen — never blank
+          replayBuffer = document.createElement('div');
+        } else {
+          els.transcript.innerHTML = '';
+          updateEmpty();
+        }
+        break;
+      case 'replay_done':
+        // server-side history replay boundary (connect/reconnect): land
+        // pinned at the very bottom, and re-assert after layout settles
+        state.inServerReplay = false;
+        state.replaying = false;
+        settleBottom();
         break;
       case 'permission_request': permissionCard(ev); break;
       case 'permission_cleared': settleCard(); break;
@@ -478,10 +751,12 @@
       case 'permission_timeout': settleCard('timed out — denied by default'); break;
       case 'choice_timeout': settleCard('timed out — dismissed'); break;
       case 'bridge_exit':
+        if (replayBuffer || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);
         setBusy(false);
         break;
       case 'exit':
+        if (replayBuffer || state.pendingSwitch) endSwitch();
         addMsg('system', 'session ended.');
         setBusy(false);
         break;
@@ -497,9 +772,15 @@
   let retryMs = 1000;
   function setConn(cls, txt) { els.conn.className = `conn ${cls}`; els.conn.textContent = txt; }
   function resetView() {
-    // reconnect replays server history from scratch: start clean
+    // reconnect replays server history from scratch: start clean, keep the
+    // scroll pinned until the server's replay_done boundary
     els.transcript.innerHTML = '';
     state.streams = {};
+    replayBuffer = null;
+    state.inServerReplay = true;
+    state.replaying = false;
+    state.pendingSwitch = null;
+    setSyncing(false);
     updateEmpty();
   }
   function onLine(data) {
@@ -548,5 +829,8 @@
   connect();
 
   // exposed for the DOM test harness
-  window.__council = { handle, sendInput, computeCompletions, state, els };
+  window.__council = {
+    handle, sendInput, computeCompletions, state, els,
+    fmt, sysFmt, switchTo, addFiles, submit, sessionCache,
+  };
 })();

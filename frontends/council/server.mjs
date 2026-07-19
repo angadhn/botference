@@ -31,6 +31,11 @@ const NO_AUTH = process.argv.includes('--no-auth');
 const PORT = process.env.PORT || 4187; // never the review ports (4177/4180)
 const STATE = path.join(ROOT, '.botference', 'council');
 fs.mkdirSync(STATE, { recursive: true });
+// image uploads land under the workspace's .botference (gitignored by
+// workspace convention); served back only through the auth-gated /uploads/
+const UPLOADS = path.join(ROOT, '.botference', 'uploads');
+const UPLOAD_MAX = 10 * 1024 * 1024; // per image
+const UPLOAD_MAX_PER_MSG = 4;
 
 const PASSWORD = process.env.COUNCIL_PASSWORD || '';
 if (HOSTED && !NO_AUTH && !PASSWORD) {
@@ -315,7 +320,11 @@ function sseOpen(res) {
   if (res.socket && typeof res.socket.setNoDelay === 'function') res.socket.setNoDelay(true);
   res.write(SSE_PAD);
 }
-const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png' };
+const MIME = {
+  '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.heic': 'image/heic',
+};
 function serveFile(res, file) {
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404).end('not found'); return; }
@@ -332,6 +341,71 @@ function readBody(req, res, cap, fn) {
     try { fn(JSON.parse(body || '{}')); }
     catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
   });
+}
+
+// --- image uploads ------------------------------------------------------
+// Content decides, not the filename: sniff magic bytes and derive the
+// extension from what the file actually is.
+function sniffImage(buf) {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.length >= 6 && (buf.subarray(0, 6).toString('latin1') === 'GIF87a' || buf.subarray(0, 6).toString('latin1') === 'GIF89a')) return 'gif';
+  if (buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
+  if (buf.length >= 12 && buf.subarray(4, 8).toString('latin1') === 'ftyp'
+    && /^(heic|heix|hevc|mif1|msf1)/.test(buf.subarray(8, 12).toString('latin1'))) return 'heic';
+  return null;
+}
+const uploadUrl = abs => '/uploads/' + path.relative(UPLOADS, abs).split(path.sep).map(encodeURIComponent).join('/');
+function uploadEndpoint(req, res) {
+  const chunks = [];
+  let size = 0;
+  req.on('data', c => {
+    size += c.length;
+    // over the cap: stop retaining (memory stays bounded), answer 413 at end
+    if (size <= UPLOAD_MAX) chunks.push(c);
+  });
+  req.on('end', () => {
+    if (size > UPLOAD_MAX) {
+      res.writeHead(413, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'image too large (10MB max)' }));
+      return;
+    }
+    const buf = Buffer.concat(chunks);
+    const ext = sniffImage(buf);
+    if (!ext) {
+      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image (png/jpeg/gif/webp/heic)' }));
+      return;
+    }
+    const month = new Date().toISOString().slice(0, 7); // yyyy-mm
+    const dir = path.join(UPLOADS, month);
+    const id = crypto.randomBytes(8).toString('hex');
+    const abs = path.join(dir, `${id}.${ext}`);
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(abs, buf, { mode: 0o600 });
+    } catch {
+      res.writeHead(500, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'could not store upload' }));
+      return;
+    }
+    res.writeHead(200, JSON_HEAD).end(JSON.stringify({
+      ok: true,
+      attachment: { id, path: abs, type: 'image', url: uploadUrl(abs) },
+    }));
+  });
+}
+// /input attachments must point at files THIS server stored — never an
+// arbitrary path the browser names. Returns the bridge-schema list
+// ({id, path, type:'image'} — exactly what the Ink TUI sends) or null.
+function cleanAttachments(raw) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > UPLOAD_MAX_PER_MSG) return null;
+  const out = [];
+  for (const a of raw) {
+    const p = path.resolve(String((a && a.path) || ''));
+    const rel = path.relative(UPLOADS, p);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(p)) return null;
+    out.push({ id: String((a && a.id) || path.basename(p)), path: p, type: 'image' });
+  }
+  return out;
 }
 
 export function handler(req, res) {
@@ -358,20 +432,41 @@ export function handler(req, res) {
     sseOpen(res);
     res.write(`data: ${JSON.stringify(helloEvent())}\n\n`);
     for (const ev of history) res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    // explicit replay boundary: the client pins the transcript to the bottom
+    // here instead of trusting per-event scroll heuristics during replay
+    res.write(`data: ${JSON.stringify({ type: 'replay_done', count: history.length })}\n\n`);
     clients.add(res);
     req.on('close', () => clients.delete(res));
+    return;
+  }
+  if (req.method === 'POST' && url === '/upload') {
+    if (!bridge || !bridge.available) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
+    uploadEndpoint(req, res);
+    return;
+  }
+  if (req.method === 'GET' && url.startsWith('/uploads/')) {
+    const file = path.resolve(UPLOADS, decodeURIComponent(url.slice('/uploads/'.length)));
+    const rel = path.relative(UPLOADS, file);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) { res.writeHead(403).end(); return; }
+    serveFile(res, file);
     return;
   }
   if (req.method === 'POST' && url === '/input') {
     readBody(req, res, 64000, data => {
       const text = String(data.text || '');
-      if (!text.trim()) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"empty"}'); return; }
+      const attachments = cleanAttachments(data.attachments);
+      if (attachments === null) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"bad attachments"}'); return; }
+      if (!text.trim() && !attachments.length) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"empty"}'); return; }
       if (text.length > 16000) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"too long"}'); return; }
       if (!bridge || !bridge.available) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
       // echo before send: the transcript shows the user's words immediately
-      // (and after a reload — the bridge does not echo input back)
-      broadcast({ type: 'user_echo', text, ts: new Date().toISOString() });
-      bridge.send({ type: 'input', text, attachments: [] });
+      // (and after a reload — the bridge does not echo input back); echoed
+      // attachments carry the display URL for inline thumbnails
+      broadcast({
+        type: 'user_echo', text, ts: new Date().toISOString(),
+        attachments: attachments.map(a => ({ ...a, url: uploadUrl(a.path) })),
+      });
+      bridge.send({ type: 'input', text, attachments });
       res.writeHead(200, JSON_HEAD).end('{"ok":true}');
     });
     return;
@@ -415,6 +510,8 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
     onOpen(ws) {
       ws.send(JSON.stringify(helloEvent()));
       for (const ev of history) ws.send(JSON.stringify(ev));
+      // same replay boundary as /events: the client pins to bottom here
+      ws.send(JSON.stringify({ type: 'replay_done', count: history.length }));
       wsClients.add(ws);
       ws.onclose = () => wsClients.delete(ws);
     },

@@ -217,7 +217,9 @@ Two ways to bring in collaborators:
 
 The planning council also runs as a chat web app (claude.ai-shaped:
 sidebar with projects and chats, streaming transcript, slash commands
-with autocomplete, choice/permission cards inline):
+with autocomplete, choice/permission cards inline, image attachments —
+attach button/paste/drag-drop on desktop, camera or photo library on
+iOS — plus clickable links and tap-to-copy password chips):
 
 ```bash
 botference plan --web       # serve locally, open the printed URL

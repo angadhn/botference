@@ -265,6 +265,7 @@ test('WebSocket transport: hello + history replay + live events; gate enforced w
   assert.equal(hello.noauth, false);
   await c.next(e => e.type === 'projects');           // history replayed over WS
   await c.next(e => e.type === 'completion_context');
+  await c.next(e => e.type === 'replay_done');        // explicit replay boundary
   await post(s.base, '/input', { text: '/status' });  // live events flow over WS
   await c.next(e => e.type === 'user_echo' && e.text === '/status');
   await c.next(e => e.type === 'room' && e.speaker === 'claude' && e.text === 'echo: /status');
@@ -367,7 +368,8 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   // clicking a chat sends the equivalent slash command — one code path
   doc.querySelector('.sess[data-act="resume"]').click();
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume abc12345' } });
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume abc12345', attachments: [] } });
+  C.state.pendingSwitch = null; // settle the in-flight switch for the rest of the smoke
 
   // completion popover: entries from a fake completion_context
   C.handle({ type: 'completion_context', global: ['/status', '/new', '/style-nope'], scoped: { '/model @claude ': ['claude-fable-5'] } });
@@ -388,7 +390,7 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.equal(pop.hasAttribute('hidden'), true, 'no popover on an exact command');
   input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/status' } });
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/status', attachments: [] } });
 
   // transcript: user echo, streaming delta, final room replaces the stream
   C.handle({ type: 'user_echo', text: 'hello council' });
@@ -437,4 +439,309 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.equal(doc.documentElement.getAttribute('data-theme'), 'dark');
   doc.querySelector('#theme-toggle .seg-btn[data-theme-opt="system"]').click();
   assert.equal(doc.documentElement.getAttribute('data-theme'), null);
+});
+
+// ---------------------------------------------------------------- uploads
+
+const PNG = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.from('council-upload-test-bytes'),
+]);
+const postRaw = (base, url, body, headers = {}) =>
+  fetch(base + url, { method: 'POST', body, headers: { 'content-type': 'application/octet-stream', ...headers } });
+
+test('upload roundtrip: sniffed, stored 0600 under .botference/uploads, served back, bridge gets the exact Ink attachment schema', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  const up = await postRaw(s.base, '/upload', PNG);
+  assert.equal(up.status, 200);
+  const { ok, attachment } = await up.json();
+  assert.equal(ok, true);
+  assert.match(attachment.url, /^\/uploads\/\d{4}-\d{2}\/[0-9a-f]{16}\.png$/);
+  assert.equal(attachment.type, 'image');
+  // stored inside the workspace's .botference/uploads/<yyyy-mm>/, mode 0600
+  const rel = path.relative(path.join(s.root, '.botference', 'uploads'), attachment.path);
+  assert.ok(!rel.startsWith('..') && /^\d{4}-\d{2}\//.test(rel), `stored in uploads tree (got ${rel})`);
+  assert.equal(fs.statSync(attachment.path).mode & 0o777, 0o600);
+  // served back byte-identical with an image mime
+  const got = await fetch(s.base + attachment.url);
+  assert.equal(got.status, 200);
+  assert.equal(got.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await got.arrayBuffer()), PNG);
+  // traversal out of the uploads tree stays blocked
+  const http = await import('node:http');
+  const trav = await new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: s.port, path: '/uploads/%2e%2e/council/.auth-secret' },
+      r => { r.resume(); resolve(r.statusCode); }).on('error', reject);
+  });
+  assert.equal(trav, 403);
+  // /input forwards the attachment to the bridge in the EXACT schema the
+  // Ink TUI sends: [{id, path, type:'image'}]
+  const inp = await post(s.base, '/input', {
+    text: 'what is this?',
+    attachments: [{ id: attachment.id, path: attachment.path, type: 'image' }],
+  });
+  assert.deepEqual(await inp.json(), { ok: true });
+  // wait for the bridge to have PROCESSED the input (its echo turn), not
+  // just the server-side user_echo which is broadcast before the send
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && e.speaker === 'claude'));
+  const lines = fs.readFileSync(s.rx, 'utf8').trim().split('\n');
+  assert.equal(lines[0], 'what is this?');
+  const att = JSON.parse(lines[1].replace(/^ATT /, ''));
+  assert.deepEqual(att, [{ id: attachment.id, path: attachment.path, type: 'image' }]);
+  assert.deepEqual(Object.keys(att[0]).sort(), ['id', 'path', 'type']);
+  // the echo carries display URLs so reloads re-render the thumbnails
+  const evs = await sseUntil(s.base, e => e.some(x => x.type === 'user_echo'));
+  const echo = evs.find(e => e.type === 'user_echo');
+  assert.equal(echo.attachments[0].url, attachment.url);
+  // attachment-only message (no text) is allowed
+  const only = await post(s.base, '/input', {
+    text: '', attachments: [{ id: attachment.id, path: attachment.path, type: 'image' }],
+  });
+  assert.deepEqual(await only.json(), { ok: true });
+});
+
+test('upload rejects: oversize, non-image bytes, forged attachment paths, too many attachments', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  // > 10MB -> 413 (and nothing stored)
+  const big = Buffer.alloc(11 * 1024 * 1024);
+  PNG.copy(big);
+  const over = await postRaw(s.base, '/upload', big);
+  assert.equal(over.status, 413);
+  assert.equal((await over.json()).ok, false);
+  // magic-byte sniffing, not extension trust: text is refused
+  const txt = await postRaw(s.base, '/upload', Buffer.from('#!/bin/sh\necho pwned'), { 'x-filename': 'x.png' });
+  assert.equal(txt.status, 400);
+  assert.match((await txt.json()).error, /not an image/);
+  assert.ok(!fs.existsSync(path.join(s.root, '.botference', 'uploads'))
+    || fs.readdirSync(path.join(s.root, '.botference', 'uploads')).length === 0, 'nothing stored');
+  // /input refuses paths outside the uploads tree — the browser cannot make
+  // the bridge read arbitrary files
+  const forged = await post(s.base, '/input', {
+    text: 'hi', attachments: [{ id: 'x', path: '/etc/passwd', type: 'image' }],
+  });
+  assert.equal(forged.status, 400);
+  assert.match((await forged.json()).error, /bad attachments/);
+  // max 4 per message
+  const up = await (await postRaw(s.base, '/upload', PNG)).json();
+  const five = Array(5).fill({ id: up.attachment.id, path: up.attachment.path, type: 'image' });
+  const many = await post(s.base, '/input', { text: 'hi', attachments: five });
+  assert.equal(many.status, 400);
+});
+
+test('hosted mode: /upload and /uploads/ are behind the same gate as everything else', async t => {
+  const s = await startServer({ hosted: true });
+  t.after(s.stop);
+  assert.equal((await postRaw(s.base, '/upload', PNG)).status, 401);
+  const auth = await fetch(`${s.base}/auth`, {
+    method: 'POST', body: 'password=test-pw&next=%2F', redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  });
+  const cookie = auth.headers.get('set-cookie').split(';')[0];
+  const up = await postRaw(s.base, '/upload', PNG, { cookie });
+  assert.equal(up.status, 200);
+  const { attachment } = await up.json();
+  assert.equal((await fetch(s.base + attachment.url)).status, 401, 'uploaded image is not public');
+  assert.equal((await fetch(s.base + attachment.url, { headers: { cookie } })).status, 200);
+});
+
+test('SSE replay ends with an explicit replay_done boundary, after the whole history batch', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  await post(s.base, '/input', { text: '/status' });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && e.speaker === 'claude'));
+  // a FRESH client connecting now gets: hello, history..., replay_done
+  const events = await sseUntil(s.base, evs => evs.some(e => e.type === 'replay_done'));
+  const iDone = events.findIndex(e => e.type === 'replay_done');
+  assert.ok(iDone > 0, 'replay_done arrives');
+  assert.ok(events.findIndex(e => e.type === 'user_echo') < iDone, 'history precedes the boundary');
+  assert.ok(events.filter(e => e.type === 'replay_done').length === 1);
+  assert.equal(typeof events[iDone].count, 'number');
+});
+
+// ------------------------------------------------- UI: scroll + cache + copy
+
+// fresh happy-dom app instance with stubbed network + controllable scroll
+// geometry (happy-dom does no layout, so the chat pane's metrics are driven
+// by the test: content height grows per appended message)
+async function mkHarness(t) {
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  const w = new GlobalWindow({ url: 'http://localhost/', width: 390, height: 844 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  const html = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'index.html'), 'utf8');
+  doc.write(html.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
+  const posts = [];
+  w.fetch = async (url, opts) => {
+    posts.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+  w.EventSource = class { constructor() { } close() { } };
+  // inert socket: happy-dom's real WebSocket fails ASYNCHRONOUSLY, which
+  // would fire the app's reconnect resetView() mid-test and wipe the DOM
+  w.WebSocket = class { constructor() { } close() { } send() { } };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'app.js'), 'utf8'), w);
+  const C = w.__council;
+  const chat = doc.getElementById('chat');
+  const transcript = doc.getElementById('transcript');
+  // synchronous geometry, like real layout on a scrollHeight read: every
+  // transcript child is ~perMsg px tall, plus `extra` for late layout shifts
+  const geo = { top: 0, client: 600, perMsg: 200, extra: 0 };
+  const height = () => transcript.children.length * geo.perMsg + geo.extra;
+  Object.defineProperty(chat, 'scrollHeight', { configurable: true, get: height });
+  Object.defineProperty(chat, 'clientHeight', { configurable: true, get: () => geo.client });
+  Object.defineProperty(chat, 'scrollTop', {
+    configurable: true,
+    get: () => geo.top,
+    set: v => { geo.top = Math.max(0, Math.min(v, height())); },
+  });
+  return { w, doc, C, chat, transcript, geo, posts };
+}
+
+test('replay lands pinned at the bottom — heuristics suppressed mid-replay, late layout shift re-asserted',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, chat, geo } = await mkHarness(t);
+  assert.equal(C.state.inServerReplay, true, 'boots in server-replay mode');
+  // history replay: many messages, arriving in bursts with "paints" between
+  C.handle({ type: 'hello' });
+  for (let i = 0; i < 10; i++) C.handle({ type: 'room', speaker: i % 2 ? 'claude' : 'codex', text: `long replayed message ${i}` });
+  // simulate the real-world misfire: between two bursts the viewport/layout
+  // shifted and scrollTop is now parked far above the bottom (>90px gap)
+  geo.top = 120;
+  C.handle({ type: 'room', speaker: 'claude', text: 'next burst' });
+  assert.equal(chat.scrollTop, chat.scrollHeight, 'mid-replay append still pins — no scrolled-up misfire');
+  // a HISTORICAL ready (replayed from server history) must not end replay mode
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.inServerReplay, true, 'historical ready does not end the replay');
+  geo.top = 120;
+  C.handle({ type: 'room', speaker: 'codex', text: 'after historical ready' });
+  assert.equal(chat.scrollTop, chat.scrollHeight, 'still pinned after a replayed ready');
+  // the server boundary ends the replay: pinned at the very bottom
+  C.handle({ type: 'replay_done' });
+  assert.equal(C.state.inServerReplay, false);
+  assert.equal(chat.scrollTop, chat.scrollHeight, 'replay_done pins to bottom');
+  assert.equal(doc.getElementById('jump').hasAttribute('hidden'), true, 'no jump pill after landing');
+  // late layout shift (fonts/images settling) after the boundary: the
+  // double-rAF settle re-asserts the bottom
+  geo.extra += 700;
+  await new Promise(r => setTimeout(r, 120)); // let both rAF callbacks run
+  assert.equal(chat.scrollTop, chat.scrollHeight, 'late layout shift is re-anchored to the bottom');
+  // live streaming afterwards respects a deliberate scroll-up
+  geo.top = 100; // user scrolled up
+  C.handle({ type: 'room', speaker: 'claude', text: 'live message' });
+  assert.equal(chat.scrollTop, 100, 'live events never yank a scrolled-up reader');
+  assert.equal(doc.getElementById('jump').hasAttribute('hidden'), false, 'jump pill offers the way down');
+});
+
+test('chat switch: optimistic cached render, offscreen reconcile, never a blank transcript',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, transcript, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const projects = active => ({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, session_count: 2,
+      sessions: [
+        { session_id: 'sidA', title: 'Chat A', updated_at: new Date().toISOString(), active: active === 'sidA' },
+        { session_id: 'sidB', title: 'Chat B', updated_at: new Date().toISOString(), active: active === 'sidB' },
+      ],
+    }],
+  });
+  C.handle(projects('sidA'));
+  assert.equal(C.state.currentSid, 'sidA');
+  C.handle({ type: 'user_echo', text: 'hello from A' });
+  C.handle({ type: 'room', speaker: 'claude', text: 'A says hi' });
+  // switch to B (first visit, uncached): old transcript stays + syncing pill
+  C.switchTo('sidB');
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidB', attachments: [] } });
+  assert.match(transcript.textContent, /hello from A/, 'no blank state while the switch is in flight');
+  assert.equal(doc.getElementById('sync').hasAttribute('hidden'), false, 'syncing pill shows');
+  // the authoritative replay: clear_panes must NOT blank the visible pane
+  C.handle({ type: 'clear_panes' });
+  assert.ok(transcript.children.length > 0, 'clear_panes during a switch keeps content on screen');
+  C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'hello from B' }, { speaker: 'codex', text: 'B replies' }] });
+  assert.match(transcript.textContent, /hello from A/, 'replay builds offscreen');
+  C.handle(projects('sidB'));
+  C.handle({ type: 'ready' });
+  assert.match(transcript.textContent, /B replies/, 'ready swaps the fresh transcript in');
+  assert.doesNotMatch(transcript.textContent, /hello from A/);
+  assert.equal(doc.getElementById('sync').hasAttribute('hidden'), true);
+  // switch BACK to A: instant render from the cache, before any server event
+  C.switchTo('sidA');
+  assert.match(transcript.textContent, /hello from A/, 'cached transcript paints instantly');
+  assert.match(transcript.textContent, /A says hi/);
+  assert.ok(C.sessionCache.has('sidB'), 'outgoing chat was snapshotted');
+  // reconcile completes without ever blanking
+  C.handle({ type: 'clear_panes' });
+  assert.ok(transcript.children.length > 0);
+  C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'hello from A' }, { speaker: 'claude', text: 'A says hi' }] });
+  C.handle(projects('sidA'));
+  C.handle({ type: 'ready' });
+  assert.match(transcript.textContent, /A says hi/);
+  // tapping the already-live chat is a no-op, not a redundant /resume
+  const n = posts.length;
+  C.switchTo('sidA');
+  assert.equal(posts.length, n, 'no round trip for the active chat');
+});
+
+test('links are clickable, text stays selectable, passwords get a copy chip',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  // bot message: URL becomes an anchor; escaping still holds
+  C.handle({
+    type: 'room', speaker: 'claude',
+    text: 'see https://tunnel.trycloudflare.com/x?a=1&b=2. also <script>alert(1)</script>',
+  });
+  const body = doc.querySelector('.msg.claude .body');
+  const a = body.querySelector('a');
+  assert.ok(a, 'URL rendered as an anchor');
+  assert.equal(a.getAttribute('href'), 'https://tunnel.trycloudflare.com/x?a=1&b=2');
+  assert.equal(a.getAttribute('target'), '_blank');
+  assert.match(a.getAttribute('rel'), /noopener/);
+  assert.equal(body.querySelector('script'), null, 'markup stays escaped');
+  assert.match(body.textContent, /<script>alert\(1\)<\/script>/);
+  // trailing punctuation is prose, not URL
+  assert.doesNotMatch(a.getAttribute('href'), /\.$/);
+  // share line: URL is a link, password is a tap-to-copy chip
+  C.handle({ type: 'room', speaker: 'system', text: 'share this: https://council.example.com   password: ab12cd34ef' });
+  const sys = [...doc.querySelectorAll('.msg.system')].pop();
+  assert.ok(sys.querySelector('a[href="https://council.example.com"]'), 'share URL is clickable');
+  const chip = sys.querySelector('.copy-chip');
+  assert.ok(chip, 'password renders as a copy chip');
+  assert.equal(chip.getAttribute('data-copy'), 'ab12cd34ef');
+  // tapping the chip copies via the clipboard API
+  let copied = null;
+  Object.defineProperty(w.navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: txt => { copied = txt; return Promise.resolve(); } },
+  });
+  chip.click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(copied, 'ab12cd34ef');
+  // user echo with attachments renders inline thumbnails
+  C.handle({ type: 'user_echo', text: 'look', attachments: [{ id: 'x', path: '/tmp/x.png', type: 'image', url: '/uploads/2026-07/x.png' }] });
+  const img = doc.querySelector('.msg.user .att-img');
+  assert.ok(img, 'sent message shows the image');
+  assert.equal(img.getAttribute('src'), '/uploads/2026-07/x.png');
+  // nothing in the stylesheet blocks selection on message text (the only
+  // user-select:none allowed is the decorative avatar mark), and the
+  // transcript explicitly opts into selection for iOS long-press
+  const css = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'style.css'), 'utf8');
+  for (const m of css.matchAll(/([^{}]+)\{[^{}]*user-select:\s*none[^{}]*\}/g)) {
+    assert.match(m[1].trim(), /\.avatar/, `only avatars may block selection: ${m[1].trim()}`);
+  }
+  assert.match(css, /#transcript\s*\{[^}]*user-select:\s*text/, 'transcript opts into selection');
+  // the attach affordance is phone-real: image picker that lets iOS offer
+  // camera + library (accept=image/*, no capture attr), plus multiple
+  const file = doc.getElementById('file');
+  assert.equal(file.getAttribute('accept'), 'image/*');
+  assert.equal(file.hasAttribute('capture'), false, 'no capture attr — keeps the library option on iOS');
+  assert.ok(file.hasAttribute('multiple'));
+  assert.ok(doc.getElementById('attach'), 'attach button present');
+  assert.match(css, /#input\s*\{[^}]*font:\s*16px/, '16px input font (no iOS zoom-on-focus)');
 });

@@ -141,7 +141,14 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
 
 /* ── transcript ──────────────────────────────────────────── */
 .chat-col { max-width: 48rem; margin: 0 auto; width: 100%; padding: 0 1.2rem }
-#chat { flex: 1; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: auto }
+/* overflow-anchor off: WE own the scroll anchor (pin-to-bottom on replay);
+   the browser's anchoring would fight the explicit scrollTop writes while
+   streamed bubbles mutate in place. Text stays freely selectable — phones
+   copy passwords/URLs from here (touch-callout default, no user-select:none
+   anywhere in this subtree except decorative avatar marks). */
+#chat { flex: 1; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: auto;
+  overflow-anchor: none }
+#transcript { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default }
 #transcript { padding-top: 1.6rem; padding-bottom: 1.2rem; display: flex;
   flex-direction: column; gap: 1.15rem }
 #empty { max-width: 30rem; margin: 22vh auto 0; text-align: center; padding: 0 1.4rem;
@@ -211,6 +218,38 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
   box-shadow: var(--shadow) }
 main { position: relative }
 
+/* chat-switch reconcile indicator: cached transcript shown, replay in flight */
+#sync { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); z-index: 8;
+  border-radius: 999px; padding: .25rem .85rem; font: .72rem var(--sans);
+  background: var(--card); border: 1px solid var(--card-line); color: var(--muted);
+  box-shadow: var(--shadow) }
+#sync[hidden] { display: none }
+
+/* copy feedback toast */
+#toast { position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: calc(9.5rem + env(safe-area-inset-bottom, 0px)); z-index: 30;
+  border-radius: 999px; padding: .35rem 1rem; font: .78rem var(--sans);
+  background: var(--fg); color: var(--bg); opacity: 0; transition: opacity .15s ease;
+  pointer-events: none }
+#toast.show { opacity: .92 }
+#toast[hidden] { display: none }
+
+/* tap-to-copy chip (tunnel passwords and other tokens in system lines) */
+.copy-chip { display: inline-flex; align-items: center; gap: .3em;
+  font: inherit; font-family: var(--mono); background: var(--rail);
+  border: 1px solid var(--card-line); border-radius: 6px; padding: .12em .5em;
+  color: var(--fg); cursor: pointer; min-height: 28px; vertical-align: baseline }
+.copy-chip:hover { border-color: var(--accent); color: var(--accent) }
+.copy-chip .chip-ic { font-size: .85em; color: var(--muted) }
+.msg .body a { color: var(--accent); text-decoration: underline;
+  text-underline-offset: 2px; overflow-wrap: anywhere }
+.msg .body a:hover { color: var(--accent-hover) }
+
+/* inline image attachments on sent messages */
+.att-row { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: .45rem }
+.att-row .att-img { max-width: min(200px, 60vw); max-height: 200px; display: block;
+  border-radius: 10px; border: 1px solid var(--card-line) }
+
 /* ── composer ────────────────────────────────────────────── */
 #composer { flex: none; padding: .4rem 0 calc(.9rem + env(safe-area-inset-bottom, 0px));
   background: linear-gradient(to top, var(--bg) 70%, transparent) }
@@ -218,6 +257,24 @@ main { position: relative }
   border-radius: 16px; box-shadow: var(--shadow);
   transition: border-color .15s ease, box-shadow .15s ease }
 .composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--card-line)) }
+.composer-box.drag { border-color: var(--accent); border-style: dashed }
+
+/* attachment thumbnails above the input, ✕ each until sent */
+#att-strip { display: flex; flex-wrap: wrap; gap: .55rem; padding: .7rem 1rem 0 }
+#att-strip[hidden] { display: none }
+#att-strip .att { position: relative; width: 56px; height: 56px }
+#att-strip .att img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px;
+  border: 1px solid var(--card-line); display: block }
+#att-strip .att.uploading img { opacity: .45; animation: attpulse 1.1s ease infinite }
+@keyframes attpulse { 50% { opacity: .2 } }
+#att-strip .att-x { position: absolute; top: -8px; right: -8px; width: 24px; height: 24px;
+  padding: 0; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: .68rem; line-height: 1; background: var(--fg);
+  color: var(--bg); border: 2px solid var(--card) }
+#attach { flex: none; width: 34px; height: 34px; padding: 0; display: flex;
+  align-items: center; justify-content: center; border-radius: 50%; color: var(--muted) }
+#attach svg { width: 17px; height: 17px }
+#attach:hover { color: var(--accent) }
 #input { display: block; width: 100%; border: 0; background: none; resize: none;
   color: var(--fg); font: 16px/1.55 var(--sans); padding: .85rem 1rem .3rem;
   max-height: 9.8rem; overflow-y: auto }

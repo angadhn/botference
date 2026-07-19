@@ -1,5 +1,51 @@
 # CHANGELOG
 
+## 2026-07-19
+
+- **Council web: image upload from phone or computer.** Attach button in
+  the composer (`accept="image/*"`, no `capture` attr — iOS Safari
+  offers camera AND library), clipboard paste, and drag-drop onto the
+  input. Thumbnails with ✕ above the input before sending; sent
+  messages show inline thumbnails (served via the auth-gated
+  `/uploads/` route, so shared links stay password-protected).
+  Transport: `POST /upload` (raw bytes, ~10MB cap, max 4 per message),
+  images validated by magic-byte sniffing — never by extension — and
+  stored 0600 under the workspace's gitignored
+  `.botference/uploads/<yyyy-mm>/`. `/input` refuses attachment paths
+  outside that tree, and forwards them to the bridge in the exact
+  attachment schema the Ink TUI uses (`{id, path, type:"image"}`), so
+  the existing adapter staging pipeline handles them unchanged.
+- **Council web: transcript lands pinned at the bottom after every
+  replay.** Root cause of the "opens somewhere in the middle" anchor:
+  the per-event "respect a scrolled-up reader" heuristic ran DURING
+  history replay — any layout/viewport shift between replay bursts
+  (iOS URL bar, fonts, code blocks settling) parked the scroll >90px
+  off the bottom, after which every following event refused to
+  auto-scroll. Now the server marks the end of its history batch with
+  an additive `replay_done` event, the client suppresses the heuristic
+  for the whole replay (including `/resume` restores, which end at the
+  bridge's live `ready`), pins on the boundary, re-asserts after late
+  layout via double-rAF + a ResizeObserver, and sets
+  `overflow-anchor: none` so browser scroll anchoring can't fight the
+  explicit pin. Live streaming keeps the old respect-the-reader
+  behavior.
+- **Council web: chat switches render instantly from a bounded cache.**
+  One bridge = one live chat (a sidebar switch IS a `/resume` round
+  trip), so true parallel caching is impossible — instead the outgoing
+  transcript+scroll is snapshotted (LRU, last 5), the cached transcript
+  paints immediately on switch-back, and the authoritative replay
+  builds offscreen and swaps in at `ready` — never a blank flash, a
+  small "syncing…" pill while reconciling. Tapping the already-active
+  chat is now a no-op instead of a redundant resume.
+- **Council web: links clickable, text selectable, passwords
+  one-tap-copyable.** URLs in any message autolink (escape-safe, on the
+  raw text, never inside code spans; `target=_blank rel=noopener`);
+  `password: <token>` lines (tunnel share lines) render the token as a
+  tap-to-copy chip, and inline-code spans copy on tap with a "copied ✓"
+  toast (graceful no-op without the clipboard API); the transcript
+  explicitly opts into text selection for iOS long-press. No more
+  screenshotting tunnel passwords off a phone.
+
 ## 2026-07-18
 
 - **`botference service` — managed long-lived processes that survive

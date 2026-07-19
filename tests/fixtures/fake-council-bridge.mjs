@@ -25,6 +25,11 @@ rl.on('line', line => {
   let msg; try { msg = JSON.parse(line); } catch { return; }
   if (msg.type === 'input') {
     if (rxFile) fs.appendFileSync(rxFile, msg.text + '\n');
+    // attachments are recorded verbatim so tests can assert the exact
+    // bridge schema ({id, path, type:'image'} — what the Ink TUI sends)
+    if (rxFile && Array.isArray(msg.attachments) && msg.attachments.length) {
+      fs.appendFileSync(rxFile, 'ATT ' + JSON.stringify(msg.attachments) + '\n');
+    }
     if (msg.text === '/trigger-choice') {
       emit({ type: 'choice_request', prompt: 'Where should this chat live?', options: ['Stay in inbox', 'Demo project'] });
       return; // choice_response resolves it below
