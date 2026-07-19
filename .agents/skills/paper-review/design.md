@@ -205,3 +205,11 @@ Trust tiers (2026-07-17): known people get manual free grants (social
 vouching); strangers pay a nominal fee — payment-as-identity, an abuse
 filter before it is revenue. The same billing pipeline later serves
 hosted V2, where real subscription pricing becomes plausible.
+
+Council concurrency (parked 2026-07-19): today one bridge = one serial
+brain — switching chats queues behind the in-flight turn (work is never
+lost; output lands in the left chat's files), but chats cannot run in
+parallel. Desired: bridge POOL in the council web server — one bridge
+per active session (capped ~2-3 for CLI/compute cost), sidebar switches
+views not brains, presence shows per-chat busy state. TUI could follow
+but is lower value there (user agrees).
