@@ -10,6 +10,7 @@
     side: $('side'), backdrop: $('backdrop'), burger: $('burger'), sideClose: $('side-close'),
     newChat: $('new-chat'), projects: $('projects'), theme: $('theme-toggle'),
     conn: $('st-conn'), stProject: $('st-project'), stRoute: $('st-route'), stCtx: $('st-ctx'),
+    stModel: $('st-model'), modelSwitcher: $('model-switcher'), presendWarn: $('presend-warn'),
     avatars: $('avatars'), banner: $('noauth-banner'), bannerX: $('noauth-x'),
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
     input: $('input'), send: $('send'), stop: $('stop'), complete: $('complete'),
@@ -55,8 +56,44 @@
     codex: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>',
   };
   const AGENTS = ['claude', 'codex'];
+  const other = a => (a === 'claude' ? 'codex' : 'claude');
+  const cap = a => a[0].toUpperCase() + a.slice(1);
   const avatarHtml = a =>
     `<span class="avatar" style="--author:var(--${a})" aria-hidden="true">${MARKS[a] || ''}</span>`;
+
+  // ── credit-exhaustion detection ──
+  // An agent's turn output carrying one of these is treated as "out of credits"
+  // until it produces a normal turn again. Claude's string is observed verbatim;
+  // the OpenAI/Codex variants are a best-guess to refine against a real error.
+  const EXHAUST_PATTERNS = {
+    claude: [/monthly spend limit/i, /\/usage-credits/i, /out of credits/i,
+      /credit balance (?:is )?too low/i, /insufficient credits?/i, /purchase credits/i],
+    codex: [/insufficient_quota/i, /exceeded your current quota/i,
+      /usage limit reached/i, /out of credits/i, /quota/i],
+  };
+  function exhaustReason(agent, text) {
+    const t = String(text || '');
+    return (EXHAUST_PATTERNS[agent] || []).some(re => re.test(t))
+      ? t.replace(/\s+/g, ' ').trim().slice(0, 200) : null;
+  }
+  // fallback model lists if completion_context never arrived (offline-ish boot)
+  const FALLBACK_MODELS = {
+    claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+  };
+  const modelsFor = agent => {
+    const scoped = state.ctx.scoped || {};
+    const list = scoped[`/model @${agent} `];
+    return (Array.isArray(list) && list.length) ? list : FALLBACK_MODELS[agent];
+  };
+  // which agents a composed message actually addresses (explicit @mentions;
+  // @all — or plain text with no tag — reaches both)
+  function mentionedAgents(text) {
+    const t = String(text || '');
+    if (/@all\b/i.test(t)) return AGENTS.slice();
+    const hit = AGENTS.filter(a => new RegExp('@' + a + '\\b', 'i').test(t));
+    return hit.length ? hit : AGENTS.slice();
+  }
   // empty state gets the two participant marks side by side
   const emptyMarks = document.querySelector('.empty-marks');
   if (emptyMarks) emptyMarks.innerHTML = AGENTS.map(avatarHtml).join('');
@@ -66,6 +103,10 @@
     busy: false, queued: 0, agents: { claude: false, codex: false },
     streams: {},           // key "model:stream_id" -> {el, text}
     ctx: { global: [], scoped: {} },
+    models: { claude: null, codex: null },     // current model per agent (from status)
+    exhausted: { claude: null, codex: null },  // credit-exhaustion reason string or null
+    lastUserText: '',                          // last human turn, for "retry with @other"
+    sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
     openProjects: new Set(),
     inServerReplay: true,  // between (re)connect and the server's replay_done boundary
@@ -94,12 +135,151 @@
 
   function renderAvatars() {
     els.avatars.innerHTML = AGENTS.map(a => {
-      const name = a[0].toUpperCase() + a.slice(1);
+      const name = cap(a);
       const on = state.agents[a];
-      return `<span class="avatar-ring${on ? ' working' : ''}" style="--author:var(--${a})" title="${name}${on ? ' is working…' : ' — idle'}">${avatarHtml(a)}</span>`;
+      const ex = state.exhausted[a];
+      const tip = ex ? `${name} is out of credits — ${ex}` : `${name}${on ? ' is working…' : ' — idle'}`;
+      return `<span class="avatar-ring${on ? ' working' : ''}${ex ? ' exhausted' : ''}" style="--author:var(--${a})" title="${esc(tip)}">${avatarHtml(a)}${ex ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</span>`;
     }).join('');
   }
   renderAvatars();
+
+  // ── model switcher (sidebar) + credit-exhaustion affordances ──
+  // A compact per-agent picker: brand-mark avatar, current model, and a native
+  // <select> of that agent's available models (mobile-friendly tap target).
+  // Selecting sends "/model @<agent> <model>" through the normal input path.
+  function modelRow(a) {
+    const cur = state.models[a] || '';
+    const ex = state.exhausted[a];
+    const opts = modelsFor(a).map(m =>
+      `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    return `<div class="ms-row${ex ? ' exhausted' : ''}" data-agent="${a}">
+      <span class="ms-mark" style="--author:var(--${a})">${avatarHtml(a)}</span>
+      <div class="ms-body">
+        <div class="ms-name">${cap(a)}${ex ? '<span class="warn-badge" title="out of credits">⚠</span>' : ''}</div>
+        <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select>
+      </div></div>`;
+  }
+  function renderModelSwitcher() {
+    if (!els.modelSwitcher) return;
+    els.modelSwitcher.innerHTML =
+      '<div class="chip-label">models</div>' + AGENTS.map(modelRow).join('');
+  }
+  function switchModel(agent, model) {
+    if (!model) return;
+    // optimistic: clear the exhausted flag now, re-flag if the next turn recurs.
+    // The authoritative current model lands on the next status event.
+    clearExhausted(agent);
+    sendInput(`/model @${agent} ${model}`);
+  }
+  if (els.modelSwitcher) {
+    els.modelSwitcher.addEventListener('change', e => {
+      const sel = e.target.closest('select.ms-select');
+      if (sel) switchModel(sel.dataset.agent, sel.value);
+    });
+  }
+  renderModelSwitcher();
+
+  // current model near the status strip (compact "C:fable-5 X:sol")
+  function shortModel(m) { return String(m || '').replace(/^claude-/, '').replace(/^gpt-/, ''); }
+  function renderStatusModels() {
+    if (!els.stModel) return;
+    const bits = [];
+    if (state.models.claude) bits.push(`C ${shortModel(state.models.claude)}`);
+    if (state.models.codex) bits.push(`X ${shortModel(state.models.codex)}`);
+    els.stModel.textContent = bits.length ? '⚙ ' + bits.join(' · ') : '';
+  }
+
+  // flag/clear an agent as out-of-credits, updating avatars + switcher + notice
+  function flagExhausted(agent, reason) {
+    const was = state.exhausted[agent];
+    state.exhausted[agent] = reason;
+    renderAvatars();
+    renderModelSwitcher();
+    refreshPresendWarn();
+    if (!was) exhaustNotice(agent, reason); // one notice per exhaustion episode
+  }
+  function clearExhausted(agent) {
+    if (!state.exhausted[agent]) return;
+    state.exhausted[agent] = null;
+    renderAvatars();
+    renderModelSwitcher();
+    refreshPresendWarn();
+  }
+  // an agent's finished turn: exhaustion message → flag; any other normal
+  // output → the agent is answering again, so clear.
+  function noteAgentTurn(agent, text) {
+    if (!AGENTS.includes(agent)) return;
+    const reason = exhaustReason(agent, text);
+    if (reason) flagExhausted(agent, reason);
+    else if (String(text || '').trim()) clearExhausted(agent);
+  }
+
+  // message-level notice at the point of use: switch the model right here, or
+  // retry the last turn with the other agent. Dismissible; never blocks.
+  function exhaustNotice(agent, reason) {
+    const o = other(agent);
+    const opts = modelsFor(agent).map(m =>
+      `<option value="${esc(m)}"${m === state.models[agent] ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    const div = document.createElement('div');
+    div.className = 'msg notice exhaust';
+    div.dataset.agent = agent;
+    div.innerHTML = `<div class="notice-head">${avatarHtml(agent)}
+      <span>⚠ ${cap(agent)} is out of credits — switch its model or tag @${o}</span>
+      <button class="notice-x" title="dismiss" aria-label="dismiss">✕</button></div>
+      <div class="notice-why">${esc(reason)}</div>
+      <div class="notice-acts">
+        <label class="notice-switch">switch <select class="ms-select" data-agent="${agent}" aria-label="${cap(agent)} model">${opts}</select></label>
+        <button class="notice-retry" data-retry="${o}">↻ retry with @${o}</button>
+      </div>`;
+    div.querySelector('.notice-x').addEventListener('click', () => div.remove());
+    div.querySelector('.ms-select').addEventListener('change', e => switchModel(agent, e.target.value));
+    div.querySelector('.notice-retry').addEventListener('click', () => {
+      const body = state.lastUserText.replace(/@(claude|codex|all)\b/gi, '').trim();
+      sendInput(`@${o} ${body}`.trim());
+    });
+    const wasPinned = pinned();
+    container().appendChild(div);
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+  }
+
+  // ── pre-send exhaustion guard ──
+  // agents this text would reach that are currently out of credits: an explicit
+  // @mention of one, or (for @all / untagged text) only when EVERY reachable
+  // agent is exhausted — i.e. the message would truly go into a void.
+  function presendExhausted(text) {
+    const t = String(text || '');
+    const explicit = AGENTS.filter(a =>
+      new RegExp('@' + a + '\\b', 'i').test(t) && state.exhausted[a]);
+    if (explicit.length) return explicit;
+    const reach = mentionedAgents(t);
+    return reach.every(a => state.exhausted[a]) ? reach.filter(a => state.exhausted[a]) : [];
+  }
+  function refreshPresendWarn() {
+    if (!els.presendWarn) return;
+    if (state.sendOverride) { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
+    const flagged = presendExhausted(els.input.value);
+    if (!flagged.length) { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
+    const a = flagged[0], o = other(a);
+    const opts = modelsFor(a).map(m =>
+      `<option value="${esc(m)}"${m === state.models[a] ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    els.presendWarn.innerHTML = `<div class="pw-msg">⚠ ${cap(a)} is out of credits — it won't reply. Switch its model or tag @${o} instead.</div>
+      <div class="pw-acts">
+        <label class="notice-switch">switch <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select></label>
+        <button class="pw-tag" data-tag="${o}">tag @${o}</button>
+        <button class="pw-send">send anyway</button>
+      </div>`;
+    els.presendWarn.hidden = false;
+    els.presendWarn.querySelector('.ms-select').addEventListener('change', e => switchModel(a, e.target.value));
+    els.presendWarn.querySelector('.pw-tag').addEventListener('click', () => {
+      els.input.value = els.input.value.replace(new RegExp('@' + a + '\\b', 'gi'), '@' + o);
+      if (!new RegExp('@' + o + '\\b', 'i').test(els.input.value)) els.input.value = `@${o} ` + els.input.value.trim();
+      autosize(); refreshPresendWarn(); syncSend(); els.input.focus();
+    });
+    els.presendWarn.querySelector('.pw-send').addEventListener('click', () => {
+      state.sendOverride = true; refreshPresendWarn(); submit();
+    });
+  }
 
   function setBusy(b) {
     state.busy = b;
@@ -602,7 +782,10 @@
     });
   }
 
-  els.input.addEventListener('input', () => { autosize(); refreshCompletions(); syncSend(); });
+  els.input.addEventListener('input', () => {
+    state.sendOverride = false; // editing invalidates a prior "send anyway"
+    autosize(); refreshCompletions(); syncSend(); refreshPresendWarn();
+  });
   els.input.addEventListener('keydown', e => {
     if (!els.complete.hidden) {
       if (e.key === 'ArrowDown') { e.preventDefault(); compSel = (compSel + 1) % compItems.length; renderCompletions(); return; }
@@ -620,9 +803,19 @@
     const ready = state.atts.filter(a => a.status === 'ok');
     if (!text && !ready.length) return;
     if (state.atts.some(a => a.status === 'up')) { toast('still uploading…'); return; }
+    // never send into a void: if this turn targets an out-of-credits agent,
+    // surface the warning + switch affordance and hold the message (a slash
+    // command like /model is control traffic, never gated)
+    if (!state.sendOverride && !text.startsWith('/') && presendExhausted(text).length) {
+      refreshPresendWarn();
+      return;
+    }
+    state.sendOverride = false;
+    if (text && !text.startsWith('/')) state.lastUserText = text;
     els.input.value = '';
     autosize();
     refreshCompletions();
+    refreshPresendWarn();
     // exact bridge attachment schema — what the Ink TUI sends: {id, path, type:'image'}
     sendInput(text, ready.map(a => ({ id: a.id, path: a.path, type: 'image' })));
     clearAtts();
@@ -659,11 +852,15 @@
       case 'hello':
         if (ev.noauth && !localStorage.getItem('council-noauth-dismissed')) els.banner.hidden = false;
         break;
-      case 'room':
-        if (String(ev.speaker).toLowerCase() === 'user' && !ev.restored) break; // we echo user input ourselves
+      case 'room': {
+        const sp = String(ev.speaker).toLowerCase();
+        if (sp === 'user' && !ev.restored) break; // we echo user input ourselves
+        // a finalized agent turn is the exhaustion signal (or proof it recovered)
+        if (AGENTS.includes(sp)) noteAgentTurn(sp, ev.text);
         if (ev.stream_id && finalizeStream(ev)) break;
         addMsg(ev.speaker, ev.text);
         break;
+      }
       case 'restore':
         for (const e of ev.entries || []) addMsg(e.speaker, e.text);
         break;
@@ -679,6 +876,7 @@
         // the echo of a sidebar-initiated /resume is switch plumbing, not
         // conversation — don't paint it over the optimistic transcript
         if (state.pendingSwitch && ev.text === '/resume ' + state.pendingSwitch) { setBusy(true); break; }
+        if (ev.text && !String(ev.text).startsWith('/')) state.lastUserText = ev.text;
         addMsg('user', ev.text, { attachments: ev.attachments || [] });
         setBusy(true);
         break;
@@ -691,6 +889,12 @@
           if (ev.codex_pct != null) bits.push(`X ${ev.codex_pct}%`);
           els.stCtx.textContent = bits.join(' · ');
         }
+        // authoritative current model per agent (additive fields; older
+        // bridges omit them and the switcher just shows "—")
+        if ('claude_model' in ev) state.models.claude = ev.claude_model || null;
+        if ('codex_model' in ev) state.models.codex = ev.codex_model || null;
+        renderModelSwitcher();
+        renderStatusModels();
         break;
       case 'projects': {
         state.projects = ev;
@@ -704,6 +908,7 @@
       }
       case 'completion_context':
         state.ctx = { global: ev.global || [], scoped: ev.scoped || {} };
+        renderModelSwitcher();
         break;
       case 'ready':
         // a buffered switch replay ends at the bridge's LIVE idle boundary —
@@ -832,5 +1037,7 @@
   window.__council = {
     handle, sendInput, computeCompletions, state, els,
     fmt, sysFmt, switchTo, addFiles, submit, sessionCache,
+    renderModelSwitcher, refreshPresendWarn, presendExhausted,
+    noteAgentTurn, exhaustReason, modelsFor,
   };
 })();

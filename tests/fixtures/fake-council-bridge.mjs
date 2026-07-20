@@ -8,8 +8,8 @@ import readline from 'node:readline';
 const rxFile = process.argv[2];
 const emit = obj => process.stdout.write(JSON.stringify(obj) + '\n');
 
-emit({ type: 'completion_context', global: ['/status', '/new', '/resume', '@claude ', '@codex '], scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-4-8'] } });
-emit({ type: 'status', mode: 'chat', lead: '', route: '@all', project: 'demo', claude_pct: 12, codex_pct: 4 });
+emit({ type: 'completion_context', global: ['/status', '/new', '/resume', '@claude ', '@codex '], scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-4-8'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] } });
+emit({ type: 'status', mode: 'chat', lead: '', route: '@all', project: 'demo', claude_pct: 12, codex_pct: 4, claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' });
 emit({
   type: 'projects', active_project_id: 'p1', inbox_session_count: 2,
   projects: [{
@@ -36,6 +36,16 @@ rl.on('line', line => {
     }
     if (msg.text === '/trigger-permission') {
       emit({ type: 'permission_request', request_id: 'r1', model: 'claude', path: '/tmp/x.md', reason: 'draft' });
+      return;
+    }
+    // model switch: reflect the new current model back in a status event, as
+    // the real bridge does once the controller applies /model @agent <model>
+    const mm = /^\/model @(claude|codex) ([\w.-]+)$/.exec(String(msg.text).trim());
+    if (mm) {
+      const key = mm[1] === 'claude' ? 'claude_model' : 'codex_model';
+      emit({ type: 'status', mode: 'chat', lead: '', route: '@all', project: 'demo', claude_pct: 12, codex_pct: 4, claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol', [key]: mm[2] });
+      emit({ type: 'room', speaker: 'system', text: `model set: @${mm[1]} → ${mm[2]}`, stream_id: 'm1' });
+      emit({ type: 'ready' });
       return;
     }
     emit({ type: 'stream', kind: 'text_delta', stream_id: 's1', pane: 'room', model: 'claude', text: 'thinking about ' });

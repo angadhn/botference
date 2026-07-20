@@ -30,6 +30,8 @@ class StatusSnapshot:
     claude_window: Optional[int] = None
     codex_tokens: Optional[int] = None
     codex_window: Optional[int] = None
+    claude_model: Optional[str] = None
+    codex_model: Optional[str] = None
     observe_enabled: bool = True
 
 

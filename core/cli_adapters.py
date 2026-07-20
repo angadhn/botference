@@ -571,6 +571,17 @@ _CREDIT_ERROR_PATTERNS = (
     "purchase credits",
     "upgrade or purchase",
     "billing_error",
+    # Claude subscription spend cap (observed verbatim): "You've hit your
+    # monthly spend limit. Run /usage-credits to manage your limit…"
+    "monthly spend limit",
+    "/usage-credits",
+    # OpenAI/Codex quota exhaustion. NOTE: the exact wording is a best-guess to
+    # be refined against a real Codex quota error; kept specific to avoid
+    # matching benign tool output.
+    "insufficient_quota",
+    "exceeded your current quota",
+    "you exceeded your current quota",
+    "usage limit reached",
 )
 
 

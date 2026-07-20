@@ -317,6 +317,8 @@ class InkBridge:
             "claude_window": status.claude_window,
             "codex_tokens": status.codex_tokens,
             "codex_window": status.codex_window,
+            "claude_model": status.claude_model,
+            "codex_model": status.codex_model,
             "observe": status.observe_enabled,
         })
 

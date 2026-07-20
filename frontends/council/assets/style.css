@@ -307,6 +307,61 @@ main { position: relative }
 #complete .opt.sel, #complete .opt:hover {
   background: color-mix(in srgb, var(--accent) 9%, var(--card)) }
 
+/* ── model switcher (sidebar) ────────────────────────────── */
+#model-switcher { display: flex; flex-direction: column; gap: .45rem }
+#model-switcher .chip-label { font: .66rem var(--sans); text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted) }
+.ms-row { display: flex; align-items: center; gap: .5rem }
+.ms-mark { width: 26px; height: 26px; flex: none; border-radius: 50%; overflow: hidden;
+  display: inline-flex }
+.ms-mark .avatar { width: 100%; height: 100% }
+.ms-mark .avatar svg { width: 58%; height: 58% }
+.ms-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .15rem }
+.ms-name { font: 600 .72rem var(--sans); color: var(--heading); display: flex;
+  align-items: center; gap: .3rem }
+.ms-select { width: 100%; font: .72rem var(--sans); color: var(--fg);
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 7px;
+  padding: .3rem .4rem; min-height: 34px }
+.ms-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.ms-row.exhausted .ms-mark { opacity: .5 }
+.warn-badge { color: var(--bad); font-size: .8em; line-height: 1 }
+#st-model { color: var(--muted) }
+
+/* out-of-credits: dimmed avatar + a ⚠ corner badge */
+.avatar-ring.exhausted { opacity: .45 }
+.avatar-ring .warn-badge { position: absolute; right: -2px; bottom: -2px;
+  background: var(--card); border-radius: 50%; font-size: .7rem; padding: 0 1px;
+  box-shadow: 0 0 0 1px var(--card-line) }
+
+/* message-level exhaustion notice (at the point of use) */
+.msg.notice.exhaust { align-self: center; max-width: min(680px, 94%); width: 100%;
+  background: color-mix(in srgb, var(--bad) 8%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--card-line));
+  border-radius: 12px; padding: .7rem .85rem; font: .82rem/1.5 var(--sans) }
+.notice-head { display: flex; align-items: center; gap: .5rem; color: var(--heading);
+  font-weight: 600 }
+.notice-head .avatar { width: 22px; height: 22px; flex: none }
+.notice-head .avatar svg { width: 58%; height: 58% }
+.notice-head span { flex: 1; min-width: 0 }
+.notice-x { flex: none; border: 0; background: none; color: var(--muted); padding: .1rem .3rem }
+.notice-why { color: var(--muted); font-size: .72rem; margin: .35rem 0 .5rem;
+  overflow-wrap: anywhere }
+.notice-acts, .pw-acts { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem }
+.notice-switch { display: inline-flex; align-items: center; gap: .35rem;
+  font-size: .74rem; color: var(--muted) }
+.notice-switch .ms-select { width: auto; min-width: 140px }
+.notice-retry, .pw-tag, .pw-send { padding: .3rem .6rem; min-height: 34px }
+.notice-retry, .pw-tag { border-color: var(--accent); color: var(--accent) }
+.pw-send { color: var(--muted) }
+
+/* pre-send warning (above the composer) */
+#presend-warn { background: color-mix(in srgb, var(--bad) 9%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--card-line));
+  border-radius: 12px; padding: .6rem .8rem; margin-bottom: .5rem;
+  font: .82rem/1.5 var(--sans) }
+#presend-warn[hidden] { display: none }
+.pw-msg { color: var(--heading); font-weight: 600; margin-bottom: .45rem }
+
 /* ── backdrop + mobile ───────────────────────────────────── */
 #backdrop:not([hidden]) { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 19 }
 #side-close { display: none }

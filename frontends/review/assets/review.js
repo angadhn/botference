@@ -87,6 +87,8 @@
     // chat detection falls back to SSE events / 409s, and the out-of-band line hides
     if (typeof j.chat === 'boolean') PRESENCE.chat = j.chat;
     SRC_DIRTY = Array.isArray(j.source_dirty) ? j.source_dirty : SRC_DIRTY;
+    if (j.models) applyModelState(j.models); // model-switcher seed (additive field)
+    else renderModelSwitcher();              // reflect chat on/off even without a seed
   }
 
   // --- one-way mirror to server ---
@@ -107,11 +109,40 @@
   // activity is visible from anywhere on the page even when the active thread
   // is off-screen or on another section page.
   const AGENTS = ['claude', 'codex'];
+  const otherAgent = a => (a === 'claude' ? 'codex' : 'claude');
+  const cap = a => a[0].toUpperCase() + a.slice(1);
   const VERBS = ['crystallizing', 'architecting', 'mulling', 'drafting', 'responding', 'pondering', 'sketching', 'weighing'];
   const PRESENCE = {
     chat: null, // null = unknown (a server predating the /data "chat" field); true/false once known
     tid: null,  // target of the in-flight anchored turn, for click-to-jump
-    agents: Object.fromEntries(AGENTS.map(a => [a, { active: false, verb: '' }])),
+    agents: Object.fromEntries(AGENTS.map(a => [a, { active: false, verb: '', exhausted: null }])),
+  };
+
+  // ── credit-exhaustion detection + model-switcher state ──
+  // An agent's turn output carrying one of these is treated as "out of credits"
+  // until it produces a normal turn again. Claude's string is observed verbatim;
+  // the OpenAI/Codex variants are a best-guess to refine against a real error.
+  const EXHAUST_PATTERNS = {
+    claude: [/monthly spend limit/i, /\/usage-credits/i, /out of credits/i,
+      /credit balance (?:is )?too low/i, /insufficient credits?/i, /purchase credits/i],
+    codex: [/insufficient_quota/i, /exceeded your current quota/i,
+      /usage limit reached/i, /out of credits/i, /quota/i],
+  };
+  function exhaustReason(agent, text) {
+    const t = String(text || '');
+    return (EXHAUST_PATTERNS[agent] || []).some(re => re.test(t))
+      ? t.replace(/\s+/g, ' ').trim().slice(0, 200) : null;
+  }
+  const FALLBACK_MODELS = {
+    claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+  };
+  // scoped model lists + current per-agent model, seeded from /data and kept
+  // live by forwarded status/completion_context chat events
+  const MODELS = { scoped: {}, current: { claude: null, codex: null } };
+  const modelsFor = agent => {
+    const list = MODELS.scoped[`/model @${agent} `];
+    return (Array.isArray(list) && list.length) ? list : FALLBACK_MODELS[agent];
   };
   let sseDown = false, serverDead = false, probeTimer = null;
   function connState() {
@@ -160,11 +191,12 @@
     const av = document.getElementById('avatars');
     if (av) av.innerHTML = AGENTS.map(a => {
       const s = PRESENCE.agents[a];
-      const name = a[0].toUpperCase() + a.slice(1);
-      const tip = s.active ? `${name} is ${s.verb}… — click to jump to the thread` : `${name} — idle`;
+      const name = cap(a);
+      const tip = s.exhausted ? `${name} is out of credits — ${s.exhausted}`
+        : s.active ? `${name} is ${s.verb}… — click to jump to the thread` : `${name} — idle`;
       // white brand glyph (currentColor) on the agent's accent circle: reads
       // identically in both themes
-      return `<div class="avatar-ring${s.active ? ' working' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span></div>`;
+      return `<div class="avatar-ring${s.active ? ' working' : ''}${s.exhausted ? ' exhausted' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span>${s.exhausted ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</div>`;
     }).join('');
   }
   const pickVerb = () => VERBS[Math.floor(Math.random() * VERBS.length)];
@@ -194,6 +226,166 @@
     if (PRESENCE.chat === on) return;
     PRESENCE.chat = on;
     renderPresence();
+  }
+
+  // ── model switcher (sidebar) + credit-exhaustion affordances ──
+  const shortModel = m => String(m || '').replace(/^claude-/, '').replace(/^gpt-/, '');
+  function modelRow(a) {
+    const cur = MODELS.current[a] || '';
+    const ex = PRESENCE.agents[a].exhausted;
+    const opts = modelsFor(a).map(m =>
+      `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    return `<div class="ms-row${ex ? ' exhausted' : ''}" data-agent="${a}">
+      <span class="ms-mark" style="--author:${a === 'claude' ? 'var(--claude)' : 'var(--codex)'}"><span class="avatar">${MARKS[a] || ''}</span></span>
+      <div class="ms-body">
+        <div class="ms-name">${cap(a)}${ex ? '<span class="warn-badge" title="out of credits">⚠</span>' : ''}</div>
+        <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select>
+      </div></div>`;
+  }
+  function renderModelSwitcher() {
+    const el = document.getElementById('model-switcher');
+    if (!el) return;
+    // only meaningful in a live --chat session: shown once agents are proven
+    // attached (PRESENCE.chat === true), hidden for static exports / no --chat
+    if (PRESENCE.chat !== true) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    el.innerHTML = '<div class="chip-label">agent models</div>' + AGENTS.map(modelRow).join('');
+  }
+  // optimistic switch: clear the exhausted flag now, post the control command;
+  // the authoritative current model lands on the next status event
+  function switchModel(agent, model) {
+    if (!model || !AGENTS.includes(agent)) return;
+    clearExhausted(agent);
+    if (!LIVE) return;
+    api('/model', { method: 'POST', body: JSON.stringify({ text: `/model @${agent} ${model}` }) })
+      .then(async r => {
+        if (r.status === 409) { toast('Restart the server as: node review/server.mjs --chat', true); return; }
+        const j = await r.json().catch(() => ({}));
+        if (!j.ok) toast(`Model switch failed${j.error ? ': ' + j.error : ''}`, true);
+        else toast(`Switching ${cap(agent)} → ${shortModel(model)}…`);
+      })
+      .catch(() => toast('Model switch failed — server unreachable', true));
+  }
+  function applyModelState(models) {
+    if (!models) return;
+    if (models.scoped) MODELS.scoped = models.scoped;
+    const st = models.status;
+    if (st) {
+      if ('claude_model' in st) MODELS.current.claude = st.claude_model || null;
+      if ('codex_model' in st) MODELS.current.codex = st.codex_model || null;
+    }
+    renderModelSwitcher();
+  }
+  function flagExhausted(agent, reason, tid) {
+    if (!AGENTS.includes(agent)) return;
+    const was = PRESENCE.agents[agent].exhausted;
+    PRESENCE.agents[agent].exhausted = reason;
+    renderPresence();
+    renderModelSwitcher();
+    if (!was) exhaustNotice(agent, reason, tid); // one notice per episode
+  }
+  function clearExhausted(agent) {
+    if (!AGENTS.includes(agent) || !PRESENCE.agents[agent].exhausted) return;
+    PRESENCE.agents[agent].exhausted = null;
+    // drop any in-thread notices raised for this agent
+    for (const [id, a] of Object.entries(ACTIVITY)) {
+      if (a.notice && a.notice.agent === agent) { delete a.notice; syncActivity(id); }
+    }
+    // and any unanchored sidebar-toast notice for this agent
+    for (const el of document.querySelectorAll(`#toasts .exhaust-notice[data-agent="${agent}"]`)) {
+      const box = el.closest('.toast') || el; box.remove();
+    }
+    renderPresence();
+    renderModelSwitcher();
+  }
+  // an agent's finished turn: exhaustion message → flag; normal output → clear
+  function noteAgentTurn(agent, text, tid) {
+    if (!AGENTS.includes(agent)) return;
+    const reason = exhaustReason(agent, text);
+    if (reason) flagExhausted(agent, reason, tid);
+    else if (String(text || '').trim()) clearExhausted(agent);
+  }
+
+  let LAST_USER_TEXT = ''; // most recent human turn, for "retry with @other"
+  // notice markup (shared by the in-thread activity render + the sidebar toast):
+  // switch this agent's model right here, or retry the turn with the other agent
+  function noticeHtml(agent, reason) {
+    const o = otherAgent(agent);
+    const opts = modelsFor(agent).map(m =>
+      `<option value="${esc(m)}"${m === MODELS.current[agent] ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    return `<div class="exhaust-notice" data-agent="${esc(agent)}">
+      <div class="en-head"><span class="badge bad-badge">⚠ out of credits</span>
+        <span>${esc(cap(agent))} is out of credits — switch its model or tag @${esc(o)}</span></div>
+      ${reason ? `<div class="en-why">${esc(reason)}</div>` : ''}
+      <div class="en-acts">
+        <label class="notice-switch">switch <select class="ms-select" data-agent="${esc(agent)}" aria-label="${esc(cap(agent))} model">${opts}</select></label>
+        <button class="rebtn en-retry" data-retry="${esc(o)}">↻ retry with @${esc(o)}</button>
+      </div></div>`;
+  }
+  function exhaustNotice(agent, reason, tid) {
+    if (tid && document.querySelector(threadSel(tid))) {
+      activityOf(tid).notice = { agent, reason };
+      syncActivity(tid);
+    } else {
+      interruptToast(noticeHtml(agent, reason)); // unanchored: sidebar toast
+    }
+  }
+  // delegated handlers for notice + sidebar-switcher controls (their markup is
+  // re-injected on every render, so listeners live on the document)
+  document.addEventListener('change', e => {
+    const sel = e.target.closest('select.ms-select');
+    if (sel) { switchModel(sel.dataset.agent, sel.value); refreshComposerWarns(); }
+  });
+  document.addEventListener('click', e => {
+    const rt = e.target.closest('.exhaust-notice [data-retry]');
+    if (!rt) return;
+    e.stopPropagation();
+    const o = rt.dataset.retry;
+    const th = rt.closest('.thread');
+    const tid = th && th.dataset.thread;
+    const body = String(LAST_USER_TEXT || '').replace(/@(claude|codex|all)\b/gi, '').trim() || 'please take this turn';
+    if (tid) maybeMention(tid, `@${o} ${body}`, `retry:${tid}:${o}:${Date.now()}`);
+    else toast(`Open the thread and tag @${o} to retry.`);
+  });
+
+  // ── pre-send guard: warn BEFORE a mention is confirmed if it targets an
+  // out-of-credits agent, with the switch control right there. Never silent. ──
+  function presendExhaustedFor(text) {
+    const t = String(text || '');
+    const explicit = AGENTS.find(a => new RegExp('@' + a + '\\b', 'i').test(t) && PRESENCE.agents[a].exhausted);
+    if (explicit) return explicit;
+    if (/@all\b/i.test(t) && AGENTS.every(a => PRESENCE.agents[a].exhausted)) {
+      return AGENTS.find(a => PRESENCE.agents[a].exhausted);
+    }
+    return null;
+  }
+  function updateComposerWarn(container, ta) {
+    if (!container || !ta) return;
+    const agent = presendExhaustedFor(ta.value);
+    let warn = container.querySelector(':scope > .presend-warn');
+    if (!agent) { if (warn) warn.remove(); return; }
+    const o = otherAgent(agent);
+    if (!warn) {
+      warn = document.createElement('div');
+      warn.className = 'presend-warn';
+      const acts = container.querySelector(':scope > .acts');
+      if (acts) container.insertBefore(warn, acts); else container.appendChild(warn);
+    }
+    const opts = modelsFor(agent).map(m =>
+      `<option value="${esc(m)}"${m === MODELS.current[agent] ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    warn.innerHTML = `<span class="pw-msg">⚠ ${esc(cap(agent))} is out of credits — it won't reply. Switch its model or tag @${esc(o)}.</span>
+      <span class="pw-acts"><label class="notice-switch">switch <select class="ms-select" data-agent="${esc(agent)}" aria-label="${esc(cap(agent))} model">${opts}</select></label>
+      <button type="button" class="rebtn pw-tag" data-pw-tag="${esc(o)}">tag @${esc(o)}</button></span>`;
+    warn.querySelector('[data-pw-tag]').addEventListener('click', () => {
+      ta.value = ta.value.replace(new RegExp('@' + agent + '\\b', 'gi'), '@' + o);
+      if (!new RegExp('@' + o + '\\b', 'i').test(ta.value)) ta.value = `@${o} ` + ta.value.trim();
+      updateComposerWarn(container, ta); ta.focus();
+    });
+  }
+  function refreshComposerWarns() {
+    for (const box of document.querySelectorAll('.card.composing, .reply.composing')) {
+      updateComposerWarn(box, box.querySelector('textarea'));
+    }
   }
   function probeServer() { // SSE dropped: is the server gone, or just the stream?
     clearTimeout(probeTimer);
@@ -386,6 +578,7 @@
     // save-as-you-type mirrors text only; @mentions fire exclusively on confirm (close below)
     ta.addEventListener('input', () => {
       clearTimeout(saveTimer); saveTimer = setTimeout(persist, 500);
+      updateComposerWarn(div, ta); // warn before a mention to an exhausted agent
     });
     const close = discard => {
       clearTimeout(saveTimer);
@@ -433,6 +626,7 @@
     // save-as-you-type mirrors text only; @mentions fire exclusively on confirm (close below)
     ta.addEventListener('input', () => {
       clearTimeout(t); t = setTimeout(persist, 500);
+      updateComposerWarn(box, ta); // warn before a mention to an exhausted agent
     });
     const close = () => {
       clearTimeout(t); persist();
@@ -476,7 +670,7 @@
       if (ta.value !== orig) { cur.edited = true; cur.edited_ts = new Date().toISOString(); }
       save(d);
     };
-    ta.addEventListener('input', () => { clearTimeout(t); t = setTimeout(persist, 500); });
+    ta.addEventListener('input', () => { clearTimeout(t); t = setTimeout(persist, 500); updateComposerWarn(box, ta); });
     const close = del => {
       clearTimeout(t);
       if (del || !ta.value.trim()) {
@@ -1136,6 +1330,15 @@
   });
   foot.appendChild(imp);
 
+  // model switcher: per-agent current model + a native <select> of that agent's
+  // available models. Renders once the model state is known (live status /
+  // completion_context, or the /data seed); hidden when agents aren't attached.
+  const modelSwitcher = document.createElement('div');
+  modelSwitcher.id = 'model-switcher';
+  modelSwitcher.hidden = true;
+  foot.appendChild(modelSwitcher);
+  renderModelSwitcher();
+
   // theme control: compact segmented icon control (sun / auto / moon), inline
   // SVG only — quiet, labeled for screen readers, persisted per browser
   const THEME_ICONS = {
@@ -1303,13 +1506,14 @@
       h += `<div class="reply bot streaming" data-stream-key="${esc(key)}" style="--author:${authorColor(s.who)}"><span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">writing…</span></span><pre class="stream-text">${esc(s.text)}</pre></div>`;
     if (a.perm) h += permHtml(a.perm);
     if (a.choice) h += choiceHtml(a.choice);
+    if (a.notice) h += noticeHtml(a.notice.agent, a.notice.reason);
     if (a.msg) h += `<div class="status-chip${a.err ? ' err' : ''}">${a.msg}</div>`;
     return h;
   }
   function syncActivity(id) {
     const th = document.querySelector(threadSel(id));
     if (!th) return;
-    th.querySelectorAll(':scope > .streaming, :scope > .status-chip, :scope > .perm-card').forEach(x => x.remove());
+    th.querySelectorAll(':scope > .streaming, :scope > .status-chip, :scope > .perm-card, :scope > .exhaust-notice').forEach(x => x.remove());
     const btn = th.querySelector(':scope > .thread-reply');
     if (btn) btn.insertAdjacentHTML('beforebegin', activityHtml(id));
     const card = th.closest('.card');
@@ -1320,7 +1524,7 @@
     const a = activityOf(cardId);
     a.msg = text; a.err = !!err;
     a.working = !err && /queued|working|sending|landing|writing/i.test(text || '');
-    if (!text && !Object.keys(a.streams).length && !a.perm && !a.choice) delete ACTIVITY[cardId];
+    if (!text && !Object.keys(a.streams).length && !a.perm && !a.choice && !a.notice) delete ACTIVITY[cardId];
     syncActivity(cardId);
     // collapsed cards have no .thread for syncActivity to hit: toggle their glow directly
     const mini = document.querySelector(`.card.collapsed[data-id="${CSS.escape(cardId)}"]`);
@@ -1396,7 +1600,15 @@
   function chatEvent(m) {
     const tid = m.target_id || null;
     setChatMode(m.kind !== 'bridge-exit'); // any chat event proves --chat; a dead bridge means agents are off
+    if (m.kind === 'completion_context') {
+      applyModelState({ scoped: (m.ev || {}).scoped });
+      return;
+    } else if (m.kind === 'status') {
+      applyModelState({ status: m.ev || {} });
+      return;
+    }
     if (m.kind === 'turn-start') {
+      if (m.user_text) LAST_USER_TEXT = m.user_text;
       presenceTurnStart(tid, m.user_text);
       if (tid) { activityOf(tid).streams = {}; chip(tid, '<span class="spin">◐</span> agents are working…'); }
       // unanchored turns (e.g. server transcript notes): presence strip only
@@ -1426,6 +1638,10 @@
           const key = `${who}:${entry.stream_id ?? 0}`;
           if (!entry.text || ENV_RE.test(entry.text)) continue;
           presenceStream(who);
+          // a finalized agent turn is the credit-exhaustion signal (or proof
+          // it recovered): flag/clear the agent and raise/drop the notice
+          const agent = who.toLowerCase().includes('codex') ? 'codex' : who.toLowerCase().includes('claude') ? 'claude' : null;
+          if (agent) noteAgentTurn(agent, entry.text, tid);
           if (tid && ACTIVITY[tid] && ACTIVITY[tid].streams[key]) {
             ACTIVITY[tid].streams[key].text = entry.text;
             const el = inlineStreamEl(tid, key);
@@ -1473,4 +1689,11 @@
   render();
   window.addEventListener('load', () => setTimeout(position, 300));
   window.addEventListener('resize', position);
+
+  // exposed for the DOM test harness
+  window.__review = {
+    chatEvent, applyModelState, renderModelSwitcher, switchModel,
+    noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
+    openComposer, setChatMode, PRESENCE, MODELS,
+  };
 })();

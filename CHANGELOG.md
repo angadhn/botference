@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## 2026-07-20
+
+- **Council + review web: model switcher with credit-exhaustion
+  warnings.** Both UIs gain a compact per-agent model picker (Claude,
+  Codex) showing each agent's current model and a native `<select>` of
+  its available models, sourced from the bridge's `completion_context`
+  scoped lists (`/model @claude …`, `/model @codex …`) with a static
+  fallback. Selecting a model sends `/model @<agent> <model>` through
+  the existing input path — council via `/input`, review via a new
+  owner-only `/model` control endpoint that queues a raw control turn
+  on the bridge. Council places it in the sidebar plus a current-model
+  chip near the status strip; review places it in the sidebar with
+  presence/theme (shown only in a live `--chat` session). The `status`
+  event now carries `claude_model`/`codex_model` so the current model
+  is authoritative. When an agent's turn output signals it is out of
+  credits — Claude's "monthly spend limit" / `/usage-credits` /
+  "out of credits" strings, or the OpenAI/Codex quota variants
+  (best-guess, to refine) — that agent is flagged: its avatar dims and
+  gains a ⚠ badge, an inline notice appears at the point of use (with a
+  one-tap model switch and a "retry with @other" action), and composing
+  a mention to a flagged agent warns before sending, with the switch
+  control right there. The flag clears automatically on the agent's
+  next normal turn, and optimistically when you switch its model.
+
 ## 2026-07-19
 
 - **Council web: image upload from phone or computer.** Attach button in

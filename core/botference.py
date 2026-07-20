@@ -1270,6 +1270,8 @@ class Botference:
             claude_window=self._claude_window,
             codex_tokens=self._codex_tokens,
             codex_window=self._codex_window,
+            claude_model=getattr(self.claude, "model", None),
+            codex_model=getattr(self.codex, "model", None),
             observe_enabled=self.observe,
         )
 

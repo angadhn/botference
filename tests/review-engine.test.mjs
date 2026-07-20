@@ -646,3 +646,101 @@ test('multi-file paper: detect still finds \\input sections (regression)', async
   assert.deepEqual(cfg.figures_dirs, ['Figures']);
   assert.doesNotMatch(out, /single-file paper/);
 });
+
+// ---- model switcher + credit-exhaustion warnings (happy-dom smoke) ----------
+
+test('model switcher + credit-exhaustion warnings (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const dir = scaffold('modelswitch', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const html = readSite(dir, '00-abstract.html');
+
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  // http:// URL so review.js runs LIVE (the model switch posts to /model)
+  const w = new GlobalWindow({ url: 'http://localhost/00-abstract.html', width: 1280, height: 900 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  doc.write(html.replace(/<script[^>]*src=[^>]*>\s*<\/script>/g, ''));
+  const slug = doc.body.getAttribute('data-slug');
+  if (!w.CSS || !w.CSS.escape) w.CSS = { escape: s => String(s).replace(/[^a-zA-Z0-9_-]/g, ch => '\\' + ch) };
+  // desktop viewport: no max-width media query matches (avoids the mobile sheet)
+  w.matchMedia = q => ({ matches: false, media: q, addEventListener() { }, removeEventListener() { } });
+  w.SUGGESTIONS = [{ id: 's1', type: 'rewrite', section: slug, author: 'claude', text: 'Tighten this.', rationale: 'clarity' }];
+  w.BUILD_META = { slug: 'ms-fixture' };
+  const posts = [];
+  w.fetch = async (url, opts) => {
+    posts.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    return {
+      ok: true, status: 200,
+      json: async () => ({ me: 'ada', hosted: false, owner: true, users: { ada: {} }, threads: {},
+        suggestions: w.SUGGESTIONS, apply: { applied: {}, flagged: {}, round: null }, chat: true, ok: true }),
+    };
+  };
+  w.EventSource = class { constructor() { } close() { } };
+  w.WebSocket = class { constructor() { } close() { } send() { } };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(dir, 'review', 'site', 'assets', 'review.js'), 'utf8'), w);
+  const R = w.__review;
+  assert.ok(R, 'review exposes the DOM test harness');
+
+  // seed the model state exactly as a forwarded completion_context + status would
+  R.setChatMode(true);
+  R.applyModelState({
+    scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-4-8', 'claude-haiku-4-5'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] },
+    status: { claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' },
+  });
+  const sw = doc.getElementById('model-switcher');
+  assert.equal(sw.hasAttribute('hidden'), false, 'switcher shows once agents are attached');
+  assert.match(sw.textContent, /Claude/);
+  assert.match(sw.textContent, /Codex/);
+  const claudeSel = sw.querySelector('select.ms-select[data-agent="claude"]');
+  assert.ok(claudeSel, 'claude model <select> renders in the sidebar');
+  assert.equal(claudeSel.value, 'claude-fable-5', 'current model preselected');
+  assert.equal(claudeSel.querySelectorAll('option').length, 3, 'all scoped claude models offered');
+
+  // selecting a model posts the exact /model command
+  claudeSel.value = 'claude-opus-4-8';
+  claudeSel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 5));
+  const modelPost = [...posts].reverse().find(p => p.url === '/model');
+  assert.ok(modelPost, '/model endpoint was called');
+  assert.equal(modelPost.body.text, '/model @claude claude-opus-4-8', 'exact bridge command');
+
+  // an injected exhaustion turn flags claude: dimmed avatar + ⚠ + a notice
+  R.chatEvent({ kind: 'stream', final: true, target_id: null,
+    ev: { speaker: 'claude', stream_id: 's9', text: "You've hit your monthly spend limit. Run /usage-credits to continue." } });
+  assert.ok(R.PRESENCE.agents.claude.exhausted, 'claude flagged out of credits');
+  const ring = doc.querySelector('#avatars .avatar-ring.exhausted');
+  assert.ok(ring && ring.querySelector('.warn-badge'), 'avatar shows dimmed + ⚠ badge');
+  assert.ok(doc.querySelector('#toasts .exhaust-notice[data-agent="claude"]'), 'an exhaustion notice is surfaced');
+
+  // a subsequent normal turn clears the flag (and the notice)
+  R.chatEvent({ kind: 'stream', final: true, target_id: null,
+    ev: { speaker: 'claude', stream_id: 's10', text: 'Normal reply — everything is fine.' } });
+  assert.ok(!R.PRESENCE.agents.claude.exhausted, 'normal output clears the flag');
+  assert.ok(!doc.querySelector('#avatars .avatar-ring.exhausted'), 'avatar recovers');
+  assert.ok(!doc.querySelector('#toasts .exhaust-notice[data-agent="claude"]'), 'notice cleared');
+
+  // re-flag, then composing a mention to the flagged agent warns BEFORE sending
+  R.chatEvent({ kind: 'stream', final: true, target_id: null,
+    ev: { speaker: 'claude', stream_id: 's11', text: 'we are out of credits right now' } });
+  assert.ok(R.PRESENCE.agents.claude.exhausted);
+  const blk = doc.querySelector('#paper [data-cid]');
+  R.openComposer({ anchor: blk.dataset.cid, excerpt: '' });
+  const ta = doc.querySelector('.card.composing textarea');
+  assert.ok(ta, 'composer opened');
+  ta.value = '@claude can you revise this?';
+  ta.dispatchEvent(new w.Event('input'));
+  const warn = doc.querySelector('.card.composing .presend-warn');
+  assert.ok(warn, 'pre-send warning shows for a mention to an out-of-credits agent');
+  assert.match(warn.textContent, /out of credits/);
+  assert.ok(warn.querySelector('select.ms-select[data-agent="claude"]'), 'the switch control is right in the warning');
+  // retagging to @codex dismisses the warning
+  ta.value = '@codex can you revise this?';
+  ta.dispatchEvent(new w.Event('input'));
+  assert.ok(!doc.querySelector('.card.composing .presend-warn'), 'warning clears once the mention no longer targets the exhausted agent');
+});

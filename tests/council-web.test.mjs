@@ -745,3 +745,83 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   assert.ok(doc.getElementById('attach'), 'attach button present');
   assert.match(css, /#input\s*\{[^}]*font:\s*16px/, '16px input font (no iOS zoom-on-focus)');
 });
+
+// ------------------------------------------- UI: model switcher + exhaustion
+
+test('model switcher renders from completion_context; selecting sends /model verbatim',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  // scoped model lists seed the picker; status carries the current per-agent model
+  C.handle({ type: 'completion_context', global: ['/status'], scoped: {
+    '/model @claude ': ['claude-fable-5', 'claude-opus-4-8', 'claude-haiku-4-5'],
+    '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'],
+  } });
+  C.handle({ type: 'status', route: '@all', project: 'p', claude_pct: 10, codex_pct: 5,
+    claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' });
+  const sw = doc.getElementById('model-switcher');
+  assert.match(sw.textContent, /Claude/);
+  assert.match(sw.textContent, /Codex/);
+  const claudeSel = sw.querySelector('select.ms-select[data-agent="claude"]');
+  assert.ok(claudeSel, 'claude model <select> renders');
+  assert.equal(claudeSel.value, 'claude-fable-5', 'current model is preselected');
+  assert.equal(claudeSel.querySelectorAll('option').length, 3, 'all scoped claude models offered');
+  assert.match(doc.getElementById('st-model').textContent, /fable-5/, 'current model visible near the status strip');
+
+  // selecting a model sends the exact bridge command through the input path
+  claudeSel.value = 'claude-opus-4-8';
+  claudeSel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/model @claude claude-opus-4-8', attachments: [] } });
+});
+
+test('credit exhaustion flags the agent (avatar + notice), clears on a normal turn, and warns before send',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'completion_context', global: [], scoped: {
+    '/model @claude ': ['claude-fable-5', 'claude-opus-4-8'], '/model @codex ': ['gpt-5.6-sol'],
+  } });
+  C.handle({ type: 'status', claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' });
+
+  // an exhaustion turn from Claude (observed string) flags it out-of-credits
+  C.handle({ type: 'room', speaker: 'claude',
+    text: "You've hit your monthly spend limit. Run /usage-credits to manage your limit and keep using Fable 5 or switch models to continue this chat." });
+  assert.ok(C.state.exhausted.claude, 'claude flagged exhausted');
+  const ring = doc.querySelector('#avatars .avatar-ring.exhausted');
+  assert.ok(ring, 'avatar shows the out-of-credits state');
+  assert.ok(ring.querySelector('.warn-badge'), 'avatar carries a ⚠ badge');
+  const notice = doc.querySelector('.msg.notice.exhaust[data-agent="claude"]');
+  assert.ok(notice, 'an inline exhaustion notice appears at the point of use');
+  assert.match(notice.textContent, /out of credits/);
+  assert.ok(notice.querySelector('select.ms-select[data-agent="claude"]'), 'notice offers a one-tap model switch');
+  assert.ok(notice.querySelector('.notice-retry[data-retry="codex"]'), 'notice offers retry with @codex');
+
+  // a subsequent normal turn from Claude clears the flag
+  C.handle({ type: 'room', speaker: 'claude', text: 'Here is my normal reply, all good.' });
+  assert.equal(C.state.exhausted.claude, null, 'normal output clears the exhausted flag');
+  assert.equal(doc.querySelector('#avatars .avatar-ring.exhausted'), null, 'avatar recovers');
+
+  // re-flag, then composing a mention to the flagged agent warns BEFORE sending
+  C.handle({ type: 'room', speaker: 'claude', text: 'insufficient credits — out of credits' });
+  assert.ok(C.state.exhausted.claude);
+  const input = doc.getElementById('input');
+  input.value = '@claude please take a look';
+  input.dispatchEvent(new w.Event('input'));
+  const warn = doc.getElementById('presend-warn');
+  assert.equal(warn.hasAttribute('hidden'), false, 'pre-send warning shows for a mention to an exhausted agent');
+  assert.match(warn.textContent, /out of credits/);
+  // pressing Enter holds the message rather than sending into a void
+  const n = posts.length;
+  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(posts.length, n, 'message is held, not sent');
+  assert.equal(input.value, '@claude please take a look', 'the composed text is preserved');
+  // the "tag @codex" affordance rewrites the mention; then it sends cleanly
+  warn.querySelector('.pw-tag').click();
+  assert.match(input.value, /@codex/);
+  assert.equal(warn.hasAttribute('hidden'), true, 'warning clears once the mention no longer targets the exhausted agent');
+  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
+  await new Promise(r => setTimeout(r, 5));
+  assert.match(posts.pop().body.text, /@codex/, 'retagged message sends to the healthy agent');
+});

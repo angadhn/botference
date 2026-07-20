@@ -17,6 +17,7 @@
   <button id="new-chat">＋&ensp;New chat</button>
   <nav id="projects" aria-label="projects and chats"></nav>
   <div class="side-foot">
+    <div id="model-switcher" aria-label="agent models"></div>
     <div id="theme-toggle"></div>
   </div>
 </aside>
@@ -30,6 +31,7 @@
       <span id="st-conn" class="conn">connecting…</span>
       <span id="st-project"></span>
       <span id="st-route"></span>
+      <span id="st-model"></span>
       <span id="st-ctx"></span>
     </div>
     <div id="avatars" aria-label="participants"></div>
@@ -60,6 +62,7 @@
   <footer id="composer">
     <div class="chat-col">
       <div id="complete" role="listbox" hidden></div>
+      <div id="presend-warn" role="alert" hidden></div>
       <div id="queue-note" hidden></div>
       <div class="composer-box">
         <div id="att-strip" aria-label="attached images" hidden></div>

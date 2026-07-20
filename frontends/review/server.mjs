@@ -249,6 +249,10 @@ function mergedData(req) {
     // clients guard for their absence, so a pre-field server keeps working
     chat: !!(chat && chat.available),
     source_dirty: dirtySources(),
+    // additive (2026-07): model-switcher seed for a late-connecting client —
+    // scoped model lists + the current per-agent model. The review SSE stream
+    // doesn't replay bridge history, so this is how the picker boots.
+    models: chat ? chat.modelState() : null,
   };
 }
 
@@ -436,6 +440,16 @@ function chatEndpoint(req, res, url) {
       if ((data.text || '').length > (CFG.bridge?.mention_max_chars || 4000)) throw new Error('too long');
       if (url === '/permission') { chat.answerPermission(data); res.writeHead(200, JSON_HEAD).end('{"ok":true}'); return; }
       if (url === '/choice') { chat.answerChoice(data); res.writeHead(200, JSON_HEAD).end('{"ok":true}'); return; }
+      if (url === '/model') {
+        // owner-only (gated above): a model switch is a control turn, not a
+        // mention. Strictly validate the shape so only /model @agent <model>
+        // ever reaches the bridge stdin.
+        if (!/^\/model @(claude|codex) [\w.-]+$/.test(String(data.text || '').trim())) {
+          res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"bad model command"}'); return;
+        }
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify(chat.control(String(data.text).trim())));
+        return;
+      }
       if (url === '/mention') {
         if (!/@(claude|codex|all)\b/i.test(data.text || '')) {
           res.writeHead(200, JSON_HEAD).end('{"queued":false,"reason":"no @claude/@codex/@all tag"}'); return;
@@ -508,7 +522,7 @@ export function handler(req, res) {
     res.writeHead(200, JSON_HEAD).end(JSON.stringify(readJSON(userFile(HANDLE), {})));
     return;
   }
-  if (req.method === 'POST' && (url === '/mention' || url === '/chatbox' || url === '/permission' || url === '/choice')) {
+  if (req.method === 'POST' && (url === '/mention' || url === '/chatbox' || url === '/permission' || url === '/choice' || url === '/model')) {
     chatEndpoint(req, res, url);
     return;
   }

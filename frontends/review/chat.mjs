@@ -25,6 +25,20 @@ export class BridgeChat {
     this.seen = new Set(this.completed);
     this.startedAt = new Date().toISOString(); // thread entries older than this never trigger bot-tag summons
     this.botTagCount = {};                     // per-thread depth cap, reset by the next human turn on the thread
+    // last model-picker context + status snapshot from the bridge. The review
+    // SSE stream doesn't replay bridge history, so a client connecting after
+    // startup gets these via /data (modelState) rather than a live event.
+    this.lastCtx = null;
+    this.lastStatus = null;
+  }
+
+  // model-switcher state for a late-connecting client (served in /data):
+  // the scoped model lists + the current per-agent model/route/context.
+  modelState() {
+    return {
+      scoped: (this.lastCtx && this.lastCtx.scoped) || null,
+      status: this.lastStatus || null,
+    };
   }
 
   // workspace root = nearest ancestor with project.json (never the paper repo itself unless it has one)
@@ -95,10 +109,17 @@ export class BridgeChat {
     // botference room would otherwise hand the bridge that room's stale
     // workspace paths and its tmux transport, neither of which apply here
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BOTFERENCE_')));
+    // Grant the bridge write access to the review dir + paper root, so the
+    // bots can append threads.json / ack.json etc. even when the paper lives
+    // OUTSIDE the botference workspace (project root). Without this the room
+    // preamble's writable roots exclude the paper and every bot reply stalls
+    // on a <write-access-request> that nothing in this flow grants.
+    const extraRoots = [this.review, path.resolve(this.review, '..')].join(',');
     this.proc = spawn('python3', [path.join(home, 'core', 'botference_ink_bridge.py'),
       '--system-prompt-file', sys, '--task-file', task], {
       cwd: home,
-      env: { ...env, BOTFERENCE_HOME: home, BOTFERENCE_PROJECT_ROOT: this.projectRoot(), BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic' },
+      env: { ...env, BOTFERENCE_HOME: home, BOTFERENCE_PROJECT_ROOT: this.projectRoot(),
+        BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: extraRoots, BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let buf = '';
@@ -142,6 +163,19 @@ export class BridgeChat {
     if (ev.type === 'stream' || ev.type === 'room') {
       // 'room' is the canonical batch for text already streamed: mark final so the UI replaces
       this.onEvent({ kind: 'stream', final: ev.type === 'room', target_id: this.current?.target_id || null, ev });
+      return;
+    }
+    // model-switcher plumbing: the scoped model lists + the current per-agent
+    // model/route/context. Cached for late-connecting clients (/data) and
+    // forwarded live so the picker reflects a switch as soon as it lands.
+    if (ev.type === 'completion_context') {
+      this.lastCtx = ev;
+      this.onEvent({ kind: 'completion_context', ev });
+      return;
+    }
+    if (ev.type === 'status') {
+      this.lastStatus = ev;
+      this.onEvent({ kind: 'status', ev });
       return;
     }
     if (ev.type === 'permission_request' || ev.type === 'permission_cleared') {
@@ -201,6 +235,16 @@ export class BridgeChat {
     this.queue.push({ target_id: target_id || null, mention_id, author, user_text: text, text: this.compose({ target_id, author, text }) });
     this.pump();
     return { queued: true, position: this.queue.length + (this.current ? 1 : 0) };
+  }
+
+  // control turn (e.g. "/model @claude claude-opus-4-8"): a raw slash command,
+  // no protocol envelope and no target thread. Queued like any turn so it never
+  // interleaves with one in flight; the bridge's quick reply + ready settle it.
+  control(text) {
+    if (!this.available) return { ok: false, reason: 'agent bridge is not running — restart the server with --chat' };
+    this.queue.push({ target_id: null, mention_id: null, author: null, user_text: null, text });
+    this.pump();
+    return { ok: true };
   }
 
   compose({ target_id, author, text }) {
