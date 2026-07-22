@@ -103,7 +103,8 @@ function paperTitle() {
       if (t) return t;
     }
   } catch { }
-  return 'Document review';
+  const folder = path.basename(ROOT).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return folder || 'Document review';
 }
 const GATE_TITLE = HOSTED ? paperTitle() : '';
 // minimal password gate, theme-consistent with assets/style.css in both schemes

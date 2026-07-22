@@ -48,11 +48,12 @@ if (main) {
   const mainSrc = stripComments(read(path.join(ROOT, main)));
 
   // masthead title: build.mjs parses \title{} from the master each build; when
-  // the paper has none, emit an empty "title" for the user to fill in (an
-  // explicit config title always wins over the \title parse). Never guessed.
+  // the paper has none, derive one from the folder name so a fresh
+  // `botference review` never renders a blank masthead (an explicit config
+  // title always wins over the \title parse; edit it to rename).
   if (!/\\title\s*\{/.test(mainSrc)) {
-    cfg.title = '';
-    notes.push('no \\title{} in the master — the masthead will be empty; set "title" in review/review.config.json to name the paper');
+    cfg.title = prettify(ROOT);
+    notes.push(`no \\title{} in the master — masthead titled "${cfg.title}" from the folder name; edit "title" in review/review.config.json to change it`);
   }
 
   // sections from \input/\include order
@@ -170,7 +171,9 @@ if (main) {
     return { file: f, title: (m && m[1].trim()) || prettify(f) };
   });
   cfg.figures_dirs = [['Figures', 'figures', 'images', 'img'].find(d => fs.existsSync(path.join(ROOT, d))) || 'Figures'];
+  cfg.title = (cfg.sections[0] && cfg.sections[0].title) || prettify(ROOT);
   notes.push('no LaTeX master found — falling back to markdown sections');
+  notes.push(`masthead titled "${cfg.title}"; edit "title" in review/review.config.json to change it`);
 }
 
 // free port, scanned from 4180 (4177 is the conventional first deployment)

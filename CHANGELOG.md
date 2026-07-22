@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 2026-07-22
+
+- **Review masthead titles are never blank.** `botference review` on a
+  document without `\title{}` used to scaffold `"title": ""` and render
+  no masthead ("never guessed" policy, retired). Detect now derives a
+  title — markdown H1, else the humanized folder name — and says so in
+  its summary; the builder applies the same fallback at build time, so
+  existing deployments pick it up via `botference review --upgrade`
+  without config edits. An explicit config `title` still wins, and
+  `"title": false` opts out of the masthead entirely. The hosted-mode
+  gate page uses the same fallback instead of "Document review".
+
 ## 2026-07-20
 
 - **Council + review web: model switcher with credit-exhaustion

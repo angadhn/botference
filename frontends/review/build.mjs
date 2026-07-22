@@ -328,6 +328,23 @@ if (CFG.title) {
     if (arg) PAPER_TITLE = cleanTitle(arg.text.replace(/(?<!\\)%[^\n]*/g, ''));
   } catch { }
 }
+if (!PAPER_TITLE && CFG.title !== false) {
+  // Never render a blank masthead: fall back to the first markdown H1,
+  // else the humanized folder name. Set "title": false to opt out.
+  if (CFG.format === 'markdown' && SECTIONS.length) {
+    try {
+      const first = fs.readFileSync(path.join(ROOT, SECTIONS[0].file), 'utf8');
+      const h1 = /^#\s+(.+)$/m.exec(first);
+      if (h1) PAPER_TITLE = h1[1].trim()
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    } catch { }
+  }
+  if (!PAPER_TITLE) {
+    PAPER_TITLE = path.basename(ROOT).replace(/\.(tex|md)$/, '')
+      .replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+}
 
 const NAV = SECTIONS.map(s => `<a href="${s.slug}.html" data-slug="${s.slug}">${s.title}</a>`).join('\n');
 // data-cid makes the title selectable/commentable like body blocks; it lives

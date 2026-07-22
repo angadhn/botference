@@ -9,7 +9,7 @@ Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-spe
 | `slug` | short project id; keys browser storage and exports |
 | `format` | `latex` · `markdown` — selects the renderer |
 | `main` | master file (LaTeX: the `\documentclass` file; paper title is parsed from it each build) |
-| `title` | optional masthead override; wins over the `\title{}` parse. Detect emits `"title": ""` when the master has no `\title{}` — fill it in to name the paper |
+| `title` | optional masthead override; wins over the `\title{}` parse. When the master has no `\title{}`, detect derives one (markdown H1, else the humanized folder name) so the masthead is never blank — edit it to rename. Set `"title": false` to render no masthead at all |
 | `sections` | ordered `[{file, title, split?}]`. A LaTeX file containing **two or more `\section` commands is auto-split at build time** into one page per section (single-file papers): content between `\begin{document}` and the first `\section` becomes an Abstract/Front Matter page, and each chunk is re-wrapped with the preamble so `\newcommand` macros keep working. The split is recomputed from the source every build (nothing stored); set `"split": false` on an entry to opt out |
 | `bib` | list of `.bib` files (optional) |
 | `abbreviations` | file defining `\newacronym` (optional) |

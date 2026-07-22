@@ -395,7 +395,7 @@ test('apply engine: whitespace-tolerant unique-span replacement', async t => {
   assert.doesNotMatch(after, /optimal trajectories/);
 });
 
-test('masthead title: config "title" wins; detect notes a missing \\title{}', async t => {
+test('masthead title: config "title" wins; no-\\title{} papers derive one from the folder', async t => {
   const dir = scaffold('title', {
     'main.tex': `\\documentclass{article}
 \\begin{document}
@@ -412,7 +412,11 @@ Second, see~\\ref{sec:one}.
   assert.match(out, /no \\title\{\} in the master/);
   const cfgFile = path.join(dir, 'review', 'review.config.json');
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
-  assert.equal(cfg.title, '');
+  // Derived from the (mkdtemp) folder name — humanized, never empty.
+  const expected = path.basename(dir).replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+  assert.equal(cfg.title, expected);
+  assert.match(out, /masthead titled/);
   cfg.title = 'A Hand-Named Paper';
   fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 1));
   installEngine(dir);
@@ -420,6 +424,47 @@ Second, see~\\ref{sec:one}.
   const page = readSite(dir, '01-one.html');
   assert.match(page, /class="masthead"[^>]*>A Hand-Named Paper</);
   assert.match(page, /assets\/span-match\.js/); // matcher ships on every page
+});
+
+test('masthead title: legacy "title": "" configs get the folder-name fallback at build; "title": false opts out', async t => {
+  const dir = scaffold('title-legacy', {
+    'main.tex': `\\documentclass{article}
+\\begin{document}
+Body before sections.
+\\section{One}
+First.
+\\section{Two}
+Second.
+\\end{document}
+`,
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  const cfgFile = path.join(dir, 'review', 'review.config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  cfg.title = ''; // the shape old detect versions scaffolded (e.g. pre-fix deployments)
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 1));
+  installEngine(dir);
+  runBuild(dir);
+  const humanized = path.basename(dir).replace(/[-_]+/g, ' ').trim();
+  assert.match(readSite(dir, '01-one.html'),
+    new RegExp(`class="masthead"[^>]*>${humanized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}<`));
+
+  cfg.title = false; // explicit opt-out: no masthead at all
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 1));
+  runBuild(dir);
+  assert.doesNotMatch(readSite(dir, '01-one.html'), /class="masthead"/);
+});
+
+test('masthead title: markdown docs take the first H1', async t => {
+  const dir = scaffold('title-md', {
+    'notes.md': '# Soft Robotics Field Notes\n\nSome prose.\n',
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const out = runDetect(dir);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.equal(cfg.title, 'Soft Robotics Field Notes');
+  assert.match(out, /masthead titled "Soft Robotics Field Notes"/);
 });
 
 const hasTool = (cmd, flag = '--version') => {
