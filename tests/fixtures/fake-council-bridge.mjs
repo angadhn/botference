@@ -38,6 +38,13 @@ rl.on('line', line => {
       emit({ type: 'permission_request', request_id: 'r1', model: 'claude', path: '/tmp/x.md', reason: 'draft' });
       return;
     }
+    if (msg.text === '/trigger-clear') {
+      // resume/new-chat shape: clear_panes wipes the server's event history
+      emit({ type: 'clear_panes' });
+      emit({ type: 'room', speaker: 'system', text: 'fresh chat' });
+      emit({ type: 'ready' });
+      return;
+    }
     // model switch: reflect the new current model back in a status event, as
     // the real bridge does once the controller applies /model @agent <model>
     const mm = /^\/model @(claude|codex) ([\w.-]+)$/.exec(String(msg.text).trim());

@@ -2,6 +2,20 @@
 
 ## 2026-07-22
 
+- **Council web: slash-command autocomplete no longer goes dark.** The
+  bridge emits `completion_context` exactly once at startup, and the
+  server kept it only in the replayable event history — which chat
+  switches wipe (`clear_panes`) and long chats front-trim, so any page
+  load after either replayed a history without it and `/` suggested
+  nothing. The server now pins the latest `completion_context` outside
+  history and replays it to every client on connect (SSE and WS), and
+  the client seeds a built-in fallback command list (mirroring
+  `get_completion_context()`) so completions work even against an
+  older running server — a browser refresh is enough, no server or
+  tunnel restart. Notably restores discoverability of `/agents on`,
+  the per-chat grant that lets the web council's Claude spawn
+  subagents (e.g. steering Opus workers) mid-session.
+
 - **Review masthead titles are never blank.** `botference review` on a
   document without `\title{}` used to scaffold `"title": ""` and render
   no masthead ("never guessed" policy, retired). Detect now derives a

@@ -154,6 +154,21 @@ test('POST /input reaches the bridge verbatim; SSE relays echo, stream, and fina
   assert.equal(deltas.map(d => d.text).join(''), 'thinking about your message');
 });
 
+test('completion_context is pinned: replayed to clients that connect after a clear_panes history wipe', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  // let the bridge's startup burst land, then wipe the history (resume shape)
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'ready'));
+  await post(s.base, '/input', { text: '/trigger-clear' });
+  const events = await sseUntil(s.base, evs =>
+    evs.some(e => e.type === 'room' && /fresh chat/.test(e.text)));
+  // a client connecting AFTER the wipe still gets the completion context
+  // (pinned outside history), so slash autocomplete survives chat switches
+  const ctx = events.find(e => e.type === 'completion_context');
+  assert.ok(ctx, 'completion_context replayed post-wipe');
+  assert.ok(ctx.global.includes('/status'));
+});
+
 test('choice and permission requests round-trip through /choice and /permission', async t => {
   const s = await startServer();
   t.after(s.stop);
@@ -370,6 +385,12 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   await new Promise(r => setTimeout(r, 10));
   assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume abc12345', attachments: [] } });
   C.state.pendingSwitch = null; // settle the in-flight switch for the rest of the smoke
+
+  // before any completion_context arrives, the seeded fallback still
+  // completes slash commands (a client can otherwise boot with an empty ctx
+  // when the server's history no longer holds the bridge's startup event)
+  assert.equal(JSON.stringify(C.computeCompletions('/agent')), JSON.stringify(['/agents']));
+  assert.equal(JSON.stringify(C.computeCompletions('/effort @claude xh')), JSON.stringify(['/effort @claude xhigh']));
 
   // completion popover: entries from a fake completion_context
   C.handle({ type: 'completion_context', global: ['/status', '/new', '/style-nope'], scoped: { '/model @claude ': ['claude-fable-5'] } });

@@ -181,6 +181,11 @@ const clients = new Set();     // SSE responses
 const wsClients = new Set();   // WebSocket connections (primary through tunnels)
 const history = [];
 const HISTORY_MAX = 4000;
+// completion_context is pinned outside history: the bridge emits it exactly
+// once at startup, so leaving it in a buffer that gets wiped on chat switches
+// and front-trimmed in long chats means late-connecting clients lose
+// slash-command autocomplete. It is replayed to every client on connect.
+let pinnedCtx = null;
 function pushHistory(ev) {
   if (ev.type === 'stream' && ev.kind === 'text_delta') {
     const last = history[history.length - 1];
@@ -193,8 +198,8 @@ function pushHistory(ev) {
   history.push(ev);
   if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX);
 }
-function broadcast(ev) {
-  pushHistory(ev);
+function broadcast(ev, record = true) {
+  if (record) pushHistory(ev);
   const json = JSON.stringify(ev);
   const line = `data: ${json}\n\n`;
   for (const res of clients) res.write(line);
@@ -264,6 +269,11 @@ class Bridge {
     });
   }
   handle(ev) {
+    if (ev.type === 'completion_context') {
+      pinnedCtx = ev;
+      broadcast(ev, false); // pinned + replayed on connect, never in history
+      return;
+    }
     // default-deny/dismiss timers: an unanswered permission is denied and an
     // unanswered choice dismissed after 120s, so a walked-away browser can
     // never jam the turn queue (mirrors the review frontend's behavior)
@@ -431,6 +441,7 @@ export function handler(req, res) {
   if (req.method === 'GET' && url === '/events') {
     sseOpen(res);
     res.write(`data: ${JSON.stringify(helloEvent())}\n\n`);
+    if (pinnedCtx) res.write(`data: ${JSON.stringify(pinnedCtx)}\n\n`);
     for (const ev of history) res.write(`data: ${JSON.stringify(ev)}\n\n`);
     // explicit replay boundary: the client pins the transcript to the bottom
     // here instead of trusting per-event scroll heuristics during replay
@@ -509,6 +520,7 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
     authorize: authorized,
     onOpen(ws) {
       ws.send(JSON.stringify(helloEvent()));
+      if (pinnedCtx) ws.send(JSON.stringify(pinnedCtx));
       for (const ev of history) ws.send(JSON.stringify(ev));
       // same replay boundary as /events: the client pins to bottom here
       ws.send(JSON.stringify({ type: 'replay_done', count: history.length }));

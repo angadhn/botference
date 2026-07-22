@@ -81,6 +81,30 @@
     claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
   };
+  // fallback completion context: the bridge emits completion_context exactly
+  // once at startup, so a client that connects after the server's history was
+  // wiped (chat switch) or front-trimmed (long chat) never receives it — and
+  // without one, slash-command autocomplete goes dark. Seed the mirror of
+  // core/botference.py get_completion_context(); the live event replaces it
+  // wholesale whenever it does arrive.
+  const FALLBACK_CTX = {
+    global: [
+      '/lead @claude', '/lead @codex', '/relay @claude', '/relay @codex',
+      '/tag @claude', '/tag @codex', '/model @claude', '/model @codex',
+      '/effort @claude', '/effort @codex', '/compact @claude', '/compact @codex',
+      '/goal @claude', '/goal @codex',
+      '/projects', '/project', '/adopt', '/new', '/file', '/add-to-project',
+      '/delete', '/draft', '/finalize', '/resume', '/rename', '/permissions',
+      '/status', '/notify', '/agents', '/auth', '/current-model', '/current',
+      '/help', '/quit', '/exit', '@claude ', '@codex ', '@all ',
+    ],
+    scoped: {
+      '/model @claude ': FALLBACK_MODELS.claude,
+      '/model @codex ': FALLBACK_MODELS.codex,
+      '/effort @claude ': ['low', 'medium', 'high', 'xhigh'],
+      '/effort @codex ': ['minimal', 'low', 'medium', 'high', 'max'],
+    },
+  };
   const modelsFor = agent => {
     const scoped = state.ctx.scoped || {};
     const list = scoped[`/model @${agent} `];
@@ -102,7 +126,7 @@
   const state = {
     busy: false, queued: 0, agents: { claude: false, codex: false },
     streams: {},           // key "model:stream_id" -> {el, text}
-    ctx: { global: [], scoped: {} },
+    ctx: FALLBACK_CTX,
     models: { claude: null, codex: null },     // current model per agent (from status)
     exhausted: { claude: null, codex: null },  // credit-exhaustion reason string or null
     lastUserText: '',                          // last human turn, for "retry with @other"
