@@ -1362,17 +1362,26 @@
   }
 
   function position() {
-    let cursor = 72; // clear the avatar pill: no card starts under it at scroll-top
-    pageCards().forEach(c => {
+    // Collect each card's desired top FIRST, then sweep in DOCUMENT order.
+    // Sweeping in list order breaks the whole margin: the cursor only ever
+    // moves down, so one early-processed card anchored low on the page
+    // shoves every later card — even ones anchored to the first paragraph —
+    // below it, stacking the margin far under the prose.
+    const placed = pageCards().map(c => {
       const el = document.querySelector(`.card[data-id="${c.id}"]`);
-      if (!el) return;
+      if (!el) return null;
       const anchor = document.getElementById(c.id)
         || document.querySelector(`mark.user-hl[data-card-id="${c.id}"]`)
         || document.querySelector(`[data-cid="${c.anchor}"]`);
-      const top = anchor ? anchor.getBoundingClientRect().top + window.scrollY - 60 : cursor;
-      el.style.top = Math.max(top, cursor) + 'px';
-      cursor = Math.max(top, cursor) + el.offsetHeight + 10;
-    });
+      const top = anchor ? anchor.getBoundingClientRect().top + window.scrollY - 60 : Infinity;
+      return { el, top };
+    }).filter(Boolean).sort((a, b) => a.top - b.top); // anchorless sink to the end
+    let cursor = 72; // clear the avatar pill: no card starts under it at scroll-top
+    for (const p of placed) {
+      const top = p.top === Infinity ? cursor : p.top;
+      p.el.style.top = Math.max(top, cursor) + 'px';
+      cursor = Math.max(top, cursor) + p.el.offsetHeight + 10;
+    }
   }
 
   // focus a thread: expands its card (collapsing any other), highlights its
