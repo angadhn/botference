@@ -1382,6 +1382,11 @@
       p.el.style.top = Math.max(top, cursor) + 'px';
       cursor = Math.max(top, cursor) + p.el.offsetHeight + 10;
     }
+    // absolutely-positioned cards add no height to the page, so a stack
+    // taller than the prose runs past the scrollable end and its tail can
+    // never be brought fully into view — grow the margin column to hold it
+    const m = document.getElementById('margin');
+    if (m) m.style.minHeight = (cursor + 32) + 'px';
   }
 
   // focus a thread: expands its card (collapsing any other), highlights its

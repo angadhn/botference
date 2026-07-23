@@ -177,6 +177,12 @@ body.spotlight .has-card:not(.focused-anchor) {
 body.spotlight del.tc-del:not(.focused), body.spotlight ins.tc-ins:not(.focused) { opacity: .55 }
 .card.collapsed { cursor: pointer; padding: .4rem .6rem }
 .card.collapsed .mini { display: flex; flex-wrap: wrap; gap: .1rem .4rem; align-items: baseline; font: .72rem/1.45 var(--sans) }
+/* GDocs-dense collapse: quote rides the author line (ellipsized) and the
+   redundant "view thread" row hides — the whole card is the click target —
+   so a collapsed card is two compact lines, not four. Keeps tall stacks
+   near their anchors instead of sprawling far past the prose. */
+.card.collapsed .mini-quote { flex: 1 1 auto; flex-basis: auto; min-width: 0 }
+.card.collapsed .mini-thread { display: none }
 .mini .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--author, var(--muted)); flex: none; align-self: center }
 .mini-author { font-weight: 700; text-transform: uppercase; font-size: .64rem; letter-spacing: .05em; color: var(--author, var(--muted)) }
 .mini .badge { margin-left: 0 }
