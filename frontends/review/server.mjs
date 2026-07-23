@@ -238,9 +238,15 @@ const isOwner = req => !HOSTED || isLocalDirect(req)
 // cookie is, and the owner's handle still requires the owner token.
 function who(req) {
   if (!HOSTED) return HANDLE;
+  // localhost IS the owner — unconditionally. Whatever handle the browser
+  // believes it has (stale localStorage from gate testing, a drifted cookie),
+  // requests on the bare loopback port are the owner's: labeled as them,
+  // written to their file. This closes the clone loop server-side instead of
+  // trusting every open tab to have picked up the client-side repair.
+  if (isLocalDirect(req)) return HANDLE;
   const h = sanitizeHandle(req.headers['x-review-handle'])
     || sanitizeHandle(decodeURIComponent(cookieOf(req, 'review_handle') || ''));
-  if (!h) return isLocalDirect(req) ? HANDLE : null; // localhost needs no picker: it is the owner
+  if (!h) return null;
   if (h === HANDLE && !isOwner(req)) return null; // nobody impersonates the owner's handle
   return h;
 }
