@@ -182,7 +182,10 @@ body.spotlight del.tc-del:not(.focused), body.spotlight ins.tc-ins:not(.focused)
    so a collapsed card is two compact lines, not four. Keeps tall stacks
    near their anchors instead of sprawling far past the prose. */
 .card.collapsed .mini-quote { flex: 1 1 auto; flex-basis: auto; min-width: 0 }
-.card.collapsed .mini-thread { display: none }
+/* the expand affordance ("N replies · more ›") rides the END of the author
+   line, right-aligned — truncation is never silent, and replies are counted,
+   without paying a third row for it */
+.card.collapsed .mini-thread { flex: 0 0 auto; flex-basis: auto; margin-left: auto; white-space: nowrap }
 .mini .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--author, var(--muted)); flex: none; align-self: center }
 .mini-author { font-weight: 700; text-transform: uppercase; font-size: .64rem; letter-spacing: .05em; color: var(--author, var(--muted)) }
 .mini .badge { margin-left: 0 }

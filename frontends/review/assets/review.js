@@ -1081,7 +1081,7 @@
       <span class="badge st-${esc(st)}">${esc(st)}</span>${(ACTIVITY[c.id] || {}).working ? '<span class="spin">◐</span>' : ''}
       ${excerpt ? `<span class="mini-quote">“${esc(excerpt)}”</span>` : ''}
       ${lastLine ? `<span class="mini-last">${esc(lastLine)}</span>` : ''}
-      <span class="mini-thread">view thread${th.length ? ` · ${th.length} repl${th.length === 1 ? 'y' : 'ies'}` : ''} ›</span>
+      <span class="mini-thread">${th.length ? `${th.length} repl${th.length === 1 ? 'y' : 'ies'} · ` : ''}more ›</span>
     </div>`;
   }
 
