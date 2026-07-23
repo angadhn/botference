@@ -219,7 +219,13 @@ The planning council also runs as a chat web app (claude.ai-shaped:
 sidebar with projects and chats, streaming transcript, slash commands
 with autocomplete, choice/permission cards inline, image attachments —
 attach button/paste/drag-drop on desktop, camera or photo library on
-iOS — plus clickable links and tap-to-copy password chips):
+iOS — plus clickable links and tap-to-copy password chips). When Claude
+spawns subagents (the `Task` tool), an inline **progress lane** in the
+turn shows one live row per subagent — status dot, label, elapsed clock,
+and latest tool activity — collapsing to a summary when each finishes.
+The open chat is reflected in the URL as `#/chat/<session-id>`, so the
+address bar is a shareable per-chat link; opening it reopens that chat
+(an unknown id falls back to the current one):
 
 ```bash
 botference plan --web       # serve locally, open the printed URL
@@ -514,6 +520,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Review rounds run in the council like free-form turns: the reviewer's footer can end rounds early (`converged` — sign-off, no revision needed) or pause the draft and hand the floor to you (`blocked`), and typing mid-draft pauses at the next round boundary. Reviewer comments are saved beside the plan in the Botference state directory. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
 | `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
+| `/autorelay [on\|off]` | Toggle **auto-relay**. When a model's context occupancy crosses 50% of its window, botference relays it automatically (same handoff machinery as `/relay`) before its next turn — never mid-turn or mid free-form thread. On by default; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. In the web council, a sidebar toggle mirrors this. No argument flips the current state. |
 | `/projects` | List project folders under `projects/` and show the active project marker, status, priority, chat count, and next action when known. |
 | `/project [open <id>\|clear\|current\|create <title>\|create-from-chat]` | Set, clear, show, or create the current project context. The status bar and Projects panel show the selected project; `Inbox` means no project is selected. |
 | `/project assign [<session-id-prefix>] <project-id>` | File this chat (or any saved one) under a project **without** switching the active context. Writes only to `projects/session-index.json`. |
@@ -698,6 +705,16 @@ starts a fresh session in the same running controller.
 - Successful relays keep only a timestamped history copy under the project-local Botference handoff history directory.
 - Fresh `./botference plan` launches do not auto-load persisted handoff notes.
 - The live `handoff-claude.md` and `handoff-codex.md` files are failure-only artifacts used to preserve a retry payload if the immediate restart fails.
+
+**Auto-relay.** By default, botference watches each model's context occupancy
+and relays it automatically once it crosses **50%** of its context window,
+using the same handoff machinery as `/relay`. The relay is always deferred to a
+safe boundary — it never fires mid-turn or inside a free-form bot-to-bot thread;
+it lands before that model's next turn (or immediately after the current thread
+ends). It re-arms only after occupancy falls back below the threshold, so a
+single crossing triggers exactly one relay. Disable it with `/autorelay off`
+(TUI) or the Auto-relay toggle in the web council sidebar; the setting persists
+per-user, and the pending flag survives restarts alongside the session.
 
 ### Resume and crash recovery
 

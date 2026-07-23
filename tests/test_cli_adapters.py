@@ -26,6 +26,7 @@ from cli_adapters import (
     CodexAdapter,
     ToolSummary,
     is_credit_error,
+    _agent_label,
     _read_jsonl_lines,
     _stream_json_user_message,
     _truncate,
@@ -165,6 +166,25 @@ class TestTruncate:
 
     def test_long_string_truncated(self):
         assert _truncate("abcdef", 3) == "abc..."
+
+
+# ── _agent_label tests (subagent progress lane) ──────────────
+
+
+class TestAgentLabel:
+    def test_prefers_description(self):
+        assert _agent_label({"description": "research the codebase",
+                             "subagent_type": "general"}) == "research the codebase"
+
+    def test_falls_back_to_subagent_type(self):
+        assert _agent_label({"subagent_type": "code-reviewer"}) == "code-reviewer"
+
+    def test_truncates_long_description(self):
+        assert _agent_label({"description": "x" * 80}) == "x" * 60 + "..."
+
+    def test_default_when_no_identifying_field(self):
+        assert _agent_label({"prompt": "do a thing"}) == "subagent"
+        assert _agent_label(None) == "subagent"
 
 
 # ── Claude interactive tmux helpers ─────────────────────────

@@ -528,6 +528,20 @@ def _truncate(s: str, limit: int = 120) -> str:
     return s if len(s) <= limit else s[:limit] + "..."
 
 
+def _agent_label(tool_input: Any) -> str:
+    """Short label for a Claude Code Task/Agent subagent, from its tool input.
+
+    The Task tool_use carries a human-written ``description`` (falling back to
+    the ``subagent_type``); the frontend names the progress-lane row with it.
+    """
+    if isinstance(tool_input, dict):
+        for key in ("description", "subagent_type", "name"):
+            val = str(tool_input.get(key) or "").strip()
+            if val:
+                return _truncate(val, 60)
+    return "subagent"
+
+
 # Provider error fragments that mean "the conversation no longer fits the context
 # window". Detecting these lets the controller surface an actionable relay (which,
 # with the bounded backfill, now succeeds) instead of dead-ending on an opaque CLI
@@ -826,6 +840,9 @@ class ClaudeAdapter:
                 if etype == "assistant":
                     message = event.get("message", {})
                     message_id = message.get("id", "")
+                    # Subagent attribution: set on events a Claude Code Task/Agent
+                    # spawns; empty ("" / None) for the main agent's own turn.
+                    parent_id = event.get("parent_tool_use_id") or ""
                     for index, block in enumerate(message.get("content", [])):
                         btype = block.get("type", "")
                         if btype == "text":
@@ -863,13 +880,23 @@ class ClaudeAdapter:
                             )
                             pending_tools[tool_id] = ts
                             tool_summaries.append(ts)
-                            self._emit_stream({
+                            start_ev = {
                                 "kind": "tool_start",
                                 "model": "claude",
                                 "tool_id": tool_id,
                                 "name": ts.name,
                                 "input_preview": ts.input_preview,
-                            })
+                            }
+                            # Subagent progress lane: the parent id attributes the
+                            # event to its agent; a Task/Agent tool_use opens (and
+                            # names) a new agent row.
+                            if parent_id:
+                                start_ev["parent_tool_use_id"] = parent_id
+                            if ts.name in ("Task", "Agent"):
+                                start_ev["agent_label"] = _agent_label(
+                                    block.get("input", {})
+                                )
+                            self._emit_stream(start_ev)
                     # Capture point-in-time occupancy from assistant event usage
                     usage = event.get("message", {}).get("usage")
                     if usage:
@@ -880,6 +907,7 @@ class ClaudeAdapter:
                         )
 
                 elif etype == "user":
+                    parent_id = event.get("parent_tool_use_id") or ""
                     for block in event.get("message", {}).get("content", []):
                         if block.get("type") == "tool_result":
                             tid = block.get("tool_use_id", "")
@@ -904,13 +932,16 @@ class ClaudeAdapter:
                                     pending_tools[tid].output_blocks = (
                                         pending_tools[tid].pending_output_blocks
                                     )
-                                self._emit_stream({
+                                done_ev = {
                                     "kind": "tool_done",
                                     "model": "claude",
                                     "tool_id": tid,
                                     "name": pending_tools[tid].name,
                                     "output_preview": pending_tools[tid].output_preview,
-                                })
+                                }
+                                if parent_id:
+                                    done_ev["parent_tool_use_id"] = parent_id
+                                self._emit_stream(done_ev)
 
                 elif etype == "result":
                     result_text = event.get("result", "")

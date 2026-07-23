@@ -95,9 +95,12 @@ body.side-collapsed #side { margin-left: -272px }
 #projects .empty-note { color: var(--muted); padding: .3rem .5rem; font-size: .76rem }
 .side-foot { padding: .7rem 1rem calc(.7rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--card-line) }
-#theme-toggle { display: flex; align-items: center; gap: .6rem }
-#theme-toggle .chip-label { font: .66rem var(--sans); text-transform: uppercase;
-  letter-spacing: .06em; color: var(--muted) }
+#theme-toggle, #autorelay-toggle { display: flex; align-items: center; gap: .6rem }
+#autorelay-toggle { margin-bottom: .55rem }
+#theme-toggle .chip-label, #autorelay-toggle .chip-label { font: .66rem var(--sans);
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted) }
+#autorelay-toggle .seg-btn { font: .66rem var(--sans); text-transform: uppercase;
+  letter-spacing: .04em; padding: .28rem .55rem }
 .seg { display: inline-flex; border: 1px solid var(--card-line); border-radius: 8px;
   overflow: hidden; background: var(--card) }
 .seg-btn { display: inline-flex; align-items: center; justify-content: center;
@@ -210,6 +213,29 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
 .msg.card .path { font: .78rem var(--mono); background: var(--rail); border-radius: 6px;
   padding: .1rem .4rem; overflow-wrap: anywhere }
 .msg.card.answered { opacity: .6; border-left-color: var(--card-line); box-shadow: none }
+
+/* ── subagent progress lane ──────────────────────────────── */
+/* one card per turn, full message width, in chronological order; rows freeze
+   into a compact summary at turn end. Desktop has room — comfortable padding;
+   rows wrap on narrow screens so the activity line never clips. */
+.msg.lane { align-self: stretch; background: var(--card); border: 1px solid var(--card-line);
+  border-left: 3px solid var(--claude); border-radius: 12px; padding: .7rem .9rem }
+.msg.lane .lane-head { display: flex; align-items: center; gap: .45rem; margin-bottom: .5rem;
+  font: 700 .68rem var(--sans); text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted) }
+.msg.lane .lane-head .avatar { width: 18px; height: 18px; flex: none }
+.lane-rows { display: flex; flex-direction: column; gap: .4rem }
+.lane-row { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; min-width: 0 }
+.lane-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--muted) }
+.lane-dot.running { background: var(--accent); animation: lanepulse 1.2s ease-in-out infinite }
+.lane-dot.done { background: var(--ok) }
+.lane-dot.error { background: var(--bad) }
+@keyframes lanepulse { 50% { opacity: .25 } }
+.lane-label { font: 600 .82rem var(--sans); color: var(--fg) }
+.lane-elapsed, .lane-meta { font: .74rem var(--sans); color: var(--muted) }
+.lane-act { font: .74rem var(--mono); color: var(--muted); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 8rem }
+.lane-row.done, .lane-row.error { opacity: .72 }
 
 #jump { position: absolute; left: 50%; transform: translateX(-50%);
   bottom: calc(7.5rem + env(safe-area-inset-bottom, 0px)); z-index: 8;

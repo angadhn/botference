@@ -10,7 +10,8 @@
     side: $('side'), backdrop: $('backdrop'), burger: $('burger'), sideClose: $('side-close'),
     newChat: $('new-chat'), projects: $('projects'), theme: $('theme-toggle'),
     conn: $('st-conn'), stProject: $('st-project'), stRoute: $('st-route'), stCtx: $('st-ctx'),
-    stModel: $('st-model'), modelSwitcher: $('model-switcher'), presendWarn: $('presend-warn'),
+    stModel: $('st-model'), modelSwitcher: $('model-switcher'), autoRelay: $('autorelay-toggle'),
+    presendWarn: $('presend-warn'),
     avatars: $('avatars'), banner: $('noauth-banner'), bannerX: $('noauth-x'),
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
     input: $('input'), send: $('send'), stop: $('stop'), complete: $('complete'),
@@ -95,7 +96,7 @@
       '/goal @claude', '/goal @codex',
       '/projects', '/project', '/adopt', '/new', '/file', '/add-to-project',
       '/delete', '/draft', '/finalize', '/resume', '/rename', '/permissions',
-      '/status', '/notify', '/agents', '/auth', '/current-model', '/current',
+      '/status', '/notify', '/autorelay', '/agents', '/auth', '/current-model', '/current',
       '/help', '/quit', '/exit', '@claude ', '@codex ', '@all ',
     ],
     scoped: {
@@ -129,6 +130,7 @@
     ctx: FALLBACK_CTX,
     models: { claude: null, codex: null },     // current model per agent (from status)
     exhausted: { claude: null, codex: null },  // credit-exhaustion reason string or null
+    autoRelay: true,                           // auto-relay at 50% context (from status)
     lastUserText: '',                          // last human turn, for "retry with @other"
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
@@ -138,6 +140,9 @@
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
     currentSid: null,      // active session id (from 'projects' events)
     atts: [],              // composer attachments: {id, path, url, thumb, status}
+    lanes: {},             // subagent progress lane: tool_use_id -> lane record
+    laneCard: null,        // the in-progress turn's lane card element (null between turns)
+    laneTimer: null,       // interval ticking the running lanes' elapsed clocks
   };
   // one bridge = one live chat: switching IS a /resume that replaces server
   // state. So this is an honest client-side cache of the last few rendered
@@ -203,6 +208,31 @@
     });
   }
   renderModelSwitcher();
+
+  // ── auto-relay toggle (sidebar) ──
+  // Segmented on/off; sends "/autorelay on|off" through the normal input path.
+  // The authoritative state lands on the next status event (state.autoRelay).
+  function renderAutoRelay() {
+    if (!els.autoRelay) return;
+    const on = state.autoRelay;
+    els.autoRelay.innerHTML =
+      '<div class="chip-label">auto-relay</div>' +
+      '<div class="seg" role="group" aria-label="auto-relay at 50% context">' +
+      [['on', on], ['off', !on]].map(([v, sel]) =>
+        `<button class="seg-btn${sel ? ' on' : ''}" data-ar="${v}" ` +
+        `aria-pressed="${sel}" title="auto-relay ${v}">${v}</button>`).join('') +
+      '</div>';
+  }
+  if (els.autoRelay) {
+    els.autoRelay.addEventListener('click', e => {
+      const b = e.target.closest('[data-ar]');
+      if (!b) return;
+      state.autoRelay = b.dataset.ar === 'on';  // optimistic; status reconciles
+      renderAutoRelay();
+      sendInput(`/autorelay ${b.dataset.ar}`);
+    });
+  }
+  renderAutoRelay();
 
   // current model near the status strip (compact "C:fable-5 X:sol")
   function shortModel(m) { return String(m || '').replace(/^claude-/, '').replace(/^gpt-/, ''); }
@@ -490,6 +520,127 @@
     return false;
   }
 
+  // ── subagent progress lane ──
+  // When the Claude bot spawns Claude Code subagents (the Task/Agent tool),
+  // the bridge streams tool events tagged with a parent_tool_use_id, and the
+  // Task tool_use itself carries an agent_label. We render one card per turn
+  // with a row per subagent: a status dot, the label, a live elapsed clock,
+  // and the latest tool activity — collapsing to a compact summary when done.
+  // The card is left in the transcript at turn end, so past turns show what
+  // their agents did (and it rebuilds from the replayed stream events).
+  const fmtDur = ms => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+  };
+  // middle-truncate so both ends of a long path/command stay legible
+  function midTruncate(s, max) {
+    s = String(s);
+    if (s.length <= max) return s;
+    const head = Math.ceil((max - 1) / 2), tail = Math.floor((max - 1) / 2);
+    return s.slice(0, head) + '…' + s.slice(s.length - tail);
+  }
+  // "ToolName · target": the target is the most identifying field of the tool
+  // input (path, command, pattern…), best-effort from the truncated preview
+  function laneActivity(ev) {
+    let inp = null;
+    try { inp = JSON.parse(ev.input_preview); } catch { }
+    let target = '';
+    if (inp && typeof inp === 'object') {
+      target = inp.file_path || inp.path || inp.pattern || inp.command
+        || inp.url || inp.query || inp.description || inp.prompt || '';
+    }
+    target = midTruncate(String(target).replace(/\s+/g, ' ').trim(), 46);
+    return target ? `${ev.name} · ${target}` : String(ev.name || '');
+  }
+  function ensureLaneCard() {
+    if (state.laneCard) return state.laneCard;
+    const wasPinned = pinned();
+    const div = document.createElement('div');
+    div.className = 'msg lane';
+    div.innerHTML = `<div class="lane-head">${avatarHtml('claude')}<span>subagents</span></div>
+      <div class="lane-rows"></div>`;
+    container().appendChild(div);
+    state.laneCard = div;
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    return div;
+  }
+  function paintLane(lane) {
+    if (lane.status === 'running') {
+      lane.el.className = 'lane-row running';
+      lane.el.innerHTML =
+        `<span class="lane-dot running" aria-hidden="true"></span>` +
+        `<span class="lane-label">${esc(lane.label)}</span>` +
+        `<span class="lane-elapsed">${fmtDur(Date.now() - lane.start)}</span>` +
+        `<span class="lane-act">${lane.latest ? esc(lane.latest) : '…'}</span>`;
+    } else {
+      // collapsed summary: label + total duration + tool-call count
+      lane.el.className = `lane-row ${lane.status}`;
+      lane.el.innerHTML =
+        `<span class="lane-dot ${lane.status}" aria-hidden="true"></span>` +
+        `<span class="lane-label">${esc(lane.label)}</span>` +
+        `<span class="lane-meta">${fmtDur(lane.dur)} · ${lane.tools} tool${lane.tools === 1 ? '' : 's'}</span>`;
+    }
+  }
+  const anyLaneRunning = () => Object.values(state.lanes).some(l => l.status === 'running');
+  function startLaneTimer() {
+    if (state.laneTimer) return;
+    state.laneTimer = setInterval(() => {
+      if (!anyLaneRunning()) { stopLaneTimer(); return; }
+      for (const l of Object.values(state.lanes)) if (l.status === 'running') paintLane(l);
+    }, 1000);
+  }
+  function stopLaneTimer() {
+    if (state.laneTimer) { clearInterval(state.laneTimer); state.laneTimer = null; }
+  }
+  function openLane(id, label) {
+    if (state.lanes[id]) return;
+    const card = ensureLaneCard();
+    const row = document.createElement('div');
+    const lane = state.lanes[id] = {
+      id, label: label || 'subagent', start: Date.now(),
+      tools: 0, latest: '', status: 'running', el: row,
+    };
+    card.querySelector('.lane-rows').appendChild(row);
+    paintLane(lane);
+    startLaneTimer();
+  }
+  function closeLane(id, status = 'done') {
+    const lane = state.lanes[id];
+    if (!lane || lane.status !== 'running') return;
+    lane.status = status;
+    lane.dur = Date.now() - lane.start;
+    paintLane(lane);
+    if (!anyLaneRunning()) stopLaneTimer();
+  }
+  function laneEvent(ev) {
+    // a Task/Agent tool_use opens (and names) a subagent row
+    if (ev.kind === 'tool_start' && 'agent_label' in ev) { openLane(ev.tool_id, ev.agent_label); return; }
+    // the Task's own result closes its lane (running -> collapsed summary)
+    if (ev.kind === 'tool_done' && state.lanes[ev.tool_id]) { closeLane(ev.tool_id); return; }
+    // a tool nested under a subagent updates that lane's latest activity
+    const lane = ev.parent_tool_use_id && state.lanes[ev.parent_tool_use_id];
+    if (lane && ev.kind === 'tool_start') {
+      lane.tools++;
+      lane.latest = laneActivity(ev);
+      paintLane(lane);
+    }
+  }
+  // turn end: freeze every running lane in its final state and detach the
+  // card so the next turn starts a fresh one (the frozen card stays on screen)
+  function freezeLanes() {
+    for (const id of Object.keys(state.lanes)) closeLane(id, 'done');
+    stopLaneTimer();
+    state.lanes = {};
+    state.laneCard = null;
+  }
+  // hard reset (reconnect / chat switch): drop lane state without freezing —
+  // the transcript itself is being rebuilt
+  function resetLanes() {
+    stopLaneTimer();
+    state.lanes = {};
+    state.laneCard = null;
+  }
+
   // ── interrupt cards ──
   let liveCard = null;
   function settleCard(note) {
@@ -625,6 +776,7 @@
     if (sid === state.currentSid && !state.pendingSwitch) return; // already live: nothing to do
     snapshotCurrent();
     state.pendingSwitch = sid;
+    syncHash(sid);                          // reflect the target chat in the URL now
     const cached = cacheGet(sid);
     if (cached) {
       els.transcript.innerHTML = cached.html;
@@ -655,6 +807,35 @@
     flushReplayBuffer();
     state.pendingSwitch = null;
     setSyncing(false);
+  }
+
+  // ── hash routing: #/chat/<session-id> keeps the open chat in the URL, so a
+  // link (or a reload) reopens the same chat. history.replaceState keeps it
+  // out of the back-button history — switching chats isn't page navigation. ──
+  function hashSid() {
+    const m = /^#\/chat\/([\w-]+)$/.exec(location.hash || '');
+    return m ? m[1] : '';
+  }
+  function syncHash(sid) {
+    const want = sid ? `#/chat/${sid}` : '';
+    if (location.hash === want) return;
+    const url = location.pathname + location.search + want;
+    try { history.replaceState(null, '', url); } catch { location.hash = want; }
+  }
+  function sessionExists(sid) {
+    for (const pr of (state.projects && state.projects.projects) || [])
+      for (const s of pr.sessions || []) if (s.session_id === sid) return true;
+    return false;
+  }
+  // open the chat the URL names if it exists and isn't already open/opening;
+  // an unknown id falls back to the current chat with a brief, non-blocking
+  // notice (waits for the first 'projects' event before it can resolve one)
+  function routeHash() {
+    const sid = hashSid();
+    if (!sid || sid === state.currentSid || sid === state.pendingSwitch) return;
+    if (!state.projects) return;
+    if (sessionExists(sid)) switchTo(sid);
+    else { toast('chat not found — showing the current chat'); syncHash(state.currentSid); }
   }
 
   // mobile slide-over / desktop collapse
@@ -890,11 +1071,12 @@
         break;
       case 'stream':
         setBusy(true);
-        if (ev.kind === 'text_delta') streamDelta(ev);
-        else if (ev.model && AGENTS.includes(String(ev.model).toLowerCase())) {
+        if (ev.kind === 'text_delta') { streamDelta(ev); break; }
+        if (ev.model && AGENTS.includes(String(ev.model).toLowerCase())) {
           const m = String(ev.model).toLowerCase();
           if (!state.agents[m]) { state.agents[m] = true; renderAvatars(); }
         }
+        if (ev.kind === 'tool_start' || ev.kind === 'tool_done') laneEvent(ev);
         break;
       case 'user_echo':
         // the echo of a sidebar-initiated /resume is switch plumbing, not
@@ -919,6 +1101,7 @@
         if ('codex_model' in ev) state.models.codex = ev.codex_model || null;
         renderModelSwitcher();
         renderStatusModels();
+        if ('auto_relay' in ev) { state.autoRelay = !!ev.auto_relay; renderAutoRelay(); }
         break;
       case 'projects': {
         state.projects = ev;
@@ -928,6 +1111,10 @@
         }
         state.currentSid = active;
         renderProjects();
+        routeHash(); // honor a #/chat/<id> now that the session list is known
+        // no (or an already-honored) hash: reflect the actually-open chat —
+        // but never clobber a hash routeHash is mid-way through opening
+        if (!state.pendingSwitch && active) syncHash(active);
         break;
       }
       case 'completion_context':
@@ -945,6 +1132,7 @@
         }
         setBusy(false);
         settleCard();
+        freezeLanes();
         state.streams = {};
         for (const el of els.transcript.querySelectorAll('.msg.streaming')) el.classList.remove('streaming');
         break;
@@ -956,6 +1144,7 @@
       case 'clear_panes':
         state.streams = {};
         liveCard = null;
+        resetLanes();
         state.replaying = true; // a restore replay follows: pin, no heuristics
         if (state.pendingSwitch && els.transcript.children.length) {
           // sidebar switch: keep the optimistic (or outgoing) transcript on
@@ -1009,6 +1198,7 @@
     state.inServerReplay = true;
     state.replaying = false;
     state.pendingSwitch = null;
+    resetLanes();
     setSyncing(false);
     updateEmpty();
   }
@@ -1051,6 +1241,8 @@
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.body.classList.contains('side-open')) closeSide();
   });
+  // a pasted link or a back/forward navigation between #/chat/<id> hashes
+  window.addEventListener('hashchange', routeHash);
 
   updateEmpty();
   syncSend();
@@ -1063,5 +1255,6 @@
     fmt, sysFmt, switchTo, addFiles, submit, sessionCache,
     renderModelSwitcher, refreshPresendWarn, presendExhausted,
     noteAgentTurn, exhaustReason, modelsFor,
+    laneEvent, hashSid, syncHash, routeHash,
   };
 })();

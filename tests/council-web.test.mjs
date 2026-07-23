@@ -846,3 +846,138 @@ test('credit exhaustion flags the agent (avatar + notice), clears on a normal tu
   await new Promise(r => setTimeout(r, 5));
   assert.match(posts.pop().body.text, /@codex/, 'retagged message sends to the healthy agent');
 });
+
+// ------------------------------------------------ UI: subagent progress lane
+
+test('subagent lane: a Task opens a running row, nested tools tick it, the Task result collapses it to a summary, turn end freezes',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  // a Task/Agent tool_use (carrying agent_label) opens a named, running row
+  C.handle({ type: 'stream', kind: 'tool_start', model: 'claude', tool_id: 'ag1', name: 'Task', agent_label: 'research the codebase' });
+  const card = doc.querySelector('.msg.lane');
+  assert.ok(card, 'a lane card appears inline in the transcript');
+  let row = card.querySelector('.lane-row');
+  assert.ok(row.classList.contains('running'), 'the row is running');
+  assert.ok(row.querySelector('.lane-dot.running'), 'a running status dot');
+  assert.match(row.textContent, /research the codebase/, 'the Task description names the row');
+  assert.equal(C.state.lanes.ag1.status, 'running');
+
+  // a tool nested under the subagent (parent_tool_use_id === the Task id)
+  // updates the row's latest activity and bumps the tool count; a long path
+  // is middle-truncated so both ends stay legible
+  C.handle({ type: 'stream', kind: 'tool_start', model: 'claude', tool_id: 't1', name: 'Read',
+    parent_tool_use_id: 'ag1', input_preview: JSON.stringify({ file_path: '/a/very/long/path/to/some/deeply/nested/module/directory/file.py' }) });
+  assert.equal(C.state.lanes.ag1.tools, 1);
+  const act = doc.querySelector('.msg.lane .lane-act');
+  assert.match(act.textContent, /Read ·/, 'activity shows ToolName · target');
+  assert.match(act.textContent, /file\.py/, 'the target tail survives truncation');
+  assert.match(act.textContent, /…/, 'the long path is middle-truncated');
+  C.handle({ type: 'stream', kind: 'tool_start', model: 'claude', tool_id: 't2', name: 'Grep',
+    parent_tool_use_id: 'ag1', input_preview: JSON.stringify({ pattern: 'foo' }) });
+  assert.equal(C.state.lanes.ag1.tools, 2);
+  // a nested tool_done doesn't close the lane (only the Task's own result does)
+  C.handle({ type: 'stream', kind: 'tool_done', model: 'claude', tool_id: 't1', name: 'Read', parent_tool_use_id: 'ag1' });
+  assert.equal(C.state.lanes.ag1.status, 'running');
+
+  // the Task's OWN result (tool_id === the lane id) collapses it to a summary
+  C.handle({ type: 'stream', kind: 'tool_done', model: 'claude', tool_id: 'ag1', name: 'Task' });
+  assert.equal(C.state.lanes.ag1.status, 'done');
+  row = doc.querySelector('.msg.lane .lane-row');
+  assert.ok(row.classList.contains('done'), 'the row collapses to done');
+  assert.ok(row.querySelector('.lane-dot.done'), 'a done status dot');
+  assert.match(row.textContent, /2 tools/, 'the summary shows the tool-call count');
+
+  // turn end freezes the lane state and detaches the card; the frozen card
+  // stays in the transcript so the past turn still shows what its agent did
+  C.handle({ type: 'ready' });
+  assert.equal(Object.keys(C.state.lanes).length, 0, 'lane state is cleared for the next turn');
+  assert.equal(C.state.laneCard, null, 'the next turn opens a fresh card');
+  assert.ok(doc.querySelector('.msg.lane'), 'the frozen lane persists in the transcript');
+  assert.equal(C.state.laneTimer, null, 'the elapsed-clock timer is stopped');
+});
+
+test('subagent lane: a turn still running at ready freezes its row to done (never a stuck spinner)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'stream', kind: 'tool_start', model: 'claude', tool_id: 'ag1', name: 'Agent', agent_label: 'draft the plan' });
+  assert.equal(C.state.lanes.ag1.status, 'running');
+  // the turn ends without a Task result event (interrupt, error): the row is
+  // frozen to done rather than left spinning forever
+  C.handle({ type: 'ready' });
+  const row = doc.querySelector('.msg.lane .lane-row');
+  assert.ok(row.classList.contains('done'), 'the row is frozen to done at turn end');
+  assert.equal(C.state.laneTimer, null);
+});
+
+// -------------------------------------------------- UI: chat id in the URL
+
+test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link restores it; unknown ids fall back',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const projects = active => ({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, session_count: 2,
+      sessions: [
+        { session_id: 'sidA', title: 'Chat A', updated_at: new Date().toISOString(), active: active === 'sidA' },
+        { session_id: 'sidB', title: 'Chat B', updated_at: new Date().toISOString(), active: active === 'sidB' },
+      ],
+    }],
+  });
+  // the open chat is reflected in the URL as soon as it is known
+  C.handle(projects('sidA'));
+  assert.equal(C.state.currentSid, 'sidA');
+  assert.equal(w.location.hash, '#/chat/sidA', 'the open chat is written to the URL');
+  // switching writes the target id immediately (before the server reconciles)
+  C.switchTo('sidB');
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(w.location.hash, '#/chat/sidB', 'switching updates the URL');
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidB', attachments: [] } });
+  C.state.pendingSwitch = null;
+  C.handle(projects('sidB')); // server reconciles the switch
+  assert.equal(C.state.currentSid, 'sidB');
+  assert.equal(w.location.hash, '#/chat/sidB');
+
+  // a hashchange to a known id (pasted link / back button) navigates to it
+  w.location.hash = '#/chat/sidA';
+  w.dispatchEvent(new w.Event('hashchange'));
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidA', attachments: [] } },
+    'a known hashed id resumes that chat');
+  C.state.pendingSwitch = null;
+  C.handle(projects('sidA'));
+
+  // an unknown id falls back to the current chat with a notice, no navigation
+  const n = posts.length;
+  w.location.hash = '#/chat/does-not-exist';
+  w.dispatchEvent(new w.Event('hashchange'));
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(posts.length, n, 'an unknown id triggers no /resume');
+  assert.equal(w.location.hash, '#/chat/sidA', 'the URL falls back to the current chat');
+});
+
+test('hash routing: a link opened straight to #/chat/<id> restores that chat once the session list arrives',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  // the hash is present before any 'projects' event (deep link / reload): the
+  // server's default-active chat is sidA, but the URL asks for sidB
+  w.location.hash = '#/chat/sidB';
+  C.handle({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, session_count: 2,
+      sessions: [
+        { session_id: 'sidA', title: 'Chat A', updated_at: new Date().toISOString(), active: true },
+        { session_id: 'sidB', title: 'Chat B', updated_at: new Date().toISOString(), active: false },
+      ],
+    }],
+  });
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidB', attachments: [] } },
+    'the hashed chat is resumed, not the default-active one');
+  assert.equal(w.location.hash, '#/chat/sidB', 'the requested hash is preserved, not overwritten');
+});

@@ -1,5 +1,43 @@
 # CHANGELOG
 
+## 2026-07-23
+
+- **Auto-relay at 50% context (on by default).** botference now watches
+  each model's context occupancy and relays it automatically — same
+  handoff machinery as `/relay` — once it crosses 50% of its context
+  window, so long sessions roll over to a fresh, summarized session
+  before they get expensive or overflow. The relay is always deferred to
+  a safe boundary: it never fires mid-turn or inside a free-form
+  bot-to-bot thread, landing before that model's next turn (or right
+  after the current thread ends). A loop guard arms exactly one relay per
+  crossing and re-arms only after occupancy drops back below the
+  threshold. Toggle with `/autorelay [on|off]` (TUI, shown in `/status`)
+  or the new Auto-relay toggle in the web council sidebar; the preference
+  persists per-user (`~/.botference/settings.json`) and the pending flag
+  is snapshotted with the session so it survives restarts. Threshold is a
+  module constant (`AUTO_RELAY_THRESHOLD_PCT = 50`).
+
+- **Council web: subagent progress lane.** When the Claude bot spawns
+  Claude Code subagents (the `Task`/`Agent` tool), the browser now shows
+  an inline card in the bot's in-progress turn — one row per subagent
+  with a pulsing status dot, the agent label (from the Task description),
+  a live-ticking elapsed clock, and the latest tool activity as
+  `ToolName · target` (long paths middle-truncated). A finished agent
+  collapses to a compact `label · duration · N tools` summary, and the
+  card freezes into the transcript at turn end so past turns still show
+  what their agents did. The stream events the bridge already forwards
+  now carry `parent_tool_use_id` (attributing each tool event to its
+  agent) and, on a `Task`/`Agent` tool_use, an `agent_label`; because
+  those events live in the replayable history, the lane rebuilds on
+  reload.
+
+- **Council web: chat id in the URL.** Opening or switching a chat writes
+  `#/chat/<session-id>` (via `history.replaceState`, so it stays out of
+  the back-button history), so the address bar is now a shareable
+  per-chat link. On load and on `hashchange`, the referenced chat is
+  reopened if it exists; an unknown id falls back to the current chat
+  with a brief, non-blocking notice.
+
 ## 2026-07-22
 
 - **Council web: slash-command autocomplete no longer goes dark.** The
