@@ -68,9 +68,9 @@ const readSite = (dir, f) => fs.readFileSync(path.join(dir, 'review', 'site', f)
 const htmlPages = dir => fs.readdirSync(path.join(dir, 'review', 'site'))
   .filter(f => f.endsWith('.html') && f !== 'index.html').sort();
 
-async function withServer(dir, fn, env = {}) {
+async function withServer(dir, fn, env = {}, args = []) {
   const port = await freePort();
-  const proc = spawn(process.execPath, [path.join(dir, 'review', 'server.mjs')],
+  const proc = spawn(process.execPath, [path.join(dir, 'review', 'server.mjs'), ...args],
     { cwd: dir, env: { ...process.env, PORT: String(port), ...env } });
   let out = '';
   proc.stdout.on('data', c => { out += c; });
@@ -738,12 +738,17 @@ test('model switcher + credit-exhaustion warnings (happy-dom)',
     scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-4-8', 'claude-haiku-4-5'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] },
     status: { claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' },
   });
-  const sw = doc.getElementById('model-switcher');
-  assert.equal(sw.hasAttribute('hidden'), false, 'switcher shows once agents are attached');
+  // the switcher moved out of the sidebar into the owner-only Settings
+  // slide-over (2026-07): open it from the gear in the avatar cluster
+  assert.equal(doc.getElementById('model-switcher'), null, 'no permanent sidebar switcher any more');
+  doc.getElementById('gear-btn').click();
+  await new Promise(r => setTimeout(r, 20));
+  const sw = doc.getElementById('settings-panel');
+  assert.equal(sw.hasAttribute('hidden'), false, 'settings opens from the gear');
   assert.match(sw.textContent, /Claude/);
   assert.match(sw.textContent, /Codex/);
   const claudeSel = sw.querySelector('select.ms-select[data-agent="claude"]');
-  assert.ok(claudeSel, 'claude model <select> renders in the sidebar');
+  assert.ok(claudeSel, 'claude model <select> renders in the settings panel');
   assert.equal(claudeSel.value, 'claude-fable-5', 'current model preselected');
   assert.equal(claudeSel.querySelectorAll('option').length, 3, 'all scoped claude models offered');
 
@@ -788,4 +793,231 @@ test('model switcher + credit-exhaustion warnings (happy-dom)',
   ta.value = '@codex can you revise this?';
   ta.dispatchEvent(new w.Event('input'));
   assert.ok(!doc.querySelector('.card.composing .presend-warn'), 'warning clears once the mention no longer targets the exhausted agent');
+});
+
+// ---- universal anchoring + human suggestions + presence/grants (2026-07) ----
+
+// The one property that must never break: `blk-N` is a POSITIONAL index, and
+// every comment in every live paper is anchored to one. Newly anchorable
+// element types therefore live in their own namespaces.
+test('universal anchoring: headings/list items/quotes/captions/cells become anchorable without moving one existing blk-N id',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const dir = scaffold('anchors', {
+    'main.tex': `\\documentclass{article}
+\\title{Anchor Paper}
+\\begin{document}
+\\input{tex/body}
+\\end{document}
+`,
+    'tex/body.tex': `\\section{Introduction}
+First paragraph.
+
+\\begin{itemize}
+\\item A bullet.
+\\end{itemize}
+
+\\subsection{Background}
+Second paragraph.
+
+\\begin{quote}
+A quotation.
+\\end{quote}
+`,
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  const site = path.join(dir, 'review', 'site');
+  const file = fs.readdirSync(site).find(f => f.endsWith('.html') && f !== 'index.html');
+  const w = new GlobalWindow({ url: 'http://localhost/' + file, width: 1400, height: 900 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  doc.write(fs.readFileSync(path.join(site, file), 'utf8').replace(/<script[^>]*src=[^>]*>\s*<\/script>/g, ''));
+  if (!w.CSS || !w.CSS.escape) w.CSS = { escape: s => String(s).replace(/[^a-zA-Z0-9_-]/g, ch => '\\' + ch) };
+  w.matchMedia = q => ({ matches: false, media: q, addEventListener() { }, removeEventListener() { } });
+  w.SUGGESTIONS = []; w.BUILD_META = { slug: 'anchors' };
+  w.fetch = async () => { throw new Error('offline'); };
+  w.EventSource = class { constructor() { } close() { } };
+  w.WebSocket = class { constructor() { } close() { } send() { } };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(site, 'assets', 'span-match.js'), 'utf8'), w);
+  vm.runInContext(fs.readFileSync(path.join(site, 'assets', 'review.js'), 'utf8'), w);
+
+  const slug = doc.body.getAttribute('data-slug');
+  // paragraphs and figures keep the ONLY positional namespace, numbered exactly
+  // as they were before headings et al. became anchorable
+  const blk = [...doc.querySelectorAll('#paper [data-cid]')]
+    .filter(el => /-blk-\d+$/.test(el.dataset.cid));
+  assert.deepEqual(blk.map(el => el.dataset.cid),
+    [0, 1, 2, 3].map(i => `${slug}-blk-${i}`),
+    'blk-N ids are contiguous from 0 over p/figure only — nothing shifted them');
+  assert.ok(blk.every(el => el.tagName === 'P' || el.tagName === 'FIGURE'),
+    'only p/figure ever hold a blk-N id');
+  // and the new types are anchorable in their own namespaces
+  assert.equal(doc.querySelector('#paper h1').dataset.cid, `${slug}-hd-0`, 'headings get -hd-N');
+  assert.equal(doc.querySelector('#paper h2').dataset.cid, `${slug}-hd-1`);
+  assert.match(doc.querySelector('#paper li').dataset.cid, /-misc-\d+$/, 'list items get -misc-N');
+  assert.match(doc.querySelector('#paper blockquote').dataset.cid, /-misc-\d+$/, 'block quotes get -misc-N');
+  // the masthead participates instead of being half-wired
+  assert.equal(doc.querySelector('header.masthead').dataset.cid, 'paper-title');
+  // a heading selection now finds an anchor (it silently found nothing before)
+  const h = doc.querySelector('#paper h1');
+  w.getSelection = () => ({ isCollapsed: false, rangeCount: 1, toString: () => 'Introduction',
+    getRangeAt: () => ({ commonAncestorContainer: h, getBoundingClientRect: () => ({ left: 1, top: 1, width: 9, bottom: 9 }) }) });
+  doc.dispatchEvent(new w.MouseEvent('mouseup', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(doc.getElementById('sel-pop').hasAttribute('hidden'), false,
+    'the selection popover opens on a heading');
+  assert.ok(doc.querySelector('#sel-pop [data-sel="suggest"]'), 'and offers Suggest alongside Comment');
+});
+
+test('build meta records the section→source map and where the title lives', async t => {
+  const dir = scaffold('titlesrc', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const sj = readSite(dir, 'suggestions.js');
+  const meta = JSON.parse(sj.slice(sj.indexOf('window.BUILD_META=') + 18).replace(/;\s*$/, ''));
+  assert.ok(meta.sections.every(s => s.slug && s.file), 'every page names its source file');
+  assert.equal(meta.title_source.kind, 'latex', 'a \\title{} paper targets the macro');
+  assert.match(meta.title_source.macro, /^\\title\{/);
+  // a paper whose masthead comes from the config key must say so, so Apply
+  // edits that JSON key instead of string-replacing a JSON file
+  const cfgPath = path.join(dir, 'review', 'review.config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  cfg.title = 'Config Given Title';
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 1));
+  runBuild(dir);
+  const sj2 = readSite(dir, 'suggestions.js');
+  const meta2 = JSON.parse(sj2.slice(sj2.indexOf('window.BUILD_META=') + 18).replace(/;\s*$/, ''));
+  assert.deepEqual({ kind: meta2.title_source.kind, key: meta2.title_source.key },
+    { kind: 'config', key: 'title' });
+});
+
+test('apply engine: human suggestions from users/*.json + JSON-aware config edits', async t => {
+  const dir = scaffold('humansugg', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const users = path.join(dir, 'review', 'state', 'users');
+  fs.mkdirSync(users, { recursive: true });
+  fs.writeFileSync(path.join(users, 'ada.json'), JSON.stringify({
+    handle: 'ada',
+    decisions: {
+      'usugg-1': { status: 'user-suggestion', section: '01-introduction',
+        source_file: 'main.tex', current_text: '\\section{Introduction}',
+        proposed_text: '\\section{Motivation}', decision: 'accepted' },
+      'usugg-2': { status: 'user-suggestion', section: '00-abstract',
+        source_json: { file: 'review/review.config.json', key: 'title' },
+        current_text: '', proposed_text: 'A Renamed Paper', decision: 'accepted' },
+      'not-a-suggestion': { status: 'user-comment', comment: 'hi' },
+    },
+  }, null, 1));
+  const { ApplyEngine } = await import(path.join(dir, 'review', 'apply.mjs'));
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  const eng = new ApplyEngine({ reviewDir: path.join(dir, 'review'), cfg });
+  const ids = eng.cards().map(c => c.id);
+  assert.ok(ids.includes('usugg-1') && ids.includes('usugg-2'),
+    'human suggestions are visible to apply without ever entering suggestions.json');
+  assert.ok(!ids.includes('not-a-suggestion'), 'ordinary comments are not cards');
+  const r = eng.apply(['usugg-1', 'usugg-2']);
+  assert.deepEqual(r.flagged, [], 'nothing flagged');
+  assert.match(fs.readFileSync(path.join(dir, 'main.tex'), 'utf8'), /\\section\{Motivation\}/);
+  const cfgAfter = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.equal(cfgAfter.title, 'A Renamed Paper', 'the config key was edited JSON-aware');
+  assert.equal(cfgAfter.slug, cfg.slug, 'and no sibling key was disturbed');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'review', 'suggestions.json'), 'utf8')).length, 0,
+    'suggestions.json stayed bot-owned');
+  // drift guard on the JSON path: a stale current_text is flagged, never guessed
+  const r2 = eng.apply(['usugg-3'].map(() => 'usugg-3'));
+  assert.deepEqual(r2.skipped.map(s => s.reason), ['unknown card id']);
+});
+
+test('hosted gate takes name + password together; /summon is gone', async t => {
+  const dir = scaffold('gate', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  await withServer(dir, async base => {
+    const form = (h, p) => fetch(`${base}/auth`, { method: 'POST', redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ handle: h, password: p, next: '/' }) });
+    const gate = await fetch(base + '/', { headers: { accept: 'text/html' } }).then(r => r.text());
+    assert.match(gate, /name="handle"/, 'the gate itself asks who you are (mobile has no sidebar picker)');
+    assert.match(gate, /name="password"/);
+    assert.equal((await form('ada', 'nope')).status, 401, 'wrong password is still refused');
+    assert.equal((await form('', 'shh')).status, 401, 'a nameless guest is refused — nothing they wrote could be saved');
+    const good = await form('Ada L', 'shh');
+    assert.equal(good.status, 303);
+    const cookies = good.headers.getSetCookie();
+    assert.ok(cookies.some(c => /^review_auth=/.test(c) && /HttpOnly/.test(c)), 'the credential stays HttpOnly');
+    const hc = cookies.find(c => /^review_handle=/.test(c));
+    assert.ok(hc && /review_handle=ada-l/.test(hc), 'the NAME rides back to the client, sanitized');
+    assert.ok(!/HttpOnly/.test(hc), 'and is readable by the page (a name is not a credential)');
+    // the handle cookie alone identifies a guest — no header, no localStorage
+    const who = await fetch(base + '/whoami', {
+      headers: { cookie: hc.split(';')[0], authorization: 'Basic ' + Buffer.from('x:shh').toString('base64') },
+    }).then(r => r.json());
+    assert.equal(who.handle, 'ada-l');
+    assert.equal(who.owner, false, 'and never confers ownership');
+    // claiming the owner's handle is refused at the gate, as it is in who()
+    const seen = await fetch(base + '/data', {
+      headers: { cookie: hc.split(';')[0], authorization: 'Basic ' + Buffer.from('x:shh').toString('base64') },
+    }).then(r => r.json());
+    assert.ok(seen.owner_handle, 'the owner handle is advertised');
+    const claim = await form(seen.owner_handle, 'shh');
+    assert.equal(claim.status, 401, 'nobody may claim the owner handle at the gate either');
+    assert.match(await claim.text(), /document owner/);
+    // the 🚩 mechanism is gone
+    assert.equal((await fetch(base + '/summon', { method: 'POST',
+      headers: { authorization: 'Basic ' + Buffer.from('x:shh').toString('base64') }, body: '{}' })).status, 404);
+  }, { REVIEW_PASSWORD: 'shh' }, ['--hosted']);
+});
+
+test('presence is in-memory, coarse and symmetric; grants gate agent summons per handle', async t => {
+  const dir = scaffold('presence', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  await withServer(dir, async base => {
+    const auth = 'Basic ' + Buffer.from('x:shh').toString('base64');
+    const guest = { authorization: auth, 'x-review-handle': 'ada' };
+    const beat = (h, state) => fetch(base + '/beat', { method: 'POST', headers: h,
+      body: JSON.stringify({ state, section: '01-introduction', section_title: 'Introduction' }) }).then(r => r.json());
+    const b = await beat(guest, 'active');
+    assert.deepEqual(b.people.map(p => [p.handle, p.state, p.section_title]), [['ada', 'active', 'Introduction']]);
+    assert.deepEqual(Object.keys(b.people[0]).sort(),
+      ['handle', 'owner', 'section', 'section_title', 'state'],
+      'a beat records state + section ONLY — no dwell, no keystrokes, no duration');
+    // never persisted: presence must leave no attendance log behind
+    const stateDir = path.join(dir, 'review', 'state');
+    assert.ok(!fs.readdirSync(stateDir).some(f => /presence|beat|attend/i.test(f)),
+      'presence is never written to disk');
+    // symmetric: a guest sees everyone at the same granularity
+    const data = await fetch(base + '/data', { headers: guest }).then(r => r.json());
+    assert.equal(data.presence.length, 1);
+    assert.equal(data.grants, undefined, 'a guest never sees the whole grant table');
+    // grants: owner-written only
+    assert.equal((await fetch(base + '/grants', { method: 'POST', headers: guest,
+      body: JSON.stringify({ handle: 'ada', agents: true, daily_cap: 3 }) })).status, 403);
+    const owner = { authorization: auth, 'x-review-owner': fs.readFileSync(path.join(stateDir, '.owner-token'), 'utf8').trim() };
+    const g = await fetch(base + '/grants', { method: 'POST', headers: owner,
+      body: JSON.stringify({ handle: 'ada', agents: true, daily_cap: 3 }) }).then(r => r.json());
+    assert.deepEqual(g.grants.ada, { agents: true, daily_cap: 3 });
+    // the granted guest can READ their own budget — a cap you can't see is a throttle
+    const mine = await fetch(base + '/data', { headers: guest }).then(r => r.json());
+    assert.deepEqual(mine.my_grant, { agents: true, daily_cap: 3, used_today: 0 });
+    // apply/commit/revert never follow a grant
+    for (const u of ['/apply', '/commit', '/revert']) {
+      assert.equal((await fetch(base + u, { method: 'POST', headers: guest, body: '{}' })).status, 403,
+        `${u} stays owner-only even for a granted handle`);
+    }
+  }, { REVIEW_PASSWORD: 'shh' }, ['--hosted']);
 });

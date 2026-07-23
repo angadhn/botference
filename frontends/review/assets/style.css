@@ -141,7 +141,13 @@ abbr { text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: he
 .card-anchor { display: inline-block; width: 0; height: 1em; vertical-align: text-top }
 .eqno { float: right; color: var(--muted); font-size: .85rem }
 math { font-size: 1.05em }
-p[data-cid]:hover, figure[data-cid]:hover { background: color-mix(in srgb, var(--hl) 40%, transparent); cursor: context-menu }
+/* every anchorable block shows it is anchorable — headings, list items, block
+   quotes, captions and table cells joined paragraphs/figures (universal
+   anchoring), and the masthead title participates from outside #paper */
+:is(p, figure, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, td, th, dt, dd, header.masthead)[data-cid]:hover {
+  background: color-mix(in srgb, var(--hl) 40%, transparent); cursor: context-menu }
+/* nested anchors (a <p> inside an <li>) must not double-tint on hover */
+:is(li, blockquote, figure)[data-cid]:hover:has([data-cid]:hover) { background: none }
 .has-comment { background: color-mix(in srgb, var(--hl) 60%, transparent); box-shadow: inset 3px 0 0 var(--hl-active); padding-left: .4rem }
 .has-card { box-shadow: inset 3px 0 0 var(--card-line); padding-left: .4rem }
 .pager { display: flex; justify-content: space-between; margin: 3rem 0; font: italic .95rem var(--serif) }
@@ -247,8 +253,12 @@ mark.user-hl.focused { background: color-mix(in srgb, var(--author, var(--hl-act
 .seg-btn svg { width: 15px; height: 15px; display: block }
 .seg-btn:hover { color: var(--accent) }
 .seg-btn.on { background: color-mix(in srgb, var(--accent) 15%, var(--card)); color: var(--accent) }
-#sel-pop { position: fixed; z-index: 20; font: .8rem var(--sans); padding: .35rem .7rem; background: var(--heading);
-  color: var(--bg); border: 0; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.3) }
+#sel-pop { position: fixed; z-index: 20; display: flex; gap: .15rem; padding: .2rem; background: var(--heading);
+  border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.3) }
+#sel-pop[hidden] { display: none }
+#sel-pop button { font: .8rem var(--sans); padding: .3rem .65rem; background: none; color: var(--bg);
+  border: 0; border-radius: 8px; cursor: pointer }
+#sel-pop button:hover { background: rgba(255,255,255,.16); color: var(--bg) }
 
 /* ---- inline tracked changes (suggesting mode): agent-colored del/ins in the
    body; deletions stay readable (thin strike, most of the ink kept) ---- */
@@ -409,3 +419,113 @@ ins.tc-ins.tc-accepted { margin-left: 0; border-left-color: var(--rev-line);
   background: color-mix(in srgb, var(--bad) 9%, var(--card));
   border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--card-line)); font: .72rem/1.45 var(--sans) }
 .presend-warn .pw-msg { display: block; color: var(--heading); font-weight: 600; margin-bottom: .4rem }
+
+/* ---- human suggestions: the composer's mode switch + the suggest form ---- */
+.card .cmp-mode { margin: .35rem 0 .1rem }
+.card .cmp-mode .seg-btn { font: .7rem var(--sans); padding: .25rem .5rem }
+.card.suggesting .sg-resolve { font: .7rem/1.45 var(--sans); color: var(--muted); margin: .3rem 0 }
+.card.suggesting .sg-ok { color: var(--rev-line) }
+.card.suggesting .sg-bad { color: var(--bad) }
+.card.suggesting .sg-lock { font: .68rem var(--mono); background: var(--rail); border-radius: 4px;
+  padding: .05rem .3rem; overflow-wrap: anywhere }
+.card.suggesting .sg-note { color: var(--muted); font-style: italic; font-size: .66rem; margin-top: .2rem }
+.card .sg-label { display: block; font: .64rem var(--sans); text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: .45rem 0 .1rem }
+.card .sg-cur del { background: color-mix(in srgb, var(--bad) 18%, transparent); text-decoration: line-through }
+.card .sg-why { min-height: 2.4em }
+/* a human suggestion card reads as a suggestion, in that human's own colour */
+.card.t-suggestion .diff del { background: color-mix(in srgb, var(--bad) 18%, transparent) }
+
+/* ---- presence cluster: humans | agents ---------------------------------- */
+#avatars .av-div { width: 1px; align-self: stretch; margin: .25rem .15rem;
+  background: var(--card-line); flex: none }
+#avatars .avatar-ring.human { opacity: .55 }
+#avatars .avatar-ring.human.active { opacity: 1 }
+#avatars .avatar-ring.human.idle { opacity: .55 }
+#avatars .avatar .initials { }
+#avatars .avatar.initials { font: 700 .8rem var(--sans); letter-spacing: .02em }
+#avatars .av-btn { width: 34px; height: 34px; align-self: center; padding: 0; border-radius: 50%;
+  background: var(--card); border: 1px solid var(--card-line); color: var(--muted);
+  display: flex; align-items: center; justify-content: center; font-size: .9rem }
+#avatars .av-btn:hover { border-color: var(--accent); color: var(--accent) }
+/* the granted guest's own budget, in their sidebar */
+#presence .budget { margin-top: .25rem; font: .68rem var(--sans); color: var(--rev-line) }
+#presence .budget.spent { color: var(--bad) }
+
+/* ---- slide-over panels (People, Settings): desktop only ----------------- */
+.slideover { display: none }
+@media (min-width: 900px) {
+  .slideover:not([hidden]) { display: block; position: fixed; top: 3.6rem; right: .8rem; z-index: 30;
+    width: min(24rem, 92vw); max-height: calc(100vh - 5rem); overflow-y: auto;
+    background: var(--card); border: 1px solid var(--card-line); border-radius: 12px;
+    padding: .8rem 1rem 1rem; font: .78rem/1.55 var(--sans); color: var(--fg);
+    box-shadow: 0 10px 34px rgba(0,0,0,.3) }
+}
+.so-head { display: flex; justify-content: space-between; align-items: center;
+  font: 700 .85rem var(--sans); color: var(--heading); margin-bottom: .4rem }
+.so-x { border: 0; background: none; color: var(--muted); cursor: pointer; padding: .1rem .3rem }
+.so-sec { margin: .9rem 0 .35rem; font: 700 .64rem var(--sans); text-transform: uppercase;
+  letter-spacing: .07em; color: var(--muted); border-top: 1px solid var(--card-line); padding-top: .55rem }
+.so-note { color: var(--muted); font-size: .68rem; font-style: italic; margin: .25rem 0 }
+.so-empty { color: var(--muted); font-size: .72rem; padding: .3rem 0 }
+.pp-row { display: flex; gap: .6rem; align-items: flex-start; padding: .5rem 0;
+  border-bottom: 1px solid var(--card-line) }
+.pp-row .avatar-ring { width: 34px; height: 34px; padding: 3px; border-radius: 50%; flex: none }
+.pp-row .avatar { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+  border-radius: 50%; background: var(--author, var(--muted)); color: #fff; font: 700 .72rem var(--sans) }
+.pp-row .avatar-ring.offline { opacity: .35 }
+.pp-row .avatar-ring.idle { opacity: .6 }
+.pp-body { flex: 1; min-width: 0 }
+.pp-name { font-weight: 700; color: var(--author, var(--heading)) }
+.pp-where { color: var(--muted); font-size: .7rem }
+.pp-grant { margin-top: .3rem; display: flex; flex-wrap: wrap; gap: .4rem .7rem; align-items: center }
+.pp-toggle { display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem }
+.pp-cap { display: inline-flex; align-items: center; gap: .3rem; font-size: .7rem; color: var(--muted) }
+.pp-cap input { width: 3.6rem; font: .72rem var(--sans); padding: .15rem .3rem; border-radius: 6px;
+  border: 1px solid var(--card-line); background: var(--bg); color: var(--fg) }
+.pp-used { font-size: .66rem; color: var(--muted) }
+.pp-note { color: var(--muted); font-size: .68rem; font-style: italic }
+/* settings: occupancy meters + honest usage tables */
+.set-occ { margin-bottom: .6rem }
+.set-occ-head { display: flex; align-items: center; gap: .4rem }
+.set-occ-head .ms-mark { width: 22px; height: 22px }
+.set-name { font-weight: 700; color: var(--heading) }
+.set-num { margin-left: auto; color: var(--muted); font-size: .72rem }
+.meter { height: 6px; border-radius: 999px; background: var(--rail); overflow: hidden; margin: .25rem 0 .15rem }
+.meter span { display: block; height: 100%; background: var(--author, var(--accent)) }
+.set-sub { color: var(--muted); font-size: .68rem }
+.set-tbl { width: 100%; border-collapse: collapse; font-size: .72rem; margin: .2rem 0 }
+.set-tbl th { text-align: left; font: 700 .64rem var(--sans); text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); padding: .2rem .3rem }
+.set-tbl td { padding: .2rem .3rem; border-top: 1px solid var(--card-line) }
+.set-tbl .dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .35rem }
+.set-est { margin-top: .3rem; font-size: .74rem }
+
+/* ---- task console (owner-only, desktop-only) ---------------------------- */
+#task-console { display: none }
+@media (min-width: 900px) {
+  #task-console:not([hidden]) { display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 22;
+    background: var(--card); border-top: 1px solid var(--card-line);
+    box-shadow: 0 -4px 18px rgba(0,0,0,.16); font: .78rem/1.5 var(--sans) }
+}
+#task-console .tc-bar { display: flex; width: 100%; align-items: center; gap: .6rem; padding: .35rem 1rem;
+  background: none; border: 0; border-radius: 0; color: var(--fg); cursor: pointer; text-align: left }
+#task-console .tc-bar:hover { color: var(--accent) }
+#task-console .tc-title { font-weight: 700 }
+#task-console .tc-hint { color: var(--accent); font-size: .72rem }
+#task-console .tc-caret { margin-left: auto; color: var(--muted); transition: transform .15s ease }
+#task-console.open .tc-caret { transform: rotate(180deg) }
+#task-console .tc-panel { display: none; gap: 1.5rem; padding: .2rem 1rem .8rem;
+  border-top: 1px solid var(--card-line) }
+#task-console.open .tc-panel { display: flex; align-items: flex-start }
+#task-console .tc-col { min-width: 0 }
+#task-console .tc-col:first-child { width: 17rem; flex: none }
+#task-console .tc-ask { flex: 1 }
+#task-console #tc-input { width: 100%; font: .8rem/1.5 var(--sans); padding: .4rem .5rem;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--card-line); border-radius: 8px }
+#task-console .tc-acts { display: flex; gap: .6rem; align-items: center; margin-top: .35rem }
+#task-console #tc-send { border-color: var(--accent); color: var(--accent) }
+#task-console .tc-note { color: var(--muted); font-size: .66rem; font-style: italic }
+#task-console #tc-activity { margin-top: .35rem; max-height: 12rem; overflow-y: auto }
+/* the Changes widget now lives in the console; it keeps its own button language */
+#task-console #apply-bar { margin: 0 }

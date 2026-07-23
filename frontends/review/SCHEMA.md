@@ -23,11 +23,11 @@ Figure handling at build: every `<img>` src is resolved against the repo root an
 
 ## How to review
 
-- **Live mode (preferred):** `node review/server.mjs`, open <http://localhost:4177>. Identity = `git config github.user` (fallback: slugged `user.name`). Your decisions/comments mirror (one-way, debounced, save-as-you-type) to `review/state/users/<handle>.json` — the only file your browser writes. The UI merges every `users/*.json`: yours editable, others' read-only and labeled with their handle. Bot replies (`state/threads.json`) render threaded under comments; suggestion cards with `reply_to` nest under the comment that prompted them. Live updates ride a WebSocket (`/ws`, primary — proxies/CDN edges such as the `--share` cloudflared tunnel buffer streamed HTTP bodies, so SSE stalls through them) with SSE (`GET /events`) as the fallback; both carry the same JSON events, live-update the margin on state changes, and reload the page on site rebuilds. **🚩 Flag for agents** saves a flag file; it does not notify — say "read my comments" in chat.
+- **Live mode (preferred):** `node review/server.mjs`, open <http://localhost:4177>. Identity = `git config github.user` (fallback: slugged `user.name`). Your decisions/comments mirror (one-way, debounced, save-as-you-type) to `review/state/users/<handle>.json` — the only file your browser writes. The UI merges every `users/*.json`: yours editable, others' read-only and labeled with their handle. Bot replies (`state/threads.json`) render threaded under comments; suggestion cards with `reply_to` nest under the comment that prompted them. Live updates ride a WebSocket (`/ws`, primary — proxies/CDN edges such as the `--share` cloudflared tunnel buffer streamed HTTP bodies, so SSE stalls through them) with SSE (`GET /events`) as the fallback; both carry the same JSON events, live-update the margin on state changes, and reload the page on site rebuilds. Agents engage **only** via an explicit `@claude`/`@codex`/`@all` tag — there is no second summoning mechanism (the old 🚩 flag button and `POST /summon` were removed: they wrote a file and notified nobody, while *looking* like they summoned someone).
 - **Collaborators without botference:** clone → `node review/server.mjs` → comment in browser → `node review/submit.mjs [--push]` commits their own user file. `state/` is gitignored *except* `state/users/`, which travels through the repo.
-- **Hosted auth (`--hosted`/`--share`):** browsers see an in-page password gate (no basic-auth popup): correct password sets an HMAC-signed `review_auth` cookie (HttpOnly, SameSite=Lax, Secure behind https, **7-day lifetime**, keyed by the gitignored `state/.auth-secret`) and redirects to the requested page. Only GET requests accepting `text/html` get the gate; JSON/SSE/asset requests get plain 401 JSON. curl and other tools may instead send `Authorization: Basic` with **any username** and the password (e.g. `curl -u x:$REVIEW_PASSWORD …`). `POST /auth` shares the per-IP write rate limit.
+- **Hosted auth (`--hosted`/`--share`):** browsers see an in-page password gate (no basic-auth popup) asking for **a name and the password together** — the name is not a credential, it only decides which `users/<handle>.json` the guest writes, and asking for it on the gate is what makes hosted mode work on a phone (the sidebar handle picker lives in a drawer there, so a guest who authenticated first could never pick one and everything they wrote was silently dropped). Correct password sets an HMAC-signed `review_auth` cookie (HttpOnly, SameSite=Lax, Secure behind https, **7-day lifetime**, keyed by the gitignored `state/.auth-secret`) plus a readable `review_handle` cookie carrying the sanitized name, and redirects to the requested page. `who()` prefers the `x-review-handle` header (the sidebar picker can still change it) and falls back to that cookie. Claiming the owner's handle is refused at the gate exactly as it is in `who()` — only the owner token confers ownership. Only GET requests accepting `text/html` get the gate; JSON/SSE/asset requests get plain 401 JSON. curl and other tools may instead send `Authorization: Basic` with **any username** and the password (e.g. `curl -u x:$REVIEW_PASSWORD …`). `POST /auth` shares the per-IP write rate limit.
 - **Static mode:** open `site/index.html` via `file://`; Export/Import decisions buttons bridge manually (browser storage is origin-scoped).
-- **File ownership:** `users/<handle>.json` = that human (via server) · `summon.json` = browser flag · `suggestions.json` + `threads.json` + `ack.json` = bots · `site/` = build.mjs only (disposable, gitignored; canonical UI assets live in tracked `review/assets/` and are copied in at build). Nobody writes another writer's file.
+- **File ownership:** `users/<handle>.json` = that human (via server), and this is where a human's **suggestions** live too · `suggestions.json` + `threads.json` + `ack.json` = bots · `grants.json` + `grant-usage.json` = the owner/server · `site/` = build.mjs only (disposable, gitignored; canonical UI assets live in tracked `review/assets/` and are copied in at build). Nobody writes another writer's file. **Presence is not a file** — it lives only in server memory (see below).
 - **UI rules:** no browser dialogs anywhere; comment creation/editing never scrolls the page; resolve archives to the sidebar "resolved" list, never deletes.
 
 ## Suggestion card (`review/suggestions.json`, mirrored into `site/suggestions.js`)
@@ -47,6 +47,52 @@ Figure handling at build: every `<img>` src is resolved against the repo root an
 | `bibtex_keys` / `bib_entries` |  | new citation keys + full BibTeX to append to `TN.bib` on accept |
 | `apply_notes` |  | anything the applier must know |
 
+## Human suggestions (`state/users/<handle>.json`)
+
+A human — including the owner — can propose text, not only ask a bot to. On highlight the composer offers two modes: **Comment** (unchanged) and **Suggest**. A human suggestion is an entry in that human's *own* user file (`suggestions.json` stays bot-owned) and flows through the identical render/apply paths as a bot card.
+
+| field | req | notes |
+|---|---|---|
+| `status` | ✓ | literally `user-suggestion` — the entry type |
+| `section` / `anchor` / `quote` | ✓ | page slug, block `data-cid`, and the exact selection |
+| `current_text` | ✓* | the **unique** source span. \*absent only when `source_json` is used |
+| `proposed_text` | ✓ | replacement, in *source* form (a heading proposal is the whole macro) |
+| `display_text` / `display_proposed` | | rendered forms, for the inline del/ins — a macro-anchored card shows the words, never the LaTeX |
+| `source_file` | | repo-relative source; mutually exclusive with `source_json` |
+| `source_json` | | `{file, key}` for a title that lives in `review.config.json` — applied **JSON-aware** (parse → set key → re-serialize), never string-replaced |
+| `head` / `tail` | | macro wrapper (`\section{` / `}`), so an edit can rebuild the proposal |
+| `comment` | | optional rationale; an `@tag` in it routes like any mention |
+| `decision` | | the *viewer's* accept/reject. Bot cards keep using `status`; a human suggestion already occupies `status` with its entry type, so its decision lands here. `acceptedIds()` and the UI read both |
+
+**Unique anchoring happens at COMPOSE time, not apply time.** The composer fetches the real source (`GET /source?file=…`, restricted to configured files plus the config itself), locates the selection, and:
+
+- **ordinary prose** — if the span is ambiguous it is widened word-by-word with surrounding block text until it matches exactly once, and the UI *shows what it locked onto* ("widened past your selection to make it unique");
+- **headings** — anchors on the enclosing LaTeX macro (`\section{Introduction}` → `\section{New Title}`), never the bare word, which is ambiguous everywhere it also appears in prose;
+- **the paper title** — targets `\title{…}` in the master, or, when the masthead comes from the config's `title` key (papers with no `\title{}`), that JSON key.
+
+If no unique anchor can be found the composer fails **there**, with the reason, and saves nothing. Failing at compose time is acceptable; failing silently at Apply time is not. `build.mjs` publishes what the browser needs for this in `BUILD_META`: `sections` (slug → source file) and `title_source`.
+
+## Presence (in memory only)
+
+Desktop clients `POST /beat` every ~15s with `{state, section, section_title, focused_id}`; the server keeps a `Map<handle, …>` and fans out a `presence` event on the existing WS/SSE stream. **Non-negotiable properties:** never written to disk (there is no attendance log), symmetric (everyone sees everyone at the same granularity), and coarse (state + section only — no keystrokes, no dwell, no durations). `active` = real pointer/scroll/key/selection interaction within 60s **and** `visibilityState === 'visible'`; `idle` = visible but untouched, or the tab hidden (reacted to immediately); `offline` = no beat for ~45s. **Desktop only** (`matchMedia('(min-width: 900px)')`): phones send no beats and simply don't appear. Mobile keeps full read + comment.
+
+The top-right cluster shows humans (initials disc in that handle's hashed author colour — the same colour as their comments and chips) and agents (brand glyph + rotating "working" ring) with a hairline between them: two visual grammars, so a person is never mistaken for a bot.
+
+## Per-handle agent grants (`state/grants.json`)
+
+Hosted mode has three tiers, not two. `{"<handle>": {"agents": true, "daily_cap": N}}`, **owner-written only** (`POST /grants`), with the day's counts in the server-owned `state/grant-usage.json`.
+
+- **owner** — everything.
+- **granted handle, within cap** — their `/mention` goes straight to the bridge; one budget unit is spent and the response says how many calls are left.
+- **everyone else, and anyone over cap** — the existing `pending-mentions.json` queue, with an honest "daily cap reached (N/N)" message rather than a silent throttle.
+
+The cap is visible to the granted guest in their own sidebar ("4 of 5 agent calls left today") — it is a budget meant to teach judicious use. Revocation and cap changes are read per request, so they take effect on the very next one. **Apply, Commit, Revert, model switching and permission/choice answers stay owner-only forever; a grant never confers them.**
+
+## Task console + Settings (owner-only, desktop-only)
+
+- **Task console** — a bottom-docked collapsible bar for *document-level* instructions that have no anchor text ("apply all", "commit", "restructure section 3", "verify every citation resolves"). It is **not** a chat about the paper: content discussion stays in anchored margin comments. Routing is as strict as everywhere else — nothing reaches an agent without `@claude`/`@codex`/`@all` (`POST /task`, owner-only, envelope marked DOCUMENT-LEVEL so bots answer in the turn instead of writing a thread entry). The **Changes widget** (Apply / Commit / Revert / out-of-band commit) lives inside it, because committing *is* a document-level task.
+- **Settings** (gear in the cluster) — live per-agent context occupancy (exact, from bridge `status` events), this session's turns and prompt tokens per agent **and per handle** (the mention payload already carries the author, so each turn's cost is attributed to whoever triggered it), a local today/this-week rollup of *real billed* cost from botference's `logs/usage.jsonl` when present, and the relocated model switcher with its credit-exhaustion warnings. The session money figure is labeled an **estimate** with its basis stated: the CLI bridge reports prompt occupancy but neither output tokens nor billed cost. There is deliberately **no subscription-quota meter** — neither provider exposes Pro/Max or ChatGPT plan quota to anything but their interactive CLIs, so the panel says so and points at `/usage` in Claude Code instead of inventing a number.
+
 ## Decisions export (`decisions-round1.json`)
 
 ```json
@@ -57,7 +103,7 @@ Figure handling at build: every `<img>` src is resolved against the repo root an
 
 **Two-way threads:** every card/comment id can carry a conversation. Bot entries live in `state/threads.json[id]` (`{author, ts, text, suggestion_id?}`); each human's replies live in their *own* `users/<handle>.json` under `decisions[id].thread` (`[{ts, text}]`, author implied by the file). The UI merges all sources chronologically by `ts` and offers an inline reply box on every card and thread entry — a reply only ever appends to the viewer's own file.
 
-Apply rules (Task 2+): accepted cards are applied to LaTeX by unique-span replacement only, atomically with any `bib_entries`; ambiguous/drifted spans are flagged `needs_manual_resolution`, never guessed. Span matching (shared `assets/span-match.js`, used by both the in-page tracked-changes renderer and apply) is whitespace- and smart-quote-tolerant: `\s+` runs collapse to one space and curly quotes fold to ASCII on both sides for matching *and* uniqueness counting, while the actual wrap/replacement uses true offsets in the raw text.
+Apply rules (Task 2+): apply is **author-agnostic** — it acts on bot cards from `suggestions.json` and human suggestions from `users/*.json` through the same code. Accepted cards are applied to LaTeX by unique-span replacement only, atomically with any `bib_entries`; a card carrying `source_json` is applied by parsing that JSON file, setting the key and re-serializing (with a drift guard on the previous value) — a JSON document is never string-replaced. Ambiguous/drifted spans are flagged `needs_manual_resolution`, never guessed. Span matching (shared `assets/span-match.js`, used by both the in-page tracked-changes renderer and apply) is whitespace- and smart-quote-tolerant: `\s+` runs collapse to one space and curly quotes fold to ASCII on both sides for matching *and* uniqueness counting, while the actual wrap/replacement uses true offsets in the raw text.
 
 ## Known limitations (accepted for review surface)
 

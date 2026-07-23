@@ -182,18 +182,21 @@ plus a `claude`/`codex` CLI on PATH and prints `agents: on (claude,
 codex detected)` — or serves read-and-comment only with an explanation
 when they're missing. `--no-agents` forces the bridge off, `--agents`
 forces it on (clear error if impossible), `--hosted` adds
-`REVIEW_PASSWORD` auth for a shared URL (an in-page password gate, no
-browser popup; tools can still send basic auth with any username), and
-`--upgrade` refreshes the engine files without touching your config,
-comments, or suggestions.
+`REVIEW_PASSWORD` auth for a shared URL (an in-page gate asking for a
+name and the password together, no browser popup; tools can still send
+basic auth with any username), and `--upgrade` refreshes the engine
+files without touching your config, comments, or suggestions.
 
 Two ways to bring in collaborators:
 
 - **Live URL** (`--share`): serves hosted mode behind a cloudflared
   quick tunnel — respects `REVIEW_PASSWORD` or generates one — and
-  prints `share this: <url>   password: <pw>`. Guests pick a handle,
-  read, and comment; their agent summons queue for you to release.
-  Ctrl-C stops server and tunnel together. Without `cloudflared` it
+  prints `share this: <url>   password: <pw>`. Guests give their name
+  at the gate, then read, comment and suggest; their agent summons
+  queue for you to release — or, if you grant a named guest agent
+  access in the People panel, go straight through within a daily cap
+  they can see. Apply, commit, revert and model switching stay yours
+  alone. Ctrl-C stops server and tunnel together. Without `cloudflared` it
   prints an install hint and keeps serving locally. For a stable URL
   across sessions, configure a named tunnel (docs link in the man page).
 - **Git sync**: commit `review/` and `.gitignore`; collaborators clone
@@ -201,6 +204,17 @@ Two ways to bring in collaborators:
   review` (agents auto-detected — without the CLIs they still read and
   comment) or use plain `node review/server.mjs`, then commit their
   comments back with `node review/submit.mjs --push`.
+
+What you get in the browser: comment or **suggest** on any block —
+paragraphs, figures, headings, list items, quotes, captions, table
+cells and the title. A suggestion (yours or a bot's) renders inline as
+tracked changes in its author's colour and flows through accept → ⚡
+Apply → ✓ Commit. Tagging `@claude`/`@codex`/`@all` in a comment is the
+*only* way to summon an agent. A top-right cluster shows who is here
+(coarse, in-memory, never logged to disk, desktop only), and the owner
+gets a bottom task console for document-level instructions plus a
+Settings panel with live context occupancy, session usage and the
+model switcher.
 
 - Engine: `frontends/review/` (document-agnostic; copied into each
   project's `review/` at setup).

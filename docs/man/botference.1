@@ -72,8 +72,10 @@ cloudflared tunnel, respecting REVIEW_PASSWORD or generating a
 password, and prints one shareable URL (see NAMED TUNNELS below for a
 stable URL across sessions);
 \fB\-\-hosted\fR enables shared-URL mode without the tunnel
-(REVIEW_PASSWORD, entered on an in-page password gate; tools may send
-Basic auth with any username instead); \fB\-\-upgrade\fR refreshes
+(REVIEW_PASSWORD, entered on an in-page gate that asks for a name and
+the password together \(em the name only decides which state/users
+file that guest writes; tools may send Basic auth with any username
+instead); \fB\-\-upgrade\fR refreshes
 engine files
 without touching review.config.json, state/, suggestions.json, or site/.
 .TP

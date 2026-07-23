@@ -107,8 +107,13 @@ function paperTitle() {
   return folder || 'Document review';
 }
 const GATE_TITLE = HOSTED ? paperTitle() : '';
-// minimal password gate, theme-consistent with assets/style.css in both schemes
-function gatePage(next, bad) {
+// minimal password gate, theme-consistent with assets/style.css in both schemes.
+// The gate asks for name AND password together: on a phone the sidebar (where
+// the handle picker used to live) is a drawer, so a guest who authenticated
+// first and picked a handle later had nowhere to pick it — and everything they
+// wrote was dropped by `who()`. The handle is NOT a credential (the password
+// is); it only names the file the guest writes.
+function gatePage(next, bad, handle) {
   const title = escHtml(GATE_TITLE);
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -127,9 +132,12 @@ form { background:var(--card); border:1px solid var(--line); border-radius:12px;
   padding:2rem 2.2rem; width:min(22rem,88vw); box-shadow:0 2px 14px rgba(0,0,0,.1) }
 h1 { font-size:1.05rem; margin:0 0 .3rem }
 p { margin:.2rem 0 1.1rem; color:var(--muted); font-size:.85rem }
-input[type=password] { width:100%; box-sizing:border-box; padding:.55rem .7rem; font-size:1rem;
+label { display:block; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--muted); margin:.9rem 0 .25rem }
+input { width:100%; box-sizing:border-box; padding:.55rem .7rem; font-size:1rem;
   border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg) }
-button { margin-top:.85rem; width:100%; padding:.55rem; font-size:1rem; border:none;
+.hint { margin:.35rem 0 0; font-size:.72rem }
+button { margin-top:1.1rem; width:100%; padding:.55rem; font-size:1rem; border:none;
   border-radius:8px; background:var(--accent); color:#fff; cursor:pointer }
 button:hover { background:var(--accent-hover) }
 .err { color:var(--accent); font-size:.85rem; margin:.7rem 0 0 }
@@ -137,10 +145,15 @@ button:hover { background:var(--accent-hover) }
 <form method="POST" action="/auth">
 <h1>${title}</h1>
 <p>This review is password-protected.</p>
-<input type="password" name="password" placeholder="password" autofocus autocomplete="current-password" aria-label="password">
+<label for="g-handle">your name</label>
+<input id="g-handle" name="handle" value="${escHtml(handle || '')}" placeholder="e.g. ada" maxlength="40"
+  autofocus autocapitalize="none" autocorrect="off" autocomplete="nickname" aria-label="your name">
+<p class="hint">names your comments — not a password. Change it later in the sidebar.</p>
+<label for="g-pass">password</label>
+<input id="g-pass" type="password" name="password" placeholder="password" autocomplete="current-password" aria-label="password">
 <input type="hidden" name="next" value="${escHtml(next)}">
-<button>enter</button>
-${bad ? '<div class="err">wrong password — try again</div>' : ''}
+<button>enter the review</button>
+${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again' : bad)}</div>` : ''}
 </form></body></html>`;
 }
 const safeNext = n => (n && n.startsWith('/') && !n.startsWith('//')) ? n : '/';
@@ -154,16 +167,37 @@ function authEndpoint(req, res) {
   req.on('end', () => {
     const form = new URLSearchParams(body);
     const next = safeNext(form.get('next'));
+    const raw = form.get('handle') || '';
+    const handle = sanitizeHandle(raw);
+    // handle validation happens BEFORE the password check gives nothing away:
+    // both failures re-render the same gate. Claiming the owner's handle is
+    // refused here as it is in who() — the owner token, not the gate, is what
+    // makes someone the owner, so an unclaimable name must be said plainly.
+    if (!handle) {
+      res.writeHead(401, GATE_HEAD).end(gatePage(next, 'enter a name so your comments can be saved', raw));
+      return;
+    }
     if (!safeEqual(form.get('password') || '', PASSWORD)) {
-      res.writeHead(401, GATE_HEAD).end(gatePage(next, true));
+      res.writeHead(401, GATE_HEAD).end(gatePage(next, true, raw));
+      return;
+    }
+    if (handle === HANDLE) {
+      res.writeHead(401, GATE_HEAD).end(gatePage(next,
+        `“${handle}” is the document owner's name here — please pick another`, ''));
       return;
     }
     const exp = String(Date.now() + AUTH_TTL_MS);
     const mac = crypto.createHmac('sha256', AUTH_SECRET).update(exp).digest('hex');
     // Secure when the browser reached us over https (the tunnel forwards the proto)
     const secure = String(req.headers['x-forwarded-proto'] || '').includes('https') ? '; Secure' : '';
+    // review_auth is the credential (HttpOnly). review_handle is a NAME, not a
+    // credential: readable by the page so review.js can seed its handle slot,
+    // and never trusted by the server for anything but "which file is yours".
     res.writeHead(303, {
-      'set-cookie': `review_auth=${exp}.${mac}; Max-Age=${Math.floor(AUTH_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+      'set-cookie': [
+        `review_auth=${exp}.${mac}; Max-Age=${Math.floor(AUTH_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+        `review_handle=${encodeURIComponent(handle)}; Max-Age=${Math.floor(AUTH_TTL_MS / 1000)}; Path=/; SameSite=Lax${secure}`,
+      ],
       location: next,
     }).end();
   });
@@ -182,9 +216,15 @@ function denied(req, res) {
 // browser picked once (header), never trusted to be the owner's without the token
 const sanitizeHandle = h => String(h || '').toLowerCase().replace(/[^\w-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 const isOwner = req => !HOSTED || (!!req.headers['x-review-owner'] && safeEqual(req.headers['x-review-owner'], OWNER_TOKEN));
+// the x-review-handle header wins (the sidebar picker can change it mid-session);
+// the review_handle cookie set by the password gate is the fallback, so a guest
+// is identified from their very first request — including on a phone, where the
+// sidebar picker sits inside a drawer. Neither is a credential: the password
+// cookie is, and the owner's handle still requires the owner token.
 function who(req) {
   if (!HOSTED) return HANDLE;
-  const h = sanitizeHandle(req.headers['x-review-handle']);
+  const h = sanitizeHandle(req.headers['x-review-handle'])
+    || sanitizeHandle(decodeURIComponent(cookieOf(req, 'review_handle') || ''));
   if (!h) return null;
   if (h === HANDLE && !isOwner(req)) return null; // nobody impersonates the owner's handle
   return h;
@@ -236,8 +276,22 @@ function mergedData(req) {
     if (u) users[u.handle || f.replace(/\.json$/, '')] = u.decisions || {};
   }
   const owner = isOwner(req);
+  const me = who(req);
+  // grants: the owner sees the whole table (People panel); a guest sees ONLY
+  // their own budget, because the cap is a budget they must be able to read —
+  // "4 of 5 agent calls left today", never a silent throttle
+  const myGrant = me && grantFor(me);
   return {
-    me: who(req),
+    me,
+    grants: owner ? readJSON(GRANTS, {}) : undefined,
+    grant_usage: owner
+      ? (readJSON(GRANT_USE, {}).date === today() ? readJSON(GRANT_USE, {}).counts || {} : {})
+      : undefined,
+    my_grant: myGrant ? { ...myGrant, used_today: grantUsed(me) } : null,
+    // everyone who has ever joined this review (their user file exists) —
+    // the People panel's roster, independent of who is online right now
+    people: Object.keys(users).sort(),
+    presence: presenceList(),
     hosted: HOSTED,
     owner,
     owner_handle: HANDLE, // additive (2026-07): honest guest queue labels
@@ -270,14 +324,118 @@ function transcriptNote(text) {
     chat.submit({ mention_id: `apply-${Date.now()}`, target_id: null, author: HANDLE, text: `${text}\nThis is a transcript record of a review-page action — acknowledge in one short line; no action needed.` });
   }
 }
-// accepted = the owner's own decisions (apply is an owner act on their accepts)
+// accepted = the owner's own decisions (apply is an owner act on their accepts).
+// `status` carries the decision on bot cards; a HUMAN suggestion occupies
+// `status` with its own entry type, so its accept/reject lands in `decision`.
 function acceptedIds() {
   const dec = readJSON(userFile(HANDLE), {}).decisions || {};
-  return Object.keys(dec).filter(id => dec[id].status === 'accepted');
+  return Object.keys(dec).filter(id => dec[id].status === 'accepted' || dec[id].decision === 'accepted');
 }
 
 // collaborator mentions in hosted mode queue here until the owner releases them
 const PENDING = path.join(STATE, 'pending-mentions.json');
+// per-handle agent grants (owner-written) + the daily budget ledger those caps
+// are measured against. The ledger is a BUDGET counter, not an attendance log:
+// it holds a date and a count per handle and nothing else.
+const GRANTS = path.join(STATE, 'grants.json');
+const GRANT_USE = path.join(STATE, 'grant-usage.json');
+const DEFAULT_CAP = 5;
+const today = () => new Date().toISOString().slice(0, 10);
+function grantFor(handle) {
+  const g = readJSON(GRANTS, {})[handle];
+  return g && g.agents ? { agents: true, daily_cap: Number(g.daily_cap) || DEFAULT_CAP } : null;
+}
+function grantUsed(handle) {
+  const u = readJSON(GRANT_USE, {});
+  return u.date === today() ? (u.counts || {})[handle] || 0 : 0;
+}
+function grantSpend(handle) {
+  let u = readJSON(GRANT_USE, {});
+  if (u.date !== today()) u = { date: today(), counts: {} };
+  u.counts[handle] = (u.counts[handle] || 0) + 1;
+  fs.writeFileSync(GRANT_USE, JSON.stringify(u, null, 1));
+  return u.counts[handle];
+}
+
+// --- presence (item 5) --------------------------------------------------
+// In-memory ONLY. Never written to disk — there is no attendance log, by
+// design. Symmetric (everyone sees everyone at the same granularity) and
+// coarse (state + section; no keystroke, dwell or duration is recorded).
+// Desktop clients beat every ~15s; mobile clients never beat and simply do
+// not appear. A handle with no beat for OFFLINE_MS is dropped entirely.
+const OFFLINE_MS = 45000;
+const PRESENT = new Map(); // handle -> {state, section, section_title, focused_id, owner, ts}
+let presenceTimer = null;
+function presenceList() {
+  const now = Date.now();
+  const out = [];
+  for (const [handle, p] of PRESENT) {
+    if (now - p.ts > OFFLINE_MS) { PRESENT.delete(handle); continue; }
+    out.push({ handle, state: p.state, section: p.section, section_title: p.section_title, owner: p.owner });
+  }
+  return out.sort((a, b) => a.handle.localeCompare(b.handle));
+}
+function firePresence() {
+  clearTimeout(presenceTimer);
+  presenceTimer = setTimeout(() => pushAll({ type: 'presence', people: presenceList() }), 250);
+}
+function beat(handle, d, owner) {
+  const state = d.state === 'active' ? 'active' : 'idle';
+  PRESENT.set(handle, {
+    state, owner: !!owner, ts: Date.now(),
+    section: String(d.section || '').slice(0, 80),
+    section_title: String(d.section_title || '').slice(0, 80),
+    focused_id: String(d.focused_id || '').slice(0, 120),
+  });
+  firePresence();
+}
+// sweep offline handles even when nobody is beating, so the cluster empties
+setInterval(() => { const n = PRESENT.size; presenceList(); if (PRESENT.size !== n) firePresence(); }, 15000).unref();
+
+// --- usage / settings panel (item 8) ------------------------------------
+// Honest by construction. Three tiers, each labeled for what it is:
+//  · occupancy   — live, exact: the bridge's own status snapshot.
+//  · session     — real turn counts and prompt-occupancy tokens per agent and
+//                  per handle; the cost figure is an ESTIMATE (see chat.mjs).
+//  · rollup      — real billed cost, but only for runs recorded in botference's
+//                  usage log; absent when this machine has none.
+// There is deliberately NO subscription-quota meter: neither provider exposes
+// Pro/Max or ChatGPT plan quota to anything but their interactive CLIs.
+function usageRollup() {
+  const log = process.env.BOTFERENCE_USAGE_LOG ||
+    (process.env.BOTFERENCE_HOME ? path.join(process.env.BOTFERENCE_HOME, 'logs', 'usage.jsonl') : null);
+  if (!log || !fs.existsSync(log)) return null;
+  const dayMs = 86400000;
+  const now = Date.now();
+  const acc = { today: { cost: 0, runs: 0 }, week: { cost: 0, runs: 0 }, source: path.basename(log) };
+  let text = '';
+  try { text = fs.readFileSync(log, 'utf8'); } catch { return null; }
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    const t = Date.parse(e.timestamp || '');
+    if (!t || e.error) continue;
+    const c = Number(e.cost_usd) || 0;
+    if (now - t < dayMs) { acc.today.cost += c; acc.today.runs++; }
+    if (now - t < 7 * dayMs) { acc.week.cost += c; acc.week.runs++; }
+  }
+  acc.today.cost = Math.round(acc.today.cost * 1e4) / 1e4;
+  acc.week.cost = Math.round(acc.week.cost * 1e4) / 1e4;
+  return acc;
+}
+function usageReport() {
+  return {
+    chat: !!(chat && chat.available),
+    models: chat ? chat.modelState() : null,
+    session: chat ? chat.usageState() : null,
+    rollup: usageRollup(),
+    // stated, not measured: no provider API reports subscription-plan quota
+    quota_note: 'Weekly subscription quota — not exposed by either provider. Run /usage in Claude Code.',
+  };
+}
+// the synthetic thread id document-level task-console turns are anchored to,
+// so their streams land in the console instead of an (absent) margin card
+const CONSOLE_ID = '__console__';
 
 // section a card lives on, for human-readable notification text
 function cardSection(id) {
@@ -463,8 +621,32 @@ function chatEndpoint(req, res, url) {
           res.writeHead(200, JSON_HEAD).end('{"queued":false,"reason":"unknown target"}'); return;
         }
         if (!owner) {
-          // collaborators cannot summon bots directly: queue for the owner to release
+          // Three tiers (item 7): owner → straight through; a GRANTED handle
+          // within its daily cap → straight through, one budget unit spent;
+          // everyone else (and anyone over cap) → the owner's release queue.
+          // Revocation and cap changes are read here, so they take effect on
+          // the very next request.
           const m = { mention_id: data.mention_id, target_id: data.target_id, author: who(req) || 'collaborator', text: data.text };
+          const grant = m.author && grantFor(m.author);
+          if (grant) {
+            const used = grantUsed(m.author);
+            if (used < grant.daily_cap) {
+              const left = grant.daily_cap - grantSpend(m.author);
+              const r = chat.submit(m);
+              res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...r, granted: true, calls_left: left, daily_cap: grant.daily_cap }));
+              return;
+            }
+            // over cap: honest message, and the turn still reaches the owner
+            const pendingCap = readJSON(PENDING, []);
+            if (!pendingCap.find(x => x.mention_id === m.mention_id)) {
+              pendingCap.push(m); fs.writeFileSync(PENDING, JSON.stringify(pendingCap, null, 1));
+              notifyOwner(`review: ${m.author} hit their daily agent cap on ${cardSection(m.target_id)}`);
+            }
+            res.writeHead(200, JSON_HEAD).end(JSON.stringify({ queued: false, pending: true, capped: true,
+              calls_left: 0, daily_cap: grant.daily_cap,
+              reason: `daily cap reached (${grant.daily_cap}/${grant.daily_cap}) — queued for the owner to release` }));
+            return;
+          }
           const pending = readJSON(PENDING, []);
           if (!pending.find(x => x.mention_id === m.mention_id)) {
             pending.push(m); fs.writeFileSync(PENDING, JSON.stringify(pending, null, 1));
@@ -506,6 +688,23 @@ export function handler(req, res) {
     res.writeHead(200, JSON_HEAD).end(JSON.stringify({ handle: who(req), slug: CFG.slug, hosted: HOSTED, owner: isOwner(req) }));
     return;
   }
+  // read-only view of a CONFIGURED source file, so the browser can resolve a
+  // human suggestion to a UNIQUE span at COMPOSE time (and say what it locked
+  // onto) instead of discovering the ambiguity at apply time. Strictly limited
+  // to the files review.config.json lists, plus the config itself when the
+  // masthead title lives in it.
+  if (req.method === 'GET' && url === '/source') {
+    const want = new URLSearchParams(req.url.split('?')[1] || '').get('file') || '';
+    const allowed = new Set([...sourceFiles(), 'review/review.config.json']);
+    if (!allowed.has(want)) { res.writeHead(404, JSON_HEAD).end('{"ok":false,"error":"not a configured source file"}'); return; }
+    const f = path.resolve(ROOT, want);
+    if (!isInside(f, ROOT)) { res.writeHead(403, JSON_HEAD).end('{"ok":false}'); return; }
+    fs.readFile(f, 'utf8', (err, text) => {
+      if (err) { res.writeHead(404, JSON_HEAD).end('{"ok":false,"error":"not found"}'); return; }
+      res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, file: want, text }));
+    });
+    return;
+  }
   if (req.method === 'GET' && url === '/data') {
     res.writeHead(200, JSON_HEAD).end(JSON.stringify(mergedData(req)));
     return;
@@ -527,7 +726,7 @@ export function handler(req, res) {
     chatEndpoint(req, res, url);
     return;
   }
-  if (req.method === 'POST' && (url === '/state' || url === '/summon')) {
+  if (req.method === 'POST' && url === '/state') {
     const handle = who(req);
     if (!handle) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"pick a handle first"}'); return; }
     let body = '';
@@ -536,13 +735,73 @@ export function handler(req, res) {
       try {
         const data = JSON.parse(body);
         // the browser only ever writes the server-identified caller's own file
-        const file = url === '/state' ? userFile(handle) : path.join(STATE, 'summon.json');
-        const prev = url === '/state' ? (readJSON(file, {}).decisions || {}) : null;
-        const payload = url === '/state'
-          ? { handle, updated: new Date().toISOString(), decisions: stampEdits(prev, data.decisions || {}), build: data.build || null }
-          : { received: new Date().toISOString(), handle, ...data };
-        fs.writeFileSync(file, JSON.stringify(payload, null, 1));
+        const file = userFile(handle);
+        const prev = readJSON(file, {}).decisions || {};
+        fs.writeFileSync(file, JSON.stringify(
+          { handle, updated: new Date().toISOString(), decisions: stampEdits(prev, data.decisions || {}), build: data.build || null }, null, 1));
         res.writeHead(200, JSON_HEAD).end('{"ok":true}');
+      } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
+    });
+    return;
+  }
+  // --- presence (item 5): coarse, in-memory, symmetric. See PRESENCE below. ---
+  if (req.method === 'POST' && url === '/beat') {
+    const handle = who(req);
+    if (!handle) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"no handle"}'); return; }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4000) req.destroy(); });
+    req.on('end', () => {
+      try { beat(handle, JSON.parse(body || '{}'), isOwner(req)); } catch { }
+      res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, people: presenceList() }));
+    });
+    return;
+  }
+  // --- per-handle agent grants (item 7): owner-written, read by /mention ---
+  if (req.method === 'POST' && url === '/grants') {
+    if (!isOwner(req)) { res.writeHead(403, JSON_HEAD).end('{"ok":false,"error":"owner only"}'); return; }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const d = JSON.parse(body || '{}');
+        const h = sanitizeHandle(d.handle);
+        if (!h || h === HANDLE) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"bad handle"}'); return; }
+        const g = readJSON(GRANTS, {});
+        if (d.agents) {
+          const cap = Math.max(0, Math.min(500, Math.floor(Number(d.daily_cap)) || 0)) || DEFAULT_CAP;
+          g[h] = { agents: true, daily_cap: cap };
+        } else delete g[h];
+        fs.writeFileSync(GRANTS, JSON.stringify(g, null, 1));
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, grants: g }));
+      } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
+    });
+    return;
+  }
+  // --- settings panel data (item 8, owner-only): occupancy + honest usage ---
+  if (req.method === 'GET' && url === '/usage') {
+    if (!isOwner(req)) { res.writeHead(403, JSON_HEAD).end('{"ok":false,"error":"owner only"}'); return; }
+    res.writeHead(200, JSON_HEAD).end(JSON.stringify(usageReport()));
+    return;
+  }
+  // --- task console (item 6, owner-only): document-level instructions with no
+  // anchor text. Same strict routing as a comment mention: nothing reaches an
+  // agent without @claude/@codex/@all. ---
+  if (req.method === 'POST' && url === '/task') {
+    if (!isOwner(req)) { res.writeHead(403, JSON_HEAD).end('{"ok":false,"error":"owner only"}'); return; }
+    if (!chat) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"server not started with --chat"}'); return; }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > (CFG.bridge?.mention_max_chars || 4000) * 4) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const text = String(data.text || '');
+        if (text.length > (CFG.bridge?.mention_max_chars || 4000)) throw new Error('too long');
+        if (!/@(claude|codex|all)\b/i.test(text)) {
+          res.writeHead(200, JSON_HEAD).end('{"queued":false,"reason":"no @claude/@codex/@all tag"}'); return;
+        }
+        const r = chat.submit({ mention_id: data.mention_id, target_id: CONSOLE_ID, doc_task: true,
+          author: who(req) || HANDLE, text });
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify(r));
       } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
     });
     return;

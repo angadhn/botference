@@ -315,17 +315,26 @@ function postprocess(html) {
 
 // paper title: an explicit config "title" wins (papers without \title{} —
 // detect emits "title": "" for those); otherwise parsed from the main source
-// each build so a retitle flows through
+// each build so a retitle flows through.
+// TITLE_SOURCE records WHERE the rendered title came from, so a title
+// suggestion knows what to edit: the master's \title{…} macro (string span)
+// or the config's "title" key (JSON-aware edit — never string-replaced).
 let PAPER_TITLE = '';
+let TITLE_SOURCE = null;
 if (CFG.title) {
   PAPER_TITLE = String(CFG.title).trim()
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  TITLE_SOURCE = { kind: 'config', file: 'review/review.config.json', key: 'title', raw: String(CFG.title) };
 } else if (CFG.main) {
   try {
     const main = fs.readFileSync(path.join(ROOT, CFG.main), 'utf8');
     const m = /\\title\s*\{/.exec(main);
     const arg = m && braceArg(main, m.index + m[0].length - 1);
-    if (arg) PAPER_TITLE = cleanTitle(arg.text.replace(/(?<!\\)%[^\n]*/g, ''));
+    if (arg) {
+      PAPER_TITLE = cleanTitle(arg.text.replace(/(?<!\\)%[^\n]*/g, ''));
+      // the full macro call is the unique span an apply can replace
+      TITLE_SOURCE = { kind: 'latex', file: CFG.main, macro: main.slice(m.index, arg.end), arg: arg.text };
+    }
   } catch { }
 }
 if (!PAPER_TITLE && CFG.title !== false) {
@@ -344,6 +353,9 @@ if (!PAPER_TITLE && CFG.title !== false) {
       .replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+  // derived masthead (no \title{}, no config title): renaming means setting the
+  // config's "title" key, so that is what a title suggestion must target
+  if (!TITLE_SOURCE) TITLE_SOURCE = { kind: 'config', file: 'review/review.config.json', key: 'title', raw: '' };
 }
 
 const NAV = SECTIONS.map(s => `<a href="${s.slug}.html" data-slug="${s.slug}">${s.title}</a>`).join('\n');
@@ -431,8 +443,15 @@ try {
   const dirty = execFileSync('git', ['status', '--porcelain', '--', ...srcPaths], { cwd: ROOT, encoding: 'utf8' }).trim() ? '-dirty' : '';
   git = rev + dirty;
 } catch { }
+// `sections` + `title_source` are additive: they let the browser resolve a
+// human suggestion to a SOURCE span (which file a page came from, what the
+// masthead title is written in) before the card is ever saved. Older clients
+// ignore them; a client on a newer engine than its build simply can't offer
+// suggest mode until the next rebuild.
 const meta = { site_version: 3, slug: CFG.slug, built_at: new Date().toISOString(), source_commit: git,
-  legacy_keys: CFG.legacy_storage_keys || [], suggestion_ids: cards.map(c => c.id) };
+  legacy_keys: CFG.legacy_storage_keys || [], suggestion_ids: cards.map(c => c.id),
+  sections: SECTIONS.map(s => ({ slug: s.slug, file: s.file, title: s.title })),
+  title_source: TITLE_SOURCE };
 fs.writeFileSync(path.join(OUT, 'suggestions.js'),
   'window.SUGGESTIONS=' + JSON.stringify(cards) + ';\nwindow.BUILD_META=' + JSON.stringify(meta) + ';');
 fs.writeFileSync(path.join(OUT, 'index.html'), `<meta http-equiv="refresh" content="0;url=${SECTIONS[0].slug}.html">`);

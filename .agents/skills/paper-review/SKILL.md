@@ -58,9 +58,13 @@ the launcher isn't available:
 - Manual (no launcher): `node review/server.mjs` — static + comment
   mirror, no bots; `--chat` adds the bot bridge (needs
   `BOTFERENCE_HOME` or the config's `bridge.core_dir`); `--hosted` adds
-  `REVIEW_PASSWORD` basic auth, per-browser handle picker, rate limits,
-  owner-only summons. The server serves ONLY `review/site/` + the
-  figures dir (path-traversal guarded) — keep it that way.
+  the `REVIEW_PASSWORD` gate, rate limits, and owner-gated summons. The
+  gate asks for **a name and the password together** (a name is not a
+  credential — it only picks which `users/<handle>.json` the guest
+  writes; asking on the gate is what makes hosted mode work on a phone,
+  where the sidebar picker is inside a drawer). The server serves ONLY
+  `review/site/` + the figures dir (path-traversal guarded) — keep it
+  that way.
 - Collaborator options: the owner's `--share` URL (read + comment;
   their agent summons queue for the owner to release), or clone the
   repo and run the identical `botference review` (agents auto-detected;
@@ -72,12 +76,19 @@ the launcher isn't available:
 
 ## The interface contract (don't regress these)
 
-- **Comments are the only conversation surface.** No chat panel. All
-  discussion lives in margin threads under comments; the sidebar
-  presence strip (connection ●, agents on/off, per-agent animated
-  "Claude is crystallizing…" in author colors) is the only global
-  signal. Interrupts (permissions/choices) render on the card, or as
-  sidebar toasts when off-page (120s default-deny).
+- **Comments are the only surface for discussing the document.**
+  There is no chat-about-the-paper panel and there will not be one: it
+  was tried, it was confusing, it is rejected. Anything *about the
+  text* is an anchored margin thread. The one exception, added
+  deliberately, is the **task console** — a bottom-docked, collapsible,
+  owner-only, desktop-only bar for *document-level instructions that
+  have no anchor text*: "apply all", "commit", "restructure section 3",
+  "verify every citation resolves". Same strict routing (no
+  `@claude`/`@codex`/`@all`, no agent). The Changes widget lives inside
+  it, because committing is itself a document-level task. Interrupts
+  (permissions/choices) render on the card, in the console for
+  console-issued turns, or as sidebar toasts when off-page (120s
+  default-deny).
 - **Strict-but-social routing.** `@claude` routes to Claude alone; the
   free-form footer handoff is disabled on review turns. To involve the
   other agent, @-tag it in your thread reply — the server converts
@@ -90,12 +101,40 @@ the launcher isn't available:
   reopenable resolved tab; humans can edit/delete their own entries
   (`edited: true` — treat an edited entry newer than your ack as new
   input); author filter chips; light/dark/system theme toggle.
-- **Changes widget** (top of sidebar, owner-only) is the commit
-  workflow: accept → ⚡ Apply → read → ✓ Commit (or ↩ Revert). Apply is
-  deterministic (`apply.mjs`: unique-span replacement, atomic bib
-  append, `needs_manual_resolution` on drift — never guessed). Apply
-  and commit are always separate actions. Out-of-band source edits
-  surface in the widget with a commit action.
+- **Changes widget** (inside the task console, owner-only) is the
+  commit workflow: accept → ⚡ Apply → read → ✓ Commit (or ↩ Revert).
+  Apply is deterministic AND author-agnostic (`apply.mjs`: unique-span
+  replacement over bot cards *and* human suggestions, atomic bib
+  append, JSON-aware edits for config-key targets,
+  `needs_manual_resolution` on drift — never guessed). Apply and commit
+  are always separate actions. Out-of-band source edits surface in the
+  widget with a commit action.
+- **Everything is commentable.** Paragraphs, figures, headings, list
+  items, block quotes, captions, table cells and the masthead title all
+  carry a `data-cid`. `blk-N` is a POSITIONAL index over `#paper p,
+  #paper figure` and every existing comment is anchored to one — so
+  that selector is frozen, and each newly anchorable type has its own
+  namespace (`-hd-N`, `-misc-N`). Never widen the `blk` selector.
+- **Humans suggest too.** The composer has Comment and Suggest modes.
+  A human suggestion is an entry in that human's own
+  `users/<handle>.json` (`suggestions.json` stays bot-owned), renders
+  inline as del/ins in that human's colour through the same path as a
+  bot card, and flows through the same accept → Apply → Commit. Its
+  source span is resolved to something UNIQUE at compose time — widened
+  with context if ambiguous, anchored on the enclosing macro for
+  headings, aimed at the config `title` key when the masthead comes
+  from there — and the UI shows what it locked onto. See SCHEMA.md.
+- **Presence is coarse and private.** Humans + agents in the top-right
+  cluster; state computed from real interaction, in server memory only,
+  never written to disk, symmetric for everyone, desktop-only.
+- **Three tiers, not two.** `state/grants.json` (owner-written) can let
+  a named handle summon agents within a visible daily cap. Apply,
+  Commit, Revert, model switching and permission answers stay
+  owner-only forever — a grant never confers them.
+- **Never invent a quota number.** Neither provider exposes
+  subscription (Pro/Max, ChatGPT plan) quota to anything scriptable;
+  the Settings panel says so and points at `/usage`. Do not
+  reverse-engineer internal endpoints to fake it.
 - **Calm UI**: no `prompt()`/`alert()`/`confirm()`, no scroll-jumps,
   layout reflows (nothing overlays content), engine files stay 100%
   document-agnostic (all specifics in `review.config.json`).
@@ -104,18 +143,23 @@ the launcher isn't available:
 
 | File | Writer |
 |---|---|
-| `state/users/<handle>.json` | that human's browser (via server) |
-| `state/summon.json` | browser 🚩 |
+| `state/users/<handle>.json` | that human's browser (via server) — comments, decisions, thread replies AND that human's suggestions |
 | `suggestions.json` | bots |
 | `state/threads.json` | bots |
 | `state/ack.json` | bots |
 | `state/apply.json` | apply.mjs (round ledger) |
+| `state/grants.json`, `state/grant-usage.json` | the owner, via the server |
 | `site/`, `suggestions.js` | build.mjs only |
+| presence | **nobody — server memory only, never a file** |
 
-## Round protocol (when summoned — by tag, 🚩, or "read my comments")
+## Round protocol (when summoned — by an @tag or "read my comments")
 
 1. Read all `users/*.json`, diff against your `ack.json` entry
-   (include entries with `edited:true` newer than your ack).
+   (include entries with `edited:true` newer than your ack). Those
+   files now also carry humans' own `user-suggestion` entries — read
+   them as proposals, and do not duplicate one a human already made.
+   A DOCUMENT-LEVEL turn from the task console says so in its envelope:
+   answer in the turn text, do not write a thread entry for it.
 2. Reply to each new comment in `threads.json` — length case-by-case,
    **never more than 6–8 sentences**, no restating, no preamble. If a
    text change is warranted, add a suggestion card

@@ -87,6 +87,12 @@
     // chat detection falls back to SSE events / 409s, and the out-of-band line hides
     if (typeof j.chat === 'boolean') PRESENCE.chat = j.chat;
     SRC_DIRTY = Array.isArray(j.source_dirty) ? j.source_dirty : SRC_DIRTY;
+    // presence / roster / grants (additive: older servers omit them)
+    if (Array.isArray(j.presence)) PEOPLE = j.presence;
+    if (Array.isArray(j.people)) ROSTER = j.people;
+    if (j.grants) GRANTS = j.grants;
+    if (j.grant_usage) GRANT_USE = j.grant_usage;
+    MY_GRANT = j.my_grant || null;
     if (j.models) applyModelState(j.models); // model-switcher seed (additive field)
     else renderModelSwitcher();              // reflect chat on/off even without a seed
   }
@@ -179,6 +185,47 @@
     b.textContent = 'server unreachable — your comments are saved in this browser and will sync if this URL comes back. You can also export them (sidebar) and email/commit them.';
     document.body.appendChild(b);
   }
+  // ---- human presence (item 5) --------------------------------------------
+  // Computed from REAL interaction, not from having a socket open: a parked tab
+  // is idle, not "active". In-memory on the server, never written to disk, and
+  // symmetric — everyone sees everyone at the same coarse granularity (state +
+  // section). DESKTOP ONLY: phones send no beats and simply don't appear.
+  const IDLE_MS = 60000, BEAT_MS = 15000;
+  const isDesktop = () => window.matchMedia('(min-width: 900px)').matches;
+  let lastTouch = Date.now();
+  let PEOPLE = []; // [{handle, state, section, section_title, owner}]
+  const initials = h => String(h || '?').replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '?';
+  function myPresenceState() {
+    if (document.visibilityState !== 'visible') return 'idle';
+    return Date.now() - lastTouch < IDLE_MS ? 'active' : 'idle';
+  }
+  const sectionTitle = () => {
+    const a = document.querySelector(`nav.toc a[data-slug="${CSS.escape(slug)}"]`);
+    return a ? a.textContent.trim() : slug;
+  };
+  let beatTimer = null;
+  function sendBeat() {
+    if (!LIVE || !isDesktop()) return;
+    api('/beat', { method: 'POST', body: JSON.stringify({
+      state: myPresenceState(), section: slug, section_title: sectionTitle(), focused_id: FOCUSED || '',
+    }) }).then(r => r.json()).then(j => { if (j && j.people) { PEOPLE = j.people; renderPresence(); } }).catch(() => { });
+  }
+  function startHeartbeat() {
+    if (!LIVE || !isDesktop() || beatTimer) return;
+    const touch = () => { lastTouch = Date.now(); };
+    for (const ev of ['pointerdown', 'pointermove', 'keydown', 'scroll', 'selectionchange'])
+      document.addEventListener(ev, touch, { passive: true });
+    // a hidden tab is idle IMMEDIATELY — not 60s later
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') touch(); sendBeat(); });
+    beatTimer = setInterval(sendBeat, BEAT_MS);
+    sendBeat();
+  }
+  function humanAvatarHtml(p) {
+    const me = ME && p.handle === ME;
+    const where = p.section_title ? ` — ${p.state === 'active' ? 'reading' : 'idle on'} §${p.section_title}` : '';
+    const tip = `${p.handle}${me ? ' (you)' : ''}${where}`;
+    return `<div class="avatar-ring human ${esc(p.state)}" data-handle="${esc(p.handle)}" style="--author:${authorColor(p.handle)}" title="${esc(tip)}"><span class="avatar initials">${esc(initials(p.handle))}</span></div>`;
+  }
   function renderPresence() {
     renderServerGone();
     const el = document.getElementById('presence');
@@ -186,10 +233,16 @@
       const [cls, txt] = connState();
       const chatTxt = PRESENCE.chat === null ? 'agents: —' : `agents: ${PRESENCE.chat ? 'on' : 'off'}`;
       el.innerHTML = `<div class="conn ${cls}">${esc(txt)}</div>
-        <div class="chatmode" title="agent chat (server started with --chat)">${chatTxt}</div>`;
+        <div class="chatmode" title="agent chat (server started with --chat)">${chatTxt}</div>${budgetHtml()}`;
     }
     const av = document.getElementById('avatars');
-    if (av) av.innerHTML = AGENTS.map(a => {
+    if (!av) return;
+    // humans first (initials disc in the handle's hashed colour — the SAME
+    // colour as their comments and chips), then a hairline, then the agents
+    // (brand glyph + rotating working ring). Two different visual grammars so
+    // a person is never mistaken for a bot.
+    const humans = PEOPLE.map(humanAvatarHtml).join('');
+    const agents = AGENTS.map(a => {
       const s = PRESENCE.agents[a];
       const name = cap(a);
       const tip = s.exhausted ? `${name} is out of credits — ${s.exhausted}`
@@ -198,6 +251,9 @@
       // identically in both themes
       return `<div class="avatar-ring${s.active ? ' working' : ''}${s.exhausted ? ' exhausted' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span>${s.exhausted ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</div>`;
     }).join('');
+    av.innerHTML = humans + (humans ? '<span class="av-div" aria-hidden="true"></span>' : '') + agents
+      + `<button class="av-btn" id="people-btn" title="People">👥</button>`
+      + (IS_OWNER ? '<button class="av-btn" id="gear-btn" title="Settings" aria-label="Settings">⚙</button>' : '');
   }
   const pickVerb = () => VERBS[Math.floor(Math.random() * VERBS.length)];
   // one verb per agent per turn, chosen at turn-start (or first stream sighting)
@@ -242,14 +298,13 @@
         <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select>
       </div></div>`;
   }
+  // the switcher lives in the Settings slide-over (owner-only, desktop-only);
+  // this is a no-op whenever that panel isn't open
   function renderModelSwitcher() {
-    const el = document.getElementById('model-switcher');
+    const el = document.getElementById('settings-models');
     if (!el) return;
-    // only meaningful in a live --chat session: shown once agents are proven
-    // attached (PRESENCE.chat === true), hidden for static exports / no --chat
-    if (PRESENCE.chat !== true) { el.hidden = true; el.innerHTML = ''; return; }
-    el.hidden = false;
-    el.innerHTML = '<div class="chip-label">agent models</div>' + AGENTS.map(modelRow).join('');
+    el.innerHTML = PRESENCE.chat === true ? AGENTS.map(modelRow).join('')
+      : '<div class="so-empty">agents are not attached (start the server with --chat)</div>';
   }
   // optimistic switch: clear the exhausted flag now, post the control command;
   // the authoritative current model lands on the next status event
@@ -323,7 +378,7 @@
       </div></div>`;
   }
   function exhaustNotice(agent, reason, tid) {
-    if (tid && document.querySelector(threadSel(tid))) {
+    if (hasSurface(tid)) {
       activityOf(tid).notice = { agent, reason };
       syncActivity(tid);
     } else {
@@ -404,7 +459,7 @@
   }
   function jumpToActive() {
     const tid = PRESENCE.tid;
-    if (!tid) return;
+    if (!tid || tid === '__console__') return; // console turns are already on screen
     if (document.querySelector(`.card[data-id="${CSS.escape(tid)}"]`)) {
       activateCard(tid); // focuses (rerenders), so re-query the fresh card node
       const card = document.querySelector(`.card[data-id="${CSS.escape(tid)}"]`);
@@ -420,9 +475,42 @@
     if (a.dataset.slug === slug) a.setAttribute('data-current', '1');
   });
 
-  // stable ids on blocks
-  document.querySelectorAll('#paper p, #paper figure').forEach((el, i) => {
-    el.dataset.cid = `${slug}-blk-${i}`;
+  // ---- stable ids on blocks ------------------------------------------------
+  // MIGRATION-CRITICAL: `blk-N` is a POSITIONAL index over the matched element
+  // list. Every existing comment in every live paper is anchored to one. So the
+  // `#paper p, #paper figure` → `${slug}-blk-${i}` pass below must stay exactly
+  // as it has always been — adding a selector to it would renumber every block
+  // after the first newly-matched element and silently re-anchor every comment.
+  //
+  // Newly commentable element types therefore get their OWN independent
+  // counters in their own namespaces (`-hd-N` for headings, `-misc-N` for list
+  // items, block quotes, captions and table cells). Nothing that exists today
+  // moves; new anchors can only ever be created, never reassigned.
+  function anchorBlocks(sel, prefix) {
+    const out = [];
+    document.querySelectorAll(sel).forEach((el, i) => {
+      if (el.dataset.cid) return;          // never overwrite an assigned anchor
+      el.dataset.cid = `${slug}-${prefix}-${i}`;
+      out.push(el);
+    });
+    return out;
+  }
+  const anchored = [
+    ...anchorBlocks('#paper p, #paper figure', 'blk'),        // ← byte-identical to the original pass
+    ...anchorBlocks('#paper h1, #paper h2, #paper h3, #paper h4, #paper h5, #paper h6', 'hd'),
+    ...anchorBlocks('#paper li, #paper blockquote, #paper figcaption, #paper td, #paper th, #paper dt, #paper dd', 'misc'),
+  ];
+  // the masthead carries data-cid="paper-title" from build.mjs and lives OUTSIDE
+  // #paper, so it must be added explicitly wherever blocks are collected
+  const masthead = document.querySelector('header.masthead[data-cid]');
+  // every anchored element (in #paper or the masthead) — the one collection all
+  // block-scoped code uses, so the masthead is never half-wired again
+  const blockEls = () => [...document.querySelectorAll('#paper [data-cid]'), ...(masthead ? [masthead] : [])];
+  // LEAF blocks only: a <li> wrapping a <p>, or a <figure> wrapping a
+  // <figcaption>, would otherwise let one span match twice and suppress its own
+  // inline rendering as "ambiguous".
+  const leafBlocks = () => blockEls().filter(b => !b.querySelector('[data-cid]'));
+  for (const el of [...anchored, ...(masthead ? [masthead] : [])]) {
     el.addEventListener('click', e => {
       if (e.target.closest('a,abbr,button,textarea,del.tc-del,ins.tc-ins')) return; // tc-* opens the change popover
 
@@ -432,7 +520,7 @@
       if (e.altKey) { openComposer({ anchor: el.dataset.cid, excerpt: el.textContent.slice(0, 100) }); return; }
       if (el.dataset.cardId) activateCard(el.dataset.cardId);
     });
-  });
+  }
 
   const margin = document.getElementById('margin');
 
@@ -451,9 +539,49 @@
     }
     return out;
   }
+  // ---- human suggestions ---------------------------------------------------
+  // A human's suggestion is an entry in their OWN state/users/<handle>.json
+  // (file ownership is absolute: suggestions.json stays bot-owned). It carries
+  // the same span fields a bot card does, so every downstream path — inline
+  // del/ins rendering, the margin card, accept → Apply → Commit — treats it
+  // identically. Only the storage location differs.
+  function ownSuggestions() {
+    return Object.entries(store())
+      .filter(([, v]) => v.status === 'user-suggestion')
+      .map(([id, v]) => ({ id, type: 'user-suggestion', mine: true, author: ME || 'you', ...v }));
+  }
+  function otherSuggestions() {
+    const out = [];
+    for (const [h, dec] of Object.entries(OTHERS)) {
+      for (const [id, v] of Object.entries(dec)) {
+        if (v.status === 'user-suggestion') out.push({ id, type: 'user-suggestion', mine: false, author: h, ...v });
+      }
+    }
+    return out;
+  }
+  const humanSuggestions = () => [...ownSuggestions(), ...otherSuggestions()];
+  // every suggestion on the page, whoever wrote it — the list wrapTracked walks
+  const allSuggestions = () => [...SUGG.filter(c => !c.reply_to), ...humanSuggestions()];
+  // A decision (accept/reject) is the VIEWER's, stored in the viewer's own file.
+  // Bot cards keep using `status`. A human suggestion already occupies `status`
+  // with its entry type, so its decision lives in `decision` — read both.
+  function decisionOf(id) {
+    const v = store()[id] || {};
+    if (v.decision) return v.decision;
+    return String(v.status || '').startsWith('user-') ? undefined : v.status;
+  }
+  function setDecision(id, val) {
+    const d = store();
+    d[id] = d[id] || {};
+    if (String(d[id].status || '').startsWith('user-')) d[id].decision = val || undefined;
+    else d[id].status = val || undefined;
+    save(d);
+  }
+
   function allCards(resolved) {
     const sugg = SUGG.filter(c => c.section === slug && !c.reply_to);
-    const all = [...sugg, ...ownComments(), ...otherComments()];
+    const all = [...sugg, ...humanSuggestions().filter(c => c.section === slug),
+      ...ownComments(), ...otherComments()];
     return all.filter(c => !!c.resolved === !!resolved)
       .filter(c => authorFilter.has('all') || cardAuthors(c).some(a => authorFilter.has(a)));
   }
@@ -503,9 +631,22 @@
   }
 
   function cardHtml(c, dec) {
-    const st = dec.status || 'pending';
+    const st = (c.type === 'user-suggestion' ? decisionOf(c.id) : dec.status) || 'pending';
     let body;
-    if (c.type === 'old-todo') {
+    if (c.type === 'user-suggestion') {
+      // the human counterpart of a bot suggestion card: same diff, same
+      // accept/apply row below, plus the author's own edit/resolve controls
+      const acts = c.mine
+        ? `<div class="acts"><button data-act="edit-sugg" data-target="${esc(c.id)}">✎ edit</button><button data-act="resolve" data-target="${esc(c.id)}">${c.resolved ? '↩ reopen' : '✓ resolve'}</button></div>`
+        : (c.resolved && IS_OWNER
+          ? `<div class="acts"><button data-act="reopen-other" data-target="${esc(c.id)}" data-handle="${esc(c.author)}">↩ reopen</button></div>`
+          : '');
+      body = `<div class="who"><span class="author">${esc(c.author)}</span><span class="badge type-badge">suggestion</span>${c.mine ? '' : ' <span class="badge">read-only</span>'}</div>
+        <div class="diff"><del>${esc(c.display_text || c.current_text)}</del> <ins>${esc(c.display_proposed != null ? c.display_proposed : c.proposed_text)}</ins></div>
+        ${c.comment ? `<div class="ctext">${esc(c.comment)}</div>` : ''}
+        <div class="why">in ${esc(c.source_json ? `${c.source_json.file} → "${c.source_json.key}"` : c.source_file || 'the source')}</div>
+        ${acts}`;
+    } else if (c.type === 'old-todo') {
       body = `<div class="who"><span class="author">${esc(c.author)}</span><span class="badge type-badge">legacy note</span></div><div>${esc(c.text)}</div>`;
     } else if (c.type === 'user-comment') {
       // reopen semantics (GDocs resolved tab): the author always can; the paper
@@ -533,7 +674,7 @@
     // P4 (owner-only): apply state + button for accepted span cards
     const ap = APPLY.applied[c.id], fl = APPLY.flagged[c.id];
     const applyBadge = ap ? `<span class="badge apply-badge">${ap.committed ? 'committed ' + esc(ap.committed) : 'applied, uncommitted'}</span>` : '';
-    const applyBtn = IS_OWNER && !ap && st === 'accepted' && c.current_text
+    const applyBtn = IS_OWNER && !ap && st === 'accepted' && (c.current_text || c.source_json)
       ? `<button data-act="apply" data-target="${t}">⚡ apply</button>` : '';
     const flagged = fl ? `<div class="status-chip err">apply flagged: ${esc(fl.reason)}</div>` : '';
     return `${body}<div class="state">${st !== 'pending' ? st.toUpperCase() : ''}${applyBadge}</div>${otherDecisionBadges(c.id)}${flagged}
@@ -545,6 +686,108 @@
       </div>${threadHtml(c.id)}`;
   }
 
+  // ---- source resolution for human suggestions ----------------------------
+  // A suggestion is only worth saving if Apply can find its span. So the whole
+  // resolution happens HERE, at compose time, against the real source file:
+  // fetch the source, locate the selection, widen it until it is unique, and
+  // show the user exactly what it locked onto. Failing here with a clear
+  // message is fine; failing silently at Apply time is not.
+  const SECMAP = Object.fromEntries((META.sections || []).map(s => [s.slug, s.file]));
+  const srcCache = {};
+  function fetchSource(file) {
+    if (!LIVE || !file) return Promise.resolve(null);
+    if (srcCache[file]) return srcCache[file];
+    return (srcCache[file] = api('/source?file=' + encodeURIComponent(file))
+      .then(r => r.ok ? r.json() : null).then(j => (j && j.ok) ? j.text : null)
+      .catch(() => null));
+  }
+  const HEAD_MACROS = ['section', 'subsection', 'subsubsection', 'paragraph', 'chapter', 'part'];
+  // the LaTeX macro call enclosing `title` — `\section{Introduction}`, not the
+  // bare word "Introduction", which is ambiguous everywhere it also appears in
+  // prose. Returns {current, proposedFor(newText)} or null.
+  function headingMacro(src, title) {
+    const want = String(title).replace(/\s+/g, ' ').trim();
+    for (const name of HEAD_MACROS) {
+      const re = new RegExp('\\\\' + name + '\\*?(?:\\[[^\\]]*\\])?\\s*\\{', 'g');
+      let m;
+      while ((m = re.exec(src))) {
+        // brace-balanced argument scan (titles may contain \emph{…})
+        let depth = 0, start = -1, end = -1;
+        for (let i = m.index + m[0].length - 1; i < src.length; i++) {
+          if (src[i] === '{') { if (depth === 0) start = i + 1; depth++; }
+          else if (src[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+        }
+        if (start < 0 || end < 0) continue;
+        const arg = src.slice(start, end);
+        if (arg.replace(/\s+/g, ' ').trim() !== want) continue;
+        const current = src.slice(m.index, end + 1);
+        return { current, head: src.slice(m.index, start), tail: '}' };
+      }
+    }
+    return null;
+  }
+  // widen `quote` with its surrounding block text, word by word on alternating
+  // sides, until it matches the source exactly once
+  function widenToUnique(src, quote, context) {
+    const S = window.SpanMatch;
+    const hits = q => S.findSpans(src, q, 3).length;
+    if (!hits(quote)) return { ok: false, reason: 'this text is not in the source file — the page may be out of date (rebuild), or the selection spans generated text' };
+    if (hits(quote) === 1) return { ok: true, current: quote, widened: false };
+    const norm = String(context || '').replace(/\s+/g, ' ');
+    const q = String(quote).replace(/\s+/g, ' ').trim();
+    const at = norm.indexOf(q);
+    if (at < 0) return { ok: false, reason: 'the selection is ambiguous and could not be widened (it spans more than one block)' };
+    let lo = at, hi = at + q.length;
+    for (let step = 0; step < 60; step++) {
+      const grew = step % 2 === 0
+        ? (() => { const p = norm.lastIndexOf(' ', Math.max(lo - 2, 0)); if (lo === 0) return false; lo = p < 0 ? 0 : p + 1; return true; })()
+        : (() => { const p = norm.indexOf(' ', hi + 1); if (hi >= norm.length) return false; hi = p < 0 ? norm.length : p; return true; })();
+      if (!grew && lo === 0 && hi === norm.length) break;
+      const cand = norm.slice(lo, hi).trim();
+      const n = hits(cand);
+      if (n === 1) return { ok: true, current: cand, widened: cand !== q };
+      if (n === 0) return { ok: false, reason: 'widening the selection lost the match — the source and the rendered page disagree here (rebuild?)' };
+    }
+    return { ok: false, reason: 'this text occurs more than once in the source and could not be made unique — select a longer, distinctive passage' };
+  }
+  // full resolution for one selection: returns the card's source fields.
+  // Three shapes: masthead title (macro or JSON config key), heading (macro),
+  // ordinary prose (unique span, widened if needed).
+  async function resolveSuggestion(info) {
+    const el = document.querySelector(`[data-cid="${CSS.escape(info.anchor)}"]`);
+    const isTitle = info.anchor === 'paper-title';
+    const isHeading = !!(el && /^H[1-6]$/.test(el.tagName));
+    const quote = String(info.quote || '').replace(/\s+/g, ' ').trim();
+    if (!quote) return { ok: false, reason: 'select some text first' };
+    if (isTitle) {
+      const ts = META.title_source;
+      if (!ts) return { ok: false, reason: 'this build does not record where the title comes from — rebuild the site (node review/build.mjs)' };
+      if (ts.kind === 'config') {
+        // JSON-aware: apply edits the key, never string-replaces the file
+        return { ok: true, kind: 'title-config', source_json: { file: ts.file, key: ts.key },
+          current_text: ts.raw || el.textContent.trim(), display_text: el.textContent.trim(),
+          locked: `${ts.file} → "${ts.key}"` };
+      }
+      return { ok: true, kind: 'title-latex', source_file: ts.file, current_text: ts.macro,
+        display_text: el.textContent.trim(), head: ts.macro.slice(0, ts.macro.indexOf(ts.arg)), tail: '}',
+        locked: ts.macro };
+    }
+    const file = SECMAP[slug];
+    if (!file) return { ok: false, reason: 'this build does not record which source file this page came from — rebuild the site (node review/build.mjs)' };
+    const src = await fetchSource(file);
+    if (src == null) return { ok: false, reason: `could not read ${file} from the server` };
+    if (isHeading) {
+      const h = headingMacro(src, el.textContent.trim());
+      if (!h) return { ok: false, reason: `could not find the \\section{…} macro for this heading in ${file}` };
+      return { ok: true, kind: 'heading', source_file: file, current_text: h.current,
+        display_text: el.textContent.trim(), head: h.head, tail: h.tail, locked: h.current };
+    }
+    const w = widenToUnique(src, quote, el ? el.textContent : quote);
+    if (!w.ok) return w;
+    return { ok: true, kind: 'prose', source_file: file, current_text: w.current,
+      display_text: w.current, widened: w.widened, locked: w.current };
+  }
+
   // --- inline composer (no prompt/alert; save-as-you-type; never scrolls the page) ---
   let composerCount = 0;
   function openComposer(anchorInfo, existingId) {
@@ -554,7 +797,16 @@
     div.className = 'card composing';
     div.dataset.id = id;
     const quoteLine = anchorInfo.quote ? `<div class="why">on: “${esc(anchorInfo.quote.slice(0, 120))}”</div>` : '';
-    div.innerHTML = `<div class="who"><span class="author">${esc(ME || 'you')}</span></div>${quoteLine}
+    // mode switch: Comment (unchanged) · Suggest (proposes replacement text).
+    // Suggest needs a selection to replace and a live server to resolve the
+    // span against the source, so it is offered only when both hold.
+    const canSuggest = LIVE && !!anchorInfo.quote && !existingId;
+    const modes = canSuggest
+      ? `<div class="seg cmp-mode" role="group" aria-label="composer mode">
+           <button class="seg-btn on" data-mode="comment">💬 Comment</button>
+           <button class="seg-btn" data-mode="suggest">✎ Suggest</button>
+         </div>` : '';
+    div.innerHTML = `<div class="who"><span class="author">${esc(ME || 'you')}</span></div>${modes}${quoteLine}
       <textarea placeholder="Comment… (saves as you type; esc to close)"></textarea>
       <div class="acts"><button data-act="done">done</button><button data-act="discard">discard</button></div>`;
     div.style.setProperty('--author', authorColor(ME || 'you'));
@@ -593,12 +845,112 @@
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); close(false); }
     });
     div.addEventListener('click', e => {
+      const mode = e.target.closest('[data-mode]');
+      if (mode && mode.dataset.mode === 'suggest') {
+        // switching to Suggest discards the (unsent) comment draft and opens
+        // the suggestion composer on the same selection
+        clearTimeout(saveTimer);
+        const d = store(); delete d[id]; save(d);
+        div.remove();
+        openSuggestComposer(anchorInfo, openedSheet);
+        return;
+      }
       const act = e.target.dataset && e.target.dataset.act;
       if (act === 'done') close(false);
       if (act === 'discard') close(true);
     });
     ta.focus({ preventScroll: true });
     composerCount++;
+  }
+
+  // ---- Suggest composer ----------------------------------------------------
+  // Prefills current_text from the exact selection, resolves it to a UNIQUE
+  // source span before anything is saved, and shows what it locked onto. The
+  // saved entry is a `user-suggestion` in the author's own file.
+  function openSuggestComposer(anchorInfo, openedSheetAlready, existing) {
+    if (document.querySelector('.card.composing')) return;
+    const id = (existing && existing.id) || `usugg-${anchorInfo.anchor}-${Date.now()}`;
+    const div = document.createElement('div');
+    div.className = 'card composing t-suggestion suggesting';
+    div.dataset.id = id;
+    div.style.setProperty('--author', authorColor(ME || 'you'));
+    div.innerHTML = `<div class="who"><span class="author">${esc(ME || 'you')}</span><span class="badge type-badge">suggestion</span></div>
+      <div class="sg-resolve">resolving the source span…</div>
+      <div class="sg-body" hidden>
+        <div class="sg-cur"></div>
+        <label class="sg-label" for="sg-prop-${esc(id)}">replace with</label>
+        <textarea id="sg-prop-${esc(id)}" class="sg-prop" placeholder="Proposed text… (empty = delete)"></textarea>
+        <label class="sg-label" for="sg-why-${esc(id)}">why (optional)</label>
+        <textarea id="sg-why-${esc(id)}" class="sg-why" placeholder="Rationale… (esc closes)"></textarea>
+        <div class="acts"><button data-sg="save">save suggestion</button><button data-sg="discard">discard</button></div>
+      </div>`;
+    margin.appendChild(div);
+    const openedSheet = openedSheetAlready || (isNarrow() && !margin.classList.contains('sheet-open'));
+    if (isNarrow()) setSheet(true);
+    const anchorEl = document.querySelector(`[data-cid="${CSS.escape(anchorInfo.anchor)}"]`);
+    if (anchorEl) div.style.top = Math.max(anchorEl.getBoundingClientRect().top + window.scrollY - 60, 0) + 'px';
+
+    const finish = () => { if (openedSheet) setSheet(false); div.remove(); pendingRender = false; rerender(); };
+    div.addEventListener('click', e => {
+      if (e.target.closest('[data-sg="discard"]')) { e.stopPropagation(); finish(); }
+    });
+    div.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); finish(); } });
+
+    const fail = reason => {
+      div.querySelector('.sg-resolve').innerHTML =
+        `<span class="sg-bad">✗ ${esc(reason)}</span><div class="acts"><button data-sg="discard">close</button></div>`;
+    };
+    (existing ? Promise.resolve(existing.resolved) : resolveSuggestion(anchorInfo)).then(r => {
+      if (!r || !r.ok) { fail((r && r.reason) || 'could not resolve this selection'); return; }
+      // show EXACTLY what the suggestion locked onto — a widened span or an
+      // enclosing macro is never applied behind the user's back
+      div.querySelector('.sg-resolve').innerHTML =
+        `<span class="sg-ok">✓ anchored on</span> <code class="sg-lock">${esc(String(r.locked).slice(0, 200))}</code>`
+        + (r.widened ? '<div class="sg-note">widened past your selection to make it unique in the source</div>' : '')
+        + (r.kind === 'heading' || r.kind === 'title-latex' ? '<div class="sg-note">headings anchor on the enclosing LaTeX macro, so the change is unambiguous</div>' : '')
+        + (r.kind === 'title-config' ? '<div class="sg-note">this title lives in the config — Apply will edit that JSON key, not the text</div>' : '');
+      const body = div.querySelector('.sg-body');
+      body.hidden = false;
+      const shownCur = r.display_text || r.current_text;
+      div.querySelector('.sg-cur').innerHTML = `<div class="sg-label">current</div><del>${esc(shownCur)}</del>`;
+      const prop = div.querySelector('.sg-prop'), why = div.querySelector('.sg-why');
+      prop.value = existing ? (existing.display_proposed != null ? existing.display_proposed : existing.proposed_text) : shownCur;
+      if (existing) why.value = existing.comment || '';
+      prop.focus({ preventScroll: true });
+      prop.setSelectionRange?.(0, prop.value.length);
+      div.querySelector('[data-sg="save"]').addEventListener('click', ev => {
+        ev.stopPropagation();
+        const shown = prop.value;
+        // macro-anchored cards keep the SOURCE proposal (`\section{New}`) for
+        // apply and the rendered words for the inline del/ins
+        const macro = r.head != null;
+        const d = store();
+        d[id] = {
+          ...(d[id] || {}), status: 'user-suggestion', section: slug, anchor: anchorInfo.anchor,
+          quote: anchorInfo.quote, comment: why.value,
+          current_text: r.current_text,
+          proposed_text: macro ? `${r.head}${shown}${r.tail}` : shown,
+          display_text: r.display_text || r.current_text,
+          display_proposed: shown,
+          source_file: r.source_file, source_json: r.source_json,
+          head: r.head, tail: r.tail, // macro wrapper, so an edit can rebuild it
+        };
+        save(d);
+        // a suggestion is a conversational act too: an @tag in the rationale routes
+        if (why.value.trim()) confirmMention(id, id, why.value.trim());
+        finish();
+      });
+    });
+  }
+  // edit one of my own suggestions: same composer, prefilled, same anchor
+  function openSuggestEditor(c) {
+    openSuggestComposer({ anchor: c.anchor, quote: c.quote, excerpt: c.excerpt }, false, {
+      id: c.id, comment: c.comment, proposed_text: c.proposed_text, display_proposed: c.display_proposed,
+      resolved: { ok: true, kind: c.source_json ? 'title-config' : 'prose', locked: c.current_text,
+        current_text: c.current_text, display_text: c.display_text || c.current_text,
+        source_file: c.source_file, source_json: c.source_json,
+        head: c.head, tail: c.tail },
+    });
   }
 
   // inline thread reply: appends {ts,text} to the viewer's own decisions[targetId].thread only
@@ -735,7 +1087,9 @@
       const div = document.createElement('div');
       const kind = c.type === 'user-comment' ? 'comment' : 'suggestion';
       const focused = c.id === FOCUSED;
-      div.className = `card t-${kind} s-${c.type === 'user-comment' ? (c.mine ? 'mine' : 'theirs') : (dec.status || 'pending')} ${focused ? 'focused' : 'collapsed'}`;
+      const sc = c.type === 'user-comment' ? (c.mine ? 'mine' : 'theirs')
+        : (c.type === 'user-suggestion' ? (decisionOf(c.id) || 'pending') : (dec.status || 'pending'));
+      div.className = `card t-${kind} s-${sc} ${focused ? 'focused' : 'collapsed'}`;
       div.style.setProperty('--author', authorColor(cardAuthors(c)[0]));
       if ((ACTIVITY[c.id] || {}).working) div.classList.add('working');
       div.dataset.id = c.id;
@@ -759,14 +1113,17 @@
           if (c.mine) { div.remove(); openComposer({ anchor: c.anchor, quote: c.quote, excerpt: c.excerpt }, c.id); }
           return;
         }
+        if (act === 'edit-sugg') {
+          if (c.mine) { div.remove(); openSuggestEditor(c); }
+          return;
+        }
         if (act === 'resolve') {
           if (!c.mine) return;
           const d = store(); d[c.id].resolved = !d[c.id].resolved; save(d); rerender(); return;
         }
         if (act === 'reopen-other') { reopenOther(target, e.target.dataset.handle); return; }
-        const d = store(); d[target] = d[target] || {};
-        d[target].status = act === 'pending' ? undefined : act;
-        save(d); rerender();
+        setDecision(target, act === 'pending' ? undefined : act);
+        rerender();
       });
     });
     unwrapTracked();   // restore pristine text before quote-wrapping scans it
@@ -774,6 +1131,7 @@
     wrapTracked();     // no-op when the sidebar toggle is off
     renderChips();
     renderProgress();
+    renderConsole();   // builds #apply-bar (the Changes widget lives in the console)
     renderApplyBar();
     renderMobile();
   }
@@ -786,8 +1144,8 @@
   // only — placement is never guessed. Idempotent like markCommented: every
   // render unwraps and re-wraps.
   function unwrapTracked() {
-    document.querySelectorAll('#paper ins.tc-ins').forEach(x => x.remove()); // generated text, not source
-    document.querySelectorAll('#paper del.tc-del').forEach(m => {
+    document.querySelectorAll('#paper ins.tc-ins, header.masthead ins.tc-ins').forEach(x => x.remove()); // generated text, not source
+    document.querySelectorAll('#paper del.tc-del, header.masthead del.tc-del').forEach(m => {
       const p = m.parentNode;
       while (m.firstChild) p.insertBefore(m.firstChild, m);
       m.remove(); p.normalize();
@@ -795,13 +1153,14 @@
   }
   function wrapTracked() {
     // matching is whitespace-tolerant (assets/span-match.js): cards carry
-    // single-spaced current_text while rendered paragraphs wrap lines
+    // single-spaced current_text while rendered paragraphs wrap lines.
+    // HUMAN suggestions render through this exact path, in their author's
+    // colour — a suggestion is a suggestion whoever wrote it.
     if (!inlineChanges || !window.SpanMatch) return;
-    const d = store();
-    const blocks = [...document.querySelectorAll('#paper [data-cid]')];
-    for (const c of SUGG) {
+    const blocks = leafBlocks();
+    for (const c of allSuggestions()) {
       if (c.section !== slug || !c.current_text || APPLY.applied[c.id]) continue;
-      const st = (d[c.id] || {}).status;
+      const st = decisionOf(c.id);
       if (st === 'rejected') continue; // margin card only
       let host = null, span = null, count = 0;
       for (const blk of blocks) {
@@ -809,6 +1168,18 @@
         count += spans.length;
         if (spans.length && !host) { host = blk; span = spans[0]; }
         if (count > 1) break;
+      }
+      // A title/heading suggestion anchors on the enclosing LaTeX macro, whose
+      // braces never appear in the rendered text. Fall back to the rendered
+      // display text — but ONLY inside the card's own anchor block. Page-wide
+      // it would be ambiguous the moment two headings share a prefix
+      // ("Alpha" vs "Alpha Sub"), and the anchor already pins the block
+      // exactly, so this is more precise, not looser.
+      if (count !== 1 && c.display_text && c.anchor) {
+        const own = document.querySelector(`[data-cid="${CSS.escape(c.anchor)}"]`);
+        const spans = own ? window.SpanMatch.findSpans(own.textContent, c.display_text, 2) : [];
+        if (spans.length === 1) { host = own; span = spans[0]; count = 1; }
+        else { host = null; count = spans.length; }
       }
       if (count !== 1 || !host) continue;
       wrapChange(host, c, span, st === 'accepted');
@@ -841,13 +1212,17 @@
       if (!lastDel) lastDel = del;
     }
     if (!lastDel) return;
-    if (c.proposed_text) { // empty proposal = pure deletion, del alone suffices
+    // display_proposed exists on macro-anchored cards (heading/title): the
+    // source proposal is `\section{New Title}`, but the body must show the
+    // rendered words, not the LaTeX
+    const shown = c.display_proposed != null ? c.display_proposed : c.proposed_text;
+    if (shown) { // empty proposal = pure deletion, del alone suffices
       const ins = document.createElement('ins');
       ins.className = 'tc-ins' + (accepted ? ' tc-accepted' : '') + (c.id === FOCUSED ? ' focused' : '');
       ins.dataset.tc = c.id;
       ins.style.setProperty('--author', color);
       ins.title = tip;
-      ins.textContent = c.proposed_text;
+      ins.textContent = shown;
       lastDel.after(ins);
     }
   }
@@ -865,24 +1240,27 @@
         rerender(); // the rebuild's SSE 'site' event reloads the page with the new render
       }).catch(() => (ids || []).forEach(id => chip(id, 'apply failed — server unreachable', true)));
   }
-  // persistent "Changes" widget (owner only): pinned at the TOP of the sidebar,
-  // directly under the section list, so the accept → apply → commit/revert flow
-  // is always in view; active states carry an accent edge (.attention)
+  // The "Changes" widget (owner only) lives inside the task console: committing
+  // IS a document-level task, so the accept → ⚡ Apply → ✓ Commit / ↩ Revert
+  // flow belongs next to "apply all" and "verify every citation", not in a
+  // separate sidebar box. Active states carry an accent edge (.attention).
   function renderApplyBar() {
-    const foot = document.querySelector('.toc-foot');
-    let bar = document.getElementById('apply-bar');
-    if (!IS_OWNER) { bar?.remove(); return; }
-    if (!bar) { bar = document.createElement('div'); bar.id = 'apply-bar'; foot.parentNode.insertBefore(bar, foot); }
+    const bar = document.getElementById('apply-bar');
+    if (!bar || !IS_OWNER) return;
     const d = store();
-    const applyable = Object.keys(d).filter(id => d[id].status === 'accepted' && !APPLY.applied[id] &&
-      (SUGG.find(c => c.id === id) || {}).current_text);
+    // a suggestion is applyable whoever wrote it — bot card or human suggestion
+    const byId = new Map(allSuggestions().map(c => [c.id, c]));
+    const applyable = Object.keys(d).filter(id => {
+      const c = byId.get(id);
+      return c && !APPLY.applied[id] && decisionOf(id) === 'accepted' && (c.current_text || c.source_json);
+    });
     const round = APPLY.round;
     const roundFiles = new Set((round || {}).files || []);
     // source files dirty in git but not part of the open round: surfaced so
     // invisible working-tree state can't exist (needs the server-side field)
     const outOfBand = (SRC_DIRTY || []).filter(f => !roundFiles.has(f));
     bar.classList.toggle('attention', !!(applyable.length || round));
-    let html = '<div class="chip-label">changes</div>';
+    let html = '';
     if (!round && !applyable.length) {
       html += lastCommit && Date.now() - lastCommit.t < 8000
         ? `<div class="chg-state ok fade">✓ committed ${esc(lastCommit.sha)}</div>`
@@ -1074,27 +1452,31 @@
     return { anchor: blk.dataset.cid, quote: sel.toString(), excerpt: sel.toString().slice(0, 100), range };
   }
   let pending = null;
-  // desktop: floating popover near the selection (mouseup, unchanged behavior)
-  const pop = document.createElement('button');
-  pop.id = 'sel-pop'; pop.textContent = '💬 Comment'; pop.hidden = true;
+  // desktop: floating popover near the selection. Two actions now — Comment
+  // (unchanged) and Suggest — so a human can propose text, not only ask a bot to.
+  const pop = document.createElement('div');
+  pop.id = 'sel-pop'; pop.hidden = true;
+  pop.innerHTML = '<button data-sel="comment">💬 Comment</button><button data-sel="suggest">✎ Suggest</button>';
   document.body.appendChild(pop);
   document.addEventListener('mouseup', e => {
-    if (e.target === pop) return;
+    if (pop.contains(e.target)) return;
     setTimeout(() => {
       if (isNarrow()) return; // narrow viewports use the bottom pill below
       const info = currentSelection();
       if (!info) { pop.hidden = true; return; }
       pending = { anchor: info.anchor, quote: info.quote, excerpt: info.excerpt };
       const r = info.range.getBoundingClientRect();
-      pop.style.left = Math.max(r.left + r.width / 2 - 45, 8) + 'px';
+      pop.style.left = Math.max(r.left + r.width / 2 - 90, 8) + 'px';
       pop.style.top = (r.top - 38) + 'px';
       pop.hidden = false;
     }, 0);
   });
   pop.addEventListener('mousedown', e => e.preventDefault());
-  pop.addEventListener('click', () => {
+  pop.addEventListener('click', e => {
+    const b = e.target.closest('[data-sel]');
+    if (!b) return;
     pop.hidden = true;
-    if (pending) openComposer(pending);
+    if (pending) (b.dataset.sel === 'suggest' ? openSuggestComposer : openComposer)(pending);
     pending = null;
   });
   // touch: iOS/Android selection handles fire no mouseup, and the native
@@ -1127,9 +1509,9 @@
   tcPop.id = 'tc-pop'; tcPop.hidden = true;
   document.body.appendChild(tcPop);
   function showTcPop(id, x, y) {
-    const c = SUGG.find(s => s.id === id);
+    const c = allSuggestions().find(s => s.id === id);
     if (!c) return;
-    const st = (store()[id] || {}).status;
+    const st = decisionOf(id);
     const rat = String(c.rationale || '').split('\n')[0].slice(0, 140);
     tcPop.innerHTML = `<div class="who" style="--author:${authorColor(cardAuthors(c)[0])}"><span class="author">${esc(c.author || 'bot')}</span>${st ? `<span class="badge">${esc(st)}</span>` : ''}</div>
       ${rat ? `<div class="why">${esc(rat)}</div>` : ''}
@@ -1149,9 +1531,8 @@
         const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
         if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } else {
-        const d = store(); d[id] = d[id] || {};
-        d[id].status = btn.dataset.tcact;
-        save(d); rerender();
+        setDecision(id, btn.dataset.tcact);
+        rerender();
       }
       return;
     }
@@ -1277,7 +1658,7 @@
   // anchored blocks) collapses the focused thread back into the stack
   document.addEventListener('click', e => {
     if (!FOCUSED) return;
-    if (e.target.closest('#margin, mark.user-hl, nav.toc, #sel-pop, #sel-pill, #tc-pop, #mob-drawer, #mob-fab, #backdrop, #avatars, #toasts, .perm-card')) return;
+    if (e.target.closest('#margin, mark.user-hl, nav.toc, #sel-pop, #sel-pill, #tc-pop, #mob-drawer, #mob-fab, #backdrop, #avatars, #toasts, .perm-card, #task-console, .slideover')) return;
     const blk = e.target.closest('[data-cid]');
     if (blk && blk.dataset.cardId) return; // anchored block: its own handler re-focuses
     setFocus(null);
@@ -1330,14 +1711,10 @@
   });
   foot.appendChild(imp);
 
-  // model switcher: per-agent current model + a native <select> of that agent's
-  // available models. Renders once the model state is known (live status /
-  // completion_context, or the /data seed); hidden when agents aren't attached.
-  const modelSwitcher = document.createElement('div');
-  modelSwitcher.id = 'model-switcher';
-  modelSwitcher.hidden = true;
-  foot.appendChild(modelSwitcher);
-  renderModelSwitcher();
+  // (the model switcher used to live here. It is a rarely-touched control that
+  // held permanent sidebar space, so it moved into the Settings slide-over —
+  // renderModelSwitcher() now targets #settings-models and no-ops when the
+  // panel is closed. Its credit-exhaustion warnings are unchanged.)
 
   // theme control: compact segmented icon control (sun / auto / moon), inline
   // SVG only — quiet, labeled for screen readers, persisted per browser
@@ -1382,28 +1759,244 @@
   renderTcToggle();
   foot.appendChild(tcBar);
 
-  // GDocs-style collaborator cluster: pill-chromed, top-right on every page
-  // (idle avatars offline too); container stays generic so human collaborators
-  // can join it later
+  // GDocs-style collaborator cluster: pill-chromed, top-right on every page —
+  // humans (initials disc in their own colour) | agents (brand glyph) — plus
+  // the People and (owner) Settings entry points
   const av = document.createElement('div');
   av.id = 'avatars';
   document.body.appendChild(av);
-  av.addEventListener('click', e => { if (e.target.closest('.avatar-ring.working')) jumpToActive(); });
+  av.addEventListener('click', e => {
+    if (e.target.closest('#people-btn')) { togglePanel(peoplePanel, renderPeople); return; }
+    if (e.target.closest('#gear-btn')) { togglePanel(settingsPanel, renderSettings); return; }
+    if (e.target.closest('.avatar-ring.working')) jumpToActive();
+  });
+
+  // ---- slide-over panels (desktop only, CSS-gated) ------------------------
+  const peoplePanel = document.createElement('aside');
+  peoplePanel.id = 'people-panel'; peoplePanel.className = 'slideover'; peoplePanel.hidden = true;
+  const settingsPanel = document.createElement('aside');
+  settingsPanel.id = 'settings-panel'; settingsPanel.className = 'slideover'; settingsPanel.hidden = true;
+  document.body.append(peoplePanel, settingsPanel);
+  function togglePanel(panel, render) {
+    const opening = panel.hidden;
+    peoplePanel.hidden = true; settingsPanel.hidden = true;
+    if (!opening) return;
+    render();
+    panel.hidden = false;
+  }
+  document.addEventListener('click', e => {
+    if (e.target.closest('.slideover, #avatars')) return;
+    peoplePanel.hidden = true; settingsPanel.hidden = true;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { peoplePanel.hidden = true; settingsPanel.hidden = true; }
+  });
+
+  // ---- People panel (item 7): who has joined + per-handle agent grants -----
+  // The owner may let a named collaborator summon agents directly, within a
+  // DAILY CAP. Apply, Commit, Revert, model switching and permission/choice
+  // answers are owner-only forever — a grant never confers them.
+  let GRANTS = {}, GRANT_USE = {}, MY_GRANT = null, ROSTER = [];
+  function renderPeople() {
+    if (peoplePanel.hidden && !peoplePanel.dataset.forceRender) { /* still safe to build */ }
+    const online = new Map(PEOPLE.map(p => [p.handle, p]));
+    const names = [...new Set([...ROSTER, ...PEOPLE.map(p => p.handle), ...(ME ? [ME] : [])])].sort();
+    const rows = names.map(h => {
+      const p = online.get(h);
+      const isOwnerRow = h === OWNER_HANDLE;
+      const g = GRANTS[h] || null;
+      const used = GRANT_USE[h] || 0;
+      const state = p ? p.state : 'offline';
+      const where = p && p.section_title ? `${p.state === 'active' ? 'reading' : 'idle on'} §${p.section_title}` : 'not here right now';
+      const grant = (IS_OWNER && !isOwnerRow)
+        ? `<div class="pp-grant">
+             <label class="pp-toggle"><input type="checkbox" data-grant="${esc(h)}"${g ? ' checked' : ''}> let ${esc(h)} summon agents</label>
+             ${g ? `<label class="pp-cap">daily cap <input type="number" min="1" max="500" value="${Number(g.daily_cap) || 5}" data-cap="${esc(h)}"></label>
+                    <span class="pp-used">${used} used today</span>` : ''}
+           </div>`
+        : (isOwnerRow ? '<div class="pp-note">document owner — full control</div>' : '');
+      return `<div class="pp-row" style="--author:${authorColor(h)}">
+        <span class="avatar-ring human ${esc(state)}"><span class="avatar initials">${esc(initials(h))}</span></span>
+        <div class="pp-body"><div class="pp-name">${esc(h)}${h === ME ? ' <span class="badge">you</span>' : ''}</div>
+        <div class="pp-where">${esc(where)}</div>${grant}</div></div>`;
+    }).join('');
+    peoplePanel.innerHTML = `<div class="so-head">People<button class="so-x" title="close">✕</button></div>
+      <div class="so-note">presence is in-memory only — nothing about who read what is ever written to disk.</div>
+      ${rows || '<div class="so-empty">nobody has joined yet</div>'}
+      ${IS_OWNER ? '<div class="so-note">Apply, Commit, Revert, model switching and permission answers stay owner-only — a grant never confers them.</div>' : ''}`;
+  }
+  peoplePanel.addEventListener('click', e => {
+    if (e.target.closest('.so-x')) { peoplePanel.hidden = true; return; }
+    const cb = e.target.closest('[data-grant]');
+    if (cb) {
+      const h = cb.dataset.grant;
+      const cap = Number((peoplePanel.querySelector(`[data-cap="${CSS.escape(h)}"]`) || {}).value) || 5;
+      postGrant(h, cb.checked, cap);
+    }
+  });
+  peoplePanel.addEventListener('change', e => {
+    const num = e.target.closest('[data-cap]');
+    if (num) postGrant(num.dataset.cap, true, Number(num.value) || 5);
+  });
+  function postGrant(handle, agents, daily_cap) {
+    api('/grants', { method: 'POST', body: JSON.stringify({ handle, agents, daily_cap }) })
+      .then(r => r.json()).then(j => {
+        if (!j.ok) { toast('Could not change that grant' + (j.error ? ': ' + j.error : ''), true); return; }
+        GRANTS = j.grants || {};
+        renderPeople();
+        toast(agents ? `${handle} can summon agents (${daily_cap}/day)` : `${handle} can no longer summon agents`);
+      }).catch(() => toast('Grant change failed — server unreachable', true));
+  }
+  // the granted guest's OWN budget, in their sidebar: a budget you can see is a
+  // budget that teaches judgement; a silent throttle only teaches confusion
+  function budgetHtml() {
+    if (!MY_GRANT) return '';
+    const left = Math.max(0, (MY_GRANT.daily_cap || 0) - (MY_GRANT.used_today || 0));
+    return `<div class="budget${left ? '' : ' spent'}">${left} of ${esc(MY_GRANT.daily_cap)} agent call${MY_GRANT.daily_cap === 1 ? '' : 's'} left today</div>`;
+  }
+
+  // ---- Settings panel (item 8): occupancy, honest usage, model switcher ----
+  let USAGE = null;
+  function renderSettings() {
+    const fmt = n => n == null ? '—' : Number(n).toLocaleString();
+    const money = n => '$' + (Math.round((Number(n) || 0) * 1e4) / 1e4).toFixed(4);
+    const u = USAGE || {};
+    const s = u.session;
+    const occ = AGENTS.map(a => {
+      const st = (u.models && u.models.status) || {};
+      const tok = st[`${a}_tokens`], win = st[`${a}_window`], pct = st[`${a}_pct`];
+      const w = pct == null ? 0 : Math.max(0, Math.min(100, Number(pct)));
+      return `<div class="set-occ" style="--author:var(--${a})">
+        <div class="set-occ-head"><span class="ms-mark" style="--author:var(--${a})"><span class="avatar">${MARKS[a] || ''}</span></span>
+          <span class="set-name">${cap(a)}</span><span class="set-num">${pct == null ? 'no data yet' : w + '%'}</span></div>
+        <div class="meter"><span style="width:${w}%"></span></div>
+        <div class="set-sub">${fmt(tok)} / ${fmt(win)} tokens in context</div></div>`;
+    }).join('');
+    const sessionRows = s ? AGENTS.map(a => {
+      const x = s.agents[a] || {};
+      return `<tr><td>${cap(a)}</td><td>${fmt(x.turns)}</td><td>${fmt(x.prompt_tokens)}</td></tr>`;
+    }).join('') : '';
+    const handleRows = s ? Object.entries(s.by_handle || {}).sort((a, b) => b[1].turns - a[1].turns).map(([h, v]) =>
+      `<tr><td><span class="dot" style="background:${authorColor(h)}"></span>${esc(h)}</td><td>${fmt(v.turns)}</td><td>${fmt(v.prompt_tokens)}</td><td>${money(v.est_cost_usd)}</td></tr>`).join('') : '';
+    const roll = u.rollup;
+    settingsPanel.innerHTML = `<div class="so-head">Settings<button class="so-x" title="close">✕</button></div>
+      <div class="so-sec">context occupancy — live</div>${occ}
+      <div class="so-sec">this review session</div>
+      ${s ? `<table class="set-tbl"><tr><th>agent</th><th>turns</th><th>prompt tokens</th></tr>${sessionRows}</table>
+             <div class="set-est">estimated spend this session: <strong>${money(s.est_cost_usd)}</strong></div>
+             <div class="so-note">${esc(s.basis)}</div>
+             ${handleRows ? `<div class="so-sec">by who asked</div><table class="set-tbl"><tr><th>handle</th><th>turns</th><th>prompt tokens</th><th>est.</th></tr>${handleRows}</table>` : ''}`
+        : '<div class="so-empty">no agent turns yet in this session</div>'}
+      <div class="so-sec">local rollup — billed</div>
+      ${roll ? `<table class="set-tbl"><tr><th></th><th>runs</th><th>cost</th></tr>
+          <tr><td>today</td><td>${fmt(roll.today.runs)}</td><td>${money(roll.today.cost)}</td></tr>
+          <tr><td>this week</td><td>${fmt(roll.week.runs)}</td><td>${money(roll.week.cost)}</td></tr></table>
+          <div class="so-note">real billed cost, from botference's ${esc(roll.source)} — covers recorded runs on this machine, not this browser session.</div>`
+        : '<div class="so-empty">no local run records on this machine (botference logs/usage.jsonl)</div>'}
+      <div class="so-sec">subscription quota</div>
+      <div class="so-note">${esc(u.quota_note || 'Weekly subscription quota — not exposed by either provider. Run /usage in Claude Code.')}</div>
+      <div class="so-sec">agent models</div><div id="settings-models"></div>`;
+    const ms = settingsPanel.querySelector('#settings-models');
+    if (ms) ms.innerHTML = PRESENCE.chat === true ? AGENTS.map(modelRow).join('')
+      : '<div class="so-empty">agents are not attached (start the server with --chat)</div>';
+    if (LIVE) api('/usage').then(r => r.ok ? r.json() : null).then(j => {
+      if (!j || settingsPanel.hidden) return;
+      if (JSON.stringify(j) === JSON.stringify(USAGE)) return;
+      USAGE = j; renderSettings();
+    }).catch(() => { });
+  }
+  settingsPanel.addEventListener('click', e => { if (e.target.closest('.so-x')) settingsPanel.hidden = true; });
+
+  // ---- Task console (item 6): document-level instructions -----------------
+  // NOT a chat-about-the-paper — that was rejected and stays rejected. Content
+  // discussion lives in margin comments, always anchored to text. This bar is
+  // for instructions that have NO anchor: "apply all", "commit", "restructure
+  // section 3", "verify every citation resolves". Owner-only, desktop-only.
+  // Routing is as strict as everywhere else: nothing reaches an agent without
+  // an explicit @claude / @codex / @all.
+  const CONSOLE_ID = '__console__';
+  const CONKEY = KEY + '-console-open';
+  const console_ = document.createElement('div');
+  console_.id = 'task-console'; console_.hidden = true;
+  document.body.appendChild(console_);
+  let consoleOpen = localStorage.getItem(CONKEY) === '1';
+  function renderConsole() {
+    if (!IS_OWNER || !LIVE) { console_.hidden = true; return; }
+    console_.hidden = false;
+    console_.classList.toggle('open', consoleOpen);
+    if (!console_.dataset.built) {
+      console_.innerHTML = `<button id="tc-toggle-btn" class="tc-bar"><span class="tc-title">⌘ Tasks &amp; changes</span><span class="tc-hint" id="tc-summary"></span><span class="tc-caret">▾</span></button>
+        <div class="tc-panel">
+          <div class="tc-col">
+            <div class="chip-label">changes</div>
+            <div id="apply-bar"></div>
+          </div>
+          <div class="tc-col tc-ask">
+            <div class="chip-label">document-level task</div>
+            <textarea id="tc-input" rows="2" placeholder="@claude verify every citation resolves… (⌘⏎ to send; needs an @tag)"></textarea>
+            <div class="tc-acts"><button id="tc-send">send task</button>
+              <span class="tc-note">anchored discussion belongs in comments — this is for the document as a whole.</span></div>
+            <div id="tc-activity"></div>
+          </div>
+        </div>`;
+      console_.dataset.built = '1';
+      console_.querySelector('#tc-toggle-btn').addEventListener('click', () => {
+        consoleOpen = !consoleOpen;
+        localStorage.setItem(CONKEY, consoleOpen ? '1' : '0');
+        renderConsole(); renderApplyBar();
+      });
+      const ta = console_.querySelector('#tc-input');
+      const send = () => {
+        const text = ta.value.trim();
+        if (!text) return;
+        if (!MENTION_RE.test(text)) { taskChip('add @claude, @codex or @all — nothing reaches an agent without an explicit tag', true); return; }
+        ta.value = '';
+        taskChip('<span class="spin">◐</span> sending…');
+        api('/task', { method: 'POST', body: JSON.stringify({ mention_id: `task:${Date.now()}:${djb2(text)}`, text }) })
+          .then(async r => {
+            const j = await r.json().catch(() => ({}));
+            if (r.status === 409) { setChatMode(false); taskChip('server not started with --chat', true); return; }
+            if (!r.ok || j.queued === false) { taskChip(`task rejected${j.reason ? ': ' + j.reason : ''}`, true); return; }
+            taskChip('queued — waiting for agents');
+          }).catch(() => taskChip('server unreachable', true));
+      };
+      console_.querySelector('#tc-send').addEventListener('click', send);
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+        if (e.key === 'Escape') { e.stopPropagation(); ta.blur(); }
+      });
+      ta.addEventListener('input', () => updateComposerWarn(console_.querySelector('.tc-ask'), ta));
+    }
+    // collapsed summary: the one line that says whether anything needs you
+    const d = store();
+    const byId = new Map(allSuggestions().map(c => [c.id, c]));
+    const n = Object.keys(d).filter(id => byId.has(id) && !APPLY.applied[id] && decisionOf(id) === 'accepted').length;
+    const sum = console_.querySelector('#tc-summary');
+    if (sum) sum.textContent = APPLY.round ? 'applied, uncommitted' : n ? `${n} accepted, ready to apply` : '';
+    syncTaskActivity();
+  }
+  function taskChip(html, err) {
+    const a = activityOf(CONSOLE_ID);
+    a.msg = html; a.err = !!err;
+    a.working = !err && /queued|working|sending|landing|writing/i.test(html || '');
+    syncTaskActivity();
+  }
+  function syncTaskActivity() {
+    const el = console_.querySelector('#tc-activity');
+    if (el) el.innerHTML = activityHtml(CONSOLE_ID);
+  }
+
   renderPresence();
 
   if (LIVE) {
-    const flag = document.createElement('button');
-    flag.id = 'flag-btn'; flag.textContent = '🚩 Flag for agents';
-    flag.title = 'Saves your comments to disk for Claude & Codex to read on their next turn';
-    flag.addEventListener('click', () => {
-      api('/summon', { method: 'POST', body: JSON.stringify({ section: slug, handle: ME }) })
-        .then(() => { pushState(); flag.textContent = '✓ Saved for the agents’ next turn'; setTimeout(() => flag.textContent = '🚩 Flag for agents', 4000); })
-        .catch(() => { flag.textContent = '✗ server unreachable'; setTimeout(() => flag.textContent = '🚩 Flag for agents', 3000); });
-    });
+    // (the 🚩 "Flag for agents" button is gone: agents only ever engage via an
+    // explicit @tag, so a second mechanism that merely wrote a file — while
+    // looking like it summoned someone — was a lie in the UI.)
     const strip = document.createElement('div');
     strip.id = 'presence';
-    foot.appendChild(flag); foot.appendChild(strip);
+    foot.appendChild(strip);
     renderPresence();
+    startHeartbeat();
 
     // boot: adopt own server-side state this browser lacks, load others/threads, then push
     api('/data').then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(j => {
@@ -1431,6 +2024,7 @@
       const type = msg.type;
       if (type === 'ping') return;
       if (type === 'chat') { chatEvent(msg); return; }
+      if (type === 'presence') { PEOPLE = msg.people || []; renderPresence(); renderPeople(); return; }
       if (type === 'site') { location.reload(); return; }
       if (type !== 'state' || refetching) return;
       refetching = true;
@@ -1511,6 +2105,9 @@
     return h;
   }
   function syncActivity(id) {
+    // document-level task turns have no margin card — their activity (queue
+    // chips, streaming reply, interrupts) renders inside the task console
+    if (id === '__console__') { syncTaskActivity(); return; }
     const th = document.querySelector(threadSel(id));
     if (!th) return;
     th.querySelectorAll(':scope > .streaming, :scope > .status-chip, :scope > .perm-card, :scope > .exhaust-notice').forEach(x => x.remove());
@@ -1592,8 +2189,12 @@
       if (a[kind]) { delete a[kind]; syncActivity(id); }
     }
   }
+  // where a turn's live output renders: its margin thread, or — for a
+  // document-level task console turn — the console's activity area
+  const surfaceSel = tid => tid === '__console__' ? '#tc-activity' : threadSel(tid);
+  const hasSurface = tid => !!(tid && document.querySelector(surfaceSel(tid)));
   const inlineStreamEl = (tid, key) =>
-    document.querySelector(`${threadSel(tid)} [data-stream-key="${CSS.escape(key)}"] .stream-text`);
+    document.querySelector(`${surfaceSel(tid)} [data-stream-key="${CSS.escape(key)}"] .stream-text`);
   // the bridge wraps every user turn in a protocol envelope (chat.mjs compose());
   // envelope echoes are never rendered anywhere
   const ENV_RE = /^\s*(?:\(→[^)\n]*\)\s*)?(?:@(?:claude|codex)\s+)?\[review chat/;
@@ -1614,7 +2215,7 @@
       // unanchored turns (e.g. server transcript notes): presence strip only
     } else if (m.kind === 'turn-end') {
       presenceIdle();
-      if (tid) chip(tid, 'reply landing in thread…');
+      if (tid) chip(tid, 'reply landing…');
       // pull the canonical thread state before clearing activity, so the chip
       // never outlives the reply it announces
       api('/data').then(r => r.json()).then(j => {
@@ -1655,7 +2256,7 @@
       const who = String(e.model || e.speaker || 'agent');
       const key = `${who}:${e.stream_id ?? 0}`;
       presenceStream(who);
-      if (tid && document.querySelector(threadSel(tid))) {
+      if (hasSurface(tid)) {
         // live streaming text inside the thread card, under the user's comment
         const a = activityOf(tid);
         const s = a.streams[key] = a.streams[key] || { who, text: '' };
@@ -1667,12 +2268,12 @@
       clearInterrupts('perm');
       if (m.ev.type !== 'permission_request') return;
       // anchored + on this page: in the thread card; otherwise: sidebar toast
-      if (tid && document.querySelector(threadSel(tid))) { activityOf(tid).perm = m.ev; syncActivity(tid); }
+      if (hasSurface(tid)) { activityOf(tid).perm = m.ev; syncActivity(tid); }
       else interruptToast(permHtml(m.ev));
     } else if (m.kind === 'choice') {
       clearInterrupts('choice');
       if (m.ev.type !== 'choice_request') return;
-      if (tid && document.querySelector(threadSel(tid))) { activityOf(tid).choice = m.ev; syncActivity(tid); }
+      if (hasSurface(tid)) { activityOf(tid).choice = m.ev; syncActivity(tid); }
       else interruptToast(choiceHtml(m.ev));
     } else if (m.kind === 'choice-auto') {
       toast(`Agents asked "${m.prompt || 'a setup question'}" — answered automatically: ${m.picked}.`);

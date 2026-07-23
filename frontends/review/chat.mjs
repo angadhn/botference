@@ -30,6 +30,24 @@ export class BridgeChat {
     // startup gets these via /data (modelState) rather than a live event.
     this.lastCtx = null;
     this.lastStatus = null;
+    // --- session usage accounting (settings panel) -----------------------
+    // What the bridge actually reports is prompt OCCUPANCY per agent (status
+    // events). It reports no output-token count and no billed cost, so this
+    // records the real numbers it does give and marks the money figure as the
+    // estimate it is — never a fabricated "billed" total.
+    this.usage = {
+      started: new Date().toISOString(),
+      turns: 0,
+      agents: { claude: { turns: 0, prompt_tokens: 0, tokens: null, window: null, pct: null },
+        codex: { turns: 0, prompt_tokens: 0, tokens: null, window: null, pct: null } },
+      by_handle: {}, // handle -> {turns, prompt_tokens}
+      est_cost_usd: 0,
+      basis: 'estimated: prompt occupancy reported by the CLI bridge, priced at the local table; '
+        + 'output tokens and cache discounts are not reported by the bridge, so treat this as an order of magnitude, not a bill.',
+    };
+    // per-million-token input prices, mirroring tools/_pricing.py. Only used
+    // for the explicitly-estimated line above.
+    this.prices = { claude: 5.0, codex: 1.25 };
   }
 
   // model-switcher state for a late-connecting client (served in /data):
@@ -39,6 +57,38 @@ export class BridgeChat {
       scoped: (this.lastCtx && this.lastCtx.scoped) || null,
       status: this.lastStatus || null,
     };
+  }
+
+  // settings-panel payload: live occupancy (exact) + session counters (exact)
+  // + one clearly-labeled cost estimate. Never persisted anywhere.
+  usageState() { return JSON.parse(JSON.stringify(this.usage)); }
+
+  // a finished turn: fold the agents' current prompt occupancy into the
+  // session counters and attribute it to the handle that triggered the turn
+  noteTurnUsage(turn) {
+    const st = this.lastStatus || {};
+    const routed = turn && turn.routed && turn.routed.length ? turn.routed : ['claude', 'codex'];
+    let prompt = 0;
+    for (const a of ['claude', 'codex']) {
+      const u = this.usage.agents[a];
+      u.tokens = st[`${a}_tokens`] ?? u.tokens;
+      u.window = st[`${a}_window`] ?? u.window;
+      u.pct = st[`${a}_pct`] ?? u.pct;
+      if (!routed.includes(a)) continue;
+      u.turns++;
+      const t = Number(st[`${a}_tokens`]) || 0;
+      u.prompt_tokens += t;
+      prompt += t;
+      this.usage.est_cost_usd += (t / 1e6) * (this.prices[a] || 0);
+    }
+    this.usage.turns++;
+    this.usage.est_cost_usd = Math.round(this.usage.est_cost_usd * 1e4) / 1e4;
+    const h = turn && turn.author;
+    if (h) {
+      const b = this.usage.by_handle[h] = this.usage.by_handle[h] || { turns: 0, prompt_tokens: 0, est_cost_usd: 0 };
+      b.turns++; b.prompt_tokens += prompt;
+      b.est_cost_usd = Math.round((b.est_cost_usd + (prompt / 1e6) * 5) * 1e4) / 1e4;
+    }
   }
 
   // workspace root = nearest ancestor with project.json (never the paper repo itself unless it has one)
@@ -153,7 +203,8 @@ export class BridgeChat {
           this.completed = [...this.completed, this.current.mention_id].slice(-500);
           try { fs.writeFileSync(this.seenFile, JSON.stringify(this.completed)); } catch { }
         }
-        this.onEvent({ kind: 'turn-end', ...this.current });
+        this.noteTurnUsage(this.current);
+        this.onEvent({ kind: 'turn-end', target_id: this.current.target_id, mention_id: this.current.mention_id });
         this.current = null;
         this.scanBotTags(); // a bot's fresh thread reply may @-tag its counterpart
       }
@@ -223,8 +274,17 @@ export class BridgeChat {
 
   send(obj) { this.proc.stdin.write(JSON.stringify(obj) + '\n'); }
 
+  // which agents a turn's text routes to — the same rule compose() applies,
+  // reused for per-agent usage attribution
+  static routedAgents(text) {
+    const t = String(text || '');
+    const tags = new Set((t.match(/@(claude|codex|all)\b/gi) || []).map(s => s.slice(1).toLowerCase()));
+    if (tags.has('all') || (!tags.has('claude') && !tags.has('codex'))) return ['claude', 'codex'];
+    return ['claude', 'codex'].filter(a => tags.has(a));
+  }
+
   // browser mention/chat -> queued turn; dedupe on mention_id; size-capped upstream
-  submit({ mention_id, target_id, author, text }) {
+  submit({ mention_id, target_id, author, text, doc_task }) {
     if (!this.available) return { queued: false, reason: 'agent bridge is not running — restart the server with --chat' };
     if (mention_id && this.seen.has(mention_id)) return { queued: false, reason: 'duplicate' };
     // a human turn on a thread opens a new round there: the bot-tag depth cap resets
@@ -232,7 +292,9 @@ export class BridgeChat {
     if (mention_id) this.seen.add(mention_id); // persisted only once its turn completes
     // keep the raw human words alongside the composed envelope: the UI shows only
     // the former (turn-start carries author/user_text), the bridge gets the latter
-    this.queue.push({ target_id: target_id || null, mention_id, author, user_text: text, text: this.compose({ target_id, author, text }) });
+    this.queue.push({ target_id: target_id || null, mention_id, author, user_text: text,
+      routed: BridgeChat.routedAgents(text),
+      text: this.compose({ target_id, author, text, doc_task }) });
     this.pump();
     return { queued: true, position: this.queue.length + (this.current ? 1 : 0) };
   }
@@ -247,7 +309,7 @@ export class BridgeChat {
     return { ok: true };
   }
 
-  compose({ target_id, author, text }) {
+  compose({ target_id, author, text, doc_task }) {
     const rd = path.relative(this.projectRoot(), this.review);
     // strict routing: a turn that tags exactly one bot is routed to that bot
     // alone (room route token as message prefix); @all or no tag keeps the
@@ -256,6 +318,14 @@ export class BridgeChat {
     const tags = new Set((String(text).match(/@(claude|codex|all)\b/gi) || []).map(s => s.slice(1).toLowerCase()));
     const solo = !tags.has('all') && tags.size === 1 ? [...tags][0] : null;
     const route = solo ? `@${solo} ` : '';
+    // document-level task (task console): no anchor text, so no thread entry is
+    // expected — the answer belongs in the turn itself, shown live in the console
+    if (doc_task) {
+      return `${route}[review chat · review_dir=${rd}] ${author} issued a DOCUMENT-LEVEL task from the review task console (no anchored comment):
+${text}
+
+This is an instruction about the document as a whole, not a reply to a comment. Answer in this turn's text — do NOT add a threads.json entry for it. Operate only beneath ${rd}/; never edit the paper sources (source edits go through the human's Apply/Commit buttons).`;
+    }
     const head = target_id
       ? `[review chat · review_dir=${rd}] ${author} replied on ${target_id} in the review site:`
       : `[review chat · review_dir=${rd}] ${author} wrote in the review chat panel:`;
@@ -297,9 +367,12 @@ export class BridgeChat {
   pump() {
     if (!this.ready || this.current || !this.queue.length) return;
     const t = this.queue.shift();
-    this.current = { target_id: t.target_id, mention_id: t.mention_id };
+    // author/routed ride along for usage attribution at turn-end; only
+    // target_id/mention_id are echoed to clients (as before)
+    this.current = { target_id: t.target_id, mention_id: t.mention_id, author: t.author || null, routed: t.routed || null };
     this.ready = false;
-    this.onEvent({ kind: 'turn-start', ...this.current, author: t.author || null, user_text: t.user_text || null });
+    this.onEvent({ kind: 'turn-start', target_id: t.target_id, mention_id: t.mention_id,
+      author: t.author || null, user_text: t.user_text || null });
     this.send({ type: 'input', text: t.text, attachments: [] });
   }
 }

@@ -22,8 +22,10 @@ Hard rules (P3 — review round semantics, per .claude/skills/paper-review/SKILL
    id: {author, ts, text, suggestion_id?}. ≤6–8 sentences, no preamble, no
    restating the comment. Update `<review_dir>/state/ack.json` last.
 3. You own only: suggestions.json, state/threads.json, state/ack.json —
-   beneath `<review_dir>`. Never write users/*.json, summon.json, or site/
-   (run `node <review_dir>/build.mjs` to regenerate site/ after suggestion
+   beneath `<review_dir>`. Never write users/*.json (they are the humans'
+   own files, and now also hold humans' own `user-suggestion` entries —
+   read them, never edit them), state/grants.json, or site/ (run
+   `node <review_dir>/build.mjs` to regenerate site/ after suggestion
    changes).
 4. Rejected cards get exactly one follow-up (concede or one best counter).
 5. **Strict routing.** A review turn addressed to one bot is that bot's alone:
@@ -37,3 +39,7 @@ Hard rules (P3 — review round semantics, per .claude/skills/paper-review/SKILL
    a tag chain — if you were summoned by the other bot's tag, answer the
    thread and return the floor to the user. @all from the human engages both
    of you sequentially, as before.
+6. **Document-level tasks.** A turn whose envelope says DOCUMENT-LEVEL came
+   from the owner's task console and has no anchored comment: answer in the
+   turn text itself and do NOT write a threads.json entry for it. Rules 1 and
+   3 still apply — never touch the document's sources.

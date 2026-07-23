@@ -2,6 +2,119 @@
 
 ## 2026-07-23
 
+- **Review: humans can suggest text, not only ask a bot to.** The
+  composer now has two modes on any highlight — **Comment** (unchanged)
+  and **Suggest**. A human suggestion prefills `current_text` from the
+  exact selection, offers an editable proposal, renders **inline in the
+  body** as strikethrough + replacement in that human's own author
+  colour (the same rendering path bot suggestions use), and flows
+  through the identical accept → ⚡ Apply → ✓ Commit pipeline. File
+  ownership is preserved absolutely: a human's suggestions live in
+  their own `state/users/<handle>.json` as `user-suggestion` entries;
+  `suggestions.json` stays bot-owned. `apply.mjs` merges both sources
+  and is author-agnostic.
+  **Unique anchoring is resolved at compose time, not apply time.** The
+  composer reads the real source file (new read-only `GET /source`,
+  restricted to configured files) and refuses to save a suggestion it
+  cannot anchor uniquely: an ambiguous prose span is widened word by
+  word with surrounding context until it matches exactly once, and the
+  UI shows what it locked onto. Headings anchor on the **enclosing
+  LaTeX macro** (`\section{Introduction}` → `\section{New Title}`),
+  never the bare word. A paper-title suggestion targets `\title{}` in
+  the master, or — for papers that have no `\title{}` and take their
+  masthead from `review.config.json`'s `title` key — that JSON key,
+  applied **JSON-aware** (parse → set → re-serialize, with a drift
+  guard). A JSON file is never string-replaced.
+
+- **Review: everything is commentable.** Section headings, list items,
+  block quotes, figure captions and table cells were completely
+  uncommentable — selection anchoring found nothing and the composer
+  silently never opened. They now carry anchors, and the masthead title
+  (which had a `data-cid` but sat outside `#paper`, so half the code
+  skipped it) fully participates in block collection and tracked-change
+  rendering. **No existing comment moved**: `blk-N` is a positional
+  index over `#paper p, #paper figure` that every live paper's comments
+  are anchored to, so that selector is frozen byte-for-byte and each
+  new type got its own independent namespace (`-hd-N` for headings,
+  `-misc-N` for the rest). A regression test asserts the `blk-N` list is
+  unchanged and holds only paragraphs and figures.
+
+- **Review: the handle field moved onto the hosted gate page.** In
+  hosted mode the "who are you?" picker rendered into the desktop
+  sidebar footer — which on a phone or tablet is a drawer, so a guest
+  could authenticate and then never pick a handle, and *everything they
+  wrote was silently dropped*. The password gate now asks for a name
+  and the password together; the name comes back in a readable
+  `review_handle` cookie (the auth cookie stays HttpOnly) and seeds the
+  browser's handle slot. Auth is not weakened: the name is not a
+  credential, the password still is, and claiming the owner's handle is
+  refused at the gate exactly as it is in `who()`. The sidebar picker
+  remains for changing your name later.
+
+- **Review: presence shows people, not just bots.** The top-right
+  cluster now lists humans (initials disc in that handle's hashed
+  author colour — the same colour as their comments and chips) and
+  agents (brand glyph + rotating working ring), separated by a hairline
+  so the two are never confused. Activity is computed from **real
+  interaction** rather than from holding a connection open: *active* =
+  pointer/scroll/key/selection within 60s and the tab visible; *idle* =
+  visible but untouched, or hidden (reacted to immediately); *offline* =
+  no beat for ~45s. A small `POST /beat` every ~15s carries
+  `{state, section, focused_id}` and the server fans a `presence` event
+  out over the existing WebSocket/SSE stream. **Presence is in-memory
+  only and is never written to disk — there is no attendance log.** It
+  is symmetric (everyone sees everyone identically) and coarse (state
+  and section, nothing else). Desktop only; phones send no beats and
+  simply don't appear, keeping full read + comment.
+
+- **Review: per-handle agent grants + a People panel.** Hosted mode was
+  binary — owner, or guest whose every `@tag` queued for release. A
+  third tier: owner-written `state/grants.json`
+  (`{"<handle>": {"agents": true, "daily_cap": N}}`), toggled per person
+  in a People panel expanded from the presence cluster. A granted handle
+  within its cap goes straight to the bridge; over cap it returns to the
+  queue with an honest "daily cap reached (N/N)" message. **The cap is
+  visible to the granted guest in their own sidebar** ("4 of 5 agent
+  calls left today") — a budget that teaches judicious use, not a silent
+  throttle. Apply, Commit, Revert, model switching and permission/choice
+  answers stay owner-only forever; a grant never confers them, and
+  revocation takes effect on the next request.
+
+- **Review: task console for document-level instructions.** A
+  bottom-docked collapsible bar (owner-only, desktop-only) for
+  instructions that have no anchor text: "apply all", "commit",
+  "restructure section 3", "verify every citation resolves". This is
+  *not* a chat about the paper — that remains rejected; anything about
+  the text stays an anchored margin comment. Routing is as strict as
+  everywhere else: nothing reaches an agent without an explicit
+  `@claude`/`@codex`/`@all`, and console turns carry a DOCUMENT-LEVEL
+  envelope so bots answer in the turn instead of writing a thread entry.
+  The **Changes widget** (Apply / Commit / Revert / out-of-band commit)
+  moved out of the sidebar and into it, because committing *is* a
+  document-level task.
+
+- **Review: settings panel (gear in the avatar cluster).** Owner-only,
+  desktop-only slide-over showing live per-agent context occupancy
+  (exact, from the bridge's own status events), this session's turns and
+  prompt tokens per agent **and per handle** (the mention payload
+  already carries the author, so each turn is attributed to whoever
+  triggered it), a today/this-week rollup of *real billed* cost from
+  botference's `logs/usage.jsonl` when present, and the model switcher —
+  **relocated here** from the sidebar, where it held permanent space for
+  a rarely-touched control, keeping its credit-exhaustion warnings. The
+  session money figure is labeled an estimate with its basis stated: the
+  CLI bridge reports prompt occupancy, but neither output tokens nor
+  billed cost. There is deliberately **no subscription-quota meter** —
+  no provider exposes Pro/Max or ChatGPT plan quota to anything but its
+  interactive CLI, so the panel says exactly that and points at `/usage`
+  in Claude Code rather than inventing a number.
+
+- **Review: the 🚩 "Flag for agents" button is gone.** Agents engage
+  only via an explicit `@tag`, so the flag was a redundant second
+  mechanism that *looked* like it summoned someone while doing nothing
+  but writing `state/summon.json`. The button, the `POST /summon`
+  endpoint and the file are all removed.
+
 - **Auto-relay at 50% context (on by default).** botference now watches
   each model's context occupancy and relays it automatically — same
   handoff machinery as `/relay` — once it crosses 50% of its context
