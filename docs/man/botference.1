@@ -177,6 +177,13 @@ checkpoint.
 .B /relay /compact /goal /permissions /status /auth /model /effort
 Session management, including per-participant model and effort switches.
 .TP
+.B /autorelay [on|off]
+Auto-relay a model when its context occupancy crosses 50% of its window,
+reusing the same handoff machinery as /relay. On by default; the relay is
+deferred to a safe boundary (never mid-turn or mid free-form thread) and
+lands before that model's next turn. Persists per-user; a matching toggle
+appears in the web council sidebar.
+.TP
 .B /notify [on|off]
 Desktop notification (via your terminal) when the bots finish a turn.
 Persists per-user.

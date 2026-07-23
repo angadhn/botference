@@ -33,6 +33,7 @@ class StatusSnapshot:
     claude_model: Optional[str] = None
     codex_model: Optional[str] = None
     observe_enabled: bool = True
+    auto_relay: bool = True
 
 
 @dataclass(frozen=True)

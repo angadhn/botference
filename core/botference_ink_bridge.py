@@ -320,6 +320,7 @@ class InkBridge:
             "claude_model": status.claude_model,
             "codex_model": status.codex_model,
             "observe": status.observe_enabled,
+            "auto_relay": status.auto_relay,
         })
 
     def set_projects(self, state: ProjectPanelState) -> None:

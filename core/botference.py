@@ -165,6 +165,7 @@ class InputKind(Enum):
     HELP = "help"
     QUIT = "quit"
     RELAY = "relay"
+    AUTORELAY = "autorelay"
     HARNESS_COMMAND = "harness_command"
     RESUME = "resume"
     RENAME = "rename"
@@ -197,6 +198,7 @@ _SLASH_COMMANDS = {
     "/permissions": InputKind.PERMISSIONS,
     "/status": InputKind.STATUS,
     "/notify": InputKind.NOTIFY,
+    "/autorelay": InputKind.AUTORELAY,
     "/agents": InputKind.AGENTS,
     "/auth": InputKind.AUTH,
     "/model": InputKind.MODEL,
@@ -1186,6 +1188,12 @@ RELAY_TIER_CROSS_MAX = 90      # 70–89%: cross-authored handoff
 # Mechanical handoff: how many transcript entries from the tail to scan
 _MECHANICAL_TAIL_ENTRIES = 20
 
+# Auto-relay: occupancy (% of the raw context window) at which a model is
+# automatically relayed with a handoff. Same machinery as manual /relay, but
+# triggered on crossing this threshold rather than by command. Deferred until
+# the current round/thread completes so a relay never lands mid-turn.
+AUTO_RELAY_THRESHOLD_PCT = 50
+
 
 class Botference:
     """Main controller: command dispatch, routing, free-form threads, finalize."""
@@ -1224,6 +1232,9 @@ class Botference:
         # Desktop notification on turn completion — a user preference, not
         # chat state, so it persists globally rather than per-session.
         self.notify: bool = bool(load_user_settings().get("notify", True))
+        # Auto-relay is a user preference (global, like notify); the pending/armed
+        # bookkeeping below is per-session chat state (persisted with the session).
+        self.auto_relay: bool = bool(load_user_settings().get("auto_relay", True))
         self._room_history: list[DisplayRecord] = []
         self._ff_writer_votes: dict[str, str] = {}  # model → "claude"/"codex" writer vote
         self._restoring_session: bool = False
@@ -1239,6 +1250,8 @@ class Botference:
         self._yield_pressure: dict[str, float] = {}   # model → normalized yield pressure (100 = yield now)
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
+        self._pending_auto_relay: set[str] = set()      # models due an auto-relay before their next turn
+        self._auto_relay_armed: dict[str, bool] = {}    # model → armed; absent means armed (re-arms below threshold)
         self._quit_requested: bool = False
         self._stream_seq: int = 0
         self._active_steer_model: str = ""  # model whose room turn is in flight
@@ -1273,6 +1286,7 @@ class Botference:
             claude_model=getattr(self.claude, "model", None),
             codex_model=getattr(self.codex, "model", None),
             observe_enabled=self.observe,
+            auto_relay=self.auto_relay,
         )
 
     @property
@@ -1688,6 +1702,8 @@ class Botference:
             "yield_pressure": dict(self._yield_pressure),
             "relay_boundary": dict(self._relay_boundary),
             "pending_relay_handoffs": dict(self._pending_relay_handoffs),
+            "pending_auto_relay": sorted(self._pending_auto_relay),
+            "auto_relay_armed": dict(self._auto_relay_armed),
         }
 
     def _persist_session(self) -> None:
@@ -1900,6 +1916,16 @@ class Botference:
             self._pending_relay_handoffs = {
                 str(model): str(value)
                 for model, value in (payload.get("pending_relay_handoffs", {}) or {}).items()
+            }
+            # auto_relay itself is a global user preference (set in __init__),
+            # so it is NOT restored here — only the per-session queue/armed state.
+            self._pending_auto_relay = {
+                str(model)
+                for model in (payload.get("pending_auto_relay", []) or [])
+            }
+            self._auto_relay_armed = {
+                str(model): bool(value)
+                for model, value in (payload.get("auto_relay_armed", {}) or {}).items()
             }
         finally:
             self._restoring_session = False
@@ -2172,6 +2198,10 @@ class Botference:
             self._run_notify(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.AUTORELAY:
+            self._run_autorelay(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.AGENTS:
             self._run_agents(parsed.body, ui)
             return
@@ -2267,6 +2297,7 @@ class Botference:
             "",
             "Session management:",
             "  /relay @claude|@codex — Reset model session with structured handoff",
+            "  /autorelay [on|off] — Auto-relay a model at 50% context (on by default; persists)",
             "  /compact @claude [instructions] — Send native Claude Code /compact (requires --claude-interactive)",
             "  /goal @claude <objective> — Send native Claude Code /goal (requires --claude-interactive)",
             "  /permissions        — Show current planner write roots and runtime grants",
@@ -2664,6 +2695,29 @@ class Botference:
             message = "Notifications off."
         self._add_room_entry(ui, "system", message)
 
+    # ── /autorelay ────────────────────────────────────────
+
+    def _run_autorelay(self, arg: str, ui: UIPort) -> None:
+        """/autorelay [on|off] — auto-relay a model when it crosses the threshold."""
+        raw = arg.strip().lower()
+        if raw in ("on", "off"):
+            self.auto_relay = raw == "on"
+        elif not raw:
+            self.auto_relay = not self.auto_relay
+        else:
+            self._add_room_entry(ui, "system", "Usage: /autorelay [on|off]")
+            return
+        save_user_setting("auto_relay", self.auto_relay)
+        if self.auto_relay:
+            message = (
+                f"Auto-relay on — a model that crosses {AUTO_RELAY_THRESHOLD_PCT}% "
+                "of its context window is relayed with a handoff before its next "
+                "turn (never mid-turn)."
+            )
+        else:
+            message = "Auto-relay off."
+        self._add_room_entry(ui, "system", message)
+
     # ── /agents ───────────────────────────────────────────
 
     _SUBAGENT_TOOL = "Task"
@@ -2742,6 +2796,8 @@ class Botference:
             f"Codex:  {x_pct} ({x})  (thread {self.codex.thread_id or '-'})",
             f"Observe: {'on' if self.observe else 'off'}",
             f"Notifications: {'on' if self.notify else 'off'}",
+            f"Auto-relay: {'on' if self.auto_relay else 'off'} "
+            f"(at {AUTO_RELAY_THRESHOLD_PCT}% context)",
             f"Subagents: {'granted' if self._claude_subagents_enabled() else 'off'} (Claude Task tool)",
             f"Turns: {len(self.transcript.entries)}",
         ]
@@ -3575,6 +3631,10 @@ class Botference:
         self._persist_session()
         await self._maybe_suggest_project(body, ui)
 
+        # Honor any auto-relay queued on a prior round (or restored from disk)
+        # before a model takes its next turn — never mid-turn or mid-thread.
+        await self._drain_pending_auto_relays(ui)
+
         targets = (
             ["claude", "codex"] if route == "@all"
             else [route.lstrip("@")]
@@ -3612,6 +3672,10 @@ class Botference:
             and last_resp is not None
         ):
             await self._run_free_form_thread(last_speaker, last_resp, ui)
+
+        # Thread/round is complete — safe to drain anything that crossed the
+        # threshold during it, so the relay lands before the next turn.
+        await self._drain_pending_auto_relays(ui)
 
     @staticmethod
     def _response_output_tokens(resp: AdapterResponse) -> int:
@@ -4050,6 +4114,52 @@ class Botference:
                 f"threshold. Consider yielding.",
             )
 
+        self._maybe_arm_auto_relay(model, raw_pct, ui)
+
+    def _maybe_arm_auto_relay(
+        self, model: str, raw_pct: float, ui: Optional[UIPort],
+    ) -> None:
+        """Queue an auto-relay when *model* crosses the occupancy threshold.
+
+        Re-arms only after occupancy drops back below the threshold, so a single
+        crossing queues exactly one relay — no loop while the model sits high or
+        while its relay is pending. The relay itself is deferred (never fired
+        here) so it can't land mid-turn; the drain runs at round boundaries.
+        """
+        if raw_pct < AUTO_RELAY_THRESHOLD_PCT:
+            self._auto_relay_armed[model] = True
+            return
+        if not self.auto_relay or model not in self._models_initialized:
+            return
+        if model in self._pending_auto_relay:
+            return
+        if not self._auto_relay_armed.get(model, True):
+            return
+        self._auto_relay_armed[model] = False
+        self._pending_auto_relay.add(model)
+        if ui is not None:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Auto-relay: {model} crossed {AUTO_RELAY_THRESHOLD_PCT}% "
+                "context — relaying with handoff.",
+            )
+
+    async def _drain_pending_auto_relays(self, ui: UIPort) -> None:
+        """Relay any models queued for auto-relay at a safe round boundary.
+
+        Reuses the manual /relay machinery. The relay's fresh session reports
+        low occupancy, which re-arms the model via _update_pct.
+        """
+        if not self._pending_auto_relay:
+            return
+        for model in ("claude", "codex"):
+            if model not in self._pending_auto_relay:
+                continue
+            self._pending_auto_relay.discard(model)
+            if model in self._models_initialized:
+                await self._relay_model(model, ui)
+
     # ── session bootstrap ────────────────────────────────
 
     async def _ensure_initialized(self, model: str, ui: UIPort) -> bool:
@@ -4219,6 +4329,8 @@ class Botference:
         self._yield_pressure = {}
         self._relay_boundary = {}
         self._pending_relay_handoffs = {}
+        self._pending_auto_relay = set()
+        self._auto_relay_armed = {}
         self._claude_pct = self._codex_pct = None
         self._claude_tokens = self._claude_window = None
         self._codex_tokens = self._codex_window = None

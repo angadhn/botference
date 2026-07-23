@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 from cli_adapters import AdapterResponse, ToolSummary
 from botference import (
+    AUTO_RELAY_THRESHOLD_PCT,
     AutoRouter,
     Botference,
     InputKind,
@@ -769,6 +770,228 @@ class TestNotifyCommand:
         await c.handle_input("/status", ui)
         status_text = "\n".join(t for s, t in ui.room_entries if s == "system")
         assert "Notifications: on" in status_text
+
+
+@pytest.mark.asyncio
+class TestAutoRelay:
+    """Auto-relay at the occupancy threshold (reuses the /relay machinery)."""
+
+    def _settings(self, tmp_path, monkeypatch) -> Path:
+        settings = tmp_path / "user-settings.json"
+        monkeypatch.setenv("BOTFERENCE_SETTINGS_FILE", str(settings))
+        return settings
+
+    def _cross(self, adapter, pct: float) -> None:
+        """Make *adapter* report `pct`% raw occupancy on its next _update_pct."""
+        adapter.context_tokens = lambda r: int(pct * 1000)
+        adapter.context_percent = lambda r: float(pct)  # yield stays < 100
+
+    def _resp(self, text: str = "ok") -> AdapterResponse:
+        return AdapterResponse(text=text, context_window=100_000)
+
+    # ── trigger / guard behavior ──
+
+    async def test_triggers_at_threshold_queues_relay(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        relay = AsyncMock()
+        c._relay_model = relay
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
+        c._update_pct("claude", self._resp(), ui)
+        assert "claude" in c._pending_auto_relay
+        relay.assert_not_called()  # deferred — never fired inline from _update_pct
+        assert any(
+            "Auto-relay" in t and "claude" in t
+            for s, t in ui.room_entries if s == "system"
+        )
+
+    async def test_exactly_at_threshold_triggers(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT)  # >= threshold
+        c._update_pct("claude", self._resp(), ui)
+        assert "claude" in c._pending_auto_relay
+
+    async def test_below_threshold_no_trigger(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT - 5)
+        c._update_pct("claude", self._resp(), ui)
+        assert c._pending_auto_relay == set()
+
+    async def test_disabled_no_trigger(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c.auto_relay = False
+        c._models_initialized.add("claude")
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 25)
+        c._update_pct("claude", self._resp(), ui)
+        assert c._pending_auto_relay == set()
+
+    async def test_no_trigger_before_model_initialized(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        # claude NOT in _models_initialized — nothing to relay yet
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 30)
+        c._update_pct("claude", self._resp(), ui)
+        assert c._pending_auto_relay == set()
+
+    async def test_no_retrigger_while_pending(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
+        c._update_pct("claude", self._resp(), ui)
+        c._update_pct("claude", self._resp(), ui)  # still above → still pending
+        assert c._pending_auto_relay == {"claude"}
+        announces = [
+            t for s, t in ui.room_entries
+            if s == "system" and "Auto-relay" in t
+        ]
+        assert len(announces) == 1  # announced exactly once
+
+    async def test_rearms_only_after_dropping_below_threshold(
+        self, tmp_path, monkeypatch,
+    ):
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
+        c._update_pct("claude", self._resp(), ui)
+        # Simulate the drain consuming the queued relay (relay executed).
+        c._pending_auto_relay.discard("claude")
+        # Still above threshold but disarmed → must NOT re-queue (loop guard).
+        c._update_pct("claude", self._resp(), ui)
+        assert c._pending_auto_relay == set()
+        # Occupancy drops below threshold → re-arm.
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT - 30)
+        c._update_pct("claude", self._resp(), ui)
+        # Crossing again re-queues.
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
+        c._update_pct("claude", self._resp(), ui)
+        assert c._pending_auto_relay == {"claude"}
+
+    # ── deferral during a free-form thread ──
+
+    async def test_deferred_until_free_form_thread_completes(
+        self, tmp_path, monkeypatch,
+    ):
+        self._settings(tmp_path, monkeypatch)
+        to_codex = (
+            'Claude turn\n{"status": "continuing", "next": "@codex", '
+            '"summary": "over to you"}'
+        )
+        to_user = (
+            'Codex turn\n{"status": "converged", "next": "@user", '
+            '"summary": "done"}'
+        )
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok(to_codex, context_window=100_000)],
+            codex_responses=[_ok(to_user, context_window=100_000)],
+            tmp_path=tmp_path,
+        )
+        # Claude crosses the threshold on its own turn; Codex stays low.
+        claude.context_tokens = lambda r: int((AUTO_RELAY_THRESHOLD_PCT + 10) * 1000)
+        claude.context_percent = lambda r: float(AUTO_RELAY_THRESHOLD_PCT + 10)
+        relay = AsyncMock()
+        c._relay_model = relay
+
+        # Spy the thread to prove the relay is untouched while it runs.
+        seen: dict[str, int] = {}
+        orig_thread = c._run_free_form_thread
+
+        async def spy(*a, **k):
+            seen["before"] = relay.call_count
+            result = await orig_thread(*a, **k)
+            seen["after"] = relay.call_count
+            return result
+
+        c._run_free_form_thread = spy
+
+        await c.handle_input("@claude go", ui)
+
+        assert seen == {"before": 0, "after": 0}       # never mid-thread
+        assert codex.send_calls or codex.resume_calls  # the thread actually ran
+        relay.assert_awaited_once_with("claude", ui)   # drained after it ended
+
+    async def test_drain_reuses_relay_machinery(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.update({"claude", "codex"})
+        c._pending_auto_relay = {"claude", "codex"}
+        relay = AsyncMock()
+        c._relay_model = relay
+        await c._drain_pending_auto_relays(ui)
+        assert c._pending_auto_relay == set()
+        assert {call.args[0] for call in relay.await_args_list} == {"claude", "codex"}
+
+    # ── persistence ──
+
+    async def test_pending_and_armed_persist_across_restore(
+        self, tmp_path, monkeypatch,
+    ):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c._pending_auto_relay = {"codex"}
+        c._auto_relay_armed = {"claude": False, "codex": False}
+        payload = c._session_payload()
+
+        c2, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c2._restore_from_payload(payload)
+        assert c2._pending_auto_relay == {"codex"}
+        assert c2._auto_relay_armed == {"claude": False, "codex": False}
+
+    # ── command surface ──
+
+    async def test_command_off_persists_across_instances(
+        self, tmp_path, monkeypatch,
+    ):
+        settings = self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        assert c.auto_relay is True
+        await c.handle_input("/autorelay off", ui)
+        assert c.auto_relay is False
+        assert json.loads(settings.read_text())["auto_relay"] is False
+        c2, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert c2.auto_relay is False
+
+    async def test_command_bare_toggles(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/autorelay", ui)
+        assert c.auto_relay is False
+        await c.handle_input("/autorelay", ui)
+        assert c.auto_relay is True
+
+    async def test_command_bad_arg_shows_usage(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/autorelay sometimes", ui)
+        assert c.auto_relay is True
+        assert any(
+            "Usage: /autorelay" in t for s, t in ui.room_entries if s == "system"
+        )
+
+    async def test_status_shows_auto_relay_state(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/status", ui)
+        status_text = "\n".join(t for s, t in ui.room_entries if s == "system")
+        assert "Auto-relay: on" in status_text
+
+    async def test_help_documents_auto_relay(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/help", ui)
+        help_text = "\n".join(t for s, t in ui.room_entries if s == "system")
+        assert "/autorelay" in help_text
+
+    async def test_autorelay_in_slash_command_completions(self):
+        from botference import get_slash_commands
+        assert "/autorelay" in get_slash_commands()
 
 
 @pytest.mark.asyncio
@@ -2435,6 +2658,10 @@ class TestContextWarnings:
         c, claude, codex, ui = _make_botference(
             codex_responses=[_ok("codex turn 1", context_window=272_000)],
         )
+        # This test is about the yield-threshold warning; 85% occupancy would
+        # otherwise trigger a real auto-relay (whose restart re-warns under the
+        # constant-token mock), so isolate that behavior out.
+        c.auto_relay = False
         codex.context_percent = MagicMock(return_value=153.0)
         codex.context_tokens = MagicMock(return_value=231_768)
 
