@@ -81,6 +81,16 @@
     OTHERS = Object.fromEntries(Object.entries(j.users || {}).filter(([h]) => h !== j.me));
     HOSTED_MODE = !!j.hosted; IS_OWNER = j.owner !== false;
     OWNER_HANDLE = j.owner_handle || OWNER_HANDLE; // additive field; older servers omit it
+    // self-repair: an OWNER browser whose stored handle has drifted to some
+    // other name (e.g. after testing the gate as a guest) would mirror the
+    // owner's whole local store up under that name — cloning every comment to
+    // a phantom user file. The server already vouches this browser is the
+    // owner, so snap the stored handle back before the next push.
+    if (HOSTED_MODE && IS_OWNER && OWNER_HANDLE && localStorage.getItem(HKEY)
+        && localStorage.getItem(HKEY) !== OWNER_HANDLE) {
+      localStorage.setItem(HKEY, OWNER_HANDLE);
+      ME = OWNER_HANDLE;
+    }
     if (j.apply) APPLY = j.apply;
     PENDING_M = j.pending_mentions || [];
     // additive server fields; a server predating them simply doesn't send them —

@@ -66,10 +66,24 @@ const safeEqual = (a, b) => {
   const hb = crypto.createHash('sha256').update(String(b)).digest();
   return crypto.timingSafeEqual(ha, hb);
 };
+// A request that reached us directly on the loopback interface — NOT through
+// the cloudflared tunnel. The tunnel's local hop also originates from
+// 127.0.0.1, but it always carries the tunnel hostname in Host plus Cf-* /
+// forwarding headers, so requiring a localhost Host AND the absence of those
+// headers AND a loopback socket separates the two. Anyone who can reach the
+// bare loopback port already owns this filesystem, so the password gate and
+// the owner token add nothing there: localhost IS the owner.
+function isLocalDirect(req) {
+  const host = String(req.headers.host || '').replace(/:\d+$/, '').toLowerCase();
+  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]') return false;
+  if (req.headers['cf-connecting-ip'] || req.headers['cf-ray'] || req.headers['x-forwarded-for']) return false;
+  const ra = (req.socket && req.socket.remoteAddress) || '';
+  return ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+}
 // browsers authenticate through the /auth password gate (cookie below); curl
 // and other tools may keep sending Authorization: Basic with ANY username
 function authorized(req) {
-  if (!HOSTED) return true;
+  if (!HOSTED || isLocalDirect(req)) return true;
   const m = /^Basic (.+)$/.exec(req.headers.authorization || '');
   if (m) {
     const pass = Buffer.from(m[1], 'base64').toString('utf8').split(':').slice(1).join(':');
@@ -215,7 +229,8 @@ function denied(req, res) {
 // identity: local mode = the machine's git handle; hosted = the handle the
 // browser picked once (header), never trusted to be the owner's without the token
 const sanitizeHandle = h => String(h || '').toLowerCase().replace(/[^\w-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
-const isOwner = req => !HOSTED || (!!req.headers['x-review-owner'] && safeEqual(req.headers['x-review-owner'], OWNER_TOKEN));
+const isOwner = req => !HOSTED || isLocalDirect(req)
+  || (!!req.headers['x-review-owner'] && safeEqual(req.headers['x-review-owner'], OWNER_TOKEN));
 // the x-review-handle header wins (the sidebar picker can change it mid-session);
 // the review_handle cookie set by the password gate is the fallback, so a guest
 // is identified from their very first request — including on a phone, where the
@@ -225,7 +240,7 @@ function who(req) {
   if (!HOSTED) return HANDLE;
   const h = sanitizeHandle(req.headers['x-review-handle'])
     || sanitizeHandle(decodeURIComponent(cookieOf(req, 'review_handle') || ''));
-  if (!h) return null;
+  if (!h) return isLocalDirect(req) ? HANDLE : null; // localhost needs no picker: it is the owner
   if (h === HANDLE && !isOwner(req)) return null; // nobody impersonates the owner's handle
   return h;
 }
