@@ -39,14 +39,20 @@ Commands:
   stop <name> | stop --all    TERM the service's process group,
                               escalate to KILL after 5s, remove the
                               ledger entry.
-  list                        Table: name, pid, uptime, alive/dead,
-                              command, log path. Dead entries are shown
-                              once, then reaped.
+  list                        Table of EVERY service in every registered
+                              ledger (name, pid, uptime, alive/dead, dir,
+                              command, log) — global view, run it from
+                              anywhere. Dead entries are shown once, then
+                              reaped. stop/logs stay scoped to the current
+                              directory's ledger: run them from the DIR
+                              shown.
   logs <name> [-n N]          Tail the service log (default 50 lines).
 
 Files (per workspace, gitignored by convention):
   .botference/services.json             the ledger (atomic writes)
   .botference/logs/service-<name>.log   stdout+stderr (~5MB rotation)
+  ~/.botference/ledgers                 global index of ledger paths
+                                        (feeds `list`; self-maintained)
 
 Convenience — run a whole share (server + tunnel) under this lifecycle,
 print the usual "share this: <url>   password: <pw>" line, then return
@@ -68,11 +74,17 @@ OP = sys.argv[2]
 ARGS = sys.argv[3:]
 LOG_MAX = int(os.environ.get("BOTFERENCE_SERVICE_LOG_MAX", str(5 * 1024 * 1024)))
 GRACE = float(os.environ.get("BOTFERENCE_SERVICE_STOP_GRACE", "5"))
+# Global ledger index: one absolute services.json path per line. Ledgers are
+# per-directory (stop stays scoped to the cwd's ledger — you can't fat-finger
+# a kill across projects), but `list` reads every ledger registered here so
+# everything running is visible no matter where it's run from.
+INDEX = os.environ.get("BOTFERENCE_SERVICE_INDEX") \
+    or os.path.join(os.path.expanduser("~"), ".botference", "ledgers")
 
 
-def load():
+def load(path=None):
     try:
-        with open(LEDGER, "r", encoding="utf-8") as fh:
+        with open(path or LEDGER, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return []
@@ -82,15 +94,41 @@ def load():
     return [e for e in entries if isinstance(e, dict)]
 
 
-def save(entries):
-    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
-    tmp = "%s.tmp.%d" % (LEDGER, os.getpid())
+def save(entries, path=None):
+    path = path or LEDGER
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump({"services": entries}, fh, indent=2)
         fh.write("\n")
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp, LEDGER)
+    os.replace(tmp, path)
+
+
+def index_paths():
+    try:
+        with open(INDEX, "r", encoding="utf-8") as fh:
+            return {l.strip() for l in fh if l.strip()}
+    except OSError:
+        return set()
+
+
+def register(path):
+    # best-effort: the index is a convenience view, never load-bearing
+    try:
+        ap = os.path.abspath(path)
+        paths = index_paths()
+        if ap in paths or not os.path.exists(ap):
+            return
+        paths.add(ap)
+        os.makedirs(os.path.dirname(INDEX), exist_ok=True)
+        tmp = INDEX + ".tmp.%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(sorted(paths)) + "\n")
+        os.replace(tmp, INDEX)
+    except OSError:
+        pass
 
 
 def alive(entry):
@@ -207,6 +245,7 @@ if OP == "start":
         "log": log,
     })
     save(entries)
+    register(LEDGER)
     print(pid)
     sys.exit(0)
 
@@ -267,44 +306,72 @@ if OP == "stop":
     sys.exit(rc)
 
 if OP == "list":
-    entries = load()
-    if not entries:
-        print("  no services running.")
-        sys.exit(0)
+    # Global view: this directory's ledger plus every ledger in the index.
+    # Actions (stop/logs) stay scoped to the cwd's ledger; run them from the
+    # DIR column's directory.
+    register(LEDGER)
+    home = os.path.expanduser("~")
+    ledgers = {os.path.abspath(LEDGER)} | index_paths()
+    live_index = set()
     now = int(time.time())
-    kept = []
     rows = []
-    for e in entries:
-        ok = alive(e)
-        if ok:
-            kept.append(e)
-        up = "-"
-        started = e.get("started_epoch")
-        if ok and isinstance(started, int):
-            secs = max(0, now - started)
-            if secs >= 86400:
-                up = "%dd%02dh" % (secs // 86400, (secs % 86400) // 3600)
-            elif secs >= 3600:
-                up = "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
-            elif secs >= 60:
-                up = "%dm%02ds" % (secs // 60, secs % 60)
-            else:
-                up = "%ds" % secs
-        cmdtext = str(e.get("command", ""))
-        if len(cmdtext) > 44:
-            cmdtext = cmdtext[:41] + "..."
-        rows.append((str(e.get("name", "?")), str(e.get("pid", "?")), up,
-                     "alive" if ok else "dead", cmdtext, str(e.get("log", ""))))
-    header = ("NAME", "PID", "UPTIME", "STATE", "COMMAND", "LOG")
-    widths = [max(len(header[i]), *(len(r[i]) for r in rows)) for i in range(5)]
+    reaped = 0
+    for lpath in sorted(ledgers):
+        entries = load(lpath)
+        if os.path.exists(lpath):
+            live_index.add(lpath)
+        if not entries:
+            continue
+        proj = os.path.dirname(os.path.dirname(lpath))
+        pdisp = "~" + proj[len(home):] if proj.startswith(home) else proj
+        kept = []
+        for e in entries:
+            ok = alive(e)
+            if ok:
+                kept.append(e)
+            up = "-"
+            started = e.get("started_epoch")
+            if ok and isinstance(started, int):
+                secs = max(0, now - started)
+                if secs >= 86400:
+                    up = "%dd%02dh" % (secs // 86400, (secs % 86400) // 3600)
+                elif secs >= 3600:
+                    up = "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+                elif secs >= 60:
+                    up = "%dm%02ds" % (secs // 60, secs % 60)
+                else:
+                    up = "%ds" % secs
+            cmdtext = str(e.get("command", ""))
+            if len(cmdtext) > 34:
+                cmdtext = cmdtext[:31] + "..."
+            rows.append((str(e.get("name", "?")), str(e.get("pid", "?")), up,
+                         "alive" if ok else "dead", pdisp, cmdtext,
+                         str(e.get("log", ""))))
+        if len(kept) != len(entries):
+            save(kept, lpath)
+            reaped += len(entries) - len(kept)
+    # prune index lines whose ledger files vanished (deleted projects)
+    if live_index != index_paths() and live_index:
+        try:
+            tmp = INDEX + ".tmp.%d" % os.getpid()
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(sorted(live_index)) + "\n")
+            os.replace(tmp, INDEX)
+        except OSError:
+            pass
+    if not rows:
+        print("  no services running (in any registered ledger).")
+        sys.exit(0)
+    header = ("NAME", "PID", "UPTIME", "STATE", "DIR", "COMMAND", "LOG")
+    widths = [max(len(header[i]), *(len(r[i]) for r in rows)) for i in range(6)]
     fmt = "  " + "  ".join("%%-%ds" % w for w in widths) + "  %s"
     print(fmt % header)
     for r in rows:
         print(fmt % r)
-    if len(kept) != len(entries):
-        save(kept)
+    if reaped:
         print("  (%d dead entr%s reaped from the ledger)"
-              % (len(entries) - len(kept), "y" if len(entries) - len(kept) == 1 else "ies"))
+              % (reaped, "y" if reaped == 1 else "ies"))
+    print("  stop/logs act on one directory's ledger: run them from the DIR shown.")
     sys.exit(0)
 
 if OP == "log-path":

@@ -2,6 +2,16 @@
 
 ## 2026-07-23
 
+- **`botference service list` is now global.** Ledgers stay
+  per-directory, but every `service start` registers its ledger in a
+  self-maintained index (`~/.botference/ledgers`) and `list` reads all
+  of them — every running service is visible from any directory, with a
+  DIR column showing where each lives. `stop` and `logs` remain scoped
+  to the current directory's ledger (you can't fat-finger a kill across
+  projects); run them from the DIR shown. Existing ledgers are picked
+  up the first time `list` or `start` runs in their directory. Dead
+  entries reap per-ledger; index lines whose ledgers vanish are pruned.
+
 - **Review: humans can suggest text, not only ask a bot to.** The
   composer now has two modes on any highlight — **Comment** (unchanged)
   and **Suggest**. A human suggestion prefills `current_text` from the

@@ -99,7 +99,12 @@ chars.
 \fIname\fR (or \fB\-\-all\fR) TERMs the service's process group,
 escalates to KILL after 5 seconds, and removes the ledger entry.
 .B list
-prints name, pid, uptime, alive/dead, command, and log path.
+prints every service in every registered ledger (name, pid, uptime,
+alive/dead, directory, command, log path) \- a global view that works
+from any directory, fed by the self-maintained index
+\fI~/.botference/ledgers\fR. \fBstop\fR and \fBlogs\fR remain scoped to
+the current directory's ledger; run them from the directory shown in
+the DIR column.
 .B logs
 \fIname\fR [\fB\-n\fR \fIN\fR] tails the service log (default 50
 lines).

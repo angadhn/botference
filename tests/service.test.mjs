@@ -17,7 +17,14 @@ import { fileURLToPath } from 'node:url';
 
 const HOME = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAUNCHER = path.join(HOME, 'botference');
-const ENV = { ...process.env, BOTFERENCE_HOME: HOME };
+const ENV = {
+  ...process.env,
+  BOTFERENCE_HOME: HOME,
+  // hermetic: `service list` is global (reads every ledger in the index) —
+  // point the index at a per-run temp file so the developer's real services
+  // never leak into assertions
+  BOTFERENCE_SERVICE_INDEX: path.join(tmpdir(), `botference-test-ledgers-${process.pid}`),
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

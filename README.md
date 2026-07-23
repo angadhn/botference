@@ -282,7 +282,7 @@ leave a server or tunnel running:
 
 ```bash
 botference service start <name> -- <command…>   # detached; survives the shell
-botference service list                         # name, pid, uptime, alive/dead, command, log
+botference service list                         # EVERY service in every registered ledger, from anywhere
 botference service logs <name> [-n N]           # tail the service log
 botference service stop <name>                  # TERM the group, KILL after 5s
 botference service stop --all
