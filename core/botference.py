@@ -3589,16 +3589,16 @@ class Botference:
         self, model: str, text: str, ui: UIPort,
     ) -> None:
         """If Claude reported a credit/billing exhaustion, tell the user how to
-        fall back to the cheaper Claude Opus 4.8.
+        fall back to the cheaper Claude Opus 5.
 
         The default Claude participant is Fable 5, which bills at a premium; when
         its credit balance runs out the raw CLI error is opaque, so surface the
-        exact switch command instead. Suppressed once already on Opus 4.8 (a bare
+        exact switch command instead. Suppressed once already on Opus 5 (a bare
         balance problem there needs a top-up, not a model switch).
         """
         if model != "claude" or not is_credit_error(text):
             return
-        fallback = "claude-opus-4-8"
+        fallback = "claude-opus-5"
         if fallback in (self.claude.model or ""):
             self._add_room_entry(
                 ui,
@@ -3612,7 +3612,7 @@ class Botference:
             ui,
             "system",
             f"Claude ({self.claude.model}) is out of credits / hit a billing "
-            f"limit. Switch to the cheaper Claude Opus 4.8 with:\n"
+            f"limit. Switch to the cheaper Claude Opus 5 with:\n"
             f"    /model @claude {fallback}\n"
             f"or relaunch botference with:  --anthropic-model {fallback}",
         )
