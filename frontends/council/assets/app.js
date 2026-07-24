@@ -827,6 +827,11 @@
       for (const s of pr.sessions || []) if (s.session_id === sid) return true;
     return false;
   }
+  // The hash drives navigation only on initial load (deep link / reload) and
+  // on real hashchange events. On later 'projects' events the server's active
+  // chat is the truth and the hash follows it — otherwise a stale hash would
+  // undo server-initiated switches (/new, /delete, a typed /resume).
+  let hashRestored = false;
   // open the chat the URL names if it exists and isn't already open/opening;
   // an unknown id falls back to the current chat with a brief, non-blocking
   // notice (waits for the first 'projects' event before it can resolve one)
@@ -1111,9 +1116,11 @@
         }
         state.currentSid = active;
         renderProjects();
-        routeHash(); // honor a #/chat/<id> now that the session list is known
-        // no (or an already-honored) hash: reflect the actually-open chat —
-        // but never clobber a hash routeHash is mid-way through opening
+        // honor a deep-linked #/chat/<id> once, when the session list first
+        // arrives; after that the hash mirrors the active chat instead
+        if (!hashRestored) { hashRestored = true; routeHash(); }
+        // reflect the actually-open chat — but never clobber a hash
+        // routeHash is mid-way through opening
         if (!state.pendingSwitch && active) syncHash(active);
         break;
       }

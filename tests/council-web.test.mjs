@@ -981,3 +981,36 @@ test('hash routing: a link opened straight to #/chat/<id> restores that chat onc
     'the hashed chat is resumed, not the default-active one');
   assert.equal(w.location.hash, '#/chat/sidB', 'the requested hash is preserved, not overwritten');
 });
+
+test('hash routing: a server-side switch (/new, /delete) wins over the stale hash — no snap-back to the old chat',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const projects = sessions => ({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, session_count: sessions.length,
+      sessions: sessions.map(([sid, active]) =>
+        ({ session_id: sid, title: sid, updated_at: new Date().toISOString(), active })),
+    }],
+  });
+  C.handle(projects([['sidA', true]]));
+  assert.equal(w.location.hash, '#/chat/sidA');
+
+  // the user runs /new: the server activates a fresh session while the URL
+  // still names the old one — the stale hash must NOT resume the old chat
+  const n = posts.length;
+  C.handle(projects([['sidA', false], ['sidNEW', true]]));
+  assert.equal(posts.length, n, 'the stale hash triggers no /resume back to the old chat');
+  assert.equal(C.state.currentSid, 'sidNEW', 'the new chat stays current');
+  assert.equal(w.location.hash, '#/chat/sidNEW', 'the URL follows the server-side switch');
+
+  // the user runs /delete on a chat the URL once named: its id vanishing from
+  // the list is not a broken deep link — no "chat not found" toast
+  w.location.hash = '#/chat/sidNEW';
+  C.handle(projects([['sidNEW', false], ['sidNEXT', true]]));
+  assert.equal(w.location.hash, '#/chat/sidNEXT');
+  const toastEl = doc.getElementById('toast');
+  assert.ok(!toastEl || !/chat not found/.test(toastEl.textContent || ''),
+    'no not-found toast for a server-side switch');
+});
