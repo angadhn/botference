@@ -214,7 +214,7 @@ EOF
 resolve_cli_model() {
   # Append [1m] to Claude model names when the context window is 1M.
   # This tells the claude CLI to use the extended context window.
-  local model="${1:-claude-opus-4-8}"
+  local model="${1:-claude-opus-5}"
   local ctx_window
   ctx_window=$(resolve_context_window "$model")
   if [ "$ctx_window" -ge 1000000 ] 2>/dev/null; then
@@ -233,7 +233,7 @@ resolve_context_window() {
     echo "$BOTFERENCE_CONTEXT_WINDOW"
     return
   fi
-  local model="${1:-claude-opus-4-8}"
+  local model="${1:-claude-opus-5}"
   case "$model" in
     gpt-5-latest) echo 272000 ;;
     gpt-5.6*) echo 1050000 ;;

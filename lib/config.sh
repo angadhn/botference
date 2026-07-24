@@ -532,6 +532,7 @@ Options:
 
 Supported models:
   claude-fable-5        Anthropic Fable 5   (1M context)
+  claude-opus-5         Anthropic Opus 5    (1M context)
   claude-opus-4-8       Anthropic Opus 4.8  (1M context)
   claude-opus-4-7       Anthropic Opus 4.7  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
@@ -550,7 +551,7 @@ Model resolution order:
   1. --anthropic-model flag
   2. ANTHROPIC_MODEL env var
   3. Per-agent model in context-budgets.json
-  4. Default: claude-fable-5 (falls back to claude-opus-4-8 on credit errors)
+  4. Default: claude-fable-5 (falls back to claude-opus-5 on credit errors)
 
 Environment variables:
   ANTHROPIC_MODEL          Global Anthropic model override (same as --anthropic-model)

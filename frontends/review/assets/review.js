@@ -173,7 +173,7 @@
       ? t.replace(/\s+/g, ' ').trim().slice(0, 200) : null;
   }
   const FALLBACK_MODELS = {
-    claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    claude: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
   };
   // scoped model lists + current per-agent model, seeded from /data and kept

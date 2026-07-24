@@ -735,7 +735,7 @@ test('model switcher + credit-exhaustion warnings (happy-dom)',
   // seed the model state exactly as a forwarded completion_context + status would
   R.setChatMode(true);
   R.applyModelState({
-    scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-4-8', 'claude-haiku-4-5'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] },
+    scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-5', 'claude-haiku-4-5'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] },
     status: { claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' },
   });
   // the switcher moved out of the sidebar into the owner-only Settings
@@ -753,12 +753,12 @@ test('model switcher + credit-exhaustion warnings (happy-dom)',
   assert.equal(claudeSel.querySelectorAll('option').length, 3, 'all scoped claude models offered');
 
   // selecting a model posts the exact /model command
-  claudeSel.value = 'claude-opus-4-8';
+  claudeSel.value = 'claude-opus-5';
   claudeSel.dispatchEvent(new w.Event('change', { bubbles: true }));
   await new Promise(r => setTimeout(r, 5));
   const modelPost = [...posts].reverse().find(p => p.url === '/model');
   assert.ok(modelPost, '/model endpoint was called');
-  assert.equal(modelPost.body.text, '/model @claude claude-opus-4-8', 'exact bridge command');
+  assert.equal(modelPost.body.text, '/model @claude claude-opus-5', 'exact bridge command');
 
   // an injected exhaustion turn flags claude: dimmed avatar + ⚠ + a notice
   R.chatEvent({ kind: 'stream', final: true, target_id: null,
