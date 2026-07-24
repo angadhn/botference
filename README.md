@@ -185,7 +185,11 @@ forces it on (clear error if impossible), `--hosted` adds
 `REVIEW_PASSWORD` auth for a shared URL (an in-page gate asking for a
 name and the password together, no browser popup; tools can still send
 basic auth with any username), and `--upgrade` refreshes the engine
-files without touching your config, comments, or suggestions.
+files without touching your config, comments, or suggestions. Set
+`REVIEW_OWNER_PASSWORD` too and that second password signs the *owner*
+in from any device — phone included: whatever name is typed, the gate
+issues the owner's handle and owner token, while the guest password
+keeps working unchanged.
 
 Two ways to bring in collaborators:
 

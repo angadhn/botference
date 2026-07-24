@@ -988,6 +988,44 @@ test('hosted gate takes name + password together; /summon is gone', async t => {
   }, { REVIEW_PASSWORD: 'shh' }, ['--hosted']);
 });
 
+test('the owner password signs the owner in from any device', async t => {
+  const dir = scaffold('ownerpw', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  await withServer(dir, async base => {
+    const REMOTE = { 'cf-connecting-ip': '203.0.113.9' };
+    const fetchR = (u, o = {}) => fetch(u, { ...o, headers: { ...REMOTE, ...(o.headers || {}) } });
+    const form = (h, p) => fetchR(`${base}/auth`, { method: 'POST', redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ handle: h, password: p, next: '/' }) });
+    const ownerHandle = (await fetch(base + '/data').then(r => r.json())).owner_handle;
+    const token = fs.readFileSync(path.join(dir, 'review', 'state', '.owner-token'), 'utf8').trim();
+    // whatever name is typed (even the owner's, even none), the owner password
+    // signs in AS the owner and hands the browser the token the client banks
+    const good = await form('whoever', 'boss');
+    assert.equal(good.status, 303);
+    assert.equal(good.headers.get('location'), `/?owner=${token}`,
+      'the redirect carries the owner token the client stores from ?owner=');
+    const cookies = good.headers.getSetCookie();
+    const hc = cookies.find(c => /^review_handle=/.test(c));
+    assert.match(hc, new RegExp(`review_handle=${ownerHandle}`), 'the cookie names the real owner, not the typed name');
+    const ac = cookies.find(c => /^review_auth=/.test(c));
+    assert.ok(ac && /HttpOnly/.test(ac));
+    const who = await fetchR(base + '/whoami', {
+      headers: { cookie: ac.split(';')[0], 'x-review-owner': token, 'x-review-handle': ownerHandle },
+    }).then(r => r.json());
+    assert.equal(who.owner, true, 'token + auth cookie = full owner standing remotely');
+    assert.equal(who.handle, ownerHandle);
+    // the guest password still refuses the owner handle, and a wrong password
+    // still fails — the owner password adds a lane, changes neither
+    assert.equal((await form(ownerHandle, 'shh')).status, 401);
+    assert.equal((await form('ada', 'wrong')).status, 401);
+    assert.equal((await form('ada', 'shh')).status, 303, 'guests gate in exactly as before');
+  }, { REVIEW_PASSWORD: 'shh', REVIEW_OWNER_PASSWORD: 'boss' }, ['--hosted']);
+});
+
 test('presence is in-memory, coarse and symmetric; grants gate agent summons per handle', async t => {
   const dir = scaffold('presence', SINGLE);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

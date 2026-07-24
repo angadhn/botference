@@ -29,7 +29,9 @@ Options:
                REVIEW_PASSWORD (or generates one and prints it), prints a
                shareable https URL; Ctrl-C stops server and tunnel together
   --hosted     Shared-URL mode without the tunnel: REVIEW_PASSWORD basic
-               auth, per-browser handle picker, owner-gated bots/apply
+               auth, per-browser handle picker, owner-gated bots/apply.
+               REVIEW_OWNER_PASSWORD (optional) adds a second password
+               that signs the OWNER in from any device
   --service    With --share: run the whole share (server + tunnel) as a
                managed service ('review-share') instead of in the
                foreground — prints the "share this: URL password" line,

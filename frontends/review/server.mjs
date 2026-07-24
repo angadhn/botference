@@ -41,6 +41,12 @@ const userFile = h => path.join(USERS, h.replace(/[^\w-]/g, '_') + '.json');
 // --- hosted mode: shared password + per-browser handles + owner token ---
 const HOSTED = process.argv.includes('--hosted');
 const PASSWORD = process.env.REVIEW_PASSWORD || '';
+// optional second password that signs the OWNER in from any device: the gate
+// accepts the owner's handle with it and forwards through ?owner=<token>, so
+// the browser picks up owner standing exactly as the printed owner link does.
+// The guest password keeps working unchanged; without this env var, owner
+// access stays localhost + token-link only.
+const OWNER_PASSWORD = process.env.REVIEW_OWNER_PASSWORD || '';
 if (HOSTED && !PASSWORD) {
   console.error('--hosted requires REVIEW_PASSWORD to be set, e.g.  REVIEW_PASSWORD=… node review/server.mjs --hosted');
   process.exit(1);
@@ -188,6 +194,23 @@ function authEndpoint(req, res) {
     // both failures re-render the same gate. Claiming the owner's handle is
     // refused here as it is in who() — the owner token, not the gate, is what
     // makes someone the owner, so an unclaimable name must be said plainly.
+    // the owner password (when configured) outranks everything: whatever name
+    // was typed, this login IS the owner — cookie under their real handle plus
+    // the ?owner= token hop the client already knows how to bank. Checked
+    // before the handle rules so the owner's own handle is not refused.
+    if (OWNER_PASSWORD && safeEqual(form.get('password') || '', OWNER_PASSWORD)) {
+      const exp = String(Date.now() + AUTH_TTL_MS);
+      const mac = crypto.createHmac('sha256', AUTH_SECRET).update(exp).digest('hex');
+      const secure = String(req.headers['x-forwarded-proto'] || '').includes('https') ? '; Secure' : '';
+      res.writeHead(303, {
+        'set-cookie': [
+          `review_auth=${exp}.${mac}; Max-Age=${Math.floor(AUTH_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+          `review_handle=${encodeURIComponent(HANDLE)}; Max-Age=${Math.floor(AUTH_TTL_MS / 1000)}; Path=/; SameSite=Lax${secure}`,
+        ],
+        location: `${next}${next.includes('?') ? '&' : '?'}owner=${OWNER_TOKEN}`,
+      }).end();
+      return;
+    }
     if (!handle) {
       res.writeHead(401, GATE_HEAD).end(gatePage(next, 'enter a name so your comments can be saved', raw));
       return;
