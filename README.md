@@ -213,9 +213,13 @@ no passwords) or that declare them as a collaborator, and every paper
 gets its own hostname transparently proxied to its local server (run
 with `--hosted`; no tunnel of its own). When a paper's server is down
 its hostname serves a friendly "work from the git repo" page instead
-of an error. Config in `~/.botference/review-hub.json` (see the header
-of `hub.mjs`), re-read live — adding a paper is one config entry plus
-one `cloudflared tunnel route dns`, no restarts.
+of an error. On the machine itself, localhost is the owner: no login,
+every paper listed; set `REVIEW_HUB_PASSWORD` when starting the hub
+and that password (with any name) opens the same full owner view from
+your phone or any other device. Config in
+`~/.botference/review-hub.json` (see the header of `hub.mjs`), re-read
+live — adding a paper is one config entry plus one `cloudflared tunnel
+route dns`, no restarts.
 
 What you get in the browser: comment or **suggest** on any block —
 paragraphs, figures, headings, list items, quotes, captions, table

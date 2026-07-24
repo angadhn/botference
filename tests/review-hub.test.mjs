@@ -87,7 +87,7 @@ before(async () => {
     ],
   }));
   hub = spawn(process.execPath, [HUB], {
-    env: { ...process.env, REVIEW_HUB_CONFIG: cfg, PORT: String(hubPort) },
+    env: { ...process.env, REVIEW_HUB_CONFIG: cfg, PORT: String(hubPort), REVIEW_HUB_PASSWORD: 'hub-owner-pw' },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((resolve, reject) => {
@@ -180,6 +180,23 @@ test('portal: localhost is the owner — no login, every paper listed', async ()
   assert.match(r.text, /Paper Beta/);
   assert.match(r.text, /Paper Ghost/);
   assert.match(r.text, new RegExp(`localhost:${portA}`)); // owner gets direct links
+});
+
+test('portal: the hub owner password opens the full list from any device', async () => {
+  const login = await req(hubPort, {
+    method: 'POST', url: '/auth', host: 'review.example.com', ip: '203.0.113.13',
+    body: new URLSearchParams({ handle: 'boss', password: 'hub-owner-pw', next: '/' }).toString(),
+  });
+  assert.equal(login.status, 303);
+  const cookie = (login.headers['set-cookie'] || [])[0].split(';')[0];
+  const r = await req(hubPort, { host: 'review.example.com', ip: '203.0.113.13', cookie });
+  assert.equal(r.status, 200);
+  assert.match(r.text, /owner view/);
+  assert.match(r.text, /Paper Alpha/);
+  assert.match(r.text, /Paper Beta/);
+  assert.match(r.text, /Paper Ghost/);
+  assert.match(r.text, /sign out/);                       // remote sessions can sign out
+  assert.doesNotMatch(r.text, /href="http:\/\/localhost/); // no dead localhost links on a phone
 });
 
 test('portal: login attempts are rate limited per client IP', async () => {

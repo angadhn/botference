@@ -60,6 +60,11 @@ if (!SECRET) {
   fs.writeFileSync(secretFile, SECRET, { mode: 0o600 });
 }
 
+// optional owner login: with REVIEW_HUB_PASSWORD set, that password (any
+// name) opens the full owner view from any device — the phone case, where
+// localhost-is-owner can't apply
+const OWNER_PW = process.env.REVIEW_HUB_PASSWORD || '';
+
 const safeEqual = (a, b) => {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
@@ -88,7 +93,7 @@ function cookieOf(req, name) {
 // hub_auth = exp.handle.slug,slug….mac — which papers this login validated on
 function session(req) {
   const raw = decodeURIComponent(cookieOf(req, 'hub_auth') || '');
-  const m = /^(\d+)\.([\w-]*)\.([\w,-]*)\.([0-9a-f]+)$/.exec(raw);
+  const m = /^(\d+)\.([\w-]*)\.([\w,*-]*)\.([0-9a-f]+)$/.exec(raw);
   if (!m || Date.now() > Number(m[1])) return null;
   const mac = crypto.createHmac('sha256', SECRET).update(`${m[1]}.${m[2]}.${m[3]}`).digest('hex');
   if (!safeEqual(mac, m[4])) return null;
@@ -211,13 +216,14 @@ live review returns.</p>
 </main>`);
 }
 
-async function listPage(cfg, papers, viewer, res) {
+async function listPage(cfg, papers, viewer, res, remote = false) {
   const status = await Promise.all(papers.map(p => probe(p.port)));
+  const localLinks = viewer === 'owner' && !remote; // dead weight on a phone
   const items = papers.map((p, i) => {
     const live = status[i];
     const href = `https://${p.host}/`;
     return `<li><span class="dot ${live ? 'live' : 'down'}"></span><a href="${escHtml(href)}">${escHtml(p.title || p.slug)}</a>
-<div class="meta">${escHtml(p.host)}${live ? '' : ' — offline (work from the git repo; it merges when the share returns)'}${viewer === 'owner' ? ` · <a class="local" href="http://localhost:${p.port}/">localhost:${p.port}</a>` : ''}</div></li>`;
+<div class="meta">${escHtml(p.host)}${live ? '' : ' — offline (work from the git repo; it merges when the share returns)'}${localLinks ? ` · <a class="local" href="http://localhost:${p.port}/">localhost:${p.port}</a>` : ''}</div></li>`;
   }).join('');
   const who = viewer === 'owner' ? 'owner view — every configured paper'
     : `signed in as <b>${escHtml(viewer)}</b>`;
@@ -225,7 +231,7 @@ async function listPage(cfg, papers, viewer, res) {
 <h1>${escHtml(cfg.name || 'Review portal')}</h1>
 <p>${who}</p>
 ${papers.length ? `<ul class="papers">${items}</ul>` : '<p>No reviews here for this login.</p>'}
-${viewer === 'owner' ? '' : '<div class="signout"><a href="/signout">sign out</a></div>'}
+${remote ? '<div class="signout"><a href="/signout">sign out</a></div>' : ''}
 </main>`));
 }
 
@@ -276,6 +282,11 @@ function portal(cfg, req, res) {
         res.writeHead(401, HTML_HEAD).end(gatePage(cfg.name || 'Review portal', 'enter your name', form.get('handle')));
         return;
       }
+      // the hub owner password (env) outranks the per-paper checks: full list
+      if (OWNER_PW && safeEqual(password, OWNER_PW)) {
+        res.writeHead(303, { 'set-cookie': sessionCookie(handle, ['*'], req), location: '/' }).end();
+        return;
+      }
       // ask each paper's own gate; the hub never stores or compares passwords
       const oks = await Promise.all(cfg.papers.map(p => gateCheck(p, handle, password, req)));
       const slugs = cfg.papers.filter((p, i) => oks[i]).map(p => p.slug);
@@ -298,10 +309,12 @@ function portal(cfg, req, res) {
     res.writeHead(401, HTML_HEAD).end(gatePage(cfg.name || 'Review portal', false, ''));
     return;
   }
+  // '*' marks an owner-password login: everything, from any device
+  if (s.slugs.includes('*')) return listPage(cfg, cfg.papers, 'owner', res, true);
   // their papers: password-validated at login, plus any they are declared on
   const mine = cfg.papers.filter(p =>
     s.slugs.includes(p.slug) || (p.collaborators || []).includes(s.handle));
-  return listPage(cfg, mine, s.handle, res);
+  return listPage(cfg, mine, s.handle, res, true);
 }
 
 const server = http.createServer((req, res) => {
