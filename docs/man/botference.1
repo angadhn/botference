@@ -13,6 +13,9 @@ botference \- a multi-LLM planning council for the terminal
 .br
 .B botference service
 \fBstart\fR \fIname\fR \fB\-\-\fR \fIcommand\fR… | \fBstop\fR \fIname\fR|\fB\-\-all\fR | \fBlist\fR | \fBlogs\fR \fIname\fR [\fB\-n\fR \fIN\fR]
+.br
+.B botference see
+\fIurl\fR|\fB:\fR\fIport\fR|\fIservice-name\fR [\fIlabel\fR] [\fB\-\-viewport\fR \fIWxH\fR]… [\fB\-\-basic-auth\fR \fIU:P\fR] [\fB\-\-out\fR \fIdir\fR]
 .SH DESCRIPTION
 .B botference
 puts you, Claude Code, and Codex in one terminal room. The bots debate
@@ -167,6 +170,19 @@ Init profile (default: vault-drafter).
 .TP
 .B \-\-help
 Show launcher help and exit.
+.SH SEE (AGENT EYES)
+.B botference see
+renders a page in headless Chrome (the system browser \- no Playwright,
+no install) and writes one PNG per viewport, printing each path. Made
+for agents: layout and design failures produce no errors or warnings,
+so an agent that only reads code and logs will ship a page that "works"
+but looks broken \- after any UI change, look at it. The default
+viewports are 390x844 (phone) and 1440x900 (desktop); \fB\-\-viewport
+WxH\fR (repeatable) replaces them. The target may be a full URL, a bare
+\fB:port\fR on localhost, or the name of a running \fBbotference
+service\fR \- the listening port is discovered from the live process,
+so agents never need to know ports. Output lands in
+\fI.botference/shots/\fR unless \fB\-\-out\fR says otherwise.
 .SH IN-SESSION COMMANDS
 Inside a planning session, commands start with a slash. Run
 .B /help

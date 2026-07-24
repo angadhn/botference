@@ -293,6 +293,28 @@ export BOTFERENCE_TUNNEL_URL=https://council.example.com   # printed as the shar
 Without `BOTFERENCE_TUNNEL`, `--share` uses a quick tunnel with a
 random `trycloudflare.com` URL.
 
+## Agent Eyes (`botference see`)
+
+Layout and design failures produce no errors and no warnings — an agent
+that only reads code and logs will ship a page that "works" but looks
+broken. `botference see` closes that loop with zero new dependencies:
+it renders a page in headless system Chrome and writes one PNG per
+viewport (defaults: 390x844 phone + 1440x900 desktop — the phone shot
+is real mobile layout, since responsive CSS responds to the viewport),
+printing each path for the agent to read back with its image tooling.
+
+```bash
+botference see fitlog                        # a RUNNING service by name — port discovered live
+botference see :4123 fitlog                  # bare localhost port
+botference see https://example.com home --viewport 500x900
+```
+
+Tell your bots: after any UI change, `botference see <service>` and
+*look* before declaring done. Pair it with deterministic invariants for
+charts and figures (assert data coverage, containment, label collisions
+on the generated SVG) — vision discovers a failure class once, the
+invariant test locks it out forever.
+
 ## Long-Running Services
 
 Anything started in a shell — including by an agent inside a botference

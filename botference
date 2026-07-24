@@ -33,6 +33,17 @@ if [ "${1:-}" = "review" ]; then
   exit $?
 fi
 
+# --- see mode: headless screenshots so agents can LOOK at the UIs they
+# build (layout bugs produce no errors or logs). Ledger-aware: a running
+# service name resolves to its live listening port. ---
+if [ "${1:-}" = "see" ]; then
+  shift
+  source "${BOTFERENCE_HOME}/lib/see.sh"
+  export BOTFERENCE_ACTIVE_MODE="see"
+  run_see_mode "$@"
+  exit $?
+fi
+
 # --- service mode: managed long-lived processes (servers, tunnels) ---
 # Also handled before the loop machinery: it only touches the per-workspace
 # ledger under .botference/ and returns immediately.

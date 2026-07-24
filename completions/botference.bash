@@ -5,7 +5,7 @@ _botference() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "init plan research-plan archive build review service help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "init plan research-plan archive build review service see help" -- "$cur") )
     return
   fi
   case "${COMP_WORDS[1]}" in

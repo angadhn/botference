@@ -12,6 +12,7 @@ _botference() {
     'archive:archive current thread, restore blank templates'
     'build:build loop (default)'
     'review:set up + serve the document-review interface'
+    'see:headless screenshots of a URL or running service (agent eyes)'
     'service:managed long-lived processes (servers, tunnels)'
     'help:show usage'
   )

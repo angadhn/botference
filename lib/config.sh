@@ -466,6 +466,7 @@ Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
        botference plan [--web|--share [--no-auth] [--service]] [--port N]
        botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
        botference service <start|stop|list|logs> …
+       botference see <url | :port | service-name> [label] [--viewport WxH]
 
 Modes:
   init              Bootstrap a project-local state directory
