@@ -98,11 +98,11 @@ the launcher isn't available:
   composing.
 - **Every author is visually distinct** (stable accent color; Claude
   coral, Codex blue, humans hashed hues); resolved comments live in a
-  reopenable resolved tab; humans can edit/delete their own entries
+  reopenable resolved tab — and ANYONE may resolve/reopen ANY thread, attributed as "resolved by <handle>" (server-mediated; ownership boundary intact); humans can edit/delete their own entries
   (`edited: true` — treat an edited entry newer than your ack as new
   input); author filter chips; light/dark/system theme toggle.
 - **Changes widget** (inside the task console, owner-only) is the
-  commit workflow: accept → ⚡ Apply → read → ✓ Commit (or ↩ Revert).
+  commit workflow: accept → ⚡ Apply (gathers every participant's accepts; the owner's explicit decision wins conflicts) → read → ✓ Commit (or ↩ Revert).
   Apply is deterministic AND author-agnostic (`apply.mjs`: unique-span
   replacement over bot cards *and* human suggestions, atomic bib
   append, JSON-aware edits for config-key targets,

@@ -79,6 +79,29 @@
   function adoptData(j) {
     ME = j.me; THREADS = j.threads || {}; SUGG = j.suggestions || SUGG;
     OTHERS = Object.fromEntries(Object.entries(j.users || {}).filter(([h]) => h !== j.me));
+    // Adopt third-party resolve/reopen of MY OWN comments (server-mediated
+    // /thread-state writes to my file) into the local store. The mirror is
+    // one-way local→server, so without this adoption my next push would
+    // silently clobber their change. resolved_ts ordering keeps whichever
+    // side acted last.
+    {
+      const mineSrv = (j.users || {})[j.me];
+      if (mineSrv) {
+        const d = store();
+        let changed = false;
+        for (const [id, sv] of Object.entries(mineSrv)) {
+          if (!sv || !sv.resolved_ts || !d[id]) continue;
+          const localTs = d[id].resolved_ts || '';
+          if (sv.resolved_ts > localTs && !!sv.resolved !== !!d[id].resolved) {
+            d[id].resolved = !!sv.resolved;
+            d[id].resolved_by = sv.resolved_by;
+            d[id].resolved_ts = sv.resolved_ts;
+            changed = true;
+          }
+        }
+        if (changed) setStore(d);
+      }
+    }
     HOSTED_MODE = !!j.hosted; IS_OWNER = j.owner !== false;
     OWNER_HANDLE = j.owner_handle || OWNER_HANDLE; // additive field; older servers omit it
     // self-repair: an OWNER browser whose stored handle has drifted to some
@@ -648,10 +671,8 @@
       // accept/apply row below, plus the author's own edit/resolve controls
       const acts = c.mine
         ? `<div class="acts"><button data-act="edit-sugg" data-target="${esc(c.id)}">✎ edit</button><button data-act="resolve" data-target="${esc(c.id)}">${c.resolved ? '↩ reopen' : '✓ resolve'}</button></div>`
-        : (c.resolved && IS_OWNER
-          ? `<div class="acts"><button data-act="reopen-other" data-target="${esc(c.id)}" data-handle="${esc(c.author)}">↩ reopen</button></div>`
-          : '');
-      body = `<div class="who"><span class="author">${esc(c.author)}</span><span class="badge type-badge">suggestion</span>${c.mine ? '' : ' <span class="badge">read-only</span>'}</div>
+        : `<div class="acts"><button data-act="state-other" data-target="${esc(c.id)}" data-handle="${esc(c.author)}" data-to="${c.resolved ? '0' : '1'}">${c.resolved ? '↩ reopen' : '✓ resolve'}</button></div>`;
+      body = `<div class="who"><span class="author">${esc(c.author)}</span><span class="badge type-badge">suggestion</span>${resolvedByBadge(c)}${c.mine ? '' : ' <span class="badge">read-only</span>'}</div>
         <div class="diff"><del>${esc(c.display_text || c.current_text)}</del> <ins>${esc(c.display_proposed != null ? c.display_proposed : c.proposed_text)}</ins></div>
         ${c.comment ? `<div class="ctext">${esc(c.comment)}</div>` : ''}
         <div class="why">in ${esc(c.source_json ? `${c.source_json.file} → "${c.source_json.key}"` : c.source_file || 'the source')}</div>
@@ -663,10 +684,8 @@
       // owner can reopen anyone's via the server (writes the author's file)
       const acts = c.mine
         ? `<div class="acts"><button data-act="edit" data-target="${esc(c.id)}">✎ edit</button><button data-act="resolve" data-target="${esc(c.id)}">${c.resolved ? '↩ reopen' : '✓ resolve'}</button></div>`
-        : (c.resolved && IS_OWNER
-          ? `<div class="acts"><button data-act="reopen-other" data-target="${esc(c.id)}" data-handle="${esc(c.author)}">↩ reopen</button></div>`
-          : '');
-      return `<div class="who"><span class="author">${esc(c.author)}</span><span class="badge type-badge">comment</span>${c.mine ? '' : ' <span class="badge">read-only</span>'}</div>
+        : `<div class="acts"><button data-act="state-other" data-target="${esc(c.id)}" data-handle="${esc(c.author)}" data-to="${c.resolved ? '0' : '1'}">${c.resolved ? '↩ reopen' : '✓ resolve'}</button></div>`;
+      return `<div class="who"><span class="author">${esc(c.author)}</span><span class="badge type-badge">comment</span>${resolvedByBadge(c)}${c.mine ? '' : ' <span class="badge">read-only</span>'}</div>
         ${c.quote || c.excerpt ? `<div class="why">on: “${esc(c.quote || c.excerpt)}”</div>` : ''}
         <div class="ctext">${esc(c.comment)}</div>${acts}${threadHtml(c.id)}
         ${replyCards(c.id).map(rc => `<div class="nested" style="--author:${authorColor(cardAuthors(rc)[0])}">${cardHtml(rc, store()[rc.id] || {})}</div>`).join('')}`;
@@ -1057,6 +1076,23 @@
     ta.focus({ preventScroll: true });
   }
 
+  // GDocs-parity thread state: ANYONE in the review may resolve/reopen any
+  // comment, attributed ("resolved by <actor>"), via a server-mediated write
+  // to the author's file. Falls back to the owner-only /reopen on servers
+  // predating /thread-state (reopen direction only).
+  function threadStateOther(id, handle, resolved) {
+    api('/thread-state', { method: 'POST', body: JSON.stringify({ id, handle, resolved }) })
+      .then(r => {
+        if (r.status === 404 && !resolved) return api('/reopen', { method: 'POST', body: JSON.stringify({ id, handle }) });
+        return r;
+      })
+      .then(r => r.json()).then(j => {
+        if (!j.ok) { toast(`Couldn't update the thread${j.reason ? ': ' + j.reason : ''}.`, true); return; }
+        return api('/data').then(r => r.json()).then(jj => { adoptData(jj); rerender(); });
+      }).catch(() => toast('Server unreachable — thread state unchanged.', true));
+  }
+  const resolvedByBadge = c => (c.resolved && c.resolved_by && c.resolved_by !== c.author)
+    ? ` <span class="badge">resolved by ${esc(c.resolved_by)}</span>` : '';
   // owner-only server write to the author's own file; resolved -> false,
   // status and thread untouched. The users/ watcher SSE refreshes peers.
   function reopenOther(id, handle) {
@@ -1129,9 +1165,12 @@
         }
         if (act === 'resolve') {
           if (!c.mine) return;
-          const d = store(); d[c.id].resolved = !d[c.id].resolved; save(d); rerender(); return;
+          const d = store(); d[c.id].resolved = !d[c.id].resolved;
+          d[c.id].resolved_by = ME; d[c.id].resolved_ts = new Date().toISOString();
+          save(d); rerender(); return;
         }
         if (act === 'reopen-other') { reopenOther(target, e.target.dataset.handle); return; }
+        if (act === 'state-other') { threadStateOther(target, e.target.dataset.handle, e.target.dataset.to === '1'); return; }
         setDecision(target, act === 'pending' ? undefined : act);
         rerender();
       });
@@ -1597,7 +1636,7 @@
     const excerpt = String(c.quote || c.excerpt || c.anchor_text || c.current_text || '').slice(0, 80);
     const first = String(c.comment || c.text || c.proposed_text || '').split('\n')[0].slice(0, 100);
     const working = (ACTIVITY[c.id] || {}).working || PRESENCE.tid === c.id;
-    const reopenBtn = c.resolved && (c.mine || IS_OWNER)
+    const reopenBtn = c.resolved
       ? `<button class="rebtn" data-mob-reopen="${esc(c.id)}" data-mine="${c.mine ? '1' : ''}" data-handle="${esc(c.author)}">↩ reopen</button>` : '';
     return `<div class="mob-entry" data-mob-id="${esc(c.id)}" style="--author:${authorColor(cardAuthors(c)[0])}">
       <span class="dot"></span>
@@ -1628,8 +1667,10 @@
     const ro = e.target.closest('[data-mob-reopen]');
     if (ro) {
       const id = ro.dataset.mobReopen;
-      if (ro.dataset.mine) { const d = store(); if (d[id]) { d[id].resolved = false; save(d); rerender(); } }
-      else reopenOther(id, ro.dataset.handle);
+      if (ro.dataset.mine) {
+        const d = store();
+        if (d[id]) { d[id].resolved = false; d[id].resolved_by = ME; d[id].resolved_ts = new Date().toISOString(); save(d); rerender(); }
+      } else threadStateOther(id, ro.dataset.handle, false);
       renderDrawer(); return;
     }
     const entry = e.target.closest('[data-mob-id]');

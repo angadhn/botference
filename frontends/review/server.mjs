@@ -345,12 +345,32 @@ function transcriptNote(text) {
     chat.submit({ mention_id: `apply-${Date.now()}`, target_id: null, author: HANDLE, text: `${text}\nThis is a transcript record of a review-page action — acknowledge in one short line; no action needed.` });
   }
 }
-// accepted = the owner's own decisions (apply is an owner act on their accepts).
+// accepted = EVERY participant's accepts, with the owner's explicit decision
+// winning any conflict ("I don't need to micromanage her decisions — the
+// ledger is there"): a card the owner explicitly accepted or rejected follows
+// the owner; otherwise any participant's accept counts. Apply/Commit remain
+// owner-only ACTS — this only widens whose accepts they gather up. Per-user
+// files are the audit ledger of who decided what.
 // `status` carries the decision on bot cards; a HUMAN suggestion occupies
 // `status` with its own entry type, so its accept/reject lands in `decision`.
 function acceptedIds() {
-  const dec = readJSON(userFile(HANDLE), {}).decisions || {};
-  return Object.keys(dec).filter(id => dec[id].status === 'accepted' || dec[id].decision === 'accepted');
+  const decOf = e => (e.status === 'accepted' || e.decision === 'accepted') ? 'accepted'
+    : (e.status === 'rejected' || e.decision === 'rejected') ? 'rejected' : null;
+  const ids = new Set();
+  const ownerSaid = {};
+  const own = readJSON(userFile(HANDLE), {}).decisions || {};
+  for (const [id, e] of Object.entries(own)) {
+    const d = decOf(e);
+    if (d) { ownerSaid[id] = d; if (d === 'accepted') ids.add(id); }
+  }
+  for (const f of fs.existsSync(USERS) ? fs.readdirSync(USERS) : []) {
+    const dec = readJSON(path.join(USERS, f), {}).decisions || {};
+    for (const [id, e] of Object.entries(dec)) {
+      if (ownerSaid[id]) continue; // the owner's explicit call always wins
+      if (decOf(e) === 'accepted') ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 // collaborator mentions in hosted mode queue here until the owner releases them
@@ -823,6 +843,36 @@ export function handler(req, res) {
         const r = chat.submit({ mention_id: data.mention_id, target_id: CONSOLE_ID, doc_task: true,
           author: who(req) || HANDLE, text });
         res.writeHead(200, JSON_HEAD).end(JSON.stringify(r));
+      } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
+    });
+    return;
+  }
+  // Anyone in the review may resolve or reopen ANY comment (GDocs parity —
+  // "she fixed it, she closes it"), attributed. Server-mediated so the
+  // author's file stays the single writer boundary; rate-limited like all
+  // hosted writes; the owner can always reopen.
+  if (req.method === 'POST' && url === '/thread-state') { // (per-IP POST rate limit already applied above)
+    const actor = who(req);
+    if (!actor) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"pick a handle first"}'); return; }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const h = sanitizeHandle(data.handle);
+        const f = h && userFile(h);
+        const u = f && readJSON(f, null);
+        if (!u || !u.decisions || !u.decisions[data.id]) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"reason":"unknown comment"}'); return; }
+        // resolved_by = who last changed the state (either direction) — it's
+        // the attribution AND the client's merge signal for adopting a
+        // third-party change into the author's own local store
+        u.decisions[data.id].resolved = !!data.resolved;
+        u.decisions[data.id].resolved_by = actor;
+        u.decisions[data.id].resolved_ts = new Date().toISOString();
+        u.updated = new Date().toISOString();
+        fs.writeFileSync(f, JSON.stringify(u, null, 1));
+        broadcast('state');
+        res.writeHead(200, JSON_HEAD).end('{"ok":true}');
       } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
     });
     return;

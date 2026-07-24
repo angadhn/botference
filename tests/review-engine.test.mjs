@@ -586,7 +586,7 @@ test('mobile UX: touch-selection pill, composer sheet, comments drawer (happy-do
   assert.equal(doc.querySelectorAll('#margin .thread').length, 0, 'default: no thread visible');
   assert.equal(doc.querySelectorAll('#margin .card.collapsed').length, 2, 'both cards collapsed');
   assert.match(doc.querySelector('.card.collapsed[data-id="s1"] .mini-thread').textContent,
-    /view thread/, 'explicit "view thread ›" affordance on collapsed cards');
+    /more ›/, 'explicit expand affordance on collapsed cards');
 
   // --- polish: segmented theme control, avatar pill, spotlight off by default
   const segDark = doc.querySelector('#theme-toggle .seg-btn[data-theme-opt="dark"]');
@@ -945,10 +945,18 @@ test('hosted gate takes name + password together; /summon is gone', async t => {
   installEngine(dir);
   runBuild(dir);
   await withServer(dir, async base => {
-    const form = (h, p) => fetch(`${base}/auth`, { method: 'POST', redirect: 'manual',
+    // simulate TUNNEL traffic: localhost is unconditionally the owner
+    // (isLocalDirect), so hosted-gate behavior only exists for requests
+    // carrying proxy markers, as real cloudflared traffic always does
+    const REMOTE = { 'cf-connecting-ip': '203.0.113.9' };
+    const fetchR = (u, o = {}) => fetch(u, { ...o, headers: { ...REMOTE, ...(o.headers || {}) } });
+    const form = (h, p) => fetchR(`${base}/auth`, { method: 'POST', redirect: 'manual',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ handle: h, password: p, next: '/' }) });
-    const gate = await fetch(base + '/', { headers: { accept: 'text/html' } }).then(r => r.text());
+    // …while a bare localhost request needs no gate and IS the owner
+    const local = await fetch(base + '/whoami').then(r => r.json());
+    assert.equal(local.owner, true, 'localhost is the owner, no token dance');
+    const gate = await fetchR(base + '/', { headers: { accept: 'text/html' } }).then(r => r.text());
     assert.match(gate, /name="handle"/, 'the gate itself asks who you are (mobile has no sidebar picker)');
     assert.match(gate, /name="password"/);
     assert.equal((await form('ada', 'nope')).status, 401, 'wrong password is still refused');
@@ -961,13 +969,13 @@ test('hosted gate takes name + password together; /summon is gone', async t => {
     assert.ok(hc && /review_handle=ada-l/.test(hc), 'the NAME rides back to the client, sanitized');
     assert.ok(!/HttpOnly/.test(hc), 'and is readable by the page (a name is not a credential)');
     // the handle cookie alone identifies a guest — no header, no localStorage
-    const who = await fetch(base + '/whoami', {
+    const who = await fetchR(base + '/whoami', {
       headers: { cookie: hc.split(';')[0], authorization: 'Basic ' + Buffer.from('x:shh').toString('base64') },
     }).then(r => r.json());
     assert.equal(who.handle, 'ada-l');
     assert.equal(who.owner, false, 'and never confers ownership');
     // claiming the owner's handle is refused at the gate, as it is in who()
-    const seen = await fetch(base + '/data', {
+    const seen = await fetchR(base + '/data', {
       headers: { cookie: hc.split(';')[0], authorization: 'Basic ' + Buffer.from('x:shh').toString('base64') },
     }).then(r => r.json());
     assert.ok(seen.owner_handle, 'the owner handle is advertised');
@@ -975,7 +983,7 @@ test('hosted gate takes name + password together; /summon is gone', async t => {
     assert.equal(claim.status, 401, 'nobody may claim the owner handle at the gate either');
     assert.match(await claim.text(), /document owner/);
     // the 🚩 mechanism is gone
-    assert.equal((await fetch(base + '/summon', { method: 'POST',
+    assert.equal((await fetchR(base + '/summon', { method: 'POST',
       headers: { authorization: 'Basic ' + Buffer.from('x:shh').toString('base64') }, body: '{}' })).status, 404);
   }, { REVIEW_PASSWORD: 'shh' }, ['--hosted']);
 });
@@ -988,7 +996,7 @@ test('presence is in-memory, coarse and symmetric; grants gate agent summons per
   runBuild(dir);
   await withServer(dir, async base => {
     const auth = 'Basic ' + Buffer.from('x:shh').toString('base64');
-    const guest = { authorization: auth, 'x-review-handle': 'ada' };
+    const guest = { authorization: auth, 'x-review-handle': 'ada', 'cf-connecting-ip': '203.0.113.9' };
     const beat = (h, state) => fetch(base + '/beat', { method: 'POST', headers: h,
       body: JSON.stringify({ state, section: '01-introduction', section_title: 'Introduction' }) }).then(r => r.json());
     const b = await beat(guest, 'active');
@@ -1007,7 +1015,7 @@ test('presence is in-memory, coarse and symmetric; grants gate agent summons per
     // grants: owner-written only
     assert.equal((await fetch(base + '/grants', { method: 'POST', headers: guest,
       body: JSON.stringify({ handle: 'ada', agents: true, daily_cap: 3 }) })).status, 403);
-    const owner = { authorization: auth, 'x-review-owner': fs.readFileSync(path.join(stateDir, '.owner-token'), 'utf8').trim() };
+    const owner = { authorization: auth, 'cf-connecting-ip': '203.0.113.9', 'x-review-owner': fs.readFileSync(path.join(stateDir, '.owner-token'), 'utf8').trim() };
     const g = await fetch(base + '/grants', { method: 'POST', headers: owner,
       body: JSON.stringify({ handle: 'ada', agents: true, daily_cap: 3 }) }).then(r => r.json());
     assert.deepEqual(g.grants.ada, { agents: true, daily_cap: 3 });
