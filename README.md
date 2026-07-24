@@ -205,6 +205,18 @@ Two ways to bring in collaborators:
   comment) or use plain `node review/server.mjs`, then commit their
   comments back with `node review/submit.mjs --push`.
 
+Hosting several papers? `frontends/review/hub.mjs` is a stable front
+door for all of them behind ONE named cloudflared tunnel: a gated
+portal on the hub hostname lists each visitor exactly the papers their
+login opens (validated against each paper's own gate — the hub stores
+no passwords) or that declare them as a collaborator, and every paper
+gets its own hostname transparently proxied to its local server (run
+with `--hosted`; no tunnel of its own). When a paper's server is down
+its hostname serves a friendly "work from the git repo" page instead
+of an error. Config in `~/.botference/review-hub.json` (see the header
+of `hub.mjs`), re-read live — adding a paper is one config entry plus
+one `cloudflared tunnel route dns`, no restarts.
+
 What you get in the browser: comment or **suggest** on any block —
 paragraphs, figures, headings, list items, quotes, captions, table
 cells and the title. A suggestion (yours or a bot's) renders inline as
