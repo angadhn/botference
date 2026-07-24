@@ -1,5 +1,75 @@
 # CHANGELOG
 
+## 2026-07-24
+
+- **`botference see` — eyes for agents.** Renders any page in headless
+  system Chrome (no Playwright, no install) and writes one PNG per
+  viewport (defaults 390x844 + 1440x900), printing paths for the agent
+  to read back. Targets: a URL, a bare `:port`, or a running
+  `botference service` NAME — the listening port is discovered from the
+  live process via the ledgers, so agents never need to know ports.
+  Rationale: layout/design failures produce no errors or logs, so a
+  code+logs loop ships pages that "work" but look broken (the fitlog
+  chart sat squashed for days). `--viewport WxH` (repeatable),
+  `--basic-auth`, `--out`; virtual-time budget lets client-drawn charts
+  finish before the shot. Tests: `tests/see.test.mjs`.
+
+- **Claude Opus 5 (`claude-opus-5`, released today) added and made the
+  suggested Opus everywhere.** Registered in both context-window tables
+  (1M); now the default in `resolve_cli_model`/`resolve_context_window`,
+  the monitor, and `botference_agent.py`; the Fable credit-exhaustion
+  hint suggests Opus 5 (same $5/$25 pricing as 4.8, strictly better);
+  first Opus offered in the review and council model switchers and the
+  TUI `/model @claude` completions. Opus 4.8 stays selectable — existing
+  sessions keep working — it's just no longer what anything suggests.
+
+- **Review hub: one stable front door for every hosted paper review**
+  (`frontends/review/hub.mjs`). Run it behind a single named cloudflared
+  tunnel: the hub hostname serves a gated portal that lists each visitor
+  only the papers their login opens (checked against each paper's own
+  `/auth` — the hub stores no passwords) or that declare them in a
+  `collaborators` list; each paper's hostname is transparently proxied
+  (headers, cookies, SSE, rate limits untouched) to its local
+  `--hosted` server, and a paper whose server is down gets a friendly
+  "work from the git repo" page instead of a 502. Localhost is the
+  owner: no login, every paper listed with direct links; set
+  `REVIEW_HUB_PASSWORD` and that password opens the same full owner
+  view from any device (the phone case). Config
+  `~/.botference/review-hub.json` (env `REVIEW_HUB_CONFIG`), re-read
+  per request — adding a paper is a config entry + one `cloudflared
+  tunnel route dns`, no restarts. Tests: `tests/review-hub.test.mjs`.
+
+- **Review server: `REVIEW_OWNER_PASSWORD` — the owner from any
+  device.** With this second password set, the hosted gate signs its
+  bearer in AS the owner regardless of the name typed: the auth cookie
+  carries the owner's real handle and the redirect carries
+  `?owner=<token>`, which the client already banks — so a phone gets
+  full owner standing (accept/apply/commit, releasing agent summons)
+  with no token copy-paste. The guest password and every existing rule
+  (owner handle refused at the guest gate, token never guessable) are
+  unchanged; without the env var nothing differs.
+
+- **Fixed "No thread to resume — call send() first" after interrupting a
+  starting codex turn.** Task cancellation is a `BaseException`, so the
+  `except Exception` cleanup in `_start_model_session` never ran: the
+  model stayed marked initialized with no thread, and every later turn
+  tried `resume()` and died. Interrupts now unmark the model (and stash
+  the relay handoff, when there is one), and a start that "succeeds"
+  without ever yielding a codex thread id is likewise treated as
+  uninitialized — the next turn re-sends instead of resuming a ghost.
+  Recovery on old bridges: switch to another chat and back (restore
+  already applied the same invariant).
+
+- **Council web: fixed `/new` (and the sidebar New chat button) being
+  undone by the chat-id URL.** Since chat IDs landed in the URL hash,
+  every session-list update re-ran the hash router, so a stale
+  `#/chat/<old-id>` immediately resumed the old chat after any
+  server-side switch — `/new` appeared to "continue an old chat", and
+  a hash naming a deleted/pruned session raised a spurious "chat not
+  found" toast. The hash now drives navigation only on initial page
+  load (deep link / reload) and on real `hashchange` events; on later
+  session-list updates the URL follows the active chat instead.
+
 ## 2026-07-23
 
 - **`botference service list` is now global.** Ledgers stay
