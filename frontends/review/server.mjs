@@ -6,12 +6,13 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { ApplyEngine } from './apply.mjs';
 import { attachWs } from './ws.mjs';
 
-const REVIEW = path.dirname(new URL(import.meta.url).pathname);
+const REVIEW = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(REVIEW, '..');
 const CFG = JSON.parse(fs.readFileSync(path.join(REVIEW, 'review.config.json'), 'utf8'));
 const SITE = path.join(REVIEW, 'site');

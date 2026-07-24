@@ -4,8 +4,9 @@
 // Usage: node review/init-config.mjs [path-to-botference-home]
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REVIEW = path.dirname(new URL(import.meta.url).pathname);
+const REVIEW = path.dirname(fileURLToPath(import.meta.url));
 const cfgFile = path.join(REVIEW, 'review.config.json');
 
 export function findHome(explicit) {

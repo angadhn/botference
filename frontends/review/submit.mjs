@@ -3,9 +3,10 @@
 // Usage:  node review/submit.mjs [--push]
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
-const REVIEW = path.dirname(new URL(import.meta.url).pathname);
+const REVIEW = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(REVIEW, '..');
 const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 

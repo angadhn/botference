@@ -7,6 +7,7 @@
 // snapshot, so a file's pre-existing uncommitted edits survive the round trip.
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 // whitespace-tolerant span matching, shared with the browser (review.js)
 import SpanMatch from './assets/span-match.js';
@@ -187,11 +188,11 @@ export class ApplyEngine {
 }
 
 // CLI: node apply.mjs [--dry-run] <card-id> [...]   (acceptance is enforced by the server; the CLI trusts its caller)
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
   const ids = args.filter(a => !a.startsWith('--'));
-  const review = path.dirname(new URL(import.meta.url).pathname);
+  const review = path.dirname(fileURLToPath(import.meta.url));
   const cfg = JSON.parse(fs.readFileSync(path.join(review, 'review.config.json'), 'utf8'));
   const engine = new ApplyEngine({ reviewDir: review, cfg });
   if (!ids.length) { console.log('usage: node apply.mjs [--dry-run] <card-id> [...]'); process.exit(1); }
