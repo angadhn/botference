@@ -89,6 +89,51 @@ test('see accepts a bare :port and a single custom viewport',
   assert.match(files[0], /-portform-500x500\.png$/);
 });
 
+test('sandboxed lane: requests are served by the see-broker with identical output', async t => {
+  // No real Chrome anywhere in this test: a fake chrome script writes a
+  // stub PNG, proving the spool protocol end-to-end deterministically.
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'see-ws-'));
+  fs.mkdirSync(path.join(ws, '.botference'), { recursive: true });
+  const fake = path.join(ws, 'fake-chrome');
+  fs.writeFileSync(fake, `#!/bin/bash
+for a in "$@"; do case "$a" in --screenshot=*) f="\${a#--screenshot=}";; esac; done
+head -c 2048 /dev/zero > "$f"
+`, { mode: 0o755 });
+
+  // broker in the workspace, with a private ledger index
+  const index = path.join(ws, 'ledger-index');
+  fs.writeFileSync(index, path.join(ws, '.botference', 'services.json') + '\n');
+  const broker = (await import('node:child_process')).spawn(
+    BOTFERENCE, ['see', '--serve'],
+    { cwd: ws, env: { ...process.env, BOTFERENCE_CHROME: fake, BOTFERENCE_SERVICE_INDEX: index } });
+  t.after(() => broker.kill());
+  // register the broker in the ledger so clients consider it alive
+  fs.writeFileSync(path.join(ws, '.botference', 'services.json'),
+    JSON.stringify({ services: [{ name: 'see-broker', pid: broker.pid }] }));
+  await new Promise(r => setTimeout(r, 1200));
+
+  // the client is "sandboxed": forced onto the broker lane, no chrome env
+  const r = await see([':1', 'brokered', '--viewport', '111x222'], {
+    cwd: ws,
+    env: { ...process.env, BOTFERENCE_SEE_FORCE_BROKER: '1', BOTFERENCE_SERVICE_INDEX: index },
+  });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /^wrote: .*-brokered-111x222\.png$/m, 'broker output relayed verbatim');
+  const shots = fs.readdirSync(path.join(ws, '.botference', 'shots'));
+  assert.equal(shots.length, 1);
+  assert.ok(fs.statSync(path.join(ws, '.botference', 'shots', shots[0])).size >= 2048);
+  // spool drained: no request or result files left behind
+  assert.deepEqual(fs.readdirSync(path.join(ws, '.botference', 'see')), []);
+});
+
+test('sandboxed lane: a clear error when no broker service is alive', async () => {
+  const r = await see([':1', 'x'],
+    { env: { ...process.env, BOTFERENCE_SEE_FORCE_BROKER: '1', BOTFERENCE_SERVICE_INDEX: '/dev/null' } });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /no see-broker service is alive/);
+  assert.match(r.stderr, /botference service start see-broker/);
+});
+
 test('see fails plainly on an unknown service name and a bad viewport', async () => {
   const r = await see(['no-such-service-xyz'],
     { env: { ...process.env, BOTFERENCE_SERVICE_INDEX: '/dev/null' } });

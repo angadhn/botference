@@ -54,6 +54,13 @@ botference see <target> [label] [--viewport WxH]... [--basic-auth U:P] [--out DI
 - Engine: headless system Chrome — no Playwright, nothing to install.
   A `--virtual-time-budget` is applied so client-drawn charts finish
   rendering before the shot.
+- **Sandboxes are handled — run the command yourself.** Your sandbox
+  cannot launch Chrome (seatbelt kills it); `botference see` detects
+  that and hands the job to the see-broker service automatically,
+  printing the same `wrote:` paths. Do not retry Chrome by hand and do
+  not ask a human for pixels. If it reports "no see-broker service is
+  alive", relay exactly this to the machine owner:
+  `botference service start see-broker -- botference see --serve`
 - Emulation caveat: it is Chrome at phone size, not iOS Safari. If a
   bug reproduces on a real iPhone but not in your render, say so —
   that is the one case that justifies installing Playwright (for its

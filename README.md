@@ -315,6 +315,14 @@ charts and figures (assert data coverage, containment, label collisions
 on the generated SVG) — vision discovers a failure class once, the
 invariant test locks it out forever.
 
+Agent sandboxes cannot launch Chrome (seatbelt kills it). The same
+command still works there: when the local render fails wholesale,
+`see` hands the exact request to the **see-broker** — start it once
+with `botference service start see-broker -- botference see --serve` —
+which watches every registered workspace's `.botference/see/` spool
+from outside the sandbox, renders, and answers through the filesystem.
+Same command, same `wrote:` output, no sandbox loosened.
+
 ## Long-Running Services
 
 Anything started in a shell — including by an agent inside a botference

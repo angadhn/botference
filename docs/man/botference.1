@@ -183,6 +183,13 @@ WxH\fR (repeatable) replaces them. The target may be a full URL, a bare
 service\fR \- the listening port is discovered from the live process,
 so agents never need to know ports. Output lands in
 \fI.botference/shots/\fR unless \fB\-\-out\fR says otherwise.
+.PP
+Agent sandboxes cannot launch Chrome; the same command hands the
+request to the \fBsee-broker\fR automatically \- a ledgered service
+(\fBbotference service start see-broker \-\- botference see \-\-serve\fR)
+that watches every registered workspace's \fI.botference/see/\fR spool
+from outside the sandbox and answers through the filesystem with
+identical output. No sandbox is loosened.
 .SH IN-SESSION COMMANDS
 Inside a planning session, commands start with a slash. Run
 .B /help
