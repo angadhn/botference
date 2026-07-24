@@ -9,6 +9,7 @@ headless logic layer so it can be tested without a UI.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -3223,6 +3224,16 @@ class Botference:
                 )
             else:
                 resp = await adapter.send(prompt)
+        except asyncio.CancelledError:
+            # Cancellation is a BaseException: without this clause an
+            # interrupt mid-start leaves the model marked initialized with
+            # no thread, and every later turn dies with "No thread to
+            # resume — call send() first".
+            self._models_initialized.discard(model)
+            if handoff_doc:
+                self._persist_failed_relay_handoff(model)
+            self._persist_session()
+            raise
         except Exception as e:
             self._add_room_entry(ui, "system", f"Error starting {model}: {e}")
             self._models_initialized.discard(model)
@@ -3240,6 +3251,12 @@ class Botference:
                 self._persist_failed_relay_handoff(model)
             self._persist_session()
             return None
+
+        if model == "codex" and not adapter.thread_id:
+            # Restore applies the same invariant (no thread id ⇒ not
+            # initialized); a start that yielded no thread cannot be
+            # resumed later.
+            self._models_initialized.discard(model)
 
         if handoff_doc:
             self._pending_relay_handoffs.pop(model, None)

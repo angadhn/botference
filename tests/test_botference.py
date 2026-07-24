@@ -8,6 +8,7 @@ mock adapters and UI.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import os
@@ -5703,3 +5704,59 @@ class TestCrashLogRotation:
         crash = paths.session_crash_log
         assert crash.exists()
         assert not crash.with_name(crash.name + ".1").exists()
+
+
+# ── interrupted model start must not leave a resumable-looking state ──
+
+
+class CancelOnSendAdapter(MockAdapter):
+    """Send is interrupted (task cancellation) before a thread exists."""
+
+    async def send(self, prompt: str) -> AdapterResponse:
+        self.send_calls.append(prompt)
+        raise asyncio.CancelledError()
+
+
+class NoThreadAdapter(MockAdapter):
+    """Send 'succeeds' but never yields a thread id (killed subprocess)."""
+
+    async def send(self, prompt: str) -> AdapterResponse:
+        self.send_calls.append(prompt)
+        return self._next()
+
+
+@pytest.mark.asyncio
+class TestInterruptedStart:
+    async def test_cancelled_first_send_uninitializes_model(self, tmp_path):
+        """An interrupt during the first codex send must not mark codex
+        initialized: the next turn would call resume() with no thread and
+        die with 'No thread to resume — call send() first'."""
+        claude = MockAdapter([_ok("hi")])
+        codex = CancelOnSendAdapter()
+        ui = MockUI()
+        c = Botference(
+            claude=claude, codex=codex,
+            system_prompt="Plan an app", task="Build a thing",
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await c.handle_input("@codex hello", ui)
+        assert "codex" not in c._models_initialized
+        assert codex.thread_id == ""
+
+    async def test_send_without_thread_id_uninitializes_codex(self, tmp_path):
+        """A start whose process died before emitting thread.started returns
+        a response but no thread — codex must be re-sent next turn, not
+        resumed."""
+        claude = MockAdapter([_ok("hi")])
+        codex = NoThreadAdapter([_ok("partial output"), _ok("second turn")])
+        ui = MockUI()
+        c = Botference(
+            claude=claude, codex=codex,
+            system_prompt="Plan an app", task="Build a thing",
+        )
+        await c.handle_input("@codex hello", ui)
+        assert "codex" not in c._models_initialized
+        # the next codex turn starts fresh instead of resuming a ghost thread
+        await c.handle_input("@codex again", ui)
+        assert len(codex.send_calls) == 2
+        assert codex.resume_calls == []
