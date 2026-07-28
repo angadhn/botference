@@ -1,6 +1,27 @@
 # CHANGELOG
 
-## 2026-07-24
+## 2026-07-28
+
+- **Council web: true multi-tab chats — one bridge per open chat.**
+  The server previously drove a single bridge with one global "active
+  chat", so the `#/chat/<id>` URL was cosmetic: a second browser tab's
+  message landed in whichever chat was last resumed anywhere. Now the
+  server keeps a bridge POOL: a tab connecting with `?chat=<sid>`
+  (derived from its `#/chat/<sid>` hash) attaches to the bridge driving
+  that chat, spawned on demand with an automatic `/resume`; every POST
+  names its bridge. Tabs on different chats are fully concurrent
+  sessions behind the same tunnel; tabs on the same chat share one
+  bridge and see the same live stream. Sidebar/hash chat switching
+  re-attaches the tab's event stream (offscreen replay reconcile, cached
+  optimistic paint — never a blank flash) instead of sending `/resume`
+  through a shared bridge; a typed `/resume` of a chat already open in
+  another tab is intercepted server-side and re-attaches instead of
+  forking the session into two processes. Unknown chat ids fall back to
+  the primary bridge with a toast. `COUNCIL_MAX_CHATS` caps the pool
+  (default 4); idle, unwatched bridges are parked at the cap. `/quit`
+  now closes its own chat's bridge; the server exits with the last one.
+  Docs: README, man page. Tests: pool routing/isolation over live WS,
+  route_error fallback, reworked switch/hash-routing DOM tests.
 
 - **`botference see` — eyes for agents.** Renders any page in headless
   system Chrome (no Playwright, no install) and writes one PNG per
@@ -13,6 +34,14 @@
   chart sat squashed for days). `--viewport WxH` (repeatable),
   `--basic-auth`, `--out`; virtual-time budget lets client-drawn charts
   finish before the shot. Tests: `tests/see.test.mjs`.
+  **Sandboxed agents included, via the see-broker:** seatbelt kills
+  Chrome inside agent sandboxes ("Abort trap 6"), so when a local
+  render fails wholesale the SAME command hands its argv to the
+  `see-broker` service (`botference see --serve`, started once via the
+  service ledger) through `.botference/see/` request files; the broker
+  renders outside the sandbox in the requesting workspace and answers
+  with identical `wrote:` output. Deterministic filesystem protocol,
+  no sandbox loosened, `set -e`-safe throughout.
 
 - **Claude Opus 5 (`claude-opus-5`, released today) added and made the
   suggested Opus everywhere.** Registered in both context-window tables

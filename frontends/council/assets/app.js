@@ -1,8 +1,13 @@
 // botference council — browser client for the plan-mode bridge.
-// One SSE stream in (/events, bridge events relayed verbatim plus a few
-// server events), three POSTs out (/input, /permission, /choice, /interrupt).
-// Slash commands pass through verbatim: the controller parses them exactly
-// as it does for the TUI.
+// One live event stream in (WS primary, SSE fallback; bridge events relayed
+// verbatim plus a few server events), POSTs out (/input, /permission,
+// /choice, /interrupt). Slash commands pass through verbatim: the controller
+// parses them exactly as it does for the TUI.
+//
+// The server runs one bridge per OPEN CHAT. This tab attaches its stream to
+// the bridge for the chat in the URL (#/chat/<id> -> ?chat=<id>), so two
+// tabs on two chats are two concurrent sessions. Switching chats means
+// RE-ATTACHING the stream, not asking a shared bridge to /resume.
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -139,15 +144,18 @@
     replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
     currentSid: null,      // active session id (from 'projects' events)
+    bridgeId: null,        // this tab's bridge (from 'hello'); named in every POST
+    resuming: false,       // the attached bridge is still executing its spawn-time /resume
     atts: [],              // composer attachments: {id, path, url, thumb, status}
     lanes: {},             // subagent progress lane: tool_use_id -> lane record
     laneCard: null,        // the in-progress turn's lane card element (null between turns)
     laneTimer: null,       // interval ticking the running lanes' elapsed clocks
   };
-  // one bridge = one live chat: switching IS a /resume that replaces server
-  // state. So this is an honest client-side cache of the last few rendered
-  // transcripts — instant optimistic paint on switch-back, reconciled when
-  // the authoritative replay lands. Bounded LRU.
+  // switching chats re-attaches this tab's stream to another bridge, and the
+  // authoritative transcript arrives as that bridge's history replay. This is
+  // an honest client-side cache of the last few rendered transcripts —
+  // instant optimistic paint on switch, reconciled when the replay lands.
+  // Bounded LRU.
   const CACHE_MAX = 5;
   const sessionCache = new Map(); // sid -> {html, scrollTop, atBottom}
   function cachePut(sid, entry) {
@@ -756,12 +764,12 @@
   els.newChat.addEventListener('click', () => { snapshotCurrent(); sendInput('/new'); closeSide(); });
 
   // ── chat switching: optimistic render from cache, reconcile on replay ──
-  // The server drives ONE bridge session, so a switch is a real /resume
-  // round trip. What we can make instant is the paint: snapshot the outgoing
-  // transcript, restore the cached one (if we have it) immediately, and let
-  // the authoritative replay land in an offscreen buffer that swaps in when
-  // 'ready' arrives. First visits keep the old chat + a syncing pill —
-  // never a blank flash.
+  // A switch re-attaches this tab's event stream to the target chat's bridge
+  // (?chat=<sid>; the server spawns one on demand). What we make instant is
+  // the paint: snapshot the outgoing transcript, restore the cached one (if
+  // we have it) immediately, and let the authoritative replay land in an
+  // offscreen buffer that swaps in when it completes. First visits keep the
+  // old chat + a syncing pill — never a blank flash.
   function snapshotCurrent() {
     if (!state.currentSid || replayBuffer || !els.transcript.children.length) return;
     cachePut(state.currentSid, {
@@ -785,7 +793,7 @@
       else { els.chat.scrollTop = cached.scrollTop; els.jump.hidden = atBottom(); }
     }
     setSyncing(true);
-    sendInput('/resume ' + sid);
+    reattach();
   }
   // replay-buffer completion: swap the freshly replayed transcript in and
   // decide the landing scroll — same content as the cached paint keeps the
@@ -806,6 +814,7 @@
   function endSwitch() {
     flushReplayBuffer();
     state.pendingSwitch = null;
+    state.resuming = false;
     setSyncing(false);
   }
 
@@ -1038,7 +1047,9 @@
     try {
       const r = await fetch(url, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        // every POST names this tab's bridge so it lands in THIS chat, not
+        // whichever chat another tab is driving
+        body: JSON.stringify({ bridge: state.bridgeId, ...body }),
       });
       if (r.status === 401) { location.reload(); return null; }
       return await r.json();
@@ -1047,6 +1058,9 @@
   async function sendInput(text, attachments = []) {
     const r = await post('/input', { text, attachments });
     if (r && r.ok === false && r.error) addMsg('system', `not sent: ${r.error}`);
+    // a typed /resume of a chat already open elsewhere: the server refuses to
+    // fork the session and asks this tab to re-attach to the live bridge
+    else if (r && r.switch) switchTo(r.switch);
     else setBusy(true);
   }
 
@@ -1060,7 +1074,21 @@
   function handle(ev) {
     switch (ev.type) {
       case 'hello':
+        state.bridgeId = ev.bridge_id || null;
+        // a freshly spawned bridge is still executing its /resume: its replay
+        // shows the interstitial startup chat, so the offscreen buffer must
+        // stay up past replay_done until the live 'ready' lands
+        state.resuming = !!ev.resuming;
         if (ev.noauth && !localStorage.getItem('council-noauth-dismissed')) els.banner.hidden = false;
+        break;
+      case 'route_error':
+        // the chat this tab asked for could not be attached (unknown id,
+        // open-chat limit): we are on the fallback bridge — say so and let
+        // the next 'projects' event correct the URL
+        toast(ev.error || 'chat not found — showing the current chat');
+        state.pendingSwitch = null;
+        state.resuming = false;
+        setSyncing(false);
         break;
       case 'room': {
         const sp = String(ev.speaker).toLowerCase();
@@ -1084,9 +1112,6 @@
         if (ev.kind === 'tool_start' || ev.kind === 'tool_done') laneEvent(ev);
         break;
       case 'user_echo':
-        // the echo of a sidebar-initiated /resume is switch plumbing, not
-        // conversation — don't paint it over the optimistic transcript
-        if (state.pendingSwitch && ev.text === '/resume ' + state.pendingSwitch) { setBusy(true); break; }
         if (ev.text && !String(ev.text).startsWith('/')) state.lastUserText = ev.text;
         addMsg('user', ev.text, { attachments: ev.attachments || [] });
         setBusy(true);
@@ -1153,9 +1178,11 @@
         liveCard = null;
         resetLanes();
         state.replaying = true; // a restore replay follows: pin, no heuristics
-        if (state.pendingSwitch && els.transcript.children.length) {
-          // sidebar switch: keep the optimistic (or outgoing) transcript on
-          // screen and build the authoritative one offscreen — never blank
+        if (state.pendingSwitch) {
+          // in-flight switch: keep the optimistic (or outgoing) transcript on
+          // screen and build the authoritative one offscreen — never blank.
+          // A fresh buffer also drops a resuming bridge's interstitial
+          // startup events, which are plumbing, not this chat's transcript.
           replayBuffer = document.createElement('div');
         } else {
           els.transcript.innerHTML = '';
@@ -1163,11 +1190,18 @@
         }
         break;
       case 'replay_done':
-        // server-side history replay boundary (connect/reconnect): land
-        // pinned at the very bottom, and re-assert after layout settles
+        // server-side history replay boundary (connect/reconnect/reattach)
         state.inServerReplay = false;
         state.replaying = false;
-        settleBottom();
+        if (replayBuffer && !state.resuming) {
+          // attached to a live chat: its replayed history IS the transcript
+          endSwitch();
+          break;
+        }
+        // a resuming bridge keeps buffering until its live 'ready';
+        // otherwise land pinned at the very bottom and re-assert after
+        // layout settles
+        if (!replayBuffer) settleBottom();
         break;
       case 'permission_request': permissionCard(ev); break;
       case 'permission_cleared': settleCard(); break;
@@ -1195,7 +1229,16 @@
   // included) buffer streamed HTTP bodies — SSE headers arrive but no events
   // ever do — while WebSocket upgrades are proxied unbuffered.
   let retryMs = 1000;
+  let liveSock = null;   // current WebSocket (null when on SSE / disconnected)
+  let liveEs = null;     // current EventSource
+  let sseMode = false;   // WS proved unusable: stay on SSE for reattaches too
   function setConn(cls, txt) { els.conn.className = `conn ${cls}`; els.conn.textContent = txt; }
+  // which chat this tab wants its stream attached to: an in-flight switch
+  // wins, then the open chat (reconnects stay on it), then a deep link
+  function chatParam() {
+    const sid = state.pendingSwitch || state.currentSid || hashSid();
+    return sid ? '?chat=' + encodeURIComponent(sid) : '';
+  }
   function resetView() {
     // reconnect replays server history from scratch: start clean, keep the
     // scroll pinned until the server's replay_done boundary
@@ -1209,37 +1252,68 @@
     setSyncing(false);
     updateEmpty();
   }
+  // connect-time view prep: a deliberate chat switch keeps the visible
+  // transcript (cached paint or the outgoing chat) and builds the replayed
+  // one offscreen; anything else starts clean
+  function prepView() {
+    if (state.pendingSwitch) {
+      replayBuffer = document.createElement('div');
+      state.streams = {};
+      liveCard = null;
+      resetLanes();
+      state.inServerReplay = true;
+      state.replaying = false;
+    } else {
+      resetView();
+    }
+  }
+  function dropTransport() {
+    if (liveSock) { const s = liveSock; liveSock = null; s.onclose = null; s.onerror = null; try { s.close(); } catch { } }
+    if (liveEs) { try { liveEs.close(); } catch { } liveEs = null; }
+  }
+  // deliberate re-attach (chat switch): close the current stream without
+  // triggering the reconnect path, and connect to the target chat's bridge
+  function reattach() {
+    dropTransport();
+    if (sseMode) connectSSE(); else connect();
+  }
   function onLine(data) {
     let ev; try { ev = JSON.parse(data); } catch { return; }
     if (ev.type !== 'ping') handle(ev);
   }
   function scheduleReconnect() {
     setConn('err', '○ reconnecting…');
-    setTimeout(connect, retryMs);
+    setTimeout(() => { if (sseMode) connectSSE(); else connect(); }, retryMs);
     retryMs = Math.min(retryMs * 2, 15000);
   }
   function connect() {
-    resetView();
+    prepView();
     let sock;
     try {
-      sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-    } catch { connectSSE(); return; }
+      sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + chatParam());
+    } catch { sseMode = true; connectSSE(); return; }
+    liveSock = sock;
     let opened = false;
     sock.onopen = () => { opened = true; retryMs = 1000; setConn('ok', '● live'); };
     sock.onmessage = e => onLine(e.data);
     sock.onerror = () => { };
     sock.onclose = () => {
+      if (liveSock !== sock) return; // superseded by a deliberate reattach
+      liveSock = null;
       // never got open: something between us and the server blocks WS — use SSE
-      if (!opened) { connectSSE(); return; }
+      if (!opened) { sseMode = true; connectSSE(); return; }
       scheduleReconnect();
     };
   }
   function connectSSE() {
-    resetView();
-    const es = new EventSource('/events');
+    prepView(); // idempotent right after connect()'s prep — no events between
+    const es = new EventSource('/events' + chatParam());
+    liveEs = es;
     es.onopen = () => { retryMs = 1000; setConn('ok', '● live'); };
     es.onmessage = e => onLine(e.data);
     es.onerror = () => {
+      if (liveEs !== es) { try { es.close(); } catch { } return; }
+      liveEs = null;
       es.close();
       scheduleReconnect();
     };
@@ -1262,6 +1336,6 @@
     fmt, sysFmt, switchTo, addFiles, submit, sessionCache,
     renderModelSwitcher, refreshPresendWarn, presendExhausted,
     noteAgentTurn, exhaustReason, modelsFor,
-    laneEvent, hashSid, syncHash, routeHash,
+    laneEvent, hashSid, syncHash, routeHash, chatParam,
   };
 })();

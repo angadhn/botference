@@ -45,8 +45,10 @@ prints one shareable https URL plus the password \- open it on a phone.
 means anyone with the URL can drive your agents, which can read and write
 files on this machine; URLs leak (link previews, chat logs) \- prefer the
 default password. \fB\-\-port\fR \fIN\fR picks the web port (default
-4187). The web server spawns its own bridge session; do not open the same
-session in the TUI and the browser at once.
+4187). The web server runs one bridge session per open chat, so browser
+tabs on different chats are concurrent sessions (COUNCIL_MAX_CHATS caps
+the pool, default 4); do not open the same session in the TUI and the
+browser at once.
 .TP
 .B research-plan
 Structured planning with prompts/plan.md.

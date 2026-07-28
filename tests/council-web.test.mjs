@@ -299,6 +299,76 @@ test('WebSocket transport: hello + history replay + live events; gate enforced w
   await gated.next(e => e.type === 'hello');
 });
 
+// ------------------------------------------------------------ bridge pool
+
+test('bridge pool: ?chat=<sid> runs a second concurrent bridge; POSTs route by bridge id; streams stay isolated', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  // tab A: default attach — the primary bridge
+  const a = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => a.close());
+  const helloA = await a.next(e => e.type === 'hello');
+  assert.ok(helloA.bridge_id, 'hello names the bridge this tab is attached to');
+  await a.next(e => e.type === 'replay_done');
+  // tab B: asks for a different chat — a second bridge spawns and is told to
+  // /resume it (no sessions dir in the test root, so the check is permissive)
+  const b = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=sidB0001' });
+  t.after(() => b.close());
+  const helloB = await b.next(e => e.type === 'hello');
+  assert.ok(helloB.bridge_id, 'second tab gets a bridge');
+  assert.notEqual(helloB.bridge_id, helloA.bridge_id, 'a DIFFERENT bridge than tab A');
+  assert.equal(helloB.chat, 'sidB0001', 'hello names the chat the tab asked for');
+  assert.equal(helloB.resuming, true, 'a fresh bridge advertises its in-flight /resume');
+  await b.next(e => e.type === 'replay_done');
+  // the fake bridge answers the queued /resume with an echo turn — that turn
+  // completing proves the spawn-time /resume reached bridge B
+  await b.next(e => e.type === 'room' && e.text === 'echo: /resume sidB0001', 8000);
+  assert.match(fs.readFileSync(s.rx, 'utf8'), /^\/resume sidB0001$/m, 'the spawn-time /resume reached bridge B');
+  // input named for bridge B lands in B's chat and streams ONLY to tab B
+  await post(s.base, '/input', { text: 'hello-B', bridge: helloB.bridge_id });
+  await b.next(e => e.type === 'user_echo' && e.text === 'hello-B');
+  await b.next(e => e.type === 'room' && e.text === 'echo: hello-B');
+  // input named for bridge A lands in A's chat and streams ONLY to tab A
+  await post(s.base, '/input', { text: 'hello-A', bridge: helloA.bridge_id });
+  await a.next(e => e.type === 'user_echo' && e.text === 'hello-A');
+  await a.next(e => e.type === 'room' && e.text === 'echo: hello-A');
+  assert.ok(!a.events.some(e => e.type === 'user_echo' && e.text === 'hello-B'),
+    "tab A never sees tab B's traffic");
+  assert.ok(!b.events.some(e => e.type === 'user_echo' && e.text === 'hello-A'),
+    "tab B never sees tab A's traffic");
+  // a typed /resume of a chat another bridge drives is not forwarded (it
+  // would fork the session) — the tab is told to reattach instead. The fake
+  // bridges both report active session abc12345; bridge A owns it first.
+  const r = await post(s.base, '/input', { text: '/resume abc12345', bridge: helloB.bridge_id });
+  assert.deepEqual(await r.json(), { ok: true, switch: 'abc12345' });
+  assert.ok(!b.events.some(e => e.type === 'user_echo' && e.text === '/resume abc12345'),
+    'the intercepted /resume was not echoed or forwarded');
+});
+
+test('bridge pool: an unknown chat id falls back to the primary bridge with a route_error', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  // a real sessions dir exists -> the server can (and does) validate ids
+  fs.mkdirSync(path.join(s.root, 'work', 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(s.root, 'work', 'sessions', 'realsid01.json'), '{}');
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=nope9999' });
+  t.after(() => c.close());
+  const err = await c.next(e => e.type === 'route_error');
+  assert.match(err.error, /chat not found/);
+  const hello = await c.next(e => e.type === 'hello');
+  assert.ok(hello.bridge_id, 'still attached (to the primary bridge)');
+  assert.equal(hello.resuming, false);
+  // a KNOWN id passes validation and gets its own bridge
+  const d = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=realsid01' });
+  t.after(() => d.close());
+  const helloD = await d.next(e => e.type === 'hello');
+  assert.equal(helloD.chat, 'realsid01');
+  assert.notEqual(helloD.bridge_id, hello.bridge_id);
+  assert.ok(!d.events.some(e => e.type === 'route_error'));
+});
+
 // ---------------------------------------------------------------- tunnel
 
 test('tunnel helper: named tunnel uses `cloudflared tunnel run` with the configured name', async t => {
@@ -360,6 +430,11 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
     return { status: 200, json: async () => ({ ok: true }) };
   };
   w.EventSource = class { constructor() { } close() { } };
+  // recording socket stub: never opens, never errors (deterministic), and
+  // captures the attach URL so tests can assert which chat a (re)connect
+  // asked for (?chat=<sid>)
+  const wsUrls = [];
+  w.WebSocket = class { constructor(url) { wsUrls.push(url); } close() { } send() { } };
   vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'app.js'), 'utf8'), w);
   const C = w.__council;
@@ -380,11 +455,13 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.match(doc.getElementById('projects').textContent, /First chat/);
   assert.match(doc.getElementById('projects').textContent, /Inbox/);
 
-  // clicking a chat sends the equivalent slash command — one code path
+  // clicking a chat re-attaches this tab's stream to that chat's bridge
   doc.querySelector('.sess[data-act="resume"]').click();
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume abc12345', attachments: [] } });
-  C.state.pendingSwitch = null; // settle the in-flight switch for the rest of the smoke
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=abc12345$/, 'switch reconnects to the target chat');
+  // settle the in-flight switch (attach hello + replay boundary) for the rest
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done', count: 0 });
 
   // before any completion_context arrives, the seeded fallback still
   // completes slash commands (a client can otherwise boot with an empty ctx
@@ -411,7 +488,7 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.equal(pop.hasAttribute('hidden'), true, 'no popover on an exact command');
   input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/status', attachments: [] } });
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/status', attachments: [] } });
 
   // transcript: user echo, streaming delta, final room replaces the stream
   C.handle({ type: 'user_echo', text: 'hello council' });
@@ -436,7 +513,7 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.match(card.textContent, /Where should this chat live\?/);
   card.querySelector('button[data-i="1"]').click();
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/choice', body: { index: 1 } });
+  assert.deepEqual(posts.pop(), { url: '/choice', body: { bridge: 'b1', index: 1 } });
   assert.ok(card.classList.contains('answered'));
 
   // permission card: deny posts allow:false
@@ -445,7 +522,7 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.match(perm.textContent, /file\.md/);
   perm.querySelector('button.deny').click();
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/permission', body: { allow: false } });
+  assert.deepEqual(posts.pop(), { url: '/permission', body: { bridge: 'b1', allow: false } });
 
   // no-auth hello shows the warning banner; dismiss persists
   C.handle({ type: 'hello', noauth: true });
@@ -601,8 +678,10 @@ async function mkHarness(t) {
   };
   w.EventSource = class { constructor() { } close() { } };
   // inert socket: happy-dom's real WebSocket fails ASYNCHRONOUSLY, which
-  // would fire the app's reconnect resetView() mid-test and wipe the DOM
-  w.WebSocket = class { constructor() { } close() { } send() { } };
+  // would fire the app's reconnect resetView() mid-test and wipe the DOM.
+  // Records attach URLs so tests can assert which chat a reconnect targeted.
+  const wsUrls = [];
+  w.WebSocket = class { constructor(url) { wsUrls.push(url); } close() { } send() { } };
   vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'app.js'), 'utf8'), w);
   const C = w.__council;
@@ -619,7 +698,7 @@ async function mkHarness(t) {
     get: () => geo.top,
     set: v => { geo.top = Math.max(0, Math.min(v, height())); },
   });
-  return { w, doc, C, chat, transcript, geo, posts };
+  return { w, doc, C, chat, transcript, geo, posts, wsUrls };
 }
 
 test('replay lands pinned at the bottom — heuristics suppressed mid-replay, late layout shift re-asserted',
@@ -657,9 +736,10 @@ test('replay lands pinned at the bottom — heuristics suppressed mid-replay, la
   assert.equal(doc.getElementById('jump').hasAttribute('hidden'), false, 'jump pill offers the way down');
 });
 
-test('chat switch: optimistic cached render, offscreen reconcile, never a blank transcript',
+test('chat switch: reattach to the target bridge, optimistic cached render, offscreen reconcile, never a blank transcript',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, transcript, posts } = await mkHarness(t);
+  const { doc, C, transcript, wsUrls } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle({ type: 'replay_done' });
   const projects = active => ({
     type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
@@ -675,13 +755,19 @@ test('chat switch: optimistic cached render, offscreen reconcile, never a blank 
   assert.equal(C.state.currentSid, 'sidA');
   C.handle({ type: 'user_echo', text: 'hello from A' });
   C.handle({ type: 'room', speaker: 'claude', text: 'A says hi' });
-  // switch to B (first visit, uncached): old transcript stays + syncing pill
+  // switch to B (first visit, no live bridge for it yet): the tab reconnects
+  // with ?chat=sidB; the old transcript stays on screen + syncing pill
   C.switchTo('sidB');
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidB', attachments: [] } });
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidB$/, 'reattaches to the target chat');
   assert.match(transcript.textContent, /hello from A/, 'no blank state while the switch is in flight');
   assert.equal(doc.getElementById('sync').hasAttribute('hidden'), false, 'syncing pill shows');
-  // the authoritative replay: clear_panes must NOT blank the visible pane
+  // a freshly spawned bridge answers with resuming:true and replays its
+  // interstitial startup burst — none of which may blank or paint the pane
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: true });
+  C.handle({ type: 'room', speaker: 'system', text: 'Council room ready.' });
+  C.handle({ type: 'replay_done', count: 1 });
+  assert.match(transcript.textContent, /hello from A/, 'startup replay of a resuming bridge stays offscreen');
+  // the live /resume lands: clear_panes must NOT blank the visible pane
   C.handle({ type: 'clear_panes' });
   assert.ok(transcript.children.length > 0, 'clear_panes during a switch keeps content on screen');
   C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'hello from B' }, { speaker: 'codex', text: 'B replies' }] });
@@ -690,23 +776,26 @@ test('chat switch: optimistic cached render, offscreen reconcile, never a blank 
   C.handle({ type: 'ready' });
   assert.match(transcript.textContent, /B replies/, 'ready swaps the fresh transcript in');
   assert.doesNotMatch(transcript.textContent, /hello from A/);
+  assert.doesNotMatch(transcript.textContent, /Council room ready/, 'interstitial startup events are dropped');
   assert.equal(doc.getElementById('sync').hasAttribute('hidden'), true);
   // switch BACK to A: instant render from the cache, before any server event
   C.switchTo('sidA');
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidA$/);
   assert.match(transcript.textContent, /hello from A/, 'cached transcript paints instantly');
   assert.match(transcript.textContent, /A says hi/);
   assert.ok(C.sessionCache.has('sidB'), 'outgoing chat was snapshotted');
-  // reconcile completes without ever blanking
-  C.handle({ type: 'clear_panes' });
-  assert.ok(transcript.children.length > 0);
-  C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'hello from A' }, { speaker: 'claude', text: 'A says hi' }] });
+  // A's bridge is still alive: its history replay reconciles at replay_done
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'user_echo', text: 'hello from A' });
+  C.handle({ type: 'room', speaker: 'claude', text: 'A says hi' });
   C.handle(projects('sidA'));
-  C.handle({ type: 'ready' });
+  C.handle({ type: 'replay_done', count: 3 });
   assert.match(transcript.textContent, /A says hi/);
-  // tapping the already-live chat is a no-op, not a redundant /resume
-  const n = posts.length;
+  assert.equal(doc.getElementById('sync').hasAttribute('hidden'), true);
+  // tapping the already-live chat is a no-op, not a redundant reattach
+  const n = wsUrls.length;
   C.switchTo('sidA');
-  assert.equal(posts.length, n, 'no round trip for the active chat');
+  assert.equal(wsUrls.length, n, 'no reconnect for the active chat');
 });
 
 test('links are clickable, text stays selectable, passwords get a copy chip',
@@ -772,6 +861,7 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
 test('model switcher renders from completion_context; selecting sends /model verbatim',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle({ type: 'replay_done' });
   // scoped model lists seed the picker; status carries the current per-agent model
   C.handle({ type: 'completion_context', global: ['/status'], scoped: {
@@ -793,7 +883,7 @@ test('model switcher renders from completion_context; selecting sends /model ver
   claudeSel.value = 'claude-opus-4-8';
   claudeSel.dispatchEvent(new w.Event('change', { bubbles: true }));
   await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/model @claude claude-opus-4-8', attachments: [] } });
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/model @claude claude-opus-4-8', attachments: [] } });
 });
 
 test('credit exhaustion flags the agent (avatar + notice), clears on a normal turn, and warns before send',
@@ -915,7 +1005,8 @@ test('subagent lane: a turn still running at ready freezes its row to done (neve
 
 test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link restores it; unknown ids fall back',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, C, posts } = await mkHarness(t);
+  const { w, C, wsUrls } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle({ type: 'replay_done' });
   const projects = active => ({
     type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
@@ -933,11 +1024,12 @@ test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link r
   assert.equal(w.location.hash, '#/chat/sidA', 'the open chat is written to the URL');
   // switching writes the target id immediately (before the server reconciles)
   C.switchTo('sidB');
-  await new Promise(r => setTimeout(r, 5));
   assert.equal(w.location.hash, '#/chat/sidB', 'switching updates the URL');
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidB', attachments: [] } });
-  C.state.pendingSwitch = null;
-  C.handle(projects('sidB')); // server reconciles the switch
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidB$/, 'switching reattaches to the target chat');
+  // B's bridge answers: attach hello + history replay ending at replay_done
+  C.handle({ type: 'hello', bridge_id: 'b2' });
+  C.handle(projects('sidB'));
+  C.handle({ type: 'replay_done' });
   assert.equal(C.state.currentSid, 'sidB');
   assert.equal(w.location.hash, '#/chat/sidB');
 
@@ -945,26 +1037,28 @@ test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link r
   w.location.hash = '#/chat/sidA';
   w.dispatchEvent(new w.Event('hashchange'));
   await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidA', attachments: [] } },
-    'a known hashed id resumes that chat');
-  C.state.pendingSwitch = null;
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidA$/, 'a known hashed id reattaches to that chat');
+  C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle(projects('sidA'));
+  C.handle({ type: 'replay_done' });
 
   // an unknown id falls back to the current chat with a notice, no navigation
-  const n = posts.length;
+  const n = wsUrls.length;
   w.location.hash = '#/chat/does-not-exist';
   w.dispatchEvent(new w.Event('hashchange'));
   await new Promise(r => setTimeout(r, 5));
-  assert.equal(posts.length, n, 'an unknown id triggers no /resume');
+  assert.equal(wsUrls.length, n, 'an unknown id triggers no reattach');
   assert.equal(w.location.hash, '#/chat/sidA', 'the URL falls back to the current chat');
 });
 
 test('hash routing: a link opened straight to #/chat/<id> restores that chat once the session list arrives',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, C, posts } = await mkHarness(t);
+  const { w, C, wsUrls } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle({ type: 'replay_done' });
-  // the hash is present before any 'projects' event (deep link / reload): the
-  // server's default-active chat is sidA, but the URL asks for sidB
+  // the hash is present before any 'projects' event (deep link that raced the
+  // boot connect): the attached bridge's chat is sidA, but the URL asks for
+  // sidB — the first session list must route to the hashed chat
   w.location.hash = '#/chat/sidB';
   C.handle({
     type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
@@ -977,14 +1071,15 @@ test('hash routing: a link opened straight to #/chat/<id> restores that chat onc
     }],
   });
   await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidB', attachments: [] } },
-    'the hashed chat is resumed, not the default-active one');
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidB$/,
+    'the hashed chat is attached, not the default-active one');
   assert.equal(w.location.hash, '#/chat/sidB', 'the requested hash is preserved, not overwritten');
 });
 
 test('hash routing: a server-side switch (/new, /delete) wins over the stale hash — no snap-back to the old chat',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, doc, C, posts } = await mkHarness(t);
+  const { w, doc, C, wsUrls } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle({ type: 'replay_done' });
   const projects = sessions => ({
     type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
@@ -997,11 +1092,11 @@ test('hash routing: a server-side switch (/new, /delete) wins over the stale has
   C.handle(projects([['sidA', true]]));
   assert.equal(w.location.hash, '#/chat/sidA');
 
-  // the user runs /new: the server activates a fresh session while the URL
-  // still names the old one — the stale hash must NOT resume the old chat
-  const n = posts.length;
+  // the user runs /new: this tab's bridge activates a fresh session while the
+  // URL still names the old one — the stale hash must NOT switch back
+  const n = wsUrls.length;
   C.handle(projects([['sidA', false], ['sidNEW', true]]));
-  assert.equal(posts.length, n, 'the stale hash triggers no /resume back to the old chat');
+  assert.equal(wsUrls.length, n, 'the stale hash triggers no reattach back to the old chat');
   assert.equal(C.state.currentSid, 'sidNEW', 'the new chat stays current');
   assert.equal(w.location.hash, '#/chat/sidNEW', 'the URL follows the server-side switch');
 

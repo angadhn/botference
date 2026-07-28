@@ -259,7 +259,12 @@ turn shows one live row per subagent — status dot, label, elapsed clock,
 and latest tool activity — collapsing to a summary when each finishes.
 The open chat is reflected in the URL as `#/chat/<session-id>`, so the
 address bar is a shareable per-chat link; opening it reopens that chat
-(an unknown id falls back to the current one):
+(an unknown id falls back to the current one). The server runs **one
+agent bridge per open chat**, so browser tabs on different chats are
+truly concurrent sessions behind the same tunnel — message away in one
+tab while another chat's turn runs; tabs on the *same* chat share one
+live stream. `COUNCIL_MAX_CHATS` caps the pool (default 4; idle,
+unwatched chats are parked automatically when the cap is hit):
 
 ```bash
 botference plan --web       # serve locally, open the printed URL
