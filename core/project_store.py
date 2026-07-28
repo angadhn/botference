@@ -241,6 +241,52 @@ class ProjectStore:
             next_action="TODO",
         )
 
+    def set_status(self, project_id: str, status: str, *, title: str = "") -> bool:
+        """Flip a project's portfolio status (e.g. active -> archived).
+
+        Nothing is moved or deleted: the project folder, its PROJECT.md and
+        every chat filed under it stay exactly where they are — only the
+        `status` field in projects/portfolio.json changes, so the reverse is
+        another set_status() call. list_projects() sorts non-active projects
+        last and frontends tuck them away.
+
+        Returns False when the project id is empty; a filesystem-discovered
+        project with no portfolio row yet gets one written for it.
+        """
+        project_id = project_id.strip()
+        status = status.strip() or "active"
+        if not project_id:
+            return False
+        path = self.projects_root / "portfolio.json"
+        data = _load_json(path)
+        raw_projects = data.get("projects")
+        if not isinstance(raw_projects, list):
+            raw_projects = []
+        found = False
+        projects: list[Any] = []
+        for raw in raw_projects:
+            if (
+                isinstance(raw, dict)
+                and str(raw.get("id") or raw.get("slug") or "").strip() == project_id
+            ):
+                entry = dict(raw)
+                entry["status"] = status
+                projects.append(entry)
+                found = True
+            else:
+                projects.append(raw)
+        if not found:
+            projects.append({
+                "id": project_id,
+                "title": title or _title_from_slug(project_id),
+                "status": status,
+                "root": f"projects/{project_id}",
+            })
+        data["version"] = data.get("version", 1)
+        data["projects"] = projects
+        self._write_json(path, data)
+        return True
+
     def associate_session(self, project_id: str, session_id: str) -> None:
         project_id = project_id.strip()
         session_id = session_id.strip()

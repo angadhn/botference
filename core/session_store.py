@@ -5,6 +5,7 @@ session_store.py — Crash-safe persistence for Botference plan sessions.
 from __future__ import annotations
 
 import json
+import shutil
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -136,9 +137,68 @@ class SessionStore:
 
     def delete(self, session_id: str) -> None:
         self.paths.session_state_file(session_id).unlink(missing_ok=True)
+        self._forget(session_id)
+
+    def _forget(self, session_id: str) -> None:
+        """Drop a session from the metadata index (its file is gone)."""
         if self._metadata_cache is not None and session_id in self._metadata_cache:
             del self._metadata_cache[session_id]
             self._save_metadata_index(self._metadata_cache)
+
+    # ── archive: out of the listing, never off the disk ──────────────
+    #
+    # Archiving MOVES work/sessions/<id>.json to archive/sessions/<id>.json.
+    # Nothing is rewritten, so the operation is a single atomic rename and
+    # unarchive() is the exact inverse. Every listing path globs
+    # paths.session_dir, so the chat simply stops appearing — no payload
+    # flag to keep in sync, and no read-modify-write race with another
+    # bridge process that has the same workspace open.
+
+    def archive(self, session_id: str) -> bool:
+        """Move a saved chat into archive/sessions/. Returns False when the
+        file is already gone (deleted or archived by another process)."""
+        return self._relocate(
+            self.paths.session_state_file(session_id),
+            self.paths.archived_session_state_file(session_id),
+            forget=session_id,
+        )
+
+    def unarchive(self, session_id: str) -> bool:
+        """Move an archived chat back into the active listing.
+
+        Returns False when there is no archived file, or when an active
+        session with that id already exists — restoring must never clobber
+        live state (the archived copy is left untouched for inspection).
+        """
+        active = self.paths.session_state_file(session_id)
+        if active.exists():
+            return False
+        return self._relocate(
+            self.paths.archived_session_state_file(session_id), active,
+        )
+
+    def list_archived_summaries(self, *, limit: int = 200) -> list[SessionSummary]:
+        """Summaries for archived chats (newest first)."""
+        return self.list_summaries(
+            limit=limit, session_dirs=[self.paths.archived_session_dir],
+        )
+
+    def _relocate(self, src: Path, dst: Path, *, forget: str = "") -> bool:
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.replace(dst)  # atomic within one filesystem
+        except FileNotFoundError:
+            return False
+        except OSError:
+            # Different mounts (a bind-mounted archive dir): fall back to a
+            # copy+unlink move, which is still no-loss.
+            try:
+                shutil.move(str(src), str(dst))
+            except (OSError, shutil.Error):
+                return False
+        if forget:
+            self._forget(forget)
+        return True
 
     def prune_empty(self, *, max_age_seconds: float = 86_400.0) -> int:
         """Delete zero-transcript session files older than *max_age_seconds*.
