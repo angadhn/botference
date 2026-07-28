@@ -2444,6 +2444,293 @@ class TestBotferenceProjects:
         )
 
 
+# ── concurrent writers: several processes share one workspace ──
+#
+# The Ink TUI and the web council (one bridge process per open chat) all run
+# their own Botference → SessionStore → ProjectStore against the same work
+# dir. Every one of them read-modify-writes the SAME shared index files.
+# These tests stand in two stores/controllers up where two processes would be.
+
+
+def _chat_payload(session_id: str, project_id: str, text: str,
+                  updated: str = "2026-07-28T00:00:00Z") -> dict:
+    return {
+        "session_id": session_id,
+        "created_at": "2026-07-01T00:00:00Z",
+        "updated_at": updated,
+        "title": text,
+        "project_id": project_id,
+        "transcript": [{"speaker": "user", "text": text}],
+    }
+
+
+class TestConcurrentWorkspaceWriters:
+    def _two_stores(self, tmp_path):
+        from session_store import SessionStore
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        other = SessionStore(c.paths)
+        # Both processes have already rendered a panel, so both hold a
+        # metadata cache — the state that used to get dumped over the shared
+        # index wholesale.
+        c.session_store.metadata_index()
+        other.metadata_index()
+        return c.session_store, other, c.paths
+
+    def _index_entries(self, paths) -> dict:
+        raw = (paths.session_dir / ".metadata-index.json").read_text(encoding="utf-8")
+        return json.loads(raw)["entries"]
+
+    def test_save_keeps_another_processes_index_row(self, tmp_path):
+        # Process B files a rockets chat; process A then saves its own chat.
+        # A must not blow B's row out of the shared index.
+        store_a, store_b, paths = self._two_stores(tmp_path)
+        store_b.save("rockets", _chat_payload("rockets", "space-rockets", "plot rockets"))
+        store_a.save("health", _chat_payload("health", "health-and-fitness", "gym plan"))
+
+        entries = self._index_entries(paths)
+        assert set(entries) >= {"rockets", "health"}
+        assert entries["rockets"]["project_id"] == "space-rockets"
+        assert entries["health"]["project_id"] == "health-and-fitness"
+
+    def test_save_never_resurrects_a_stale_project_id(self, tmp_path):
+        # A cached the rockets chat while it was still in Inbox. B moves it to
+        # the rockets project. A's next save must not republish its stale row.
+        store_a, store_b, paths = self._two_stores(tmp_path)
+        store_b.save("rockets", _chat_payload("rockets", "", "plot rockets"))
+        store_a.metadata_index()
+        store_b.save("rockets", _chat_payload(
+            "rockets", "space-rockets", "plot rockets", "2026-07-28T01:00:00Z"))
+
+        store_a.save("health", _chat_payload("health", "health-and-fitness", "gym plan"))
+
+        assert self._index_entries(paths)["rockets"]["project_id"] == "space-rockets"
+
+    def test_index_row_never_pins_a_competing_writers_mtime(self, tmp_path, monkeypatch):
+        # The chat is open in two processes. A's save is overtaken by B's, so
+        # A's row describes data that is no longer on disk. It must record the
+        # mtime of the bytes A actually wrote, so the row loses the merge (and
+        # would be re-parsed anyway) instead of masquerading as current.
+        import session_store as ss
+        store_a, store_b, paths = self._two_stores(tmp_path)
+        raced = {"done": False}
+        real_write = ss.atomic_write_json
+
+        def racing_write(path, payload, **kwargs):
+            mtime = real_write(path, payload, **kwargs)
+            if not raced["done"] and payload.get("project_id") == "health-and-fitness":
+                raced["done"] = True
+                store_b.save("shared", _chat_payload(
+                    "shared", "space-rockets", "plot rockets", "2026-07-28T02:00:00Z"))
+            return mtime
+
+        monkeypatch.setattr(ss, "atomic_write_json", racing_write)
+        store_a.save("shared", _chat_payload("shared", "health-and-fitness", "gym plan"))
+        monkeypatch.undo()
+
+        assert raced["done"]
+        from session_store import SessionStore
+        fresh = SessionStore(paths)  # a newly spawned bridge process
+        assert fresh.metadata_index()["shared"].project_id == "space-rockets"
+
+    def test_panel_never_files_a_chat_under_a_stale_project(self, tmp_path, monkeypatch):
+        # End-to-end version of the user-visible bug: a rockets chat listed
+        # under Health & Fitness because a second process pinned its own stale
+        # metadata row to the winning writer's mtime.
+        import session_store as ss
+        (tmp_path / "projects" / "health-and-fitness").mkdir(parents=True)
+        (tmp_path / "projects" / "space-rockets").mkdir(parents=True)
+        tui, _, _, _ = _make_botference(tmp_path=tmp_path)
+        web, _, _, _ = _make_botference(tmp_path=tmp_path)
+        tui.project_panel_snapshot()
+        web.project_panel_snapshot()
+
+        raced = {"done": False}
+        real_write = ss.atomic_write_json
+
+        def racing_write(path, payload, **kwargs):
+            mtime = real_write(path, payload, **kwargs)
+            if not raced["done"] and payload.get("project_id") == "health-and-fitness":
+                raced["done"] = True
+                web.session_store.save("shared", _chat_payload(
+                    "shared", "space-rockets", "plot space rockets",
+                    "2026-07-28T02:00:00Z"))
+            return mtime
+
+        monkeypatch.setattr(ss, "atomic_write_json", racing_write)
+        tui.session_store.save("shared", _chat_payload(
+            "shared", "health-and-fitness", "gym plan"))
+        monkeypatch.undo()
+
+        panel, _, _, _ = _make_botference(tmp_path=tmp_path)  # fresh process
+        panel.active_project_id = "space-rockets"
+        snapshot = panel.project_panel_snapshot()
+        rockets = next(p for p in snapshot.projects if p.project_id == "space-rockets")
+        health = next(p for p in snapshot.projects if p.project_id == "health-and-fitness")
+        assert [s.session_id for s in rockets.sessions] == ["shared"]
+        assert rockets.session_count == 1
+        assert health.session_count == 0
+
+    def test_two_controllers_keep_each_chat_in_its_own_project(self, tmp_path):
+        # Interleaved saves from two processes, then both panels are asked for
+        # the truth. Neither may lose or misfile the other's chat.
+        (tmp_path / "projects" / "health-and-fitness").mkdir(parents=True)
+        (tmp_path / "projects" / "space-rockets").mkdir(parents=True)
+        one, _, _, _ = _make_botference(tmp_path=tmp_path)
+        two, _, _, _ = _make_botference(tmp_path=tmp_path)
+        one.active_project_id = "health-and-fitness"
+        two.active_project_id = "space-rockets"
+        one.project_panel_snapshot()
+        two.project_panel_snapshot()
+
+        for turn in range(3):
+            one.session_store.save("health", _chat_payload(
+                "health", "health-and-fitness", "gym plan",
+                f"2026-07-28T0{turn}:00:00Z"))
+            one.project_store.associate_session("health-and-fitness", "health")
+            two.session_store.save("rockets", _chat_payload(
+                "rockets", "space-rockets", "plot space rockets",
+                f"2026-07-28T0{turn}:00:00Z"))
+            two.project_store.associate_session("space-rockets", "rockets")
+
+        health_panel = one.project_panel_snapshot()
+        rockets_panel = two.project_panel_snapshot()
+        health = next(p for p in health_panel.projects
+                      if p.project_id == "health-and-fitness")
+        rockets = next(p for p in rockets_panel.projects
+                       if p.project_id == "space-rockets")
+        assert [s.session_id for s in health.sessions] == ["health"]
+        assert [s.session_id for s in rockets.sessions] == ["rockets"]
+        assert health.session_count == 1
+        assert rockets.session_count == 1
+        assert health_panel.inbox_session_count == 0
+        assert one.project_store.session_index_map() == {
+            "health": "health-and-fitness", "rockets": "space-rockets",
+        }
+
+    def test_concurrent_association_writers_keep_every_project(self, tmp_path, monkeypatch):
+        # Two processes file different chats at the same time. A plain
+        # read-modify-write drops whichever association was read first.
+        import threading
+        import time as _time
+        import project_store as ps_module
+
+        (tmp_path / "projects" / "health-and-fitness").mkdir(parents=True)
+        (tmp_path / "projects" / "space-rockets").mkdir(parents=True)
+        real_load = ps_module._load_json
+
+        def slow_load(path):
+            data = real_load(path)
+            if path.name == "session-index.json":
+                _time.sleep(0.05)  # widen the read-modify-write window
+            return data
+
+        monkeypatch.setattr(ps_module, "_load_json", slow_load)
+
+        def file_chat(project_id, session_id):
+            ProjectStore(tmp_path).associate_session(project_id, session_id)
+
+        threads = [
+            threading.Thread(target=file_chat, args=("health-and-fitness", "health")),
+            threading.Thread(target=file_chat, args=("space-rockets", "rockets")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        monkeypatch.undo()
+        assert ProjectStore(tmp_path).session_index_map() == {
+            "health": "health-and-fitness", "rockets": "space-rockets",
+        }
+
+    def test_a_filed_chat_survives_other_processes_churn(self, tmp_path):
+        # A chat filed once with /project assign is never written again, so
+        # nothing repairs it: every concurrent association was a chance to
+        # delete it. It has to still be filed when the churn stops.
+        import threading
+
+        (tmp_path / "projects" / "filed-away").mkdir(parents=True)
+        ProjectStore(tmp_path).associate_session("filed-away", "orphan")
+
+        def churn(index):
+            store = ProjectStore(tmp_path)
+            for turn in range(40):
+                store.associate_session(f"project-{index}", f"chat-{index}-{turn}")
+
+        threads = [threading.Thread(target=churn, args=(i,)) for i in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        mapping = ProjectStore(tmp_path).session_index_map()
+        assert mapping.get("orphan") == "filed-away"
+        assert len(mapping) == 121
+
+    def test_session_index_write_is_atomic_for_concurrent_readers(self, tmp_path):
+        # A reader mid-write used to parse a truncated file, see no
+        # associations at all, and paint every chat into Inbox.
+        import threading
+
+        store = ProjectStore(tmp_path)
+        for index in range(400):
+            store.associate_session(f"project-{index % 8}", f"session-{index}")
+        baseline = len(store.session_index_map())
+        assert baseline == 400
+
+        observed: list[int] = []
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                observed.append(len(ProjectStore(tmp_path).session_index_map()))
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        try:
+            for index in range(60):
+                store.associate_session("project-9", f"session-{index}")
+        finally:
+            stop.set()
+            thread.join(timeout=10)
+
+        assert observed, "reader never sampled the index"
+        assert min(observed) == baseline
+
+    def test_prune_empty_drops_pruned_rows_from_the_shared_index(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        stale = c.paths.session_dir / "corpse.json"
+        stale.write_text(json.dumps({"session_id": "corpse", "transcript": []}),
+                         encoding="utf-8")
+        c.session_store.save("live", _chat_payload("live", "", "still here"))
+        c.session_store.metadata_index()
+        assert "corpse" in self._index_entries(c.paths)
+        os.utime(stale, (1_600_000_000, 1_600_000_000))
+
+        assert c.session_store.prune_empty() == 1
+
+        entries = self._index_entries(c.paths)
+        assert "corpse" not in entries
+        assert "live" in entries
+
+    def test_panel_counts_a_chat_once_when_it_is_in_two_session_dirs(self, tmp_path):
+        # The same chat reachable from the global store AND a project-local
+        # sessions/ dir is one chat, not two rows and not a count of 2.
+        project = tmp_path / "projects" / "space-rockets"
+        (project / "sessions").mkdir(parents=True)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        payload = _chat_payload("rockets", "space-rockets", "plot space rockets")
+        c.session_store.save("rockets", payload)
+        (project / "sessions" / "rockets.json").write_text(
+            json.dumps(payload), encoding="utf-8")
+
+        c.active_project_id = "space-rockets"
+        snapshot = c.project_panel_snapshot()
+        rockets = next(p for p in snapshot.projects if p.project_id == "space-rockets")
+        assert rockets.session_count == 1
+        assert [s.session_id for s in rockets.sessions] == ["rockets"]
+
+
 # ── StatusSnapshot integration ────────────────────────────
 
 
