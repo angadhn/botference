@@ -259,7 +259,22 @@ turn shows one live row per subagent — status dot, label, elapsed clock,
 and latest tool activity — collapsing to a summary when each finishes.
 The open chat is reflected in the URL as `#/chat/<session-id>`, so the
 address bar is a shareable per-chat link; opening it reopens that chat
-(an unknown id falls back to the current one):
+(an unknown id falls back to the current one).
+
+The sidebar drives housekeeping without leaving the browser, and every
+affordance sends the same slash command the TUI takes — one code path:
+
+- **New** is a split control — `＋ New` with `chat` / `project` stacked
+  beside it. `chat` runs `/new`; `project` opens an inline title field
+  and sends `/project create <title>`.
+- Each chat row has a **⋯** menu with **Archive** (`/archive <id>` —
+  reversible) and **Delete…** (`/delete <id>`, whose confirmation is the
+  controller's own choice card in the transcript, so nothing is
+  confirmed twice).
+- Each project block offers **⊘ archive project**
+  (`/project archive <id>`); archived projects collapse into an
+  **Archived** section at the bottom of the sidebar, closed by default,
+  where **↩ unarchive project** brings one back.
 
 ```bash
 botference plan --web       # serve locally, open the printed URL
@@ -588,10 +603,13 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/projects` | List project folders under `projects/` and show the active project marker, status, priority, chat count, and next action when known. |
 | `/project [open <id>\|clear\|current\|create <title>\|create-from-chat]` | Set, clear, show, or create the current project context. The status bar and Projects panel show the selected project; `Inbox` means no project is selected. |
 | `/project assign [<session-id-prefix>] <project-id>` | File this chat (or any saved one) under a project **without** switching the active context. Writes only to `projects/session-index.json`. |
+| `/project archive <id>` / `/project unarchive <id>` | Tuck a project away, or bring it back. Nothing moves on disk and nothing is deleted: only the `status` field in `projects/portfolio.json` flips to `archived`. Archived projects sort last everywhere and collapse into the closed **Archived** section at the bottom of the web sidebar; archiving the *active* project drops the room back to Inbox. |
 | `/adopt [<id-prefix>]` | Continue a pre-existing **native Claude Code** chat inside the council. Opens a picker of recent `claude` sessions for the current folder; the adopted chat becomes the room's Claude session (full native memory), Claude writes a handoff into the shared transcript, and Codex joins from that brief. Run it from a fresh chat in the folder where the original conversation happened. Under `--claude-interactive`, the tmux pane launches as `claude --resume <that chat>` — botference becomes the steering layer over the real, attachable Claude Code session (watch it with `tmux attach -rt botference-claude-…`). |
 | `/new [title]` | Start a fresh chat in place — the current chat is saved and stays resumable; the active project context is kept. |
 | `/file [<project-id>]` | File the current chat under a project. With no args, opens the arrow-key project picker (including "create a new project from this chat"). Alias: `/add-to-project`. |
 | `/delete [<id-prefix>]` | Delete a saved chat. With no args, opens a picker of recent chats; either way a confirm step follows. Deleting the chat you're in rolls into a fresh `/new`. The project index entry is cleaned up too. |
+| `/archive [<id-prefix>\|list]` | Archive a saved chat: its session JSON **moves** from `work/sessions/` to `archive/sessions/` (`BOTFERENCE_ARCHIVE_DIR`), so it leaves every listing while staying byte-for-byte on disk. No confirm step — it is reversible. With no args, opens a picker of recent chats; `/archive list` shows what is already archived. Archiving the chat you're in saves it first, then rolls into a fresh `/new`. |
+| `/unarchive [<id-prefix>]` | Move an archived chat back into the active listing (picker with no args). It never overwrites a live chat with the same id — if one exists, the archived copy is left untouched and nothing is lost. |
 | `/resume [latest\|<number>\|<title>\|<session-id-prefix>]` | Restore a previously saved planning session. With a project selected, project-associated and project-local sessions are shown first, while old unassigned sessions remain visible. You can resume mid-chat — the current session is persisted on every turn, so the chat you're leaving stays recoverable via `/resume <its-id>`. Selecting a session row in the Ink Projects panel runs this command for you. |
 | `/rename <name>` | Name the current planning session for future `/resume` lookup. Sessions also get an automatic title from the first user message or task. |
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
@@ -1089,7 +1107,7 @@ botference/
 
 - **`work/`** — Legacy active thread state for the self-hosted repo layout. In project-local mode these files live under `botference/`.
 - **`build/`** — Generated and runtime artifacts: `AI-generated-outputs/`, `logs/`, `run/`. Fully gitignored.
-- **`archive/`** — Legacy archive path for the self-hosted repo layout. In project-local mode archives live under `botference/archive/`.
+- **`archive/`** — Legacy archive path for the self-hosted repo layout. In project-local mode archives live under `botference/archive/`. `archive/sessions/` holds chats put away with `/archive`; move a file back to `work/sessions/` (or run `/unarchive <id-prefix>`) to restore one.
 
 ## Tracked Code LOC
 

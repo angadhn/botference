@@ -199,6 +199,19 @@ in the room for the authoritative list. Highlights:
 Chat lifecycle: start fresh, continue a native Claude Code chat here,
 file under a project, name, switch, or delete chats (picker-driven).
 .TP
+.B /archive [<id-prefix>|list] , /unarchive [<id-prefix>]
+Archive a saved chat instead of deleting it: the session JSON moves from
+\fIwork/sessions/\fR to \fIarchive/sessions/\fR (\fBBOTFERENCE_ARCHIVE_DIR\fR),
+leaving every listing while staying on disk. /unarchive moves it back and
+never overwrites a live chat of the same id. Both open a picker with no
+argument; /archive list shows what is already archived.
+.TP
+.B /project archive <id> , /project unarchive <id>
+Tuck a project away or bring it back. Only the \fIstatus\fR field in
+\fIprojects/portfolio.json\fR changes \(em the folder and its chats are
+untouched. Archived projects sort last and collapse into a closed
+"Archived" section in the web council sidebar.
+.TP
 .B /lead /draft /finalize
 Planning: set (or let the bots vote on) the plan writer, draft
 implementation-plan.md with AI review rounds, and finalize with a

@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## 2026-07-29
+
+- **Archive, don't delete — for chats and for projects.** Two new
+  controller commands put a chat away without destroying it:
+  `/archive [<id-prefix>|list]` *moves* `work/sessions/<id>.json` to
+  `archive/sessions/` (`BOTFERENCE_ARCHIVE_DIR`) and `/unarchive
+  [<id-prefix>]` moves it back. A move is one atomic rename, so nothing
+  is rewritten, every listing (which globs `work/sessions/`) simply
+  stops showing it, and there is no payload flag for a second bridge
+  process to race on. Archiving is reversible, so it asks for no
+  confirmation; archiving the chat you're in saves it first and then
+  rolls into a fresh `/new`. `/unarchive` refuses to overwrite a live
+  chat with the same id — the archived copy is left untouched rather
+  than clobbering newer state. Both tolerate a file another process
+  already moved or deleted. Projects get the same treatment via
+  `/project archive <id>` / `/project unarchive <id>`, which flips only
+  the `status` field in `projects/portfolio.json` — the folder, its
+  PROJECT.md, and every chat filed under it stay exactly where they are;
+  archiving the active project drops the room back to Inbox.
+
+- **Council web sidebar: per-chat actions, archived projects, and a
+  split New control.** Every chat row now has a **⋯** menu with
+  **Archive** and **Delete…**; both send the plain slash command through
+  the normal input path, so `/delete`'s confirmation is the controller's
+  own choice card in the transcript (asked once, not twice). Each
+  project block offers **⊘ archive project**, and non-active projects
+  collapse into an **Archived** section at the bottom of the sidebar —
+  closed by default, with **↩ unarchive project** inside — so a long
+  history of finished work stops crowding the list. The old "New chat"
+  button became a split control: `＋ New` with `chat` / `project`
+  stacked beside it, where `project` opens an inline title field and
+  sends `/project create <title>` (no modal, no `prompt()`, thumb-sized
+  on a phone). `/project ` also gained scoped autocomplete for its
+  subcommands. Tests: three new happy-dom sidebar cases in
+  `tests/council-web.test.mjs`, plus `TestChatArchive` /
+  `TestProjectArchive` in `tests/test_botference.py`.
+
 ## 2026-07-24
 
 - **`botference see` — eyes for agents.** Renders any page in headless
