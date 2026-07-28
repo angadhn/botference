@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## 2026-07-29
+
+- **Fixed chats showing up under the wrong project (and vanishing from
+  the one they were filed in).** Now that a workspace is driven by
+  several processes at once — the Ink TUI plus one web-council bridge
+  per open chat — every `SessionStore`/`ProjectStore` was
+  read-modify-writing the same shared index files with no coordination,
+  so the last writer silently overwrote the others. Three concrete
+  faults, all fixed:
+  - `work/sessions/.metadata-index.json` was rewritten WHOLESALE from
+    each process's private in-memory cache. That deleted rows for chats
+    the writer had never seen and republished its stale `project_id` for
+    chats another process had since moved. Writers now merge into the
+    file they re-read under a lock and publish only the rows they
+    actually verified this pass, freshest mtime winning per row.
+  - A row's mtime was read by stat-ing the session file AFTER the atomic
+    rename, so a writer that lost a race pinned its own stale data to the
+    winner's timestamp. Nothing ever re-parsed that chat again, and the
+    wrong project stuck permanently — the "rockets chat under Health &
+    Fitness" report. The mtime now comes from the inode we wrote, so a
+    row that lost a race simply loses the merge and self-heals.
+  - `projects/session-index.json` was a non-atomic, unlocked
+    read-modify-write. Concurrent writers dropped each other's
+    associations wholesale (a stress run with three writers lost 119 of
+    121 filed chats, including one filed via `/project assign` and never
+    touched again), and readers that hit a half-written file saw NO
+    memberships at all — every chat blinking into Inbox. Writes are now
+    atomic and locked, and a chat already filed where it belongs is no
+    longer rewritten on every persisted turn.
+  Also: the project panel now counts and lists each chat ONCE when it is
+  reachable from both the global store and a project-local `sessions/`
+  dir (the duplicate-rows report), `prune_empty` drops pruned rows from
+  the shared index instead of leaving corpses for other processes, and
+  the panel scan no longer mutates the metadata cache the controller's
+  save path is writing. On-disk formats are unchanged — existing
+  sessions, indexes and associations load as-is.
+
 ## 2026-07-24
 
 - **`botference see` — eyes for agents.** Renders any page in headless
