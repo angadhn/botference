@@ -56,6 +56,19 @@ class BotferencePaths:
         return self.session_dir / f"{session_id}.json"
 
     @property
+    def archived_session_dir(self) -> Path:
+        """Archived chat snapshots: archive/sessions/
+
+        Archiving a chat moves its JSON here — out of the active listing,
+        still on disk, and reversible by moving it back.
+        """
+        return self.archive_dir / "sessions"
+
+    def archived_session_state_file(self, session_id: str) -> Path:
+        """Archived snapshot file for a plan session."""
+        return self.archived_session_dir / f"{session_id}.json"
+
+    @property
     def session_crash_log(self) -> Path:
         """Crash log for plan sessions."""
         return self.session_dir / "crash.log"

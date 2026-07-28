@@ -155,6 +155,8 @@ class InputKind(Enum):
     NEW = "new"
     FILE = "file"
     DELETE = "delete"
+    ARCHIVE = "archive"
+    UNARCHIVE = "unarchive"
     LEAD = "lead"
     DRAFT = "draft"
     FINALIZE = "finalize"
@@ -191,6 +193,8 @@ _SLASH_COMMANDS = {
     "/file": InputKind.FILE,
     "/add-to-project": InputKind.FILE,
     "/delete": InputKind.DELETE,
+    "/archive": InputKind.ARCHIVE,
+    "/unarchive": InputKind.UNARCHIVE,
     "/lead": InputKind.LEAD,
     "/draft": InputKind.DRAFT,
     "/finalize": InputKind.FINALIZE,
@@ -230,6 +234,12 @@ _TARGETED_COMMANDS = (
     "/lead", "/relay", "/tag", "/model", "/effort", "/compact", "/goal",
 )
 
+# /project subcommands, surfaced to autocomplete as scoped completions
+_PROJECT_SUBCOMMANDS = (
+    "open", "clear", "current", "create", "create-from-chat",
+    "assign", "archive", "unarchive", "activate-build",
+)
+
 # Known effort levels (passed through to the underlying CLI)
 _CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 _CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max")
@@ -258,6 +268,7 @@ def get_completion_context() -> dict:
     return {
         "global": get_slash_commands(),
         "scoped": {
+            "/project ": list(_PROJECT_SUBCOMMANDS),
             "/model @claude ": _known_claude_models(),
             "/model @codex ": _known_codex_models(),
             "/effort @claude ": list(_CLAUDE_EFFORT_LEVELS),
@@ -2262,6 +2273,14 @@ class Botference:
             await self._run_delete(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.ARCHIVE:
+            await self._run_archive(parsed.body, ui)
+            return
+
+        if parsed.kind is InputKind.UNARCHIVE:
+            await self._run_unarchive(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.DRAFT:
             await self._run_draft(ui, parsed.body)
             return
@@ -2283,6 +2302,8 @@ class Botference:
             "  /rename <name>      — Name this chat for future /resume lookup",
             "  /resume [latest|number|title|id] — Switch to a saved chat (works mid-chat; current chat is auto-saved)",
             "  /delete [<id-prefix>] — Delete a saved chat (picker + confirm)",
+            "  /archive [<id-prefix>|list] — Archive a saved chat (reversible; picker without args)",
+            "  /unarchive [<id-prefix>] — Restore an archived chat (picker without args)",
             "",
             "Projects:",
             "  /projects          — List project folders under projects/",
@@ -2290,6 +2311,8 @@ class Botference:
             "                     — Set, show, or create the active project context",
             "  /project assign [<session-id-prefix>] <project-id>",
             "                     — File this chat (or a saved one) under a project without switching context",
+            "  /project archive <id> | /project unarchive <id>",
+            "                     — Tuck a project away (nothing is deleted) or bring it back",
             "",
             "Planning:",
             "  /lead @claude|@codex — Set who writes the plan (auto-set when the bots agree on a writer)",
@@ -2358,6 +2381,7 @@ class Botference:
             "",
             "Use /project open <id> to switch context, /project clear for Inbox/global.",
             "Use /project create <title> or /project create-from-chat to add one.",
+            "Use /project archive <id> to tuck one away (reversible with unarchive).",
         ])
         self._add_room_entry(ui, "system", "\n".join(lines))
 
@@ -2404,6 +2428,12 @@ class Botference:
             self._assign_session_to_project(value, ui)
             return
 
+        if action in ("archive", "unarchive"):
+            self._set_project_status(
+                value, "archived" if action == "archive" else "active", ui,
+            )
+            return
+
         if action == "create-from-chat":
             if value:
                 self._add_room_entry(ui, "system", "Usage: /project create-from-chat")
@@ -2442,6 +2472,56 @@ class Botference:
             f"Plan writes now target {self._planning_display_path(self._plan_path)}.\n"
             f"Run /resume to see chats for this project.",
         )
+
+    def _set_project_status(self, query: str, status: str, ui: UIPort) -> None:
+        """Archive/unarchive a project by flipping portfolio.json status.
+
+        Nothing moves on disk: the folder and every chat filed under it stay
+        put, archived projects just sort last and get tucked away in the
+        frontends. /project unarchive <id> is the exact reverse.
+        """
+        verb = "archive" if status != "active" else "unarchive"
+        query = query.strip()
+        if not query:
+            self._add_room_entry(
+                ui, "system", f"Usage: /project {verb} <project-id>",
+            )
+            return
+        project = self.project_store.get(query)
+        if not project:
+            self._add_room_entry(
+                ui, "system",
+                f"No project matched '{query}'.\n\n"
+                "Run /projects to list available projects.",
+            )
+            return
+        if project.status == status:
+            state = "archived" if status != "active" else "active"
+            self._add_room_entry(
+                ui, "system", f"{project.title} is already {state}.",
+            )
+            return
+
+        self.project_store.set_status(project.id, status, title=project.title)
+        if status != "active" and self.active_project_id == project.id:
+            # Don't leave the room pointed at a project the user just filed
+            # away — fall back to Inbox/global scope.
+            self.active_project_id = ""
+            self._persist_session()
+        self._sync_project_ui(ui)
+        if status == "active":
+            self._add_room_entry(
+                ui, "system",
+                f"Unarchived {project.title} ({project.id}). "
+                f"Use /project open {project.id} to work in it.",
+            )
+        else:
+            self._add_room_entry(
+                ui, "system",
+                f"Archived {project.title} ({project.id}). Its folder and "
+                f"chats are untouched — /project unarchive {project.id} "
+                "restores it.",
+            )
 
     def _assign_session_to_project(self, arg: str, ui: UIPort) -> None:
         """File a chat into a project without switching the active context.
@@ -4491,6 +4571,160 @@ class Botference:
         else:
             self._sync_project_ui(ui)
             self._add_room_entry(ui, "system", f"Deleted “{target_label}”.")
+
+    # ── chat archive: /archive, /unarchive ────────────────
+    #
+    # Archiving is the reversible half of /delete: the session JSON moves to
+    # archive/sessions/ (BOTFERENCE_ARCHIVE_DIR), so the chat drops out of
+    # every listing while every byte survives. /unarchive moves it back.
+
+    async def _resolve_saved_chat(
+        self,
+        prefix: str,
+        summaries: list,
+        *,
+        prompt: str,
+        empty_note: str,
+        ui: UIPort,
+        allow_current: bool = False,
+    ) -> tuple[str, str] | None:
+        """Resolve one saved chat by id-prefix, or ask the user to pick.
+
+        Returns (session_id, label), or None when nothing matched, the list
+        was empty, or the user cancelled (a note is posted either way).
+        """
+        def label_of(summary) -> str:
+            return summary.title or summary.session_id[:8]
+
+        prefix = prefix.strip()
+        if prefix:
+            matches = [s for s in summaries if s.session_id.startswith(prefix)]
+            if not matches and allow_current and self.session_id.startswith(prefix):
+                return self.session_id, self._session_title()
+            if len(matches) == 1:
+                return matches[0].session_id, label_of(matches[0])
+            if not matches:
+                self._add_room_entry(
+                    ui, "system", f"No chat matched '{prefix}'.",
+                )
+                return None
+            self._add_room_entry(
+                ui, "system",
+                f"'{prefix}' is ambiguous ({len(matches)} chats). "
+                "Use a longer prefix.",
+            )
+            return None
+
+        if not summaries:
+            self._add_room_entry(ui, "system", empty_note)
+            return None
+
+        request_choice = getattr(ui, "request_choice", None)
+        if request_choice is None:
+            # No picker (headless/scripted UI): print ids to pass explicitly.
+            lines = [prompt] + [
+                f"  {s.session_id[:8]} — {label_of(s)}" for s in summaries[:20]
+            ]
+            self._add_room_entry(ui, "system", "\n".join(lines))
+            return None
+
+        recent = summaries[:8]
+        labels = [
+            ("(this chat) " if s.session_id == self.session_id else "")
+            + label_of(s)
+            for s in recent
+        ]
+        labels.append("Cancel")
+        index = await request_choice(prompt, labels)
+        if index is None or not 0 <= index < len(recent):
+            return None
+        return recent[index].session_id, label_of(recent[index])
+
+    def _show_archived_chats(self, ui: UIPort) -> None:
+        summaries = self.session_store.list_archived_summaries()
+        if not summaries:
+            self._add_room_entry(
+                ui, "system",
+                "No archived chats. /archive [<id-prefix>] puts one here.",
+            )
+            return
+        lines = ["Archived chats:"]
+        for summary in summaries[:30]:
+            lines.append(
+                f"  {summary.session_id[:8]} — "
+                f"{summary.title or 'Untitled'} ({summary.entry_count} entries)"
+            )
+        lines.extend([
+            "",
+            f"Files live in {self._relative_project_path(self.paths.archived_session_dir)}/.",
+            "Use /unarchive <id-prefix> to bring one back.",
+        ])
+        self._add_room_entry(ui, "system", "\n".join(lines))
+
+    async def _run_archive(self, arg: str, ui: UIPort) -> None:
+        """Archive a saved chat (picker without args; `/archive list` shows
+        what is already archived)."""
+        prefix = arg.strip()
+        if prefix.lower() in ("list", "ls"):
+            self._show_archived_chats(ui)
+            return
+
+        target = await self._resolve_saved_chat(
+            prefix,
+            self.session_store.list_summaries(limit=200),
+            prompt="Archive which chat?",
+            empty_note="No saved chats to archive.",
+            ui=ui,
+            allow_current=True,
+        )
+        if target is None:
+            return
+        target_id, target_label = target
+
+        if target_id == self.session_id:
+            # Save the chat we're sitting in and step into a fresh one first,
+            # so nothing re-creates the file we're about to move.
+            self._start_new_chat("", ui)
+
+        if not self.session_store.archive(target_id):
+            self._add_room_entry(
+                ui, "system",
+                f"“{target_label}” is no longer on disk — nothing to archive.",
+            )
+            return
+        self._sync_project_ui(ui)
+        self._add_room_entry(
+            ui, "system",
+            f"Archived “{target_label}”. Nothing was deleted — the chat is in "
+            f"{self._relative_project_path(self.paths.archived_session_dir)}/; "
+            f"/unarchive {target_id[:8]} brings it back.",
+        )
+
+    async def _run_unarchive(self, arg: str, ui: UIPort) -> None:
+        """Restore an archived chat to the active listing (picker without args)."""
+        target = await self._resolve_saved_chat(
+            arg,
+            self.session_store.list_archived_summaries(),
+            prompt="Restore which archived chat?",
+            empty_note="No archived chats. /archive [<id-prefix>] puts one here.",
+            ui=ui,
+        )
+        if target is None:
+            return
+        target_id, target_label = target
+
+        if not self.session_store.unarchive(target_id):
+            self._add_room_entry(
+                ui, "system",
+                f"Could not restore “{target_label}” — an active chat with "
+                "that id already exists (the archived copy is untouched).",
+            )
+            return
+        self._sync_project_ui(ui)
+        self._add_room_entry(
+            ui, "system",
+            f"Restored “{target_label}”. /resume {target_id[:8]} opens it.",
+        )
 
     # ── /draft ────────────────────────────────────────────
 

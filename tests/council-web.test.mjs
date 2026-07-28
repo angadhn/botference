@@ -1109,3 +1109,111 @@ test('hash routing: a server-side switch (/new, /delete) wins over the stale has
   assert.ok(!toastEl || !/chat not found/.test(toastEl.textContent || ''),
     'no not-found toast for a server-side switch');
 });
+
+// ------------------------------------------- sidebar: archive / delete / new
+
+test('sidebar chat row: ⋯ opens archive + delete, both send the plain slash command',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts, wsUrls } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, status: 'active', session_count: 2,
+      sessions: [
+        { session_id: 'sidA', title: 'Chat A', updated_at: new Date().toISOString(), active: true },
+        { session_id: 'sidB', title: 'Chat B', updated_at: new Date().toISOString(), active: false },
+      ],
+    }],
+  });
+  // the menu is closed until asked for — the row stays a plain chat row
+  assert.equal(doc.querySelector('.row-menu'), null);
+  doc.querySelector('.row-more[data-sid="sidB"]').click();
+  const menu = doc.querySelector('.sess-row.menu-open .row-menu');
+  assert.ok(menu, 'the ⋯ button opens the row menu');
+  assert.equal(doc.querySelectorAll('.row-menu').length, 1, 'only one row menu at a time');
+
+  // archive: one slash command, no client-side confirm (it is reversible)
+  menu.querySelector('[data-act="archive"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/archive sidB', attachments: [] } });
+  assert.equal(doc.querySelector('.row-menu'), null, 'acting closes the menu');
+
+  // delete: the same path, and the controller's confirm card does the asking
+  doc.querySelector('.row-more[data-sid="sidB"]').click();
+  doc.querySelector('.row-menu [data-act="delete"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/delete sidB', attachments: [] } });
+
+  // tapping the row itself still opens the chat (re-attach, not a POST)
+  doc.querySelector('.sess[data-sid="sidB"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidB$/, 'row tap reattaches to that chat');
+});
+
+test('sidebar projects: archived ones collapse into their own section; archive/unarchive send /project commands',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({
+    type: 'projects', active_project_id: 'live', inbox_session_count: 0,
+    projects: [
+      { id: 'live', title: 'Live project', active: true, status: 'active', session_count: 0, sessions: [] },
+      { id: 'old', title: 'Old project', active: false, status: 'archived', session_count: 4, sessions: [] },
+    ],
+  });
+  const side = doc.getElementById('projects');
+  // the archived project is present but tucked away: collapsed, out of the
+  // active Projects list, and counted
+  const arch = side.querySelector('.arch');
+  assert.ok(arch, 'archived section exists');
+  assert.equal(arch.classList.contains('open'), false, 'collapsed by default');
+  assert.match(arch.querySelector('.arch-head').textContent, /Archived\s*1/,
+    'the header counts archived projects');
+  assert.ok(arch.textContent.includes('Old project'));
+  assert.equal(side.querySelector('.proj[data-pid="old"]').closest('.arch'), arch,
+    'the archived project renders only inside the archived section');
+
+  // expanding it offers unarchive
+  arch.querySelector('.arch-head').click();
+  assert.ok(doc.querySelector('.arch.open'), 'the section expands');
+  doc.querySelector('[data-act="proj-unarchive"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project unarchive old', attachments: [] } });
+
+  // and the live project can be archived from its own body
+  doc.querySelector('[data-act="proj-archive"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project archive live', attachments: [] } });
+});
+
+test('sidebar New split button: chat starts a chat, project takes a title inline',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const form = doc.getElementById('new-project-form');
+  const title = doc.getElementById('new-project-title');
+  assert.equal(form.hasAttribute('hidden'), true, 'the title field stays out of the way');
+
+  doc.getElementById('new-chat').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/new', attachments: [] } });
+
+  doc.getElementById('new-project').click();
+  assert.equal(form.hasAttribute('hidden'), false, 'the title field opens');
+  title.value = '  Spaceship Engineering  ';
+  title.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(),
+    { url: '/input', body: { bridge: null, text: '/project create Spaceship Engineering', attachments: [] } });
+  assert.equal(form.hasAttribute('hidden'), true, 'the field closes after submitting');
+
+  // Escape backs out without sending anything
+  doc.getElementById('new-project').click();
+  title.value = 'nope';
+  const n = posts.length;
+  title.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(form.hasAttribute('hidden'), true);
+  assert.equal(posts.length, n, 'nothing sent on escape');
+});

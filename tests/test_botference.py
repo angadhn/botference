@@ -5346,6 +5346,194 @@ class TestChatLifecycle:
         assert any("victim chat" in o for o in options)
 
 
+@pytest.mark.asyncio
+class TestChatArchive:
+    """Archive is the reversible half of /delete: the session file moves to
+    archive/sessions/ and comes back with /unarchive."""
+
+    async def _saved_chat(self, tmp_path, title="victim chat"):
+        first, _, _, ui1 = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await first.handle_input(f"/rename {title}", ui1)
+        await first.handle_input("@claude hello", ui1)
+        return first.session_id
+
+    async def test_archive_moves_the_file_and_hides_the_chat(self, tmp_path):
+        victim_id = await self._saved_chat(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input(f"/archive {victim_id[:8]}", ui)
+
+        assert not (tmp_path / "work" / "sessions" / f"{victim_id}.json").exists()
+        archived = tmp_path / "archive" / "sessions" / f"{victim_id}.json"
+        assert archived.exists(), "the chat is still on disk, just archived"
+        payload = json.loads(archived.read_text())
+        assert payload["session_id"] == victim_id
+        # gone from the active listing (what /resume and the sidebar show)
+        assert all(
+            s.session_id != victim_id
+            for s in c.session_store.list_summaries(limit=50)
+        )
+        assert any("Archived" in t for _, t in ui.room_entries)
+
+    async def test_unarchive_restores_it(self, tmp_path):
+        victim_id = await self._saved_chat(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/archive {victim_id[:8]}", ui)
+
+        await c.handle_input(f"/unarchive {victim_id[:8]}", ui)
+
+        assert (tmp_path / "work" / "sessions" / f"{victim_id}.json").exists()
+        assert not (tmp_path / "archive" / "sessions" / f"{victim_id}.json").exists()
+        assert any(
+            s.session_id == victim_id
+            for s in c.session_store.list_summaries(limit=50)
+        )
+
+    async def test_archive_picker_lists_recent_chats(self, tmp_path):
+        await self._saved_chat(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(0)
+
+        await c.handle_input("/archive", ui)
+
+        prompt, options = ui.choice_requests[0]
+        assert "Archive which chat" in prompt
+        assert any("victim chat" in o for o in options)
+
+    async def test_archive_list_shows_archived_chats(self, tmp_path):
+        victim_id = await self._saved_chat(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/archive {victim_id[:8]}", ui)
+
+        await c.handle_input("/archive list", ui)
+
+        listing = [t for _, t in ui.room_entries if "Archived chats:" in t]
+        assert listing and "victim chat" in listing[-1]
+
+    async def test_archiving_the_current_chat_rolls_into_a_fresh_one(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        old_id = c.session_id
+
+        await c.handle_input(f"/archive {old_id[:8]}", ui)
+
+        assert c.session_id != old_id
+        assert c.transcript.entries == []
+        assert not (tmp_path / "work" / "sessions" / f"{old_id}.json").exists()
+        # the outgoing chat was saved before it moved — no lost turns
+        archived = tmp_path / "archive" / "sessions" / f"{old_id}.json"
+        assert archived.exists()
+        assert json.loads(archived.read_text())["transcript"]
+
+    async def test_unarchive_never_clobbers_a_live_chat(self, tmp_path):
+        victim_id = await self._saved_chat(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/archive {victim_id[:8]}", ui)
+        # another process re-created a chat with the same id meanwhile
+        live = tmp_path / "work" / "sessions" / f"{victim_id}.json"
+        live.write_text(json.dumps({
+            "session_id": victim_id,
+            "transcript": [{"speaker": "user", "text": "newer"}],
+        }), encoding="utf-8")
+
+        await c.handle_input(f"/unarchive {victim_id[:8]}", ui)
+
+        assert json.loads(live.read_text())["transcript"][0]["text"] == "newer"
+        assert (tmp_path / "archive" / "sessions" / f"{victim_id}.json").exists()
+        assert any("already exists" in t for _, t in ui.room_entries)
+
+    async def test_archive_tolerates_a_file_another_process_removed(self, tmp_path):
+        # Several bridges can share one workspace: a chat listed a moment ago
+        # may already be gone. Both layers must degrade, never raise.
+        victim_id = await self._saved_chat(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        (tmp_path / "work" / "sessions" / f"{victim_id}.json").unlink()
+
+        assert c.session_store.archive(victim_id) is False
+        assert c.session_store.unarchive(victim_id) is False
+        await c.handle_input(f"/archive {victim_id[:8]}", ui)
+        assert any("No chat matched" in t for _, t in ui.room_entries)
+
+    async def test_empty_archive_reports_instead_of_failing(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/unarchive", ui)
+        assert any("No archived chats" in t for _, t in ui.room_entries)
+
+
+@pytest.mark.asyncio
+class TestProjectArchive:
+    async def test_archive_flips_portfolio_status_and_clears_context(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project open spaceship-engineering", ui)
+
+        await c.handle_input("/project archive spaceship-engineering", ui)
+
+        portfolio = json.loads(
+            (tmp_path / "projects" / "portfolio.json").read_text()
+        )
+        entry = next(p for p in portfolio["projects"]
+                     if p["id"] == "spaceship-engineering")
+        assert entry["status"] == "archived"
+        # the folder is untouched — archiving a project deletes nothing
+        assert (tmp_path / "projects" / "spaceship-engineering" / "PROJECT.md").exists()
+        # and the room no longer points at a project the user filed away
+        assert c.active_project_id == ""
+        panel = ui.project_states[-1]
+        assert panel.projects[0].status == "archived"
+
+    async def test_unarchive_restores_active_status(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project archive spaceship-engineering", ui)
+
+        await c.handle_input("/project unarchive spaceship-engineering", ui)
+
+        portfolio = json.loads(
+            (tmp_path / "projects" / "portfolio.json").read_text()
+        )
+        entry = next(p for p in portfolio["projects"]
+                     if p["id"] == "spaceship-engineering")
+        assert entry["status"] == "active"
+        assert c.project_store.get("spaceship-engineering").status == "active"
+
+    async def test_archive_preserves_other_portfolio_fields(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        (tmp_path / "projects" / "portfolio.json").write_text(json.dumps({
+            "version": 1,
+            "projects": [{
+                "id": "spaceship-engineering",
+                "title": "Spaceship Engineering",
+                "status": "active",
+                "priority": 2,
+                "next_action": "size the engine bay",
+            }],
+        }), encoding="utf-8")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project archive spaceship-engineering", ui)
+
+        entry = next(
+            p for p in json.loads(
+                (tmp_path / "projects" / "portfolio.json").read_text()
+            )["projects"] if p["id"] == "spaceship-engineering"
+        )
+        assert entry["priority"] == 2
+        assert entry["next_action"] == "size the engine bay"
+        assert entry["status"] == "archived"
+
+    async def test_unknown_project_and_missing_arg_are_reported(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project archive", ui)
+        assert any("Usage: /project archive" in t for _, t in ui.room_entries)
+        await c.handle_input("/project archive nope", ui)
+        assert any("No project matched" in t for _, t in ui.room_entries)
+
+
 class TestPruneEmpty:
     def test_prunes_only_old_empty_sessions(self, tmp_path):
         c, _, _, _ = _make_botference(tmp_path=tmp_path)
