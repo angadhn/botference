@@ -1420,7 +1420,19 @@ class Botference:
                 )))
 
         rows.sort(key=lambda r: r[0], reverse=True)
-        return [summary for _, summary in rows[:limit]]
+        # One row per chat. A session that lives in the global index AND in a
+        # project-local sessions/ dir would otherwise be listed twice — the
+        # "same chat twice in the sidebar" report.
+        deduped: list[SessionSummary] = []
+        seen_ids: set[str] = set()
+        for _, summary in rows:
+            if summary.session_id in seen_ids:
+                continue
+            seen_ids.add(summary.session_id)
+            deduped.append(summary)
+            if len(deduped) >= limit:
+                break
+        return deduped
 
     def _project_session_dirs(self, project: ProjectInfo | None = None) -> list[Path]:
         dirs = [self.paths.session_dir]
@@ -1457,17 +1469,20 @@ class Botference:
 
         global_dir = self.paths.session_dir
         inbox_count = 0
-        global_count_by_project: dict[str, int] = {}
+        # Count session IDS, not rows: the same chat reachable from both the
+        # global index and a project-local sessions/ dir must count once.
+        global_ids_by_project: dict[str, set[str]] = {}
+        counted_globally: set[str] = set()
         for session_id, entry in metadata.items():
             if entry.entry_count < 1:
                 continue
             project_id = entry.project_id or indexed_to_project.get(session_id, "")
             if project_id:
-                global_count_by_project[project_id] = (
-                    global_count_by_project.get(project_id, 0) + 1
-                )
+                global_ids_by_project.setdefault(project_id, set()).add(session_id)
+                counted_globally.add(session_id)
             else:
                 inbox_count += 1
+                counted_globally.add(session_id)
 
         local_count_by_project: dict[str, int] = {}
         for project in projects:
@@ -1476,7 +1491,7 @@ class Botference:
                 continue
             # Project-local dirs are typically tiny — parse inline to match
             # the same "entry_count >= 1" filter we apply globally.
-            count = 0
+            local_ids: set[str] = set()
             for path in local_dir.glob("*.json"):
                 if path.name.startswith("."):
                     continue
@@ -1492,14 +1507,17 @@ class Botference:
                         payload, project, source_path=path
                     )
                 ):
-                    count += 1
-            local_count_by_project[project.id] = count
+                    session_id = str(payload.get("session_id") or path.stem)
+                    if session_id in counted_globally:
+                        continue
+                    local_ids.add(session_id)
+            local_count_by_project[project.id] = len(local_ids)
 
         panel_projects: list[ProjectPanelProject] = []
         for project in projects:
             is_active = project.id == self.active_project_id
             session_count = (
-                global_count_by_project.get(project.id, 0)
+                len(global_ids_by_project.get(project.id, ()))
                 + local_count_by_project.get(project.id, 0)
             )
             if is_active:

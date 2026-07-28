@@ -5,21 +5,79 @@ session_store.py — Crash-safe persistence for Botference plan sessions.
 from __future__ import annotations
 
 import json
+import threading
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Iterator
 
 from paths import BotferencePaths
+
+try:  # POSIX advisory locking; absent on Windows.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
 
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+@contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    """Cross-process advisory lock guarding read-modify-write of *path*.
+
+    Several Botference processes now share one workspace (the Ink TUI plus
+    one web-council bridge per open chat), and they all read-modify-write the
+    same shared index files. Without a lock the last writer silently drops
+    whatever another process wrote in between.
+
+    The lock lives in a sidecar `.<name>.lock` file, not in *path* itself:
+    shared files are replaced atomically, so a lock held on the old inode
+    would protect nothing. (Dot-prefixed because these directories are also
+    the user's own project folders — and because every session-dir scan
+    already skips dotfiles.) Degrades to a no-op where locking is unavailable
+    (Windows, read-only filesystem) — the merge logic still limits the damage.
+    """
+    handle = None
+    if _fcntl is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path.with_name(f".{path.name}.lock"), "a+")
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        except OSError:
+            if handle is not None:
+                handle.close()
+            handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
+
+
+def atomic_write_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    indent: int | None = None,
+) -> float:
+    """Write *payload* to *path* atomically; return the written file's mtime.
+
+    The mtime is read from the temp file's inode BEFORE the rename — that is
+    the inode the reader will stat, and it stays correct even if another
+    process replaces *path* a moment later. Stat-ing *path* after the rename
+    would hand back a competing writer's mtime and pin our (now stale) data
+    to their timestamp, which is exactly how a stale metadata-index row
+    becomes permanent instead of self-healing on the next scan.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(
         "w",
@@ -29,15 +87,27 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         suffix=".tmp",
         delete=False,
     ) as tmp:
-        # Compact separators, no indent/sort: the session file is rewritten in
-        # full on every room entry, so serialization cost scales with chat
-        # length. indent=2 + sort_keys measured ~4x slower and ~20% larger at
-        # 10K transcript entries (~340ms vs ~90ms per save) — enough to stall
-        # the controller's event loop several times per turn on long chats.
-        json.dump(payload, tmp, separators=(",", ":"))
+        # Compact separators, no indent/sort by default: the session file is
+        # rewritten in full on every room entry, so serialization cost scales
+        # with chat length. indent=2 + sort_keys measured ~4x slower and ~20%
+        # larger at 10K transcript entries (~340ms vs ~90ms per save) — enough
+        # to stall the controller's event loop several times per turn.
+        if indent is None:
+            json.dump(payload, tmp, separators=(",", ":"))
+        else:
+            json.dump(payload, tmp, indent=indent)
         tmp.write("\n")
         tmp_path = Path(tmp.name)
+    try:
+        mtime = tmp_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
     tmp_path.replace(path)
+    return mtime
+
+
+# Back-compat alias: the private name predates the shared helper.
+_atomic_write_json = atomic_write_json
 
 
 def _entry_count(payload: dict[str, Any]) -> int:
@@ -98,6 +168,9 @@ class SessionStore:
     def __init__(self, paths: BotferencePaths):
         self.paths = paths
         self._metadata_cache: dict[str, SessionMetadata] | None = None
+        # The panel hydrates on a worker thread while the controller saves on
+        # the event loop thread, so cache mutation and index writes are guarded.
+        self._lock = threading.RLock()
 
     @property
     def _metadata_index_path(self) -> Path:
@@ -105,19 +178,15 @@ class SessionStore:
 
     def save(self, session_id: str, payload: dict[str, Any]) -> None:
         path = self.paths.session_state_file(session_id)
-        _atomic_write_json(path, payload)
+        mtime = atomic_write_json(path, payload)
         # Keep the metadata index in sync so project_panel_snapshot stays cheap
         # without losing accuracy. Cache loads lazily on first read.
         if self._metadata_cache is not None:
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                mtime = 0.0
             transcript = payload.get("transcript", [])
             entry_count = (
                 len(transcript) if isinstance(transcript, list) else 0
             )
-            self._metadata_cache[session_id] = SessionMetadata(
+            entry = SessionMetadata(
                 mtime=mtime,
                 project_id=str(payload.get("project_id", "") or ""),
                 entry_count=entry_count,
@@ -125,7 +194,16 @@ class SessionStore:
                 title=_display_title(payload),
                 created_at=str(payload.get("created_at", "") or ""),
             )
-            self._save_metadata_index(self._metadata_cache)
+            with self._lock:
+                if self._metadata_cache is None:  # pruned from another thread
+                    return
+                self._metadata_cache[session_id] = entry
+                # Publish just THIS row into the shared index. Dumping our whole
+                # cache would resurrect stale rows for chats another process has
+                # since moved to a different project.
+                self._metadata_cache = self._sync_metadata_index(
+                    {session_id: entry}
+                )
 
     def load(self, session_id: str) -> dict[str, Any]:
         path = self.paths.session_state_file(session_id)
@@ -136,9 +214,13 @@ class SessionStore:
 
     def delete(self, session_id: str) -> None:
         self.paths.session_state_file(session_id).unlink(missing_ok=True)
-        if self._metadata_cache is not None and session_id in self._metadata_cache:
-            del self._metadata_cache[session_id]
-            self._save_metadata_index(self._metadata_cache)
+        with self._lock:
+            if self._metadata_cache is not None:
+                self._metadata_cache.pop(session_id, None)
+            if self._metadata_cache is not None or self._metadata_index_path.exists():
+                merged = self._sync_metadata_index({}, removals={session_id})
+                if self._metadata_cache is not None:
+                    self._metadata_cache = merged
 
     def prune_empty(self, *, max_age_seconds: float = 86_400.0) -> int:
         """Delete zero-transcript session files older than *max_age_seconds*.
@@ -153,7 +235,7 @@ class SessionStore:
         if not session_dir.is_dir():
             return 0
         cutoff = _time.time() - max_age_seconds
-        removed = 0
+        removed_ids: set[str] = set()
         for path in session_dir.glob("*.json"):
             if path.name.startswith("."):
                 continue
@@ -168,12 +250,18 @@ class SessionStore:
                 continue
             try:
                 path.unlink()
-                removed += 1
+                removed_ids.add(path.stem)
             except OSError:
                 continue
-        if removed and self._metadata_cache is not None:
-            self._metadata_cache = None  # force rebuild on next read
-        return removed
+        if removed_ids:
+            with self._lock:
+                if self._metadata_index_path.exists():
+                    # Drop the pruned rows from the SHARED index without
+                    # republishing our own (possibly stale) cache.
+                    self._sync_metadata_index({}, removals=removed_ids)
+                if self._metadata_cache is not None:
+                    self._metadata_cache = None  # force rebuild on next read
+        return len(removed_ids)
 
     def _load_metadata_index(self) -> dict[str, SessionMetadata]:
         path = self._metadata_index_path
@@ -226,9 +314,44 @@ class SessionStore:
             },
         }
         try:
-            _atomic_write_json(self._metadata_index_path, payload)
+            atomic_write_json(self._metadata_index_path, payload)
         except OSError:
             pass
+
+    def _sync_metadata_index(
+        self,
+        updates: dict[str, SessionMetadata],
+        *,
+        removals: set[str] | frozenset[str] = frozenset(),
+    ) -> dict[str, SessionMetadata]:
+        """Merge *updates* into the shared on-disk index; return the result.
+
+        The index is shared state: the TUI and every web-council bridge write
+        it concurrently. A writer that rewrote the file from its own in-memory
+        cache would (a) delete rows for chats it has never seen and (b)
+        resurrect its stale `project_id` for chats another process has since
+        moved — which is how a rockets chat ends up listed under Health &
+        Fitness. So we re-read the file inside a lock and overlay only the
+        rows we actually verified this pass, freshest mtime winning per row.
+
+        A row is removed only if its session file is really gone: a chat
+        created by another process microseconds ago must survive our write.
+        """
+        path = self._metadata_index_path
+        with self._lock, file_lock(path):
+            on_disk = self._load_metadata_index()
+            merged = dict(on_disk)
+            for session_id, entry in updates.items():
+                current = merged.get(session_id)
+                if current is None or entry.mtime >= current.mtime:
+                    merged[session_id] = entry
+            for session_id in removals:
+                if self.paths.session_state_file(session_id).exists():
+                    continue
+                merged.pop(session_id, None)
+            if merged != on_disk:
+                self._save_metadata_index(merged)
+            return merged
 
     def metadata_index(self) -> dict[str, SessionMetadata]:
         """Cheap metadata lookup for project_panel_snapshot.
@@ -237,17 +360,26 @@ class SessionStore:
         derive per-project counts and skip empty/unresumable snapshots
         without re-parsing every session JSON on every panel refresh.
 
+        The session file on disk — not any cached row — is the authority on
+        which project a chat belongs to: a row whose mtime no longer matches
+        its file is re-parsed, so a row another process got wrong self-heals.
+
         Falls back gracefully if the index can't be written (read-only fs).
         """
-        if self._metadata_cache is None:
-            self._metadata_cache = self._load_metadata_index()
-        cache = self._metadata_cache
+        with self._lock:
+            if self._metadata_cache is None:
+                self._metadata_cache = self._load_metadata_index()
+            # Scan against a snapshot, not the live cache: this runs on the
+            # panel's worker thread while the controller saves on the event
+            # loop, and holding the lock across the whole scan would stall
+            # every save behind it.
+            cache = dict(self._metadata_cache)
         session_dir = self.paths.session_dir
         if not session_dir.is_dir():
             return cache
 
         seen: set[str] = set()
-        changed = False
+        verified: dict[str, SessionMetadata] = {}
         for path in session_dir.glob("*.json"):
             session_id = path.stem
             if session_id.startswith("."):
@@ -263,6 +395,7 @@ class SessionStore:
             # panel can build summaries from the index alone next launch.
             # _display_title() never returns the empty string, so this is safe.
             if cached is not None and cached.mtime == mtime and cached.title:
+                verified[session_id] = cached
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -272,7 +405,7 @@ class SessionStore:
             entry_count = (
                 len(transcript) if isinstance(transcript, list) else 0
             )
-            cache[session_id] = SessionMetadata(
+            verified[session_id] = SessionMetadata(
                 mtime=mtime,
                 project_id=str(payload.get("project_id", "") or ""),
                 entry_count=entry_count,
@@ -280,21 +413,22 @@ class SessionStore:
                 title=_display_title(payload),
                 created_at=str(payload.get("created_at", "") or ""),
             )
-            changed = True
 
-        # Drop entries whose session files were deleted out from under us.
-        for session_id in list(cache.keys()):
-            if session_id not in seen:
-                del cache[session_id]
-                changed = True
+        # Entries whose session files were deleted out from under us. The
+        # merge re-checks each one on disk, so a chat another process created
+        # after our scan started is never dropped.
+        gone = {session_id for session_id in cache if session_id not in seen}
 
-        if changed:
-            self._save_metadata_index(cache)
+        # Publish what we verified and adopt whatever other processes have
+        # written meanwhile, so our cache never drifts behind the workspace.
+        with self._lock:
+            merged = self._sync_metadata_index(verified, removals=gone)
+            self._metadata_cache = merged
         # Return a shallow snapshot so background readers (e.g. the
         # async project-panel hydration) can iterate without racing a
         # concurrent save() that mutates the live cache. Entries are
         # frozen dataclasses, so a dict copy is enough.
-        return dict(cache)
+        return dict(merged)
 
     def summary_from_metadata(
         self,

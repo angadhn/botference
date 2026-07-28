@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from session_store import atomic_write_json, file_lock
+
 
 _SKIP_DIRS = {"__pycache__", ".git", ".obsidian", "node_modules"}
 
@@ -247,27 +249,39 @@ class ProjectStore:
         if not project_id or not session_id:
             return
         path = self.projects_root / "session-index.json"
-        data = _load_json(path)
-        sessions = data.get("sessions")
-        if not isinstance(sessions, list):
-            sessions = []
-        kept_sessions = []
-        changed = False
-        for raw in sessions:
-            if not isinstance(raw, dict):
+        # session-index.json is shared state: the TUI and every web-council
+        # bridge file chats into projects concurrently. Read-modify-write it
+        # under a lock, or one writer's association silently overwrites
+        # another's and that chat drops back to Inbox (or keeps a project it
+        # was just moved out of).
+        with file_lock(path):
+            data = _load_json(path)
+            sessions = data.get("sessions")
+            if not isinstance(sessions, list):
+                sessions = []
+            kept_sessions = []
+            changed = False
+            matched = 0
+            for raw in sessions:
+                if not isinstance(raw, dict):
+                    kept_sessions.append(raw)
+                    continue
+                raw_session_id = str(raw.get("session_id") or raw.get("id") or "").strip()
+                if raw_session_id == session_id:
+                    matched += 1
+                    if str(raw.get("project") or raw.get("project_id") or "").strip() != project_id:
+                        changed = True
+                    continue
                 kept_sessions.append(raw)
-                continue
-            raw_session_id = str(raw.get("session_id") or raw.get("id") or "").strip()
-            if raw_session_id == session_id:
-                changed = True
-                continue
-            kept_sessions.append(raw)
-        kept_sessions.append({"session_id": session_id, "project": project_id})
-        data["version"] = data.get("version", 1)
-        data["sessions"] = kept_sessions
-        if not changed and sessions == kept_sessions:
-            return
-        self._write_json(path, data)
+            # Already filed here exactly once: skip the rewrite entirely. Every
+            # persisted turn calls this, and a no-op rewrite is pure contention
+            # (plus a chance to lose a concurrent writer's association).
+            if matched == 1 and not changed:
+                return
+            kept_sessions.append({"session_id": session_id, "project": project_id})
+            data["version"] = data.get("version", 1)
+            data["sessions"] = kept_sessions
+            self._write_json(path, data)
 
     def dissociate_session(self, session_id: str) -> None:
         """Drop a chat from the project index (e.g. when it is deleted)."""
@@ -275,44 +289,48 @@ class ProjectStore:
         if not session_id:
             return
         path = self.projects_root / "session-index.json"
-        data = _load_json(path)
-        sessions = data.get("sessions")
-        if not isinstance(sessions, list):
-            return
-        kept = [
-            raw for raw in sessions
-            if not (isinstance(raw, dict)
-                    and str(raw.get("session_id") or raw.get("id") or "").strip()
-                    == session_id)
-        ]
-        if len(kept) == len(sessions):
-            return
-        data["sessions"] = kept
-        self._write_json(path, data)
+        with file_lock(path):
+            data = _load_json(path)
+            sessions = data.get("sessions")
+            if not isinstance(sessions, list):
+                return
+            kept = [
+                raw for raw in sessions
+                if not (isinstance(raw, dict)
+                        and str(raw.get("session_id") or raw.get("id") or "").strip()
+                        == session_id)
+            ]
+            if len(kept) == len(sessions):
+                return
+            data["sessions"] = kept
+            self._write_json(path, data)
 
     def _upsert_portfolio_entry(self, entry: dict[str, Any]) -> None:
         path = self.projects_root / "portfolio.json"
-        data = _load_json(path)
-        projects = data.get("projects")
-        if not isinstance(projects, list):
-            projects = []
-        project_id = str(entry.get("id", ""))
-        updated = False
-        new_projects: list[Any] = []
-        for raw in projects:
-            if isinstance(raw, dict) and raw.get("id") == project_id:
+        with file_lock(path):
+            data = _load_json(path)
+            projects = data.get("projects")
+            if not isinstance(projects, list):
+                projects = []
+            project_id = str(entry.get("id", ""))
+            updated = False
+            new_projects: list[Any] = []
+            for raw in projects:
+                if isinstance(raw, dict) and raw.get("id") == project_id:
+                    new_projects.append(entry)
+                    updated = True
+                else:
+                    new_projects.append(raw)
+            if not updated:
                 new_projects.append(entry)
-                updated = True
-            else:
-                new_projects.append(raw)
-        if not updated:
-            new_projects.append(entry)
-        data["version"] = data.get("version", 1)
-        data["active_project_limit"] = data.get("active_project_limit", 10)
-        data["projects"] = new_projects
-        self._write_json(path, data)
+            data["version"] = data.get("version", 1)
+            data["active_project_limit"] = data.get("active_project_limit", 10)
+            data["projects"] = new_projects
+            self._write_json(path, data)
 
     @staticmethod
     def _write_json(path: Path, data: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        # Atomic: a plain write_text leaves the file truncated mid-write, and
+        # a concurrent reader that parses it then sees NO project memberships
+        # at all — every chat blinks into Inbox.
+        atomic_write_json(path, data, indent=2)
