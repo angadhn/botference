@@ -67,10 +67,27 @@ body.side-collapsed #side { margin-left: -272px }
 .brand em { font: italic 400 .92rem var(--serif); color: var(--accent) }
 #side-close { border: 0; background: none; color: var(--muted); font-size: .9rem;
   padding: .3rem .5rem; min-height: 34px }
-#new-chat { margin: .3rem 1rem .9rem; padding: .55rem .8rem; text-align: left;
-  font-weight: 600; color: var(--accent); border-color: var(--line);
-  background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 10px }
-#new-chat:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-hover) }
+/* split "New" control: [ ＋ New | chat / project ] */
+.new-split { display: flex; align-items: stretch; margin: .3rem 1rem .9rem;
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 7%, transparent) }
+.new-lede { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .1rem; padding: .35rem .7rem; flex: none; color: var(--accent);
+  font: 600 1rem var(--sans); line-height: 1 }
+.new-lede b { font: 600 .78rem var(--sans) }
+.new-opts { display: flex; flex-direction: column; flex: 1;
+  border-left: 1px solid var(--line) }
+.new-opts button { flex: 1; min-height: 34px; border: 0; border-radius: 0; background: none;
+  text-align: left; padding: .3rem .7rem; color: var(--accent);
+  font: 600 .8rem var(--sans) }
+.new-opts button + button { border-top: 1px solid var(--card-line); font-weight: 500;
+  color: var(--fg) }
+.new-opts button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-hover) }
+#new-project-form { margin: -.55rem 1rem .8rem }
+#new-project-form input { width: 100%; padding: .45rem .6rem; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--card); color: var(--fg);
+  font: .8rem var(--sans) }
 #projects { flex: 1; overflow-y: auto; padding: 0 .6rem 1rem; font: .82rem/1.5 var(--sans) }
 #projects h2 { font: 700 .66rem var(--sans); text-transform: uppercase; letter-spacing: .08em;
   color: var(--muted); margin: .9rem .4rem .3rem }
@@ -92,6 +109,39 @@ body.side-collapsed #side { margin-left: -272px }
 .sess:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); color: var(--fg) }
 .sess.active { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--heading); font-weight: 600 }
 .sess .when { color: var(--muted); font-size: .68rem; margin-left: .35rem }
+.sess-cmd { color: var(--muted); font-size: .75rem }
+/* chat row: title button + ⋯ actions (archive / delete) */
+.sess-row { position: relative; display: flex; align-items: center }
+.sess-row .sess { flex: 1; min-width: 0 }
+.row-more { flex: none; border: 0; background: none; color: var(--muted);
+  padding: .1rem .45rem; min-height: 30px; border-radius: 8px; font-size: .9rem;
+  line-height: 1; opacity: 0 }
+.sess-row:hover .row-more, .sess-row.menu-open .row-more,
+.row-more:focus-visible { opacity: 1 }
+@media (hover: none) { .row-more { opacity: .55 } }  /* touch: no hover to reveal it */
+.row-more:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); color: var(--fg) }
+.row-menu { position: absolute; right: .3rem; top: calc(100% - .2rem); z-index: 20;
+  min-width: 8.5rem; padding: .25rem; border-radius: 10px; background: var(--card);
+  border: 1px solid var(--card-line); box-shadow: var(--shadow) }
+.row-menu button { display: block; width: 100%; text-align: left; border: 0; background: none;
+  border-radius: 7px; padding: .45rem .6rem; min-height: 34px; color: var(--fg);
+  font: .78rem var(--sans) }
+.row-menu button:hover { background: color-mix(in srgb, var(--fg) 8%, transparent) }
+.row-menu button.danger { color: var(--bad) }
+.row-menu button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent) }
+/* archived projects: parked at the bottom, collapsed by default */
+.arch { margin-top: .9rem; border-top: 1px solid var(--card-line); padding-top: .4rem }
+.arch-head { display: flex; align-items: center; gap: .4rem; width: 100%; text-align: left;
+  border: 0; background: none; border-radius: 8px; padding: .42rem .5rem; color: var(--muted);
+  font: 700 .66rem var(--sans); text-transform: uppercase; letter-spacing: .08em }
+.arch-head:hover { background: color-mix(in srgb, var(--fg) 6%, transparent) }
+.arch-head .chev { flex: none; font-size: .62rem; width: .8em; display: inline-block;
+  transition: transform .15s ease }
+.arch.open .arch-head .chev { transform: rotate(90deg) }
+.arch-head .count { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none }
+.arch-body { display: none }
+.arch.open .arch-body { display: block }
+.arch .proj-head .name { color: var(--muted); font-weight: 500 }
 #projects .empty-note { color: var(--muted); padding: .3rem .5rem; font-size: .76rem }
 .side-foot { padding: .7rem 1rem calc(.7rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--card-line) }

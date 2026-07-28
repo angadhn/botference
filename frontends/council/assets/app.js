@@ -8,7 +8,9 @@
   const $ = id => document.getElementById(id);
   const els = {
     side: $('side'), backdrop: $('backdrop'), burger: $('burger'), sideClose: $('side-close'),
-    newChat: $('new-chat'), projects: $('projects'), theme: $('theme-toggle'),
+    newChat: $('new-chat'), newProject: $('new-project'),
+    newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
+    projects: $('projects'), theme: $('theme-toggle'),
     conn: $('st-conn'), stProject: $('st-project'), stRoute: $('st-route'), stCtx: $('st-ctx'),
     stModel: $('st-model'), modelSwitcher: $('model-switcher'), autoRelay: $('autorelay-toggle'),
     presendWarn: $('presend-warn'),
@@ -95,11 +97,14 @@
       '/effort @claude', '/effort @codex', '/compact @claude', '/compact @codex',
       '/goal @claude', '/goal @codex',
       '/projects', '/project', '/adopt', '/new', '/file', '/add-to-project',
-      '/delete', '/draft', '/finalize', '/resume', '/rename', '/permissions',
+      '/delete', '/archive', '/unarchive',
+      '/draft', '/finalize', '/resume', '/rename', '/permissions',
       '/status', '/notify', '/autorelay', '/agents', '/auth', '/current-model', '/current',
       '/help', '/quit', '/exit', '@claude ', '@codex ', '@all ',
     ],
     scoped: {
+      '/project ': ['open', 'clear', 'current', 'create', 'create-from-chat',
+        'assign', 'archive', 'unarchive', 'activate-build'],
       '/model @claude ': FALLBACK_MODELS.claude,
       '/model @codex ': FALLBACK_MODELS.codex,
       '/effort @claude ': ['low', 'medium', 'high', 'xhigh'],
@@ -135,6 +140,8 @@
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
     openProjects: new Set(),
+    menuSid: null,         // chat row whose ⋯ actions menu is open
+    archOpen: false,       // "Archived" projects section expanded?
     inServerReplay: true,  // between (re)connect and the server's replay_done boundary
     replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
@@ -708,31 +715,64 @@
     if (d < 86400) return `${Math.round(d / 3600)}h`;
     return `${Math.round(d / 86400)}d`;
   };
+  // one chat row: the row itself resumes; ⋯ opens archive/delete, both of
+  // which are plain slash commands (the controller owns the confirm step)
+  function chatRow(s) {
+    const sid = esc(s.session_id);
+    const open = state.menuSid === s.session_id;
+    return `<div class="sess-row${open ? ' menu-open' : ''}">
+      <button class="sess${s.active ? ' active' : ''}" data-act="resume" data-sid="${sid}">
+        ${esc(s.title || s.session_id.slice(0, 8))}<span class="when">${relTime(s.updated_at)}</span></button>
+      <button class="row-more" data-act="menu" data-sid="${sid}" aria-haspopup="true"
+        aria-expanded="${open}" aria-label="actions for ${esc(s.title || s.session_id.slice(0, 8))}">⋯</button>
+      ${open ? `<div class="row-menu" role="menu">
+        <button role="menuitem" data-act="archive" data-sid="${sid}">Archive</button>
+        <button role="menuitem" class="danger" data-act="delete" data-sid="${sid}">Delete…</button>
+      </div>` : ''}
+    </div>`;
+  }
+  function projectBlock(pr, { archived = false } = {}) {
+    const open = state.openProjects.has(pr.id) || (pr.active && !archived);
+    const pid = esc(pr.id);
+    let html = `<div class="proj${open ? ' open' : ''}" data-pid="${pid}">
+      <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${pid}" aria-expanded="${open}">
+        <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
+        <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
+      <div class="proj-sessions">`;
+    if (!archived && !pr.active) {
+      html += `<button class="sess sess-cmd" data-act="activate" data-pid="${pid}">→ make active project</button>`;
+    }
+    // chats first, project-level commands under them
+    for (const s of pr.sessions || []) html += chatRow(s);
+    if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
+    html += archived
+      ? `<button class="sess sess-cmd" data-act="proj-unarchive" data-pid="${pid}">↩ unarchive project</button>`
+      : `<button class="sess sess-cmd" data-act="proj-archive" data-pid="${pid}">⊘ archive project</button>`;
+    return html + '</div></div>';
+  }
   function renderProjects() {
     const p = state.projects;
     if (!p) { els.projects.innerHTML = '<div class="empty-note">loading…</div>'; return; }
+    const all = p.projects || [];
+    const live = all.filter(pr => (pr.status || 'active') === 'active');
+    const archived = all.filter(pr => (pr.status || 'active') !== 'active');
     let html = '';
     html += '<h2>Chats</h2>';
     html += `<div class="proj"><button class="proj-head" data-act="inbox">
       <span class="chev">•</span><span class="name">Inbox</span>
       <span class="count">${p.inbox_session_count || 0}</span></button></div>`;
-    if ((p.projects || []).length) {
+    if (live.length) {
       html += '<h2>Projects</h2>';
-      for (const pr of p.projects) {
-        const open = state.openProjects.has(pr.id) || pr.active;
-        html += `<div class="proj${open ? ' open' : ''}" data-pid="${esc(pr.id)}">
-          <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${esc(pr.id)}" aria-expanded="${open}">
-            <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
-            <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
-          <div class="proj-sessions">`;
-        if (!pr.active) html += `<button class="sess" data-act="activate" data-pid="${esc(pr.id)}">→ make active project</button>`;
-        for (const s of pr.sessions || []) {
-          html += `<button class="sess${s.active ? ' active' : ''}" data-act="resume" data-sid="${esc(s.session_id)}">
-            ${esc(s.title || s.session_id.slice(0, 8))}<span class="when">${relTime(s.updated_at)}</span></button>`;
-        }
-        if (!(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
-        html += '</div></div>';
-      }
+      for (const pr of live) html += projectBlock(pr);
+    }
+    // archived projects live at the bottom, collapsed — present, out of the way
+    if (archived.length) {
+      html += `<div class="arch${state.archOpen ? ' open' : ''}">
+        <button class="arch-head" data-act="toggle-arch" aria-expanded="${state.archOpen}">
+          <span class="chev">▶</span>Archived<span class="count">${archived.length}</span></button>
+        <div class="arch-body">`;
+      for (const pr of archived) html += projectBlock(pr, { archived: true });
+      html += '</div></div>';
     }
     els.projects.innerHTML = html;
   }
@@ -740,6 +780,7 @@
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
+    if (act !== 'menu' && state.menuSid) { state.menuSid = null; renderProjects(); }
     if (act === 'toggle') {
       const pid = b.dataset.pid;
       if (state.openProjects.has(pid)) state.openProjects.delete(pid);
@@ -747,13 +788,55 @@
       renderProjects();
       return;
     }
+    if (act === 'toggle-arch') { state.archOpen = !state.archOpen; renderProjects(); return; }
+    if (act === 'menu') {
+      state.menuSid = state.menuSid === b.dataset.sid ? null : b.dataset.sid;
+      renderProjects();
+      return;
+    }
     // sidebar affordances send the equivalent slash command — one code path
     if (act === 'inbox') sendInput('/resume');
     if (act === 'resume') switchTo(b.dataset.sid);
     if (act === 'activate') sendInput('/project open ' + b.dataset.pid);
+    if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
+    if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
+    if (act === 'archive') {
+      sendInput('/archive ' + b.dataset.sid);
+      toast('archiving — /unarchive brings it back');
+    }
+    if (act === 'delete') {
+      // the controller answers with a confirm card in the transcript, so the
+      // sidebar gets out of the way instead of confirming twice
+      sendInput('/delete ' + b.dataset.sid);
+      toast('confirm the delete in the chat');
+    }
     closeSide();
   });
+  // a tap anywhere else dismisses an open row menu
+  document.addEventListener('click', e => {
+    if (state.menuSid && !e.target.closest('.sess-row')) { state.menuSid = null; renderProjects(); }
+  });
   els.newChat.addEventListener('click', () => { snapshotCurrent(); sendInput('/new'); closeSide(); });
+
+  // new project: an inline title field (no modal, no prompt()) that sends
+  // the same /project create the TUI takes
+  function showNewProject(on) {
+    els.newProjForm.hidden = !on;
+    if (on) { els.newProjTitle.value = ''; els.newProjTitle.focus(); }
+  }
+  function submitNewProject() {
+    const title = els.newProjTitle.value.trim();
+    if (!title) { showNewProject(false); return; }
+    sendInput('/project create ' + title);
+    showNewProject(false);
+    closeSide();
+  }
+  els.newProject.addEventListener('click', () => showNewProject(els.newProjForm.hidden));
+  els.newProjForm.addEventListener('submit', e => { e.preventDefault(); submitNewProject(); });
+  els.newProjTitle.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.stopPropagation(); showNewProject(false); }
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submitNewProject(); }
+  });
 
   // ── chat switching: optimistic render from cache, reconcile on replay ──
   // The server drives ONE bridge session, so a switch is a real /resume
