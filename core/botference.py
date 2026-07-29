@@ -2426,7 +2426,8 @@ class Botference:
             "Chat lifecycle:",
             "  /new [title]        — Start a fresh chat here (current one is saved)",
             "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
-            "  /file [<project-id>] — File this chat under a project (picker without args; alias /add-to-project)",
+            "  /file [<project-id>] — File this chat under a project, which becomes active"
+            " (picker without args; alias /add-to-project)",
             "  /rename <name>      — Name this chat for future /resume lookup",
             "  /resume [latest|number|title|id] — Switch to a saved chat, in any project"
             " (works mid-chat; current chat is auto-saved; the chat's project becomes active)",
@@ -2439,7 +2440,8 @@ class Botference:
             "  /project [open <id>|clear|current|create <title>|create-from-chat|activate-build]",
             "                     — Set, show, or create the active project context",
             "  /project assign [<session-id-prefix>] <project-id>",
-            "                     — File this chat (or a saved one) under a project without switching context",
+            "                     — File this chat (the project becomes active) or a saved one"
+            " (you stay where you are)",
             "  /project archive <id> | /project unarchive <id>",
             "                     — Tuck a project away (nothing is deleted) or bring it back",
             "",
@@ -2543,6 +2545,10 @@ class Botference:
         if action == "clear":
             self.active_project_id = ""
             self._persist_session()
+            # The payload now says Inbox, and an empty payload project_id
+            # falls back to the session index — so a leftover association
+            # would keep listing this chat under the project it just left.
+            self.project_store.dissociate_session(self.session_id)
             self._sync_project_ui(ui)
             self._show_room_notice(
                 ui, "system", "Project context cleared. Current project: Inbox"
@@ -2590,10 +2596,7 @@ class Botference:
                 f"No project matched '{query}'.\n\nRun /projects to list available projects.",
             )
             return
-        self.active_project_id = project.id
-        self._persist_session()
-        self.project_store.associate_session(project.id, self.session_id)
-        self._sync_project_ui(ui)
+        self._activate_project(project, ui)
         self._show_room_notice(
             ui,
             "system",
@@ -2601,6 +2604,21 @@ class Botference:
             f"Plan writes now target {self._planning_display_path(self._plan_path)}.\n"
             f"Run /resume to see chats for this project.",
         )
+
+    def _activate_project(self, project: ProjectInfo, ui: UIPort) -> None:
+        """Make *project* this chat's project — the only way that sticks.
+
+        A chat's project IS its bridge's active project at save time:
+        ``_persist_session`` stamps ``active_project_id`` into the payload
+        (authoritative for membership) and re-associates the session index
+        after every turn. So filing the chat you are sitting in has to move
+        the active context too, otherwise the next save quietly undoes it.
+        Every "file the current chat" path funnels through here.
+        """
+        self.active_project_id = project.id
+        self._persist_session()
+        self.project_store.associate_session(project.id, self.session_id)
+        self._sync_project_ui(ui)
 
     def _set_project_status(self, query: str, status: str, ui: UIPort) -> None:
         """Archive/unarchive a project by flipping portfolio.json status.
@@ -2653,10 +2671,14 @@ class Botference:
             )
 
     def _assign_session_to_project(self, arg: str, ui: UIPort) -> None:
-        """File a chat into a project without switching the active context.
+        """File a chat into a project.
 
         Usage: /project assign <project-id>                (current chat)
                /project assign <session-id-prefix> <project-id>
+
+        Filing THIS chat moves the active context with it (see
+        ``_activate_project``). Filing another saved chat rewrites that
+        chat's payload on disk and leaves this chat where it is.
         """
         usage = ("Usage: /project assign <project-id>  or  "
                  "/project assign <session-id-prefix> <project-id>")
@@ -2665,6 +2687,7 @@ class Botference:
             self._add_room_entry(ui, "system", usage)
             return
 
+        session_path: Path | None = None
         if len(parts) == 1:
             session_id, session_label = self.session_id, "this chat"
             project_query = parts[0]
@@ -2689,6 +2712,8 @@ class Botference:
                 return
             session_id = matches[0].session_id
             session_label = f"'{matches[0].title or session_id[:8]}'"
+            if matches[0].source_path:
+                session_path = Path(matches[0].source_path)
 
         project = self.project_store.get(project_query)
         if not project:
@@ -2699,7 +2724,29 @@ class Botference:
             )
             return
 
+        if session_id == self.session_id:
+            # Filing the chat you are in = moving its working context. Any
+            # other treatment is a no-op: the next save re-stamps the payload
+            # (and the index) from active_project_id.
+            self._activate_project(project, ui)
+            self._add_room_entry(
+                ui, "system",
+                f"Filed this chat under {project.title} ({project.id}) — "
+                "it is now the active project.\n"
+                f"Plan writes now target "
+                f"{self._planning_display_path(self._plan_path)}.",
+            )
+            return
+
         self.project_store.associate_session(project.id, session_id)
+        # The payload wins over the session index everywhere membership is
+        # resolved, so the saved chat has to be re-stamped on disk too.
+        if not self.session_store.set_project(
+            session_id, project.id, path=session_path,
+        ):
+            log.warning(
+                "Could not rewrite project_id for session %s", session_id,
+            )
         self._sync_project_ui(ui)
         self._add_room_entry(
             ui, "system",
@@ -2781,10 +2828,9 @@ class Botference:
 
         if choice < len(suggestions):
             project = suggestions[choice]
-            self.active_project_id = project.id
-            self._persist_session()
-            self.project_store.associate_session(project.id, self.session_id)
-            self._sync_project_ui(ui)
+            # Already correct (sets the active project before persisting);
+            # routed through the shared helper so it stays that way.
+            self._activate_project(project, ui)
             self._show_room_notice(
                 ui, "system",
                 f"Project context set to {project.title} ({project.id}).",
@@ -2809,10 +2855,7 @@ class Botference:
             )
             return
 
-        self.active_project_id = project.id
-        self.project_store.associate_session(project.id, self.session_id)
-        self._persist_session()
-        self._sync_project_ui(ui)
+        self._activate_project(project, ui)
         self._add_room_entry(
             ui,
             "system",
@@ -4601,12 +4644,13 @@ class Botference:
             return
         if choice < len(projects):
             project = projects[choice]
-            self.project_store.associate_session(project.id, self.session_id)
-            self._persist_session()
-            self._sync_project_ui(ui)
+            self._activate_project(project, ui)
             self._add_room_entry(
                 ui, "system",
-                f"Filed this chat under {project.title} ({project.id}).",
+                f"Filed this chat under {project.title} ({project.id}) — "
+                "it is now the active project.\n"
+                f"Plan writes now target "
+                f"{self._planning_display_path(self._plan_path)}.",
             )
             return
         title = _project_title_from_session_title(self._session_title())

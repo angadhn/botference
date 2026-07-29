@@ -6161,8 +6161,9 @@ class TestProjectAssign:
             (tmp_path / "projects" / "session-index.json").read_text()
         )
         assert c.session_id in str(index)
-        # Active context unchanged.
-        assert c.active_project_id == ""
+        # Filing the chat you are in moves the working context with it —
+        # anything else is undone by the next turn's save.
+        assert c.active_project_id == "spaceship-engineering"
         assert any("Filed this chat" in t for s, t in ui.room_entries
                    if s == "system")
 
@@ -6186,6 +6187,114 @@ class TestProjectAssign:
         await c.handle_input("/project assign no-such-project", ui)
         assert any("No project matched" in t for s, t in ui.room_entries
                    if s == "system")
+
+
+# ── Filing a chat has to survive the next save ────────────
+#
+# Membership is resolved payload-first (session-index.json only backfills
+# legacy chats), and _persist_session re-stamps BOTH from active_project_id
+# after every turn. A filing path that touches only the index is therefore a
+# silent no-op for the chat you are in: /file printed success and the move
+# reverted seconds later, on the next turn.
+
+
+def _payload_on_disk(tmp_path: Path, session_id: str) -> dict:
+    return json.loads(
+        (tmp_path / "work" / "sessions" / f"{session_id}.json").read_text()
+    )
+
+
+def _sessions_under(controller, project_id: str) -> list[str]:
+    snapshot = controller.project_panel_snapshot()
+    project = next(p for p in snapshot.projects
+                   if p.project_id == project_id)
+    return [s.session_id for s in project.sessions]
+
+
+@pytest.mark.asyncio
+class TestFilingSticks:
+    def _two_projects(self, tmp_path):
+        _add_project(tmp_path, "project-a", "Project A")
+        _add_project(tmp_path, "project-b", "Project B")
+
+    async def _chat_in_project_a(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("r1"), _ok("r2")], tmp_path=tmp_path,
+        )
+        await c.handle_input("/project open project-a", ui)
+        await c.handle_input("@claude hello", ui)
+        return c, ui
+
+    def _assert_filed_under_b(self, tmp_path, c):
+        assert c.active_project_id == "project-b"
+        assert _payload_on_disk(tmp_path, c.session_id)["project_id"] == "project-b"
+        assert c.project_store.session_index_map()[c.session_id] == "project-b"
+        assert c.session_store.metadata_index()[c.session_id].project_id == "project-b"
+        assert _sessions_under(c, "project-b") == [c.session_id]
+        assert _sessions_under(c, "project-a") == []
+
+    async def test_file_with_arg_survives_the_next_turn(self, tmp_path):
+        self._two_projects(tmp_path)
+        c, ui = await self._chat_in_project_a(tmp_path)
+
+        await c.handle_input("/file project-b", ui)
+        await c.handle_input("@claude another turn", ui)  # the save that reverted it
+
+        self._assert_filed_under_b(tmp_path, c)
+
+    async def test_file_picker_survives_the_next_turn(self, tmp_path):
+        self._two_projects(tmp_path)
+        c, ui = await self._chat_in_project_a(tmp_path)
+
+        project_ids = [p.id for p in c.project_store.list_projects()]
+        ui.choice_responses.append(project_ids.index("project-b"))
+        await c.handle_input("/file", ui)
+        await c.handle_input("@claude another turn", ui)
+
+        self._assert_filed_under_b(tmp_path, c)
+
+    async def test_assign_moves_a_saved_chat_on_disk(self, tmp_path):
+        self._two_projects(tmp_path)
+        filed, _ = await self._chat_in_project_a(tmp_path)
+        old_id = filed.session_id
+        assert _payload_on_disk(tmp_path, old_id)["project_id"] == "project-a"
+
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/project assign {old_id[:8]} project-b", ui)
+
+        # The payload wins over the index everywhere, so it has to move too.
+        assert _payload_on_disk(tmp_path, old_id)["project_id"] == "project-b"
+        assert c.project_store.session_index_map()[old_id] == "project-b"
+        assert _sessions_under(c, "project-b") == [old_id]
+        assert _sessions_under(c, "project-a") == []
+        # Filing someone else's chat leaves this room where it was.
+        assert c.active_project_id == ""
+
+    async def test_assigned_chat_reopens_in_its_new_project(self, tmp_path):
+        self._two_projects(tmp_path)
+        filed, _ = await self._chat_in_project_a(tmp_path)
+        old_id = filed.session_id
+
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/project assign {old_id[:8]} project-b", ui)
+        await c.handle_input(f"/resume {old_id[:8]}", ui)
+
+        assert c.session_id == old_id
+        assert c.active_project_id == "project-b"
+
+    async def test_project_clear_unfiles_the_chat(self, tmp_path):
+        self._two_projects(tmp_path)
+        c, ui = await self._chat_in_project_a(tmp_path)
+
+        await c.handle_input("/project clear", ui)
+        await c.handle_input("@claude another turn", ui)
+
+        assert _payload_on_disk(tmp_path, c.session_id)["project_id"] == ""
+        # An empty payload project_id falls back to the session index, so a
+        # leftover association would keep the chat listed under Project A.
+        assert c.session_id not in c.project_store.session_index_map()
+        assert _sessions_under(c, "project-a") == []
+        assert c.project_panel_snapshot().inbox_session_count == 1
 
 
 # ── Long-chat stability: replay cap, persistence format, crash log ──
