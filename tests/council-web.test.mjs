@@ -709,6 +709,57 @@ test('chat switch: optimistic cached render, offscreen reconcile, never a blank 
   assert.equal(posts.length, n, 'no round trip for the active chat');
 });
 
+test('sidebar: every project expands and opens its own chats — no "make active project" step',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const now = new Date().toISOString();
+  const projects = activePid => ({
+    type: 'projects', active_project_id: activePid, inbox_session_count: 2,
+    projects: [
+      {
+        id: 'p1', title: 'Active P', active: activePid === 'p1', session_count: 1,
+        sessions: [{ session_id: 'sidA', title: 'Chat A', updated_at: now, active: activePid === 'p1' }],
+      },
+      {
+        // the controller now ships chats for EVERY project, not just the active one
+        id: 'p2', title: 'Other P', active: activePid === 'p2', session_count: 2,
+        sessions: [
+          { session_id: 'sidB', title: 'Chat B', updated_at: now, active: false },
+          { session_id: 'sidC', title: 'Chat C', updated_at: now, active: activePid === 'p2' },
+        ],
+      },
+    ],
+  });
+  C.handle(projects('p1'));
+  const side = doc.getElementById('projects');
+  // the activation affordance is gone for good
+  assert.equal(side.querySelector('[data-act="activate"]'), null, 'no activate button');
+  assert.doesNotMatch(side.textContent, /make active project/);
+  // the active project auto-opens; the other is collapsed but fully populated
+  assert.ok(side.querySelector('.proj[data-pid="p1"]').classList.contains('open'));
+  assert.equal(side.querySelector('.proj[data-pid="p2"]').classList.contains('open'), false);
+  assert.match(side.querySelector('.proj[data-pid="p2"]').textContent, /Chat B/);
+  assert.match(side.querySelector('.proj[data-pid="p2"]').textContent, /Chat C/);
+  // any project header toggles — non-active opens…
+  doc.querySelector('.proj[data-pid="p2"] .proj-head').click();
+  assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'), 'non-active project expands');
+  // …and the active one can be collapsed (auto-open never fights the user)
+  doc.querySelector('.proj[data-pid="p1"] .proj-head').click();
+  assert.equal(doc.querySelector('.proj[data-pid="p1"]').classList.contains('open'), false, 'active project collapses');
+  // tapping a chat in the NON-active project just opens it — same /resume path
+  doc.querySelector('.proj[data-pid="p2"] .sess[data-sid="sidC"]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { text: '/resume sidC', attachments: [] } });
+  // the controller confirms: the chat's project is now the active one, and it
+  // auto-expands — while the project the user collapsed stays collapsed
+  C.state.pendingSwitch = null;
+  C.handle(projects('p2'));
+  assert.equal(C.state.currentSid, 'sidC');
+  assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'));
+  assert.equal(doc.querySelector('.proj[data-pid="p1"]').classList.contains('open'), false);
+});
+
 test('links are clickable, text stays selectable, passwords get a copy chip',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C } = await mkHarness(t);

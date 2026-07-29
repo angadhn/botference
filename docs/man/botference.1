@@ -36,8 +36,10 @@ Bootstrap a project-local state directory.
 Free-form planning council: you + Claude + Codex in one room; the bots can
 hand each other the floor (budgeted) until the conversation returns to you.
 With \fB\-\-web\fR the council serves as a chat web app in the browser
-instead of the Ink TUI (sidebar with projects and chats, streaming
-transcript, slash commands with autocomplete, choice/permission cards);
+instead of the Ink TUI (sidebar where every project expands to its recent
+chats and tapping any chat opens it \- no "make active project" step \-
+streaming transcript, slash commands with autocomplete, choice/permission
+cards);
 \fB\-\-share\fR additionally puts it behind an in-page password gate
 (COUNCIL_PASSWORD, generated when unset) and a cloudflared tunnel, and
 prints one shareable https URL plus the password \- open it on a phone.
@@ -198,6 +200,8 @@ in the room for the authoritative list. Highlights:
 .B /new /adopt /file /rename /resume /delete
 Chat lifecycle: start fresh, continue a native Claude Code chat here,
 file under a project, name, switch, or delete chats (picker-driven).
+\fB/resume\fR reaches a saved chat in any project, not just the active
+one; opening a chat makes that chat's project the active context.
 .TP
 .B /lead /draft /finalize
 Planning: set (or let the bots vote on) the plan writer, draft

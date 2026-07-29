@@ -2138,6 +2138,132 @@ class TestBotferenceProjects:
         assert "ship paper" not in listing
         assert "global note" not in listing
 
+    async def test_project_panel_lists_chats_for_every_project(self, tmp_path):
+        # Browsing must not require activating a project: the panel ships the
+        # recent chats for EVERY project, so the sidebar can expand any of them.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        (tmp_path / "projects" / "spaceship-engineering").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        for session_id, project_id, title, stamp in (
+            ("career-1", "CareerSwitch", "career packet", "2026-05-01T00:00:00Z"),
+            ("ship-1", "spaceship-engineering", "ship paper", "2026-05-02T00:00:00Z"),
+            ("ship-2", "spaceship-engineering", "ship talk", "2026-05-03T00:00:00Z"),
+        ):
+            c.session_store.save(session_id, {
+                "session_id": session_id,
+                "created_at": stamp,
+                "updated_at": stamp,
+                "title": title,
+                "project_id": project_id,
+                "transcript": [{"speaker": "user", "text": title}],
+            })
+
+        # Inbox is the active "project" — nothing is activated at all.
+        assert c.active_project_id == ""
+        snapshot = c.project_panel_snapshot()
+        rows = {p.project_id: p for p in snapshot.projects}
+        assert [s.session_id for s in rows["CareerSwitch"].sessions] == ["career-1"]
+        assert rows["CareerSwitch"].session_count == 1
+        ship = rows["spaceship-engineering"]
+        assert ship.session_count == 2
+        # newest first
+        assert [s.session_id for s in ship.sessions] == ["ship-2", "ship-1"]
+        assert ship.sessions[0].title == "ship talk"
+        assert ship.sessions[0].updated_at == "2026-05-03T00:00:00Z"
+
+    async def test_project_panel_shortlist_is_capped_per_project(self, tmp_path):
+        (tmp_path / "projects" / "alpha-project").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        for i in range(12):
+            session_id = f"sess-{i:02d}"
+            c.session_store.save(session_id, {
+                "session_id": session_id,
+                "updated_at": f"2026-05-{i + 1:02d}T00:00:00Z",
+                "title": f"chat {i}",
+                "project_id": "alpha-project",
+                "transcript": [{"speaker": "user", "text": "hi"}],
+            })
+
+        row = next(
+            p for p in c.project_panel_snapshot().projects
+            if p.project_id == "alpha-project"
+        )
+        assert row.session_count == 12          # count semantics unchanged
+        assert len(row.sessions) == 8           # shortlist stays bounded
+
+    async def test_project_panel_lists_project_local_chats_when_inactive(self, tmp_path):
+        # Chats stored under projects/<id>/sessions/ show up for a project
+        # that is not active, same as the globally-stored ones.
+        project = tmp_path / "projects" / "spaceship-engineering"
+        local = project / "sessions"
+        local.mkdir(parents=True)
+        (local / "local-1.json").write_text(json.dumps({
+            "session_id": "local-1",
+            "updated_at": "2026-05-04T00:00:00Z",
+            "title": "local chat",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+        }), encoding="utf-8")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        row = next(
+            p for p in c.project_panel_snapshot().projects
+            if p.project_id == "spaceship-engineering"
+        )
+        assert row.session_count == 1
+        assert [s.session_id for s in row.sessions] == ["local-1"]
+        assert row.sessions[0].title == "local chat"
+
+    async def test_resume_opens_a_chat_from_another_project(self, tmp_path):
+        # The linchpin of "click any chat and it works": a chat that belongs
+        # to a project other than the active one still resumes, and the
+        # active project follows the chat.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        (tmp_path / "projects" / "spaceship-engineering").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("ship-1", {
+            "session_id": "ship-1",
+            "created_at": "2026-05-02T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "ship paper",
+            "project_id": "spaceship-engineering",
+            "transcript": [{"speaker": "user", "text": "ship paper"}],
+            "room_history": [{"speaker": "user", "text": "ship paper"}],
+        })
+        await c.handle_input("/project open CareerSwitch", ui)
+        assert c.active_project_id == "CareerSwitch"
+
+        await c.handle_input("/resume ship-1", ui)
+
+        assert c.session_id == "ship-1"
+        assert c.active_project_id == "spaceship-engineering"
+        assert ui.statuses[-1].project == "Spaceship Engineering"
+        assert any("Resumed session" in text for _, text in ui.room_entries)
+
+    async def test_resume_restores_project_from_session_index_for_legacy_chats(
+        self, tmp_path
+    ):
+        # Legacy chats predate payload.project_id — the panel lists them under
+        # the project session-index.json records, so resuming must land there.
+        (tmp_path / "projects" / "spaceship-engineering").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        (c.paths.session_dir / "legacy-1.json").write_text(json.dumps({
+            "session_id": "legacy-1",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "legacy chat",
+            "transcript": [{"speaker": "user", "text": "legacy chat"}],
+        }), encoding="utf-8")
+        (tmp_path / "projects" / "session-index.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": [
+                {"session_id": "legacy-1", "project": "spaceship-engineering"},
+            ],
+        }), encoding="utf-8")
+
+        await c.handle_input("/resume legacy-1", ui)
+
+        assert c.session_id == "legacy-1"
+        assert c.active_project_id == "spaceship-engineering"
+
     async def test_project_panel_uses_payload_project_over_duplicate_index(self, tmp_path):
         career = tmp_path / "projects" / "CareerSwitch"
         spaceship = tmp_path / "projects" / "spaceship-engineering"

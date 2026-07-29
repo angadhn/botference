@@ -134,7 +134,8 @@
     lastUserText: '',                          // last human turn, for "retry with @other"
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
-    openProjects: new Set(),
+    openProjects: new Set(),   // expanded projects (any project, active or not)
+    lastActivePid: null,       // active project at the last 'projects' event
     inServerReplay: true,  // between (re)connect and the server's replay_done boundary
     replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
@@ -708,6 +709,18 @@
     if (d < 86400) return `${Math.round(d / 3600)}h`;
     return `${Math.round(d / 86400)}d`;
   };
+  // Every project expands on tap and lists its own chats — opening a chat IS
+  // how you enter a project (the controller makes the chat's project active
+  // on resume), so there is no "make active project" step to click first.
+  // The active project auto-opens once, then manual toggling wins.
+  function autoOpenActiveProject(p) {
+    // Expand the project you just landed in (first load, or when opening a
+    // chat moves you into another project). A manual collapse sticks until
+    // the active project changes again.
+    const pid = (p && p.active_project_id) || '';
+    if (pid && pid !== state.lastActivePid) state.openProjects.add(pid);
+    state.lastActivePid = pid;
+  }
   function renderProjects() {
     const p = state.projects;
     if (!p) { els.projects.innerHTML = '<div class="empty-note">loading…</div>'; return; }
@@ -719,13 +732,12 @@
     if ((p.projects || []).length) {
       html += '<h2>Projects</h2>';
       for (const pr of p.projects) {
-        const open = state.openProjects.has(pr.id) || pr.active;
+        const open = state.openProjects.has(pr.id);
         html += `<div class="proj${open ? ' open' : ''}" data-pid="${esc(pr.id)}">
           <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${esc(pr.id)}" aria-expanded="${open}">
             <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
             <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
           <div class="proj-sessions">`;
-        if (!pr.active) html += `<button class="sess" data-act="activate" data-pid="${esc(pr.id)}">→ make active project</button>`;
         for (const s of pr.sessions || []) {
           html += `<button class="sess${s.active ? ' active' : ''}" data-act="resume" data-sid="${esc(s.session_id)}">
             ${esc(s.title || s.session_id.slice(0, 8))}<span class="when">${relTime(s.updated_at)}</span></button>`;
@@ -750,7 +762,6 @@
     // sidebar affordances send the equivalent slash command — one code path
     if (act === 'inbox') sendInput('/resume');
     if (act === 'resume') switchTo(b.dataset.sid);
-    if (act === 'activate') sendInput('/project open ' + b.dataset.pid);
     closeSide();
   });
   els.newChat.addEventListener('click', () => { snapshotCurrent(); sendInput('/new'); closeSide(); });
@@ -1115,6 +1126,7 @@
           for (const s of pr.sessions || []) if (s.active) active = s.session_id;
         }
         state.currentSid = active;
+        autoOpenActiveProject(ev);
         renderProjects();
         // honor a deep-linked #/chat/<id> once, when the session list first
         // arrives; after that the hash mirrors the active chat instead

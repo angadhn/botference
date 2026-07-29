@@ -160,6 +160,46 @@ describe("buildProjectRows", () => {
     assert.equal(placeholder.title, "no resumable chats yet");
   });
 
+  it("collapses non-active projects even though the controller now sends their chats", () => {
+    // The controller ships recent chats for EVERY project (the web sidebar
+    // browses them without switching). The TUI panel still expands only the
+    // active project — extra payload must not leak rows or crash navigation.
+    const state: ProjectPanelStateData = {
+      active_project_id: "career-switch",
+      inbox_session_count: 0,
+      projects: [
+        activeProject.projects[0]!,
+        {
+          id: "spaceship",
+          title: "Spaceship",
+          status: "active",
+          next_action: "",
+          active: false,
+          session_count: 2,
+          sessions: [
+            {
+              session_id: "ship-1",
+              title: "Ship paper",
+              updated_at: "2026-05-09T00:00:00Z",
+              active: false,
+            },
+          ],
+        },
+      ],
+    };
+    const rows = buildProjectRows(state, { now: NOW });
+    assert.deepEqual(
+      rows.filter((r) => r.kind === "session").map((r) => r.id),
+      [
+        "abc12345-aaaa-bbbb-cccc-ddddeeeeffff",
+        "deadbeef-1111-2222-3333-444455556666",
+      ],
+    );
+    const last = rows[rows.length - 1]!;
+    assert.equal(last.kind, "project");
+    assert.equal(last.title, "Spaceship");
+  });
+
   it("filters selectable rows by case-insensitive title match", () => {
     const rows = buildProjectRows(activeProject, { now: NOW, filter: "resume" });
     assert.deepEqual(

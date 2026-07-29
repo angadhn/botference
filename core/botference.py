@@ -422,6 +422,10 @@ _BACKFILL_MAX_CHARS = 60_000
 # history remains in the session file and in self._room_history.
 _REPLAY_MAX_ENTRIES = 2_000
 
+# How many recent chats the project panel lists per project (every project,
+# not just the active one — the sidebar browses any project without switching).
+PANEL_SESSION_LIMIT = 8
+
 
 def _take_tail_within_budget(blocks: list[str], max_chars: int) -> tuple[list[str], int]:
     """Keep the most-recent blocks whose combined length fits *max_chars*.
@@ -1445,31 +1449,96 @@ class Botference:
                 tagged.append(summary)
         return tagged[:limit]
 
+    def _session_summaries_any_project(self, *, limit: int, exclude_session_id: str):
+        """Every resumable chat, regardless of which project owns it.
+
+        The sidebar lists chats for every project, so `/resume <id>` has to
+        reach a chat that the *active* project doesn't contain. This is only
+        used as a fallback when the project-scoped list has no match, so the
+        wider (and slightly more expensive) walk stays off the hot path.
+        """
+        dirs = [self.paths.session_dir]
+        for project in self.project_store.list_projects():
+            session_dir = project.session_dir
+            if session_dir not in dirs and session_dir.is_dir():
+                dirs.append(session_dir)
+        return self.session_store.list_summaries(
+            limit=limit,
+            exclude_session_id=exclude_session_id,
+            session_dirs=dirs,
+        )
+
+    def _panel_sessions(
+        self, rows: list[tuple[float, str, str, str]]
+    ) -> list[ProjectPanelSession]:
+        """Newest-first shortlist of panel rows, deduped by session id."""
+        sessions: list[ProjectPanelSession] = []
+        seen: set[str] = set()
+        for _mtime, session_id, title, updated_at in sorted(
+            rows, key=lambda row: row[0], reverse=True
+        ):
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            sessions.append(ProjectPanelSession(
+                session_id=session_id,
+                title=title,
+                updated_at=updated_at,
+                active=session_id == self.session_id,
+            ))
+            if len(sessions) >= PANEL_SESSION_LIMIT:
+                break
+        return sessions
+
     def project_panel_snapshot(self) -> ProjectPanelState:
         # Hot path: this fires at startup and after every turn. We rely on a
         # cached metadata index (work/sessions/.metadata-index.json) so we
         # never parse the full session corpus more than once per process,
         # and counts honor both `payload.project_id` AND empty/unresumable
         # filtering — the things a raw filesystem count would get wrong.
+        #
+        # EVERY project gets its recent chats, not just the active one: the
+        # web sidebar expands any project and opens any chat directly, with
+        # no "make this the active project" step. That stays cheap because
+        # the rows come out of the same single sweep that computes the counts
+        # (title/updated_at are cached in the index) — no extra file reads,
+        # and only (mtime, id, title, updated_at) tuples are accumulated.
         projects = self.project_store.list_projects()
         indexed_to_project = self.project_store.session_index_map()
         metadata = self.session_store.metadata_index()
+        known_project_ids = {project.id for project in projects}
 
         global_dir = self.paths.session_dir
         inbox_count = 0
-        global_count_by_project: dict[str, int] = {}
+        count_by_project: dict[str, int] = {}
+        rows_by_project: dict[str, list[tuple[float, str, str, str]]] = {}
+
+        def add_row(
+            project_id: str, mtime: float, session_id: str, title: str, updated_at: str
+        ) -> None:
+            rows_by_project.setdefault(project_id, []).append(
+                (mtime, session_id, title, updated_at)
+            )
+
         for session_id, entry in metadata.items():
             if entry.entry_count < 1:
                 continue
             project_id = entry.project_id or indexed_to_project.get(session_id, "")
-            if project_id:
-                global_count_by_project[project_id] = (
-                    global_count_by_project.get(project_id, 0) + 1
-                )
-            else:
+            if not project_id:
                 inbox_count += 1
+                continue
+            count_by_project[project_id] = count_by_project.get(project_id, 0) + 1
+            # Rows only for projects that still exist on disk — a stale
+            # project_id still counts (unchanged semantics) but has no panel.
+            if project_id in known_project_ids:
+                add_row(
+                    project_id,
+                    entry.mtime,
+                    session_id,
+                    entry.title or "Untitled session",
+                    entry.updated_at,
+                )
 
-        local_count_by_project: dict[str, int] = {}
         for project in projects:
             local_dir = project.session_dir
             if local_dir == global_dir or not local_dir.is_dir():
@@ -1485,36 +1554,35 @@ class Botference:
                 except (OSError, json.JSONDecodeError):
                     continue
                 transcript = payload.get("transcript", [])
-                if (
+                if not (
                     isinstance(transcript, list)
                     and len(transcript) >= 1
                     and self._payload_belongs_to_project(
                         payload, project, source_path=path
                     )
                 ):
-                    count += 1
-            local_count_by_project[project.id] = count
+                    continue
+                count += 1
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                add_row(
+                    project.id,
+                    mtime,
+                    str(payload.get("session_id") or path.stem),
+                    _display_title(payload),
+                    str(payload.get("updated_at", "") or ""),
+                )
+            count_by_project[project.id] = count_by_project.get(project.id, 0) + count
 
         panel_projects: list[ProjectPanelProject] = []
         for project in projects:
             is_active = project.id == self.active_project_id
-            session_count = (
-                global_count_by_project.get(project.id, 0)
-                + local_count_by_project.get(project.id, 0)
+            session_count = count_by_project.get(project.id, 0)
+            panel_sessions = tuple(
+                self._panel_sessions(rows_by_project.get(project.id, []))
             )
-            if is_active:
-                summaries = self._project_tagged_summaries(project, limit=8)
-                panel_sessions = tuple(
-                    ProjectPanelSession(
-                        session_id=s.session_id,
-                        title=s.title,
-                        updated_at=s.updated_at,
-                        active=s.session_id == self.session_id,
-                    )
-                    for s in summaries
-                )
-            else:
-                panel_sessions = ()
             panel_projects.append(ProjectPanelProject(
                 project_id=project.id,
                 title=project.title,
@@ -1759,7 +1827,8 @@ class Botference:
         lines.extend([
             "",
             "Run /resume latest, /resume <number>, /resume <title>, or /resume <session-id-prefix>.",
-            "Use /project open <id> to filter by project, or /project clear for Inbox/global.",
+            "This list is scoped to the current project, but /resume <id> reaches any chat —",
+            "opening one makes its project active. /project open <id> refiles this list; /project clear = Inbox/global.",
         ])
         return "\n".join(lines)
 
@@ -1779,6 +1848,15 @@ class Botference:
             return prefix
         return [s.session_id for s in summaries if needle in title(s)]
 
+    def _match_sessions(self, summaries: list, query: str) -> list[str]:
+        """Session ids matching *query* by id (exact/prefix), else by title."""
+        matches = [
+            summary.session_id
+            for summary in summaries
+            if summary.session_id == query or summary.session_id.startswith(query)
+        ]
+        return matches or self._matching_sessions_by_title(summaries, query)
+
     def _rename_session(self, arg: str, ui: UIPort) -> None:
         title = _clean_session_title(arg)
         if not title:
@@ -1792,6 +1870,24 @@ class Botference:
         self._persist_session()
         self._add_room_entry(ui, "system", f"Session renamed to: {title}")
 
+    def _restored_project_id(self, payload: dict) -> str:
+        """Which project a resumed chat belongs to.
+
+        Same precedence the project panel uses (payload wins, session-index
+        backfills legacy chats), so the project a chat is *listed* under is
+        the project you land in when you open it.
+        """
+        project_id = str(payload.get("project_id", "") or "")
+        if project_id:
+            return project_id
+        session_id = str(payload.get("session_id", "") or "")
+        if not session_id:
+            return ""
+        indexed = self.project_store.session_index_map().get(session_id, "")
+        if indexed and self.project_store.get(indexed):
+            return indexed
+        return ""
+
     def _restore_from_payload(self, payload: dict) -> str:
         self._restoring_session = True
         try:
@@ -1804,7 +1900,9 @@ class Botference:
             self.system_prompt = str(payload.get("system_prompt", self.system_prompt))
             self.task = str(payload.get("task", self.task))
             self.lead = str(payload.get("lead", "auto"))
-            self.active_project_id = str(payload.get("project_id", "") or "")
+            # Opening a chat carries you into its project — that is what makes
+            # "click any chat in any project and it just works" true.
+            self.active_project_id = self._restored_project_id(payload)
             self.observe = bool(payload.get("observe", self.observe))
             self._set_claude_subagents(bool(payload.get("claude_subagents")))
             self.router.current_route = str(payload.get("route", "@all"))
@@ -2019,13 +2117,18 @@ class Botference:
         elif query.isdigit() and 1 <= int(query) <= len(summaries):
             target_id = summaries[int(query) - 1].session_id
         else:
-            matches = [
-                summary.session_id
-                for summary in summaries
-                if summary.session_id == query or summary.session_id.startswith(query)
-            ]
+            matches = self._match_sessions(summaries, query)
             if not matches:
-                matches = self._matching_sessions_by_title(summaries, query)
+                # Not in the active project? Look everywhere. The sidebar
+                # lists every project's chats and clicking one must just open
+                # it — the chat's own project becomes active on restore.
+                wider = self._session_summaries_any_project(
+                    limit=1000, exclude_session_id=self.session_id,
+                )
+                wider_matches = self._match_sessions(wider, query)
+                if wider_matches:
+                    matches = wider_matches
+                    summaries = wider
             if not matches:
                 self._show_room_notice(
                     ui,
@@ -2281,7 +2384,8 @@ class Botference:
             "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
             "  /file [<project-id>] — File this chat under a project (picker without args; alias /add-to-project)",
             "  /rename <name>      — Name this chat for future /resume lookup",
-            "  /resume [latest|number|title|id] — Switch to a saved chat (works mid-chat; current chat is auto-saved)",
+            "  /resume [latest|number|title|id] — Switch to a saved chat, in any project"
+            " (works mid-chat; current chat is auto-saved; the chat's project becomes active)",
             "  /delete [<id-prefix>] — Delete a saved chat (picker + confirm)",
             "",
             "Projects:",

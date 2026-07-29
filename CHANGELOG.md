@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 2026-07-29
+
+- **Browse any project's chats without "activating" it.** The web sidebar
+  now expands every project (active or not) to its 8 most recent chats, and
+  tapping a chat just opens it. The `→ make active project` row is gone:
+  opening a chat IS how you enter a project, and filing a new chat is
+  already covered by the "Where should this chat live?" card after `/new`.
+  The active project auto-expands on arrival, but a manual collapse sticks.
+  - Controller: `project_panel_snapshot()` builds the recent-chat shortlist
+    for **every** project out of the same single sweep that already computed
+    the counts (cached metadata index → title/updated_at, plus the tiny
+    project-local `sessions/` dirs). No extra file reads per turn; only
+    `(mtime, id, title, updated_at)` tuples are accumulated, and the
+    shortlist stays capped at 8 per project. `session_count` is unchanged.
+  - `/resume <id|title>` now reaches a chat filed under *any* project — it
+    falls back to an all-projects lookup when the active project has no
+    match (fallback only, so the hot path is untouched). Restoring a chat
+    makes that chat's project active, including legacy chats whose project
+    is only recorded in `projects/session-index.json`.
+  - The Ink TUI still expands only the active project; the extra payload is
+    ignored there (covered by a regression test).
+
 ## 2026-07-24
 
 - **`botference see` — eyes for agents.** Renders any page in headless
