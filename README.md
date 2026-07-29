@@ -31,9 +31,10 @@ default planner UI:
 
 ![Ink UI — council panel with status line](docs/images/ink-ui.png)
 
-The Projects panel lists `Inbox` plus every folder under `projects/` and
-expands the active project to show its 8 most recent resumable chats. Pane
-controls in Ink:
+The Projects panel lists `Inbox` plus every folder under `projects/`. The
+controller sends the 8 most recent resumable chats for **every** project;
+the Ink panel expands the active one (the web sidebar lets you expand any of
+them). Pane controls in Ink:
 
 | Key | Action |
 |-----|--------|
@@ -49,7 +50,9 @@ age (`5m`, `3h`, `2d`); the chat you're currently in is marked `▸ … · open`
 Selecting `Inbox` runs `/project clear`; selecting a project header runs
 `/project open <id>`; selecting a session row runs `/resume <session-id>`.
 You can switch sessions mid-chat — the current session is persisted on every
-turn, so you can `/resume <its-id>` to come back later.
+turn, so you can `/resume <its-id>` to come back later. `/resume <id>` reaches
+any saved chat, including one filed under a different project; opening it
+makes that chat's project the active one.
 
 The Ink TUI is the only frontend. First use after clone: `cd ink-ui && npm
 install`. It supports app-level pane-clamped text selection, multiline input
@@ -250,7 +253,9 @@ model switcher.
 ## Plan From The Browser / Your Phone
 
 The planning council also runs as a chat web app (claude.ai-shaped:
-sidebar with projects and chats, streaming transcript, slash commands
+sidebar where every project expands to its recent chats — tap any chat to
+open it, no "make this the active project" step; the chat's project becomes
+the active context on open — streaming transcript, slash commands
 with autocomplete, choice/permission cards inline, image attachments —
 attach button/paste/drag-drop on desktop, camera or photo library on
 iOS — plus clickable links and tap-to-copy password chips). When Claude
@@ -269,6 +274,11 @@ unwatched chats are parked automatically when the cap is hit).
 The sidebar drives housekeeping without leaving the browser, and every
 affordance sends the same slash command the TUI takes — one code path:
 
+- Every project header is a chevron toggle — active, inactive or archived
+  — and lists that project's 8 most recent chats. Tapping a chat opens it
+  and makes its project the active context; there is no separate
+  "activate this project" step. The project you land in auto-expands, and
+  a project you collapse by hand stays collapsed.
 - **New** is a split control — `＋ New` with `chat` / `project` stacked
   beside it. `chat` runs `/new`; `project` opens an inline title field
   and sends `/project create <title>`.
@@ -735,6 +745,11 @@ Projects panel is persistent: it shows `Inbox`, discovered projects, the active
 project marker, and the active project's resumable chats. New controller
 sessions start in `Inbox`; Botference does not create a new project until you
 ask it to.
+
+Browsing a project never requires activating it. The controller's project
+panel carries each project's recent chats, so the web sidebar expands any
+project and opens any chat directly; the chat you open decides the active
+project (`/resume <id>` behaves the same way from the TUI).
 
 On the first message of an Inbox chat, Botference shows an arrow-key picker
 asking where the chat should live: existing projects whose title or

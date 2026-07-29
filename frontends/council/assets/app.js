@@ -144,7 +144,8 @@
     lastUserText: '',                          // last human turn, for "retry with @other"
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
-    openProjects: new Set(),
+    openProjects: new Set(),   // expanded projects (any project, active or not)
+    lastActivePid: null,       // active project at the last 'projects' event
     menuSid: null,         // chat row whose ⋯ actions menu is open
     archOpen: false,       // "Archived" projects section expanded?
     inServerReplay: true,  // between (re)connect and the server's replay_done boundary
@@ -723,6 +724,20 @@
     if (d < 86400) return `${Math.round(d / 3600)}h`;
     return `${Math.round(d / 86400)}d`;
   };
+  // Every project expands on tap and lists its own chats — opening a chat IS
+  // how you enter a project (the controller makes the chat's project active
+  // on resume), so there is no "make active project" step to click first.
+  function autoOpenActiveProject(p) {
+    // Expand the project you just landed in (first load, or when opening a
+    // chat moves you into another project). A manual collapse sticks until
+    // the active project changes again. Archived projects stay tucked away.
+    const pid = (p && p.active_project_id) || '';
+    const pr = (p && p.projects || []).find(x => x.id === pid);
+    if (pid && pid !== state.lastActivePid && (!pr || (pr.status || 'active') === 'active')) {
+      state.openProjects.add(pid);
+    }
+    state.lastActivePid = pid;
+  }
   // one chat row: the row itself resumes; ⋯ opens archive/delete, both of
   // which are plain slash commands (the controller owns the confirm step)
   function chatRow(s) {
@@ -740,16 +755,16 @@
     </div>`;
   }
   function projectBlock(pr, { archived = false } = {}) {
-    const open = state.openProjects.has(pr.id) || (pr.active && !archived);
+    // Purely user-driven: autoOpenActiveProject() seeds openProjects when you
+    // land in a project, so the active one can still be collapsed by hand.
+    const open = state.openProjects.has(pr.id);
     const pid = esc(pr.id);
     let html = `<div class="proj${open ? ' open' : ''}" data-pid="${pid}">
       <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${pid}" aria-expanded="${open}">
         <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
         <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
       <div class="proj-sessions">`;
-    if (!archived && !pr.active) {
-      html += `<button class="sess sess-cmd" data-act="activate" data-pid="${pid}">→ make active project</button>`;
-    }
+    // No "make active project" row: opening any chat here does that for you.
     // chats first, project-level commands under them
     for (const s of pr.sessions || []) html += chatRow(s);
     if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
@@ -805,7 +820,6 @@
     // sidebar affordances send the equivalent slash command — one code path
     if (act === 'inbox') sendInput('/resume');
     if (act === 'resume') switchTo(b.dataset.sid);
-    if (act === 'activate') sendInput('/project open ' + b.dataset.pid);
     if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
     if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
     if (act === 'archive') {
@@ -1223,6 +1237,7 @@
           for (const s of pr.sessions || []) if (s.active) active = s.session_id;
         }
         state.currentSid = active;
+        autoOpenActiveProject(ev);
         renderProjects();
         // honor a deep-linked #/chat/<id> once, when the session list first
         // arrives; after that the hash mirrors the active chat instead

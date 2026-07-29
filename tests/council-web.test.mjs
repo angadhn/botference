@@ -798,6 +798,79 @@ test('chat switch: reattach to the target bridge, optimistic cached render, offs
   assert.equal(wsUrls.length, n, 'no reconnect for the active chat');
 });
 
+test('sidebar: every project expands and opens its own chats — no "make active project" step',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, wsUrls } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const now = new Date().toISOString();
+  const projects = activePid => ({
+    type: 'projects', active_project_id: activePid, inbox_session_count: 2,
+    projects: [
+      {
+        id: 'p1', title: 'Active P', active: activePid === 'p1', session_count: 1,
+        sessions: [{ session_id: 'sidA', title: 'Chat A', updated_at: now, active: activePid === 'p1' }],
+      },
+      {
+        // the controller now ships chats for EVERY project, not just the active one
+        id: 'p2', title: 'Other P', active: activePid === 'p2', session_count: 2,
+        sessions: [
+          { session_id: 'sidB', title: 'Chat B', updated_at: now, active: false },
+          { session_id: 'sidC', title: 'Chat C', updated_at: now, active: activePid === 'p2' },
+        ],
+      },
+      // archived projects list their chats too — the Archived section is a
+      // place to find old work, not a place where it disappears
+      {
+        id: 'p3', title: 'Done P', status: 'archived', active: false, session_count: 1,
+        sessions: [{ session_id: 'sidD', title: 'Chat D', updated_at: now, active: false }],
+      },
+    ],
+  });
+  C.handle(projects('p1'));
+  const side = doc.getElementById('projects');
+  // the activation affordance is gone for good
+  assert.equal(side.querySelector('[data-act="activate"]'), null, 'no activate button');
+  assert.doesNotMatch(side.textContent, /make active project/);
+  // the active project auto-opens; the other is collapsed but fully populated
+  assert.ok(side.querySelector('.proj[data-pid="p1"]').classList.contains('open'));
+  assert.equal(side.querySelector('.proj[data-pid="p2"]').classList.contains('open'), false);
+  assert.match(side.querySelector('.proj[data-pid="p2"]').textContent, /Chat B/);
+  assert.match(side.querySelector('.proj[data-pid="p2"]').textContent, /Chat C/);
+  // any project header toggles — non-active opens…
+  doc.querySelector('.proj[data-pid="p2"] .proj-head').click();
+  assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'), 'non-active project expands');
+  // …and the active one can be collapsed (auto-open never fights the user)
+  doc.querySelector('.proj[data-pid="p1"] .proj-head').click();
+  assert.equal(doc.querySelector('.proj[data-pid="p1"]').classList.contains('open'), false, 'active project collapses');
+  // per-chat ⋯ menus and the project-level commands survive in every block
+  assert.ok(doc.querySelector('.proj[data-pid="p2"] .row-more[data-sid="sidC"]'), 'chat rows keep their ⋯ menu');
+  assert.ok(doc.querySelector('.proj[data-pid="p2"] [data-act="proj-archive"]'), 'archive project stays');
+  // tapping a chat in the NON-active project just opens it — the tab
+  // re-attaches to that chat's bridge, no /resume through this one
+  doc.querySelector('.proj[data-pid="p2"] .sess[data-sid="sidC"]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidC$/, 'opens the chat in its own bridge');
+  // the controller confirms: the chat's project is now the active one, and it
+  // auto-expands — while the project the user collapsed stays collapsed
+  C.state.pendingSwitch = null;
+  C.handle(projects('p2'));
+  assert.equal(C.state.currentSid, 'sidC');
+  assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'));
+  assert.equal(doc.querySelector('.proj[data-pid="p1"]').classList.contains('open'), false);
+  // the archived project keeps its chats, in the Archived section, collapsed
+  doc.querySelector('[data-act="toggle-arch"]').click();
+  const arch = doc.querySelector('.arch .proj[data-pid="p3"]');
+  assert.ok(arch, 'archived project renders in the Archived section');
+  assert.equal(arch.classList.contains('open'), false, 'archived projects start collapsed');
+  assert.match(arch.textContent, /Chat D/, 'archived project still lists its chats');
+  doc.querySelector('.arch .proj[data-pid="p3"] .proj-head').click();
+  assert.ok(doc.querySelector('.arch .proj[data-pid="p3"]').classList.contains('open'), 'and expands on tap');
+  doc.querySelector('.arch .proj[data-pid="p3"] .sess[data-sid="sidD"]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidD$/, 'an archived project s chat opens too');
+});
+
 test('links are clickable, text stays selectable, passwords get a copy chip',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C } = await mkHarness(t);

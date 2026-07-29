@@ -2,6 +2,32 @@
 
 ## 2026-07-29
 
+- **Browse any project's chats without "activating" it.** The web sidebar
+  now expands every project — active, inactive, or archived — to its 8 most
+  recent chats, and tapping a chat just opens it. The `→ make active
+  project` row is gone: opening a chat IS how you enter a project, and
+  filing a new chat is already covered by the "Where should this chat live?"
+  card after `/new`. Every project header is a chevron toggle (the active
+  one included); the project you land in auto-expands, but a manual collapse
+  sticks until the active project changes again. The per-chat **⋯**
+  Archive/Delete menu, **⊘ archive project**, the **Archived** section and
+  the split **＋ New** control are unchanged.
+  - Controller: `project_panel_snapshot()` builds the recent-chat shortlist
+    for **every** project out of the same single sweep that already computed
+    the counts (cached metadata index → title/updated_at, plus the tiny
+    project-local `sessions/` dirs). No extra file reads per turn; only
+    `(mtime, id, title, updated_at)` tuples are accumulated, and the
+    shortlist stays capped at 8 per project. Counts keep their
+    dedupe-by-session-id semantics, and a chat reachable from both the
+    global store and a project-local dir is still listed exactly once.
+  - `/resume <id|title>` now reaches a chat filed under *any* project — it
+    falls back to an all-projects lookup when the active project has no
+    match (fallback only, so the hot path is untouched). Restoring a chat
+    makes that chat's project active, including legacy chats whose project
+    is only recorded in `projects/session-index.json`.
+  - The Ink TUI still expands only the active project; the extra payload is
+    ignored there (covered by a regression test).
+
 - **Archive, don't delete — for chats and for projects.** Two new
   controller commands put a chat away without destroying it:
   `/archive [<id-prefix>|list]` *moves* `work/sessions/<id>.json` to
