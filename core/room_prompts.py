@@ -235,6 +235,30 @@ def subagents_note(model: str) -> str:
     )
 
 
+# -- Deliverables ------------------------------------------------------------
+
+
+def deliverables_note() -> str:
+    """Where finished artifacts live and how the user reaches them.
+
+    Chats produce plots, HTML pages, and reports that the user returns to
+    later; scattering them behind ad-hoc HTTP servers and throwaway tunnels
+    makes them unfindable and ties them to processes that die on reboot.
+    """
+    return (
+        "--- Deliverables ---\n"
+        "When you produce something the user will open again — an HTML page, "
+        "plot, report, dashboard, or image — save the file inside the current "
+        "project's folder (e.g. `projects/<project-id>/artifacts/`), or under "
+        "`work/artifacts/` if this chat has no project yet. If that location "
+        "is outside your writable roots, request it first with the "
+        "write-access tag. Then give the user the link "
+        "`/files/<path relative to the workspace root>` — the chat server "
+        "serves it at that address on every device, permanently. Never spin "
+        "up ad-hoc HTTP servers or throwaway tunnels for a deliverable."
+    )
+
+
 # -- Room role --------------------------------------------------------------
 
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."

@@ -51,6 +51,7 @@ from room_prompts import (
     WRITER_PREAMBLE,
     adopt_room_note,
     checkpoint_preamble,
+    deliverables_note,
     finalize_plan_preamble,
     free_form_protocol,
     free_form_resume_note,
@@ -4256,6 +4257,7 @@ class Botference:
         agents_note = subagents_note(model)
         if agents_note:
             parts.append(agents_note)
+        parts.append(deliverables_note())
         skill_context = project_skill_context(
             model,
             [self.paths.project_root, self.paths.botference_home],

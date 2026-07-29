@@ -1311,3 +1311,39 @@ test('sidebar New split button: chat starts a chat, project takes a title inline
   assert.equal(form.hasAttribute('hidden'), true);
   assert.equal(posts.length, n, 'nothing sent on escape');
 });
+
+test('/files serves workspace artifacts auth-gated, refuses dot-segments and traversal', async () => {
+  const s = await startServer();
+  try {
+    fs.mkdirSync(path.join(s.root, 'projects', 'demo', 'artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(s.root, 'projects', 'demo', 'artifacts', 'plot.html'), '<h1>plot</h1>');
+    fs.mkdirSync(path.join(s.root, '.botference'), { recursive: true });
+    fs.writeFileSync(path.join(s.root, '.botference', 'secret.txt'), 'nope');
+
+    const ok = await fetch(`${s.base}/files/projects/demo/artifacts/plot.html`);
+    assert.equal(ok.status, 200);
+    assert.match(ok.headers.get('content-type'), /text\/html/);
+    assert.equal(await ok.text(), '<h1>plot</h1>');
+
+    // hidden dirs (secrets, .git) are never reachable
+    assert.equal((await fetch(`${s.base}/files/.botference/secret.txt`)).status, 403);
+    // encoded traversal cannot escape the workspace root (fetch normalizes
+    // the path before sending, so this arrives as a non-/files route — either
+    // way nothing outside the root may ever be served)
+    fs.writeFileSync(path.join(s.root, '..', 'council-outside.txt'), 'outside');
+    const trav = await fetch(`${s.base}/files/%2e%2e/council-outside.txt`);
+    assert.notEqual(trav.status, 200, 'traversal must not serve content');
+    fs.rmSync(path.join(s.root, '..', 'council-outside.txt'), { force: true });
+    // missing files are a plain 404
+    assert.equal((await fetch(`${s.base}/files/projects/none.html`)).status, 404);
+  } finally { s.stop(); }
+});
+
+test('/files requires auth on a hosted server', async () => {
+  const s = await startServer({ hosted: true });
+  try {
+    fs.writeFileSync(path.join(s.root, 'note.md'), 'private');
+    const r = await fetch(`${s.base}/files/note.md`, { redirect: 'manual' });
+    assert.notEqual(r.status, 200, 'unauthenticated /files must not serve content');
+  } finally { s.stop(); }
+});

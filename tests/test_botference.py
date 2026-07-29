@@ -720,6 +720,14 @@ class TestAgentsCommand:
             "Usage: /agents" in t for s, t in ui.room_entries if s == "system"
         )
 
+    async def test_initial_prompt_includes_deliverables_note(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        for model in ("claude", "codex"):
+            prompt = c._build_initial_prompt(model)
+            assert "--- Deliverables ---" in prompt
+            assert "/files/" in prompt
+            assert "throwaway tunnels" in prompt
+
 
 @pytest.mark.asyncio
 class TestNotifyCommand:
