@@ -2,6 +2,13 @@
 
 ## 2026-07-29
 
+- **Council transcript: the reply is the last thing in a turn, not the tool
+  calls.** The "Explored …" tool-run entry is emitted at turn end — after the
+  agent's text already streamed in — so it used to land *below* the reply,
+  making every turn look unfinished. The web client now renders it as a
+  visually distinct collapsed card ("claude explored · N steps", expandable
+  to the full step list) and slots it *above* the agent's message, so the
+  final reply always closes the turn.
 - **Council sidebar: a flat "Recent" list.** The panel now ships the Inbox's
   recent chats too (`inbox_sessions` on the projects event, same newest-first
   shortlist every project already got), and the web sidebar opens with a

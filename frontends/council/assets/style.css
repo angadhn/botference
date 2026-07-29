@@ -230,6 +230,19 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
 .msg .who .avatar { width: 20px; height: 20px; flex: none }
 .msg .who .avatar svg { width: 60%; height: 60% }
 .msg .body { font: 1.02rem/1.75 var(--serif); overflow-wrap: break-word; white-space: pre-wrap }
+/* tool-run card: visually distinct from prose, collapsed to one line by
+   default, expandable to the full step list */
+.msg.tools-msg { padding: 0; background: none; border: 0 }
+.tools { margin: .15rem 0 .15rem .2rem; border-left: 2px solid var(--line);
+  padding: .15rem .6rem }
+.tools summary { cursor: pointer; list-style: none;
+  color: var(--muted); font: .74rem var(--sans) }
+.tools summary::-webkit-details-marker { display: none }
+.tools summary::before { content: '▸ '; font-size: .62rem }
+.tools[open] summary::before { content: '▾ ' }
+.tools summary:hover { color: var(--fg) }
+.tool-steps { margin-top: .35rem; white-space: pre; overflow-x: auto;
+  font: .72rem/1.7 var(--mono); color: var(--muted) }
 .msg .body pre { white-space: pre; overflow-x: auto; font: .8rem/1.55 var(--mono);
   background: var(--rail); border: 1px solid var(--card-line); border-radius: 10px;
   padding: .7rem .9rem; margin: .5rem 0 }

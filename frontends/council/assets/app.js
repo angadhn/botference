@@ -508,6 +508,30 @@
     return div;
   }
 
+  // A turn's tool run arrives as its own room entry (stream_id "<base>:tools",
+  // text "Explored\n├ …"). It lands at turn end — after the agent's text has
+  // already streamed into the transcript — so rendering it in arrival order
+  // would leave tool calls as the LAST thing in every turn, which reads like
+  // the turn never finished. Render it as a compact collapsible card and slot
+  // it BEFORE the agent's streaming message, so the reply is always last.
+  function addToolsCard(speaker, text, streamId) {
+    const who = String(speaker || 'system').toLowerCase();
+    const lines = String(text || '').split('\n');
+    const steps = lines[0] === 'Explored' ? lines.slice(1) : lines;
+    const wasPinned = pinned();
+    const div = document.createElement('div');
+    div.className = `msg ${who} tools-msg`;
+    div.innerHTML = `<details class="tools"><summary>${esc(who)} explored · ` +
+      `${steps.length} step${steps.length === 1 ? '' : 's'}</summary>` +
+      `<div class="tool-steps">${steps.map(esc).join('\n')}</div></details>`;
+    const base = streamId ? `${who}:${streamId.replace(/:tools$/, '')}` : '';
+    const live = base && state.streams[base];
+    if (live && live.el && live.el.parentNode) live.el.parentNode.insertBefore(div, live.el);
+    else container().appendChild(div);
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    return div;
+  }
+
   function streamKey(ev) { return `${ev.model || ev.speaker || 'agent'}:${ev.stream_id || 0}`; }
   function streamDelta(ev) {
     const model = String(ev.model || 'claude').toLowerCase();
@@ -1214,6 +1238,12 @@
       case 'room': {
         const sp = String(ev.speaker).toLowerCase();
         if (sp === 'user' && !ev.restored) break; // we echo user input ourselves
+        // tool-run entries get the collapsible card, placed before the reply
+        if (AGENTS.includes(sp) &&
+            (/:tools$/.test(ev.stream_id || '') || /^Explored\n/.test(ev.text || ''))) {
+          addToolsCard(ev.speaker, ev.text, ev.stream_id || '');
+          break;
+        }
         // a finalized agent turn is the exhaustion signal (or proof it recovered)
         if (AGENTS.includes(sp)) noteAgentTurn(sp, ev.text);
         if (ev.stream_id && finalizeStream(ev)) break;

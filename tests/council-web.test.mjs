@@ -507,9 +507,20 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's9', model: 'claude', text: 'partial ' });
   const streaming = doc.querySelector('.msg.claude.streaming .body');
   assert.match(streaming.textContent, /partial/);
+  // the tool-run entry lands AFTER the text started streaming but must render
+  // BEFORE it, as a collapsed expandable card — the reply stays last
+  C.handle({ type: 'room', speaker: 'claude', stream_id: 's9:tools', text: 'Explored\n├ Read notes.md\n└ Shell ls' });
+  const toolsCard = doc.querySelector('.msg.tools-msg');
+  assert.ok(toolsCard, 'tool run renders as its own card');
+  assert.match(toolsCard.querySelector('summary').textContent, /claude explored · 2 steps/);
+  assert.match(toolsCard.querySelector('.tool-steps').textContent, /Read notes\.md/);
+  assert.ok(toolsCard.nextElementSibling.classList.contains('streaming'),
+    'tools card is inserted before the streaming reply');
   C.handle({ type: 'room', speaker: 'claude', stream_id: 's9', text: 'final text' });
   assert.equal(doc.querySelector('.msg.claude.streaming'), null, 'stream finalized');
-  assert.match(doc.querySelector('.msg.claude .body').textContent, /final text/);
+  const claudeMsgs = [...doc.querySelectorAll('.msg.claude')];
+  assert.match(claudeMsgs[claudeMsgs.length - 1].querySelector('.body').textContent, /final text/,
+    'the reply, not the tool run, is the last thing in the turn');
 
   // multi-line system output (/help shape) renders as a legible block
   C.handle({ type: 'room', speaker: 'system', text: 'Chat lifecycle:\n  /new — start fresh\n  /resume — switch' });
