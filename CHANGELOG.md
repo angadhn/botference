@@ -2,6 +2,56 @@
 
 ## 2026-07-29
 
+- **Review hub: the portal runs the estate, not a config file you hand-edit.**
+  Set `"workspace"` in `~/.botference/review-hub.json` and every directory
+  under `<workspace>/projects/` becomes a review candidate — *scaffolded*
+  once it has `review/review.config.json`, *not set up yet* otherwise. The
+  owner portal lists all of them (running, stopped, never set up) merged
+  with the explicit `papers` entries, an explicit entry winning any slug or
+  directory collision.
+- **Review hub: on/off toggles.** Turning a paper on scaffolds it if it was
+  never set up, picks a free port from `"portRange"`, runs `cloudflared
+  tunnel route dns review <slug>.<domain>`, and starts it hosted as a
+  managed service with a generated guest password and the hub's owner
+  password in its env. A failed DNS route is surfaced with the exact command
+  to run and never stops the paper coming up. Turning it off stops that
+  paper's service by its ledger entry, from the paper's own directory —
+  never a pattern kill. Papers published by hand under the older
+  `review-share` name are still found, because the lookup is scoped to that
+  paper's own ledger.
+- **Review hub: wake-on-request.** Asking for a paper whose server is down
+  now starts it — if you are the owner — behind a self-refreshing
+  "starting…" page. Guests keep getting the friendly "work from the git
+  repo" page: starting a paper is never a guest's decision.
+- **Review hub: passwordless owner devices.** A new browser can ask to be
+  trusted; the hub fires a macOS notification and dialog on the machine, and
+  Approve hands that browser a one-year HMAC-signed cookie scoped to the
+  parent domain, so it is the owner on the paper subdomains too (which is
+  what makes wake-on-request work from a phone). Pending requests expire
+  after five minutes, denied and expired devices are told plainly, and the
+  portal on the machine itself can approve when no dialog appears.
+  `REVIEW_HUB_PASSWORD` still works; deleting
+  `~/.botference/.review-hub-device-secret` revokes every device at once.
+- **Review hub: private by default.** A newly enabled paper gets a generated
+  guest password and an *empty* `collaborators` list, so it is invisible and
+  unreachable to everyone but the owner until the owner declares who may see
+  it. Existing declared collaborators are unaffected. Passwords live in
+  `~/.botference/review-paper-secrets.json` (mode 0600), never in the config.
+- **Review hub: every project's files, at the portal, with zero setup.** Not
+  everything a project produces is a scaffolded review — plots, HTML
+  reports, notes. Each discovered project is now browsable at
+  `/p/<slug>/files/`, served by the hub process itself: no review
+  scaffolding, no paper server, no DNS record. Owner-only, always (a
+  declared collaborator on a paper still gets 403). Dot-segment path
+  components — `.git`, `.botference`, any dotfile — and traversal are
+  refused, symlinks are resolved and re-checked so they are not a way out,
+  and a project's own HTML is served under `Content-Security-Policy:
+  sandbox` with an opaque origin, so a report's scripts run but can never
+  act as the owner against the hub.
+- **`botference review --setup`** scaffolds and builds, then exits without
+  serving; **`--hosted --service`** (with optional `--service-name`) runs one
+  hosted server under the managed service lifecycle, pinned to the paper's
+  own ledger. These are the two primitives the hub's toggles drive.
 - **Council transcript: the reply is the last thing in a turn, not the tool
   calls.** The "Explored …" tool-run entry is emitted at turn end — after the
   agent's text already streamed in — so it used to land *below* the reply,

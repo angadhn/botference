@@ -84,7 +84,13 @@ the password together \(em the name only decides which state/users
 file that guest writes; tools may send Basic auth with any username
 instead); \fB\-\-upgrade\fR refreshes
 engine files
-without touching review.config.json, state/, suggestions.json, or site/.
+without touching review.config.json, state/, suggestions.json, or site/;
+\fB\-\-setup\fR scaffolds and builds, then exits without serving (what
+the review hub runs before it can publish a project that was never set
+up). \fB\-\-hosted \-\-service\fR runs just the hosted server (no
+tunnel) under the managed service lifecycle, named after the directory
+unless \fB\-\-service-name\fR \fINAME\fR says otherwise; its ledger
+belongs to the paper's own directory, so stop it from there.
 .TP
 .B service
 Managed long-lived processes (dev servers, share tunnels) that survive
@@ -142,7 +148,7 @@ Plan mode only: \fB\-\-web\fR plus the password gate and a cloudflared
 tunnel; prints "share this: <url>   password: <pw>".
 .TP
 .B \-\-service
-With \fB\-\-share\fR only (both \fBplan\fR and \fBreview\fR): run the
+With \fB\-\-share\fR (both \fBplan\fR and \fBreview\fR): run the
 whole share (server + tunnel) under the managed service lifecycle
 instead of in the foreground \- the launcher waits (bounded) for the
 canonical "share this: <url>   password: <pw>" line to appear in the
@@ -151,7 +157,9 @@ Service names: \fBcouncil-share\fR (plan) and \fBreview-share\fR
 (review); stop with \fBbotference service stop\fR \fIname\fR.
 Re-running while the service is up reprints its last share line. This
 is the flag agents should use to stand up a share that outlives their
-turn.
+turn. With \fBreview \-\-hosted\fR (no tunnel) it instead runs the one
+hosted server as a service \- see \fB\-\-service-name\fR \- which is
+how the review hub's on/off toggles publish a paper.
 .TP
 .B \-\-no-auth
 With \fBplan \-\-share\fR only: skip the password gate. Never the
@@ -295,6 +303,70 @@ is printed as the share URL when set.
 Live events (streaming replies, project lists) travel over WebSocket,
 which traverses tunnels reliably; server-sent events remain as a
 fallback for local use.
+.SH REVIEW HUB
+.B frontends/review/hub.mjs
+is one front door for every hosted paper on the machine, behind ONE
+named tunnel: a gated portal on the hub hostname, and one transparent
+reverse proxy per paper hostname. Config lives in
+.I ~/.botference/review-hub.json
+.RB ( REVIEW_HUB_CONFIG
+overrides it) and is re-read on every request, so edits and toggles
+apply without a restart.
+.TP
+.B Auto-discovery
+With a
+.B workspace
+key set, every directory under \fIworkspace\fR/projects/ is a review
+candidate: \fIscaffolded\fR once it has review/review.config.json,
+\fInot set up yet\fR otherwise. The owner portal lists all of them
+merged with the explicit \fBpapers\fR entries; an explicit entry wins
+any slug or directory collision.
+.TP
+.B On/off toggles
+Turning a paper on scaffolds it if needed (\fBreview --setup\fR),
+assigns a free port from
+.BR portRange ,
+runs \fBcloudflared tunnel route dns review <slug>.<domain>\fR
+(tunnel name from
+.BR REVIEW_HUB_TUNNEL ,
+default \fBreview\fR) and starts it with \fBreview --hosted --service
+--port\fR \fIN\fR. A failed DNS route is surfaced with the exact
+command to run and is never fatal. Turning it off stops that paper's
+service by its ledger entry, from the paper's own directory.
+.TP
+.B Wake-on-request
+An owner asking for a paper whose server is down gets a
+self-refreshing "starting…" page and the same start path; guests get
+the offline "work from the git repo" page.
+.TP
+.B Owner devices
+Localhost is always the owner. A remote browser can request approval:
+the hub fires a macOS notification and dialog, and Approve issues a
+one-year HMAC-signed cookie scoped to the parent domain, so that
+browser is the owner on the paper subdomains too. Pending requests
+expire after five minutes.
+.B REVIEW_HUB_PASSWORD
+remains the password route from any device. Deleting
+.I ~/.botference/.review-hub-device-secret
+revokes every approved device at once.
+.TP
+.B Privacy
+A newly enabled paper gets a generated guest password and an empty
+.B collaborators
+list, so only the owner can see or reach it until collaborators are
+declared. Secrets live in
+.I ~/.botference/review-paper-secrets.json
+(mode 0600), never in the config.
+.TP
+.B Project files
+Every discovered project is browsable, owner-only, at
+.IR /p/<slug>/files/ ,
+served by the hub process itself \- no scaffolding, no paper server
+and no DNS record needed, so bot-produced plots and HTML reports are
+viewable at the portal with zero setup. Dot-segment path components
+(.git, .botference, any dotfile) and traversal are refused, symlinks
+are resolved and re-checked, and a project's own HTML is served under
+a sandbox CSP with an opaque origin.
 .SH ENVIRONMENT
 .BR ANTHROPIC_MODEL ,
 .BR OPENAI_MODEL ,
@@ -306,6 +378,9 @@ fallback for local use.
 .BR COUNCIL_PASSWORD ,
 .BR REVIEW_PASSWORD ,
 .BR REVIEW_OWNER_PASSWORD ,
+.BR REVIEW_HUB_CONFIG ,
+.BR REVIEW_HUB_PASSWORD ,
+.BR REVIEW_HUB_TUNNEL ,
 .BR BOTFERENCE_TUNNEL ,
 .BR BOTFERENCE_TUNNEL_URL .
 See \fBbotference --help\fR for details.

@@ -221,12 +221,45 @@ gets its own hostname transparently proxied to its local server (run
 with `--hosted`; no tunnel of its own). When a paper's server is down
 its hostname serves a friendly "work from the git repo" page instead
 of an error. On the machine itself, localhost is the owner: no login,
-every paper listed; set `REVIEW_HUB_PASSWORD` when starting the hub
-and that password (with any name) opens the same full owner view from
-your phone or any other device. Config in
-`~/.botference/review-hub.json` (see the header of `hub.mjs`), re-read
-live — adding a paper is one config entry plus one `cloudflared tunnel
-route dns`, no restarts.
+every paper listed. Config in `~/.botference/review-hub.json` (see the
+header of `hub.mjs`), re-read live — no restarts.
+
+The owner portal runs the whole estate, so the config stops being
+something you hand-edit:
+
+- **Auto-discovery.** Set `"workspace"` (e.g.
+  `"~/MySiteFromObsidianVault/botference"`) and every directory under
+  `<workspace>/projects/` becomes a review candidate — *scaffolded*
+  once it has `review/review.config.json`, *not set up yet* otherwise.
+  The owner sees all of them, running or not, merged with the explicit
+  `papers` entries; an explicit entry always wins a collision.
+- **On/off toggles.** Turning a paper on scaffolds it if it was never
+  set up, picks a free port from `"portRange"`, runs `cloudflared
+  tunnel route dns review <slug>.<domain>`, and starts it hosted as a
+  managed service with a generated guest password. If the DNS route
+  fails the paper still comes up and the portal shows you the exact
+  command to run. Turning it off stops that paper's service by its
+  ledger entry, from the paper's own directory — never a pattern kill.
+- **Wake-on-request.** Ask for a paper whose server is down and, if
+  you are the owner, it starts behind a self-refreshing "starting…"
+  page. Guests keep getting the offline page; starting a paper is
+  never a guest's decision.
+- **Passwordless owner devices.** A new browser can ask to be trusted;
+  the hub pops a macOS dialog on the machine, and Approve hands that
+  browser a year-long signed cookie that makes it the owner on the hub
+  *and* the paper subdomains. `REVIEW_HUB_PASSWORD` still works as the
+  password route from any device.
+- **Private by default.** A newly enabled paper gets a generated guest
+  password and an empty `collaborators` list, so it is invisible and
+  unreachable to everyone but you until you declare who may see it.
+  Passwords live in `~/.botference/review-paper-secrets.json` (0600),
+  never in the config.
+- **Project files.** Every discovered project also gets an owner-only
+  files view at `/p/<slug>/files/` served by the hub itself — no review
+  scaffolding, no paper server, no DNS record — so a plot or HTML
+  report your bots produced is viewable at the portal with zero setup.
+  Dotfiles (`.git`, `.botference`, …) and traversal are refused, and a
+  project's own HTML is sandboxed to an opaque origin.
 
 What you get in the browser: comment or **suggest** on any block —
 paragraphs, figures, headings, list items, quotes, captions, table
