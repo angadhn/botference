@@ -3,17 +3,23 @@
 ## 2026-07-29
 
 - **Browse any project's chats without "activating" it.** The web sidebar
-  now expands every project (active or not) to its 8 most recent chats, and
-  tapping a chat just opens it. The `→ make active project` row is gone:
-  opening a chat IS how you enter a project, and filing a new chat is
-  already covered by the "Where should this chat live?" card after `/new`.
-  The active project auto-expands on arrival, but a manual collapse sticks.
+  now expands every project — active, inactive, or archived — to its 8 most
+  recent chats, and tapping a chat just opens it. The `→ make active
+  project` row is gone: opening a chat IS how you enter a project, and
+  filing a new chat is already covered by the "Where should this chat live?"
+  card after `/new`. Every project header is a chevron toggle (the active
+  one included); the project you land in auto-expands, but a manual collapse
+  sticks until the active project changes again. The per-chat **⋯**
+  Archive/Delete menu, **⊘ archive project**, the **Archived** section and
+  the split **＋ New** control are unchanged.
   - Controller: `project_panel_snapshot()` builds the recent-chat shortlist
     for **every** project out of the same single sweep that already computed
     the counts (cached metadata index → title/updated_at, plus the tiny
     project-local `sessions/` dirs). No extra file reads per turn; only
     `(mtime, id, title, updated_at)` tuples are accumulated, and the
-    shortlist stays capped at 8 per project. `session_count` is unchanged.
+    shortlist stays capped at 8 per project. Counts keep their
+    dedupe-by-session-id semantics, and a chat reachable from both the
+    global store and a project-local dir is still listed exactly once.
   - `/resume <id|title>` now reaches a chat filed under *any* project — it
     falls back to an all-projects lookup when the active project has no
     match (fallback only, so the hot path is untouched). Restoring a chat
@@ -21,6 +27,99 @@
     is only recorded in `projects/session-index.json`.
   - The Ink TUI still expands only the active project; the extra payload is
     ignored there (covered by a regression test).
+
+- **Archive, don't delete — for chats and for projects.** Two new
+  controller commands put a chat away without destroying it:
+  `/archive [<id-prefix>|list]` *moves* `work/sessions/<id>.json` to
+  `archive/sessions/` (`BOTFERENCE_ARCHIVE_DIR`) and `/unarchive
+  [<id-prefix>]` moves it back. A move is one atomic rename, so nothing
+  is rewritten, every listing (which globs `work/sessions/`) simply
+  stops showing it, and there is no payload flag for a second bridge
+  process to race on. Archiving is reversible, so it asks for no
+  confirmation; archiving the chat you're in saves it first and then
+  rolls into a fresh `/new`. `/unarchive` refuses to overwrite a live
+  chat with the same id — the archived copy is left untouched rather
+  than clobbering newer state. Both tolerate a file another process
+  already moved or deleted. Projects get the same treatment via
+  `/project archive <id>` / `/project unarchive <id>`, which flips only
+  the `status` field in `projects/portfolio.json` — the folder, its
+  PROJECT.md, and every chat filed under it stay exactly where they are;
+  archiving the active project drops the room back to Inbox.
+
+- **Council web sidebar: per-chat actions, archived projects, and a
+  split New control.** Every chat row now has a **⋯** menu with
+  **Archive** and **Delete…**; both send the plain slash command through
+  the normal input path, so `/delete`'s confirmation is the controller's
+  own choice card in the transcript (asked once, not twice). Each
+  project block offers **⊘ archive project**, and non-active projects
+  collapse into an **Archived** section at the bottom of the sidebar —
+  closed by default, with **↩ unarchive project** inside — so a long
+  history of finished work stops crowding the list. The old "New chat"
+  button became a split control: `＋ New` with `chat` / `project`
+  stacked beside it, where `project` opens an inline title field and
+  sends `/project create <title>` (no modal, no `prompt()`, thumb-sized
+  on a phone). `/project ` also gained scoped autocomplete for its
+  subcommands. Tests: three new happy-dom sidebar cases in
+  `tests/council-web.test.mjs`, plus `TestChatArchive` /
+  `TestProjectArchive` in `tests/test_botference.py`.
+
+- **Fixed chats showing up under the wrong project (and vanishing from
+  the one they were filed in).** Now that a workspace is driven by
+  several processes at once — the Ink TUI plus one web-council bridge
+  per open chat — every `SessionStore`/`ProjectStore` was
+  read-modify-writing the same shared index files with no coordination,
+  so the last writer silently overwrote the others. Three concrete
+  faults, all fixed:
+  - `work/sessions/.metadata-index.json` was rewritten WHOLESALE from
+    each process's private in-memory cache. That deleted rows for chats
+    the writer had never seen and republished its stale `project_id` for
+    chats another process had since moved. Writers now merge into the
+    file they re-read under a lock and publish only the rows they
+    actually verified this pass, freshest mtime winning per row.
+  - A row's mtime was read by stat-ing the session file AFTER the atomic
+    rename, so a writer that lost a race pinned its own stale data to the
+    winner's timestamp. Nothing ever re-parsed that chat again, and the
+    wrong project stuck permanently — the "rockets chat under Health &
+    Fitness" report. The mtime now comes from the inode we wrote, so a
+    row that lost a race simply loses the merge and self-heals.
+  - `projects/session-index.json` was a non-atomic, unlocked
+    read-modify-write. Concurrent writers dropped each other's
+    associations wholesale (a stress run with three writers lost 119 of
+    121 filed chats, including one filed via `/project assign` and never
+    touched again), and readers that hit a half-written file saw NO
+    memberships at all — every chat blinking into Inbox. Writes are now
+    atomic and locked, and a chat already filed where it belongs is no
+    longer rewritten on every persisted turn.
+  Also: the project panel now counts and lists each chat ONCE when it is
+  reachable from both the global store and a project-local `sessions/`
+  dir (the duplicate-rows report), `prune_empty` drops pruned rows from
+  the shared index instead of leaving corpses for other processes, and
+  the panel scan no longer mutates the metadata cache the controller's
+  save path is writing. On-disk formats are unchanged — existing
+  sessions, indexes and associations load as-is.
+
+## 2026-07-28
+
+- **Council web: true multi-tab chats — one bridge per open chat.**
+  The server previously drove a single bridge with one global "active
+  chat", so the `#/chat/<id>` URL was cosmetic: a second browser tab's
+  message landed in whichever chat was last resumed anywhere. Now the
+  server keeps a bridge POOL: a tab connecting with `?chat=<sid>`
+  (derived from its `#/chat/<sid>` hash) attaches to the bridge driving
+  that chat, spawned on demand with an automatic `/resume`; every POST
+  names its bridge. Tabs on different chats are fully concurrent
+  sessions behind the same tunnel; tabs on the same chat share one
+  bridge and see the same live stream. Sidebar/hash chat switching
+  re-attaches the tab's event stream (offscreen replay reconcile, cached
+  optimistic paint — never a blank flash) instead of sending `/resume`
+  through a shared bridge; a typed `/resume` of a chat already open in
+  another tab is intercepted server-side and re-attaches instead of
+  forking the session into two processes. Unknown chat ids fall back to
+  the primary bridge with a toast. `COUNCIL_MAX_CHATS` caps the pool
+  (default 4); idle, unwatched bridges are parked at the cap. `/quit`
+  now closes its own chat's bridge; the server exits with the last one.
+  Docs: README, man page. Tests: pool routing/isolation over live WS,
+  route_error fallback, reworked switch/hash-routing DOM tests.
 
 ## 2026-07-24
 
@@ -35,6 +134,14 @@
   chart sat squashed for days). `--viewport WxH` (repeatable),
   `--basic-auth`, `--out`; virtual-time budget lets client-drawn charts
   finish before the shot. Tests: `tests/see.test.mjs`.
+  **Sandboxed agents included, via the see-broker:** seatbelt kills
+  Chrome inside agent sandboxes ("Abort trap 6"), so when a local
+  render fails wholesale the SAME command hands its argv to the
+  `see-broker` service (`botference see --serve`, started once via the
+  service ledger) through `.botference/see/` request files; the broker
+  renders outside the sandbox in the requesting workspace and answers
+  with identical `wrote:` output. Deterministic filesystem protocol,
+  no sandbox loosened, `set -e`-safe throughout.
 
 - **Claude Opus 5 (`claude-opus-5`, released today) added and made the
   suggested Opus everywhere.** Registered in both context-window tables

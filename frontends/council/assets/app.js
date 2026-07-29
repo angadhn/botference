@@ -1,14 +1,21 @@
 // botference council — browser client for the plan-mode bridge.
-// One SSE stream in (/events, bridge events relayed verbatim plus a few
-// server events), three POSTs out (/input, /permission, /choice, /interrupt).
-// Slash commands pass through verbatim: the controller parses them exactly
-// as it does for the TUI.
+// One live event stream in (WS primary, SSE fallback; bridge events relayed
+// verbatim plus a few server events), POSTs out (/input, /permission,
+// /choice, /interrupt). Slash commands pass through verbatim: the controller
+// parses them exactly as it does for the TUI.
+//
+// The server runs one bridge per OPEN CHAT. This tab attaches its stream to
+// the bridge for the chat in the URL (#/chat/<id> -> ?chat=<id>), so two
+// tabs on two chats are two concurrent sessions. Switching chats means
+// RE-ATTACHING the stream, not asking a shared bridge to /resume.
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
   const els = {
     side: $('side'), backdrop: $('backdrop'), burger: $('burger'), sideClose: $('side-close'),
-    newChat: $('new-chat'), projects: $('projects'), theme: $('theme-toggle'),
+    newChat: $('new-chat'), newProject: $('new-project'),
+    newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
+    projects: $('projects'), theme: $('theme-toggle'),
     conn: $('st-conn'), stProject: $('st-project'), stRoute: $('st-route'), stCtx: $('st-ctx'),
     stModel: $('st-model'), modelSwitcher: $('model-switcher'), autoRelay: $('autorelay-toggle'),
     presendWarn: $('presend-warn'),
@@ -95,11 +102,14 @@
       '/effort @claude', '/effort @codex', '/compact @claude', '/compact @codex',
       '/goal @claude', '/goal @codex',
       '/projects', '/project', '/adopt', '/new', '/file', '/add-to-project',
-      '/delete', '/draft', '/finalize', '/resume', '/rename', '/permissions',
+      '/delete', '/archive', '/unarchive',
+      '/draft', '/finalize', '/resume', '/rename', '/permissions',
       '/status', '/notify', '/autorelay', '/agents', '/auth', '/current-model', '/current',
       '/help', '/quit', '/exit', '@claude ', '@codex ', '@all ',
     ],
     scoped: {
+      '/project ': ['open', 'clear', 'current', 'create', 'create-from-chat',
+        'assign', 'archive', 'unarchive', 'activate-build'],
       '/model @claude ': FALLBACK_MODELS.claude,
       '/model @codex ': FALLBACK_MODELS.codex,
       '/effort @claude ': ['low', 'medium', 'high', 'xhigh'],
@@ -136,19 +146,24 @@
     projects: null,
     openProjects: new Set(),   // expanded projects (any project, active or not)
     lastActivePid: null,       // active project at the last 'projects' event
+    menuSid: null,         // chat row whose ⋯ actions menu is open
+    archOpen: false,       // "Archived" projects section expanded?
     inServerReplay: true,  // between (re)connect and the server's replay_done boundary
     replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
     currentSid: null,      // active session id (from 'projects' events)
+    bridgeId: null,        // this tab's bridge (from 'hello'); named in every POST
+    resuming: false,       // the attached bridge is still executing its spawn-time /resume
     atts: [],              // composer attachments: {id, path, url, thumb, status}
     lanes: {},             // subagent progress lane: tool_use_id -> lane record
     laneCard: null,        // the in-progress turn's lane card element (null between turns)
     laneTimer: null,       // interval ticking the running lanes' elapsed clocks
   };
-  // one bridge = one live chat: switching IS a /resume that replaces server
-  // state. So this is an honest client-side cache of the last few rendered
-  // transcripts — instant optimistic paint on switch-back, reconciled when
-  // the authoritative replay lands. Bounded LRU.
+  // switching chats re-attaches this tab's stream to another bridge, and the
+  // authoritative transcript arrives as that bridge's history replay. This is
+  // an honest client-side cache of the last few rendered transcripts —
+  // instant optimistic paint on switch, reconciled when the replay lands.
+  // Bounded LRU.
   const CACHE_MAX = 5;
   const sessionCache = new Map(); // sid -> {html, scrollTop, atBottom}
   function cachePut(sid, entry) {
@@ -712,39 +727,75 @@
   // Every project expands on tap and lists its own chats — opening a chat IS
   // how you enter a project (the controller makes the chat's project active
   // on resume), so there is no "make active project" step to click first.
-  // The active project auto-opens once, then manual toggling wins.
   function autoOpenActiveProject(p) {
     // Expand the project you just landed in (first load, or when opening a
     // chat moves you into another project). A manual collapse sticks until
-    // the active project changes again.
+    // the active project changes again. Archived projects stay tucked away.
     const pid = (p && p.active_project_id) || '';
-    if (pid && pid !== state.lastActivePid) state.openProjects.add(pid);
+    const pr = (p && p.projects || []).find(x => x.id === pid);
+    if (pid && pid !== state.lastActivePid && (!pr || (pr.status || 'active') === 'active')) {
+      state.openProjects.add(pid);
+    }
     state.lastActivePid = pid;
+  }
+  // one chat row: the row itself resumes; ⋯ opens archive/delete, both of
+  // which are plain slash commands (the controller owns the confirm step)
+  function chatRow(s) {
+    const sid = esc(s.session_id);
+    const open = state.menuSid === s.session_id;
+    return `<div class="sess-row${open ? ' menu-open' : ''}">
+      <button class="sess${s.active ? ' active' : ''}" data-act="resume" data-sid="${sid}">
+        ${esc(s.title || s.session_id.slice(0, 8))}<span class="when">${relTime(s.updated_at)}</span></button>
+      <button class="row-more" data-act="menu" data-sid="${sid}" aria-haspopup="true"
+        aria-expanded="${open}" aria-label="actions for ${esc(s.title || s.session_id.slice(0, 8))}">⋯</button>
+      ${open ? `<div class="row-menu" role="menu">
+        <button role="menuitem" data-act="archive" data-sid="${sid}">Archive</button>
+        <button role="menuitem" class="danger" data-act="delete" data-sid="${sid}">Delete…</button>
+      </div>` : ''}
+    </div>`;
+  }
+  function projectBlock(pr, { archived = false } = {}) {
+    // Purely user-driven: autoOpenActiveProject() seeds openProjects when you
+    // land in a project, so the active one can still be collapsed by hand.
+    const open = state.openProjects.has(pr.id);
+    const pid = esc(pr.id);
+    let html = `<div class="proj${open ? ' open' : ''}" data-pid="${pid}">
+      <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${pid}" aria-expanded="${open}">
+        <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
+        <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
+      <div class="proj-sessions">`;
+    // No "make active project" row: opening any chat here does that for you.
+    // chats first, project-level commands under them
+    for (const s of pr.sessions || []) html += chatRow(s);
+    if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
+    html += archived
+      ? `<button class="sess sess-cmd" data-act="proj-unarchive" data-pid="${pid}">↩ unarchive project</button>`
+      : `<button class="sess sess-cmd" data-act="proj-archive" data-pid="${pid}">⊘ archive project</button>`;
+    return html + '</div></div>';
   }
   function renderProjects() {
     const p = state.projects;
     if (!p) { els.projects.innerHTML = '<div class="empty-note">loading…</div>'; return; }
+    const all = p.projects || [];
+    const live = all.filter(pr => (pr.status || 'active') === 'active');
+    const archived = all.filter(pr => (pr.status || 'active') !== 'active');
     let html = '';
     html += '<h2>Chats</h2>';
     html += `<div class="proj"><button class="proj-head" data-act="inbox">
       <span class="chev">•</span><span class="name">Inbox</span>
       <span class="count">${p.inbox_session_count || 0}</span></button></div>`;
-    if ((p.projects || []).length) {
+    if (live.length) {
       html += '<h2>Projects</h2>';
-      for (const pr of p.projects) {
-        const open = state.openProjects.has(pr.id);
-        html += `<div class="proj${open ? ' open' : ''}" data-pid="${esc(pr.id)}">
-          <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${esc(pr.id)}" aria-expanded="${open}">
-            <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
-            <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
-          <div class="proj-sessions">`;
-        for (const s of pr.sessions || []) {
-          html += `<button class="sess${s.active ? ' active' : ''}" data-act="resume" data-sid="${esc(s.session_id)}">
-            ${esc(s.title || s.session_id.slice(0, 8))}<span class="when">${relTime(s.updated_at)}</span></button>`;
-        }
-        if (!(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
-        html += '</div></div>';
-      }
+      for (const pr of live) html += projectBlock(pr);
+    }
+    // archived projects live at the bottom, collapsed — present, out of the way
+    if (archived.length) {
+      html += `<div class="arch${state.archOpen ? ' open' : ''}">
+        <button class="arch-head" data-act="toggle-arch" aria-expanded="${state.archOpen}">
+          <span class="chev">▶</span>Archived<span class="count">${archived.length}</span></button>
+        <div class="arch-body">`;
+      for (const pr of archived) html += projectBlock(pr, { archived: true });
+      html += '</div></div>';
     }
     els.projects.innerHTML = html;
   }
@@ -752,6 +803,7 @@
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
+    if (act !== 'menu' && state.menuSid) { state.menuSid = null; renderProjects(); }
     if (act === 'toggle') {
       const pid = b.dataset.pid;
       if (state.openProjects.has(pid)) state.openProjects.delete(pid);
@@ -759,20 +811,62 @@
       renderProjects();
       return;
     }
+    if (act === 'toggle-arch') { state.archOpen = !state.archOpen; renderProjects(); return; }
+    if (act === 'menu') {
+      state.menuSid = state.menuSid === b.dataset.sid ? null : b.dataset.sid;
+      renderProjects();
+      return;
+    }
     // sidebar affordances send the equivalent slash command — one code path
     if (act === 'inbox') sendInput('/resume');
     if (act === 'resume') switchTo(b.dataset.sid);
+    if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
+    if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
+    if (act === 'archive') {
+      sendInput('/archive ' + b.dataset.sid);
+      toast('archiving — /unarchive brings it back');
+    }
+    if (act === 'delete') {
+      // the controller answers with a confirm card in the transcript, so the
+      // sidebar gets out of the way instead of confirming twice
+      sendInput('/delete ' + b.dataset.sid);
+      toast('confirm the delete in the chat');
+    }
     closeSide();
+  });
+  // a tap anywhere else dismisses an open row menu
+  document.addEventListener('click', e => {
+    if (state.menuSid && !e.target.closest('.sess-row')) { state.menuSid = null; renderProjects(); }
   });
   els.newChat.addEventListener('click', () => { snapshotCurrent(); sendInput('/new'); closeSide(); });
 
+  // new project: an inline title field (no modal, no prompt()) that sends
+  // the same /project create the TUI takes
+  function showNewProject(on) {
+    els.newProjForm.hidden = !on;
+    if (on) { els.newProjTitle.value = ''; els.newProjTitle.focus(); }
+  }
+  function submitNewProject() {
+    const title = els.newProjTitle.value.trim();
+    if (!title) { showNewProject(false); return; }
+    sendInput('/project create ' + title);
+    showNewProject(false);
+    closeSide();
+  }
+  els.newProject.addEventListener('click', () => showNewProject(els.newProjForm.hidden));
+  els.newProjForm.addEventListener('submit', e => { e.preventDefault(); submitNewProject(); });
+  els.newProjTitle.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.stopPropagation(); showNewProject(false); }
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submitNewProject(); }
+  });
+
   // ── chat switching: optimistic render from cache, reconcile on replay ──
-  // The server drives ONE bridge session, so a switch is a real /resume
-  // round trip. What we can make instant is the paint: snapshot the outgoing
-  // transcript, restore the cached one (if we have it) immediately, and let
-  // the authoritative replay land in an offscreen buffer that swaps in when
-  // 'ready' arrives. First visits keep the old chat + a syncing pill —
-  // never a blank flash.
+  // A switch re-attaches this tab's event stream to the target chat's bridge
+  // (?chat=<sid>; the server spawns one on demand). What we make instant is
+  // the paint: snapshot the outgoing transcript, restore the cached one (if
+  // we have it) immediately, and let the authoritative replay land in an
+  // offscreen buffer that swaps in when it completes. First visits keep the
+  // old chat + a syncing pill — never a blank flash.
   function snapshotCurrent() {
     if (!state.currentSid || replayBuffer || !els.transcript.children.length) return;
     cachePut(state.currentSid, {
@@ -796,7 +890,7 @@
       else { els.chat.scrollTop = cached.scrollTop; els.jump.hidden = atBottom(); }
     }
     setSyncing(true);
-    sendInput('/resume ' + sid);
+    reattach();
   }
   // replay-buffer completion: swap the freshly replayed transcript in and
   // decide the landing scroll — same content as the cached paint keeps the
@@ -817,6 +911,7 @@
   function endSwitch() {
     flushReplayBuffer();
     state.pendingSwitch = null;
+    state.resuming = false;
     setSyncing(false);
   }
 
@@ -1049,7 +1144,9 @@
     try {
       const r = await fetch(url, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        // every POST names this tab's bridge so it lands in THIS chat, not
+        // whichever chat another tab is driving
+        body: JSON.stringify({ bridge: state.bridgeId, ...body }),
       });
       if (r.status === 401) { location.reload(); return null; }
       return await r.json();
@@ -1058,6 +1155,9 @@
   async function sendInput(text, attachments = []) {
     const r = await post('/input', { text, attachments });
     if (r && r.ok === false && r.error) addMsg('system', `not sent: ${r.error}`);
+    // a typed /resume of a chat already open elsewhere: the server refuses to
+    // fork the session and asks this tab to re-attach to the live bridge
+    else if (r && r.switch) switchTo(r.switch);
     else setBusy(true);
   }
 
@@ -1071,7 +1171,21 @@
   function handle(ev) {
     switch (ev.type) {
       case 'hello':
+        state.bridgeId = ev.bridge_id || null;
+        // a freshly spawned bridge is still executing its /resume: its replay
+        // shows the interstitial startup chat, so the offscreen buffer must
+        // stay up past replay_done until the live 'ready' lands
+        state.resuming = !!ev.resuming;
         if (ev.noauth && !localStorage.getItem('council-noauth-dismissed')) els.banner.hidden = false;
+        break;
+      case 'route_error':
+        // the chat this tab asked for could not be attached (unknown id,
+        // open-chat limit): we are on the fallback bridge — say so and let
+        // the next 'projects' event correct the URL
+        toast(ev.error || 'chat not found — showing the current chat');
+        state.pendingSwitch = null;
+        state.resuming = false;
+        setSyncing(false);
         break;
       case 'room': {
         const sp = String(ev.speaker).toLowerCase();
@@ -1095,9 +1209,6 @@
         if (ev.kind === 'tool_start' || ev.kind === 'tool_done') laneEvent(ev);
         break;
       case 'user_echo':
-        // the echo of a sidebar-initiated /resume is switch plumbing, not
-        // conversation — don't paint it over the optimistic transcript
-        if (state.pendingSwitch && ev.text === '/resume ' + state.pendingSwitch) { setBusy(true); break; }
         if (ev.text && !String(ev.text).startsWith('/')) state.lastUserText = ev.text;
         addMsg('user', ev.text, { attachments: ev.attachments || [] });
         setBusy(true);
@@ -1165,9 +1276,11 @@
         liveCard = null;
         resetLanes();
         state.replaying = true; // a restore replay follows: pin, no heuristics
-        if (state.pendingSwitch && els.transcript.children.length) {
-          // sidebar switch: keep the optimistic (or outgoing) transcript on
-          // screen and build the authoritative one offscreen — never blank
+        if (state.pendingSwitch) {
+          // in-flight switch: keep the optimistic (or outgoing) transcript on
+          // screen and build the authoritative one offscreen — never blank.
+          // A fresh buffer also drops a resuming bridge's interstitial
+          // startup events, which are plumbing, not this chat's transcript.
           replayBuffer = document.createElement('div');
         } else {
           els.transcript.innerHTML = '';
@@ -1175,11 +1288,18 @@
         }
         break;
       case 'replay_done':
-        // server-side history replay boundary (connect/reconnect): land
-        // pinned at the very bottom, and re-assert after layout settles
+        // server-side history replay boundary (connect/reconnect/reattach)
         state.inServerReplay = false;
         state.replaying = false;
-        settleBottom();
+        if (replayBuffer && !state.resuming) {
+          // attached to a live chat: its replayed history IS the transcript
+          endSwitch();
+          break;
+        }
+        // a resuming bridge keeps buffering until its live 'ready';
+        // otherwise land pinned at the very bottom and re-assert after
+        // layout settles
+        if (!replayBuffer) settleBottom();
         break;
       case 'permission_request': permissionCard(ev); break;
       case 'permission_cleared': settleCard(); break;
@@ -1207,7 +1327,16 @@
   // included) buffer streamed HTTP bodies — SSE headers arrive but no events
   // ever do — while WebSocket upgrades are proxied unbuffered.
   let retryMs = 1000;
+  let liveSock = null;   // current WebSocket (null when on SSE / disconnected)
+  let liveEs = null;     // current EventSource
+  let sseMode = false;   // WS proved unusable: stay on SSE for reattaches too
   function setConn(cls, txt) { els.conn.className = `conn ${cls}`; els.conn.textContent = txt; }
+  // which chat this tab wants its stream attached to: an in-flight switch
+  // wins, then the open chat (reconnects stay on it), then a deep link
+  function chatParam() {
+    const sid = state.pendingSwitch || state.currentSid || hashSid();
+    return sid ? '?chat=' + encodeURIComponent(sid) : '';
+  }
   function resetView() {
     // reconnect replays server history from scratch: start clean, keep the
     // scroll pinned until the server's replay_done boundary
@@ -1221,37 +1350,68 @@
     setSyncing(false);
     updateEmpty();
   }
+  // connect-time view prep: a deliberate chat switch keeps the visible
+  // transcript (cached paint or the outgoing chat) and builds the replayed
+  // one offscreen; anything else starts clean
+  function prepView() {
+    if (state.pendingSwitch) {
+      replayBuffer = document.createElement('div');
+      state.streams = {};
+      liveCard = null;
+      resetLanes();
+      state.inServerReplay = true;
+      state.replaying = false;
+    } else {
+      resetView();
+    }
+  }
+  function dropTransport() {
+    if (liveSock) { const s = liveSock; liveSock = null; s.onclose = null; s.onerror = null; try { s.close(); } catch { } }
+    if (liveEs) { try { liveEs.close(); } catch { } liveEs = null; }
+  }
+  // deliberate re-attach (chat switch): close the current stream without
+  // triggering the reconnect path, and connect to the target chat's bridge
+  function reattach() {
+    dropTransport();
+    if (sseMode) connectSSE(); else connect();
+  }
   function onLine(data) {
     let ev; try { ev = JSON.parse(data); } catch { return; }
     if (ev.type !== 'ping') handle(ev);
   }
   function scheduleReconnect() {
     setConn('err', '○ reconnecting…');
-    setTimeout(connect, retryMs);
+    setTimeout(() => { if (sseMode) connectSSE(); else connect(); }, retryMs);
     retryMs = Math.min(retryMs * 2, 15000);
   }
   function connect() {
-    resetView();
+    prepView();
     let sock;
     try {
-      sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-    } catch { connectSSE(); return; }
+      sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + chatParam());
+    } catch { sseMode = true; connectSSE(); return; }
+    liveSock = sock;
     let opened = false;
     sock.onopen = () => { opened = true; retryMs = 1000; setConn('ok', '● live'); };
     sock.onmessage = e => onLine(e.data);
     sock.onerror = () => { };
     sock.onclose = () => {
+      if (liveSock !== sock) return; // superseded by a deliberate reattach
+      liveSock = null;
       // never got open: something between us and the server blocks WS — use SSE
-      if (!opened) { connectSSE(); return; }
+      if (!opened) { sseMode = true; connectSSE(); return; }
       scheduleReconnect();
     };
   }
   function connectSSE() {
-    resetView();
-    const es = new EventSource('/events');
+    prepView(); // idempotent right after connect()'s prep — no events between
+    const es = new EventSource('/events' + chatParam());
+    liveEs = es;
     es.onopen = () => { retryMs = 1000; setConn('ok', '● live'); };
     es.onmessage = e => onLine(e.data);
     es.onerror = () => {
+      if (liveEs !== es) { try { es.close(); } catch { } return; }
+      liveEs = null;
       es.close();
       scheduleReconnect();
     };
@@ -1274,6 +1434,6 @@
     fmt, sysFmt, switchTo, addFiles, submit, sessionCache,
     renderModelSwitcher, refreshPresendWarn, presendExhausted,
     noteAgentTurn, exhaustReason, modelsFor,
-    laneEvent, hashSid, syncHash, routeHash,
+    laneEvent, hashSid, syncHash, routeHash, chatParam,
   };
 })();

@@ -14,7 +14,18 @@
     <span class="brand">botference <em>council</em></span>
     <button id="side-close" aria-label="close sidebar">✕</button>
   </div>
-  <button id="new-chat">＋&ensp;New chat</button>
+  <!-- split "New" control: one block, two targets — chat (primary) / project -->
+  <div class="new-split" role="group" aria-label="create">
+    <span class="new-lede" aria-hidden="true">＋<b>New</b></span>
+    <div class="new-opts">
+      <button id="new-chat" aria-label="new chat">chat</button>
+      <button id="new-project" aria-label="new project">project</button>
+    </div>
+  </div>
+  <form id="new-project-form" hidden>
+    <input id="new-project-title" type="text" autocomplete="off"
+      enterkeyhint="done" placeholder="Project title…" aria-label="new project title">
+  </form>
   <nav id="projects" aria-label="projects and chats"></nav>
   <div class="side-foot">
     <div id="model-switcher" aria-label="agent models"></div>

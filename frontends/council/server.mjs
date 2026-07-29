@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 // Council web server: a browser frontend for botference PLAN mode.
-// Spawns core/botference_ink_bridge.py as a child (same JSONL protocol the
-// Ink TUI speaks), relays its events over SSE, and turns browser POSTs into
-// bridge input. Single-user by design: in hosted mode the password IS the
-// identity (no handles, no multi-user).
+// Spawns core/botference_ink_bridge.py children (same JSONL protocol the
+// Ink TUI speaks), relays their events over WS/SSE, and turns browser POSTs
+// into bridge input. Single-user by design: in hosted mode the password IS
+// the identity (no handles, no multi-user).
+//
+// One bridge per OPEN CHAT (not one per server): a tab that connects with
+// ?chat=<session-id> is attached to the bridge driving that chat, spawned on
+// demand with an automatic /resume. Tabs on different chats run concurrent,
+// independent sessions behind the same tunnel; tabs on the same chat share
+// one bridge and see the same live stream.
 //
 // Run:    node frontends/council/server.mjs            (local, no gate)
 // Flags:  --hosted   password gate (COUNCIL_PASSWORD) + rate-limited POSTs
@@ -12,6 +18,7 @@
 // Env:    PORT, BOTFERENCE_PROJECT_ROOT, BOTFERENCE_HOME, BOTFERENCE_PYTHON_BIN,
 //         COUNCIL_CLAUDE_MODEL/EFFORT, COUNCIL_OPENAI_MODEL/EFFORT,
 //         BOTFERENCE_COUNCIL_SYSTEM_FILE/TASK_FILE,
+//         COUNCIL_MAX_CHATS (bridge-pool cap, default 4),
 //         COUNCIL_BRIDGE_CMD (tests: JSON argv array replacing the python bridge)
 import http from 'node:http';
 import fs from 'node:fs';
@@ -174,47 +181,70 @@ function acquireLock() {
   process.on('exit', () => { try { fs.unlinkSync(lockFile); } catch { } });
 }
 
-// --- SSE clients + event history (replayed to newly connected clients so a
-// page reload keeps the transcript). Consecutive text deltas of one stream are
-// coalesced in the history, so replay stays small even after long turns.
-const clients = new Set();     // SSE responses
-const wsClients = new Set();   // WebSocket connections (primary through tunnels)
-const history = [];
+// --- the bridge pool ----------------------------------------------------
+// One bridge child per open chat. Each bridge keeps its own event history
+// (replayed to clients attaching to that chat, so a reload keeps the
+// transcript) and its own subscriber sets. Consecutive text deltas of one
+// stream are coalesced in the history, so replay stays small after long turns.
 const HISTORY_MAX = 4000;
-// completion_context is pinned outside history: the bridge emits it exactly
-// once at startup, so leaving it in a buffer that gets wiped on chat switches
-// and front-trimmed in long chats means late-connecting clients lose
-// slash-command autocomplete. It is replayed to every client on connect.
-let pinnedCtx = null;
-function pushHistory(ev) {
-  if (ev.type === 'stream' && ev.kind === 'text_delta') {
-    const last = history[history.length - 1];
-    if (last && last.type === 'stream' && last.kind === 'text_delta'
-      && last.stream_id === ev.stream_id && last.model === ev.model && last.pane === ev.pane) {
-      last.text = String(last.text || '') + String(ev.text || '');
-      return;
-    }
-  }
-  history.push(ev);
-  if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX);
-}
-function broadcast(ev, record = true) {
-  if (record) pushHistory(ev);
-  const json = JSON.stringify(ev);
-  const line = `data: ${json}\n\n`;
-  for (const res of clients) res.write(line);
-  for (const ws of wsClients) ws.send(json);
-}
-const helloEvent = () => ({ type: 'hello', hosted: HOSTED, noauth: NO_AUTH, bridge: !!(bridge && bridge.available) });
+const MAX_BRIDGES = Math.max(1, Number(process.env.COUNCIL_MAX_CHATS) || 4);
+const bridges = new Map(); // bridge id -> Bridge
+let nextBridgeSeq = 1;
+let primaryId = null;      // the bridge sid-less connections attach to
 
-// --- the bridge child ---------------------------------------------------
-let bridge = null;
+const helloEvent = b => ({
+  type: 'hello', hosted: HOSTED, noauth: NO_AUTH,
+  bridge: !!(b && b.available),
+  bridge_id: b ? b.id : null,
+  chat: b ? (b.sid || b.claimedSid) : null,
+  resuming: !!(b && b.resuming),
+});
+
 class Bridge {
-  constructor() {
+  constructor(claimedSid = null) {
+    this.id = 'b' + nextBridgeSeq++;
     this.proc = null;
     this.available = false;
     this.permTimer = null;
     this.choiceTimer = null;
+    // which chat this bridge drives: claimedSid is the attach target while a
+    // spawn-time /resume is in flight; sid is authoritative, learned from the
+    // bridge's own 'projects' events (the session flagged active)
+    this.sid = null;
+    this.claimedSid = claimedSid;
+    this.resuming = !!claimedSid;
+    this.busy = false;             // between an input send and the next ready
+    this.readySeen = false;        // the startup ready has arrived
+    this.lastUsed = Date.now();
+    // completion_context is pinned outside history: the bridge emits it once
+    // at startup, so leaving it in a buffer that gets wiped on chat switches
+    // and front-trimmed in long chats means late-connecting clients lose
+    // slash-command autocomplete. It is replayed to every client on connect.
+    this.pinnedCtx = null;
+    this.history = [];
+    this.clients = new Set();     // SSE responses attached to this chat
+    this.wsClients = new Set();   // WebSocket connections (primary transport)
+  }
+  subscriberCount() { return this.clients.size + this.wsClients.size; }
+  pushHistory(ev) {
+    const history = this.history;
+    if (ev.type === 'stream' && ev.kind === 'text_delta') {
+      const last = history[history.length - 1];
+      if (last && last.type === 'stream' && last.kind === 'text_delta'
+        && last.stream_id === ev.stream_id && last.model === ev.model && last.pane === ev.pane) {
+        last.text = String(last.text || '') + String(ev.text || '');
+        return;
+      }
+    }
+    history.push(ev);
+    if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX);
+  }
+  broadcast(ev, record = true) {
+    if (record) this.pushHistory(ev);
+    const json = JSON.stringify(ev);
+    const line = `data: ${json}\n\n`;
+    for (const res of this.clients) res.write(line);
+    for (const ws of this.wsClients) ws.send(json);
   }
   cmd() {
     if (process.env.COUNCIL_BRIDGE_CMD) return JSON.parse(process.env.COUNCIL_BRIDGE_CMD);
@@ -235,7 +265,6 @@ class Bridge {
     return p;
   }
   start() {
-    acquireLock();
     const [cmd, ...args] = this.cmd();
     this.proc = spawn(cmd, args, {
       cwd: HOME,
@@ -258,21 +287,42 @@ class Bridge {
       }
     });
     this.available = true;
-    this.proc.stderr.on('data', d => broadcast({ type: 'bridge_log', text: String(d).slice(0, 500) }));
+    this.proc.stderr.on('data', d => this.broadcast({ type: 'bridge_log', text: String(d).slice(0, 500) }));
     this.proc.on('error', err => {
       this.available = false;
-      broadcast({ type: 'bridge_exit', code: -1, error: err.message });
+      this.broadcast({ type: 'bridge_exit', code: -1, error: err.message });
+      despawnBridge(this);
     });
     this.proc.on('exit', code => {
+      if (!this.available) return; // already handled (clean 'exit' event or error)
       this.available = false;
-      broadcast({ type: 'bridge_exit', code });
+      this.broadcast({ type: 'bridge_exit', code });
+      despawnBridge(this);
     });
   }
   handle(ev) {
     if (ev.type === 'completion_context') {
-      pinnedCtx = ev;
-      broadcast(ev, false); // pinned + replayed on connect, never in history
+      this.pinnedCtx = ev;
+      this.broadcast(ev, false); // pinned + replayed on connect, never in history
       return;
+    }
+    if (ev.type === 'projects') {
+      // learn which chat this bridge actually drives (the active session)
+      let active = null;
+      for (const pr of ev.projects || []) {
+        for (const s of pr.sessions || []) if (s.active) active = s.session_id;
+      }
+      if (active) {
+        this.sid = active;
+        if (active === this.claimedSid) { this.claimedSid = null; this.resuming = false; }
+      }
+    }
+    if (ev.type === 'ready') {
+      this.busy = false;
+      // a spawn-time /resume is done at the ready that ENDS its turn — the
+      // bridge's startup ready arrives first and must not clear the claim
+      if (this.resuming && this.readySeen) { this.resuming = false; this.claimedSid = null; }
+      this.readySeen = true;
     }
     // default-deny/dismiss timers: an unanswered permission is denied and an
     // unanswered choice dismissed after 120s, so a walked-away browser can
@@ -281,7 +331,7 @@ class Bridge {
       clearTimeout(this.permTimer);
       this.permTimer = setTimeout(() => {
         this.send({ type: 'permission_response', allow: false });
-        broadcast({ type: 'permission_timeout' });
+        this.broadcast({ type: 'permission_timeout' });
       }, 120000);
     }
     if (ev.type === 'permission_cleared') clearTimeout(this.permTimer);
@@ -289,27 +339,116 @@ class Bridge {
       clearTimeout(this.choiceTimer);
       this.choiceTimer = setTimeout(() => {
         this.send({ type: 'choice_response', index: null });
-        broadcast({ type: 'choice_timeout' });
+        this.broadcast({ type: 'choice_timeout' });
       }, 120000);
     }
     if (ev.type === 'choice_cleared') clearTimeout(this.choiceTimer);
     if (ev.type === 'clear_panes') {
       // a resume/new-chat wipes the transcript: drop stale history so a
       // reload doesn't replay the previous chat's events over the new one
-      history.length = 0;
+      this.history.length = 0;
     }
     if (ev.type === 'exit') {
-      broadcast(ev);
-      setTimeout(() => process.exit(0), 200); // /quit in the browser stops the server
+      this.available = false;
+      this.broadcast(ev);
+      despawnBridge(this);
+      // /quit closes THIS chat's bridge; the server stops with the last one
+      if (bridges.size === 0) setTimeout(() => process.exit(0), 200);
       return;
     }
-    broadcast(ev);
+    this.broadcast(ev);
   }
   send(obj) {
     if (!this.proc || !this.available) return false;
+    if (obj && obj.type === 'input') this.busy = true;
+    this.lastUsed = Date.now();
     this.proc.stdin.write(JSON.stringify(obj) + '\n');
     return true;
   }
+}
+
+// --- pool management ----------------------------------------------------
+function spawnBridge(claimedSid = null) {
+  const b = new Bridge(claimedSid);
+  bridges.set(b.id, b);
+  if (primaryId === null) primaryId = b.id;
+  b.start();
+  if (claimedSid) b.send({ type: 'input', text: `/resume ${claimedSid}` });
+  return b;
+}
+function despawnBridge(b) {
+  clearTimeout(b.permTimer);
+  clearTimeout(b.choiceTimer);
+  bridges.delete(b.id);
+  if (b.proc) { try { b.proc.kill(); } catch { } }
+  if (primaryId === b.id) {
+    const first = bridges.values().next();
+    primaryId = first.done ? null : first.value.id;
+  }
+}
+function ensurePrimary() {
+  const cur = primaryId !== null ? bridges.get(primaryId) : null;
+  if (cur) return cur;
+  return spawnBridge();
+}
+function findBySid(sid) {
+  for (const b of bridges.values()) {
+    if (b.available && (b.sid === sid || b.claimedSid === sid)) return b;
+  }
+  return null;
+}
+// Mirror of paths.py work-dir resolution, just enough to answer "does a
+// session file for this id exist?". When no sessions dir can be found at all
+// the check stays permissive — the bridge itself is the authority then.
+function sessionKnownMissing(sid) {
+  if (!/^[\w-]+$/.test(sid)) return true;
+  const candidates = [];
+  if (process.env.BOTFERENCE_WORK_DIR) candidates.push(path.join(process.env.BOTFERENCE_WORK_DIR, 'sessions'));
+  candidates.push(
+    path.join(ROOT, 'botference', 'sessions'),
+    path.join(ROOT, 'work', 'sessions'),
+    path.join(ROOT, 'sessions'),
+  );
+  const dirs = candidates.filter(d => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
+  if (!dirs.length) return false;
+  return !dirs.some(d => fs.existsSync(path.join(d, `${sid}.json`)));
+}
+// Evict the least-recently-used bridge that is idle and has no attached
+// tabs. Never evicts a bridge mid-turn or one someone is looking at.
+function reapIdleBridge() {
+  let victim = null;
+  for (const b of bridges.values()) {
+    if (b.busy || b.subscriberCount() > 0) continue;
+    if (!victim || b.lastUsed < victim.lastUsed) victim = b;
+  }
+  if (victim) despawnBridge(victim);
+  return !!victim;
+}
+// Resolve the bridge a connection with ?chat=<sid> should attach to,
+// spawning one when that chat has no live bridge yet. On refusal (unknown
+// chat, pool full) the connection falls back to the primary bridge and the
+// client is told why via a route_error event.
+function attachTarget(sid) {
+  if (!sid) return { bridge: ensurePrimary() };
+  const live = findBySid(sid);
+  if (live) return { bridge: live };
+  if (sessionKnownMissing(sid)) return { bridge: ensurePrimary(), error: 'chat not found' };
+  if (bridges.size >= MAX_BRIDGES && !reapIdleBridge()) {
+    return { bridge: ensurePrimary(), error: `open-chat limit reached (${MAX_BRIDGES}) — close another chat tab first` };
+  }
+  return { bridge: spawnBridge(sid) };
+}
+// Resolve which bridge a POST addresses: explicit bridge id first (what the
+// client learned from its hello), then a chat sid, then the primary. A POST
+// naming a bridge that no longer exists is REFUSED, never rerouted — landing
+// a message in a different chat than the tab shows is the failure mode this
+// whole pool exists to prevent.
+function bridgeForPost(data) {
+  if (data && typeof data.bridge === 'string' && data.bridge) {
+    return bridges.get(data.bridge) || null;
+  }
+  if (data && typeof data.chat === 'string') { const b = findBySid(data.chat); if (b) return b; }
+  return primaryId !== null ? bridges.get(primaryId) : null;
 }
 
 // --- HTTP ---------------------------------------------------------------
@@ -418,6 +557,27 @@ function cleanAttachments(raw) {
   return out;
 }
 
+const chatParamOf = reqUrl => {
+  const q = String(reqUrl || '').split('?')[1] || '';
+  const m = /(?:^|&)chat=([^&]*)/.exec(q);
+  return m ? decodeURIComponent(m[1]) : '';
+};
+// shared connect sequence for /events and /ws: route_error (if the requested
+// chat could not be attached), hello, pinned context, history, replay_done
+function replayTo(send, b, routeError) {
+  if (routeError) send({ type: 'route_error', error: routeError });
+  send(helloEvent(b));
+  if (b.pinnedCtx) send(b.pinnedCtx);
+  for (const ev of b.history) send(ev);
+  // explicit replay boundary: the client pins the transcript to the bottom
+  // here instead of trusting per-event scroll heuristics during replay
+  send({ type: 'replay_done', count: b.history.length });
+}
+const anyBridgeAvailable = () => {
+  for (const b of bridges.values()) if (b.available) return true;
+  return false;
+};
+
 export function handler(req, res) {
   const url = req.url.split('?')[0];
   if (req.method === 'POST' && rateLimited(req)) {
@@ -439,19 +599,15 @@ export function handler(req, res) {
     return;
   }
   if (req.method === 'GET' && url === '/events') {
+    const { bridge: b, error } = attachTarget(chatParamOf(req.url));
     sseOpen(res);
-    res.write(`data: ${JSON.stringify(helloEvent())}\n\n`);
-    if (pinnedCtx) res.write(`data: ${JSON.stringify(pinnedCtx)}\n\n`);
-    for (const ev of history) res.write(`data: ${JSON.stringify(ev)}\n\n`);
-    // explicit replay boundary: the client pins the transcript to the bottom
-    // here instead of trusting per-event scroll heuristics during replay
-    res.write(`data: ${JSON.stringify({ type: 'replay_done', count: history.length })}\n\n`);
-    clients.add(res);
-    req.on('close', () => clients.delete(res));
+    replayTo(ev => res.write(`data: ${JSON.stringify(ev)}\n\n`), b, error);
+    b.clients.add(res);
+    req.on('close', () => { b.clients.delete(res); b.lastUsed = Date.now(); });
     return;
   }
   if (req.method === 'POST' && url === '/upload') {
-    if (!bridge || !bridge.available) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
+    if (!anyBridgeAvailable()) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
     uploadEndpoint(req, res);
     return;
   }
@@ -469,11 +625,23 @@ export function handler(req, res) {
       if (attachments === null) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"bad attachments"}'); return; }
       if (!text.trim() && !attachments.length) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"empty"}'); return; }
       if (text.length > 16000) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"too long"}'); return; }
+      const bridge = bridgeForPost(data);
       if (!bridge || !bridge.available) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
+      // a typed /resume targeting a chat another bridge already drives must
+      // not fork the session into two processes — tell the tab to reattach
+      // to the live bridge instead
+      const rm = /^\/resume\s+([\w-]+)\s*$/.exec(text.trim());
+      if (rm) {
+        const owner = findBySid(rm[1]);
+        if (owner && owner !== bridge) {
+          res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, switch: rm[1] }));
+          return;
+        }
+      }
       // echo before send: the transcript shows the user's words immediately
       // (and after a reload — the bridge does not echo input back); echoed
       // attachments carry the display URL for inline thumbnails
-      broadcast({
+      bridge.broadcast({
         type: 'user_echo', text, ts: new Date().toISOString(),
         attachments: attachments.map(a => ({ ...a, url: uploadUrl(a.path) })),
       });
@@ -483,7 +651,8 @@ export function handler(req, res) {
     return;
   }
   if (req.method === 'POST' && url === '/interrupt') {
-    readBody(req, res, 1000, () => {
+    readBody(req, res, 1000, data => {
+      const bridge = bridgeForPost(data);
       const ok = bridge && bridge.send({ type: 'interrupt' });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
     });
@@ -491,6 +660,7 @@ export function handler(req, res) {
   }
   if (req.method === 'POST' && url === '/permission') {
     readBody(req, res, 1000, data => {
+      const bridge = bridgeForPost(data);
       clearTimeout(bridge && bridge.permTimer);
       const ok = bridge && bridge.send({ type: 'permission_response', allow: !!data.allow });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
@@ -499,6 +669,7 @@ export function handler(req, res) {
   }
   if (req.method === 'POST' && url === '/choice') {
     readBody(req, res, 1000, data => {
+      const bridge = bridgeForPost(data);
       clearTimeout(bridge && bridge.choiceTimer);
       const index = Number.isInteger(data.index) && data.index >= 0 ? data.index : null;
       const ok = bridge && bridge.send({ type: 'choice_response', index });
@@ -510,22 +681,19 @@ export function handler(req, res) {
 }
 
 if (process.env.COUNCIL_NO_LISTEN !== '1') {
-  bridge = new Bridge();
-  bridge.start();
+  acquireLock();
+  ensurePrimary();
   const server = http.createServer(handler);
   // WS is the browser's primary live-event transport (SSE is the fallback):
   // same auth gate as every request, same hello + history replay as /events
   attachWs(server, {
     path: '/ws',
     authorize: authorized,
-    onOpen(ws) {
-      ws.send(JSON.stringify(helloEvent()));
-      if (pinnedCtx) ws.send(JSON.stringify(pinnedCtx));
-      for (const ev of history) ws.send(JSON.stringify(ev));
-      // same replay boundary as /events: the client pins to bottom here
-      ws.send(JSON.stringify({ type: 'replay_done', count: history.length }));
-      wsClients.add(ws);
-      ws.onclose = () => wsClients.delete(ws);
+    onOpen(ws, req) {
+      const { bridge: b, error } = attachTarget(chatParamOf(req && req.url));
+      replayTo(ev => ws.send(JSON.stringify(ev)), b, error);
+      b.wsClients.add(ws);
+      ws.onclose = () => { b.wsClients.delete(ws); b.lastUsed = Date.now(); };
     },
   });
   server.listen(PORT, '127.0.0.1', () => {
@@ -536,7 +704,9 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
   // heartbeat: keeps tunnel/proxy connections warm and lets dead clients
   // surface — an SSE comment (EventSource ignores it) and a WS ping event
   setInterval(() => {
-    for (const res of clients) res.write(': ping\n\n');
-    for (const ws of wsClients) ws.send('{"type":"ping"}');
+    for (const b of bridges.values()) {
+      for (const res of b.clients) res.write(': ping\n\n');
+      for (const ws of b.wsClients) ws.send('{"type":"ping"}');
+    }
   }, SSE_HEARTBEAT_MS).unref();
 }

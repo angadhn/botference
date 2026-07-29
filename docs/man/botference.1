@@ -47,8 +47,10 @@ prints one shareable https URL plus the password \- open it on a phone.
 means anyone with the URL can drive your agents, which can read and write
 files on this machine; URLs leak (link previews, chat logs) \- prefer the
 default password. \fB\-\-port\fR \fIN\fR picks the web port (default
-4187). The web server spawns its own bridge session; do not open the same
-session in the TUI and the browser at once.
+4187). The web server runs one bridge session per open chat, so browser
+tabs on different chats are concurrent sessions (COUNCIL_MAX_CHATS caps
+the pool, default 4); do not open the same session in the TUI and the
+browser at once.
 .TP
 .B research-plan
 Structured planning with prompts/plan.md.
@@ -202,6 +204,19 @@ Chat lifecycle: start fresh, continue a native Claude Code chat here,
 file under a project, name, switch, or delete chats (picker-driven).
 \fB/resume\fR reaches a saved chat in any project, not just the active
 one; opening a chat makes that chat's project the active context.
+.TP
+.B /archive [<id-prefix>|list] , /unarchive [<id-prefix>]
+Archive a saved chat instead of deleting it: the session JSON moves from
+\fIwork/sessions/\fR to \fIarchive/sessions/\fR (\fBBOTFERENCE_ARCHIVE_DIR\fR),
+leaving every listing while staying on disk. /unarchive moves it back and
+never overwrites a live chat of the same id. Both open a picker with no
+argument; /archive list shows what is already archived.
+.TP
+.B /project archive <id> , /project unarchive <id>
+Tuck a project away or bring it back. Only the \fIstatus\fR field in
+\fIprojects/portfolio.json\fR changes \(em the folder and its chats are
+untouched. Archived projects sort last and collapse into a closed
+"Archived" section in the web council sidebar.
 .TP
 .B /lead /draft /finalize
 Planning: set (or let the bots vote on) the plan writer, draft
