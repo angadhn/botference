@@ -35,6 +35,13 @@
 // through the tunnel and starts it as a managed service; off stops that
 // service by its ledger entry (never by pattern-kill).
 //
+// Not every project is a scaffolded review, so the hub also serves each
+// discovered project's plain files at /p/<slug>/files/… out of this very
+// process — no scaffolding, no paper server, no DNS record. That is how a
+// chat-produced plot or HTML report becomes viewable at the portal with
+// zero setup. Owner only, dotfiles and traversal refused, project HTML
+// sandboxed to an opaque origin.
+//
 // A collaborator sees a paper when their login password validates against
 // it (forwarded to the paper's own /auth — the hub stores no passwords)
 // or their handle is declared in that paper's `collaborators` list (so a
@@ -347,6 +354,123 @@ function findEntry(cfg, key) {
   if (!key) return null;
   const all = discover(cfg);
   return all.find(e => e.slug === key) || all.find(e => e.dir === key) || null;
+}
+
+// ── project files (owner-only, served by the hub itself) ────────────
+// Not everything a project produces is a scaffolded review: plots, HTML
+// reports, notes. Those are served straight out of the project directory
+// at /p/<slug>/files/… by THIS process — no review scaffolding, no paper
+// server, no DNS record needed. Owner only, always: guests never see a
+// project's raw files, whatever they collaborate on.
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8', '.tex': 'text/plain; charset=utf-8',
+  '.bib': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+  '.yml': 'text/plain; charset=utf-8', '.yaml': 'text/plain; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.gif': 'image/gif',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.ico': 'image/x-icon', '.pdf': 'application/pdf', '.mp4': 'video/mp4',
+  '.woff2': 'font/woff2', '.zip': 'application/zip',
+};
+// Every component must be an ordinary visible name: that single rule bars
+// '.', '..', .git, .botference and every other dotfile in one go.
+function safeRel(raw) {
+  let dec;
+  try { dec = decodeURIComponent(String(raw || '')); } catch { return null; }
+  if (dec.includes('\0') || dec.includes('\\')) return null;
+  const parts = dec.split('/').filter(s => s !== '');
+  for (const p of parts) if (p.startsWith('.')) return null;
+  return parts.join('/');
+}
+// resolve inside the project, following symlinks and re-checking: a link
+// pointing out of the tree is not a way out
+function resolveInside(dir, rel) {
+  const base = fs.realpathSync(dir);
+  const full = path.resolve(base, rel);
+  if (full !== base && !full.startsWith(base + path.sep)) return null;
+  let real;
+  try { real = fs.realpathSync(full); } catch { return null; }
+  if (real !== base && !real.startsWith(base + path.sep)) return null;
+  return real;
+}
+const humanSize = n => n < 1024 ? `${n} B`
+  : n < 1024 ** 2 ? `${(n / 1024).toFixed(1)} kB`
+    : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(1)} GB`;
+
+function listingPage(entry, rel, names) {
+  const base = `/p/${encodeURIComponent(entry.slug)}/files/`;
+  const crumbs = rel ? rel.split('/') : [];
+  const trail = crumbs.map((c, i) =>
+    `<a href="${escHtml(base + crumbs.slice(0, i + 1).map(encodeURIComponent).join('/') + '/')}">${escHtml(c)}</a>`
+  ).join(' / ');
+  const up = crumbs.length
+    ? `<li><a href="${escHtml(base + crumbs.slice(0, -1).map(encodeURIComponent).join('/') + (crumbs.length > 1 ? '/' : ''))}">../</a></li>`
+    : '';
+  const items = names.map(n => {
+    const href = base + [...crumbs, n.name].map(encodeURIComponent).join('/') + (n.dir ? '/' : '');
+    return `<li><a href="${escHtml(href)}">${escHtml(n.name)}${n.dir ? '/' : ''}</a>`
+      + `<div class="meta">${n.dir ? 'folder' : humanSize(n.size)}</div></li>`;
+  }).join('');
+  return page(`${entry.title || entry.slug} — files`, `<main class="wide">
+<h1>${escHtml(clip(entry.title || entry.slug))}</h1>
+<p>files · <a href="/">portal</a>${trail ? ` · ${trail}` : ''}</p>
+${names.length || up ? `<ul class="papers">${up}${items}</ul>` : '<p>This folder is empty.</p>'}
+</main>`);
+}
+
+function serveFiles(cfg, entry, rel, req, res) {
+  if (rel === null) {
+    res.writeHead(403, HTML_HEAD).end(page('Not allowed',
+      '<main><h1>Not allowed</h1><p>Hidden files and paths that climb out of the project are off limits.</p></main>'));
+    return;
+  }
+  let full;
+  try { full = resolveInside(entry.dir, rel); } catch { full = null; }
+  if (!full) {
+    res.writeHead(404, HTML_HEAD).end(page('Not found', '<main><h1>Not found</h1></main>'));
+    return;
+  }
+  let st;
+  try { st = fs.statSync(full); } catch {
+    res.writeHead(404, HTML_HEAD).end(page('Not found', '<main><h1>Not found</h1></main>'));
+    return;
+  }
+  if (st.isDirectory()) {
+    let names = [];
+    try {
+      names = fs.readdirSync(full, { withFileTypes: true })
+        .filter(d => !d.name.startsWith('.'))     // never even mention them
+        .map(d => {
+          let size = 0;
+          try { size = d.isDirectory() ? 0 : fs.statSync(path.join(full, d.name)).size; } catch { }
+          return { name: d.name, dir: d.isDirectory(), size };
+        })
+        .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+    } catch { }
+    res.writeHead(200, HTML_HEAD).end(listingPage(entry, rel, names));
+    return;
+  }
+  if (!st.isFile()) {
+    res.writeHead(404, HTML_HEAD).end(page('Not found', '<main><h1>Not found</h1></main>'));
+    return;
+  }
+  const type = MIME[path.extname(full).toLowerCase()] || 'application/octet-stream';
+  const head = {
+    'content-type': type, 'content-length': st.size,
+    'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+  };
+  // a project's own HTML runs in a sandbox with an opaque origin: plots and
+  // reports still work, but nothing they contain can act as the owner
+  if (type.startsWith('text/html')) head['content-security-policy'] = 'sandbox allow-scripts allow-popups allow-forms';
+  res.writeHead(200, head);
+  if (req.method === 'HEAD') return res.end();
+  const stream = fs.createReadStream(full);
+  stream.on('error', () => res.destroy());
+  res.on('close', () => stream.destroy());
+  stream.pipe(res);
 }
 
 // ── starting and stopping papers ────────────────────────────────────
@@ -701,6 +825,8 @@ async function ownerPage(cfg, req, res, remote) {
     const title = e.enabled ? `<a href="${escHtml(`https://${e.host}/`)}">${name}</a>` : `<b>${name}</b>`;
     const bits = [escHtml(e.host || e.slug), state];
     if (live && localLinks) bits.push(`<a class="local" href="http://localhost:${e.port}/">localhost:${e.port}</a>`);
+    // the files view needs neither scaffolding nor a running server
+    if (e.dir) bits.push(`<a class="local" href="/p/${encodeURIComponent(e.slug)}/files/">files</a>`);
     if (e.dir) bits.push(`<span class="pw">${escHtml(clip(e.dir, 46))}</span>`);
     const pw = secrets[e.slug]
       ? `<div class="meta">guest password <span class="pw">${escHtml(secrets[e.slug])}</span> · collaborators: ${(e.collaborators || []).length
@@ -781,6 +907,18 @@ async function portal(cfg, req, res) {
   const query = new URLSearchParams((req.url || '').split('?')[1] || '');
   const v = viewer(cfg, req);
   const remote = !isLocalDirect(req);
+
+  // owner-only: browse whatever a project produced, review or not
+  const files = /^\/p\/([\w-]+)\/files(?:\/(.*))?$/.exec(url);
+  if (files) {
+    if (!v || !v.owner) { res.writeHead(403, HTML_HEAD).end(page('Not allowed', '<main><h1>Not allowed</h1></main>')); return; }
+    const entry = findEntry(cfg, sanitizeHandle(files[1]));
+    if (!entry || !entry.dir || !fs.existsSync(entry.dir)) {
+      res.writeHead(404, HTML_HEAD).end(page('Not found', '<main><h1>Not found</h1><p>No project by that name on this machine.</p></main>'));
+      return;
+    }
+    return serveFiles(cfg, entry, safeRel(files[2] || ''), req, res);
+  }
 
   // owner-only: the on/off toggles and the machine-readable state behind them
   if (url === '/toggle' && req.method === 'POST') {

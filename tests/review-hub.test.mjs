@@ -628,4 +628,113 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     assert.match(r.text, /Sign in to see the reviews/);
     assert.match(r.text, /ask the owner to approve/);  // the way in is offered on the gate
   });
+
+  // ── project files: the portal is the one address for everything a
+  // project produced, review-scaffolded or not
+  test('files: a project needs no scaffolding and no server to be browsable', async () => {
+    const dir = path.join(ws, 'projects', 'bare-project');
+    fs.mkdirSync(path.join(dir, 'plots'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'plots', 'trend.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><title>t</title></svg>');
+    fs.writeFileSync(path.join(dir, 'report.html'), '<h1>Quarterly</h1>');
+    fs.writeFileSync(path.join(dir, 'notes.md'), '# notes\n');
+    fs.mkdirSync(path.join(dir, '.botference'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.botference', 'services.json'), '{"services":[]}');
+    fs.writeFileSync(path.join(dir, '.secret-env'), 'TOKEN=hunter2');
+
+    const nested = await req(port2, { url: '/p/bare-project/files/plots/trend.svg', host: 'localhost' });
+    assert.equal(nested.status, 200);
+    assert.equal(nested.headers['content-type'], 'image/svg+xml');
+    assert.match(nested.text, /<svg/);
+
+    const md = await req(port2, { url: '/p/bare-project/files/notes.md', host: 'localhost' });
+    assert.equal(md.status, 200);
+    assert.match(md.headers['content-type'], /^text\/markdown/);
+
+    // a project's own HTML is served, but with an opaque origin so it can
+    // never act as the owner against the hub
+    const html = await req(port2, { url: '/p/bare-project/files/report.html', host: 'localhost' });
+    assert.equal(html.status, 200);
+    assert.match(html.headers['content-type'], /^text\/html/);
+    assert.match(html.headers['content-security-policy'], /sandbox/);
+    assert.doesNotMatch(html.headers['content-security-policy'], /allow-same-origin/);
+    assert.equal(html.headers['x-content-type-options'], 'nosniff');
+  });
+
+  test('files: directory listings are readable and never mention dotfiles', async () => {
+    const root = await req(port2, { url: '/p/bare-project/files/', host: 'localhost' });
+    assert.equal(root.status, 200);
+    assert.match(root.text, /report\.html/);
+    assert.match(root.text, /notes\.md/);
+    assert.match(root.text, /plots\//);                 // folders marked and sorted first
+    assert.doesNotMatch(root.text, /\.botference/);
+    assert.doesNotMatch(root.text, /secret-env/);
+
+    const sub = await req(port2, { url: '/p/bare-project/files/plots/', host: 'localhost' });
+    assert.equal(sub.status, 200);
+    assert.match(sub.text, /trend\.svg/);
+    assert.match(sub.text, /\.\.\//);                   // a way back up
+    assert.match(sub.text, /href="\/p\/bare-project\/files\/plots\/trend\.svg"/);
+
+    // and the portal links to it whether or not the paper is scaffolded
+    const portal = await req(port2, { host: 'localhost' });
+    assert.match(portal.text, /href="\/p\/bare-project\/files\/"/);
+  });
+
+  test('files: dot segments and traversal are refused, symlinks included', async () => {
+    const dir = path.join(ws, 'projects', 'bare-project');
+    fs.writeFileSync(path.join(root, 'outside.txt'), 'not yours');
+    try { fs.symlinkSync(path.join(root, 'outside.txt'), path.join(dir, 'escape.txt')); } catch { }
+
+    for (const url of [
+      '/p/bare-project/files/.botference/services.json',
+      '/p/bare-project/files/.secret-env',
+      '/p/bare-project/files/plots/../.secret-env',
+      '/p/bare-project/files/../../hub.json',
+      '/p/bare-project/files/%2e%2e/%2e%2e/hub.json',
+      '/p/bare-project/files/%2e%2e%2f%2e%2e%2fhub.json',
+    ]) {
+      const r = await req(port2, { url, host: 'localhost' });
+      assert.equal(r.status, 403, `${url} was not refused (got ${r.status})`);
+      assert.doesNotMatch(r.text, /hunter2|"services"|"papers"/, `${url} leaked content`);
+    }
+    // a symlink out of the tree resolves outside and is not a way through
+    const link = await req(port2, { url: '/p/bare-project/files/escape.txt', host: 'localhost' });
+    assert.equal(link.status, 404);
+    assert.doesNotMatch(link.text, /not yours/);
+  });
+
+  test('files: guests never get a project files view, whatever they collaborate on', async () => {
+    const login = await req(port2, {
+      method: 'POST', url: '/auth', host: 'review.example.com', ip: '198.51.100.50',
+      body: new URLSearchParams({ handle: 'ada', password: 'pw-c' }).toString(),
+    });
+    const cookie = (login.headers['set-cookie'] || [])[0].split(';')[0];
+    // ada is a declared collaborator on explicit-one — still no files view
+    for (const slug of ['explicit-one', 'bare-project']) {
+      const r = await req(port2, {
+        url: `/p/${slug}/files/`, host: 'review.example.com', ip: '198.51.100.50', cookie,
+      });
+      assert.equal(r.status, 403);
+      assert.doesNotMatch(r.text, /report\.html|Explicit One/);
+    }
+    const anon = await req(port2, { url: '/p/bare-project/files/', host: 'review.example.com', ip: '198.51.100.51' });
+    assert.equal(anon.status, 403);
+
+    // but an approved owner device gets it from anywhere
+    fs.writeFileSync(answerFile, 'button returned:Approve, gave up:false\n');
+    const ask = await req(port2, { url: '/device/request', host: 'review.example.com', ip: '198.51.100.52' });
+    const id = /\/device\/wait\?id=([0-9a-f]+)/.exec(ask.text)[1];
+    let approved;
+    for (let i = 0; i < 60; i++) {
+      approved = await req(port2, { url: `/device/wait?id=${id}`, host: 'review.example.com', ip: '198.51.100.52' });
+      if (approved.status === 303) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const dev = (approved.headers['set-cookie'] || [])[0].split(';')[0];
+    const r = await req(port2, {
+      url: '/p/bare-project/files/', host: 'review.example.com', ip: '198.51.100.52', cookie: dev,
+    });
+    assert.equal(r.status, 200);
+    assert.match(r.text, /report\.html/);
+  });
 });
