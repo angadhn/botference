@@ -12,7 +12,8 @@ REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs submit.mjs init-con
 
 review_usage() {
   cat <<'HELP'
-Usage: botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
+Usage: botference review [dir] [--share [--service]] [--hosted [--service]]
+                         [--setup] [--port N] [--no-agents] [--upgrade]
 
 Set up (first run) and serve the document-review interface in a document
 repo. dir defaults to the current directory. First run copies the engine
@@ -37,6 +38,16 @@ Options:
                foreground — prints the "share this: URL password" line,
                then returns control. Stop with
                'botference service stop review-share'.
+               With --hosted (no tunnel): run just the hosted server as
+               a managed service, named after the directory unless
+               --service-name says otherwise. This is what the review
+               hub's on/off toggles use. Stop it from the paper's own
+               directory (the service ledger is per-directory).
+  --service-name NAME
+               Service name for --hosted --service ([a-z0-9-], ≤32).
+  --setup      Scaffold and build only — install the engine into
+               <dir>/review/, detect the config, update .gitignore,
+               build the site — then exit without serving.
   --agents     Force the agent bridge on (errors if python3 or an agent
                CLI is missing)
   --no-agents  Serve without the agent bridge (comments only)
@@ -78,10 +89,17 @@ review_ensure_gitignore() {
 
 run_review_mode() {
   local dir="" hosted=false share=false service=false agents="auto" upgrade=false port="" arg
-  # args minus --service, for the service re-exec below
-  local passthrough=() _pt
+  local setup_only=false service_name=""
+  # args minus the service-only flags, for the --share --service re-exec below
+  local passthrough=() _pt _skip_next=false
   for _pt in "$@"; do
-    [ "$_pt" = "--service" ] || passthrough+=("$_pt")
+    if $_skip_next; then _skip_next=false; continue; fi
+    case "$_pt" in
+      --service) ;;
+      --service-name) _skip_next=true ;;
+      --service-name=*) ;;
+      *) passthrough+=("$_pt") ;;
+    esac
   done
   while [ "$#" -gt 0 ]; do
     arg=$1
@@ -90,6 +108,16 @@ run_review_mode() {
       --hosted) hosted=true ;;
       --share) share=true; hosted=true ;;
       --service) service=true ;;
+      --setup) setup_only=true ;;
+      --service-name=*) service_name="${arg#--service-name=}" ;;
+      --service-name)
+        if [ "$#" -eq 0 ]; then
+          echo "Error: --service-name requires a name." >&2
+          return 2
+        fi
+        service_name=$1
+        shift
+        ;;
       # --chat/--no-chat are silent deprecated aliases of --agents/--no-agents
       --no-agents|--no-chat) agents="off" ;;
       --agents|--chat) agents="on" ;;
@@ -122,8 +150,17 @@ run_review_mode() {
     echo "Error: --port expects a number, got '$port'." >&2
     return 2
   fi
-  if $service && ! $share; then
-    echo "Error: --service requires --share (botference review --share --service)." >&2
+  if $service && ! $share && ! $hosted; then
+    echo "Error: --service requires --share or --hosted" >&2
+    echo "  (botference review --share --service, or --hosted --service)." >&2
+    return 2
+  fi
+  if [ -n "$service_name" ] && ! [[ "$service_name" =~ ^[a-z0-9-]{1,32}$ ]]; then
+    echo "Error: invalid --service-name '$service_name' — use [a-z0-9-], 1–32 chars." >&2
+    return 2
+  fi
+  if $setup_only && { $share || $service; }; then
+    echo "Error: --setup scaffolds and exits; it cannot be combined with --share/--service." >&2
     return 2
   fi
   if $hosted && ! $share && [ -z "${REVIEW_PASSWORD:-}" ]; then
@@ -157,10 +194,36 @@ run_review_mode() {
 
   # --- --share --service: re-run this exact share detached, under the
   # managed service lifecycle; print the "share this:" line, then return ---
-  if $service; then
+  if $service && $share; then
     source "${BOTFERENCE_HOME}/lib/service.sh"
     run_share_as_service "review-share" "${BOTFERENCE_HOME}/botference" review \
       ${passthrough[@]+"${passthrough[@]}"}
+    return $?
+  fi
+
+  # --- --hosted --service: the hosted server alone (no tunnel) under the
+  # managed service lifecycle. The ledger is per-directory, so it is pinned
+  # to the paper's own dir: stop it with 'botference service stop <name>'
+  # run from there. This is the mechanism behind the review hub's toggles.
+  if $service; then
+    source "${BOTFERENCE_HOME}/lib/service.sh"
+    if [ -z "$service_name" ]; then
+      service_name="review-$(basename "$dir" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
+      service_name=$(printf '%s' "$service_name" | sed 's/-*$//' | cut -c1-32)
+    fi
+    # ledger + logs belong to the paper, not to whoever invoked us
+    export BOTFERENCE_PROJECT_ROOT="$dir"
+    SERVICE_DIR="${dir}/.botference"
+    SERVICE_LEDGER="${SERVICE_DIR}/services.json"
+    SERVICE_LOG_DIR="${SERVICE_DIR}/logs"
+    local hosted_args=("${BOTFERENCE_HOME}/botference" review "$dir" --hosted)
+    [ -n "$port" ] && hosted_args+=(--port "$port")
+    case "$agents" in
+      on) hosted_args+=(--agents) ;;
+      off) hosted_args+=(--no-agents) ;;
+    esac
+    $upgrade && hosted_args+=(--upgrade)
+    service_cmd_start "$service_name" -- "${hosted_args[@]}"
     return $?
   fi
 
@@ -205,6 +268,13 @@ run_review_mode() {
     echo "      'node review/server.mjs', then 'node review/submit.mjs --push'"
     echo "    - or share one live URL instead: botference review --share"
     echo ""
+  fi
+
+  # --setup: scaffolding and building was the whole job (what the review
+  # hub runs before it can enable a paper that was never set up).
+  if $setup_only; then
+    echo "  Review scaffolded and built in $review_dir (not serving: --setup)."
+    return 0
   fi
 
   # --- agent capability: the bridge needs python3 + at least one agent CLI.
