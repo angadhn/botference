@@ -184,6 +184,15 @@ const clip = (s, n = 72) => {
   const t = String(s ?? '');
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 };
+// a path a human can read at a glance: home-relative, and when still long,
+// just the tail — the project folder is the part that identifies it
+const prettyDir = d => {
+  const home = os.homedir();
+  const s = String(d || '').startsWith(home) ? `~${String(d).slice(home.length)}` : String(d || '');
+  if (s.length <= 40) return s;
+  const parts = s.split('/').filter(Boolean);
+  return `…/${parts.slice(-2).join('/')}`;
+};
 const expandHome = p => {
   const s = String(p || '');
   if (!s) return '';
@@ -624,12 +633,20 @@ async function disablePaper(cfg, entry) {
   if (!dir) {
     j.error = `no directory on record for '${entry.slug}' — stop it by hand from its own directory`;
   } else {
-    // the service ledger is per-directory: stop from the paper's own dir, by
-    // its recorded pid. Never a pattern kill.
-    const args = ['service', 'stop', serviceName(entry.slug)];
-    const r = await run(BOTFERENCE_BIN, args, {
-      cwd: dir, timeout: 60000, env: { BOTFERENCE_PROJECT_ROOT: dir },
-    });
+    // The service ledger is per-directory: stop from the paper's own dir, by
+    // its recorded pid. Never a pattern kill. 'review-share' is the legacy
+    // name for a paper stood up by hand with --share --service; because the
+    // lookup is scoped to this paper's own ledger it can only ever match
+    // this paper's own service, so it is a safe second try.
+    let r, args;
+    for (const name of [serviceName(entry.slug), 'review-share']) {
+      args = ['service', 'stop', name];
+      r = await run(BOTFERENCE_BIN, args, {
+        cwd: dir, timeout: 60000, env: { BOTFERENCE_PROJECT_ROOT: dir },
+      });
+      if (r.ok) break;
+      if (!/no service named/i.test(r.stderr + r.stdout)) break;
+    }
     if (!r.ok) {
       j.error = (r.stderr || r.stdout || r.error).trim().split('\n').pop() || 'stop failed';
       j.notes.push(`run this in ${dir}: ${cmdLine(BOTFERENCE_BIN, args)}`);
@@ -692,7 +709,7 @@ body { margin:0; min-height:100vh; display:flex; align-items:center; justify-con
   font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif }
 main, form { background:var(--card); border:1px solid var(--line); border-radius:12px;
   padding:2rem 2.2rem; width:min(26rem,92vw); box-shadow:0 2px 14px rgba(0,0,0,.1) }
-main.wide { width:min(44rem,94vw) }
+main.wide { width:min(44rem,100%); box-sizing:border-box }
 h1 { font-size:1.05rem; margin:0 0 .3rem }
 p { margin:.2rem 0 1.1rem; color:var(--muted); font-size:.85rem }
 label { display:block; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
@@ -707,19 +724,20 @@ ul.papers { list-style:none; margin:1rem 0 0; padding:0 }
 ul.papers li { border-top:1px solid var(--line); padding:.8rem 0 }
 ul.papers a { color:var(--fg); text-decoration:none; font-weight:600 }
 ul.papers a:hover { color:var(--accent) }
-.meta { font-size:.78rem; color:var(--muted); margin-top:.15rem }
+.meta { font-size:.78rem; color:var(--muted); margin-top:.15rem; overflow-wrap:anywhere }
 .dot { display:inline-block; width:.55em; height:.55em; border-radius:50%; margin-right:.4em }
 .live { background:var(--ok) } .down { background:var(--muted) }
 .blank { background:transparent; box-shadow:inset 0 0 0 1px var(--muted) }
-.local { font-size:.78rem } .signout { margin-top:1.4rem; font-size:.78rem }
+.local { font-size:.78rem; font-weight:400 } .signout { margin-top:1.4rem; font-size:.78rem }
 .row { display:flex; align-items:flex-start; gap:.8rem }
 .row .grow { flex:1; min-width:0 }
-form.toggle { all:unset; display:inline }
+form.toggle { all:unset; display:inline; flex:none }
 form.toggle button { margin:0; width:auto; padding:.25rem .8rem; font-size:.78rem;
   border-radius:999px; background:transparent; color:var(--accent);
   border:1px solid var(--line); cursor:pointer }
 form.toggle button:hover { background:var(--accent); color:#fff }
-.pw { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.75rem }
+.pw { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.75rem;
+  overflow-wrap:anywhere }
 .note { font-size:.75rem; color:var(--accent); margin-top:.3rem; word-break:break-all }
 a { color:var(--accent) }`;
 const page = (title, body, head = '') => `<!doctype html><html><head><meta charset="utf-8">
@@ -827,7 +845,7 @@ async function ownerPage(cfg, req, res, remote) {
     if (live && localLinks) bits.push(`<a class="local" href="http://localhost:${e.port}/">localhost:${e.port}</a>`);
     // the files view needs neither scaffolding nor a running server
     if (e.dir) bits.push(`<a class="local" href="/p/${encodeURIComponent(e.slug)}/files/">files</a>`);
-    if (e.dir) bits.push(`<span class="pw">${escHtml(clip(e.dir, 46))}</span>`);
+    if (e.dir) bits.push(`<span class="pw">${escHtml(prettyDir(e.dir))}</span>`);
     const pw = secrets[e.slug]
       ? `<div class="meta">guest password <span class="pw">${escHtml(secrets[e.slug])}</span> · collaborators: ${(e.collaborators || []).length
         ? escHtml((e.collaborators || []).join(', ')) : 'none — private to you'}</div>` : '';

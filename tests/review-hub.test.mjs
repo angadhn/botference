@@ -335,6 +335,7 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     // one project whose review slug collides with the explicit entry
     const explicitDir = project('Explicit-Dir', { slug: 'explicit-one', title: 'Explicit One' });
     project('alpha-set', { slug: 'alpha-set', title: 'Alpha Set' });
+    project('legacy-paper', { slug: 'legacy-paper', title: 'Legacy Paper' });
     project('bare-project', null);
     project('dupe-slug', { slug: 'explicit-one', title: 'Impostor' });
 
@@ -515,6 +516,32 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     assert.ok(fresh.some(l => l === 'service stop review-bare-project'),
       `stop did not go through the service ledger: ${JSON.stringify(fresh)}`);
     assert.ok(!fresh.some(l => /pkill|killall/.test(l)), 'no pattern kill, ever');
+  });
+
+  test('toggle off also finds a paper stood up by hand as review-share', async () => {
+    // papers published before the toggles exist run under the old fixed
+    // service name; the lookup is scoped to the paper's own ledger, so the
+    // second try can only ever match that same paper
+    await req(port2, {
+      method: 'POST', url: '/toggle', host: 'localhost',
+      body: new URLSearchParams({ slug: 'legacy-paper', action: 'on' }).toString(),
+    });
+    await settle('legacy-paper', true);
+    fs.writeFileSync(pidFile, fs.readFileSync(pidFile, 'utf8')
+      .replace(/^review-legacy-paper /m, 'review-share '));
+
+    const before = logLines().length;
+    await req(port2, {
+      method: 'POST', url: '/toggle', host: 'localhost',
+      body: new URLSearchParams({ slug: 'legacy-paper', action: 'off' }).toString(),
+    });
+    const p = await settle('legacy-paper', false);
+    assert.equal(p.running, false);
+    assert.equal(p.job.error, '');
+
+    const fresh = logLines().slice(before);
+    assert.ok(fresh.some(l => l === 'service stop review-legacy-paper'), 'the slug name is tried first');
+    assert.ok(fresh.some(l => l === 'service stop review-share'), 'the legacy name is the fallback');
   });
 
   test('toggles and status are owner-only', async () => {
