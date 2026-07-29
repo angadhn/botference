@@ -52,6 +52,15 @@
   serving; **`--hosted --service`** (with optional `--service-name`) runs one
   hosted server under the managed service lifecycle, pinned to the paper's
   own ledger. These are the two primitives the hub's toggles drive.
+- **Deliverables get a permanent home and a permanent link.** The bots'
+  standing instructions now say: anything the user will open again (plots,
+  HTML pages, reports) is saved into the chat's project folder
+  (`projects/<id>/artifacts/`, or `work/artifacts/` for Inbox chats) and
+  linked in chat as `/files/<relpath>` — never served from ad-hoc HTTP
+  servers or throwaway tunnels. The council server gains the matching
+  auth-gated `GET /files/` route over the workspace (dot-segments like
+  `.botference` refused, traversal blocked), so those links work on every
+  device for as long as the file exists.
 - **Council transcript: the reply is the last thing in a turn, not the tool
   calls.** The "Explored …" tool-run entry is emitted at turn end — after the
   agent's text already streamed in — so it used to land *below* the reply,

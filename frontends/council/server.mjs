@@ -473,6 +473,8 @@ const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
   '.webp': 'image/webp', '.heic': 'image/heic',
+  '.pdf': 'application/pdf', '.md': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8', '.json': 'application/json', '.csv': 'text/csv',
 };
 function serveFile(res, file) {
   fs.readFile(file, (err, buf) => {
@@ -609,6 +611,18 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/upload') {
     if (!anyBridgeAvailable()) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
     uploadEndpoint(req, res);
+    return;
+  }
+  // Project deliverables: bots save rendered artifacts (plots, reports,
+  // HTML pages) into the workspace and link them in chat as /files/<relpath>.
+  // Auth-gated like everything else; any dot-segment (.botference secrets,
+  // .git, hidden files) is refused so only real content is reachable.
+  if (req.method === 'GET' && url.startsWith('/files/')) {
+    const file = path.resolve(ROOT, decodeURIComponent(url.slice('/files/'.length)));
+    const rel = path.relative(ROOT, file);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) ||
+        rel.split(path.sep).some(seg => seg.startsWith('.'))) { res.writeHead(403).end(); return; }
+    serveFile(res, file);
     return;
   }
   if (req.method === 'GET' && url.startsWith('/uploads/')) {
