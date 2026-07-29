@@ -60,3 +60,4 @@ class ProjectPanelState:
     projects: tuple[ProjectPanelProject, ...] = ()
     active_project_id: str = ""
     inbox_session_count: int = 0
+    inbox_sessions: tuple[ProjectPanelSession, ...] = ()

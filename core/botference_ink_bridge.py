@@ -328,6 +328,15 @@ class InkBridge:
             "type": "projects",
             "active_project_id": state.active_project_id,
             "inbox_session_count": state.inbox_session_count,
+            "inbox_sessions": [
+                {
+                    "session_id": session.session_id,
+                    "title": session.title,
+                    "updated_at": session.updated_at,
+                    "active": session.active,
+                }
+                for session in state.inbox_sessions
+            ],
             "projects": [
                 {
                     "id": project.project_id,

@@ -773,6 +773,22 @@
       : `<button class="sess sess-cmd" data-act="proj-archive" data-pid="${pid}">⊘ archive project</button>`;
     return html + '</div></div>';
   }
+  // Flat newest-first shortlist across Inbox + every project, so finding a
+  // chat never requires remembering which project it lives in. Rows carry a
+  // small project chip; no ⋯ menu here — manage a chat from its project block.
+  function recentRows(p) {
+    const rows = [];
+    for (const s of p.inbox_sessions || []) rows.push({ s, chip: 'Inbox' });
+    for (const pr of p.projects || []) {
+      if ((pr.status || 'active') !== 'active') continue;
+      for (const s of pr.sessions || []) rows.push({ s, chip: pr.title || pr.id });
+    }
+    rows.sort((a, b) => String(b.s.updated_at || '').localeCompare(String(a.s.updated_at || '')));
+    return rows.slice(0, 8).map(({ s, chip }) => `
+      <button class="sess recent${s.active ? ' active' : ''}" data-act="resume" data-sid="${esc(s.session_id)}">
+        ${esc(s.title || s.session_id.slice(0, 8))}<span class="chip">${esc(chip)}</span>
+        <span class="when">${relTime(s.updated_at)}</span></button>`).join('');
+  }
   function renderProjects() {
     const p = state.projects;
     if (!p) { els.projects.innerHTML = '<div class="empty-note">loading…</div>'; return; }
@@ -780,6 +796,8 @@
     const live = all.filter(pr => (pr.status || 'active') === 'active');
     const archived = all.filter(pr => (pr.status || 'active') !== 'active');
     let html = '';
+    const recent = recentRows(p);
+    if (recent) html += '<h2>Recent</h2>' + recent;
     html += '<h2>Chats</h2>';
     html += `<div class="proj"><button class="proj-head" data-act="inbox">
       <span class="chev">•</span><span class="name">Inbox</span>
@@ -843,6 +861,11 @@
   // new project: an inline title field (no modal, no prompt()) that sends
   // the same /project create the TUI takes
   function showNewProject(on) {
+    // never silently eat a typed title: dismissing with text still in the
+    // field says so, instead of pretending the form was never opened
+    if (!on && !els.newProjForm.hidden && els.newProjTitle.value.trim()) {
+      toast('project name discarded');
+    }
     els.newProjForm.hidden = !on;
     if (on) { els.newProjTitle.value = ''; els.newProjTitle.focus(); }
   }
@@ -850,6 +873,7 @@
     const title = els.newProjTitle.value.trim();
     if (!title) { showNewProject(false); return; }
     sendInput('/project create ' + title);
+    els.newProjTitle.value = '';
     showNewProject(false);
     closeSide();
   }

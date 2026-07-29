@@ -443,9 +443,12 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   // empty state shows before any content
   assert.equal(doc.getElementById('empty').hasAttribute('hidden'), false);
 
-  // projects event renders the sidebar (project + chat + inbox count)
+  // projects event renders the sidebar (project + chat + inbox count), plus a
+  // flat Recent shortlist with a project chip per row (Inbox chats included,
+  // ordered by updated_at desc — the loose thought is older, so it lists second)
   C.handle({
     type: 'projects', active_project_id: 'p1', inbox_session_count: 3,
+    inbox_sessions: [{ session_id: 'inb00001', title: 'Loose thought', updated_at: '2026-01-01T00:00:00Z', active: false }],
     projects: [{
       id: 'p1', title: 'Demo project', active: true, session_count: 1,
       sessions: [{ session_id: 'abc12345', title: 'First chat', updated_at: new Date().toISOString(), active: false }],
@@ -454,6 +457,13 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.match(doc.getElementById('projects').textContent, /Demo project/);
   assert.match(doc.getElementById('projects').textContent, /First chat/);
   assert.match(doc.getElementById('projects').textContent, /Inbox/);
+  assert.match(doc.getElementById('projects').textContent, /Recent/);
+  assert.match(doc.getElementById('projects').textContent, /Loose thought/);
+  const recentRows = [...doc.querySelectorAll('.sess.recent')];
+  assert.equal(recentRows.length, 2, 'recent lists both chats');
+  assert.equal(recentRows[0].dataset.sid, 'abc12345', 'newest first');
+  assert.match(recentRows[0].querySelector('.chip').textContent, /Demo project/);
+  assert.match(recentRows[1].querySelector('.chip').textContent, /Inbox/);
 
   // clicking a chat re-attaches this tab's stream to that chat's bridge
   doc.querySelector('.sess[data-act="resume"]').click();

@@ -1538,6 +1538,7 @@ class Botference:
         global_ids_by_project: dict[str, set[str]] = {}
         counted_globally: set[str] = set()
         rows_by_project: dict[str, list[tuple[float, str, str, str]]] = {}
+        inbox_rows: list[tuple[float, str, str, str]] = []
 
         def add_row(
             project_id: str, mtime: float, session_id: str, title: str, updated_at: str
@@ -1553,6 +1554,12 @@ class Botference:
             counted_globally.add(session_id)
             if not project_id:
                 inbox_count += 1
+                inbox_rows.append((
+                    entry.mtime,
+                    session_id,
+                    entry.title or "Untitled session",
+                    entry.updated_at,
+                ))
                 continue
             global_ids_by_project.setdefault(project_id, set()).add(session_id)
             # Rows only for projects that still exist on disk — a stale
@@ -1632,6 +1639,7 @@ class Botference:
             projects=tuple(panel_projects),
             active_project_id=self.active_project_id,
             inbox_session_count=inbox_count,
+            inbox_sessions=tuple(self._panel_sessions(inbox_rows)),
         )
 
     def _sync_project_ui(self, ui: UIPort) -> None:

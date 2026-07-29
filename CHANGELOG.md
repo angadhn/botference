@@ -2,6 +2,17 @@
 
 ## 2026-07-29
 
+- **Council sidebar: a flat "Recent" list.** The panel now ships the Inbox's
+  recent chats too (`inbox_sessions` on the projects event, same newest-first
+  shortlist every project already got), and the web sidebar opens with a
+  Recent section — the latest chats across Inbox and every active project in
+  one ordered list, each row tagged with a small project chip. Finding a chat
+  no longer requires remembering which project it lives in.
+- **Council sidebar: the new-project form has a Create button.** Typing a
+  title and tapping anywhere else used to discard it silently — the project
+  was never created and nothing said so. There is now a visible Create
+  button beside the field (Enter still works), and dismissing the form with
+  text in it shows a "project name discarded" toast.
 - **`/file` actually files the chat now.** Filing the chat you are sitting
   in (`/file <project>`, `/add-to-project`, `/project assign <project>`, or
   the no-args picker) used to write only `projects/session-index.json` and

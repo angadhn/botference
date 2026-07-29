@@ -2358,6 +2358,28 @@ class TestBotferenceProjects:
         snapshot = c.project_panel_snapshot()
         assert snapshot.inbox_session_count == 1
 
+    async def test_panel_inbox_lists_recent_sessions_newest_first(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        old = c.paths.session_dir / "old.json"
+        old.write_text(json.dumps({
+            "session_id": "old",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+            "updated_at": "2026-05-01T00:00:00Z",
+        }), encoding="utf-8")
+        new = c.paths.session_dir / "new.json"
+        new.write_text(json.dumps({
+            "session_id": "new",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+            "updated_at": "2026-05-02T00:00:00Z",
+        }), encoding="utf-8")
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(new, (2_000_000, 2_000_000))
+
+        snapshot = c.project_panel_snapshot()
+        assert [s.session_id for s in snapshot.inbox_sessions] == ["new", "old"]
+        assert snapshot.inbox_sessions[0].title
+        assert snapshot.inbox_sessions[0].updated_at == "2026-05-02T00:00:00Z"
+
     async def test_panel_metadata_index_is_persisted(self, tmp_path):
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
         (c.paths.session_dir / "alpha.json").write_text(json.dumps({

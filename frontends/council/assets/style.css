@@ -85,9 +85,15 @@ body.side-collapsed #side { margin-left: -272px }
 .new-opts button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent-hover) }
 #new-project-form { margin: -.55rem 1rem .8rem }
-#new-project-form input { width: 100%; padding: .45rem .6rem; border-radius: 8px;
+#new-project-form:not([hidden]) { display: flex; gap: .4rem }
+#new-project-form input { flex: 1; min-width: 0; padding: .45rem .6rem; border-radius: 8px;
   border: 1px solid var(--accent); background: var(--card); color: var(--fg);
   font: .8rem var(--sans) }
+#new-project-create { flex: none; padding: .45rem .7rem; border-radius: 8px;
+  border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent); font: 600 .8rem var(--sans) }
+#new-project-create:hover { background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--accent-hover) }
 #projects { flex: 1; overflow-y: auto; padding: 0 .6rem 1rem; font: .82rem/1.5 var(--sans) }
 #projects h2 { font: 700 .66rem var(--sans); text-transform: uppercase; letter-spacing: .08em;
   color: var(--muted); margin: .9rem .4rem .3rem }
@@ -109,6 +115,11 @@ body.side-collapsed #side { margin-left: -272px }
 .sess:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); color: var(--fg) }
 .sess.active { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--heading); font-weight: 600 }
 .sess .when { color: var(--muted); font-size: .68rem; margin-left: .35rem }
+.sess .chip { display: inline-block; max-width: 8em; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: -.25em; margin-left: .4rem; padding: 0 .4em;
+  border-radius: 6px; font-size: .62rem; line-height: 1.5; color: var(--muted);
+  background: color-mix(in srgb, var(--fg) 7%, transparent) }
+.sess.recent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .sess-cmd { color: var(--muted); font-size: .75rem }
 /* chat row: title button + ⋯ actions (archive / delete) */
 .sess-row { position: relative; display: flex; align-items: center }
