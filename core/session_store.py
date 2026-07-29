@@ -180,6 +180,56 @@ class SessionStore:
     def save(self, session_id: str, payload: dict[str, Any]) -> None:
         path = self.paths.session_state_file(session_id)
         mtime = atomic_write_json(path, payload)
+        self._publish_metadata_row(session_id, payload, mtime)
+
+    def set_project(
+        self,
+        session_id: str,
+        project_id: str,
+        *,
+        path: Path | None = None,
+    ) -> bool:
+        """Stamp ``project_id`` into a saved chat's payload on disk.
+
+        Filing a chat you are NOT currently sitting in. The payload is the
+        authority on project membership everywhere it is resolved (project
+        panel, /resume, restore); ``projects/session-index.json`` only
+        backfills legacy chats whose payload predates the field. So an index
+        association alone silently loses to whatever the payload already
+        says — this is the other half of that move.
+
+        Best effort by design: if the chat is open in another bridge process
+        right now, that process's next save re-stamps its own in-memory
+        active project. Cross-process signalling is deliberately out of
+        scope; close the chat there (or /project open inside it) instead.
+        """
+        target = path or self.paths.session_state_file(session_id)
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        payload["project_id"] = project_id
+        try:
+            mtime = atomic_write_json(target, payload)
+        except OSError:
+            return False
+        # Only the global session dir is covered by the metadata index;
+        # project-local session files are parsed inline by the panel.
+        try:
+            indexed = target.resolve() == self.paths.session_state_file(
+                session_id
+            ).resolve()
+        except (OSError, RuntimeError, ValueError):
+            indexed = False
+        if indexed:
+            self._publish_metadata_row(session_id, payload, mtime)
+        return True
+
+    def _publish_metadata_row(
+        self, session_id: str, payload: dict[str, Any], mtime: float,
+    ) -> None:
         # Keep the metadata index in sync so project_panel_snapshot stays cheap
         # without losing accuracy. Cache loads lazily on first read.
         if self._metadata_cache is not None:

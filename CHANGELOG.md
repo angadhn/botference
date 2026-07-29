@@ -2,6 +2,32 @@
 
 ## 2026-07-29
 
+- **`/file` actually files the chat now.** Filing the chat you are sitting
+  in (`/file <project>`, `/add-to-project`, `/project assign <project>`, or
+  the no-args picker) used to write only `projects/session-index.json` and
+  print success — then the very next turn's save silently put the chat back.
+  Membership is resolved payload-first everywhere (project panel, `/resume`,
+  restore), and `_persist_session()` re-stamps both the payload and the
+  index from the room's active project after every turn, so an
+  index-only write never had a chance. **A chat's project is the project its
+  room is in at save time**, so filing the current chat now moves the active
+  context with it — exactly what the `/project open <target>` workaround was
+  doing by hand. The confirmation says so ("…is now the active project",
+  plus where plan writes land). Every "file the current chat" path (`/file`
+  with and without args, `/project assign`, the "Where should this chat
+  live?" card after `/new`, `/project create`) funnels through one helper.
+- **`/project assign <session-id-prefix> <project>` moves the other chat on
+  disk.** It now rewrites that session's `project_id` in its saved JSON
+  (atomic write + the locked single-row metadata-index sync) as well as
+  associating it in the index, so a chat whose payload already named a
+  project actually moves and reopens in its new project. Best effort by
+  design: if that chat is open in another bridge process, that process
+  re-stamps its own active project on its next save. Filing someone else's
+  chat still leaves your room where it was.
+- **`/project clear` no longer leaves the chat listed under the project it
+  just left.** Clearing writes an empty payload `project_id`, which falls
+  back to the session index — so the stale association is now dropped too.
+
 - **Browse any project's chats without "activating" it.** The web sidebar
   now expands every project — active, inactive, or archived — to its 8 most
   recent chats, and tapping a chat just opens it. The `→ make active
