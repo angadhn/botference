@@ -249,6 +249,13 @@ Persists per-user.
 .B /agents [on|off]
 Grant/revoke the Claude participant's subagent (Task) tool. Off by
 default per chat; Claude suggests it and waits for approval.
+.TP
+.B /allow-host [<domain>]
+Grant the bots' sandbox network access to a site (e.g.
+.BR example.org ).
+Persists per workspace and applies from each bot's next turn \- no
+restarts. Without arguments, lists current grants. The bots are
+instructed to ask for this instead of working around a blocked fetch.
 .PP
 Plain text is auto-routed;
 .BR @claude ,

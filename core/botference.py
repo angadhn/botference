@@ -30,6 +30,8 @@ from cli_adapters import (
     CodexAdapter,
     PlannerWriteConfig,
     ToolSummary,
+    add_granted_network_host,
+    granted_network_hosts,
     is_credit_error,
     normalize_claude_transport,
     normalize_write_roots,
@@ -176,6 +178,7 @@ class InputKind(Enum):
     MODEL = "model"
     EFFORT = "effort"
     CURRENT = "current"
+    ALLOW_HOST = "allow_host"
 
 
 @dataclass(frozen=True)
@@ -211,6 +214,7 @@ _SLASH_COMMANDS = {
     "/effort": InputKind.EFFORT,
     "/current-model": InputKind.CURRENT,
     "/current": InputKind.CURRENT,
+    "/allow-host": InputKind.ALLOW_HOST,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -2414,6 +2418,10 @@ class Botference:
             await self._run_archive(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.ALLOW_HOST:
+            self._run_allow_host(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.UNARCHIVE:
             await self._run_unarchive(parsed.body, ui)
             return
@@ -2427,6 +2435,47 @@ class Botference:
             return
 
         await self._send_message(parsed, ui, attachments=attachments)
+
+    # ── /allow-host ───────────────────────────────────────
+
+    _ALLOW_HOST_RE = re.compile(r"^(\*\.)?([a-z0-9-]+\.)+[a-z]{2,}$")
+
+    def _run_allow_host(self, body: str, ui: UIPort) -> None:
+        """Grant the bots' sandbox network access to a site the user names.
+
+        The grant is a workspace file the Claude adapter re-reads at every
+        spawn, so it applies from each bot's next turn — no restarts.
+        """
+        raw = body.strip()
+        if not raw:
+            granted = granted_network_hosts()
+            lines = ["Bot network access is limited to an allowlist."]
+            lines.append(
+                "Granted for this workspace: "
+                + (", ".join(granted) if granted else "(none beyond the defaults)")
+            )
+            lines.append("Grant a new site with /allow-host <domain> "
+                         "(e.g. /allow-host example.org — applies from the "
+                         "bots' next turn).")
+            self._show_room_notice(ui, "system", "\n".join(lines))
+            return
+        host = raw.lower()
+        # accept a pasted URL: keep just the hostname
+        host = re.sub(r"^[a-z]+://", "", host).split("/")[0].split("?")[0]
+        host = host.strip(".")
+        if not self._ALLOW_HOST_RE.match(host):
+            self._add_room_entry(
+                ui, "system",
+                f"'{raw}' does not look like a domain. "
+                "Usage: /allow-host <domain>  (e.g. example.org or *.example.org)",
+            )
+            return
+        granted = add_granted_network_host(host)
+        self._add_room_entry(
+            ui, "system",
+            f"Granted bot network access to {host} — applies from each bot's "
+            f"next turn. Granted this workspace: {', '.join(granted)}",
+        )
 
     # ── /help ─────────────────────────────────────────────
 
@@ -2468,6 +2517,7 @@ class Botference:
             "  /status             — Show context %, lead, mode, sessions",
             "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
             "  /agents [on|off]    — Grant/revoke Claude's subagent (Task) tool (off by default, per-chat; Claude may suggest it)",
+            "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",

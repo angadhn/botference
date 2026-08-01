@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 2026-08-01
+
+- **`/allow-host <domain>` — grant the bots a website when you say so.** The
+  bots' shell sandbox restricts network access to an allowlist (by design:
+  they execute commands autonomously while reading untrusted web content).
+  Granting a new site used to mean editing code and restarting. Now it's a
+  chat command: the grant persists per workspace
+  (`.botference/allowed-hosts.json`) and the Claude adapter re-reads it at
+  every spawn, so it applies from the bots' very next turn with no restart.
+  Bare `/allow-host` lists grants; the bots' prompt tells them to ask you
+  for it rather than work around a blocked fetch. (`ai-2040.com` also joined
+  the default allowlist for the active review project.)
+
 ## 2026-07-29
 
 - **Review hub: the portal runs the estate, not a config file you hand-edit.**

@@ -730,6 +730,47 @@ class TestAgentsCommand:
 
 
 @pytest.mark.asyncio
+class TestAllowHost:
+    async def test_grant_persists_and_reaches_the_sandbox_allowlist(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/allow-host https://Example.org/some/page", ui)
+        assert any("example.org" in t for s, t in ui.room_entries
+                   if s == "system")
+        import cli_adapters
+        assert "example.org" in cli_adapters.granted_network_hosts()
+        assert "example.org" in cli_adapters._plan_allowed_hosts()
+        # defaults are still present alongside the grant
+        assert "github.com" in cli_adapters._plan_allowed_hosts()
+
+    async def test_grant_applies_at_spawn_time_without_new_settings(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        import cli_adapters
+        adapter = cli_adapters.ClaudeAdapter(
+            settings={"sandbox": {"enabled": True,
+                                  "network": {"allowedDomains": ["github.com"]}}},
+        )
+        cli_adapters.add_granted_network_host("late-grant.org")
+        cmd = adapter._build_cmd(resume=False)
+        settings = json.loads(cmd[cmd.index("--settings") + 1])
+        assert "late-grant.org" in settings["sandbox"]["network"]["allowedDomains"]
+
+    async def test_rejects_non_domains_and_lists_grants(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/allow-host not a domain", ui)
+        assert any("does not look like a domain" in t
+                   for s, t in ui.room_entries if s == "system")
+        await c.handle_input("/allow-host", ui)
+        assert any("allowlist" in t for s, t in ui.room_entries if s == "system")
+
+
+@pytest.mark.asyncio
 class TestNotifyCommand:
     def _settings(self, tmp_path, monkeypatch) -> Path:
         settings = tmp_path / "user-settings.json"

@@ -664,6 +664,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/notify [on\|off]` | Toggle the desktop notification posted when the bots finish (see [Desktop notifications](#desktop-notifications)). No argument flips the current state; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. |
 | `/agents [on\|off]` | Grant or revoke the Claude participant's **subagent** (Task) tool. Off by default in every chat: Claude is instructed to *suggest* subagents when a task would benefit and wait for your approval — and the gate is enforced at the tool level (the CLI is simply not given the Task tool until you grant it), not by prompt alone. The grant persists with the chat across `/resume` and resets on `/new`. Codex has no subagent facility; not available under `--claude-interactive`. |
+| `/allow-host [<domain>]` | Grant the bots' sandbox **network access** to a site (persists per workspace in `.botference/allowed-hosts.json`, applies from their next turn — no restart). The sandbox blocks all other hosts by design; the bots are instructed to ask you for this instead of working around a blocked fetch. Bare `/allow-host` lists current grants. |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
 

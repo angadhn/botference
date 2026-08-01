@@ -209,7 +209,10 @@ def web_access_note(model: str) -> str:
         "verification error), do not give up: fetch it via Bash with "
         '`curl -sL -A "botference/1.0 (planning council)" <url>` '
         "(truncate long pages, e.g. `| head -c 20000`). "
-        "Use WebSearch when you only need to discover sources."
+        "Use WebSearch when you only need to discover sources. "
+        "If a fetch is refused because the sandbox blocks that host, do not "
+        "work around it — ask the user to grant the site with "
+        "`/allow-host <domain>`; the grant applies from your next turn."
     )
 
 

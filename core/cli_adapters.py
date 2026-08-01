@@ -257,11 +257,47 @@ def _plan_network_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _granted_hosts_file() -> Path:
+    root = os.environ.get("BOTFERENCE_PROJECT_ROOT", "").strip() or "."
+    return Path(root) / ".botference" / "allowed-hosts.json"
+
+
+def granted_network_hosts() -> list[str]:
+    """User-granted extra sandbox hosts (via /allow-host), re-read per call.
+
+    Reading at adapter-spawn time (every bot turn spawns a fresh CLI) is what
+    makes a grant apply from the very next turn with no restart anywhere.
+    """
+    try:
+        data = json.loads(_granted_hosts_file().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(h).strip() for h in data if str(h).strip()]
+
+
+def add_granted_network_host(host: str) -> list[str]:
+    """Persist a user network grant; returns the full granted list."""
+    hosts = granted_network_hosts()
+    if host not in hosts:
+        hosts.append(host)
+        path = _granted_hosts_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(hosts, indent=1) + "\n", encoding="utf-8")
+    return hosts
+
+
 def _plan_allowed_hosts() -> list[str]:
     raw = os.environ.get("BOTFERENCE_PLAN_ALLOWED_HOSTS", "").strip()
     if not raw:
-        return list(_DEFAULT_PLAN_ALLOWED_HOSTS)
-    return [h.strip() for h in raw.split(",") if h.strip()]
+        base = list(_DEFAULT_PLAN_ALLOWED_HOSTS)
+    else:
+        base = [h.strip() for h in raw.split(",") if h.strip()]
+    for host in granted_network_hosts():
+        if host not in base:
+            base.append(host)
+    return base
 
 
 @dataclass(frozen=True)
@@ -779,7 +815,16 @@ class ClaudeAdapter:
         for path in self.add_dirs:
             cmd += ["--add-dir", path]
         if self.settings:
-            cmd += ["--settings", json.dumps(self.settings, separators=(",", ":"))]
+            settings = self.settings
+            # Refresh the sandbox network allowlist at spawn time so hosts
+            # granted mid-chat with /allow-host apply from the next turn.
+            net = settings.get("sandbox", {}).get("network")
+            if isinstance(net, dict) and "allowedDomains" in net:
+                settings = json.loads(json.dumps(settings))
+                settings["sandbox"]["network"]["allowedDomains"] = (
+                    _plan_allowed_hosts()
+                )
+            cmd += ["--settings", json.dumps(settings, separators=(",", ":"))]
         return cmd
 
     async def send(self, prompt: str) -> AdapterResponse:
