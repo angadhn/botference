@@ -243,6 +243,10 @@ _DEFAULT_PLAN_ALLOWED_HOSTS = (
     "*.wikipedia.org",
     "wikimedia.org",
     "*.wikimedia.org",
+    # Sites the user has papers/reviews built around (capture + re-render
+    # tasks need to fetch the originals).
+    "ai-2040.com",
+    "*.ai-2040.com",
 )
 
 
