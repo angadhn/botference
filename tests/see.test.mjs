@@ -126,6 +126,51 @@ head -c 2048 /dev/zero > "$f"
   assert.deepEqual(fs.readdirSync(path.join(ws, '.botference', 'see')), []);
 });
 
+test('see renders a local file via file:// — no server needed',
+  { skip: CHROME ? false : 'no Chrome/Chromium installed' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'see-file-'));
+  fs.writeFileSync(path.join(dir, 'chart report.html'),
+    '<body style="background:#333"><svg width="200" height="100"><rect width="200" height="100" fill="#d97757"/></svg></body>');
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'see-'));
+  const r = await see(['chart report.html', '--viewport', '400x300', '--out', out], { cwd: dir });
+  assert.equal(r.status, 0, r.stderr);
+  const files = fs.readdirSync(out);
+  assert.equal(files.length, 1);
+  assert.match(files[0], /-chart-report-400x300\.png$/, 'label derived from the filename, sanitized');
+  assert.ok(fs.statSync(path.join(out, files[0])).size > 1000);
+});
+
+test('sandboxed lane: file targets work from a subdirectory (absolutized into the workspace spool)', async t => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'see-ws2-'));
+  fs.mkdirSync(path.join(ws, '.botference'), { recursive: true });
+  fs.mkdirSync(path.join(ws, 'charts'));
+  fs.writeFileSync(path.join(ws, 'charts', 'hero.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  const fake = path.join(ws, 'fake-chrome');
+  fs.writeFileSync(fake, `#!/bin/bash
+for a in "$@"; do case "$a" in --screenshot=*) f="\${a#--screenshot=}";; esac; done
+head -c 2048 /dev/zero > "$f"
+`, { mode: 0o755 });
+  const index = path.join(ws, 'ledger-index');
+  fs.writeFileSync(index, path.join(ws, '.botference', 'services.json') + '\n');
+  const broker = (await import('node:child_process')).spawn(
+    BOTFERENCE, ['see', '--serve'],
+    { cwd: ws, env: { ...process.env, BOTFERENCE_CHROME: fake, BOTFERENCE_SERVICE_INDEX: index } });
+  t.after(() => broker.kill());
+  fs.writeFileSync(path.join(ws, '.botference', 'services.json'),
+    JSON.stringify({ services: [{ name: 'see-broker', pid: broker.pid }] }));
+  await new Promise(r => setTimeout(r, 1200));
+
+  // client sits in ws/charts and names the file relative to THERE; the
+  // request must still land in ws/.botference/see and resolve the file
+  const r = await see(['hero.svg', '--viewport', '300x300'], {
+    cwd: path.join(ws, 'charts'),
+    env: { ...process.env, BOTFERENCE_SEE_FORCE_BROKER: '1', BOTFERENCE_SERVICE_INDEX: index },
+  });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /^wrote: .*-hero-300x300\.png$/m);
+  assert.deepEqual(fs.readdirSync(path.join(ws, '.botference', 'see')), [], 'spool drained');
+});
+
 test('sandboxed lane: a clear error when no broker service is alive', async () => {
   const r = await see([':1', 'x'],
     { env: { ...process.env, BOTFERENCE_SEE_FORCE_BROKER: '1', BOTFERENCE_SERVICE_INDEX: '/dev/null' } });
@@ -138,7 +183,7 @@ test('see fails plainly on an unknown service name and a bad viewport', async ()
   const r = await see(['no-such-service-xyz'],
     { env: { ...process.env, BOTFERENCE_SERVICE_INDEX: '/dev/null' } });
   assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /no running service by that name/);
+  assert.match(r.stderr, /not a URL, an existing file, or a running service name/);
 
   const r2 = await see(['http://127.0.0.1:1/', '--viewport', 'huge']);
   assert.notEqual(r2.status, 0);

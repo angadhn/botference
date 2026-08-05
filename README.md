@@ -369,6 +369,7 @@ printing each path for the agent to read back with its image tooling.
 ```bash
 botference see fitlog                        # a RUNNING service by name — port discovered live
 botference see :4123 fitlog                  # bare localhost port
+botference see charts/hero.html              # a local file (chart, report, mockup) — no server needed
 botference see https://example.com home --viewport 500x900
 ```
 

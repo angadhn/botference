@@ -17,9 +17,14 @@ looks wrong". Pixels can, and you can read pixels.
 botference see <target> [label] [--viewport WxH]... [--basic-auth U:P] [--out DIR]
 ```
 
-- `<target>`: a URL, a bare `:port` (localhost), or the NAME of a
+- `<target>`: a URL, a bare `:port` (localhost), a **local file path**
+  (HTML, SVG — rendered via file://, no server needed: the way to
+  verify charts, reports, and mockups you just wrote), or the NAME of a
   running `botference service` — its listening port is discovered from
   the live process, you never need to know it.
+- Never hand-roll rendering via ImageMagick/qlmanage/rsvg to check a
+  chart — their SVG engines have artifacts Chrome does not; `see` is
+  the trustworthy lane and works from your sandbox.
 - Default viewports: `390x844` (phone — real mobile layout, since
   responsive CSS answers to viewport width) and `1440x900` (desktop).
 - It prints `wrote: <path>.png` lines. **Read those images.** That is

@@ -31,6 +31,8 @@ Read the printed PNG paths back with your image tooling.
 Target forms:
   https://… or http://…   used as-is
   :4123 (or bare digits)  http://localhost:<port>
+  path/to/page.html       an existing local file (HTML, SVG, …) —
+                          rendered via file:// with no server needed
   <service-name>          a running `botference service` — its listening
                           port is discovered from the live process
 
@@ -150,13 +152,35 @@ PY
 # its output verbatim — the caller sees the same "wrote:" lines a local
 # render would print. Deterministic: one request file, one result file.
 see_via_broker() {
-  local req_dir=".botference/see"
+  # absolutize a file-path target so the broker (which cds to the
+  # workspace root) resolves the same file the caller meant
+  local send=() a positional_seen=false
+  for a in "$@"; do
+    if ! $positional_seen && [ "${a#-}" = "$a" ] && [ -f "$a" ]; then
+      send+=("$(cd "$(dirname "$a")" && pwd -P)/$(basename "$a")")
+      positional_seen=true
+    else
+      send+=("$a")
+    fi
+  done
+  # spool in the nearest enclosing workspace (.botference marker), so
+  # requests made from a subdirectory still land where the broker looks
+  local base="$PWD" up=0
+  while [ "$up" -lt 6 ]; do
+    [ -d "$base/.botference" ] && break
+    [ "$base" = "/" ] && break
+    base=$(dirname "$base")
+    up=$((up + 1))
+  done
+  [ -d "$base/.botference" ] || base="$PWD"
+  local req_dir="$base/.botference/see"
   mkdir -p "$req_dir" 2>/dev/null || {
-    echo "Error: cannot write ${req_dir}/ here — run see from the workspace root." >&2
+    echo "Error: cannot write ${req_dir}/ — run see from inside a workspace." >&2
     return 1
   }
   local id="$(date +%s)-$$-${RANDOM}"
   local req="${req_dir}/${id}.request" res="${req_dir}/${id}.result"
+  set -- "${send[@]}"
   python3 - "$req" "$@" <<'PY' || return 1
 import json, sys
 path = sys.argv[1]
@@ -205,13 +229,19 @@ see_serve() {
         [ -d "$ws" ] && dirs+=("$ws")
       done < "$index"
     fi
-    local seen="" d
+    local seen="" d p
     for d in "${dirs[@]}"; do
       case "$seen" in *"|$d|"*) continue ;; esac
       seen="${seen}|$d|"
       for req in "$d"/.botference/see/*.request; do
         [ -f "$req" ] || continue
         see_serve_one "$d" "$req"
+      done
+      # ledger-less projects under a registered workspace spool too
+      for req in "$d"/projects/*/.botference/see/*.request; do
+        [ -f "$req" ] || continue
+        p=$(dirname "$(dirname "$(dirname "$req")")")
+        see_serve_one "$p" "$req"
       done
     done
     sleep 1
@@ -318,10 +348,18 @@ run_see_mode() {
     [0-9]*)
       if [[ "$target" =~ ^[0-9]+$ ]]; then url="http://localhost:${target}"; fi ;;
   esac
+  if [ -z "$url" ] && [ -f "$target" ]; then
+    # a local file (chart, report, mockup): render it via file:// — the
+    # commonest agent need after "look at the running app"
+    local abs_dir
+    abs_dir=$(cd "$(dirname "$target")" && pwd -P)
+    url="file://${abs_dir}/$(basename "$target")"
+    [ -n "$label" ] || label=$(basename "$target" | sed -E 's/\.[^.]+$//; s/[^A-Za-z0-9.-]/-/g')
+  fi
   if [ -z "$url" ]; then
     if ! url=$(see_resolve_service "$target"); then
-      echo "Error: '$target' is not a URL and no running service by that name was found." >&2
-      echo "  (services: botference service list — or pass a URL / :port directly)" >&2
+      echo "Error: '$target' is not a URL, an existing file, or a running service name." >&2
+      echo "  (services: botference service list — or pass a URL / :port / file path directly)" >&2
       return 1
     fi
     [ -n "$label" ] || label="$target"

@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 2026-08-05
+
+- **`botference see` renders local files.** A target that is an existing
+  file (HTML, SVG, …) renders via `file://` — the way agents verify
+  charts, reports, and mockups they just wrote, with no server and no
+  hand-rolled ImageMagick/qlmanage lanes (whose SVG engines have
+  artifacts Chrome does not). Works through the see-broker too: file
+  targets are absolutized client-side, requests made from a
+  subdirectory spool to the nearest enclosing workspace, and the broker
+  now also watches `projects/*/` spools of registered workspaces, so
+  ledger-less project dirs are covered.
+
 ## 2026-08-01
 
 - **`/allow-host <domain>` — grant the bots a website when you say so.** The

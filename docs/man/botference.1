@@ -191,7 +191,8 @@ so an agent that only reads code and logs will ship a page that "works"
 but looks broken \- after any UI change, look at it. The default
 viewports are 390x844 (phone) and 1440x900 (desktop); \fB\-\-viewport
 WxH\fR (repeatable) replaces them. The target may be a full URL, a bare
-\fB:port\fR on localhost, or the name of a running \fBbotference
+\fB:port\fR on localhost, an existing local file (HTML, SVG \- rendered
+via file:// with no server), or the name of a running \fBbotference
 service\fR \- the listening port is discovered from the live process,
 so agents never need to know ports. Output lands in
 \fI.botference/shots/\fR unless \fB\-\-out\fR says otherwise.
