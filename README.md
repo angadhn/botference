@@ -295,7 +295,21 @@ iOS — plus clickable links and tap-to-copy password chips). When Claude
 spawns subagents (the `Task` tool), an inline **progress lane** in the
 turn shows one live row per subagent — status dot, label, elapsed clock,
 and latest tool activity — collapsing to a summary when each finishes.
-The open chat is reflected in the URL as `#/chat/<session-id>`, so the
+Bot messages render markdown: fenced code, inline code, links, bold —
+and **tables** (a sign-off sheet arrives as a real table, horizontally
+scrollable on a phone, not a wall of pipes). An **agents panel** shows
+each agent's condition for the open chat: a context gauge (whole
+percents and compact tokens, e.g. `43% · 86k / 200k`, with the 50%
+auto-relay threshold ticked), live activity (current tool + target
+while it works), the model picker, per-agent **relay** buttons plus
+**relay both**, the auto-relay toggle, relay provenance ("memory reset
+12m ago · self handoff" — when that agent's session memory last
+restarted and which tier authored the handoff), and session facts
+(project, mode, lead, route). On wide desktop it is a right-hand rail;
+on phones and narrow windows it slides in from the RIGHT via its own
+header toggle (the left hamburger drawer stays purely projects and
+chats), so context usage is always readable on mobile. The open chat is
+reflected in the URL as `#/chat/<session-id>`, so the
 address bar is a shareable per-chat link; opening it reopens that chat
 (an unknown id falls back to the current one). The server runs **one
 agent bridge per open chat**, so browser tabs on different chats are
@@ -647,8 +661,8 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/lead @claude\|@codex` | Manually set which model writes the plan. You can also use `/lead auto` to let the bots' writer consensus decide. |
 | `/draft [rounds]` | Update the project-local `implementation-plan.md` via the lead model, with optional AI review rounds. Defaults to `2`; `/draft 0` writes the plan with no AI review, `/draft 1` does one review/revise cycle, and so on. Review rounds run in the council like free-form turns: the reviewer's footer can end rounds early (`converged` — sign-off, no revision needed) or pause the draft and hand the floor to you (`blocked`), and typing mid-draft pauses at the next round boundary. Reviewer comments are saved beside the plan in the Botference state directory. |
 | `/finalize` | Lead-only finalization. The lead addresses all active reviewer comment files, rewrites the project-local `implementation-plan.md` if needed, creates `checkpoint.md`, and archives reviewer comments under the Botference archive directory. |
-| `/relay @claude\|@codex` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. |
-| `/autorelay [on\|off]` | Toggle **auto-relay**. When a model's context occupancy crosses 50% of its window, botference relays it automatically (same handoff machinery as `/relay`) before its next turn — never mid-turn or mid free-form thread. On by default; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. In the web council, a sidebar toggle mirrors this. No argument flips the current state. |
+| `/relay @claude\|@codex\|@both` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. `@both` (alias `@all`, `/relay-both`) resets both agents at once, token-efficiently: the agent with the most context headroom authors **one** shared handoff, both fresh sessions bootstrap from it, and the restarts run in parallel. Falls back to the free mechanical handoff when both agents are too degraded to author one. |
+| `/autorelay [on\|off]` | Toggle **auto-relay**. When a model's context occupancy crosses 50% of its window, botference relays it automatically (same handoff machinery as `/relay`) before its next turn — never mid-turn or mid free-form thread. On by default; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. In the web council, a toggle in the agents panel mirrors this. No argument flips the current state. |
 | `/projects` | List project folders under `projects/` and show the active project marker, status, priority, chat count, and next action when known. |
 | `/project [open <id>\|clear\|current\|create <title>\|create-from-chat]` | Set, clear, show, or create the current project context. The status bar and Projects panel show the selected project; `Inbox` means no project is selected. |
 | `/project assign [<session-id-prefix>] <project-id>` | File a chat under a project. Filing **this** chat moves the active context with it — a chat's project is the one its room is in at save time, so anything less is undone by the next turn's save. Filing **another** saved chat rewrites that chat's session JSON (and the project index) while you stay where you are; if that chat is open in another botference process, that process wins on its next save. |
@@ -850,7 +864,7 @@ safe boundary — it never fires mid-turn or inside a free-form bot-to-bot threa
 it lands before that model's next turn (or immediately after the current thread
 ends). It re-arms only after occupancy falls back below the threshold, so a
 single crossing triggers exactly one relay. Disable it with `/autorelay off`
-(TUI) or the Auto-relay toggle in the web council sidebar; the setting persists
+(TUI) or the Auto-relay toggle in the web council agents panel; the setting persists
 per-user, and the pending flag survives restarts alongside the session.
 
 ### Resume and crash recovery

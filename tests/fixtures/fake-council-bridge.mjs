@@ -30,6 +30,23 @@ rl.on('line', line => {
     if (rxFile && Array.isArray(msg.attachments) && msg.attachments.length) {
       fs.appendFileSync(rxFile, 'ATT ' + JSON.stringify(msg.attachments) + '\n');
     }
+    // a spawn-time /resume answers with a fresh projects snapshot flagging
+    // the resumed chat active (what the real bridge does after a resume),
+    // then falls through to the generic echo turn below
+    const rs = /^\/resume ([\w-]+)$/.exec(String(msg.text).trim());
+    if (rs) {
+      emit({
+        type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+        inbox_sessions: [],
+        projects: [{
+          id: 'p1', title: 'Demo project', status: 'active', next_action: '', active: true, session_count: 2,
+          sessions: [
+            { session_id: rs[1], title: 'Resumed chat', updated_at: new Date().toISOString(), active: true },
+            { session_id: 'abc12345', title: 'First chat', updated_at: new Date().toISOString(), active: false },
+          ],
+        }],
+      });
+    }
     if (msg.text === '/trigger-choice') {
       emit({ type: 'choice_request', prompt: 'Where should this chat live?', options: ['Stay in inbox', 'Demo project'] });
       return; // choice_response resolves it below

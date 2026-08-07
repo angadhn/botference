@@ -29,8 +29,6 @@
   </form>
   <nav id="projects" aria-label="projects and chats"></nav>
   <div class="side-foot">
-    <div id="model-switcher" aria-label="agent models"></div>
-    <div id="autorelay-toggle"></div>
     <div id="theme-toggle"></div>
   </div>
 </aside>
@@ -42,12 +40,13 @@
     </button>
     <div id="statusbar" aria-live="polite">
       <span id="st-conn" class="conn">connecting…</span>
-      <span id="st-project"></span>
-      <span id="st-route"></span>
-      <span id="st-model"></span>
-      <span id="st-ctx"></span>
+      <span id="st-ctx" title="context occupancy — details in the agents panel"></span>
     </div>
     <div id="avatars" aria-label="participants"></div>
+    <!-- narrow screens: opens the agents panel as a right-side drawer -->
+    <button id="agents-toggle" aria-label="open agents panel" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2.5-7 4 14 2.5-7h5"/></svg>
+    </button>
   </header>
 
   <div id="noauth-banner" role="alert" hidden>
@@ -98,6 +97,20 @@
     </div>
   </footer>
 </main>
+
+<!-- agents dashboard: right rail on wide desktop; its #agents-body content
+     reparents into the sidebar drawer slot on narrower screens -->
+<aside id="agents-panel" aria-label="agent status">
+  <section id="agents-body">
+    <div class="chip-label ap-label">agents</div>
+    <div id="agent-cards"></div>
+    <div class="ap-actions">
+      <button id="relay-both" title="Reset both agents at once from one shared handoff (token-efficient)">↻ relay both</button>
+      <div id="autorelay-toggle"></div>
+    </div>
+    <div id="ap-facts" aria-label="session facts"></div>
+  </section>
+</aside>
 
 <script src="/assets/app.js"></script>
 </body>

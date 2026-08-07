@@ -16,8 +16,10 @@
     newChat: $('new-chat'), newProject: $('new-project'),
     newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
     projects: $('projects'), theme: $('theme-toggle'),
-    conn: $('st-conn'), stProject: $('st-project'), stRoute: $('st-route'), stCtx: $('st-ctx'),
-    stModel: $('st-model'), modelSwitcher: $('model-switcher'), autoRelay: $('autorelay-toggle'),
+    conn: $('st-conn'), stCtx: $('st-ctx'),
+    agentCards: $('agent-cards'), agentsBody: $('agents-body'),
+    agentsPanel: $('agents-panel'), agentsToggle: $('agents-toggle'),
+    apFacts: $('ap-facts'), relayBoth: $('relay-both'), autoRelay: $('autorelay-toggle'),
     presendWarn: $('presend-warn'),
     avatars: $('avatars'), banner: $('noauth-banner'), bannerX: $('noauth-x'),
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
@@ -98,7 +100,8 @@
   const FALLBACK_CTX = {
     global: [
       '/lead @claude', '/lead @codex', '/relay @claude', '/relay @codex',
-      '/tag @claude', '/tag @codex', '/model @claude', '/model @codex',
+      '/relay @both', '/tag @claude', '/tag @codex', '/tag @both',
+      '/model @claude', '/model @codex',
       '/effort @claude', '/effort @codex', '/compact @claude', '/compact @codex',
       '/goal @claude', '/goal @codex',
       '/projects', '/project', '/adopt', '/new', '/file', '/add-to-project',
@@ -141,6 +144,10 @@
     models: { claude: null, codex: null },     // current model per agent (from status)
     exhausted: { claude: null, codex: null },  // credit-exhaustion reason string or null
     autoRelay: true,                           // auto-relay at 50% context (from status)
+    ctxStat: { claude: null, codex: null },    // {pct, tokens, window} per agent (from status)
+    relay: { claude: null, codex: null },      // {at, tier} last-relay provenance (from status)
+    activity: { claude: null, codex: null },   // latest tool label while an agent works
+    facts: { mode: '', lead: '', route: '', project: '' },  // session facts (from status)
     lastUserText: '',                          // last human turn, for "retry with @other"
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
@@ -152,6 +159,7 @@
     replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
     currentSid: null,      // active session id (from 'projects' events)
+    routeErrorSid: null,   // chat id the server just refused (route_error)
     bridgeId: null,        // this tab's bridge (from 'hello'); named in every POST
     resuming: false,       // the attached bridge is still executing its spawn-time /resume
     atts: [],              // composer attachments: {id, path, url, thumb, status}
@@ -189,27 +197,78 @@
   }
   renderAvatars();
 
-  // ── model switcher (sidebar) + credit-exhaustion affordances ──
-  // A compact per-agent picker: brand-mark avatar, current model, and a native
-  // <select> of that agent's available models (mobile-friendly tap target).
-  // Selecting sends "/model @<agent> <model>" through the normal input path.
-  function modelRow(a) {
+  // ── agents panel: per-agent condition dashboard + controls ──
+  // Right rail on wide desktop; reparents into the sidebar drawer below the
+  // breakpoint so the hamburger carries it on mobile. Each card: activity,
+  // model <select>, context gauge (rounded % + compact tokens, auto-relay
+  // threshold tick), relay button, and relay provenance ("memory freshness").
+  const AUTORELAY_PCT = 50;  // mirrors AUTO_RELAY_THRESHOLD_PCT in the controller
+  function fmtTok(n) {
+    if (n == null) return '—';
+    if (n >= 1e6) return String(Math.round(n / 1e5) / 10).replace(/\.0$/, '') + 'm';
+    if (n >= 1000) return Math.round(n / 1000) + 'k';
+    return String(n);
+  }
+  function relAgo(iso) {
+    const ms = Date.now() - Date.parse(iso);
+    if (!isFinite(ms) || ms < 0) return null;
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+  }
+  function agentCard(a) {
     const cur = state.models[a] || '';
     const ex = state.exhausted[a];
+    const st = state.ctxStat[a];
+    const pct = st && st.pct != null ? Math.max(0, Math.min(100, st.pct)) : null;
+    const working = state.agents[a];
+    const activity = ex ? '⚠ out of credits'
+      : working ? (state.activity[a] || 'working…') : 'idle';
     const opts = modelsFor(a).map(m =>
       `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
-    return `<div class="ms-row${ex ? ' exhausted' : ''}" data-agent="${a}">
-      <span class="ms-mark" style="--author:var(--${a})">${avatarHtml(a)}</span>
-      <div class="ms-body">
-        <div class="ms-name">${cap(a)}${ex ? '<span class="warn-badge" title="out of credits">⚠</span>' : ''}</div>
-        <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select>
-      </div></div>`;
+    const rl = state.relay[a];
+    const ago = rl && rl.at ? relAgo(rl.at) : null;
+    const fresh = ago ? `memory reset ${ago}${rl.tier ? ` · ${rl.tier} handoff` : ''}`
+      : 'no relay yet this session';
+    const level = pct == null ? '' : pct >= 75 ? ' hot' : pct >= AUTORELAY_PCT ? ' warm' : '';
+    return `<div class="agent-card${ex ? ' exhausted' : ''}" data-agent="${a}">
+      <div class="ac-head">
+        <span class="ms-mark" style="--author:var(--${a})">${avatarHtml(a)}</span>
+        <span class="ac-name">${cap(a)}${ex ? '<span class="warn-badge" title="out of credits">⚠</span>' : ''}</span>
+        <span class="ac-activity${working ? ' on' : ''}" title="${esc(activity)}">${esc(activity)}</span>
+      </div>
+      <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select>
+      <div class="ac-gauge${level}" role="img"
+        aria-label="${cap(a)} context ${pct == null ? 'unknown' : Math.round(pct) + '%'}">
+        <div class="ac-fill" style="width:${pct == null ? 0 : pct}%"></div>
+        <span class="ac-tick" title="auto-relay at ${AUTORELAY_PCT}%"></span>
+      </div>
+      <div class="ac-meta">
+        <span class="ac-pct">${pct == null ? '—' : Math.round(pct) + '%'}</span>
+        <span class="ac-tok">${st && st.tokens != null ? `${fmtTok(st.tokens)} / ${fmtTok(st.window)}` : ''}</span>
+        <button class="ac-relay" data-relay="${a}"
+          title="Reset ${cap(a)}'s session with a structured handoff">↻ relay</button>
+      </div>
+      <div class="ac-fresh" title="when this agent's session memory last restarted, and which handoff tier wrote it">${esc(fresh)}</div>
+    </div>`;
   }
-  function renderModelSwitcher() {
-    if (!els.modelSwitcher) return;
-    els.modelSwitcher.innerHTML =
-      '<div class="chip-label">models</div>' + AGENTS.map(modelRow).join('');
+  function renderAgentsPanel() {
+    if (els.agentCards) els.agentCards.innerHTML = AGENTS.map(agentCard).join('');
+    if (els.apFacts) {
+      const f = state.facts;
+      const bits = [];
+      if (f.project) bits.push(['project', f.project]);
+      if (f.mode) bits.push(['mode', f.mode]);
+      if (f.lead) bits.push(['lead', f.lead]);
+      if (f.route) bits.push(['route', f.route]);
+      els.apFacts.innerHTML = bits.map(([k, v]) =>
+        `<span class="fact"><b>${k}</b>${esc(v)}</span>`).join('');
+    }
   }
+  // kept name: exhaustion/ctx call sites re-render the panel through this
+  const renderModelSwitcher = renderAgentsPanel;
   function switchModel(agent, model) {
     if (!model) return;
     // optimistic: clear the exhausted flag now, re-flag if the next turn recurs.
@@ -217,13 +276,39 @@
     clearExhausted(agent);
     sendInput(`/model @${agent} ${model}`);
   }
-  if (els.modelSwitcher) {
-    els.modelSwitcher.addEventListener('change', e => {
+  if (els.agentCards) {
+    els.agentCards.addEventListener('change', e => {
       const sel = e.target.closest('select.ms-select');
       if (sel) switchModel(sel.dataset.agent, sel.value);
     });
+    els.agentCards.addEventListener('click', e => {
+      const b = e.target.closest('[data-relay]');
+      if (b) sendInput(`/relay @${b.dataset.relay}`);
+    });
   }
-  renderModelSwitcher();
+  if (els.relayBoth) els.relayBoth.addEventListener('click', () => sendInput('/relay @both'));
+  // narrow screens: the panel is a RIGHT-side drawer with its own toggle —
+  // the left drawer stays purely projects and chats. Wide desktop shows the
+  // panel as a static right rail and hides the toggle (CSS).
+  function openAgents() {
+    document.body.classList.add('agents-open');
+    els.backdrop.hidden = false;
+    if (els.agentsToggle) els.agentsToggle.setAttribute('aria-expanded', 'true');
+  }
+  function closeAgents() {
+    if (!document.body.classList.contains('agents-open')) return;
+    document.body.classList.remove('agents-open');
+    if (!document.body.classList.contains('side-open')) els.backdrop.hidden = true;
+    if (els.agentsToggle) els.agentsToggle.setAttribute('aria-expanded', 'false');
+  }
+  if (els.agentsToggle) {
+    els.agentsToggle.addEventListener('click', () => {
+      document.body.classList.contains('agents-open') ? closeAgents() : openAgents();
+    });
+  }
+  els.backdrop.addEventListener('click', closeAgents);
+  setInterval(renderAgentsPanel, 60000);  // keep "memory reset Xm ago" honest
+  renderAgentsPanel();
 
   // ── auto-relay toggle (sidebar) ──
   // Segmented on/off; sends "/autorelay on|off" through the normal input path.
@@ -250,16 +335,6 @@
   }
   renderAutoRelay();
 
-  // current model near the status strip (compact "C:fable-5 X:sol")
-  function shortModel(m) { return String(m || '').replace(/^claude-/, '').replace(/^gpt-/, ''); }
-  function renderStatusModels() {
-    if (!els.stModel) return;
-    const bits = [];
-    if (state.models.claude) bits.push(`C ${shortModel(state.models.claude)}`);
-    if (state.models.codex) bits.push(`X ${shortModel(state.models.codex)}`);
-    els.stModel.textContent = bits.length ? '⚙ ' + bits.join(' · ') : '';
-  }
-
   // flag/clear an agent as out-of-credits, updating avatars + switcher + notice
   function flagExhausted(agent, reason) {
     const was = state.exhausted[agent];
@@ -280,9 +355,11 @@
   // output → the agent is answering again, so clear.
   function noteAgentTurn(agent, text) {
     if (!AGENTS.includes(agent)) return;
+    state.activity[agent] = null;  // its turn ended
     const reason = exhaustReason(agent, text);
     if (reason) flagExhausted(agent, reason);
     else if (String(text || '').trim()) clearExhausted(agent);
+    renderAgentsPanel();
   }
 
   // message-level notice at the point of use: switch the model right here, or
@@ -354,7 +431,11 @@
   function setBusy(b) {
     state.busy = b;
     els.stop.hidden = !b;
-    if (!b) { for (const a of AGENTS) state.agents[a] = false; renderAvatars(); }
+    if (!b) {
+      for (const a of AGENTS) { state.agents[a] = false; state.activity[a] = null; }
+      renderAvatars();
+      renderAgentsPanel();
+    }
   }
 
   // ── transcript ──
@@ -393,8 +474,50 @@
     }
     return html;
   }
+  // GFM tables in prose: a header row with |, a delimiter row of ---, then
+  // body rows. Rendered as a real <table> in a horizontally scrollable wrap
+  // (phones); everything else in the prose block flows through inlineFmt
+  // unchanged. Cells are escaped by inlineFmt — nothing raw reaches innerHTML.
+  const splitRow = line => {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map(c => c.trim());
+  };
+  const isDelimRow = line =>
+    /^[\s|:-]+$/.test(line) && line.includes('-') && line.includes('|') &&
+    splitRow(line).every(c => /^:?-+:?$/.test(c));
+  function blockFmt(raw) {
+    const lines = String(raw).split('\n');
+    let html = '', buf = [];
+    const flush = () => { if (buf.length) { html += inlineFmt(buf.join('\n')); buf = []; } };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.includes('|') && i + 1 < lines.length && isDelimRow(lines[i + 1])) {
+        const align = splitRow(lines[i + 1]).map(c =>
+          /^:-+:$/.test(c) ? 'center' : /^-+:$/.test(c) ? 'right' : '');
+        const tr = (tag, cells) => '<tr>' + cells.map((c, k) =>
+          `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${inlineFmt(c)}</${tag}>`
+        ).join('') + '</tr>';
+        const rows = [];
+        let j = i + 2;
+        while (j < lines.length && lines[j].includes('|') && lines[j].trim()) {
+          rows.push(splitRow(lines[j])); j++;
+        }
+        flush();
+        html += `<div class="tbl-wrap"><table><thead>${tr('th', splitRow(line))}</thead>` +
+          `<tbody>${rows.map(r => tr('td', r)).join('')}</tbody></table></div>`;
+        i = j - 1;
+        // the body is pre-wrap: swallow one blank line after the table so the
+        // block break doesn't double up
+        if (i + 1 < lines.length && !lines[i + 1].trim()) i++;
+      } else buf.push(line);
+    }
+    flush();
+    return html;
+  }
   function fmt(text) {
-    // fences first (on raw text), then inline formatting on the prose parts
+    // fences first (on raw text), then block/inline formatting on the prose
     const parts = String(text).split(/```([\s\S]*?)```/);
     let html = '';
     for (let i = 0; i < parts.length; i++) {
@@ -402,7 +525,7 @@
         const body = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
         html += `<pre><code>${esc(body)}</code></pre>`;
       } else {
-        html += inlineFmt(parts[i]);
+        html += blockFmt(parts[i]);
       }
     }
     return html;
@@ -976,25 +1099,29 @@
     const url = location.pathname + location.search + want;
     try { history.replaceState(null, '', url); } catch { location.hash = want; }
   }
-  function sessionExists(sid) {
-    for (const pr of (state.projects && state.projects.projects) || [])
-      for (const s of pr.sessions || []) if (s.session_id === sid) return true;
-    return false;
-  }
   // The hash drives navigation only on initial load (deep link / reload) and
   // on real hashchange events. On later 'projects' events the server's active
   // chat is the truth and the hash follows it — otherwise a stale hash would
   // undo server-initiated switches (/new, /delete, a typed /resume).
   let hashRestored = false;
-  // open the chat the URL names if it exists and isn't already open/opening;
-  // an unknown id falls back to the current chat with a brief, non-blocking
-  // notice (waits for the first 'projects' event before it can resolve one)
+  // open the chat the URL names if it isn't already open/opening. The SERVER
+  // is the authority on which ids exist (it checks the session files on
+  // disk): the sidebar lists only each project's recent chats, so gating on
+  // it here made valid deep links toast "chat not found". A genuinely
+  // unknown id comes back as route_error — the fallback bridge answers, the
+  // toast shows, and the next 'projects' event corrects the URL.
   function routeHash() {
     const sid = hashSid();
     if (!sid || sid === state.currentSid || sid === state.pendingSwitch) return;
     if (!state.projects) return;
-    if (sessionExists(sid)) switchTo(sid);
-    else { toast('chat not found — showing the current chat'); syncHash(state.currentSid); }
+    // one-shot guard: the id the server just refused isn't re-asked in the
+    // same breath, but a later deliberate navigation may retry it
+    if (sid === state.routeErrorSid) {
+      state.routeErrorSid = null;
+      syncHash(state.currentSid);
+      return;
+    }
+    switchTo(sid);
   }
 
   // mobile slide-over / desktop collapse
@@ -1229,7 +1356,9 @@
       case 'route_error':
         // the chat this tab asked for could not be attached (unknown id,
         // open-chat limit): we are on the fallback bridge — say so and let
-        // the next 'projects' event correct the URL
+        // the next 'projects' event correct the URL. Remember the refused id
+        // so routeHash doesn't immediately re-ask for it (toast loop).
+        state.routeErrorSid = state.pendingSwitch || hashSid() || null;
         toast(ev.error || 'chat not found — showing the current chat');
         state.pendingSwitch = null;
         state.resuming = false;
@@ -1259,6 +1388,8 @@
         if (ev.model && AGENTS.includes(String(ev.model).toLowerCase())) {
           const m = String(ev.model).toLowerCase();
           if (!state.agents[m]) { state.agents[m] = true; renderAvatars(); }
+          // live activity for the agents panel: latest tool + target
+          if (ev.kind === 'tool_start') { state.activity[m] = laneActivity(ev); renderAgentsPanel(); }
         }
         if (ev.kind === 'tool_start' || ev.kind === 'tool_done') laneEvent(ev);
         break;
@@ -1268,21 +1399,32 @@
         setBusy(true);
         break;
       case 'status':
-        els.stProject.textContent = ev.project ? `⌘ ${ev.project}` : '';
-        els.stRoute.textContent = ev.route ? `→ ${ev.route}` : '';
+        state.facts = {
+          mode: ev.mode || '', lead: ev.lead || '',
+          route: ev.route || '', project: ev.project || '',
+        };
+        for (const a of AGENTS) {
+          state.ctxStat[a] = {
+            pct: ev[`${a}_pct`], tokens: ev[`${a}_tokens`], window: ev[`${a}_window`],
+          };
+          state.relay[a] = {
+            at: ev[`${a}_last_relay_at`] || null,
+            tier: ev[`${a}_last_relay_tier`] || null,
+          };
+        }
         {
+          // ambient glance only — whole percents; the panel has the detail
           const bits = [];
-          if (ev.claude_pct != null) bits.push(`C ${ev.claude_pct}%`);
-          if (ev.codex_pct != null) bits.push(`X ${ev.codex_pct}%`);
+          if (ev.claude_pct != null) bits.push(`C ${Math.round(ev.claude_pct)}%`);
+          if (ev.codex_pct != null) bits.push(`X ${Math.round(ev.codex_pct)}%`);
           els.stCtx.textContent = bits.join(' · ');
         }
         // authoritative current model per agent (additive fields; older
         // bridges omit them and the switcher just shows "—")
         if ('claude_model' in ev) state.models.claude = ev.claude_model || null;
         if ('codex_model' in ev) state.models.codex = ev.codex_model || null;
-        renderModelSwitcher();
-        renderStatusModels();
         if ('auto_relay' in ev) { state.autoRelay = !!ev.auto_relay; renderAutoRelay(); }
+        renderAgentsPanel();
         break;
       case 'projects': {
         state.projects = ev;
@@ -1290,6 +1432,9 @@
         for (const pr of ev.projects || []) {
           for (const s of pr.sessions || []) if (s.active) active = s.session_id;
         }
+        // Inbox chats carry the active flag too — missing them left
+        // currentSid null for unfiled chats (phantom "chat not found")
+        for (const s of ev.inbox_sessions || []) if (s.active) active = s.session_id;
         state.currentSid = active;
         autoOpenActiveProject(ev);
         renderProjects();
@@ -1473,6 +1618,7 @@
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.body.classList.contains('side-open')) closeSide();
+    if (e.key === 'Escape') closeAgents();
   });
   // a pasted link or a back/forward navigation between #/chat/<id> hashes
   window.addEventListener('hashchange', routeHash);

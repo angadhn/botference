@@ -4198,10 +4198,21 @@ class TestRelayParsing:
         assert p.kind is InputKind.RELAY
         assert p.target == ""
 
-    def test_relay_at_all_invalid(self):
-        p = parse_input("/relay @all")
-        assert p.kind is InputKind.RELAY
-        assert p.target == ""
+    # ── @both (and its @all alias) ──
+
+    def test_all_both_aliases_equivalent(self):
+        forms = [
+            "/relay @both",
+            "/relay both",
+            "/relay-both",
+            "/relay @all",   # @all normalizes to both
+            "/relay all",
+            "/tag @both",
+        ]
+        results = [parse_input(f) for f in forms]
+        for r in results:
+            assert r.kind is InputKind.RELAY
+            assert r.target == "both"
 
     def test_relay_unknown_model(self):
         p = parse_input("/relay @gemini")
@@ -4231,11 +4242,12 @@ class TestBotferenceRelay:
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("usage" in t.lower() for t in system_msgs)
 
-    async def test_relay_at_all_shows_usage(self):
+    async def test_relay_at_all_routes_to_both(self):
+        """/relay @all is an alias for @both; with no sessions it explains that."""
         c, _, _, ui = _make_botference()
         await c.handle_input("/relay @all", ui)
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
-        assert any("usage" in t.lower() for t in system_msgs)
+        assert any("no active session" in t.lower() for t in system_msgs)
 
     async def test_relay_no_session_shows_error(self):
         """Relay target with no active session should explain the issue."""
@@ -4828,6 +4840,180 @@ class TestRelayGeneration:
         system_msgs = [t for s, t in ui.room_entries if s == "system"]
         assert any("relayed codex" in t.lower() for t in system_msgs)
         assert any("tier: cross" in t.lower() for t in system_msgs)
+
+
+# ── /relay @both: shared handoff, parallel restart ────────
+
+
+@pytest.mark.asyncio
+class TestRelayBoth:
+    async def test_both_no_sessions_shows_error(self, tmp_path):
+        c, _, _, ui, _ = _make_relay_botference(tmp_path)
+        await c.handle_input("/relay @both", ui)
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("no active session" in t.lower() for t in system_msgs)
+
+    async def test_both_single_session_falls_back_to_single_relay(self, tmp_path):
+        c, claude, codex, ui, _ = _make_relay_botference(
+            tmp_path,
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
+        )
+        await c.handle_input("@claude hello", ui)
+        ui.room_entries.clear()
+        await c.handle_input("/relay @both", ui)
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("relaying it alone" in t.lower() for t in system_msgs)
+        assert any("relayed claude" in t.lower() for t in system_msgs)
+        assert len(codex.send_calls) == 0
+
+    async def test_both_shared_handoff_single_generation(self, tmp_path):
+        """One handoff generation bootstraps both fresh sessions."""
+        c, claude, codex, ui, work_dir = _make_relay_botference(
+            tmp_path,
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
+            codex_responses=[_ok("init"), _ok("fresh")],
+        )
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("@codex hello", ui)
+        ui.room_entries.clear()
+
+        await c.handle_input("/relay @both", ui)
+
+        # Exactly one LLM generation (author = claude via tie-break); the
+        # peer's doc reuses the same body under tier "cross".
+        assert len(claude.resume_calls) == 1
+        assert len(codex.resume_calls) == 0
+
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("relayed claude (tier: self)" in t.lower() for t in system_msgs)
+        assert any("relayed codex (tier: cross)" in t.lower() for t in system_msgs)
+
+        # Both restarted fresh (init + restart sends each)
+        assert len(claude.send_calls) == 2
+        assert len(codex.send_calls) == 2
+        assert "claude" in c._models_initialized
+        assert "codex" in c._models_initialized
+
+        # History docs written for both, sharing the generated body
+        for model, tier in (("claude", "self"), ("codex", "cross")):
+            history = list((work_dir / "handoffs" / model).iterdir())
+            assert len(history) == 1
+            content = history[0].read_text()
+            assert f"model: {model}" in content
+            assert f"generation_tier: {tier}" in content
+            assert "Test relay objective" in content
+
+    async def test_both_degraded_author_uses_mechanical(self, tmp_path):
+        """When even the healthiest agent is >= cross max, no LLM is asked."""
+        c, claude, codex, ui, _ = _make_relay_botference(
+            tmp_path,
+            claude_responses=[_ok("init"), _ok("fresh")],
+            codex_responses=[_ok("init"), _ok("fresh")],
+        )
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("@codex hello", ui)
+        c._yield_pressure["claude"] = 95.0
+        c._yield_pressure["codex"] = 97.0
+        ui.room_entries.clear()
+
+        await c.handle_input("/relay @both", ui)
+
+        assert len(claude.resume_calls) == 0
+        assert len(codex.resume_calls) == 0
+        system_msgs = [t for s, t in ui.room_entries if s == "system"]
+        assert any("relayed claude (tier: mechanical)" in t.lower() for t in system_msgs)
+        assert any("relayed codex (tier: mechanical)" in t.lower() for t in system_msgs)
+
+    async def test_both_records_relay_provenance(self, tmp_path):
+        c, claude, codex, ui, _ = _make_relay_botference(
+            tmp_path,
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
+            codex_responses=[_ok("init"), _ok("fresh")],
+        )
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("@codex hello", ui)
+        await c.handle_input("/relay @both", ui)
+
+        snap = c.status_snapshot()
+        assert snap.claude_last_relay_tier == "self"
+        assert snap.codex_last_relay_tier == "cross"
+        assert snap.claude_last_relay_at
+        assert snap.codex_last_relay_at
+
+    async def test_provenance_survives_persist_restore(self, tmp_path):
+        c, claude, codex, ui, _ = _make_relay_botference(
+            tmp_path,
+            claude_responses=[_ok("init"), _ok(_VALID_HANDOFF_BODY), _ok("fresh")],
+            codex_responses=[_ok("init"), _ok("fresh")],
+        )
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("@codex hello", ui)
+        await c.handle_input("/relay @both", ui)
+
+        # Round-trip through the persisted payload into a fresh controller
+        payload = c._session_payload()
+        c2 = Botference(
+            claude=MockAdapter([_ok("x")]), codex=MockAdapter([_ok("x")]),
+            system_prompt="Test prompt", task="Test task", paths=c.paths,
+        )
+        c2._restore_from_payload(payload)
+        snap = c2.status_snapshot()
+        assert snap.claude_last_relay_tier == "self"
+        assert snap.codex_last_relay_tier == "cross"
+
+
+# ── Recency semantics: updated_at means activity, not persistence ──
+
+
+@pytest.mark.asyncio
+class TestRecencySemantics:
+    async def test_persist_without_activity_keeps_updated_at(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude hello", ui)
+        stamp = c.updated_at
+        c._persist_session()  # no new transcript entries, no rename
+        assert c.updated_at == stamp
+
+    async def test_restore_then_persist_keeps_updated_at(self, tmp_path):
+        """Opening (resuming) a chat must not bump its recency."""
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude hello", ui)
+        payload = c._session_payload()
+        stamp = payload["updated_at"]
+
+        c2, _, _, _ = _make_botference()
+        c2._restore_from_payload(payload)
+        c2._persist_session()
+        assert c2.updated_at == stamp
+
+    async def test_rename_counts_as_activity(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude hello", ui)
+        before = (len(c.transcript.entries), c.custom_title)
+        c.custom_title = "renamed"
+        c._persist_session()
+        assert c._persisted_activity != before
+        assert c._persisted_activity == (len(c.transcript.entries), "renamed")
+
+    def test_panel_orders_by_updated_at_not_mtime(self):
+        """A chat merely OPENED (fresh mtime) must not outrank one recently
+        messaged (fresh updated_at)."""
+        c, _, _, _ = _make_botference()
+        rows = [
+            (2000.0, "s-opened", "Opened", "2026-08-01T00:00:00Z"),
+            (1000.0, "s-messaged", "Messaged", "2026-08-05T00:00:00Z"),
+        ]
+        sessions = c._panel_sessions(rows)
+        assert [s.session_id for s in sessions] == ["s-messaged", "s-opened"]
+
+    def test_panel_mtime_fallback_when_updated_at_missing(self):
+        c, _, _, _ = _make_botference()
+        rows = [
+            (1_754_000_000.0, "older", "Older", ""),
+            (1_754_000_100.0, "newer", "Newer", ""),
+        ]
+        sessions = c._panel_sessions(rows)
+        assert [s.session_id for s in sessions] == ["newer", "older"]
 
 
 # ── Task 6: Mechanical handoff generation ─────────────────

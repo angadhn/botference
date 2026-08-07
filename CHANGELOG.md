@@ -1,5 +1,50 @@
 # CHANGELOG
 
+## 2026-08-06
+
+- **`/relay @both` — reset both agents at once, token-efficiently.** The
+  agent with the most context headroom authors **one** shared handoff;
+  both fresh sessions bootstrap from it (author's copy is tier `self`,
+  the peer's `cross`) and the restarts run in parallel. One generation
+  instead of two; falls back to the free mechanical handoff when even
+  the healthiest agent is ≥ the cross-tier ceiling. Aliases: `@all`,
+  `/relay-both`. With only one live session it degrades to a normal
+  single relay.
+- **Council web: agents panel.** A per-agent condition dashboard — right
+  rail on wide desktop; on phones/narrow windows it slides in from the
+  right via its own header toggle, keeping the left drawer purely
+  projects and chats (context usage finally readable on mobile).
+  Each card: context gauge with whole percents and compact tokens
+  (`43% · 86k / 200k`) and the 50% auto-relay threshold ticked, live
+  activity (current tool + target), model picker, a relay button, and
+  relay provenance ("memory reset 12m ago · self handoff") fed by new
+  additive status fields (`*_last_relay_at`/`*_last_relay_tier`,
+  persisted with the session). Panel footer: **relay both**, the
+  auto-relay toggle (moved from the sidebar), and session facts
+  (project/mode/lead/route) — the top status strip slims down to
+  connection state plus a rounded `C 43% · X 62%` glance instead of
+  full-precision floats.
+- **Council web: markdown tables render as tables.** A sign-off sheet
+  from a bot now arrives as a real table (alignment, inline formatting
+  in cells, escaped markup, horizontally scrollable on phones), not a
+  wall of pipes. Bare piped prose without a `|---|` delimiter row stays
+  prose.
+- **Council web: the sidebar's recent chats are live and honest.** Three
+  fixes. (1) The projects snapshot is now treated as *workspace* state on
+  the server: the freshest snapshot from any chat's bridge fans out to
+  every tab (re-marked so each tab keeps its own chat flagged active) and
+  is replayed on attach — previously each tab replayed its own bridge's
+  stale listing, so the sidebar time-traveled backwards on chat switches
+  and never heard about other chats' activity. (2) Recency now means *last
+  message*: `updated_at` bumps only when the transcript (or title)
+  actually changed, and the panel sorts by it — merely opening a chat
+  re-saved its file and let opened-but-idle chats outrank
+  recently-messaged ones. (3) The phantom "chat not found" toast is gone:
+  the client no longer pre-judges deep links against the truncated
+  8-per-project panel listing (and it now scans Inbox rows for the active
+  flag) — the server, which checks the session files on disk, is the
+  authority, and only a genuine `route_error` toasts.
+
 ## 2026-08-05
 
 - **`botference see` renders local files.** A target that is an existing

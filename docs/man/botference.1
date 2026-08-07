@@ -235,13 +235,17 @@ checkpoint.
 .TP
 .B /relay /compact /goal /permissions /status /auth /model /effort
 Session management, including per-participant model and effort switches.
+.B /relay @both
+(alias @all, /relay-both) resets both agents at once from one shared
+handoff \(em authored once by the agent with the most context headroom
+\(em with both restarts running in parallel.
 .TP
 .B /autorelay [on|off]
 Auto-relay a model when its context occupancy crosses 50% of its window,
 reusing the same handoff machinery as /relay. On by default; the relay is
 deferred to a safe boundary (never mid-turn or mid free-form thread) and
 lands before that model's next turn. Persists per-user; a matching toggle
-appears in the web council sidebar.
+appears in the web council agents panel.
 .TP
 .B /notify [on|off]
 Desktop notification (via your terminal) when the bots finish a turn.

@@ -34,6 +34,12 @@ class StatusSnapshot:
     codex_model: Optional[str] = None
     observe_enabled: bool = True
     auto_relay: bool = True
+    # Relay provenance: when each model's session was last relayed and which
+    # tier authored the handoff ("self"/"cross"/"mechanical"). None = never.
+    claude_last_relay_at: Optional[str] = None
+    claude_last_relay_tier: Optional[str] = None
+    codex_last_relay_at: Optional[str] = None
+    codex_last_relay_tier: Optional[str] = None
 
 
 @dataclass(frozen=True)

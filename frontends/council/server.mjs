@@ -192,6 +192,46 @@ const bridges = new Map(); // bridge id -> Bridge
 let nextBridgeSeq = 1;
 let primaryId = null;      // the bridge sid-less connections attach to
 
+// The projects snapshot is WORKSPACE state, not per-chat state: every bridge
+// derives it from the same session files on disk, so the freshest snapshot
+// from ANY bridge supersedes what every tab shows. It is pinned globally
+// (never per-bridge history — replaying an old snapshot made the sidebar
+// time-travel backwards on chat switches) and re-marked per receiving bridge
+// so each tab still sees its OWN chat flagged active.
+let latestProjects = null;
+let latestProjectsFrom = null;  // bridge id that produced latestProjects
+const emptySnapshot = ev =>
+  !(ev.projects || []).length && !(ev.inbox_sessions || []).length && !ev.inbox_session_count;
+function remarkProjects(ev, bridge, isSource = false) {
+  // the emitting bridge's own tabs get the snapshot verbatim — its
+  // controller's active flags and active_project_id are already theirs
+  // (a project can be active while the open chat is still unfiled)
+  if (isSource) return ev;
+  const sid = bridge.sid || bridge.claimedSid || null;
+  let activePid = '';
+  const projects = (ev.projects || []).map(pr => {
+    const sessions = (pr.sessions || []).map(s => ({ ...s, active: s.session_id === sid }));
+    if (sessions.some(s => s.active)) activePid = pr.id;
+    return { ...pr, sessions };
+  });
+  for (const pr of projects) pr.active = pr.id === activePid;
+  return {
+    ...ev,
+    projects,
+    inbox_sessions: (ev.inbox_sessions || []).map(s => ({ ...s, active: s.session_id === sid })),
+    active_project_id: activePid,
+  };
+}
+function publishProjects(ev, source) {
+  // a fresh bridge's empty startup placeholder (emitted before its first
+  // 'ready', ahead of panel hydration) must not wipe a populated sidebar in
+  // every tab; post-ready empty snapshots are real (workspace emptied out)
+  if (latestProjects && emptySnapshot(ev) && source && !source.readySeen) return;
+  latestProjects = ev;
+  latestProjectsFrom = source ? source.id : null;
+  for (const b of bridges.values()) b.broadcast(remarkProjects(ev, b, b === source), false);
+}
+
 const helloEvent = b => ({
   type: 'hello', hosted: HOSTED, noauth: NO_AUTH,
   bridge: !!(b && b.available),
@@ -312,10 +352,15 @@ class Bridge {
       for (const pr of ev.projects || []) {
         for (const s of pr.sessions || []) if (s.active) active = s.session_id;
       }
+      for (const s of ev.inbox_sessions || []) if (s.active) active = s.session_id;
       if (active) {
         this.sid = active;
         if (active === this.claimedSid) { this.claimedSid = null; this.resuming = false; }
       }
+      // workspace state: pinned globally + fanned out to every tab, never
+      // recorded in this bridge's history (see publishProjects)
+      publishProjects(ev, this);
+      return;
     }
     if (ev.type === 'ready') {
       this.busy = false;
@@ -570,6 +615,9 @@ function replayTo(send, b, routeError) {
   if (routeError) send({ type: 'route_error', error: routeError });
   send(helloEvent(b));
   if (b.pinnedCtx) send(b.pinnedCtx);
+  // freshest workspace sidebar regardless of which bridge computed it —
+  // per-bridge history no longer carries projects events
+  if (latestProjects) send(remarkProjects(latestProjects, b, b.id === latestProjectsFrom));
   for (const ev of b.history) send(ev);
   // explicit replay boundary: the client pins the transcript to the bottom
   // here instead of trusting per-event scroll heuristics during replay

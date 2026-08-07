@@ -321,6 +321,10 @@ class InkBridge:
             "codex_model": status.codex_model,
             "observe": status.observe_enabled,
             "auto_relay": status.auto_relay,
+            "claude_last_relay_at": status.claude_last_relay_at,
+            "claude_last_relay_tier": status.claude_last_relay_tier,
+            "codex_last_relay_at": status.codex_last_relay_at,
+            "codex_last_relay_tier": status.codex_last_relay_tier,
         })
 
     def set_projects(self, state: ProjectPanelState) -> None:

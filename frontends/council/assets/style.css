@@ -157,7 +157,6 @@ body.side-collapsed #side { margin-left: -272px }
 .side-foot { padding: .7rem 1rem calc(.7rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--card-line) }
 #theme-toggle, #autorelay-toggle { display: flex; align-items: center; gap: .6rem }
-#autorelay-toggle { margin-bottom: .55rem }
 #theme-toggle .chip-label, #autorelay-toggle .chip-label { font: .66rem var(--sans);
   text-transform: uppercase; letter-spacing: .06em; color: var(--muted) }
 #autorelay-toggle .seg-btn { font: .66rem var(--sans); text-transform: uppercase;
@@ -248,6 +247,14 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
   padding: .7rem .9rem; margin: .5rem 0 }
 .msg .body code { white-space: pre-wrap }
 .msg .body pre code { background: none; padding: 0; white-space: inherit }
+/* markdown tables: real <table>, horizontally scrollable on narrow screens */
+.msg .body .tbl-wrap { white-space: normal; overflow-x: auto; margin: .45rem 0;
+  max-width: 100% }
+.msg .body table { border-collapse: collapse; font: .82rem/1.5 var(--sans) }
+.msg .body th, .msg .body td { border: 1px solid var(--card-line);
+  padding: .3rem .6rem; text-align: left; vertical-align: top }
+.msg .body th { background: var(--rail); color: var(--heading); font-weight: 600;
+  white-space: nowrap }
 .msg.claude { --author: var(--claude) }
 .msg.codex { --author: var(--codex) }
 .msg.user { align-self: flex-end; max-width: 85%; background: var(--user-bubble);
@@ -407,10 +414,7 @@ main { position: relative }
 #complete .opt.sel, #complete .opt:hover {
   background: color-mix(in srgb, var(--accent) 9%, var(--card)) }
 
-/* ── model switcher (sidebar) ────────────────────────────── */
-#model-switcher { display: flex; flex-direction: column; gap: .45rem }
-#model-switcher .chip-label { font: .66rem var(--sans); text-transform: uppercase;
-  letter-spacing: .06em; color: var(--muted) }
+/* ── agent model select + brand marks (agents panel, notices) ── */
 .ms-row { display: flex; align-items: center; gap: .5rem }
 .ms-mark { width: 26px; height: 26px; flex: none; border-radius: 50%; overflow: hidden;
   display: inline-flex }
@@ -425,7 +429,64 @@ main { position: relative }
 .ms-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
 .ms-row.exhausted .ms-mark { opacity: .5 }
 .warn-badge { color: var(--bad); font-size: .8em; line-height: 1 }
-#st-model { color: var(--muted) }
+
+/* ── agents panel: right rail on wide desktop, right slide-over otherwise ── */
+#agents-body { display: flex; flex-direction: column; gap: .8rem }
+.chip-label { font: .66rem var(--sans); text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted) }
+#agent-cards { display: flex; flex-direction: column; gap: .7rem }
+.agent-card { border: 1px solid var(--card-line); border-radius: 10px;
+  background: var(--card); padding: .6rem .7rem;
+  display: flex; flex-direction: column; gap: .45rem }
+.agent-card.exhausted { opacity: .8 }
+.ac-head { display: flex; align-items: center; gap: .5rem; min-width: 0 }
+.ac-name { font: 600 .78rem var(--sans); color: var(--heading);
+  display: flex; align-items: center; gap: .3rem }
+.ac-activity { margin-left: auto; font: .68rem var(--sans); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55% }
+.ac-activity.on { color: var(--accent) }
+/* context gauge: fill = occupancy, tick = the 50% auto-relay threshold */
+.ac-gauge { position: relative; height: 6px; border-radius: 3px;
+  background: var(--rail); border: 1px solid var(--card-line) }
+.ac-fill { height: 100%; border-radius: 3px; background: var(--ok);
+  transition: width .3s ease }
+.ac-gauge.warm .ac-fill { background: var(--accent) }
+.ac-gauge.hot .ac-fill { background: var(--bad) }
+.ac-tick { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px;
+  background: var(--muted); opacity: .6 }
+.ac-meta { display: flex; align-items: center; gap: .5rem; font: .72rem var(--sans) }
+.ac-pct { font-weight: 600; color: var(--heading) }
+.ac-tok { color: var(--muted) }
+.ac-relay { margin-left: auto; font: .68rem var(--sans); padding: .22rem .5rem }
+.ac-fresh { font: .66rem var(--sans); color: var(--muted) }
+.ap-actions { display: flex; align-items: center; justify-content: space-between;
+  gap: .6rem; flex-wrap: wrap }
+#relay-both { font: .72rem var(--sans) }
+#ap-facts { display: flex; flex-direction: column; gap: .25rem;
+  font: .72rem var(--sans); color: var(--fg);
+  border-top: 1px solid var(--card-line); padding-top: .6rem }
+#ap-facts:empty { display: none }
+#ap-facts .fact b { font: 700 .62rem var(--sans); text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); margin-right: .45rem }
+/* header toggle for the drawer form (hidden on wide desktop) */
+#agents-toggle { border: 0; background: none; color: var(--muted); padding: .35rem;
+  min-height: 38px; flex: none }
+#agents-toggle svg { width: 20px; height: 20px; display: block }
+#agents-toggle:hover { color: var(--accent) }
+/* below the wide breakpoint: a RIGHT-side slide-over (the left drawer stays
+   purely projects + chats) */
+#agents-panel { position: fixed; inset: 0 0 0 auto; z-index: 20;
+  width: min(85vw, 320px); background: var(--rail);
+  border-left: 1px solid var(--card-line);
+  padding: .9rem 1rem calc(.9rem + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto; transform: translateX(100%); transition: transform .15s ease;
+  box-shadow: -8px 0 30px rgba(0, 0, 0, .2) }
+body.agents-open #agents-panel { transform: translateX(0) }
+@media (min-width: 1101px) {
+  #agents-panel { position: static; transform: none; transition: none;
+    display: block; width: 264px; flex: none; z-index: auto; box-shadow: none }
+  #agents-toggle { display: none }
+}
 
 /* out-of-credits: dimmed avatar + a ⚠ corner badge */
 .avatar-ring.exhausted { opacity: .45 }
@@ -476,7 +537,6 @@ main { position: relative }
   .msg .body { font-size: .98rem }
   .msg.user { max-width: 92% }
   #statusbar { gap: .6rem }
-  #st-route { display: none }
   .composer-hint { visibility: hidden }
   #jump { bottom: calc(8rem + env(safe-area-inset-bottom, 0px)) }
   .chat-col { padding: 0 .9rem }

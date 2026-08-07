@@ -346,6 +346,44 @@ test('bridge pool: ?chat=<sid> runs a second concurrent bridge; POSTs route by b
     'the intercepted /resume was not echoed or forwarded');
 });
 
+test('bridge pool: a projects snapshot from one bridge fans out to every tab, re-marked per chat', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  // tab A on the primary bridge (its chat: abc12345, per the fake's startup)
+  const a = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => a.close());
+  await a.next(e => e.type === 'hello');
+  await a.next(e => e.type === 'replay_done');
+  // tab B spawns a second bridge that resumes sidB0001; its post-resume
+  // snapshot (listing sidB0001 + abc12345) is workspace state
+  const b = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=sidB0001' });
+  t.after(() => b.close());
+  await b.next(e => e.type === 'hello');
+  await b.next(e => e.type === 'replay_done');
+  // the snapshot reaches TAB A (cross-bridge fanout), re-marked so tab A's
+  // own chat stays the active one
+  const pA = await a.next(e => e.type === 'projects' &&
+    ((e.projects[0] || {}).sessions || []).some(x => x.session_id === 'sidB0001'), 8000);
+  const rowsA = Object.fromEntries(pA.projects[0].sessions.map(x => [x.session_id, x.active]));
+  assert.equal(rowsA.abc12345, true, "tab A keeps its own chat flagged active");
+  assert.equal(rowsA.sidB0001, false, "the other tab's chat is not active for tab A");
+  // and tab B's copy of the same snapshot marks sidB0001 active instead
+  const pB = await b.next(e => e.type === 'projects' &&
+    ((e.projects[0] || {}).sessions || []).some(x => x.session_id === 'sidB0001'), 8000);
+  const rowsB = Object.fromEntries(pB.projects[0].sessions.map(x => [x.session_id, x.active]));
+  assert.equal(rowsB.sidB0001, true, "tab B sees its own chat active");
+  assert.equal(rowsB.abc12345, false);
+  // a LATER tab connecting to the primary replays the freshest snapshot —
+  // not the primary's own stale startup listing
+  const c2 = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => c2.close());
+  const pC = await c2.next(e => e.type === 'projects');
+  assert.ok((pC.projects[0].sessions || []).some(x => x.session_id === 'sidB0001'),
+    'replay serves the globally freshest snapshot');
+  await c2.next(e => e.type === 'replay_done');
+});
+
 test('bridge pool: an unknown chat id falls back to the primary bridge with a route_error', async t => {
   const { wsConnect } = await import('./fixtures/ws-client.mjs');
   const s = await startServer();
@@ -950,9 +988,42 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   assert.match(css, /#input\s*\{[^}]*font:\s*16px/, '16px input font (no iOS zoom-on-focus)');
 });
 
+test('markdown tables render as real tables; cells escaped; bare pipes stay prose',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'room', speaker: 'claude', text: [
+    'Sign-off sheet:',
+    '',
+    '| Step | Owner | Status |',
+    '| --- | :---: | ---: |',
+    '| Schema | Claude | **done** |',
+    '| Cutover | <script>x</script> | pending |',
+    '',
+    'Ping me when signed.',
+  ].join('\n') });
+  const body = doc.querySelector('.msg.claude .body');
+  const table = body.querySelector('.tbl-wrap table');
+  assert.ok(table, 'markdown table renders as a real <table>');
+  assert.equal(table.querySelectorAll('thead th').length, 3);
+  assert.equal(table.querySelectorAll('tbody tr').length, 2);
+  assert.match(table.querySelectorAll('thead th')[1].getAttribute('style') || '', /center/);
+  assert.match(table.querySelectorAll('thead th')[2].getAttribute('style') || '', /right/);
+  assert.ok(table.querySelector('tbody strong'), 'inline formatting works inside cells');
+  assert.equal(table.querySelector('script'), null, 'cell markup stays escaped');
+  assert.match(table.textContent, /<script>x<\/script>/);
+  assert.match(body.textContent, /Sign-off sheet:/);
+  assert.match(body.textContent, /Ping me when signed\./);
+  // a lone piped line with no delimiter row is prose, not a table
+  C.handle({ type: 'room', speaker: 'codex', text: 'either A | B works\nyour call' });
+  const cx = [...doc.querySelectorAll('.msg.codex .body')].pop();
+  assert.equal(cx.querySelector('table'), null);
+  assert.match(cx.textContent, /A \| B/);
+});
+
 // ------------------------------------------- UI: model switcher + exhaustion
 
-test('model switcher renders from completion_context; selecting sends /model verbatim',
+test('agents panel: per-agent model select, rounded gauge, relay provenance, relay buttons',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C, posts } = await mkHarness(t);
   C.handle({ type: 'hello', bridge_id: 'b1' });
@@ -962,22 +1033,48 @@ test('model switcher renders from completion_context; selecting sends /model ver
     '/model @claude ': ['claude-fable-5', 'claude-opus-4-8', 'claude-haiku-4-5'],
     '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'],
   } });
-  C.handle({ type: 'status', route: '@all', project: 'p', claude_pct: 10, codex_pct: 5,
-    claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' });
-  const sw = doc.getElementById('model-switcher');
-  assert.match(sw.textContent, /Claude/);
-  assert.match(sw.textContent, /Codex/);
-  const claudeSel = sw.querySelector('select.ms-select[data-agent="claude"]');
+  C.handle({ type: 'status', mode: 'public', lead: 'auto', route: '@all', project: 'p',
+    claude_pct: 43.21739130434783, codex_pct: 5.4,
+    claude_tokens: 86435, claude_window: 200000, codex_tokens: 10800, codex_window: 200000,
+    claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol',
+    claude_last_relay_at: new Date(Date.now() - 12.5 * 60000).toISOString(),
+    claude_last_relay_tier: 'self' });
+  const cards = doc.getElementById('agent-cards');
+  assert.match(cards.textContent, /Claude/);
+  assert.match(cards.textContent, /Codex/);
+  const claudeSel = cards.querySelector('select.ms-select[data-agent="claude"]');
   assert.ok(claudeSel, 'claude model <select> renders');
   assert.equal(claudeSel.value, 'claude-fable-5', 'current model is preselected');
   assert.equal(claudeSel.querySelectorAll('option').length, 3, 'all scoped claude models offered');
-  assert.match(doc.getElementById('st-model').textContent, /fable-5/, 'current model visible near the status strip');
+
+  // gauge + meta: whole percents and compact tokens — no float spew anywhere
+  const cc = cards.querySelector('.agent-card[data-agent="claude"]');
+  assert.equal(cc.querySelector('.ac-pct').textContent, '43%');
+  assert.equal(cc.querySelector('.ac-tok').textContent, '86k / 200k');
+  assert.ok(cc.querySelector('.ac-tick'), 'auto-relay threshold tick present');
+  // relay provenance ("is its memory fresh?")
+  assert.match(cc.querySelector('.ac-fresh').textContent, /memory reset 12m ago · self handoff/);
+  const cx = cards.querySelector('.agent-card[data-agent="codex"]');
+  assert.match(cx.querySelector('.ac-fresh').textContent, /no relay yet/);
+  // ambient top-strip summary is rounded too
+  assert.equal(doc.getElementById('st-ctx').textContent, 'C 43% · X 5%');
+  // session facts render in the panel
+  assert.match(doc.getElementById('ap-facts').textContent, /public/);
+  assert.match(doc.getElementById('ap-facts').textContent, /@all/);
 
   // selecting a model sends the exact bridge command through the input path
   claudeSel.value = 'claude-opus-4-8';
   claudeSel.dispatchEvent(new w.Event('change', { bubbles: true }));
   await new Promise(r => setTimeout(r, 5));
   assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/model @claude claude-opus-4-8', attachments: [] } });
+
+  // per-agent relay and relay-both send plain slash commands
+  cards.querySelector('.agent-card[data-agent="codex"] .ac-relay').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/relay @codex', attachments: [] } });
+  doc.getElementById('relay-both').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/relay @both', attachments: [] } });
 });
 
 test('credit exhaustion flags the agent (avatar + notice), clears on a normal turn, and warns before send',
@@ -1136,13 +1233,23 @@ test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link r
   C.handle(projects('sidA'));
   C.handle({ type: 'replay_done' });
 
-  // an unknown id falls back to the current chat with a notice, no navigation
+  // an unknown id is ASKED OF THE SERVER (the sidebar lists only recent
+  // chats, so the client no longer pre-judges): the server refuses with
+  // route_error, and the next projects event corrects the URL — without the
+  // client re-asking for the refused id (no toast loop)
   const n = wsUrls.length;
   w.location.hash = '#/chat/does-not-exist';
   w.dispatchEvent(new w.Event('hashchange'));
   await new Promise(r => setTimeout(r, 5));
-  assert.equal(wsUrls.length, n, 'an unknown id triggers no reattach');
+  assert.equal(wsUrls.length, n + 1, 'the unknown id is attempted against the server');
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=does-not-exist$/);
+  C.handle({ type: 'route_error', error: 'chat not found' });
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle(projects('sidA'));
+  C.handle({ type: 'replay_done' });
+  await new Promise(r => setTimeout(r, 5));
   assert.equal(w.location.hash, '#/chat/sidA', 'the URL falls back to the current chat');
+  assert.equal(wsUrls.length, n + 1, 'the refused id is not re-asked');
 });
 
 test('hash routing: a link opened straight to #/chat/<id> restores that chat once the session list arrives',

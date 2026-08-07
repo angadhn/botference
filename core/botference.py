@@ -225,8 +225,8 @@ _MENTION_RE = re.compile(
 )
 
 # Relay command patterns
-_RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex)$", re.IGNORECASE)
-_RELAY_TARGET_RE = re.compile(r"^@?(claude|codex)$", re.IGNORECASE)
+_RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex|both)$", re.IGNORECASE)
+_RELAY_TARGET_RE = re.compile(r"^@?(claude|codex|both|all)$", re.IGNORECASE)
 _HARNESS_TARGET_RE = re.compile(
     r"^@?(claude|codex)(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL
 )
@@ -293,6 +293,8 @@ def get_slash_commands() -> list[str]:
     for cmd in _TARGETED_COMMANDS:
         out.append(f"{cmd} @claude")
         out.append(f"{cmd} @codex")
+        if cmd in ("/relay", "/tag"):
+            out.append(f"{cmd} @both")
     for cmd in _SLASH_COMMANDS:
         if cmd in _TARGETED_COMMANDS:
             continue
@@ -322,9 +324,10 @@ def parse_input(raw: str) -> ParsedInput:
             arg = parts[1].strip() if len(parts) > 1 else ""
             m = _RELAY_TARGET_RE.match(arg)
             if m:
-                return ParsedInput(
-                    kind=InputKind.RELAY, target=m.group(1).lower(),
-                )
+                target = m.group(1).lower()
+                if target == "all":
+                    target = "both"
+                return ParsedInput(kind=InputKind.RELAY, target=target)
             return ParsedInput(kind=InputKind.RELAY, target="", body=arg)
 
         # Native harness slash-command passthrough. Botference owns the target
@@ -1195,7 +1198,10 @@ _FREE_FORM_EXTENSION_TURNS = 3        # one automatic extension, then handoff
 _FREE_FORM_EXTENSION_TOKENS = 4_000
 _FREE_FORM_TURN_NUDGE_TOKENS = 400    # per-turn size above which we nudge
 
-_RELAY_USAGE = "Usage: /relay @claude|@codex  (aliases: /relay-claude, /tag @claude)"
+_RELAY_USAGE = (
+    "Usage: /relay @claude|@codex|@both  "
+    "(aliases: /relay-claude, /relay-both, /tag @claude)"
+)
 _HARNESS_COMMAND_USAGE = (
     "Usage: /compact @claude [instructions] or /goal @claude <objective>. "
     "Native passthrough requires --claude-interactive."
@@ -1246,6 +1252,9 @@ class Botference:
         self.custom_title: str = ""
 
         self.transcript = Transcript()
+        # (entry count, title) at last persist — persists that change neither
+        # leave updated_at alone (see _persist_session)
+        self._persisted_activity: tuple[int, str] = (0, "")
         self.router = AutoRouter()
         self.mode = RoomMode.PUBLIC
         self.lead: str = "auto"
@@ -1270,6 +1279,7 @@ class Botference:
         self._warned_overlimit_models: set[str] = set()
         self._yield_pressure: dict[str, float] = {}   # model → normalized yield pressure (100 = yield now)
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
+        self._last_relay: dict[str, dict[str, str]] = {}  # model → {"at": iso, "tier": tier} provenance
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
         self._pending_auto_relay: set[str] = set()      # models due an auto-relay before their next turn
         self._auto_relay_armed: dict[str, bool] = {}    # model → armed; absent means armed (re-arms below threshold)
@@ -1308,6 +1318,10 @@ class Botference:
             codex_model=getattr(self.codex, "model", None),
             observe_enabled=self.observe,
             auto_relay=self.auto_relay,
+            claude_last_relay_at=self._last_relay.get("claude", {}).get("at") or None,
+            claude_last_relay_tier=self._last_relay.get("claude", {}).get("tier") or None,
+            codex_last_relay_at=self._last_relay.get("codex", {}).get("at") or None,
+            codex_last_relay_tier=self._last_relay.get("codex", {}).get("tier") or None,
         )
 
     @property
@@ -1496,6 +1510,22 @@ class Botference:
             session_dirs=dirs,
         )
 
+    @staticmethod
+    def _panel_recency_key(row: tuple[float, str, str, str]) -> str:
+        """Order chats by last ACTIVITY (updated_at), not file mtime — merely
+        opening a chat re-saves its file, and mtime ordering made opened
+        chats outrank recently-messaged ones. Rows without updated_at fall
+        back to an ISO stamp derived from mtime (same format, so comparable).
+        """
+        if row[3]:
+            return row[3]
+        return (
+            _dt.fromtimestamp(row[0], _tz.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
     def _panel_sessions(
         self, rows: list[tuple[float, str, str, str]]
     ) -> list[ProjectPanelSession]:
@@ -1503,7 +1533,7 @@ class Botference:
         sessions: list[ProjectPanelSession] = []
         seen: set[str] = set()
         for _mtime, session_id, title, updated_at in sorted(
-            rows, key=lambda row: row[0], reverse=True
+            rows, key=self._panel_recency_key, reverse=True
         ):
             if session_id in seen:
                 continue
@@ -1819,6 +1849,7 @@ class Botference:
             "models_initialized": sorted(self._models_initialized),
             "yield_pressure": dict(self._yield_pressure),
             "relay_boundary": dict(self._relay_boundary),
+            "last_relay": {m: dict(v) for m, v in self._last_relay.items()},
             "pending_relay_handoffs": dict(self._pending_relay_handoffs),
             "pending_auto_relay": sorted(self._pending_auto_relay),
             "auto_relay_armed": dict(self._auto_relay_armed),
@@ -1839,7 +1870,14 @@ class Botference:
         ):
             return
         try:
-            self.updated_at = iso_now()
+            # updated_at means "last real activity" (new transcript entries or
+            # a rename), NOT "last persisted": merely opening a chat re-saves
+            # it, and bumping here would let opened-but-idle chats outrank
+            # recently-messaged ones in the recents panel.
+            activity = (len(self.transcript.entries), self.custom_title)
+            if activity != self._persisted_activity:
+                self.updated_at = iso_now()
+                self._persisted_activity = activity
             self.session_store.save(self.session_id, self._session_payload())
             if self.active_project_id:
                 self.project_store.associate_session(
@@ -2061,6 +2099,13 @@ class Botference:
                 str(model): int(value)
                 for model, value in (payload.get("relay_boundary", {}) or {}).items()
             }
+            self._last_relay = {
+                str(model): {
+                    "at": str((value or {}).get("at", "")),
+                    "tier": str((value or {}).get("tier", "")),
+                }
+                for model, value in (payload.get("last_relay", {}) or {}).items()
+            }
             self._pending_relay_handoffs = {
                 str(model): str(value)
                 for model, value in (payload.get("pending_relay_handoffs", {}) or {}).items()
@@ -2075,6 +2120,11 @@ class Botference:
                 str(model): bool(value)
                 for model, value in (payload.get("auto_relay_armed", {}) or {}).items()
             }
+            # Restored content is not new activity: the persist that follows a
+            # resume must keep the chat's updated_at (and panel recency) put.
+            self._persisted_activity = (
+                len(self.transcript.entries), self.custom_title,
+            )
         finally:
             self._restoring_session = False
         return saved_mode
@@ -2391,7 +2441,10 @@ class Botference:
             if not parsed.target:
                 self._add_room_entry(ui, "system", _RELAY_USAGE)
                 return
-            await self._relay_model(parsed.target, ui)
+            if parsed.target == "both":
+                await self._relay_both(ui)
+            else:
+                await self._relay_model(parsed.target, ui)
             return
 
         if parsed.kind is InputKind.HARNESS_COMMAND:
@@ -2509,7 +2562,9 @@ class Botference:
             "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
             "",
             "Session management:",
-            "  /relay @claude|@codex — Reset model session with structured handoff",
+            "  /relay @claude|@codex|@both — Reset session(s) with structured handoff",
+            "                     — @both: one shared handoff (authored by the healthiest",
+            "                       agent), both sessions restart from it in parallel",
             "  /autorelay [on|off] — Auto-relay a model at 50% context (on by default; persists)",
             "  /compact @claude [instructions] — Send native Claude Code /compact (requires --claude-interactive)",
             "  /goal @claude <objective> — Send native Claude Code /goal (requires --claude-interactive)",
@@ -2535,7 +2590,7 @@ class Botference:
             "its next tool call, like Claude Code). Codex can't be steered —",
             "messages typed during its turns queue for the next turn.",
             "",
-            "Aliases: /relay-claude, /relay-codex, /tag @claude, /tag @codex",
+            "Aliases: /relay-claude, /relay-codex, /relay-both, /tag @claude, /tag @codex",
             "",
             "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
             "",
@@ -3462,6 +3517,8 @@ class Botference:
 
         restarted = await self._ensure_initialized(model, ui)
 
+        self._record_relay(model, used_tier, now)
+
         # Confirmation
         suffix = f" on {new_model}" if model_changed else ""
         if restarted:
@@ -3477,6 +3534,135 @@ class Botference:
                 f"Relayed {model} (tier: {used_tier}){suffix}, but fresh-session startup failed. "
                 f"Retry by messaging {model}.",
             )
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+
+    def _record_relay(self, model: str, tier: str | None, now: _dt) -> None:
+        """Record relay provenance for the status panel (UI 'memory freshness')."""
+        self._last_relay[model] = {
+            "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "tier": tier or "",
+        }
+
+    async def _relay_both(self, ui: UIPort) -> None:
+        """/relay @both — reset both agents at once from one shared handoff.
+
+        Token-efficient by design: the live agent with the most context
+        headroom authors a single handoff document and both fresh sessions
+        bootstrap from it (the author's copy is tier "self", the peer's is
+        tier "cross"), so only one generation is paid instead of two. The
+        restarts then run concurrently. Falls back to per-model mechanical
+        handoffs when the healthiest author is already too degraded
+        (>= RELAY_TIER_CROSS_MAX) or generation/validation fails.
+        """
+        models = [m for m in ("claude", "codex") if m in self._models_initialized]
+        if not models:
+            self._add_room_entry(ui, "system", "Cannot relay — no active sessions.")
+            return
+        if len(models) == 1:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Only {models[0]} has an active session — relaying it alone.",
+            )
+            await self._relay_model(models[0], ui)
+            return
+
+        relay_prompt = self._read_relay_prompt()
+        if relay_prompt is None:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Relay failed — prompt file not found: {self.paths.relay_prompt}",
+            )
+            return
+
+        author = min(models, key=self.yield_pressure)
+        now = _dt.now(_tz.utc)
+
+        body = None
+        if self.yield_pressure(author) < RELAY_TIER_CROSS_MAX:
+            adapter = self.claude if author == "claude" else self.codex
+            prompt = (
+                "[System: Both agents are being relayed simultaneously. Both "
+                "sessions will be torn down after this. Generate ONE shared "
+                "handoff document that will bootstrap BOTH successor sessions "
+                "— yours and your peer's — so cover the whole room, not just "
+                "your own thread. Write ONLY the Markdown body sections — the "
+                "controller will add frontmatter.]\n\n" + relay_prompt
+            )
+            try:
+                resp = await adapter.resume(prompt)
+            except Exception as e:
+                log.warning("Shared relay handoff by %s failed: %s", author, e)
+                resp = None
+            if resp is not None and resp.text and not resp.text.startswith("Error:"):
+                self._update_pct(author, resp, ui)
+                body = _strip_response_frontmatter(resp.text)
+
+        docs: dict[str, tuple[str, str]] = {}  # model → (tier, doc)
+        if body is not None:
+            for model in models:
+                tier = "self" if model == author else "cross"
+                doc = self._build_handoff_doc(model, tier, now, body)
+                result = validate_handoff(doc)
+                if not result.valid:
+                    log.warning(
+                        "Shared relay doc for %s failed validation: %s",
+                        model, result.errors,
+                    )
+                    docs = {}
+                    break
+                docs[model] = (tier, doc)
+
+        if not docs:
+            for model in models:
+                mech = self._relay_generate_mechanical(model)
+                doc = self._build_handoff_doc(model, "mechanical", now, mech or "")
+                result = validate_handoff(doc)
+                if mech is None or not result.valid:
+                    self._add_room_entry(
+                        ui,
+                        "system",
+                        f"Relay failed for {model} — could not generate valid handoff.",
+                    )
+                    return
+                docs[model] = ("mechanical", doc)
+
+        # History copies, boundaries, teardown — then restart both
+        # concurrently: this is what makes @both simultaneous.
+        ts_filename = now.strftime("%Y-%m-%dT%H-%M-%SZ")
+        for model, (_tier, doc) in docs.items():
+            history_dir = self.paths.handoff_model_history_dir(model)
+            history_dir.mkdir(parents=True, exist_ok=True)
+            (history_dir / f"{ts_filename}_handoff.md").write_text(
+                doc, encoding="utf-8",
+            )
+            self.set_relay_boundary(model)
+            self._teardown_model_session(model, ui)
+            self.paths.handoff_live_file(model).unlink(missing_ok=True)
+            self._pending_relay_handoffs[model] = doc
+
+        results = await asyncio.gather(
+            *(self._ensure_initialized(m, ui) for m in models)
+        )
+
+        for model, restarted in zip(models, results):
+            tier = docs[model][0]
+            self._record_relay(model, tier, now)
+            if restarted:
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    f"Relayed {model} (tier: {tier}) and started a fresh session.",
+                )
+            else:
+                self._add_room_entry(
+                    ui,
+                    "system",
+                    f"Relayed {model} (tier: {tier}), but fresh-session startup "
+                    f"failed. Retry by messaging {model}.",
+                )
         ui.set_status(self.status_snapshot())
         self._persist_session()
 
@@ -4647,6 +4833,9 @@ class Botference:
         self.updated_at = self.created_at
         self.custom_title = _clean_session_title(title) if title.strip() else ""
         self.transcript = Transcript()
+        # (entry count, title) at last persist — persists that change neither
+        # leave updated_at alone (see _persist_session)
+        self._persisted_activity: tuple[int, str] = (0, "")
         self.router = AutoRouter()
         self.mode = RoomMode.PUBLIC
         self.lead = "auto"
