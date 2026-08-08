@@ -372,6 +372,14 @@ random `trycloudflare.com` URL.
 
 ## Web Annotator (`botference plugin`)
 
+**Just want the plugin?** Three steps, nothing else needed:
+```bash
+git clone https://github.com/angadhn/botference && cd botference
+./botference plugin --install-autostart     # macOS: companion runs at every login
+```
+then `brave://extensions` → Developer mode → Load unpacked → `frontends/plugin/extension`.
+(Bot replies need the `claude` and/or `codex` CLI logged in; without them you still get highlights, comments, and Obsidian export.)
+
 The review-doc experience, injected into any static article page on the
 open web: a browser extension (Chromium/Brave, `frontends/plugin/extension`)
 plus a local companion server. Highlight text on a blog post or article,
