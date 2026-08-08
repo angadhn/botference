@@ -103,7 +103,7 @@ test('entering a sticky workspace says so in exactly one line', () => {
     { cwd: wsB, home });
   const lines = away.out.replace(/\n+$/, '').split('\n');
   assert.equal(lines.length, 3, away.out);
-  assert.equal(lines[0], `  workspace: ${real(wsA)}  (run with --here to use the current directory instead)`);
+  assert.equal(lines[0], `📦 workspace: ${real(wsA)}  (run with --here to use the current directory instead)`);
   assert.equal(lines[1], `ROOT=${real(wsA)}`);
   assert.equal(lines[2], `PWD=${real(wsA)}`, 'and it moves there before the server starts');
   const here = sh('_plugin_enter_workspace false\necho done', { cwd: wsA, home });

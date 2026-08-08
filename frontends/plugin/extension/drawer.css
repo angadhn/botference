@@ -295,8 +295,17 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .prow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px;
   border-bottom: 1px solid var(--card-line) }
 .prow:last-child { border-bottom: 0 }
-/* where you already are: still listed, visibly not a destination */
-.prow.current { opacity: .58 }
+/* Where you already are. It used to be the DIMMED row, which read as
+   "unavailable" — but it is the one row in this list the reader has context
+   for, and the one they are most likely to be looking for. So it is the
+   emphasised one: full opacity, an accent rail and a faint accent wash, the
+   same grammar a focused thread card uses. The others stay ordinary. */
+.prow.current {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.prow.current .ptitle { color: var(--fg) }
+.prow.current .prow-main { padding-left: 11px }
 /* basis 0, not auto: the row wraps (so a refusal can claim a full-width line
    of its own) and a two-line title must therefore never be able to push the
    buttons onto a line of theirs — a flex item only wraps when its HYPOTHETICAL

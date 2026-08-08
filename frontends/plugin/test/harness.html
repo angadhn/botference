@@ -1574,9 +1574,18 @@ async function selftest() {
        'The Long Quarter: how a bank talked itself into a very expensive silence',
        'The committee that never met'].join(' | '));
   const cur = pane().querySelector('.prow.current');
-  check('the page you are on is marked and dimmed',
-    !!cur && cur === rows[0] && /· this page/.test(cur.textContent) &&
-    parseFloat(getComputedStyle(cur).opacity) < 1);
+  // The row for the page you are ON is the EMPHASISED one, not a dimmed one:
+  // it is the row with the most context behind it and the one most likely to be
+  // looked for. (It used to be dimmed, which read as "unavailable".)
+  check('the page you are on is marked and named',
+    !!cur && cur === rows[0] && /· this page/.test(cur.textContent));
+  check('…and emphasised rather than dimmed', !!cur &&
+    parseFloat(getComputedStyle(cur).opacity) === 1 &&
+    getComputedStyle(cur).backgroundColor !== getComputedStyle(rows[1]).backgroundColor &&
+    /inset/.test(getComputedStyle(cur).boxShadow));
+  check('…while the other rows stay ordinary', !!rows[1] &&
+    parseFloat(getComputedStyle(rows[1]).opacity) === 1 &&
+    !/inset/.test(getComputedStyle(rows[1]).boxShadow));
   check('…and nothing else is marked', pane().querySelectorAll('.prow.current').length === 1);
   const other = [...rows].find(r => !r.classList.contains('current'));
   check('each row carries site, thread count and a relative time',

@@ -114,7 +114,7 @@ _plugin_enter_workspace() {
   local force_here=${1:-false}
   _plugin_pick_workspace "$force_here"
   if [ "$PLUGIN_WS" != "$(pwd -P)" ]; then
-    echo "  workspace: ${PLUGIN_WS}  (run with --here to use the current directory instead)"
+    echo "📦 workspace: ${PLUGIN_WS}  (run with --here to use the current directory instead)"
     cd "$PLUGIN_WS" || return 1
   fi
   _plugin_remember_workspace "$PLUGIN_WS"
@@ -206,7 +206,7 @@ plugin_autostart_plist() {
 
 _plugin_require_macos() {
   if [ "$(uname -s)" != "Darwin" ]; then
-    echo "Error: login autostart uses launchd — macOS only." >&2
+    echo "✗ login autostart uses launchd — macOS only." >&2
     return 1
   fi
 }
@@ -233,12 +233,12 @@ plugin_autostart_install() {
   local tmp="${plist}.tmp.$$"
   plugin_autostart_plist "$PLUGIN_AUTOSTART_LABEL" "$workspace" "$port" ${@+"$@"} > "$tmp" || {
     rm -f "$tmp"
-    echo "Error: could not write the LaunchAgent plist." >&2
+    echo "✗ could not write the LaunchAgent plist." >&2
     return 1
   }
   if command -v plutil >/dev/null 2>&1 && ! plutil -lint "$tmp" >/dev/null 2>&1; then
     rm -f "$tmp"
-    echo "Error: generated plist failed plutil -lint — refusing to install." >&2
+    echo "✗ the generated plist failed plutil -lint — refusing to install." >&2
     return 1
   fi
   mv "$tmp" "$plist"
@@ -257,22 +257,37 @@ plugin_autostart_install() {
   elif launchctl load -w "$plist" >/dev/null 2>&1; then
     :
   else
-    echo "Error: launchctl could not load ${plist}." >&2
-    echo "  Try by hand: launchctl bootstrap ${domain} ${plist}" >&2
+    echo "✗ launchctl could not load ${plist}." >&2
+    echo "   try by hand: launchctl bootstrap ${domain} ${plist}" >&2
     return 1
   fi
 
-  echo "  login autostart installed: ${PLUGIN_AUTOSTART_LABEL}"
-  echo "  workspace:  ${workspace}   port: ${url_port}$([ "$#" -gt 0 ] && printf '   args: %s' "$*")"
-  echo "  plist:      ${plist}"
-  echo "  logs:       ${log}"
-  echo "  check it:   launchctl list | grep ${PLUGIN_AUTOSTART_LABEL}"
-  echo "  remove it:  botference plugin --uninstall-autostart"
+  echo ""
+  echo "✅ Login autostart installed — the web annotator companion now starts at every login, and restarts if it dies."
+  echo ""
   if $takeover; then
-    echo "  a companion is already running in a terminal — the autostart copy will take over within ~10s after you Ctrl-C it (or at next login)"
+    echo "🟢 A companion is already running in a terminal — the autostart copy takes"
+    echo "   over within ~10s after you Ctrl-C it (or at the next login)."
   else
-    echo "  the companion is starting now, and again at every login."
+    echo "🟢 It is starting now, and again at every login."
   fi
+  echo ""
+  echo "▶  Next steps"
+  echo "   1. load the browser extension (once): brave://extensions → Developer mode →"
+  echo "      Load unpacked → ${BOTFERENCE_HOME}/frontends/plugin/extension"
+  echo "   2. want bot replies? log into the agent CLIs — 'claude' and/or 'codex' —"
+  echo "      so @claude/@codex in a comment is answered"
+  echo "   3. highlight text on any article page to leave your first annotation"
+  echo ""
+  echo "🧩 For reference"
+  echo "   workspace: ${workspace}"
+  echo "   port:      ${url_port}$([ "$#" -gt 0 ] && printf '   args: %s' "$*")"
+  echo "   plist:     ${plist}"
+  echo "   logs:      ${log}"
+  echo "   check it:  launchctl list | grep ${PLUGIN_AUTOSTART_LABEL}"
+  echo "   remove it: botference plugin --uninstall-autostart"
+  echo "   label:     ${PLUGIN_AUTOSTART_LABEL}"
+  echo ""
 }
 
 plugin_autostart_uninstall() {
@@ -287,13 +302,19 @@ plugin_autostart_uninstall() {
   fi
   if [ -f "$plist" ]; then
     rm -f "$plist"
-    echo "  login autostart removed: ${PLUGIN_AUTOSTART_LABEL}"
-    echo "  deleted:    ${plist}"
-    $unloaded && echo "  the autostart companion (if it was running) has been stopped."
-    echo "  a companion you run by hand ('botference plugin') is unaffected."
+    echo ""
+    echo "🗑  Login autostart removed: ${PLUGIN_AUTOSTART_LABEL}"
+    echo "   deleted: ${plist}"
+    $unloaded && echo "   the autostart companion (if it was running) has been stopped."
+    echo ""
+    echo "💡 A companion you run by hand ('botference plugin') is unaffected."
+    echo ""
   else
-    $unloaded && echo "  unloaded a stray ${PLUGIN_AUTOSTART_LABEL} job (no plist on disk)."
-    echo "  nothing to remove — no login autostart was installed (${plist})."
+    echo ""
+    $unloaded && echo "🗑  Unloaded a stray ${PLUGIN_AUTOSTART_LABEL} job (no plist on disk)."
+    echo "✅ Nothing to remove — no login autostart was installed."
+    echo "   looked for: ${plist}"
+    echo ""
   fi
 }
 
@@ -323,7 +344,7 @@ run_plugin_mode() {
       --port=*) port="${arg#--port=}" ;;
       --port)
         if [ "$#" -eq 0 ]; then
-          echo "Error: --port requires a number." >&2
+          echo "✗ --port requires a number." >&2
           return 2
         fi
         port=$1
@@ -331,14 +352,15 @@ run_plugin_mode() {
         ;;
       --help|-h) plugin_usage; return 0 ;;
       *)
-        echo "Error: unknown plugin option '$arg' (see 'botference plugin --help')." >&2
+        echo "✗ unknown plugin option '$arg'" >&2
+        echo "   see 'botference plugin --help' for the full list." >&2
         return 2
         ;;
     esac
   done
 
   if [ -n "$port" ] && ! [[ "$port" =~ ^[0-9]+$ ]]; then
-    echo "Error: --port expects a number, got '$port'." >&2
+    echo "✗ --port expects a number, got '$port'." >&2
     return 2
   fi
 
@@ -347,23 +369,23 @@ run_plugin_mode() {
   # launchd reads at every login; sharing is a thing you start on purpose
   # and stop when the conversation is over.
   if [ -n "$autostart" ] && { $hosted || $share; }; then
-    echo "Error: --install-autostart cannot be combined with --hosted/--share." >&2
-    echo "  Autostart runs the private local companion at login; start a share by hand" >&2
-    echo "  when you want one: botference plugin --share" >&2
+    echo "✗ --install-autostart cannot be combined with --hosted/--share." >&2
+    echo "   Autostart runs the private local companion at login; start a share by hand" >&2
+    echo "   when you want one: botference plugin --share" >&2
     return 2
   fi
   if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
-    echo "Error: --hosted requires PLUGIN_PASSWORD to be set, e.g." >&2
-    echo "  PLUGIN_PASSWORD=… botference plugin --hosted" >&2
-    echo "(or use --share, which generates one and opens a tunnel for you)" >&2
+    echo "✗ --hosted requires PLUGIN_PASSWORD to be set, e.g." >&2
+    echo "   PLUGIN_PASSWORD=… botference plugin --hosted" >&2
+    echo "   (or use --share, which generates one and opens a tunnel for you)" >&2
     return 2
   fi
 
   # --- login autostart: a different lifecycle from --service, never both ---
   if [ -n "$autostart" ]; then
     if $service; then
-      echo "Error: --${autostart}-autostart cannot be combined with --service." >&2
-      echo "  --service is a per-session managed process; autostart is a login LaunchAgent." >&2
+      echo "✗ --${autostart}-autostart cannot be combined with --service." >&2
+      echo "   --service is a per-session managed process; autostart is a login LaunchAgent." >&2
       return 2
     fi
     if [ "$autostart" = "uninstall" ]; then
@@ -374,11 +396,11 @@ run_plugin_mode() {
 
   local engine="${BOTFERENCE_HOME}/frontends/plugin"
   if [ ! -f "$engine/server.mjs" ]; then
-    echo "Error: plugin companion not found at $engine." >&2
+    echo "✗ plugin companion not found at $engine." >&2
     return 1
   fi
   if ! command -v node >/dev/null 2>&1; then
-    echo "Error: 'node' not found on PATH — the companion server runs on Node.js." >&2
+    echo "✗ 'node' not found on PATH — the companion server runs on Node.js." >&2
     return 1
   fi
 
@@ -401,7 +423,8 @@ run_plugin_mode() {
   # line and any detached copy all agree on it ---
   if $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
     PLUGIN_PASSWORD=$(node -e 'console.log(require("crypto").randomBytes(8).toString("hex"))') || return 1
-    echo "  PLUGIN_PASSWORD not set — generated one for this session: ${PLUGIN_PASSWORD}"
+    echo ""
+    echo "🔑 PLUGIN_PASSWORD not set — generated one for this session: ${PLUGIN_PASSWORD}"
   fi
   if $hosted; then export PLUGIN_PASSWORD; fi
 
@@ -431,12 +454,12 @@ run_plugin_mode() {
   case "$agents" in
     on)
       if ! $have_python; then
-        echo "Error: --agents: 'python3' not found on PATH — the agent bridge runs on it." >&2
+        echo "✗ --agents: 'python3' not found on PATH — the agent bridge runs on it." >&2
         return 1
       fi
       if [ -z "$clis" ]; then
-        echo "Error: --agents: no 'claude' or 'codex' CLI found on PATH." >&2
-        echo "  Install one (and log in) to enable agents, or drop --agents." >&2
+        echo "✗ --agents: no 'claude' or 'codex' CLI found on PATH." >&2
+        echo "   Install one (and log in) to enable agents, or drop --agents." >&2
         return 1
       fi
       agents_on=true
@@ -452,24 +475,45 @@ run_plugin_mode() {
   if ! $agents_on; then server_args+=(--no-agents); fi
   if $hosted; then server_args+=(--hosted); fi
 
-  echo "  Web annotator companion: http://127.0.0.1:${url_port}/  (Ctrl-C stops it)"
+  echo ""
+  echo "🟢 Web annotator companion"
+  echo "   ▶ http://127.0.0.1:${url_port}/   (Ctrl-C stops it)"
+  if [ "${PLUGIN_WS_STICKY:-false}" != true ]; then
+    echo "   📦 workspace: ${PLUGIN_WS}"
+  fi
   if $agents_on; then
-    echo "  agents: on (${clis} detected) — @claude/@codex in comments summon them"
+    echo "   🔌 agents: on (${clis} detected) — @claude/@codex in comments summon them"
   elif [ "$agents" = "off" ]; then
-    echo "  agents: off (--no-agents) — highlights, comments, and export only"
+    echo "   🔌 agents: off (--no-agents) — highlights, comments, and export only"
   else
-    echo "  agents: off — python3 + a claude/codex CLI on PATH are needed for bot replies."
+    echo "   🔌 agents: off — python3 + a claude/codex CLI on PATH are needed for bot replies"
   fi
+
   if $hosted; then
-    echo "  hosted: remote visitors need the password; this machine stays the owner"
-    echo "  people without the extension read and reply at /pages"
-    echo "  their @-mentions are refused until you grant them agents in"
-    echo "  ${PLUGIN_WS}/.botference/plugin/grants.json"
+    echo ""
+    echo "🌐 Hosted: remote visitors need the password; this machine stays the owner"
+    echo "   • people without the extension read and reply at /pages"
+    echo "   • their @-mentions are refused until you grant them agents in"
+    echo "     ${PLUGIN_WS}/.botference/plugin/grants.json"
   fi
-  echo "  Extension not installed yet? brave://extensions → Developer mode →"
-  echo "  Load unpacked → ${engine}/extension"
+
+  # The extension is a one-time install, so the walkthrough only shows up
+  # when it plausibly still has to happen: no annotations stored here yet.
+  echo ""
+  if [ -d "${PLUGIN_WS}/.botference/plugin" ]; then
+    echo "🧩 Extension: ${engine}/extension"
+    echo "   (load it once via brave://extensions → Developer mode → Load unpacked)"
+  else
+    echo "🧩 Get the extension (one time, ~30 seconds):"
+    echo "   1. open brave://extensions"
+    echo "   2. turn on Developer mode"
+    echo "   3. Load unpacked → ${engine}/extension"
+    echo ""
+    echo "💡 Then highlight text on any article page to annotate it."
+  fi
 
   if ! $share; then
+    echo ""
     exec node "$engine/server.mjs" ${server_args[@]+"${server_args[@]}"}
   fi
 
@@ -486,14 +530,18 @@ run_plugin_mode() {
   if start_share_tunnel "$url_port" "$tunnel_log"; then
     print_share_line "${PLUGIN_PASSWORD}" "$url_port" "$tunnel_log"
   else
+    echo "" >&2
     if [ -n "${BOTFERENCE_TUNNEL:-}" ]; then
-      echo "  BOTFERENCE_TUNNEL is set ('${BOTFERENCE_TUNNEL}') but 'cloudflared' is not installed —" >&2
-      echo "  install it (e.g. 'brew install cloudflared') to use your named tunnel." >&2
+      echo "✗ BOTFERENCE_TUNNEL is set ('${BOTFERENCE_TUNNEL}') but 'cloudflared' is not installed." >&2
+      echo "   install it (e.g. 'brew install cloudflared') to use your named tunnel." >&2
     else
-      echo "  cloudflared not found — no public URL. Install it (e.g. 'brew install cloudflared')" >&2
-      echo "  or tunnel by hand:  cloudflared tunnel --url http://localhost:${url_port}" >&2
+      echo "✗ cloudflared not found — no public URL." >&2
+      echo "   install it (e.g. 'brew install cloudflared')," >&2
+      echo "   or tunnel by hand: cloudflared tunnel --url http://localhost:${url_port}" >&2
     fi
-    echo "  Serving locally in the meantime: http://localhost:${url_port}/  password: ${PLUGIN_PASSWORD}" >&2
+    echo "" >&2
+    echo "🟢 Serving locally in the meantime: http://localhost:${url_port}/   password: ${PLUGIN_PASSWORD}" >&2
+    echo "" >&2
   fi
   local rc=0
   wait "$server_pid" || rc=$?
