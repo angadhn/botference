@@ -20,6 +20,10 @@
 //
 // content → background   (chrome.runtime.sendMessage, all replies async)
 //
+//   every message also carries {page_url} — the sender's own location, which
+//   re-registers the tab in the routing table. A worker respawn empties that
+//   table, and a tab it has forgotten receives nothing at all.
+//
 //   {t:'hello',  url}                 register this tab's page + wake check
 //        → {ok:true, known:bool,      known = this normUrl appears in /index
 //           connected:bool,           WS currently open?
@@ -78,7 +82,22 @@
 //   {t:'ws',   ev:{…}}                a companion event, verbatim, as
 //                                     specified in SPEC.md's event stream
 //                                     (page / chat / bridge / hello / ping)
-//   {t:'conn', connected:bool}        WS opened or dropped
+//   {t:'conn', connected:bool,        WS opened or dropped. `resumed` marks a
+//              resumed?:bool}         socket that has just (re)opened: nobody
+//                                     can say what was missed while it was
+//                                     down, so the drawer refetches its page
+//   {t:'whereami'}                    a freshly started worker asking an
+//                                     already-open tab which page it is on
+//        → {ok:true, url:'…'}         (no content script there: the send throws)
+//
+// content ⇄ background   (chrome.runtime.connect, port name 'bfp')
+//
+//   A long-lived port per tab. The content script posts {t:'ping', url} on it
+//   and gets {t:'pong', connected} back; the worker registers the tab from
+//   that url and delivers {t:'ws'}/{t:'conn'} through the port when it is
+//   there. The point is the DISCONNECT: when Chrome retires the worker the
+//   port dies, and that is the content script's cue to reconnect (which starts
+//   a new worker) and resync the page.
 //   {t:'toggle'}                      the toolbar action was clicked on this
 //                                     tab — activate (or toggle) the drawer
 //   {t:'autoopen'}                    open-page raised a tab that was ALREADY
@@ -162,8 +181,48 @@ let retryTimer = null;
 let indexCache = {};         // pageKey -> {url,title,threads,updated_at}
 let indexAt = 0;
 let indexPending = null;
+// Which tab is showing which page. THIS TABLE IS THE WHOLE DELIVERY PATH: an
+// event with a url is routed by looking a tab up in here, and a tab that is
+// missing simply never hears from the companion again.
+//
+// It lives in worker memory, and an MV3 worker is a temporary thing — Chrome
+// kills it and respawns it whenever it likes. The worker that comes back
+// reconnects the socket perfectly and then routes every event into an EMPTY
+// table, while the tab it forgot sits there with "queued…" on screen until the
+// user reloads. That is why registration is no longer a one-shot `hello`:
+//   • every message from a content script carries `page_url` and re-registers
+//   • a long-lived port (see onConnect) registers on connect, and its death is
+//     the signal content.js uses to notice the worker went away
+//   • a worker that has just started asks the open tabs where they are
 const tabUrls = new Map();   // tabId -> normUrl
 const tabCounts = new Map(); // tabId -> thread count (for the badge)
+const ports = new Map();     // tabId -> the content script's live port
+const PORT_NAME = 'bfp';
+
+function registerTab(tabId, rawUrl) {
+  if (tabId == null || !rawUrl) return;
+  const nu = normUrl(rawUrl);
+  if (tabUrls.get(tabId) === nu) return;
+  tabUrls.set(tabId, nu);
+  if (!tabCounts.has(tabId)) {
+    const e = indexEntryFor(nu);
+    setBadge(tabId, e ? (e.threads || 0) : 0);
+  }
+}
+
+// A worker that has just been respawned knows nothing. Ask every ordinary tab
+// which page it is on; the ones with our content script answer, the rest throw
+// and are ignored. Silent either way.
+async function restoreTabs() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }); } catch { return; }
+  for (const t of tabs) {
+    if (!t || t.id == null) continue;
+    chrome.tabs.sendMessage(t.id, { t: 'whereami' })
+      .then(r => { if (r && r.ok && r.url) registerTab(t.id, r.url); })
+      .catch(() => { /* no content script there */ });
+  }
+}
 
 const indexEntryFor = nu => Object.values(indexCache).find(v => v && normUrl(v.url) === nu) || null;
 
@@ -276,7 +335,10 @@ async function ensureSocket() {
   ws.onopen = () => {
     wsState = 'open';
     backoff = 1000;
-    broadcastAll({ t: 'conn', connected: true });
+    // `resumed` is a standing instruction, not news: a socket that has just
+    // opened cannot say what happened while it was shut, so every drawer
+    // refetches its page instead of trusting the events it may have missed.
+    broadcastAll({ t: 'conn', connected: true, resumed: true });
     refreshIndex(true);
   };
   ws.onmessage = e => {
@@ -326,6 +388,8 @@ function routeEvent(ev) {
 }
 
 function send(tabId, msg) {
+  const port = ports.get(tabId);
+  if (port) { try { port.postMessage(msg); return; } catch { ports.delete(tabId); } }
   chrome.tabs.sendMessage(tabId, msg).catch(() => { tabUrls.delete(tabId); tabCounts.delete(tabId); });
 }
 function broadcastAll(msg) {
@@ -449,9 +513,35 @@ async function openPage(rawUrl) {
   return { ok: true, created: true, tabId: tab && tab.id };
 }
 
+// ---- the content script's port -------------------------------------------
+// Two jobs, both about survival rather than data: it re-registers the tab the
+// moment a new worker starts, and its `onDisconnect` in the content script is
+// the only reliable notice a page gets that the worker it was talking to has
+// died. Messages still travel by sendMessage/tabs.sendMessage; nothing here is
+// a second protocol.
+chrome.runtime.onConnect.addListener(port => {
+  if (!port || port.name !== PORT_NAME) return;
+  const tabId = port.sender && port.sender.tab ? port.sender.tab.id : null;
+  if (tabId != null) ports.set(tabId, port);
+  ensureSocket();
+  port.onMessage.addListener(msg => {
+    if (!msg) return;
+    if (msg.url) registerTab(tabId, msg.url);
+    ensureSocket();
+    // the answer doubles as the liveness receipt the page is asking for
+    try { port.postMessage({ t: 'pong', connected: wsState === 'open' }); } catch { /* gone */ }
+  });
+  port.onDisconnect.addListener(() => {
+    if (tabId != null && ports.get(tabId) === port) ports.delete(tabId);
+  });
+});
+
 // ---- message router ------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = sender && sender.tab ? sender.tab.id : null;
+  // every message re-registers its tab: a worker that restarted between two
+  // API calls must not have to wait for a page reload to learn who is out there
+  if (msg && msg.page_url) registerTab(tabId, msg.page_url);
   ensureSocket();
   (async () => {
     switch (msg && msg.t) {
@@ -523,3 +613,7 @@ chrome.runtime.onStartup.addListener(() => { ensureSocket(); refreshIndex(true);
 
 ensureSocket();
 refreshIndex(true);
+// This line runs on EVERY worker start, including the respawn after Chrome
+// killed the last one mid-conversation: it is how the tabs that were already
+// open get their delivery address back.
+restoreTabs();

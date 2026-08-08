@@ -115,8 +115,8 @@ All bodies JSON. All error responses `{ok:false, error:"…"}` with 4xx/5xx.
 | GET | `/index` | — | the index.json map |
 | GET | `/page?url=<enc>` | — | full page record (above) or `{ok:true, page:null}` |
 | POST | `/page` | `{url,title,site}` | upserts page shell → full page record |
-| POST | `/thread` | `{url, quote, prefix, suffix, msg:{text}}` | creates thread + first msg (server stamps id/author/ts) → `{ok, thread, queued?}` |
-| POST | `/reply` | `{url, thread_id, text}` (`thread_id:"__page__"` = page chat) | appends msg → `{ok, msg, queued?, position?}` |
+| POST | `/thread` | `{url, quote, prefix, suffix, msg:{text}}` | creates thread + first msg (server stamps id/author/ts) → `{ok, thread, queued?, position?, wait?}` |
+| POST | `/reply` | `{url, thread_id, text}` (`thread_id:"__page__"` = page chat) | appends msg → `{ok, msg, queued?, position?, wait?}` (`wait`: `bridge_starting`\|`busy`) |
 | POST | `/edit` | `{url, thread_id, ts, text}` | edits own (author=config.author) msg |
 | POST | `/delete` | `{url, thread_id, ts?}` | ts absent → whole thread; present → one msg |
 | POST | `/orphan` | `{url, thread_id, orphaned:bool}` | extension reports anchor status |
@@ -397,6 +397,13 @@ Contract deltas agreed during live testing — authoritative over the sections a
   lifecycle-scoped: written only if the turn hasn't already started (epoch check),
   superseded by the working chip at turn-start, structurally removed at
   reply/turn-end/error.
+- Pages view: the row for the page you are on is the emphasised one — accent
+  rail, faint accent wash, its title at full contrast and bold — and the other
+  rows step back (title at ~60% of --heading, meta at .75 opacity, both restored
+  on hover) so the emphasis is visible rather than merely present. The button
+  that opens the list wears the braid itself, drawn the way icons/make-icons.mjs
+  draws the 16px tile: half a turn, one crossing, three strands, casing in
+  --bg so over/under reads in both themes.
 - Identity assets: extension icons are a full-bleed braid mark (per-size redrawn
   variants in icons/make-icons.mjs + braid.svg source; the 16px read is the
   acceptance bar); site/og-image.png is the braid share card; site/favicon.png from
@@ -416,9 +423,12 @@ Contract deltas agreed during live testing — authoritative over the sections a
   links a font-only `katex-fonts.css` into the PAGE document (both web-accessible).
   Obsidian export is unchanged and deliberately so: the raw `$…$` source is what
   reaches the vault, because Obsidian typesets it itself.
-- Long threads fold: past 6 drawn units a thread (and the page chat) keeps its
-  root and the last 3 units and hides the rest behind one `.showmore` line,
-  "Show N earlier replies", N counting messages and not tool rows. The unit of
+- Long threads fold: past 3 drawn units a thread (and the page chat) keeps its
+  root and the last 2 units and hides the rest behind one `.showmore` line,
+  "Show N earlier replies" — singular "Show 1 earlier reply" when the fold hides
+  exactly one, which a four-unit thread does — N counting messages and not tool
+  rows. A middle that holds no message at all (only tool rows) is not folded, so
+  the line never claims zero. The unit of
   folding is what the drawer draws — a person's message, or a bot's whole turn
   (its merged tools row plus every answer in it) — so a tools disclosure can
   never survive above an answer that was folded away. Expansion is one-way and
@@ -426,6 +436,41 @@ Contract deltas agreed during live testing — authoritative over the sections a
   a page delete); the outbox, streaming blocks and the status chip render after
   the fold and are therefore always visible. `msgUnits`/`collapsePlan` are pure
   and unit-tested (test/collapse.test.mjs).
+- Liveness: the drawer converges on the record without a reload, always. The
+  event stream is a fast path, never the only one. Every content→background
+  message carries `page_url` and re-registers the tab in the worker's routing
+  table (memory-only, and an MV3 worker is retired and respawned at Chrome's
+  discretion — a respawned worker that has forgotten a tab delivers it nothing,
+  which is how a reply could land in the record while the tab still showed
+  "queued…"). Belt and braces, all four: a long-lived port per tab
+  (`chrome.runtime.connect`, name `bfp`) whose DISCONNECT is the page's notice
+  that the worker died — it reconnects (starting a worker) and refetches; a
+  fresh worker asks every open tab `{t:'whereami'}`; `{t:'conn', resumed:true}`
+  on every socket (re)open makes each drawer refetch what it may have missed;
+  and after any send, checks at 4s and 10s refetch if no event has arrived.
+  A page that is visibly waiting and hearing nothing polls every 4s (bounded,
+  ~2 min). A running turn with no event for 45s is settled locally
+  (`quietTurns`/`endTurn`) so a lost `turn-end` cannot spin for ever, and a
+  refetch that shows the bots answered clears a stale wait structurally. One
+  malformed event can never freeze the stream: `onEvent` catches, counts, and
+  the next event is handled normally (the failure triggers a refetch).
+- Waiting states say what they are waiting for: `chat.submit` reports
+  `wait: 'bridge_starting' | 'busy'` (absent once the turn is genuinely
+  running), which rides POST /thread and /reply beside `queued`/`position`. The
+  drawer renders "waking the agents…" / "queued behind another chat…" /
+  "queued (#N)", each with the same ◐ every other live state uses — a wait must
+  look alive, not stalled. An older companion sends no `wait` and still gets a
+  plain, spinning "queued…".
+- @-mentions complete themselves: typing `@` at a word boundary in any composer
+  (new comment, reply, page chat) opens a small menu of the agents the drawer
+  knows about (from the same models/status data the gear popover reads — never a
+  hardcoded pair) plus `@all`, each with its logomark. Typing filters by
+  case-insensitive prefix, ↑/↓ move, Enter/Tab/click complete to `@handle `
+  (trailing space), Esc or no match closes it and leaves the text exactly as
+  typed. Mid-message mentions count — the token under the CARET is what is
+  completed — and an `@` inside a word (an email address) never opens it.
+  `mentionToken`/`mentionCandidates` are pure and unit-tested
+  (test/mentions.test.mjs).
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

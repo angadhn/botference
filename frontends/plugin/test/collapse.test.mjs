@@ -90,8 +90,8 @@ function visible(msgs, expanded) {
   eq('…and ends KEEP_TAIL from the end', p.to, 12 - D.KEEP_TAIL);
   eq('the count is what is hidden', p.hidden, 12 - D.KEEP_HEAD - D.KEEP_TAIL);
 
-  eq('the root and the last three are what is left',
-    visible(msgs), ['u0', '⋯8', 'b9', 'u10', 'b11']);
+  eq('the root and the last two are what is left',
+    visible(msgs), ['u0', '⋯9', 'u10', 'b11']);
 
   // the expander sits between the root and the tail, exactly once
   eq('exactly one expander', visible(msgs).filter(x => String(x)[0] === '⋯').length, 1);
@@ -123,21 +123,37 @@ function visible(msgs, expanded) {
     p.hidden < hiddenIds.length, p.hidden + ' vs ' + hiddenIds.length);
 }
 
-// ---- 5. a fold has to be worth the click ------------------------------------
+// ---- 5. the smallest fold, and the one that is not worth drawing ------------
 {
+  // the tightest thread that folds: four units, one of them hidden. The line
+  // has to say so in the singular.
+  const four = [you('u0'), bot('b1'), you('u2'), bot('b3')];
+  const p4 = plan(four);
+  ok('4 units fold', p4.collapsed === true, JSON.stringify(p4));
+  eq('…hiding exactly one message', p4.hidden, 1);
+  eq('…the one between the root and the live tail', visible(four), ['u0', '⋯1', 'u2', 'b3']);
+  eq('…and the line reads in the singular', D.moreLabel(p4.hidden), 'Show 1 earlier reply');
+  eq('two or more stay plural', D.moreLabel(2), 'Show 2 earlier replies');
+  eq('…however many there are', D.moreLabel(11), 'Show 11 earlier replies');
+
+  // three units is the last shape that reads straight through
+  const three = [you('u0'), bot('b1'), you('u2')];
+  eq('3 units stay whole', plan(three).collapsed, false);
+
   // a bot turn carrying several answers is ONE unit but several messages: the
-  // unit count can pass the threshold while barely any message is hidden
+  // unit count can pass the threshold while nothing worth naming is hidden
   const msgs = [you('u0')];
   for (let i = 1; i <= 6; i++) msgs.push(i % 2 ? bot('b' + i) : you('u' + i));
   const p = plan(msgs);
   ok('7 units fold', p.collapsed === true, JSON.stringify(p));
-  ok('…and hide at least two messages', p.hidden >= 2, JSON.stringify(p));
+  ok('…and hide at least one message', p.hidden >= 1, JSON.stringify(p));
 
-  // the degenerate shape the guard exists for: units, but almost no messages
-  // in the middle of them
+  // the degenerate shape the guard exists for: units in the middle, but no
+  // message inside any of them
   const tiny = D.collapsePlan(
-    [[you('a')], [tools('t')], [tools('t')], [tools('t')], [you('b')], [bot('c')], [bot('d')]], false);
+    [[you('a')], [tools('t')], [you('b')], [bot('c')]], false);
   eq('a middle made only of tool rows is not worth folding', tiny.collapsed, false);
+  eq('…and claims nothing', tiny.hidden, 0);
 }
 
 // ---- 6. a new reply lands in the visible tail, unfolded ----------------------
@@ -163,8 +179,15 @@ function visible(msgs, expanded) {
   ok('a fresh exchange is on screen',
     seen.indexOf('ask') !== -1 && seen.indexOf('answer') !== -1, JSON.stringify(seen));
   ok('the thread is still collapsed', after.collapsed === true);
+  // the two units that used to be the live tail are inside the fold now: u10,
+  // and the turn carrying both b11 and 'fresh' — three messages between them
   eq('…and the two units it displaced rolled into the fold',
-    after.hidden, before.hidden + 2);
+    after.hidden, before.hidden + 3);
+  ok('…so the old tail is off screen',
+    seen.indexOf('u10') === -1 && seen.indexOf('fresh') === -1, JSON.stringify(seen));
+  eq('the claim still matches what is actually hidden',
+    after.hidden, msgs.filter(m => m.kind !== 'tools').length
+      - seen.filter(x => String(x)[0] !== '⋯').length);
   ok('the root is still on screen', seen[0] === 'u0');
 }
 
@@ -177,7 +200,7 @@ function visible(msgs, expanded) {
   const many = [];
   for (let i = 0; i < 40; i++) many.push([you('u' + i)]);
   eq('an expanded thread never folds', D.collapsePlan(many, true).collapsed, false);
-  eq('…while the same thread folded would hide 36',
+  eq('…while the same thread folded would hide 37',
     D.collapsePlan(many, false).hidden, 40 - D.KEEP_HEAD - D.KEEP_TAIL);
 }
 

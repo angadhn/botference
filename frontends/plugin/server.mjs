@@ -156,7 +156,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: refused });
     return { queued: false, reason: refused };
   }
-  const { position } = chat.submit({
+  const { position, wait } = chat.submit({
     url: page.url, target, text, title: page.title,
     // on a shared page the bots are answering a room, not one reader: name
     // whoever is asking, unless it is the owner (whose annotator never did)
@@ -165,7 +165,10 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     history: priorMsgs(page, target),
     ...extras,
   });
-  return { queued: true, position };
+  // `wait` is what the drawer says while it waits: bridge_starting (the agents
+  // are being woken) or busy (another chat has the floor). Absent = the turn is
+  // already running and turn-start is about to say so.
+  return { queued: true, position, ...(wait ? { wait } : {}) };
 }
 
 // A .docx may ride along with any mention (the reader is annotating a doc and

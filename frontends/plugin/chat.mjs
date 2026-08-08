@@ -529,10 +529,22 @@ export function createChat({ onEvent }) {
     // a comment carrying an @-mention: queue a turn for its page/thread
     submit(job) {
       if (job.articleText) articleByUrl.set(job.url, String(job.articleText).slice(0, ARTICLE_MAX));
-      queue.push({ ...job, target: job.target || PAGE_CHAT });
+      const mine = { ...job, target: job.target || PAGE_CHAT };
+      queue.push(mine);
+      // WHY this turn is not answering yet, sampled before the bridge is
+      // asked to start: a cold bridge takes ten or twenty seconds to come up,
+      // and a reader watching a flat "queued…" through all of it has no way to
+      // tell the difference between starting and stuck.
+      const cold = !available || !ready;
       start();
       pump();
-      return { queued: true, position: queue.length + (current ? 1 : 0) };
+      const started = !!(current && current.job === mine);
+      return {
+        queued: true,
+        position: queue.length + (current ? 1 : 0),
+        // null once the turn is genuinely under way: turn-start says the rest
+        wait: started ? null : (cold ? 'bridge_starting' : 'busy'),
+      };
     },
     // a raw slash command (model picker): queued like any turn, answered by
     // the bridge's next ready. Starts the bridge if nothing has yet.

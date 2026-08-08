@@ -25,7 +25,12 @@
 // Sending is OPTIMISTIC: the message appears in its thread and the composer
 // empties before onSave/onReply is even called (they are slow — they re-read
 // the page and may attach a document). Both may answer:
-//   {ok:true, queued, position}   normal; the bots were summoned or not
+//   {ok:true, queued, position,   normal; the bots were summoned or not.
+//    wait}                        `wait` is WHY nothing has started yet —
+//                                 'bridge_starting' (the agents are being
+//                                 woken) or 'busy' (another chat has the
+//                                 floor) — and decides the words on the
+//                                 spinning wait line. Absent = under way.
 //   {ok:true, reason:'…'}         saved, but the bots will NOT run for this
 //                                 sender (a guest, or --no-agents) — shown at
 //                                 the composer, nothing rolled back
@@ -541,9 +546,9 @@
   // plus every answer in it — is another. Collapsing by message would let a
   // turn's "Explored · 4 steps" row survive on its own, hovering above an
   // answer that had been hidden, which is worse than showing nothing.
-  const COLLAPSE_AT = 6;   // units on screen before any folding happens
+  const COLLAPSE_AT = 3;   // units on screen before any folding happens
   const KEEP_HEAD = 1;     // the thread root: the message under the quote
-  const KEEP_TAIL = 3;     // the tail of the conversation, always live
+  const KEEP_TAIL = 2;     // the tail of the conversation, always live
 
   // The raw msgs list grouped exactly the way msgsHtml draws it.
   function msgUnits(list) {
@@ -574,9 +579,58 @@
     for (let i = from; i < to; i++) {
       for (const m of units[i]) if (m.kind !== 'tools') hidden++;
     }
-    // one message behind a one-line control saves nothing and costs a click
-    if (hidden < 2) return none;
+    // hiding one message is worth the line ("Show 1 earlier reply"); hiding
+    // none is not — a middle made only of tool rows has nothing to announce
+    if (hidden < 1) return none;
     return { collapsed: true, from, to, hidden };
+  }
+
+  // ── @-mentions: completing the handle you are typing ─────────────────────
+  // Mentions are the only way to summon a bot and they work anywhere in a
+  // message, so the completion follows the CARET, not the start of the box.
+  // Both halves are pure and unit-tested (test/mentions.test.mjs): what token
+  // is being typed, and which handles match it.
+  const HANDLE_CHAR = /[A-Za-z0-9_-]/;
+  // The character before an "@" decides whether it is a mention at all. A
+  // handle starts a word: after whitespace, at the very beginning, or after
+  // the punctuation people actually type in front of one. Anything else —
+  // crucially a letter or digit — makes it an email address or a path, and
+  // those must be typeable without a menu appearing over them.
+  const MENTION_OPENER = /[\s(\[{"'“‘*_>~,;:/-]/;
+
+  // The @-token the caret is sitting in, or null. `start` is the "@" itself,
+  // `end` the caret: replacing [start, end) is what completing means.
+  function mentionToken(text, caret) {
+    const s = String(text == null ? '' : text);
+    const at = Math.max(0, Math.min(Number(caret) || 0, s.length));
+    let i = at;
+    while (i > 0 && HANDLE_CHAR.test(s[i - 1])) i--;
+    if (i === 0 || s[i - 1] !== '@') return null;
+    const start = i - 1;
+    if (start > 0 && !MENTION_OPENER.test(s[start - 1])) return null;
+    return { start, end: at, query: s.slice(i, at) };
+  }
+
+  // Who can be summoned: whatever agents the drawer knows about, plus @all,
+  // filtered by what has been typed so far (case-insensitive prefix). The
+  // agents are never hardcoded here — the caller passes what the companion
+  // said — but @all is always on the list, because it always works.
+  function mentionCandidates(agents, query) {
+    const q = String(query || '').toLowerCase();
+    const out = [];
+    for (const a of [...(agents || []), 'all']) {
+      const h = String(a || '').trim().toLowerCase();
+      if (!h || out.indexOf(h) !== -1) continue;
+      if (h.indexOf(q) === 0) out.push(h);
+    }
+    return out;
+  }
+
+  // What the expander line says. A fold that hides exactly one message has to
+  // read "Show 1 earlier reply" — folds start at four units now, so the
+  // singular is the common case, not a curiosity.
+  function moreLabel(hidden) {
+    return 'Show ' + hidden + ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
   }
 
   // Official agent logomarks for the header presence cluster — the same Simple
@@ -621,11 +675,29 @@
     '<path d="M13.6 9.2A1.9 1.9 0 0 1 11.7 11H6.2L3 13.4V4.6A1.9 1.9 0 0 1 4.9 2.8h6.8a1.9 1.9 0 0 1 1.9 1.8z"/>' +
     '</svg>';
 
-  const PAGES_SVG =
-    '<svg class="pico" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
-    '<rect x="2.3" y="1.8" width="8.2" height="10.4" rx="1.5"/>' +
-    '<path d="M5.5 14.2h6a1.7 1.7 0 0 0 1.7-1.7V4.7"/></svg>';
+  // The braid — the plugin's own mark, the one on the extension icon and the
+  // share card, and the way into its own list of pages. It replaces a stacked-
+  // pages outline that read as a copy icon, which is not what this button does.
+  //
+  // Drawn the way icons/make-icons.mjs draws the 16px tile (VARIANTS, min:0):
+  // HALF a turn, one crossing, three fat strands, no bloom and no flares —
+  // everything the full braid does is illegible at row scale. The casing is
+  // painted in the drawer's own background so over/under reads in both themes,
+  // and the strand order (codex, you, claude) is what makes the crossing a
+  // crossing rather than three lines meeting.
+  const BRAID_STRANDS = [
+    ['codex', 'M12.07 17.2L11.38 15.67L10.43 14.13L9.27 12.6L8 11.07L6.71 9.53L5.5 8L4.47 6.47L3.7 4.93L3.26 3.4L3.15 1.87L3.39 0.33L3.93 -1.2'],
+    ['you', 'M8 17.2L9.24 15.67L10.42 14.13L11.47 12.6L12.3 11.07L12.82 9.53L13 8L12.82 6.47L12.3 4.93L11.47 3.4L10.42 1.87L9.24 0.33L8 -1.2'],
+    ['claude', 'M3.93 17.2L3.39 15.67L3.15 14.13L3.26 12.6L3.7 11.07L4.47 9.53L5.5 8L6.71 6.47L8 4.93L9.27 3.4L10.43 1.87L11.38 0.33L12.07 -1.2'],
+  ];
+  const BRAID_SVG =
+    '<svg class="pico braid" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
+    'stroke-linecap="round" stroke-linejoin="round">' +
+    BRAID_STRANDS.map(([name, d]) =>
+      `<path d="${d}" stroke="var(--bg)" stroke-width="3.4"/>` +
+      `<path d="${d}" stroke="var(--${name})" stroke-width="2"/>`).join('') +
+    '</svg>';
+  const PAGES_SVG = BRAID_SVG;
 
   function create(opts) {
     opts = opts || {};
@@ -655,6 +727,12 @@
       // so `turn-start` regularly beats {queued:true} back to us; a send whose
       // generation has already moved on has missed its window to say "queued".
       turnSeq: {},
+      // target -> when a chat event for it last arrived. A turn ends with an
+      // event, so a running turn nobody has heard from in a long time is a
+      // turn whose ending was lost in transit — see quietTurns/endTurn.
+      heard: {},
+      // the open @-menu, if any: {target, start, end, caret, items, index}
+      mention: null,
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       // OPTIMISTIC SEND (round 5). A message the user has committed to but the
@@ -974,7 +1052,7 @@
     // The folded middle of a long thread. One line, no card, no chrome — it is
     // a way back into the scrollback, not a participant in the conversation.
     function moreHtml(target, hidden) {
-      const label = 'Show ' + hidden + ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
+      const label = moreLabel(hidden);
       return `<button class="showmore" data-act="expand" data-target="${esc(target)}" type="button" aria-expanded="false">${esc(label)}</button>`;
     }
 
@@ -1054,10 +1132,15 @@
     // line ("queued…") is a claim about a turn that has NOT started, so the
     // chip does not sit beside it, it replaces it. Structural, so the promise
     // holds even if an event went missing.
+    // A wait is a live state, so it looks like one: the same ◐ the working chip
+    // falls back to. Flat text next to a composer reads as something that has
+    // stalled — which is exactly how "queued…" was being read while the bridge
+    // spent twenty seconds waking up.
     function statusHtml(target) {
       const note = D.notes[target];
       const noteHtml = note
-        ? `<div class="status-chip${note.err ? ' err' : ''}">${esc(note.text)}</div>` : '';
+        ? `<div class="status-chip${note.err ? ' err' : ''}">` +
+          `${note.transient ? '<span class="spin">◐</span>' : ''}${esc(note.text)}</div>` : '';
       if (D.running[target]) {
         return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>`
           + (note && note.transient ? '' : noteHtml);
@@ -1074,9 +1157,110 @@
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
       return `<div class="composer" data-target="${esc(target)}">
+        <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
         <div class="crow"><span class="hint">${esc(HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
       </div>`;
+    }
+
+    // ---- the @-menu ---------------------------------------------------------
+    // Typing "@" in any composer opens a short list of who can be summoned.
+    // The list is whatever the companion has told us about (the same agent
+    // data the gear popover reads) plus @all — nothing about claude or codex
+    // is written into this file's behaviour. Everything about it is optional:
+    // no match closes it, Esc closes it, and a literal "@" in prose is left
+    // completely alone (see MENTION_OPENER).
+    function agentRoster() {
+      const m = D.models || {};
+      const keys = o => (o && typeof o === 'object' ? Object.keys(o) : []);
+      const seen = [];
+      for (const list of [keys(m.current), keys(m.status), keys(m.effort && m.effort.current)]) {
+        for (const a of list) {
+          if (a && a !== 'auto_relay' && seen.indexOf(a) === -1) seen.push(a);
+        }
+      }
+      // a companion that has not spoken yet still has to offer something: the
+      // agents this build ships logomarks for, in the order it draws them
+      const roster = seen.length ? seen : Object.keys(MARKS);
+      return roster.slice().sort((a, b) => AGENT_ORDER.indexOf(a) - AGENT_ORDER.indexOf(b));
+    }
+
+    // @all has no logomark of its own, so it wears the braid: three strands,
+    // which is exactly what it means.
+    const mentionMark = h => (MARKS[h]
+      ? `<span class="mmark" style="color:var(--${h})">${MARKS[h]}</span>`
+      : `<span class="mmark">${BRAID_SVG}</span>`);
+
+    function menuFor(target) {
+      return D.mounted &&
+        D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .mentions');
+    }
+
+    function closeMention() {
+      if (D.mounted) {
+        D.shadow.querySelectorAll('.mentions').forEach(m => { m.hidden = true; m.innerHTML = ''; });
+      }
+      D.mention = null;
+    }
+
+    function paintMention() {
+      const m = D.mention;
+      const menu = m && menuFor(m.target);
+      if (!menu) return;
+      menu.innerHTML = m.items.map((h, i) =>
+        `<button class="mrow${i === m.index ? ' on' : ''}" type="button" role="option"
+           aria-selected="${i === m.index}" data-act="mention" data-handle="${esc(h)}"
+           data-target="${esc(m.target)}">${mentionMark(h)}<span class="mname">@${esc(h)}</span></button>`).join('');
+      menu.hidden = false;
+    }
+
+    // Recompute from the box itself: what is typed and where the caret is are
+    // the only inputs, so this is safe to call from input, keyup and click.
+    function syncMention(ta) {
+      const box = ta && ta.closest && ta.closest('.composer');
+      if (!box) return closeMention();
+      const target = box.getAttribute('data-target');
+      const tok = mentionToken(ta.value, ta.selectionStart);
+      const items = tok ? mentionCandidates(agentRoster(), tok.query) : [];
+      // nothing matches what is being typed: the menu goes away and the typing
+      // carries on untouched — never a swallowed keystroke
+      if (!tok || !items.length) return closeMention();
+      const same = D.mention && D.mention.target === target &&
+        D.mention.items.join(',') === items.join(',');
+      const index = same ? Math.min(D.mention.index, items.length - 1) : 0;
+      D.mention = { target, start: tok.start, end: tok.end, caret: tok.end, items, index };
+      paintMention();
+    }
+
+    // Completing writes "@handle " — with the trailing space, because the
+    // mention is finished and the sentence goes on.
+    function insertMention(handle) {
+      const m = D.mention;
+      if (!m || !handle) return closeMention();
+      const ta = composerBox(m.target);
+      if (!ta) return closeMention();
+      const v = ta.value;
+      const ins = '@' + handle + ' ';
+      const before = v.slice(0, m.start);
+      ta.value = before + ins + v.slice(m.end);
+      const caret = before.length + ins.length;
+      D.drafts[m.target] = ta.value;
+      closeMention();
+      ta.focus();
+      ta.setSelectionRange(caret, caret);
+    }
+
+    // render() rebuilds the composer, so an open menu has to be put back —
+    // together with the caret, which is the only thing that makes it mean
+    // anything. Only ever while the menu was already open.
+    function restoreMention() {
+      const m = D.mention;
+      if (!m) return;
+      const ta = composerBox(m.target);
+      if (!ta) { D.mention = null; return; }
+      paintMention();
+      ta.focus();
+      ta.setSelectionRange(m.caret, m.caret);
     }
 
     // ---- the outbox: messages sent but not yet confirmed -------------------
@@ -1334,6 +1518,7 @@
       fillMarkdown(D.shadow);
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
+      restoreMention();
       paintFoot();
     }
 
@@ -1871,12 +2056,19 @@
 
       D.shadow.addEventListener('click', e => {
         const btn = e.target.closest && e.target.closest('[data-act]');
+        // any click that is not the @-menu (a row of it included, once it has
+        // been handled below) dismisses it — clicking away is a decision too
+        if (D.mention && !(btn && btn.dataset.act === 'mention')) {
+          const inBox = e.target.closest && e.target.closest('.composer textarea');
+          if (inBox) syncMention(inBox); else closeMention();
+        }
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
           if (card && card.dataset.thread !== PAGE_TARGET) focus(card.dataset.thread);
           return;
         }
         const act = btn.dataset.act;
+        if (act === 'mention') { insertMention(btn.dataset.handle); return; }
         const target = btn.dataset.target;
         if (act === 'close') { close(); return; }
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
@@ -1925,8 +2117,44 @@
 
       D.el.conn.addEventListener('click', () => { if (!D.connected) cb('onReconnect')(); });
 
+      // the caret moved or the text changed: the @-menu follows both
+      D.shadow.addEventListener('input', e => {
+        const ta = e.target;
+        if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) syncMention(ta);
+      });
+      D.shadow.addEventListener('keyup', e => {
+        if (!/^(Arrow|Home|End|PageUp|PageDown)/.test(e.key || '')) return;
+        const ta = e.target;
+        if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) syncMention(ta);
+      });
+
       // ⌘/Ctrl+Enter sends; plain Enter stays a newline (comments run long)
       D.shadow.addEventListener('keydown', e => {
+        // While the @-menu is open it owns the arrows, Enter, Tab and Esc —
+        // and nothing else. ⌘↩ still sends: finishing a mention is not a
+        // reason to hold a finished message back.
+        if (D.mention && e.target && e.target.closest && e.target.closest('.composer')) {
+          const m = D.mention;
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const step = e.key === 'ArrowDown' ? 1 : m.items.length - 1;
+            m.index = (m.index + step) % m.items.length;
+            paintMention();
+            return;
+          }
+          if (e.key === 'Tab' || (e.key === 'Enter' && !e.metaKey && !e.ctrlKey)) {
+            e.preventDefault();
+            insertMention(m.items[m.index]);
+            return;
+          }
+          if (e.key === 'Escape') {
+            // one layer at a time: the menu, and the drawer stays open
+            e.preventDefault();
+            e.stopPropagation();
+            closeMention();
+            return;
+          }
+        }
         if (e.key === 'Escape') {
           e.stopPropagation();
           // Esc peels one layer at a time: popover first, then the drawer
@@ -1954,7 +2182,10 @@
 
     function note(target, text, err, transient) {
       const key = target == null ? PAGE_TARGET : target;
-      if (text) D.notes[key] = { text, err: !!err, transient: !!transient };
+      // a wait remembers how many bot messages this target had when it was
+      // written, which is what lets a later refetch decide it is over
+      if (text) D.notes[key] = { text, err: !!err, transient: !!transient,
+                                 ...(transient ? { bots: botsIn(key) } : {}) };
       else delete D.notes[key];
       render();
     }
@@ -1971,6 +2202,18 @@
     // no turn running and none has begun or ended since the send left.
     const queueWindowOpen = (key, epoch) =>
       key != null && !D.running[key] && D.turnSeq[key] === epoch;
+
+    // What the wait actually says. The companion knows WHY the turn has not
+    // started — the bridge is being woken (ten or twenty seconds, cold), or
+    // another page has the floor — and saying which is the difference between
+    // a wait that looks alive and one that looks broken. An older companion
+    // sends no `wait` field and gets the word it always used.
+    function waitText(res) {
+      if (res.wait === 'bridge_starting') return 'waking the agents…';
+      if (res.position > 1) return `queued (#${res.position})`;
+      if (res.wait === 'busy') return 'queued behind another chat…';
+      return 'queued…';
+    }
     const bumpTurn = target => { D.turnSeq[target] = (D.turnSeq[target] || 0) + 1; };
 
     const composerBox = target =>
@@ -2011,6 +2254,7 @@
       const entry = { id: 'o-' + (++outSeq), text, state: 'sending', error: '',
                       seen: countSame(target, text) + twins };
       list.push(entry);
+      closeMention();   // the message has gone; there is nothing left to complete
       delete D.drafts[target];
       delete D.notes[target];
       const box = composerBox(target);
@@ -2074,7 +2318,7 @@
       if (res.reason) note(key == null ? null : key, res.reason, true);
       else if (!res.queued) note(target === '__new__' ? null : target, null);
       else if (queueWindowOpen(key, epoch)) {
-        note(key, res.position > 1 ? `queued (#${res.position})` : 'queued…', false, true);
+        note(key, waitText(res), false, true);
       } else render();   // the turn is already under way, or already over: say nothing
     }
 
@@ -2341,8 +2585,31 @@
       return D;
     }
 
+    // A refetch is the other way a wait can end. The events that would have
+    // taken "queued…" down (turn-start, reply, turn-end) can be lost outright —
+    // an extension service worker dies and the tab is never told another thing
+    // until content.js resyncs — so the RECORD gets the same authority they
+    // have: if the bots have answered since the wait was written, the wait is
+    // over, whatever we did or did not hear.
+    function botsIn(target) {
+      const list = target === PAGE_TARGET
+        ? ((D.page && D.page.page_chat) || [])
+        : ((((D.page && D.page.threads) || []).find(t => t.id === target) || {}).msgs || []);
+      return list.filter(m => m && isBot(m.author)).length;
+    }
+    function clearAnsweredWaits() {
+      let changed = false;
+      for (const key of Object.keys(D.notes)) {
+        const n = D.notes[key];
+        if (!n || !n.transient || n.bots == null) continue;
+        if (botsIn(key) > n.bots) { delete D.notes[key]; changed = true; }
+      }
+      return changed;
+    }
+
     function setPage(page) {
       D.page = page || null;
+      clearAnsweredWaits();
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';
         D.el.title.textContent = title;
@@ -2396,7 +2663,25 @@
     function hideSel() { if (D.mounted) D.el.selbtn.classList.remove('on'); return D; }
 
     // ---- companion events -----------------------------------------------
+    // One event must never be able to take the drawer down with it. Everything
+    // live — the working chip, the streaming text, the answer itself — arrives
+    // through here, so an exception thrown on one event used to end the
+    // conversation: the listener died, every later event went unhandled, and
+    // the reader was left looking at a stale pane with no error and no clue.
+    // Whatever the malformed thing was, it is logged and the next event is
+    // handled normally; content.js turns the failure into a refetch, so the
+    // record still wins.
     function onEvent(ev) {
+      try { return applyEvent(ev); }
+      catch (e) {
+        // nothing of the event is touched again in here: reading it is what
+        // threw in the first place
+        console.warn('[botference] event ignored:', (e && e.message) || e);
+        D.badEvents = (D.badEvents || 0) + 1;
+        return undefined;
+      }
+    }
+    function applyEvent(ev) {
       if (!ev) return;
       if (ev.type === 'bridge') { D.bridge = ev.error ? (ev.state + ' — ' + ev.error) : ev.state; paintFoot(); return; }
       // Model switches, context gauges and relays are broadcast to every tab;
@@ -2417,6 +2702,7 @@
       }
       if (ev.type !== 'chat') return;
       const target = ev.target || PAGE_TARGET;
+      D.heard[target] = Date.now();   // this turn is demonstrably still being reported
       switch (ev.kind) {
         case 'turn-start':
           D.running[target] = true;
@@ -2492,6 +2778,29 @@
       }
     }
 
+    // A turn ENDS with an event, so a turn that is still "running" long after
+    // the last thing anyone heard about it is a turn whose end never arrived —
+    // the worker died mid-answer, and the chip would otherwise spin for ever.
+    // The record cannot say (it holds messages, not turns), so silence is the
+    // only evidence there is; content.js supplies the patience.
+    function quietTurns(ms) {
+      const now = Date.now();
+      return Object.keys(D.running).filter(t => now - (D.heard[t] || 0) >= (ms || 0));
+    }
+    // Exactly what a `turn-end` does, for a turn-end that never came.
+    function endTurn(target) {
+      if (!D.running[target]) return false;
+      delete D.running[target];
+      bumpTurn(target);
+      clearWaiting(target);
+      delete D.turnAgents[target];
+      delete D.liveAgents[target];
+      delete D.speaker[target];
+      for (const k of Object.keys(D.streams)) if (D.streams[k].target === target) delete D.streams[k];
+      render();
+      return true;
+    }
+
     // Optimistic local append so the thread moves the instant the event lands;
     // content.js still refetches /page on `page` events for the truth.
     function appendMsg(target, msg) {
@@ -2508,9 +2817,18 @@
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
-      showPages, showThreads, refreshPages,
+      showPages, showThreads, refreshPages, quietTurns, endTurn,
       isOpen: () => D.opened,
       isPagesOpen: () => D.view === 'pages',
+      // Is anything on this page waiting on the bots? content.js polls the
+      // record while this is true — a wait is exactly the state a lost event
+      // strands, and the only one worth spending requests on.
+      // how many events were thrown out because handling them threw — 0 in a
+      // healthy session, and the harness asserts on it
+      eventErrors: () => D.badEvents || 0,
+      isWaiting: () => Object.keys(D.notes).some(k => D.notes[k] && D.notes[k].transient)
+        || Object.keys(D.running).length > 0
+        || Object.keys(D.outbox).some(k => (D.outbox[k] || []).some(e => e.state === 'sending')),
     });
     return D;
   }
@@ -2520,7 +2838,8 @@
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     // pure, for the node tests — no DOM, no KaTeX
     scanMath, protectMath,                                  // test/math.test.mjs
-    msgUnits, collapsePlan, COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL,  // test/collapse.test.mjs
+    msgUnits, collapsePlan, moreLabel, COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL,  // test/collapse.test.mjs
+    mentionToken, mentionCandidates,                        // test/mentions.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

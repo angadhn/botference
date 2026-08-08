@@ -137,7 +137,9 @@
   function bg(msg) {
     return new Promise(resolve => {
       try {
-        chrome.runtime.sendMessage(msg, r => {
+        // page_url rides on everything: the worker's routing table is memory
+        // only, and this is what puts this tab back in it after a respawn
+        chrome.runtime.sendMessage({ ...msg, page_url: HREF }, r => {
           const err = chrome.runtime && chrome.runtime.lastError;
           if (err) return resolve({ ok: false, error: err.message });
           resolve(r || { ok: false, error: 'no response from background' });
@@ -447,6 +449,139 @@
     return drawer;
   }
 
+  // ---- staying in step with the companion ----------------------------------
+  // Every live update reaches this page through the extension's service
+  // worker, and an MV3 worker is a disposable thing: Chrome retires one
+  // whenever it likes, and the replacement reconnects the socket perfectly
+  // while having never heard of this tab. Its routing table is empty, so the
+  // reply the bots wrote a minute ago is delivered nowhere, and the drawer
+  // sits under a comment saying "queued…" until the page is reloaded. That is
+  // exactly the bug this section exists to make impossible.
+  //
+  // So the page stops treating the event stream as the only truth:
+  //   • a port to the worker, reconnected whenever it dies — reconnecting
+  //     STARTS a worker, and re-registers this tab with it
+  //   • a resync (one GET /page) on every reconnect, on every socket that
+  //     comes back, and whenever the tab is looked at again
+  //   • after a send, two scheduled checks: if nothing has arrived by then,
+  //     ask the record directly
+  //
+  // None of it is user-visible. A worker respawn is routine; the only evidence
+  // of one should be that the drawer is right anyway.
+  const PORT_NAME = 'bfp';
+  const PORT_RETRY_MS = 800;
+  const PING_MS = 20000;                  // keeps a worker warm while a tab is open
+  const RESYNC_MIN_MS = 1500;             // never refetch more often than this
+  const WAIT_TICK_MS = 4000;              // how often a waiting page looks up
+  const SEND_CHECKS_MS = [4000, 10000];   // the safety net after a send
+  const WAIT_POLLS_MAX = 30;              // …and then it stops asking (~2 min)
+  const TURN_QUIET_MS = 45000;            // a running turn nobody has heard from
+  let port = null;
+  let portTimer = null;
+  let waitTimer = null;
+  let lastEventAt = Date.now();           // anything at all arriving from the worker
+  let lastPingAt = 0;
+  let lastResyncAt = 0;
+  let resyncing = null;
+  let waitPolls = 0;
+  let eventErrorsSeen = 0;                // events the drawer had to throw away
+  const resyncLog = [];                   // why we refetched, for test/harness.html
+
+  // One refetch, throttled and de-duplicated: several reasons to distrust the
+  // stream can land in the same second and they all want the same GET.
+  function resync(why) {
+    if (!active) return Promise.resolve(null);
+    if (resyncing) return resyncing;
+    if (Date.now() - lastResyncAt < RESYNC_MIN_MS) return Promise.resolve(null);
+    lastResyncAt = Date.now();
+    resyncLog.push(String(why || ''));
+    if (resyncLog.length > 20) resyncLog.shift();
+    resyncing = Promise.resolve(loadPage()).catch(() => null)
+      .then(p => { resyncing = null; return p; });
+    return resyncing;
+  }
+
+  function connectPort() {
+    if (port || !(chrome.runtime && chrome.runtime.connect)) return;
+    try { port = chrome.runtime.connect({ name: PORT_NAME }); } catch { port = null; }
+    if (!port) { schedulePort(); return; }
+    port.onMessage.addListener(msg => {
+      lastEventAt = Date.now();
+      if (msg && msg.t === 'pong') return;
+      handleWorkerMsg(msg, () => {});
+    });
+    port.onDisconnect.addListener(() => {
+      // the worker we were talking to is gone. Reconnecting wakes a new one;
+      // the resync is for whatever it never got the chance to tell us.
+      port = null;
+      schedulePort();
+      resync('worker-gone');
+    });
+    lastPingAt = Date.now();
+    pingPort();
+  }
+  function schedulePort() {
+    if (portTimer) return;
+    portTimer = setTimeout(() => { portTimer = null; connectPort(); }, PORT_RETRY_MS);
+  }
+  function pingPort() {
+    if (!port) return;
+    try { port.postMessage({ t: 'ping', url: HREF }); }
+    catch { port = null; schedulePort(); }
+  }
+
+  // The tab was put away and brought back: whatever happened meanwhile, it
+  // happened to a page nobody was looking at.
+  function liveness(why) {
+    connectPort();
+    pingPort();
+    lastPingAt = Date.now();
+    if (active) resync(why);
+  }
+
+  // A send is the one moment we KNOW an answer is owed, which makes it the one
+  // moment worth spending requests on. Two checks, then it stops: if the pipe
+  // is healthy the events have long since arrived and these are no-ops.
+  function watchSend() {
+    const sentAt = Date.now();
+    for (const ms of SEND_CHECKS_MS) {
+      setTimeout(() => {
+        if (!active || !drawer) return;
+        if (lastEventAt > sentAt) return;        // the stream is alive; nothing to do
+        if (!drawer.isWaiting()) return;         // nothing is outstanding any more
+        resync('after-send');
+      }, ms);
+    }
+  }
+
+  function startLiveness() {
+    connectPort();
+    if (waitTimer) return;
+    waitTimer = setInterval(() => {
+      const now = Date.now();
+      connectPort();
+      if (now - lastPingAt >= PING_MS) { lastPingAt = now; pingPort(); }
+      if (!active || !drawer) return;
+      // a page that is waiting on the bots and hearing nothing looks it up —
+      // but not for ever: a companion that has genuinely stopped answering is
+      // not worth a request every few seconds until the tab is closed
+      if (drawer.isWaiting() && now - lastEventAt > WAIT_TICK_MS) {
+        if (waitPolls < WAIT_POLLS_MAX) { waitPolls++; resync('waiting'); }
+      } else {
+        waitPolls = 0;
+      }
+      // …and a turn still marked running long after the last word about it had
+      // its ending lost in transit. The chip comes down; the record is already
+      // whatever the resync made it.
+      for (const t of drawer.quietTurns(TURN_QUIET_MS)) drawer.endTurn(t);
+    }, WAIT_TICK_MS);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) liveness('visible');
+  }, false);
+  window.addEventListener('focus', () => liveness('focus'), false);
+
   // ---- KaTeX fonts live in the PAGE document, not the shadow root ------------
   // @font-face rules inside a shadow root DO NOT REGISTER — the fonts are never
   // fetched and every formula in the drawer falls back to the page's serif. So
@@ -517,10 +652,14 @@
         pendingSel = null;
         bg({ t: 'badge', count: (PAGE.threads || []).length });
         loadPage();
+        watchSend();
         // `reason` = saved, but the bots will not run for this sender (a guest
         // with no bot access, or a companion started --no-agents). The drawer
         // shows it at the composer; the comment itself is safe.
         return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
+                 // why it is waiting, in the companion's words (bridge_starting
+                 // | busy): the drawer turns it into the line by the composer
+                 wait: r.data && r.data.wait,
                  reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped),
                  thread_id: thread && thread.id };
       },
@@ -554,7 +693,9 @@
           // deduped with nothing echoed: the record is the only truth left
           await loadPage();
         }
+        watchSend();
         return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
+                 wait: r.data && r.data.wait,
                  reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped) };
       },
 
@@ -786,8 +927,18 @@
   }, true);
 
   // ---- background messages -----------------------------------------------------
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => handleWorkerMsg(msg, sendResponse));
+
+  // The same handling whichever pipe carried it — tabs.sendMessage or the port.
+  function handleWorkerMsg(msg, sendResponse) {
     if (!msg) return;
+    lastEventAt = Date.now();
+    // a worker that has just started asking who is out here: answering is what
+    // puts this tab back in its routing table
+    if (msg.t === 'whereami') {
+      sendResponse({ ok: true, url: HREF, active });
+      return;
+    }
     if (msg.t === 'toggle') {
       if (!active) activate();
       else drawer.toggle();
@@ -803,21 +954,38 @@
     }
     if (msg.t === 'conn') {
       if (drawer) drawer.setConn(!!msg.connected);
+      // a socket that has just come back cannot say what it missed while it
+      // was down, so the record is asked instead of assumed
+      if (msg.connected && msg.resumed) resync('socket-resumed');
       sendResponse({ ok: true });
       return;
     }
     if (msg.t === 'ws') {
       const ev = msg.ev || {};
-      if (ev.type === 'page') {
-        if (active) loadPage();
-        // the pages list is a live view of /index; a no-op unless it is up
-        if (drawer) drawer.refreshPages();
-      } else if (drawer) drawer.onEvent(ev);
+      // an event that cannot be handled is not allowed to end the stream: the
+      // drawer swallows the throw, this catches anything left, and either way
+      // the record is asked what really happened
+      try {
+        if (ev.type === 'page') {
+          if (active) loadPage();
+          // the pages list is a live view of /index; a no-op unless it is up
+          if (drawer) drawer.refreshPages();
+        } else if (drawer) {
+          drawer.onEvent(ev);
+          if (drawer.eventErrors() > eventErrorsSeen) {
+            eventErrorsSeen = drawer.eventErrors();
+            resync('event-failed');
+          }
+        }
+      } catch (e) {
+        console.warn('[botference] event handling failed:', (e && e.message) || e);
+        resync('event-threw');
+      }
       sendResponse({ ok: true });
       return;
     }
     sendResponse({ ok: false, error: 'unknown' });
-  });
+  }
 
   // ---- boot ---------------------------------------------------------------------
   // One-shot: a row clicked in another tab's pages list left a flag for this
@@ -840,6 +1008,7 @@
 
   function boot() {
     consumeAutoOpen();
+    startLiveness();
     bg({ t: 'hello', url: location.href }).then(r => {
       if (!r || !r.ok) return;
       if (r.known) {
@@ -856,6 +1025,10 @@
   window.__bfp = {
     activate, loadPage, reanchorAll, headline, articleText, normUrl, hashText,
     site: SITE, caps: CAPS,
+    // the liveness machinery, observable so the harness can drive a dead
+    // worker and assert that the page converges anyway
+    liveness: { resync, connectPort, watchSend, get log() { return resyncLog.slice(); },
+                get connected() { return !!port; } },
     // what the companion was last told the page said — the harness asserts the
     // changed/unchanged decision against it rather than inferring it
     get contextHash() { return lastContextHash; },

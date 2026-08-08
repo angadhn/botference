@@ -328,6 +328,11 @@ async function main() {
     });
     assert.equal(r.json.queued, true);
     assert.equal(r.json.position, 1);
+    // the very first mention finds the bridge cold, and the answer says so:
+    // the drawer shows "waking the agents…" instead of a flat "queued…" for
+    // the ten or twenty seconds a spawn takes
+    assert.equal(r.json.wait, 'bridge_starting',
+      'the first mention reports that the bridge is being started');
     const since = () => stream.events.slice(before);
     const chat = kind => since().filter(e => e.type === 'chat' && e.kind === kind);
     await waitFor(() => chat('turn-start').length, 'turn-start');

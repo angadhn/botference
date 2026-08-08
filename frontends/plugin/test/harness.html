@@ -37,6 +37,8 @@
                      "Show N earlier replies" line is on screen
     ?pages=1         open the Pages view — the plugin's own list of every
                      annotated page (screenshot state)
+    ?mention=1       the @-menu held open over the page-chat composer, with
+                     half a handle typed (screenshot state)
     ?gdocs=1         pretend to be a Google Doc: the url, the " - Google Docs"
                      tab title, a canvas-painted body with no article text, and
                      a stubbed /export?format=txt. Exercises the site-adapter
@@ -451,7 +453,19 @@ let queueDepth = 0;
 // ?queued=1 — a companion whose queue never gets pumped: the mention is
 // accepted, {queued:true} comes back, and no turn ever starts. The waiting line
 // then holds still for a screenshot instead of being overtaken by the chip.
-const HOLD_QUEUE = Q.get('queued') === '1';
+// (mutable: the selftest holds the queue for a moment too, to read the wait
+// line before a turn overtakes it)
+let HOLD_QUEUE = Q.get('queued') === '1';
+// what the companion says it is WAITING FOR when it answers {queued:true} —
+// 'bridge_starting' (the agents are being woken) or 'busy' (another chat has
+// the floor). null = an older companion that says nothing, which must still
+// produce the plain "queued…" line.
+let WAIT_REASON = null;
+window.__bfpQueue = {
+  hold(on) { HOLD_QUEUE = !!on; },
+  reason(r) { WAIT_REASON = r || null; },
+  play(target, text) { playTurn(target, text); },
+};
 
 // ---- agents (round 2: GET /models · POST /model · `models` event;
 //      round 3: `status` context gauges · POST /relay) ----------------------
@@ -722,7 +736,8 @@ function companion(method, path, body) {
     }
     const queued = mention;
     if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
-    return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined } };
+    return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined,
+                                            ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
   }
   if (method === 'POST' && route === '/reply') {
     postedMsgs.push(captured(route, body.text, body));
@@ -752,7 +767,8 @@ function companion(method, path, body) {
     }
     const queued = mention;
     if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(body.thread_id, body.text), 350); }
-    return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined } };
+    return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined,
+                                            ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
   }
   if (method === 'POST' && route === '/edit') {
     const list = body.thread_id === '__page__'
@@ -914,9 +930,34 @@ function companion(method, path, body) {
 // 2. the chrome.* shim — exactly the surface the extension touches
 // ───────────────────────────────────────────────────────────────────────────
 const contentListeners = [];
+// The worker's route to this tab, modelled as one bit. A real MV3 worker is
+// retired whenever Chrome feels like it and the replacement's tab routing
+// table is EMPTY, so either way the outcome is the same: events fired
+// meanwhile are delivered nowhere, the companion carries on, the record grows,
+// and the page's only clue is that its port died. `__bfpWorker.kill()` is that
+// exactly; reconnecting the port (which starts a worker and re-registers the
+// tab) is what puts it back.
+let workerAlive = true;
+const livePorts = new Set();
 function toContent(msg) {
+  if (!workerAlive || !delivering) return;   // nothing to deliver it
   for (const fn of contentListeners) { try { fn(msg, {}, () => {}); } catch (e) { console.error(e); } }
 }
+let delivering = true;
+window.__bfpWorker = {
+  // the worker went away: the port dies with it, which is the page's cue
+  kill() {
+    workerAlive = false;
+    for (const p of [...livePorts]) { livePorts.delete(p); p._dis.forEach(fn => { try { fn(p); } catch {} }); }
+  },
+  // the quieter failure: the worker is alive and the port is fine, but its
+  // socket to the companion is gone, so no event ever arrives and NOTHING
+  // announces it. Only the page's own suspicion can end this one.
+  deafen() { delivering = false; },
+  hear() { delivering = true; },
+  get alive() { return workerAlive; },
+  get ports() { return livePorts.size; },
+};
 const store = {};
 try {
   const raw = localStorage.getItem('bfp-harness-store');
@@ -1000,6 +1041,26 @@ window.chrome = {
       setTimeout(() => cb && cb(reply), slow ? slowPost : 15);
     },
     onMessage: { addListener: fn => contentListeners.push(fn) },
+    // the long-lived port content.js keeps open. Connecting STARTS a worker —
+    // that is the whole reason the extension reconnects rather than waits.
+    connect(info) {
+      workerAlive = true;
+      const port = {
+        name: (info && info.name) || '',
+        _msg: [], _dis: [],
+        onMessage: { addListener: fn => port._msg.push(fn) },
+        onDisconnect: { addListener: fn => port._dis.push(fn) },
+        postMessage(msg) {
+          if (!workerAlive) return;
+          if (msg && msg.t === 'ping') {
+            setTimeout(() => port._msg.forEach(fn => { try { fn({ t: 'pong', connected: true }); } catch {} }), 5);
+          }
+        },
+        disconnect() { livePorts.delete(port); },
+      };
+      livePorts.add(port);
+      return port;
+    },
   },
   storage: {
     local: {
@@ -1489,6 +1550,207 @@ async function selftest() {
     !chatStatus().length);
   d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'turn-end' });
 
+  // ---- @ completes itself -------------------------------------------------
+  // A mention is the only way to summon a bot, and until now you had to know
+  // the handles and spell them. Typing "@" now offers them — the agents the
+  // companion has named, plus @all — and never gets in the way of an "@" typed
+  // on purpose.
+  const menu = () => S.querySelector('.pane[data-pane="chat"] .composer .mentions');
+  const mrows = () => [...(menu() ? menu().querySelectorAll('.mrow') : [])];
+  const menuOpen = () => !!menu() && !menu().hidden && mrows().length > 0;
+  const typeInChat = (text, box) => {
+    const ta = box || S.querySelector('.pane[data-pane="chat"] .composer textarea');
+    ta.focus();
+    ta.value = text;
+    ta.setSelectionRange(text.length, text.length);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return ta;
+  };
+  const press = (ta, key) => ta.dispatchEvent(
+    new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+
+  let ata = await until(freeChat, 8000);
+  typeInChat('so, @', ata);
+  check('typing @ offers the agents that can be summoned', menuOpen());
+  check('…with @all always among them',
+    mrows().some(r => /@all\b/.test(r.textContent)));
+  check('…and the agents the companion actually named, not a hardcoded pair',
+    mrows().some(r => /@claude\b/.test(r.textContent)) &&
+    mrows().some(r => /@codex\b/.test(r.textContent)));
+  check('…each wearing its own mark', mrows().every(r => !!r.querySelector('.mmark svg')));
+  typeInChat('so, @cod', ata);
+  check('typing more filters to what still matches',
+    mrows().length === 1 && /@codex\b/.test(mrows()[0].textContent));
+  press(ata, 'Enter');
+  check('Enter completes the handle, with the trailing space',
+    ata.value === 'so, @codex ');
+  check('…and the menu is gone', !menuOpen());
+
+  // arrows choose, Tab completes
+  typeInChat('@', ata);
+  check('the first row is selected to begin with',
+    !!mrows()[0] && mrows()[0].classList.contains('on'));
+  press(ata, 'ArrowDown');
+  check('…arrow keys move the selection',
+    !!mrows()[1] && mrows()[1].classList.contains('on') && !mrows()[0].classList.contains('on'));
+  const second = mrows()[1].textContent.trim();
+  press(ata, 'Tab');
+  check('Tab completes the highlighted one', ata.value === second + ' ');
+
+  // clicking completes too
+  typeInChat('@c', ata);
+  const wanted = mrows()[0].dataset.handle;
+  mrows()[0].click();
+  check('clicking a row completes it', ata.value === '@' + wanted + ' ');
+
+  // …and every way out leaves the text exactly as typed
+  typeInChat('@cl', ata);
+  press(ata, 'Escape');
+  check('Esc dismisses the menu', !menuOpen());
+  check('…leaving what was typed alone, as plain text', ata.value === '@cl');
+  check('…and the drawer itself stays open', d.isOpen());
+  typeInChat('@zzz', ata);
+  check('a handle nobody has closes the menu rather than blocking the typing',
+    !menuOpen() && ata.value === '@zzz');
+  typeInChat('write to ada@exa', ata);
+  check('an email address never opens it', !menuOpen());
+  typeInChat('', ata);
+
+  // a mention mid-message counts, and so does the reply composer
+  const firstCard = () => S.querySelector('.pane[data-pane="comments"] .card[data-thread]');
+  d.showThreads();
+  S.querySelector('.tab[data-tab="comments"]').click();
+  const rta = await until(() => firstCard() && firstCard().querySelector('.composer textarea'), 8000);
+  rta.focus();
+  rta.value = 'good point — @cl';
+  rta.setSelectionRange(rta.value.length, rta.value.length);
+  rta.dispatchEvent(new Event('input', { bubbles: true }));
+  const rmenu = firstCard().querySelector('.mentions');
+  check('a reply composer completes mid-message too',
+    !!rmenu && !rmenu.hidden && rmenu.querySelectorAll('.mrow').length === 1);
+  rta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  check('…writing the handle into the middle of the sentence',
+    rta.value === 'good point — @claude ');
+  rta.value = '';
+  rta.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.tab[data-tab="chat"]').click();
+
+  // ---- a wait says what it is waiting for, and looks alive doing it -------
+  // "It just says queued…" — for the twenty seconds a cold bridge takes to come
+  // up, flat text next to the composer reads as something that has stalled. The
+  // companion knows why nothing has started yet, so it says so, and the line
+  // spins like every other live state in the drawer.
+  window.__bfpQueue.hold(true);
+  window.__bfpQueue.reason('bridge_starting');
+  (await until(freeChat, 8000)).value = '@claude first thing after a long idle';
+  chatSend().click();
+  check('a cold bridge says it is waking the agents, not merely "queued"',
+    !!await until(() => (/waking the agents/.test(chatStatusText()) ? true : null), 6000));
+  check('…and the wait spins, so it reads as alive rather than stuck',
+    !!S.querySelector('.pane[data-pane="chat"] .status-chip .spin'));
+  check('…as a wait, not as a problem',
+    !S.querySelector('.pane[data-pane="chat"] .status-chip.err'));
+  window.__bfpQueue.reason('busy');
+  (await until(freeChat, 8000)).value = '@claude and this one behind it';
+  chatSend().click();
+  check('a turn behind another chat says that instead',
+    !!await until(() => (/queued \(#2\)|behind another chat/.test(chatStatusText()) ? true : null), 6000));
+  // let the held turns run: a wait that never ends is the bug above, not this one
+  window.__bfpQueue.hold(false);
+  window.__bfpQueue.reason(null);
+  window.__bfpQueue.play('__page__', '@claude first thing after a long idle');
+  check('…and the working chip still supersedes the wait when the turn starts',
+    !!await until(() => (chatRing() && !/waking|queued/.test(chatStatusText()) ? true : null), 12000));
+  check('…leaving nothing behind when it ends',
+    !!await until(() => (!chatStatus().length ? true : null), 25000));
+
+  // ---- a codex turn is a turn like any other ------------------------------
+  // Reported from the field as "I get a spinner for claude, but not for codex":
+  // the two agents share one path and the only thing that differs is the name
+  // in the event, so this pins the whole lifecycle to the agent that was said
+  // to be missing it — chip, ring, answer, and a clean end.
+  (await until(freeChat, 8000)).value = '@codex your turn, and mind the spinner';
+  chatSend().click();
+  const codexRing = () => S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring[data-agent="codex"]');
+  check('a codex turn puts codex in the working chip', !!await until(codexRing, 12000));
+  check('…with its ring actually spinning, not sitting there dimmed',
+    !!codexRing() && codexRing().classList.contains('working'));
+  check('…and no claude alongside it: the chip names who is working',
+    !S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring[data-agent="claude"]'));
+  check('…the answer lands in the pane',
+    !!await until(() => (chatPane().querySelectorAll('.reply.bot').length ? true : null), 20000));
+  check('…and the turn ends cleanly, chip and all',
+    !!await until(() => (!chatStatus().length ? true : null), 25000));
+  check('…having handled every event it was sent', d.eventErrors() === 0);
+
+  // …and one malformed event can never again take the stream down with it:
+  // before this, a throw in here killed the listener and the drawer simply
+  // stopped updating, with nothing on screen to say so.
+  d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__',
+              get kind() { throw new Error('a deliberately broken event'); } });
+  check('an event that throws is dropped, not fatal', d.eventErrors() === 1);
+  d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'reply',
+              msg: { author: 'codex', ts: now(), text: 'still listening' } });
+  check('…and the very next event is handled normally',
+    chatPane().textContent.includes('still listening'));
+
+  // ---- the drawer converges even when nothing is delivered ----------------
+  // The live failure this exists for: the bots answered seven seconds after the
+  // mention, the reply was in the record, and the tab — still open, still
+  // saying "queued…" — never heard a word of it until it was reloaded.
+  // Everything between the companion and this page goes through an MV3 service
+  // worker, and a worker Chrome has retired and respawned routes events with a
+  // table that has nobody in it. So the page stopped depending on being told.
+  const chatText = () => chatPane().textContent;
+
+  // 1. the worker dies. The port dying IS the notice, and the record settles it.
+  const LOST = 'the answer nobody was told about';
+  d.note('__page__', 'queued…', false, true);
+  check('a wait is on screen to be stranded', /queued/.test(chatStatusText()));
+  window.__bfpWorker.kill();
+  RECORD.page_chat.push({ author: 'codex', ts: now(), text: LOST });
+  toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });   // delivered nowhere
+  check('the page reconnects on its own, without a reload',
+    !!await until(() => (window.__bfpWorker.ports > 0 ? true : null), 8000));
+  check('…and refetches the answer it was never told about',
+    !!await until(() => (chatText().includes(LOST) ? true : null), 8000));
+  check('…which takes the stale wait with it',
+    !!await until(() => (!/queued/.test(chatStatusText()) ? true : null), 8000));
+  check('…quietly — a worker respawn is not an error the reader should see',
+    !S.querySelector('.status-chip.err'));
+
+  // 2. the quieter one: worker and port both fine, but no event ever arrives
+  // (the companion's socket went away inside a live worker). Nothing announces
+  // this at all, so the send itself is what arms the check.
+  window.__bfpWorker.deafen();
+  (await until(freeChat, 8000)).value = '@codex answer this into a silent pipe';
+  chatSend().click();
+  check('the mention still reaches the companion',
+    !!await until(() => (RECORD.page_chat.some(m => m.author === 'codex' &&
+      /Two things stand out|Part 1/.test(m.text || '')) ? true : null), 12000));
+  check('…and the message the reader sent reconciles as usual',
+    !!await until(() => (!pendingCards().length ? true : null), 15000));
+  check('…and the drawer catches up on its own, with nothing delivered to it',
+    !!await until(() => (chatText().includes('answer this into a silent pipe') &&
+      !/queued/.test(chatStatusText()) &&
+      chatPane().querySelectorAll('.reply.bot').length > 0 ? true : null), 20000));
+  check('…because a page that is waiting and hearing nothing goes and looks',
+    window.__bfp.liveness.log.some(w => w === 'after-send' || w === 'waiting'));
+  window.__bfpWorker.hear();
+
+  // 3. that turn's ENDING was lost with everything else. A turn ends with an
+  // event and nothing else, so a turn nobody has heard from in a long time is
+  // settled from this side — otherwise the working chip spins for ever.
+  const quiet = d.quietTurns(0);
+  for (const t of quiet) d.endTurn(t);
+  check('a turn whose end was lost is settled from this side, not left spinning',
+    !S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring'));
+  check('…leaving the chat with no chip and no wait', !chatStatus().length);
+  check('…while the answers it did deliver are still on screen',
+    chatPane().querySelectorAll('.reply.bot').length > 0);
+  check('…and nothing is left waiting on a pipe that was never fixed',
+    d.isWaiting() === false);
+
   // ---- your own messages are markdown too --------------------------------
   // Same renderer as the bots get, same safety rules — people paste links into
   // their own comments and a pasted link should be a link. What is STORED stays
@@ -1757,6 +2019,16 @@ async function selftest() {
     parseFloat(getComputedStyle(cur).opacity) === 1 &&
     getComputedStyle(cur).backgroundColor !== getComputedStyle(rows[1]).backgroundColor &&
     /inset/.test(getComputedStyle(cur).boxShadow));
+  // …and the emphasis has to be VISIBLE, which bold alone was not in a list
+  // where every title was already at full strength: the others step back.
+  check('…by a margin you can actually see: its title outreads the rest', (() => {
+    const a = getComputedStyle(cur.querySelector('.ptitle'));
+    const b = getComputedStyle(rows[1].querySelector('.ptitle'));
+    return a.color !== b.color && parseInt(a.fontWeight, 10) > parseInt(b.fontWeight, 10);
+  })());
+  check('…and its meta line is the only one at full strength',
+    parseFloat(getComputedStyle(cur.querySelector('.pmeta')).opacity) === 1 &&
+    parseFloat(getComputedStyle(rows[1].querySelector('.pmeta')).opacity) < 1);
   check('…while the other rows stay ordinary', !!rows[1] &&
     parseFloat(getComputedStyle(rows[1]).opacity) === 1 &&
     !/inset/.test(getComputedStyle(rows[1]).boxShadow));
@@ -2140,14 +2412,32 @@ async function selftest() {
   check('a short thread is never folded',
     !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore'));
 
+  // the threshold itself: three drawn units still read straight through, the
+  // fourth is what folds — and a fold that hides one reply says so in the
+  // singular
+  const OTHER = RECORD.threads[0];
+  const otherCard = () => S.querySelector('.card[data-thread="' + OTHER.id + '"]');
+  OTHER.msgs.push({ author: 'claude', ts: iso(60), text: 'Unit two.' },
+                  { author: 'angadh', ts: iso(58), text: 'Unit three.' });
+  d.setPage(RECORD);
+  check('three units still read straight through', !otherCard().querySelector('.showmore'));
+  OTHER.msgs.push({ author: 'claude', ts: iso(56), text: 'Unit four.' });
+  d.setPage(RECORD);
+  check('…and the fourth unit folds the thread', !!otherCard().querySelector('.showmore'));
+  check('…hiding exactly one reply, in the singular',
+    otherCard().querySelector('.showmore').textContent.trim() === 'Show 1 earlier reply');
+  check('…with the root and the last two units still on screen', (() => {
+    const t = otherCard().querySelector('.thread').textContent;
+    return t.includes(OTHER.msgs[0].text.slice(0, 30))
+      && t.includes('Unit three.') && t.includes('Unit four.') && !t.includes('Unit two.');
+  })());
+
   // a new reply arrives in a thread that is still folded: it must show up at
   // the bottom without the hidden middle springing open under the reader
   d.setPage(RECORD);
-  const OTHER = RECORD.threads[0];
   for (let i = 1; i <= 8; i++) OTHER.msgs.push({ author: i % 2 ? 'claude' : 'angadh', ts: iso(30 - i), text: 'Line ' + i });
   d.setPage(RECORD);
-  const otherCard = () => S.querySelector('.card[data-thread="' + OTHER.id + '"]');
-  check('the second thread folded once it grew', !!otherCard().querySelector('.showmore'));
+  check('the thread stays folded as it grows', !!otherCard().querySelector('.showmore'));
   OTHER.msgs.push({ author: 'claude', ts: iso(1), text: 'Brand new answer' });
   d.setPage(RECORD);
   check('a reply arriving in a folded thread is visible immediately',
@@ -2565,6 +2855,20 @@ window.__bfp.activate(false).then(() => {
         ta.dispatchEvent(new Event('input', { bubbles: true }));
         d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
         log('queued: a mention waiting its turn (screenshot state)');
+      }, 250);
+    }
+    // the @-menu, held open for a screenshot: half a handle typed, the list
+    // showing whoever can be summoned
+    if (Q.get('mention') === '1') {
+      setTimeout(() => {
+        d.open('chat');
+        const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
+        if (!ta) return log('mention: no composer');
+        ta.focus();
+        ta.value = 'and one more thing, @c';
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        log('mention: the @-menu, open (screenshot state)');
       }, 250);
     }
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);

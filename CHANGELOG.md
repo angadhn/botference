@@ -2,6 +2,43 @@
 
 ## 2026-08-08
 
+- **Web annotator: the drawer can no longer be left behind.** Live
+  updates reach a page through the extension's service worker, and
+  Chrome retires those whenever it likes — the replacement reconnected
+  the socket but had never heard of your tab, so replies landed in the
+  record while the drawer sat there saying "queued…" until you reloaded.
+  Now every message re-registers the tab, a port per tab makes the
+  worker's death visible to the page (it reconnects and refetches), a
+  socket that comes back tells every drawer to catch up, a send that
+  hears nothing checks the record after a few seconds, and a page that
+  is visibly waiting looks it up on its own. A turn whose ending was
+  lost stops spinning after 45s, a refetch that finds the answer takes
+  the stale wait down with it, and one malformed event can no longer
+  freeze the stream.
+
+- **Web annotator: a wait says what it is waiting for.** The companion
+  now reports WHY nothing has started — the bridge is being woken, or
+  another chat has the floor — and the drawer says "waking the agents…"
+  or "queued behind another chat…" instead of a flat "queued…", with the
+  same spinner every other live state uses. Waiting should look alive.
+
+- **Web annotator: @ completes itself.** Typing `@` in any composer
+  offers the agents that can be summoned (whichever ones the companion
+  reports, plus `@all`), each with its logomark: keep typing to filter,
+  ↑/↓ to choose, Enter, Tab or a click to complete to "@codex ". Esc or
+  a handle nobody has closes it and leaves your text alone, and an "@"
+  inside a word — an email address — never opens it at all.
+
+- **Web annotator: the Pages list reads properly.** The row for the page
+  you are on now outreads the rest by a visible margin (the other rows
+  step back and come back on hover), and the button that opens the list
+  wears the braid instead of a glyph that looked like a copy icon.
+
+- **Web annotator: threads fold sooner.** A thread now folds past three
+  drawn units instead of six, keeping its root and the last two — so a
+  four-message exchange already tucks its middle behind "Show 1 earlier
+  reply" (singular, and the count still ignores tool rows).
+
 - **Web annotator: maths renders, and long threads fold.** Messages now
   typeset LaTeX — `$…$` and `\(…\)` inline, `$$…$$` and `\[…\]` display —
   for every author, in comment threads and page chat alike, using KaTeX
