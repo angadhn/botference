@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
-import { createChat, hasMention, priorMsgs } from './chat.mjs';
+import { createChat, hasMention, priorMsgs, commentsDigest } from './chat.mjs';
 import { exportPage } from './export.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +28,11 @@ const AGENTS_OFF_REASON = 'agents are off on this companion';
 const AGENTS_OFF_ERROR = "agents are off — restart 'botference plugin' with claude/codex CLIs available";
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
-const BODY_MAX = 200000; // article_text rides along on first mentions
+// article_text rides along with mentions, and a .docx may ride with them too —
+// base64 of an 8MB document is ~11MB of request body, so the wire limit sits
+// above the document limit, not at it
+const DOCX_MAX = 8 * 1024 * 1024;
+const BODY_MAX = 12 * 1024 * 1024;
 
 // --- one companion per workspace: pid lock (same pattern as the council) ---
 const lockFile = path.join(store.ROOT, '.botference', 'plugin-web.lock');
@@ -71,7 +75,21 @@ function sseOpen(res) {
 // persistence, chat.mjs only reports what the bots said. So a /page refetch
 // after turn-end always agrees with what streamed.
 const chat = NO_AGENTS ? null : createChat({ onEvent: onChatEvent });
+// what the agents panel renders: the bridge's own model/effort/occupancy, plus
+// the one setting the companion owns (verbosity). Assembled in one place so
+// GET /models and every `models` broadcast agree field for field.
+const EMPTY_MODELS = { current: null, options: null, status: null, effort: null };
+function modelsPayload() {
+  const m = chat ? chat.models() : EMPTY_MODELS;
+  return {
+    current: m.current, options: m.options, status: m.status, effort: m.effort,
+    verbosity: store.readConfig().verbosity,
+  };
+}
 function onChatEvent(ev) {
+  // chat.mjs knows nothing about config.json; the verbosity a tab renders
+  // rides the same event as everything else in that panel
+  if (ev.type === 'models') return broadcast({ ...ev, verbosity: store.readConfig().verbosity });
   if (ev.type === 'chat' && ev.kind === 'reply') {
     const page = store.readPage(ev.url);
     if (page) {
@@ -87,7 +105,7 @@ function onChatEvent(ev) {
 
 // an @-mention in any message — first comment or tenth reply — is the only
 // thing that summons the bots
-function summon(page, target, text, articleText) {
+function summon(page, target, text, extras = {}) {
   if (!hasMention(text)) return {};
   if (NO_AGENTS) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: AGENTS_OFF_ERROR });
@@ -97,18 +115,42 @@ function summon(page, target, text, articleText) {
     url: page.url, target, text, title: page.title,
     quote: target === store.PAGE_CHAT ? '' : (store.findThread(page, target) || {}).quote,
     history: priorMsgs(page, target),
-    articleText,
+    ...extras,
   });
   return { queued: true, position };
 }
+
+// A .docx may ride along with any mention (the reader is annotating a doc and
+// wants the bots to see what everyone else already said in its margins). It is
+// read for this turn only: the digest goes in the envelope and nowhere else.
+// Returns null when the request has already been refused.
+function docxDigestOf(res, data, text) {
+  if (!data.docx_b64) return '';
+  const buf = Buffer.from(String(data.docx_b64), 'base64');
+  if (buf.length > DOCX_MAX) { fail(res, 413, 'document too large — 8MB max'); return null; }
+  return hasMention(text) ? commentsDigest(buf) : '';
+}
+const contextExtras = (data, docxDigest) => ({
+  articleText: data.article_text,
+  articleChanged: !!data.article_changed,
+  docxDigest,
+});
 
 // --- HTTP helpers -------------------------------------------------------
 const ok = (res, obj) => res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...obj }));
 const fail = (res, code, error) => res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error }));
 function readBody(req, res, fn) {
   let body = '';
-  req.on('data', c => { body += c; if (body.length > BODY_MAX) req.destroy(); });
+  let over = false;
+  req.on('data', c => {
+    if (over) return;
+    body += c;
+    // answer before hanging up: a dropped socket reads as "the companion is
+    // down" in the extension, which is the wrong thing to tell the user
+    if (body.length > BODY_MAX) { over = true; fail(res, 413, 'request too large'); req.destroy(); }
+  });
   req.on('end', () => {
+    if (over) return;
     let data; try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
     fn(data);
   });
@@ -140,11 +182,7 @@ export function handler(req, res) {
   // Both are null until the bridge has started and spoken — the extension
   // renders that as "unknown yet", never as an empty list.
   if (req.method === 'GET' && url === '/models') {
-    const m = chat ? chat.models() : { current: null, options: null, status: null };
-    return ok(res, {
-      current: m.current, options: m.options, status: m.status,
-      bridge: NO_AGENTS ? 'disabled' : chat.state(),
-    });
+    return ok(res, { ...modelsPayload(), bridge: NO_AGENTS ? 'disabled' : chat.state() });
   }
   if (req.method === 'GET' && url === '/index') {
     return res.writeHead(200, JSON_HEAD).end(JSON.stringify(store.readIndex()));
@@ -185,6 +223,8 @@ export function handler(req, res) {
       if (!data.url) return fail(res, 400, 'url required');
       if (!data.quote) return fail(res, 400, 'quote required');
       if (!text.trim()) return fail(res, 400, 'empty comment');
+      const docxDigest = docxDigestOf(res, data, text);
+      if (docxDigest === null) return; // 413: nothing is saved, nothing is queued
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
       const thread = store.addThread(page, {
@@ -193,13 +233,15 @@ export function handler(req, res) {
       });
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { thread, ...summon(page, thread.id, text, data.article_text) });
+      ok(res, { thread, ...summon(page, thread.id, text, contextExtras(data, docxDigest)) });
     });
   }
   if (req.method === 'POST' && url === '/reply') {
     return readBody(req, res, data => {
       const text = String(data.text || '');
       if (!text.trim()) return fail(res, 400, 'empty reply');
+      const docxDigest = docxDigestOf(res, data, text);
+      if (docxDigest === null) return;
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
@@ -207,7 +249,7 @@ export function handler(req, res) {
       if (!msg) return fail(res, 404, 'unknown thread');
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { msg, ...summon(page, target, text, data.article_text) });
+      ok(res, { msg, ...summon(page, target, text, contextExtras(data, docxDigest)) });
     });
   }
   if (req.method === 'POST' && url === '/edit') {
@@ -224,6 +266,27 @@ export function handler(req, res) {
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { msg });
+    });
+  }
+  // Ticking a checkbox in a message — usually a BOT's message, which is the
+  // whole point: a bot proposes a checklist and the reader works through it in
+  // the drawer. So unlike /edit there is no author check; only the box
+  // character changes, so nothing a bot said can be rewritten this way.
+  if (req.method === 'POST' && url === '/tick') {
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const msgs = store.msgsOf(page, data.thread_id || store.PAGE_CHAT);
+      if (!msgs) return fail(res, 404, 'unknown thread');
+      const msg = msgs.find(m => m.ts === data.ts);
+      if (!msg) return fail(res, 404, 'unknown message');
+      const text = Number.isInteger(data.index) && data.index >= 0
+        ? store.setCheckbox(msg.text, data.index, !!data.checked) : null;
+      if (text === null) return fail(res, 400, 'index out of range');
+      msg.text = text;
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { text });
     });
   }
   if (req.method === 'POST' && url === '/delete') {
@@ -256,6 +319,34 @@ export function handler(req, res) {
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { thread_deleted: gone });
+    });
+  }
+  // Forget a page entirely — record, index row and, if asked, the botference
+  // chat behind it. Hard delete on both sides: nothing is archived, because a
+  // page the reader deleted from the drawer should not resurface in /resume.
+  if (req.method === 'POST' && url === '/delete-page') {
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const sid = page.session_id || null;
+      const wanted = !!data.delete_session && !!sid;
+      // a session two pages point at is the inheritance bug, not a shared
+      // chat: deleting it would take the other page's conversation with it
+      if (wanted) {
+        const other = store.pageWithSession(sid, page.url);
+        if (other) return fail(res, 409, `that chat is also claimed by ${other} — its session was left alone`);
+      }
+      let session_deleted = false;
+      if (wanted) {
+        // a live bridge owns the session store (it holds the chat in memory
+        // and would rewrite the file on its next save): ask it to delete.
+        // Stopped, nobody owns the file and we can remove it ourselves.
+        if (chat && chat.state() === 'running') { chat.control(`/delete ${sid}`); session_deleted = true; }
+        else session_deleted = store.deleteSessionFile(sid);
+      }
+      store.deletePage(page.url);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { session_deleted });
     });
   }
   if (req.method === 'POST' && url === '/orphan') {
@@ -291,6 +382,33 @@ export function handler(req, res) {
       if (options && options.length && !options.includes(model)) return fail(res, 400, `unknown model for ${agent}`);
       chat.control(`/model @${agent} ${model}`);
       ok(res, { queued: true });
+    });
+  }
+  // reasoning effort: the same picker shape as /model, but the bridge never
+  // reports the live level, so the companion is the one keeping score
+  if (req.method === 'POST' && url === '/effort') {
+    return readBody(req, res, data => {
+      const agent = String(data.agent || '');
+      const level = String(data.level || '');
+      if (agent !== 'claude' && agent !== 'codex') return fail(res, 400, 'agent must be claude or codex');
+      if (!/^[\w-]+$/.test(level)) return fail(res, 400, 'bad effort level');
+      if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
+      const options = (chat.models().effort.options || {})[agent];
+      if (options && options.length && !options.includes(level)) return fail(res, 400, `unknown effort level for ${agent}`);
+      chat.control(`/effort @${agent} ${level}`);
+      ok(res, { queued: true });
+    });
+  }
+  // how long the bots' replies should be. A companion setting, not a bridge
+  // one: it lives in config.json and is enforced in the envelope, so it holds
+  // across restarts and applies to the very next turn.
+  if (req.method === 'POST' && url === '/verbosity') {
+    return readBody(req, res, data => {
+      const level = String(data.level || '');
+      if (!store.VERBOSITY_LEVELS.includes(level)) return fail(res, 400, 'level must be short or long');
+      const cfg = store.saveConfig({ verbosity: level });
+      broadcast({ type: 'models', ...modelsPayload() });
+      ok(res, { verbosity: cfg.verbosity });
     });
   }
   // hand an agent's own context back to it (compaction/handoff). Never worth

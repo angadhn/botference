@@ -29,8 +29,12 @@
 //   {t:'api', method:'GET'|'POST', path:'/page?url=…', body?:{…}}
 //        → {ok:true, status:200, data:{…}}          companion answered
 //        → {ok:false, error:'…', status?:N, data?:…} transport or 4xx/5xx
-//   {t:'gdocs-export', url}           FALLBACK transport for the Google Docs
-//                                     adapter's plain-text export. The content
+//   {t:'gdocs-export', url, want?}    FALLBACK transport for the Google Docs
+//                                     adapter's export — the plain text, or
+//                                     (want:'bytes', format=docx) the same
+//                                     document as a zip, which is the only
+//                                     export that carries the doc's own
+//                                     comment threads. The content
 //                                     script fetches it itself first (with
 //                                     credentials:'same-origin' — adapters.js
 //                                     explains why that mode and not
@@ -41,9 +45,10 @@
 //                                     `url` is NOT a general fetch target: it
 //                                     is validated to https + host exactly
 //                                     docs.google.com + the document export
-//                                     route, and nothing else is ever
-//                                     requested. This is not a proxy.
+//                                     route, format=txt|docx, and nothing else
+//                                     is ever requested. This is not a proxy.
 //        → {ok:true, status:200, contentType:'…', text:'…'}
+//        → {ok:true, status:200, contentType:'…', b64:'…'}   (want:'bytes')
 //        → {ok:false, status?:N, error:'…', peek?:'…'}
 //   {t:'badge', count:N}              set this tab's badge (N=0 clears it)
 //        → {ok:true}
@@ -258,12 +263,27 @@ function refreshAllBadges() {
 // Credentials are 'include' HERE (and only here): the worker's own origin is
 // the extension, so 'same-origin' would send no cookies at all, and CORS is
 // satisfied by the host permission rather than by response headers.
+//
+// format=docx is the same route asking for the same document as a zip — the
+// one export that carries the doc's own comment threads. It is fetched as
+// bytes and handed back base64-encoded, because a Uint8Array does not survive
+// sendMessage intact.
 const GDOCS_EXPORT_URL =
-  /^https:\/\/docs\.google\.com\/(?:u\/\d{1,3}\/)?document\/(?:u\/\d{1,3}\/)?d\/[A-Za-z0-9_-]{8,}\/export\?format=txt(?:&authuser=\d{1,3})?$/;
+  /^https:\/\/docs\.google\.com\/(?:u\/\d{1,3}\/)?document\/(?:u\/\d{1,3}\/)?d\/[A-Za-z0-9_-]{8,}\/export\?format=(?:txt|docx)(?:&authuser=\d{1,3})?$/;
 const GDOCS_TEXT_MAX = 300000;   // the adapter keeps 12000; this is the wire cap
+const GDOCS_BYTES_MAX = 6 * 1024 * 1024;   // matches adapters.js's DOCX_MAX
 const peek = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, 80);
 
-async function gdocsExport(rawUrl) {
+const B64_CHUNK = 0x8000;
+function bytesToBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += B64_CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + B64_CHUNK));
+  }
+  return btoa(s);
+}
+
+async function gdocsExport(rawUrl, want) {
   const url = String(rawUrl == null ? '' : rawUrl);
   let u;
   try { u = new URL(url); } catch { return { ok: false, error: 'gdocs-export: not a url' }; }
@@ -277,6 +297,18 @@ async function gdocsExport(rawUrl) {
     return { ok: false, error: 'fetch threw: ' + peek((e && e.message) || e) };
   }
   const contentType = (res.headers && res.headers.get('content-type')) || '';
+  if (want === 'bytes') {
+    let buf;
+    try { buf = await res.arrayBuffer(); }
+    catch (e) { return { ok: false, status: res.status, contentType, error: 'the body did not read: ' + peek((e && e.message) || e) }; }
+    if (!res.ok) return { ok: false, status: res.status, contentType, error: 'HTTP ' + res.status };
+    const bytes = new Uint8Array(buf || 0);
+    if (bytes.length > GDOCS_BYTES_MAX) {
+      return { ok: false, status: res.status, contentType, error: 'the export is over the ' +
+        Math.round(GDOCS_BYTES_MAX / 1048576) + 'MB cap (' + bytes.length + ' bytes)' };
+    }
+    return { ok: true, status: res.status, contentType, b64: bytesToBase64(bytes) };
+  }
   let text = '';
   try { text = await res.text(); } catch (e) { text = ''; }
   if (!res.ok) {
@@ -339,7 +371,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case 'api': {
         const r = await api(msg.method, msg.path, msg.body);
-        if (r.ok && /^\/(thread|reply|delete|edit|orphan|page)$/.test(String(msg.path).split('?')[0])) {
+        if (r.ok && /^\/(thread|reply|delete|delete-page|edit|orphan|page|tick)$/.test(String(msg.path).split('?')[0])) {
           refreshIndexSoon();
         }
         return r;
@@ -352,7 +384,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         forceReconnect();
         return { ok: true };
       }
-      case 'gdocs-export': return gdocsExport(msg.url);
+      case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'open-page': return openPage(msg.url);
       default:
         return { ok: false, error: 'unknown message ' + JSON.stringify(msg && msg.t) };

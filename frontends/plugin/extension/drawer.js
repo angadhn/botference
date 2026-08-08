@@ -21,17 +21,29 @@
 //   onReply(threadId, text)             threadId '__page__' = page chat
 //   onEdit(threadId, ts, text)
 //   onDelete(threadId, ts|null)         null ts = delete the whole thread
+//   onTick(threadId, ts, index, checked) a checkbox in a bot's markdown
+//                                        checklist was clicked; index is its
+//                                        0-based ordinal in that message
+//                                        → {ok, text}   (POST /tick) — `text`
+//                                        is the message's authoritative new
+//                                        body and replaces the optimistic tick
 //   onExport()                          → {ok, path} to show in the footbar
 //   onPages()                           → {ok, index:{pageKey:{url,title,threads,
-//                                         updated_at}}}                (GET /index)
+//                                         has_session,updated_at}}}   (GET /index)
 //   onOpenPage(url)                     → {ok}  open/focus a tab at that page
 //   onExportPage(url)                   → {ok, path}          (POST /export {url})
+//   onDeletePage(url)                   → {ok, session_deleted, current}
+//                                         (POST /delete-page) — `current` says
+//                                         the deleted page is the one we are on
 //   onInterrupt()
 //   onJump(threadId)                    quote clicked: scroll page to highlight
 //   onFocus(threadId|null)              card focused/blurred: tint the highlight
-//   onModels()                          → {ok, current, options, status, bridge}
-//                                                                         (GET /models)
+//   onModels()                          → {ok, current, options, status, bridge,
+//                                            effort, verbosity}          (GET /models)
 //   onSetModel(agent, model)            → {ok, queued}                    (POST /model)
+//   onSetEffort(agent, level)           → {ok, queued} | {ok:false,error} (POST /effort)
+//   onSetVerbosity(level)               → {ok, queued} | {ok:false,error} (POST /verbosity)
+//                                         level: 'short'|'long'
 //   onRelay(agent)                      → {ok, queued} | {ok:false,error} (POST /relay)
 //                                         agent: 'claude'|'codex'|'both'
 //   onClose() / onReconnect() / onSelect()
@@ -86,8 +98,18 @@
   // [text](http…), **bold**, *italic*, `code`. Anything else stays literal.
   const SAFE_URL = /^https?:\/\//i;
   const FENCE = /^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)\s*$/;
-  const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
-  const NUMBER = /^\s{0,3}(\d{1,9})[.)]\s+(.*)$/;
+  // Any indent, not the usual ≤3: the companion counts a message's checkboxes
+  // with the same line-anchored rule, and a nested "    - [ ] …" it counted but
+  // this renderer treated as prose would put every later tick on the WRONG box.
+  // (Nested lists flatten as a result — the drawer is a 420px column and never
+  // drew the second level anyway.)
+  const BULLET = /^[ \t]*[-*+]\s+(.*)$/;
+  const NUMBER = /^[ \t]*(\d{1,9})[.)]\s+(.*)$/;
+  // "- [ ] thing" / "* [x] thing" / "1. [ ] thing" — a real checkbox, not a
+  // picture of one. The state lives in the message TEXT (the companion rewrites
+  // the brackets), so a refetched thread renders the same ticks with no client
+  // state at all.
+  const TASK = /^\[([ xX])\]\s+(.*)$/;
   const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
   // one alternation, tried left to right: code spans win over emphasis, so
   // `**not bold**` inside backticks stays literal
@@ -133,9 +155,15 @@
   const isBlockStart = l =>
     FENCE.test(l) || BULLET.test(l) || NUMBER.test(l) || HEADING.test(l) || !l.trim();
 
+  // The tick index a click reports back to the companion: the 0-based ordinal
+  // of the checkbox WITHIN ITS MESSAGE, counted in document order. Reset per
+  // renderMarkdown() call, which is once per message.
+  let taskSeq = 0;
+
   function renderMarkdown(src) {
     const frag = document.createDocumentFragment();
     const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+    taskSeq = 0;
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
@@ -174,6 +202,7 @@
           const n = Number(NUMBER.exec(line)[1]);
           if (n > 1) list.setAttribute('start', String(n));
         }
+        let tasks = 0;
         while (i < lines.length) {
           const m = (ordered ? NUMBER : BULLET).exec(lines[i]);
           if (!m) break;
@@ -181,8 +210,23 @@
           let txt = ordered ? m[2] : m[1];
           // lazy continuation: a wrapped item keeps flowing into the same <li>
           while (i < lines.length && !isBlockStart(lines[i])) txt += ' ' + lines[i++].trim();
-          mdInline(txt, list.appendChild(mk('li')));
+          const task = TASK.exec(txt);
+          const li = list.appendChild(mk('li'));
+          if (!task) { mdInline(txt, li); continue; }
+          tasks++;
+          const done = task[1] !== ' ';
+          li.className = 'md-task' + (done ? ' done' : '');
+          const box = mk('input', 'md-tick');
+          box.type = 'checkbox';
+          box.checked = done;
+          box.setAttribute('data-tick', String(taskSeq++));
+          box.setAttribute('aria-label', task[2]);
+          li.appendChild(box);
+          mdInline(task[2], li.appendChild(mk('span', 'md-tasktext')));
         }
+        // a list of checkboxes carries its own markers; the bullets would be
+        // a second, quieter bullet in front of every one of them
+        if (tasks) list.classList.add('md-tasklist');
         frag.appendChild(list);
         continue;
       }
@@ -246,6 +290,16 @@
   // Two stacked sheets: the header's own glyph for "every page you have
   // annotated". Stroked in currentColor so it inherits the icon button's
   // hover/active colour like the ⚙ and ✕ next to it.
+  // A speech bubble: "there are bots in this one". Muted, stroked in
+  // currentColor like the header's own glyphs, and never a second colour —
+  // the row is a destination, not a status board.
+  const CHAT_TIP = 'has a bot chat';
+  const CHAT_SVG =
+    '<svg class="cico" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M13.6 9.2A1.9 1.9 0 0 1 11.7 11H6.2L3 13.4V4.6A1.9 1.9 0 0 1 4.9 2.8h6.8a1.9 1.9 0 0 1 1.9 1.8z"/>' +
+    '</svg>';
+
   const PAGES_SVG =
     '<svg class="pico" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
     'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
@@ -283,12 +337,17 @@
       // 'threads' = the Comments/Page-chat tabs; 'pages' = the library of every
       // annotated page, which takes over the whole body and hides the tab bar
       view: 'threads',
-      pages: { list: null, loading: false, err: '' },
+      // `confirm` = the url whose inline "delete page + its chat?" is showing;
+      // `rowErr` = a refusal from the companion, shown under the row it is about
+      pages: { list: null, loading: false, err: '', confirm: null, rowErr: null },
       connected: false,
       connKnown: false,    // false until the background has told us either way
       bridge: '',
       foot: '',
-      models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false },
+      // effort mirrors models ({current, options}, null until the bridge has
+      // spoken); verbosity is a companion-level preference, so it is a string
+      models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false,
+                effort: null, verbosity: '' },
       modelsOpen: false,
       relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
@@ -617,13 +676,19 @@
     // a companion that names nobody at all still gets an honest chip
     const chipBody = targets => chipAvatars(targets) || `<span class="spin">◐</span>agents are working…`;
 
+    // The chip and the note are two different facts and can both be true at
+    // once: a `chat`/`error` event now arrives MID-TURN (the companion denies
+    // every bot file-write and says so, then lets the turn finish). Showing
+    // only the chip would swallow that message, and showing only the note
+    // would claim the turn had stopped when it has not.
     function statusHtml(target) {
       const note = D.notes[target];
+      const noteHtml = note
+        ? `<div class="status-chip${note.err ? ' err' : ''}">${esc(note.text)}</div>` : '';
       if (D.running[target]) {
-        return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>`;
+        return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>` + noteHtml;
       }
-      if (note) return `<div class="status-chip${note.err ? ' err' : ''}">${esc(note.text)}</div>`;
-      return '';
+      return noteHtml;
     }
 
     function composerHtml(target, label, extra) {
@@ -745,14 +810,30 @@
     function pageRowHtml(p) {
       const n = p.threads | 0;
       const cur = isCurrentUrl(p.url);
+      // has_session = the companion holds a botference session for this page,
+      // i.e. there are bots in it. A page of pure notes has none, and the
+      // difference is worth one muted glyph.
+      const chat = p.has_session
+        ? `<span class="pchat" title="${esc(CHAT_TIP)}" aria-label="${esc(CHAT_TIP)}">${CHAT_SVG}</span>`
+        : '';
+      const confirming = D.pages.confirm != null && sameUrl(D.pages.confirm, p.url);
+      const err = D.pages.rowErr && sameUrl(D.pages.rowErr.url, p.url)
+        ? `<div class="prow-err">${esc(D.pages.rowErr.text)}</div>` : '';
+      const acts = confirming
+        ? `<span class="pconfirm">delete page + its chat?
+             <button class="rebtn yes" data-act="page-del-yes" data-url="${esc(p.url)}" type="button">yes</button>
+             <button class="rebtn" data-act="page-del-no" type="button">no</button></span>`
+        : `<button class="rebtn pexport" data-act="page-export" data-url="${esc(p.url)}" type="button"
+             title="Export this page to Obsidian" aria-label="Export this page to Obsidian">${OBSIDIAN_SVG}</button>
+           <button class="rebtn pdel" data-act="page-del" data-url="${esc(p.url)}" type="button"
+             title="Delete this page and its chat" aria-label="Delete this page and its chat">✕</button>`;
       return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}">
         <button class="prow-main" data-act="page-open" data-url="${esc(p.url)}" type="button"
           title="${esc(cur ? 'back to this page’s comments' : p.url)}">
           <span class="ptitle">${esc(p.title || p.url)}</span>
-          <span class="pmeta"><span class="psite">${esc(hostOf(p.url))}</span> · <span class="pcount">${n} thread${n === 1 ? '' : 's'}</span> · <span class="pwhen">${esc(relTime(p.updated_at))}</span>${cur ? '<span class="pcur"> · this page</span>' : ''}</span>
+          <span class="pmeta"><span class="psite">${esc(hostOf(p.url))}</span> · <span class="pcount">${n} thread${n === 1 ? '' : 's'}</span> · <span class="pwhen">${esc(relTime(p.updated_at))}</span>${cur ? '<span class="pcur"> · this page</span>' : ''}${chat}</span>
         </button>
-        <button class="rebtn pexport" data-act="page-export" data-url="${esc(p.url)}" type="button"
-          title="Export this page to Obsidian" aria-label="Export this page to Obsidian">${OBSIDIAN_SVG}</button>
+        ${acts}${err}
       </div>`;
     }
 
@@ -925,19 +1006,34 @@
       return Math.round(h / 24) + 'd ago';
     }
 
-    function optionList(agent) {
-      const cur = (D.models.current && D.models.current[agent]) || '';
-      const list = (D.models.options && D.models.options[agent]) || null;
-      if (!list || !list.length) return [cur || '—'];
-      // a model the bridge no longer offers is still what is running: show it
-      return list.indexOf(cur) === -1 && cur ? [cur].concat(list) : list.slice();
+    // Two pickers per agent, built from the same rule: model and effort. Both
+    // arrive as {current, options} and both go null the moment the bridge is
+    // not running, which is what disables them.
+    const modelCur = a => (D.models.current && D.models.current[a]) || '';
+    const modelList = a => (D.models.options && D.models.options[a]) || null;
+    const effortCur = a => (D.models.effort && D.models.effort.current && D.models.effort.current[a]) || '';
+    const effortList = a => (D.models.effort && D.models.effort.options && D.models.effort.options[a]) || null;
+    const pickerCur = (agent, kind) => (kind === 'effort' ? effortCur : modelCur)(agent);
+    const pickerList = (agent, kind) => (kind === 'effort' ? effortList : modelList)(agent);
+
+    // '—' is not a level: it is "the bridge has not said". The companion
+    // reports effort.current.codex as null until it has been set even once,
+    // and preselecting `low` there would be the drawer inventing an answer.
+    const NOPICK = '—';
+    function optionsFor(cur, list) {
+      if (!list || !list.length) return [cur || NOPICK];
+      if (!cur) return [NOPICK].concat(list);
+      // a value the bridge no longer offers is still what is running: show it
+      return list.indexOf(cur) === -1 ? [cur].concat(list) : list.slice();
     }
-    function buildSelect(agent) {
+    const optionList = agent => optionsFor(modelCur(agent), modelList(agent));
+
+    function buildSelect(agent, kind) {
       const sel = mk('select');
-      sel.setAttribute('data-agent', agent);
-      const cur = (D.models.current && D.models.current[agent]) || '';
-      const list = (D.models.options && D.models.options[agent]) || null;
-      for (const o of optionList(agent)) {
+      sel.setAttribute(kind === 'effort' ? 'data-effort' : 'data-agent', agent);
+      const cur = pickerCur(agent, kind);
+      const list = pickerList(agent, kind);
+      for (const o of optionsFor(cur, list)) {
         const opt = mk('option');
         opt.value = o;
         opt.textContent = o;
@@ -958,6 +1054,39 @@
     }
 
     const RELAY_TIP = 'hand off to a fresh session (context reset)';
+    const VERB_TIP = 'how the bots talk: short = 2-3 crisp sentences; long = at most 4-5';
+    const VERB_LEVELS = ['short', 'long'];
+
+    // The one preference in here that is not about an agent: how long an answer
+    // in a 420px column is allowed to be. Two states, so it is a switch and not
+    // a menu — segmented, 12px, and it says what each end means on hover.
+    function verbosityRow() {
+      const row = mk('div', 'pop-verbrow');
+      const label = mk('span', 'pop-verblabel');
+      label.textContent = 'replies';
+      const seg = mk('span', 'pop-verb');
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', 'reply length');
+      seg.title = VERB_TIP;
+      VERB_LEVELS.forEach((level, i) => {
+        if (i) {
+          const sep = mk('span', 'vsep');
+          sep.setAttribute('aria-hidden', 'true');
+          sep.textContent = '·';
+          seg.appendChild(sep);
+        }
+        const b = mk('button', 'vseg');
+        b.type = 'button';
+        b.setAttribute('data-act', 'verb');
+        b.setAttribute('data-level', level);
+        b.title = VERB_TIP;
+        b.textContent = level;
+        seg.appendChild(b);
+      });
+      row.appendChild(label);
+      row.appendChild(seg);
+      return row;
+    }
 
     function paintModels() {
       const pop = D.el.pop;
@@ -972,19 +1101,30 @@
         group.setAttribute('data-agent', agent);
         group.style.setProperty('--author', authorColor(agent));
 
+        // one grid for the whole agent: [name | picker | relay], two rows deep.
+        // The <label>s inside it are display:contents (drawer.css), so clicking
+        // a name still focuses its select while both selects share a column.
         const line = mk('div', 'pop-line');
-        const row = mk('label', 'pop-row');
+        const row = mk('label', 'pop-row pop-modelrow');
         const name = mk('span', 'pop-agent');
         const mark = mk('span', 'pop-mark');
         mark.innerHTML = MARKS[agent] || '';       // authored SVG, never data
         name.appendChild(mark);
         name.appendChild(document.createTextNode(agent));
         row.appendChild(name);
-        row.appendChild(buildSelect(agent));
+        row.appendChild(buildSelect(agent, 'model'));
         line.appendChild(row);
         // outside the <label>: a click on a label is forwarded to its control,
         // which would drop the select open every time you asked for a relay
         line.appendChild(relayButton(agent, 'relay', agent + ' — ' + RELAY_TIP));
+
+        // how hard that model thinks, on the row under the model it belongs to
+        const eff = mk('label', 'pop-row pop-effort');
+        const effName = mk('span', 'pop-sub');
+        effName.textContent = 'effort';
+        eff.appendChild(effName);
+        eff.appendChild(buildSelect(agent, 'effort'));
+        line.appendChild(eff);
         group.appendChild(line);
 
         const g = mk('div', 'gauge');
@@ -1012,6 +1152,7 @@
       foot.appendChild(mk('span', 'pop-auto'));
       foot.appendChild(relayButton('both', 'relay both', 'both agents — ' + RELAY_TIP));
       pop.appendChild(foot);
+      pop.appendChild(verbosityRow());
 
       pop.appendChild(mk('div', 'pop-hint'));
       syncModels();
@@ -1032,18 +1173,11 @@
         if (!group) continue;
         group.classList.toggle('asleep', mode !== 'live');
 
-        const sel = group.querySelector('select');
-        const cur = (m.current && m.current[agent]) || '';
-        const want = optionList(agent);
-        const have = [].map.call(sel.options, o => o.value);
-        if (have.join(' ') !== want.join(' ')) {
-          group.querySelector('.pop-row').replaceChild(buildSelect(agent), sel);
-        } else {
-          if (cur && sel.value !== cur) sel.value = cur;
-          sel.disabled = !(m.options && m.options[agent] && m.options[agent].length);
-        }
+        syncPicker(group, agent, 'model');
+        syncPicker(group, agent, 'effort');
         paintGauge(group, agent, st[agent]);
       }
+      syncVerbosity();
 
       const sleep = pop.querySelector('.pop-sleep');
       sleep.textContent = SLEEP_TEXT[mode] || '';
@@ -1057,6 +1191,41 @@
       // waits, including the one in the footer
       pop.querySelectorAll('button.relay').forEach(b => { b.disabled = D.relaying || mode === 'off'; });
       paintModelHint();
+    }
+
+    // One picker, repainted in place. The option list is rebuilt only when it
+    // actually differs — replacing a <select> the user has open would close it
+    // under their finger every time a `models` broadcast arrived.
+    function syncPicker(group, agent, kind) {
+      const effort = kind === 'effort';
+      const row = group.querySelector(effort ? '.pop-effort' : '.pop-modelrow');
+      const sel = group.querySelector('select[' + (effort ? 'data-effort' : 'data-agent') + ']');
+      if (!row || !sel) return;
+      const cur = pickerCur(agent, kind);
+      const list = pickerList(agent, kind);
+      const want = optionsFor(cur, list);
+      const have = [].map.call(sel.options, o => o.value);
+      if (have.join('\u0000') !== want.join('\u0000')) {
+        row.replaceChild(buildSelect(agent, kind), sel);
+      } else {
+        if (cur && sel.value !== cur) sel.value = cur;
+        sel.disabled = !(list && list.length);
+      }
+    }
+
+    // Verbosity is the companion's own preference, not the bridge's, so it
+    // survives a sleeping agent — but a companion too old to report one has
+    // nothing to switch, and the row simply is not there.
+    function syncVerbosity() {
+      const row = D.el.pop && D.el.pop.querySelector('.pop-verbrow');
+      if (!row) return;
+      const v = D.models.verbosity || '';
+      row.hidden = !v;
+      row.querySelectorAll('.vseg').forEach(b => {
+        const on = b.getAttribute('data-level') === v;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
     }
 
     // pct is whatever the companion reported and is never recomputed from
@@ -1113,11 +1282,16 @@
         D.models.options = r.options || null;
         // a companion that never heard of `status` simply has no gauges
         D.models.status = r.status || null;
+        // …and one that never heard of effort/verbosity gets no pickers and no
+        // reply-length switch, rather than empty ones
+        D.models.effort = r.effort || null;
+        D.models.verbosity = r.verbosity || '';
         D.models.bridge = r.bridge || '';
         D.models.err = false;
       } else {
         D.models.options = null;
         D.models.status = null;
+        D.models.effort = null;
         D.models.note = (r && r.error) || 'could not reach the companion';
         D.models.err = true;
       }
@@ -1147,6 +1321,49 @@
         D.models.err = false;
       }
       paintModelHint();
+    }
+
+    // Effort rides the same road as the model switch: queued as a control turn,
+    // reported inline, and never a dialog. The companion's refusal text (an
+    // agent that has no effort levels, a bridge that died between the GET and
+    // the POST) is the message.
+    async function pickEffort(agent, level) {
+      D.models.note = agent + ' effort → ' + level + '…';
+      D.models.err = false;
+      paintModelHint();
+      let r;
+      try { r = await cb('onSetEffort')(agent, level); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        D.models.note = (r && r.error) || 'could not change effort';
+        D.models.err = true;
+      } else {
+        const eff = D.models.effort || (D.models.effort = { current: {}, options: null });
+        eff.current = Object.assign({}, eff.current, { [agent]: level });
+        D.models.note = agent + ' effort → ' + level;
+        D.models.err = false;
+      }
+      syncModels();
+    }
+
+    // How long the answers are. Optimistic — the switch has to move under the
+    // finger — and put back if the companion says no.
+    async function setVerbosity(level) {
+      if (!level || D.models.verbosity === level) return;
+      const prev = D.models.verbosity;
+      D.models.verbosity = level;
+      D.models.note = 'replies: ' + level;
+      D.models.err = false;
+      syncModels();
+      let r;
+      try { r = await cb('onSetVerbosity')(level); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        D.models.verbosity = prev;
+        D.models.note = (r && r.error) || 'could not change how the bots talk';
+        D.models.err = true;
+      }
+      syncModels();
     }
 
     // Relay = hand the agent a fresh session carrying a summary of this one.
@@ -1193,7 +1410,20 @@
       D.el.pop.addEventListener('change', e => {
         const sel = e.target;
         if (!sel || sel.tagName !== 'SELECT' || sel.disabled) return;
+        if (sel.value === NOPICK) return;      // the placeholder is not a choice
+        // two selects per agent, told apart by which attribute carries the name
+        const eff = sel.getAttribute('data-effort');
+        if (eff) { pickEffort(eff, sel.value); return; }
         pickModel(sel.getAttribute('data-agent'), sel.value);
+      });
+
+      // a checkbox in a bot's checklist. `change` and not `click`, so keyboard
+      // toggles count too — and the box has already moved by the time we get
+      // here, which is exactly the optimistic state we want to keep or undo.
+      D.shadow.addEventListener('change', e => {
+        const box = e.target;
+        if (!box || !box.classList || !box.classList.contains('md-tick')) return;
+        doTick(box);
       });
 
       D.shadow.addEventListener('click', e => {
@@ -1208,11 +1438,15 @@
         if (act === 'close') { close(); return; }
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
         if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
+        if (act === 'verb') { setVerbosity(btn.dataset.level); return; }
         if (act === 'export') { doExport(); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
         if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
         if (act === 'page-export') { doExportPage(btn.dataset.url); return; }
+        if (act === 'page-del') { D.pages.confirm = btn.dataset.url; D.pages.rowErr = null; renderPages(); return; }
+        if (act === 'page-del-no') { D.pages.confirm = null; renderPages(); return; }
+        if (act === 'page-del-yes') { doDeletePage(btn.dataset.url); return; }
         if (act === 'jump') {
           const card = btn.closest('.card');
           if (card && !card.classList.contains('orphaned') && !card.classList.contains('pending')) {
@@ -1332,6 +1566,51 @@
       });
     }
 
+    // ---- checklists -------------------------------------------------------
+    // A tick is a message edit the companion performs: it rewrites the Nth
+    // "- [ ]" in that message and hands the whole new body back, which is what
+    // gets rendered. So the truth is always the message text — a refetch, a
+    // second tab and a reload all show the same ticks with no client state.
+    //
+    // Optimistic in between: the box has already moved (this runs on `change`),
+    // the label greys immediately, and a refusal puts both back.
+    function findMsg(target, ts) {
+      if (!D.page) return null;
+      const list = target === PAGE_TARGET
+        ? (D.page.page_chat || [])
+        : (((D.page.threads || []).find(t => t.id === target) || {}).msgs || []);
+      return list.find(m => m && m.ts === ts) || null;
+    }
+
+    async function doTick(box) {
+      const li = box.closest('li');
+      const reply = box.closest('.reply');
+      const card = box.closest('.card[data-thread]');
+      const target = card && card.getAttribute('data-thread');
+      const ts = reply && reply.getAttribute('data-ts');
+      const index = Number(box.getAttribute('data-tick'));
+      const checked = !!box.checked;
+      if (!target || !ts || !isFinite(index)) { box.checked = !checked; return; }
+      if (li) li.classList.toggle('done', checked);
+      box.disabled = true;
+      let r;
+      try { r = await cb('onTick')(target, ts, index, checked); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        box.checked = !checked;
+        box.disabled = false;
+        if (li) li.classList.toggle('done', !checked);
+        note(target, (r && r.error) || 'could not save that tick', true);   // renders
+        return;
+      }
+      // reconcile from the authoritative body, then let render() rebuild the
+      // list from it — the checkbox states come back out of the text
+      const msg = findMsg(target, ts);
+      if (msg && typeof r.text === 'string' && r.text) msg.text = r.text;
+      box.disabled = false;
+      render();
+    }
+
     async function doDelete(target, ts) {
       const r = await cb('onDelete')(target, ts || null);
       if (r && r.ok === false) note(target, r.error || 'delete failed', true);
@@ -1350,6 +1629,39 @@
     }
     const doExport = () => exportFlow(() => cb('onExport')());
     const doExportPage = url => exportFlow(() => cb('onExportPage')(url));
+
+    // Deleting a page from the library takes its bot session with it. The
+    // companion may refuse (a turn is running for that page); that refusal is
+    // ordinary traffic and lands under the row it is about, never in a dialog.
+    //
+    // Deleting the page you are STANDING ON is the case worth being careful
+    // with: content.js unpaints its highlights and hands back an empty record,
+    // and everything this drawer was holding about the old conversation —
+    // streams, status notes, an open confirm — has to go with it, or the next
+    // render draws the ghost of a page that no longer exists.
+    async function doDeletePage(url) {
+      if (!url) return;
+      D.pages.confirm = null;
+      D.pages.rowErr = null;
+      renderPages();
+      let r;
+      try { r = await cb('onDeletePage')(url); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        D.pages.rowErr = { url, text: (r && r.error) || 'could not delete that page' };
+        renderPages();
+        return;
+      }
+      if (D.pages.list) D.pages.list = D.pages.list.filter(p => !sameUrl(p.url, url));
+      if (r.current) {
+        D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
+        D.speaker = {}; D.notes = {}; D.toolsOpen = {};
+        D.confirm = null; D.focused = null; D.pending = null;
+        D.foot = ''; D.footErr = false;
+      }
+      renderPages();
+      render();
+    }
 
     // A row click on the page you are already on has nothing to open: it is
     // just the way back to this page's comments.
@@ -1482,6 +1794,10 @@
         if (ev.current) D.models.current = Object.assign({}, D.models.current, ev.current);
         if (ev.options !== undefined) D.models.options = ev.options;
         if (ev.status !== undefined) D.models.status = ev.status;
+        // effort travels with the models broadcast (same null-until-the-bridge
+        // -speaks rule); verbosity is a plain string the companion owns
+        if (ev.effort !== undefined) D.models.effort = ev.effort;
+        if (ev.verbosity) D.models.verbosity = ev.verbosity;
         if (ev.bridge) D.models.bridge = ev.bridge;
         if (D.modelsOpen) syncModels();
         return;
@@ -1540,10 +1856,15 @@
           render();
           break;
         case 'error':
-          delete D.running[target];
-          delete D.turnAgents[target];
-          delete D.liveAgents[target];
-          delete D.speaker[target];
+          // A turn that is still running keeps its chip: the companion reports
+          // a refused file-write (and anything else it survives) as an error
+          // event mid-turn and then ends the turn normally. Only an error that
+          // arrives with no turn in flight IS the end of one.
+          if (!D.running[target]) {
+            delete D.turnAgents[target];
+            delete D.liveAgents[target];
+            delete D.speaker[target];
+          }
           note(target, ev.error || 'the bots hit an error', true);
           break;
       }

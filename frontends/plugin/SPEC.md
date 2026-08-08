@@ -339,6 +339,31 @@ Contract deltas agreed during live testing — authoritative over the sections a
   differs from the pre-/new active one (new chats are invisible until their first
   turn; /rename emits no snapshot); failure leaves session_id null and errors the
   turn; /resume is confirmed against the snapshot before the user turn is sent.
+- Round 4 — living context: /thread and /reply accept article_text on ANY
+  mention-bearing message; later turns honor it only with article_changed:true
+  (envelope prefix "[the page content has been updated since earlier in this chat]").
+  The extension re-extracts + FNV-1a-hashes per mention and sends only on change.
+  Optional docx_b64 (gdocs adapter; ≤6MB client / 413 >8MB server) is parsed by a
+  zlib-only zip reader for word/comments.xml → "[comments on this document]" digest.
+  All transient, never persisted.
+- Round 4 — interaction: POST /tick {url, thread_id, ts, index, checked} toggles the
+  index-th line-start checkbox ("- [ ]", "* [ ]", "+ [ ]", "1. [ ]", "2) [ ]") in any
+  author's msg text; the drawer renders bot checklists as clickable checkboxes
+  (optimistic, reconciled from {ok,text}). POST /effort {agent, level} queues /effort
+  control turns (options from completion_context; starts the bridge like /model);
+  POST /verbosity {level:"short"|"long"} persists to config.json (default short) and
+  drives a per-turn envelope length instruction (short: 2-3 crisp chat-register
+  sentences; long: ≤4-5) replacing the old fixed brevity line. GET /models and the
+  models broadcast carry effort + verbosity. Gear popover: effort selects per agent +
+  a short·long segmented control.
+- Round 4 — safety & management: every bridge permission_request is DENIED
+  immediately with a visible chat error ("file-writing is disabled in the
+  annotator"); bridge-system-prompt forbids creating files/artifacts from page/doc
+  content and asks for markdown checklists on multi-suggestion replies. /index
+  entries carry has_session; POST /delete-page {url, delete_session} hard-deletes the
+  page (+ its council session via a /delete control turn when the bridge runs, direct
+  session-file unlink when stopped; 409 when another page claims the sid). Pages
+  rows show a chat badge and a ✕ with inline confirm.
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

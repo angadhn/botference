@@ -21,6 +21,9 @@ const CONFIG_FILE = path.join(DIR, 'config.json');
 // vault (has .obsidian/), else the home directory — the export folder is
 // created inside it either way. Only used to seed config.json on first run;
 // an existing config always wins.
+const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+
 function detectVault() {
   let dir = ROOT;
   for (let i = 0; i < 10; i++) {
@@ -36,7 +39,34 @@ export const DEFAULT_CONFIG = {
   vault_path: detectVault(),
   export_folder: 'Web Clippings',
   author: os.userInfo().username,
+  // how long the bots' replies should run; the envelope carries the matching
+  // instruction on every turn
+  verbosity: 'short',
 };
+export const VERBOSITY_LEVELS = ['short', 'long'];
+
+// The controller's session files, resolved exactly as core/paths.py resolves
+// work_dir — we delete chats out of that directory when the bridge isn't
+// running to be told about it, so guessing wrong would delete nothing (or,
+// worse, something else).
+export function workDir() {
+  if (process.env.BOTFERENCE_WORK_DIR) return process.env.BOTFERENCE_WORK_DIR;
+  if (process.env.BOTFERENCE_PROJECT_DIR) return process.env.BOTFERENCE_PROJECT_DIR;
+  const projectDir = path.join(ROOT, 'botference');
+  if (isDir(projectDir)) return projectDir;
+  // ROOT is itself a botference state dir: its sessions/ is the real store
+  if (isFile(path.join(ROOT, 'project.json'))) return ROOT;
+  const work = path.join(ROOT, 'work');
+  return isDir(work) ? work : ROOT;
+}
+export const sessionFile = sid => path.join(workDir(), 'sessions', `${String(sid)}.json`);
+
+// Hard delete, no archive: the chat ceases to exist. A missing file is a
+// success — the caller wanted it gone and it is.
+export function deleteSessionFile(sid) {
+  if (!sid || /[/\\]/.test(String(sid))) return false;
+  try { fs.unlinkSync(sessionFile(sid)); return true; } catch { return false; }
+}
 
 const nowIso = () => new Date().toISOString();
 
@@ -49,7 +79,6 @@ function writeJson(file, obj) {
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 }
-
 // url identity: no hash, no campaign params, no trailing slash. Two tabs on
 // the same article — one arriving from a newsletter link — must land on one
 // page file, or half the annotations vanish.
@@ -84,7 +113,18 @@ export const newThreadId = () =>
 export function readConfig() {
   const cfg = readJson(CONFIG_FILE, null);
   if (!cfg) { writeJson(CONFIG_FILE, DEFAULT_CONFIG); return { ...DEFAULT_CONFIG }; }
-  return { ...DEFAULT_CONFIG, ...cfg };
+  const merged = { ...DEFAULT_CONFIG, ...cfg };
+  // a hand-edited config must never make the envelope say something strange
+  if (!VERBOSITY_LEVELS.includes(merged.verbosity)) merged.verbosity = DEFAULT_CONFIG.verbosity;
+  return merged;
+}
+
+// settings the drawer can change (verbosity, today): merged over what is on
+// disk and written atomically like everything else
+export function saveConfig(patch) {
+  const cfg = { ...readConfig(), ...patch };
+  writeJson(CONFIG_FILE, cfg);
+  return readConfig();
 }
 
 export const readIndex = () => readJson(INDEX_FILE, {});
@@ -111,10 +151,23 @@ export function savePage(page) {
   const idx = readIndex();
   idx[pageKey(page.url)] = {
     url: page.url, title: page.title,
-    threads: (page.threads || []).length, updated_at: page.updated_at,
+    threads: (page.threads || []).length,
+    // the pages list badges the ones the bots have a chat about, and only the
+    // index is loaded to draw it
+    has_session: !!page.session_id,
+    updated_at: page.updated_at,
   };
   writeJson(INDEX_FILE, idx);
   return page;
+}
+
+// The page is gone: its record and its index row go together, or the pages
+// list keeps offering a row that opens onto nothing.
+export function deletePage(url) {
+  try { fs.unlinkSync(pageFile(url)); } catch { }
+  const idx = readIndex();
+  delete idx[pageKey(url)];
+  writeJson(INDEX_FILE, idx);
 }
 
 export function blankPage({ url, title, site }) {
@@ -179,6 +232,25 @@ export function addThread(page, { quote, prefix, suffix, text, author, index }) 
     ? index : page.threads.length;
   page.threads.splice(at, 0, thread);
   return thread;
+}
+
+// Markdown task-list items, in every marker style a bot might reach for:
+// "- [ ]", "* [ ]", "+ [ ]", "1. [ ]", "2) [ ]". Only the box character is ever
+// rewritten — indentation, marker, spacing and the item's words come back
+// byte-for-byte, because the message being ticked is usually a bot's own reply.
+const CHECKBOX_RE = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\])/gm;
+
+// index-th checkbox of the message → checked/unchecked. null = no such box.
+export function setCheckbox(text, index, checked) {
+  const src = String(text || '');
+  let n = 0;
+  let hit = false;
+  const out = src.replace(CHECKBOX_RE, (m, head, box, tail) => {
+    if (n++ !== index) return m;
+    hit = true;
+    return head + (checked ? 'x' : ' ') + tail;
+  });
+  return hit ? out : null;
 }
 
 export function appendMsg(page, threadId, { author, text, ts, kind }) {

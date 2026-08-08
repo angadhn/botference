@@ -44,6 +44,8 @@
     ?badexport=1     (with ?gdocs=1) the export answers 200 with a Google
                      account chooser instead of the document — the failure
                      state, with its warning in Page chat (screenshot state)
+    ?checklist=1     seed the page chat with a bot checklist (screenshot state
+                     for the interactive checkboxes)
     ?wide=NNN        start the drawer at NNN px instead of the stored width
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -167,6 +169,9 @@ const DOC_ID = '1aBcD_efGH-2026QuietMachine';
 const DOC_HREF = 'https://docs.google.com/document/d/' + DOC_ID + '/edit?tab=t.0#heading=h.9k2xz1';
 const DOC_URL = 'https://docs.google.com/document/d/' + DOC_ID + '/edit?tab=t.0';  // == normUrl(DOC_HREF)
 const DOC_EXPORT = 'https://docs.google.com/document/d/' + DOC_ID + '/export?format=txt';
+// the same document as a zip — the only export that carries the doc's own
+// comment threads, which is why a mention on a Doc now sends both
+const DOC_EXPORT_DOCX = 'https://docs.google.com/document/d/' + DOC_ID + '/export?format=docx';
 const DOC_TITLE = 'The Quiet Machine — draft 7';
 const DOC_HEAD = 'THE QUIET MACHINE — editorial draft 7';
 // deliberately longer than both caps: the extension sends ~12000, the
@@ -199,6 +204,26 @@ let DOC_FETCH_MODE = Q.get('badexport') === '1' ? 'picker' : 'ok';
 const DOC_EXPORT_AUTH = n => DOC_EXPORT + '&authuser=' + n;
 const CASCADE_WINNER = DOC_EXPORT_AUTH(2);
 
+// ---- the .docx export -----------------------------------------------------
+// A real docx is a zip, and "PK\x03\x04" is the whole of what the adapter
+// checks before it will attach one — a chooser page served 200 opens with '<'
+// and is refused on exactly that. DOC_DOCX_MODE picks the world:
+//   'ok' a document · 'picker' the account chooser · 'big' past the 6MB cap
+let DOC_DOCX_MODE = 'ok';
+const DOCX_BYTES = (() => {
+  const b = new Uint8Array(2048);
+  b[0] = 0x50; b[1] = 0x4b; b[2] = 0x03; b[3] = 0x04;   // PK\x03\x04
+  for (let i = 4; i < b.length; i++) b[i] = (i * 37) % 256;
+  return b;
+})();
+// allocated only in the world that asks for it — 6MB is not free
+const bigDocx = () => {
+  const b = new Uint8Array(6 * 1024 * 1024 + 4096);
+  b[0] = 0x50; b[1] = 0x4b; b[2] = 0x03; b[3] = 0x04;
+  return b;
+};
+const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 // What docs.google.com would answer for a given export url in the current
 // world — {ok, status, contentType, body}. Shared by the page fetch and the
 // background shim below, because the server does not care which asked. The
@@ -209,6 +234,13 @@ function exportAnswer(url) {
   const u = String(url);
   const picker = { ok: true, status: 200, contentType: 'text/html; charset=UTF-8', body: ACCOUNT_PICKER };
   const doc = { ok: true, status: 200, contentType: 'text/plain; charset=UTF-8', body: DOC_BODY() };
+  // the zip lives on the same route with format=docx, and answers in bytes
+  if (u === DOC_EXPORT_DOCX || u.indexOf(DOC_EXPORT_DOCX + '&authuser=') === 0) {
+    if (DOC_DOCX_MODE === 'picker') return picker;
+    if (DOC_DOCX_MODE === 'fail') return { ok: false, status: 500, contentType: '', body: '' };
+    return { ok: true, status: 200, contentType: DOCX_TYPE,
+             bytes: DOC_DOCX_MODE === 'big' ? bigDocx() : DOCX_BYTES };
+  }
   if (u !== DOC_EXPORT && u.indexOf(DOC_EXPORT + '&authuser=') !== 0) {
     return { ok: false, status: 404, contentType: '', body: '' };
   }
@@ -242,7 +274,13 @@ if (GDOCS) {
     const a = exportAnswer(url);
     return { ok: a.ok, status: a.status,
       headers: { get: () => a.contentType },
-      text: async () => a.body };
+      text: async () => (a.bytes ? '' : a.body),
+      // the docx lane asks for bytes; a text body still answers (as its own
+      // encoding) so a chooser served on the docx route is caught by the
+      // same "does it open PK?" test the real one is
+      arrayBuffer: async () => (a.bytes
+        ? a.bytes.slice().buffer
+        : new TextEncoder().encode(a.body || '').buffer) };
   };
 
   // the body: app chrome with real text (the only selectable thing on a Docs
@@ -370,6 +408,19 @@ const CANNED_MD =
 const TOOLS_A = 'Explored\n└ Fetch https://example.com/reports/aragon-part-1\n└ Fetch https://example.com/reports/aragon-part-2';
 const TOOLS_B = 'Explored\n└ Read 2 documents';
 
+// A bot checklist: three items, none ticked, in the three spellings the
+// companion accepts. The state lives in this text and nowhere else — a tick
+// rewrites the brackets server-side and the drawer re-renders from the answer.
+const CANNED_CHECKLIST =
+  'Before this goes to the desk:\n\n' +
+  '- [ ] Check "structural failure of oversight" against the **report** itself\n' +
+  '* [ ] Add one table of xGA by season\n' +
+  '1. [ ] Ask the manager about the [European draw](https://example.com/draw)\n' +
+  '    - [ ] …and about the fixture list while you are there\n\n' +
+  'Tick them off as you go — I will see the state.';
+// the same three, with the middle one already done, for ?checklist=1
+const CHECKLIST_DONE = CANNED_CHECKLIST.replace('* [ ] Add one table', '* [x] Add one table');
+
 const MENTION = /@(claude|codex|all)\b/i;
 let queueDepth = 0;
 
@@ -395,10 +446,26 @@ const MODELS = {
              last_relay_at: null, last_relay_tier: null },
     auto_relay: true,
   },
+  // round 4: how hard each model thinks. Same null-until-the-bridge-speaks
+  // rule as `options`, and codex's CURRENT is null until it has been set even
+  // once — the drawer must show that as "—", not invent a level.
+  effort: NOBRIDGE || NOAGENTS ? null : {
+    current: { claude: 'high', codex: null },
+    options: { claude: ['low', 'medium', 'high'], codex: ['low', 'medium', 'high', 'xhigh'] },
+  },
+  // …and how long the answers are. A companion preference, not a bridge one:
+  // it survives a sleeping bridge, which is why it is a bare string.
+  verbosity: 'short',
   bridge: NOAGENTS ? 'disabled' : NOBRIDGE ? 'stopped' : 'running',
 };
 const modelPosts = [];      // what the drawer POSTed, for the selftest
 const relayPosts = [];      // …and every /relay body
+const effortPosts = [];     // …and every /effort body
+const verbosityPosts = [];  // …and every /verbosity body
+const tickPosts = [];       // …and every /tick body
+const deletePagePosts = []; // …and every /delete-page body
+let tickFail = false;       // the selftest flips this to exercise the revert
+let refuseDelete = false;   // …and this for the 409 refusal path
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
 const postedMsgs = [];      // every /thread + /reply body, for the article_text checks
@@ -410,30 +477,44 @@ const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 // Three other pages plus this one, stored deliberately out of order so the
 // drawer has to sort them itself. Times are chosen so the expected order is
 // unambiguous: this page (just updated) · 2h · 2h20 · 3d.
+// `has_session` = the companion holds a botference session for that page, i.e.
+// there are bots in it. Two of these have one and two do not, so the drawer's
+// badge has something to be wrong about.
 const OTHER_PAGES = {
   'fakekey0000000000000000000000000000000b': {
     url: 'https://www.longreads.example/2026/tunnel-vision',
-    title: 'Tunnel Vision', threads: 1, updated_at: iso(120) },
+    title: 'Tunnel Vision', threads: 1, has_session: true, updated_at: iso(120) },
   'fakekey0000000000000000000000000000000c': {
     url: 'https://example.org/finance/the-long-quarter',
     title: 'The Long Quarter: how a bank talked itself into a very expensive silence',
-    threads: 5, updated_at: iso(140) },
+    threads: 5, has_session: false, updated_at: iso(140) },
   'fakekey0000000000000000000000000000000d': {
     url: 'https://news.example.net/politics/the-committee-that-never-met',
-    title: 'The committee that never met', threads: 2, updated_at: iso(3 * 24 * 60) },
+    title: 'The committee that never met', threads: 2, has_session: true,
+    updated_at: iso(3 * 24 * 60) },
 };
 let indexEmpty = false;     // selftest flips this to exercise the empty state
+let pageDeleted = false;    // …and this is set when THIS page is deleted
 function indexMap() {
   if (indexEmpty) return {};
-  return Object.assign({
-    'fakekey0000000000000000000000000000000a': {
-      url: PAGE_URL, title: RECORD.title,
-      threads: RECORD.threads.length, updated_at: RECORD.updated_at },
-  }, OTHER_PAGES);
+  const out = Object.assign({}, OTHER_PAGES);
+  if (!pageDeleted) {
+    out['fakekey0000000000000000000000000000000a'] = {
+      url: PAGE_URL, title: RECORD.title, threads: RECORD.threads.length,
+      has_session: !!RECORD.session_id, updated_at: RECORD.updated_at };
+  }
+  return out;
 }
 
 // ?md=1 — a markdown-heavy bot reply already on screen at load, for screenshots,
 // with its tool activity stored out of order behind it
+// ?checklist=1 — a checklist already on screen at load, one item done, so the
+// ticked/unticked treatment is screenshotable without driving a turn
+if (Q.get('checklist') === '1') {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(7), text: '@claude give me a checklist for the desk' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(6), text: CHECKLIST_DONE });
+}
+
 if (Q.get('md') === '1') {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(10), text: '@codex link me the sources' });
   RECORD.page_chat.push({ author: 'codex', ts: iso(9), kind: 'tools', text: TOOLS_A });
@@ -443,12 +524,47 @@ if (Q.get('md') === '1') {
 
 function stampMsg(text) { return { author: 'angadh', ts: now(), text }; }
 
+// Everything about the PAGE that a message carried. `article_changed` and
+// `docx_b64` are round 4: the page text now travels again whenever it has
+// changed under a live session, and a Google Doc's comments ride along as the
+// .docx on every mention. Absent fields stay absent — an assertion that a
+// message carried "no article_text" must be able to tell undefined from ''.
+function captured(route, text, body) {
+  return { route, text,
+    article_text: body.article_text,
+    article_changed: body.article_changed,
+    docx_b64: body.docx_b64 };
+}
+
+// The companion's own tick: rewrite the Nth checkbox of a message and hand the
+// whole new body back. Line-anchored, and all three list spellings — a "[ ]"
+// in the middle of a sentence is not a checkbox.
+const TICKABLE = /^([ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)\[([ xX])\]/gm;
+function toggleNth(text, index, checked) {
+  let n = -1;
+  return String(text == null ? '' : text).replace(TICKABLE, (m, pre) => {
+    n++;
+    return n === index ? pre + '[' + (checked ? 'x' : ' ') + ']' : m;
+  });
+}
+function countTicks(text) {
+  return (String(text == null ? '' : text).match(TICKABLE) || []).length;
+}
+function msgIn(threadId, ts) {
+  const list = !threadId || threadId === '__page__'
+    ? RECORD.page_chat
+    : (RECORD.threads.find(t => t.id === threadId) || { msgs: [] }).msgs;
+  return list.find(m => m.ts === ts) || null;
+}
+
 // Play a full turn: turn-start → stream deltas → stream-done → reply → turn-end,
 // then a `page` invalidation, exactly as the companion would.
 function playTurn(target, text) {
   const streamId = 's-' + Math.random().toString(36).slice(2, 8);
   const model = /@codex/i.test(text || '') ? 'codex' : 'claude';
-  const body = model === 'codex' ? CANNED_MD : CANNED_REPLY;
+  const body = /checklist/i.test(text || '')
+    ? CANNED_CHECKLIST
+    : (model === 'codex' ? CANNED_MD : CANNED_REPLY);
   const ev = e => toContent({ t: 'ws', ev: Object.assign({ url: PAGE_URL, target }, e) });
 
   log('turn running (' + model + ')');
@@ -506,7 +622,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: RECORD };
   }
   if (method === 'POST' && route === '/thread') {
-    postedMsgs.push({ route, text: body.msg && body.msg.text, article_text: body.article_text });
+    postedMsgs.push(captured(route, body.msg && body.msg.text, body));
     const thread = {
       id: 't-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       quote: body.quote, prefix: body.prefix, suffix: body.suffix, orphaned: false,
@@ -519,7 +635,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined } };
   }
   if (method === 'POST' && route === '/reply') {
-    postedMsgs.push({ route, text: body.text, article_text: body.article_text });
+    postedMsgs.push(captured(route, body.text, body));
     // "#fail" in a message is the harness's way of making a save go wrong, so
     // the composer's keep-the-text-on-failure path is testable
     if (/#fail\b/.test(body.text || '')) return { ok: false, status: 500, error: 'simulated failure' };
@@ -560,7 +676,72 @@ function companion(method, path, body) {
   if (method === 'GET' && route === '/models') {
     return { ok: true, status: 200, data: {
       ok: true, current: MODELS.current, options: MODELS.options,
-      status: MODELS.status, bridge: MODELS.bridge } };
+      status: MODELS.status, bridge: MODELS.bridge,
+      effort: MODELS.effort, verbosity: MODELS.verbosity } };
+  }
+  // POST /tick {url, thread_id, ts, index, checked} — the companion owns the
+  // message text, so it rewrites the brackets and answers with the new body.
+  // Nothing about a checkbox is client state.
+  if (method === 'POST' && route === '/tick') {
+    tickPosts.push({ thread_id: body.thread_id, ts: body.ts, index: body.index, checked: body.checked });
+    if (tickFail) return { ok: false, status: 500, error: 'simulated tick failure' };
+    if (!Number.isInteger(body.index)) return { ok: false, status: 400, error: 'index must be an integer' };
+    const m = msgIn(body.thread_id, body.ts);
+    if (!m) return { ok: false, status: 404, error: 'no such message' };
+    if (body.index < 0 || body.index >= countTicks(m.text)) {
+      return { ok: false, status: 400, error: 'no checkbox #' + body.index + ' in that message' };
+    }
+    m.text = toggleNth(m.text, body.index, !!body.checked);
+    RECORD.updated_at = now();
+    log('tick: #' + body.index + ' → ' + (body.checked ? 'done' : 'open'));
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true, text: m.text } };
+  }
+  // POST /effort {agent, level} — queued like /model, and it starts the bridge
+  // rather than refusing when idle. Only --no-agents is a 409.
+  if (method === 'POST' && route === '/effort') {
+    effortPosts.push({ agent: body && body.agent, level: body && body.level });
+    if (MODELS.bridge === 'disabled') return { ok: false, status: 409, error: 'agents are off on this companion' };
+    if (!/^(claude|codex)$/.test(String(body && body.agent))) return { ok: false, status: 400, error: 'bad agent' };
+    const opts = (MODELS.effort && MODELS.effort.options && MODELS.effort.options[body.agent]) || [];
+    if (opts.indexOf(body.level) === -1) return { ok: false, status: 400, error: 'bad effort level' };
+    MODELS.effort.current[body.agent] = body.level;
+    log('effort: ' + body.agent + ' → ' + body.level);
+    setTimeout(() => toContent({ t: 'ws', ev: {
+      type: 'models', current: { ...MODELS.current }, effort: MODELS.effort, verbosity: MODELS.verbosity } }), 40);
+    return { ok: true, status: 200, data: { ok: true, queued: true } };
+  }
+  // POST /verbosity {level} — a companion preference, so it answers with the
+  // value it settled on and broadcasts the options along with it
+  if (method === 'POST' && route === '/verbosity') {
+    verbosityPosts.push({ level: body && body.level });
+    if (!/^(short|long)$/.test(String(body && body.level))) return { ok: false, status: 400, error: 'bad verbosity' };
+    MODELS.verbosity = body.level;
+    log('verbosity: ' + body.level);
+    setTimeout(() => toContent({ t: 'ws', ev: {
+      type: 'models', options: MODELS.options, effort: MODELS.effort, verbosity: MODELS.verbosity } }), 40);
+    return { ok: true, status: 200, data: { ok: true, verbosity: MODELS.verbosity } };
+  }
+  // POST /delete-page {url, delete_session} — the page and the bot session
+  // behind it. 409 (and the page left intact) when another page owns that
+  // session; the drawer has to surface that on the row, not swallow it.
+  if (method === 'POST' && route === '/delete-page') {
+    deletePagePosts.push({ url: body && body.url, delete_session: body && body.delete_session });
+    if (refuseDelete) {
+      return { ok: false, status: 409, error: 'another page owns that chat — delete that one instead' };
+    }
+    const url = String((body && body.url) || '');
+    if (url === PAGE_URL) {
+      RECORD.threads = [];
+      RECORD.page_chat = [];
+      RECORD.session_id = null;
+      pageDeleted = true;
+    } else {
+      for (const k of Object.keys(OTHER_PAGES)) if (OTHER_PAGES[k].url === url) delete OTHER_PAGES[k];
+    }
+    log('page deleted: ' + url);
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url } }), 20);
+    return { ok: true, status: 200, data: { ok: true, session_deleted: true } };
   }
   // POST /relay {agent:"claude"|"codex"|"both"} — the companion refuses with
   // 409 when the bridge has nothing to hand off. codex is scripted as the
@@ -660,14 +841,24 @@ window.chrome = {
           // to the redirect's CORS headers.
           case 'gdocs-export': {
             const url = String(msg.url || '');
-            exportFetches.push({ url, credentials: 'include', via: 'background' });
-            if (!/^https:\/\/docs\.google\.com\/(?:u\/\d{1,3}\/)?document\/(?:u\/\d{1,3}\/)?d\/[A-Za-z0-9_-]{8,}\/export\?format=txt(?:&authuser=\d{1,3})?$/.test(url)) {
+            exportFetches.push({ url, credentials: 'include', via: 'background', want: msg.want || 'text' });
+            if (!/^https:\/\/docs\.google\.com\/(?:u\/\d{1,3}\/)?document\/(?:u\/\d{1,3}\/)?d\/[A-Za-z0-9_-]{8,}\/export\?format=(?:txt|docx)(?:&authuser=\d{1,3})?$/.test(url)) {
               return { ok: false, error: 'gdocs-export: refused — this is not a Google Docs export url' };
             }
             const a = exportAnswer(url);
-            return a.ok
-              ? { ok: true, status: a.status, contentType: a.contentType, text: a.body }
-              : { ok: false, status: a.status, contentType: a.contentType, error: 'HTTP ' + a.status };
+            if (!a.ok) return { ok: false, status: a.status, contentType: a.contentType, error: 'HTTP ' + a.status };
+            // bytes cannot cross sendMessage intact, so the worker encodes —
+            // and the worker's own 6MB cap answers before the wire does
+            if (msg.want === 'bytes') {
+              const bytes = a.bytes || new TextEncoder().encode(a.body || '');
+              if (bytes.length > 6 * 1024 * 1024) {
+                return { ok: false, status: a.status, contentType: a.contentType,
+                         error: 'the export is over the 6MB cap (' + bytes.length + ' bytes)' };
+              }
+              return { ok: true, status: a.status, contentType: a.contentType,
+                       b64: window.BFPAdapters.bytesToBase64(bytes) };
+            }
+            return { ok: true, status: a.status, contentType: a.contentType, text: a.body };
           }
           case 'badge': badges.push(msg.count); return { ok: true };
           // stands in for background.js's openPage(): there are no tabs here,
@@ -846,8 +1037,9 @@ async function selftest() {
 
   // ---- ⚙ agents popover: models, context gauges, relay ----
   S.querySelector('[data-act="models"]').click();
+  // model pickers only — round 4 put a second select (effort) in every row
   const sels = await until(() => {
-    const s = S.querySelectorAll('.popover.models select');
+    const s = S.querySelectorAll('.popover.models select[data-agent]');
     return s.length === 2 && !s[0].disabled ? s : null;
   });
   check('gear opens a models popover with both agents', !!sels);
@@ -1160,6 +1352,258 @@ async function selftest() {
   check('clicking the row for the page you are on just goes back to it',
     !!curRow && !d.isPagesOpen() && !S.querySelector('.pane[data-pane="comments"]').hidden);
 
+  // ---- interactive checklists in a bot reply ----------------------------
+  // The boxes are real inputs and the state is the message TEXT: a tick is an
+  // edit the companion performs and answers with, so a refetch renders the
+  // same ticks with nothing remembered on this side.
+  d.open('chat');
+  const cta = () => S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  const csend = () => S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  const free = () => { const t = cta(); return t && !t.disabled ? t : null; };
+  const boxes = () => [...S.querySelectorAll('.pane[data-pane="chat"] .reply.bot .md-tick')];
+  const items = () => [...S.querySelectorAll('.pane[data-pane="chat"] .reply.bot li.md-task')];
+
+  (await until(free, 8000)).value = '@claude give me a checklist for the desk';
+  csend();
+  check('a bot checklist renders as real checkboxes',
+    !!await until(() => boxes().length === 4 ? boxes() : null, 25000));
+  await until(() => !S.querySelector('.pane[data-pane="chat"] .status-chip'), 25000);
+  check('…in every list spelling the companion accepts, indented ones included',
+    boxes().length === 4);
+  check('…each one a real input, not a glyph', boxes().every(b => b.type === 'checkbox'));
+  check('none of them starts ticked',
+    boxes().every(b => !b.checked) && items().every(li => !li.classList.contains('done')));
+  check('the brackets never reach the label', !/\[[ xX]\]/.test(items().map(li => li.textContent).join(' ')));
+  check('markdown inside an item still renders',
+    !!items()[0].querySelector('strong') && !!items()[2].querySelector('a'));
+  check('the boxes are indexed in document order',
+    boxes().map(b => b.getAttribute('data-tick')).join(',') === '0,1,2,3');
+
+  const listTs = boxes()[1].closest('.reply').getAttribute('data-ts');
+  boxes()[1].click();
+  check('a click ticks the box at once, without waiting for the companion',
+    boxes()[1].checked && items()[1].classList.contains('done'));
+  check('…and POSTs /tick with that box’s own index', !!await until(() =>
+    tickPosts.some(p => p.index === 1 && p.checked === true &&
+      p.ts === listTs && p.thread_id === '__page__')));
+  check('the companion’s answer is what stays on screen', !!await until(() => {
+    const b = boxes();
+    return b.length === 4 && b[1].checked && !b[0].checked && !b[2].checked && !b[3].checked ? b : null;
+  }));
+  check('…because the tick was written into the message text',
+    /\* \[x\] Add one table/.test((msgIn('__page__', listTs) || {}).text || ''));
+  check('the box is drawn in the drawer’s theme, not the page’s',
+    /^(light|dark)$/.test(getComputedStyle(boxes()[0]).colorScheme) &&
+    getComputedStyle(boxes()[0]).colorScheme === getComputedStyle(S.querySelector('.panel')).colorScheme);
+  check('a ticked item is struck through, not hidden',
+    items()[1].classList.contains('done') &&
+    /line-through/.test(getComputedStyle(items()[1].querySelector('.md-tasktext')).textDecorationLine));
+
+  await window.__bfp.loadPage();
+  check('a refetched page renders the same ticks with no client state', !!await until(() => {
+    const b = boxes();
+    return b.length === 4 && b[1].checked && !b[0].checked ? b : null;
+  }));
+
+  boxes()[1].click();
+  check('unticking sends checked:false', !!await until(() =>
+    tickPosts.some(p => p.index === 1 && p.checked === false)));
+  check('…and the item comes back', !!await until(() => {
+    const b = boxes();
+    return b.length === 4 && !b[1].checked && !items()[1].classList.contains('done') ? b : null;
+  }));
+
+  // the index is an ordinal over the message, and the companion counts the
+  // same boxes this renderer drew — an indented item included, or every later
+  // tick would land on the wrong line
+  boxes()[3].click();
+  check('an indented item is the same box on both sides', !!await until(() =>
+    /- \[x\] …and about the fixture list/.test((msgIn('__page__', listTs) || {}).text || '')));
+  check('…and nothing else in the message moved with it',
+    !/\[x\] Check "structural/.test((msgIn('__page__', listTs) || {}).text || '') &&
+    !/\[x\] Ask the manager/.test((msgIn('__page__', listTs) || {}).text || ''));
+
+  tickFail = true;
+  boxes()[0].click();
+  check('a refused tick puts the box back', !!await until(() => {
+    const b = boxes();
+    return b.length === 4 && !b[0].checked ? b : null;
+  }));
+  check('…and says why, in the thread it happened in',
+    /simulated tick failure/.test((S.querySelector('.pane[data-pane="chat"] .status-chip') || {}).textContent || ''));
+  check('…and nothing was written into the message',
+    !/\[x\] Check "structural/.test((msgIn('__page__', listTs) || {}).text || ''));
+  tickFail = false;
+  d.note('__page__', null);
+
+  // ---- per-mention context refresh --------------------------------------
+  // The page can change under a live session — that is the whole point of a
+  // document. Every mention re-reads it; only a DIFFERENT page travels, and it
+  // travels flagged, because the companion ignores unflagged text after the
+  // first turn.
+  RECORD.session_id = 'sess-live-1';
+  await window.__bfp.loadPage();
+  check('the page now carries a session', window.__bfp.sessionKnown === true);
+  const hashBefore = window.__bfp.contextHash;
+  check('…and what the bots were told it said is remembered',
+    typeof hashBefore === 'string' && hashBefore.length > 0);
+
+  const late = document.createElement('p');
+  late.textContent = 'Late addition: the manager resigned on Tuesday, which changes the piece.';
+  document.querySelector('article').appendChild(late);
+
+  (await until(free, 8000)).value = '@claude has anything changed?';
+  csend();
+  const changed = await until(() => postedMsgs.find(p => /has anything changed/.test(p.text || '')));
+  check('a page that changed under a live session sends its text again',
+    !!changed && typeof changed.article_text === 'string');
+  check('…flagged, so the companion knows it is a revision', !!changed && changed.article_changed === true);
+  check('…and it is the NEW text', !!changed && /manager resigned on Tuesday/.test(changed.article_text));
+  check('…and the remembered hash moved with it',
+    !!await until(() => window.__bfp.contextHash && window.__bfp.contextHash !== hashBefore));
+  await until(() => !S.querySelector('.pane[data-pane="chat"] .status-chip'), 25000);
+
+  (await until(free, 8000)).value = '@claude and now?';
+  csend();
+  const unchanged = await until(() => postedMsgs.find(p => /and now\?/.test(p.text || '')));
+  check('an unchanged page sends neither the text nor the flag',
+    !!unchanged && unchanged.article_text === undefined && unchanged.article_changed === undefined);
+  check('an ordinary web page never attaches a document',
+    !postedMsgs.some(p => p.docx_b64 !== undefined));
+  await until(() => !S.querySelector('.pane[data-pane="chat"] .status-chip'), 25000);
+
+  // ---- effort pickers + the reply-length switch --------------------------
+  S.querySelector('[data-act="models"]').click();
+  const effs = await until(() => {
+    const s = S.querySelectorAll('.popover.models select[data-effort]');
+    return s.length === 2 ? s : null;
+  });
+  const effSel = a => S.querySelector('.popover.models select[data-effort="' + a + '"]');
+  check('each agent gets an effort picker under its model', !!effs);
+  check('…labelled “effort”',
+    S.querySelector('.pop-agentrow[data-agent="claude"] .pop-effort .pop-sub').textContent.trim() === 'effort');
+  check('…at the drawer’s 12px floor',
+    getComputedStyle(S.querySelector('.pop-effort .pop-sub')).fontSize === '12px');
+  check('the current effort is preselected', !!effs && effSel('claude').value === 'high');
+  check('an effort the bridge has never been told reads as unset, not as a guess',
+    effSel('codex').value === '—' && effSel('codex').options.length === 5);
+
+  effSel('claude').value = 'low';
+  effSel('claude').dispatchEvent(new Event('change', { bubbles: true }));
+  check('changing it POSTs /effort with the agent and the level',
+    !!await until(() => effortPosts.some(p => p.agent === 'claude' && p.level === 'low')));
+  check('…and reports back inline, like a model switch',
+    !!await until(() => /claude effort → low/.test(S.querySelector('.pop-hint').textContent)));
+
+  await sleep(120);   // let the companion's own broadcast land first
+  d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options,
+    effort: { current: { claude: 'medium', codex: 'xhigh' }, options: MODELS.effort.options },
+    verbosity: 'long' });
+  check('a models broadcast moves both effort pickers in place',
+    effSel('claude').value === 'medium' && effSel('codex').value === 'xhigh');
+
+  const seg = () => S.querySelector('.popover.models .pop-verb');
+  const vbtn = lv => S.querySelector('.popover.models .vseg[data-level="' + lv + '"]');
+  check('the popover carries a two-way reply-length switch', !!seg() && !!vbtn('short') && !!vbtn('long'));
+  check('…reading “short · long”', seg().textContent.replace(/\s+/g, '') === 'short·long');
+  check('…which says what each end means on hover',
+    /how the bots talk: short = 2-3 crisp sentences; long = at most 4-5/.test(seg().title));
+  check('…and is 12px, like everything else in here',
+    getComputedStyle(vbtn('short')).fontSize === '12px');
+  check('the broadcast set it to long',
+    vbtn('long').classList.contains('on') && !vbtn('short').classList.contains('on'));
+  vbtn('short').click();
+  check('clicking the other half moves it at once', vbtn('short').classList.contains('on'));
+  check('…and POSTs /verbosity', !!await until(() => verbosityPosts.some(p => p.level === 'short')));
+  await sleep(120);
+  d.onEvent({ type: 'models', verbosity: 'long' });
+  check('…and a later broadcast moves it back', vbtn('long').classList.contains('on'));
+
+  d.onEvent({ type: 'models', bridge: 'stopped', current: null, options: null, status: null, effort: null });
+  check('a sleeping bridge disables the effort pickers too',
+    effSel('claude').disabled && effSel('codex').disabled);
+  check('…and shows them unset rather than empty', effSel('claude').value === '—');
+  check('the reply-length switch survives it — that one is the companion’s',
+    !S.querySelector('.pop-verbrow').hidden && !vbtn('long').disabled);
+  d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options,
+              status: MODELS.status, effort: MODELS.effort });
+  check('waking up re-enables them', !effSel('claude').disabled);
+  S.querySelector('.popover.models').dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+  // ---- the companion denies every bot file-write, mid-turn ---------------
+  const denial = 'claude asked to write a file — file-writing is disabled in the annotator';
+  const chips = () => [...S.querySelectorAll('.pane[data-pane="chat"] .status-chip')];
+  const evd = e => d.onEvent(Object.assign({ type: 'chat', url: PAGE_URL, target: '__page__' }, e));
+  evd({ kind: 'turn-start', agents: ['claude'] });
+  evd({ kind: 'error', error: denial });
+  check('a denied file-write is visible in the thread',
+    chips().some(c => c.classList.contains('err') && c.textContent.includes(denial)));
+  check('…without pretending the turn stopped', chips().some(c => c.querySelector('.avatar-ring')));
+  evd({ kind: 'turn-end' });
+  check('…and it is still on screen once the turn ends normally',
+    chips().some(c => c.classList.contains('err') && /file-writing is disabled/.test(c.textContent)) &&
+    !S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring'));
+  d.note('__page__', null);
+
+  // ---- the pages library: which ones have bots in them, and deleting ------
+  S.querySelector('[data-act="pages"]').click();
+  await until(() => (prows().length ? prows() : null));
+  const rowFor = u => [...prows()].find(r => r.dataset.url === u);
+  const QUARTER = 'https://example.org/finance/the-long-quarter';
+  check('a page with a bot chat is badged', !!rowFor(TUNNEL) && !!rowFor(TUNNEL).querySelector('.pchat'));
+  check('…and says so on hover',
+    /has a bot chat/.test(rowFor(TUNNEL).querySelector('.pchat').getAttribute('title') || ''));
+  check('a page of pure notes is not badged',
+    !!rowFor(QUARTER) && !rowFor(QUARTER).querySelector('.pchat'));
+  // the list on screen was rendered before this page had a session; the badge
+  // arrives with the refresh the view kicked off when it opened
+  check('the page you are on picked one up when it got a session', !!await until(() => {
+    const r = rowFor(PAGE_URL);
+    return r && r.querySelector('.pchat') ? r : null;
+  }));
+
+  refuseDelete = true;
+  const nRows = prows().length;
+  rowFor(TUNNEL).querySelector('[data-act="page-del"]').click();
+  check('deleting a page asks first, inline — never a browser dialog',
+    !!rowFor(TUNNEL).querySelector('[data-act="page-del-yes"]') &&
+    /delete page \+ its chat\?/.test(rowFor(TUNNEL).textContent));
+  rowFor(TUNNEL).querySelector('[data-act="page-del-yes"]').click();
+  check('a refusal lands on the row it is about', !!await until(() => {
+    const r = rowFor(TUNNEL), e = r && r.querySelector('.prow-err');
+    return e && /another page owns that chat/.test(e.textContent) ? e : null;
+  }));
+  check('…and the page is still there', prows().length === nRows && !!rowFor(TUNNEL));
+  check('…and the delete asked for the chat to go with it',
+    deletePagePosts.some(p => p.url === TUNNEL && p.delete_session === true));
+
+  refuseDelete = false;
+  rowFor(TUNNEL).querySelector('[data-act="page-del"]').click();
+  rowFor(TUNNEL).querySelector('[data-act="page-del-yes"]').click();
+  check('a deleted page leaves the list',
+    !!await until(() => (prows().length === nRows - 1 && !rowFor(TUNNEL)) ? true : null));
+
+  const marksBefore = document.querySelectorAll('mark.bfp-hl').length;
+  check('the page you are on is painted before it goes', marksBefore > 0);
+  const curRowNow = () => [...prows()].find(r => r.classList.contains('current'));
+  curRowNow().querySelector('[data-act="page-del"]').click();
+  curRowNow().querySelector('[data-act="page-del-yes"]').click();
+  check('deleting the page you are on takes its row too',
+    !!await until(() => (!curRowNow() && !rowFor(PAGE_URL)) ? true : null));
+  check('…and unpaints every highlight it left on the page',
+    document.querySelectorAll('mark.bfp-hl').length === 0);
+  check('…and empties the toolbar badge', !!await until(() => badges[badges.length - 1] === 0));
+  S.querySelector('[data-act="pages-back"]').click();
+  d.open('comments');
+  check('…leaving a clean drawer behind, not the ghost of a conversation',
+    !S.querySelectorAll('.pane[data-pane="comments"] .card').length &&
+    !!S.querySelector('.pane[data-pane="comments"] .empty') &&
+    !S.querySelector('.pane[data-pane="chat"] .reply'));
+  check('…with the composer still inviting the bots',
+    /@claude, @codex or @all to bring in the bots/.test(
+      S.querySelector('.pane[data-pane="chat"] .composer .hint').textContent));
+
   const bad = out.filter(l => l[0] === '✗');
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
@@ -1390,6 +1834,67 @@ async function selftestGdocs() {
   check('…and dismissed', !S.querySelector('.pane[data-pane="chat"] .ctxwarn'));
   check('dismissing it leaves the conversation untouched',
     S.querySelectorAll('.pane[data-pane="chat"] .reply.bot').length > botsBefore);
+
+  // ---- the doc's own comment threads travel as the .docx -----------------
+  // A txt export is prose only: every comment in the document is dropped. The
+  // zip of the same document carries them, so a mention sends both — and
+  // every mention sends a fresh one, because comments move faster than prose.
+  const sentFor = t => postedMsgs.find(p => new RegExp(t).test(p.text || '')) || {};
+  check('the first mention attached the document as a .docx',
+    typeof sentFor('what is this draft actually arguing').docx_b64 === 'string');
+  check('…and it really is a zip, not a chooser page served 200',
+    /^UEsD/.test(sentFor('what is this draft actually arguing').docx_b64 || ''));
+  check('…fetched from the docx export url', exportFetches.some(f => f.url === DOC_EXPORT_DOCX));
+  check('…on the page lane, with the user’s own session',
+    exportFetches.some(f => f.url === DOC_EXPORT_DOCX && f.via === 'page' && f.credentials === 'same-origin'));
+  check('…and never through the companion proxy',
+    !apiCalls.some(c => /export\?format=docx/.test(decodeURIComponent(c.path || ''))));
+  check('a later mention attaches it again, fresh',
+    typeof sentFor('counter-argument').docx_b64 === 'string');
+  check('…including the mention whose TEXT export had failed',
+    typeof sentFor('first read').docx_b64 === 'string');
+
+  // a send helper that waits for the composer to come back first: a frozen
+  // composer drops clicks, it does not queue them
+  const composerReady = () => { const t = chatTa(); return t && !t.disabled ? t : null; };
+  async function ask(text) {
+    (await until(composerReady, 8000)).value = text;
+    S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+    const sent = await until(() => postedMsgs.find(p => p.text === text));
+    await until(() => !S.querySelector('.pane[data-pane="chat"] .status-chip'), 25000);
+    return sent;
+  }
+
+  DOC_DOCX_MODE = 'picker';
+  const noDocx = await ask('@claude who commented on the intro?');
+  check('a docx that comes back as an account chooser is dropped, silently',
+    !!noDocx && noDocx.docx_b64 === undefined);
+  check('…and the question still went out', !!noDocx);
+
+  DOC_DOCX_MODE = 'big';
+  const bigOne = await ask('@claude anything in the comments about the ending?');
+  check('a document past the 6MB cap is skipped rather than sent',
+    !!bigOne && bigOne.docx_b64 === undefined);
+  DOC_DOCX_MODE = 'ok';
+
+  // ---- the document changed under a live session ------------------------
+  RECORD.session_id = 'sess-doc-live';
+  await window.__bfp.loadPage();
+  const hashWas = window.__bfp.contextHash;
+  check('the doc’s session is known and its text remembered',
+    window.__bfp.sessionKnown === true && typeof hashWas === 'string');
+  DOC_TEXT = 'REVISION 8 — rewritten after the desk read.\n\n' + DOC_TEXT;
+  const rev = await ask('@claude what changed in this draft?');
+  check('a document edited under a live session travels again',
+    !!rev && typeof rev.article_text === 'string');
+  check('…flagged as a revision', !!rev && rev.article_changed === true);
+  check('…carrying the rewritten text', !!rev && /REVISION 8/.test(rev.article_text));
+  check('…and the remembered hash moved', window.__bfp.contextHash !== hashWas);
+  const again = await ask('@claude and is that all?');
+  check('an untouched document sends neither the text nor the flag',
+    !!again && again.article_text === undefined && again.article_changed === undefined);
+  check('…but its comments still ride along', !!again && typeof again.docx_b64 === 'string');
+  check('still nothing painted on a canvas page', document.querySelectorAll('mark.bfp-hl').length === 0);
 
   const bad = out.filter(l => l[0] === '✗');
   const el = document.getElementById('h-log');

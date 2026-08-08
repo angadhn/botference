@@ -12,11 +12,16 @@ const log = o => { if (LOG) { try { fs.appendFileSync(LOG, JSON.stringify(o) + '
 const ready = () => setImmediate(() => emit({ type: 'ready' }));
 const room = (speaker, text) => emit({ type: 'room', speaker, text, blocks: [] });
 
-let seq = 0, streamSeq = 0, sid = null;
+let seq = 0, streamSeq = 0, sid = null, pendingDelete = null;
 const sessions = [];
 const MODELS = {
   claude: ['claude-fable-5', 'claude-opus-5', 'claude-haiku-4-5'],
   codex: ['gpt-5.6-sol', 'gpt-5.5', 'o3'],
+};
+// the controller's own effort ladders (botference.py _CLAUDE/_CODEX_EFFORT_LEVELS)
+const EFFORT = {
+  claude: ['low', 'medium', 'high', 'xhigh'],
+  codex: ['minimal', 'low', 'medium', 'high', 'max'],
 };
 const live = { claude: 'claude-fable-5', codex: 'gpt-5.6-sol' };
 // occupancy: tokens creep on every status (the heartbeat), pct only when a
@@ -39,6 +44,8 @@ const completionContext = () => emit({
     '/project ': ['open', 'create'],
     '/model @claude ': MODELS.claude,
     '/model @codex ': MODELS.codex,
+    '/effort @claude ': EFFORT.claude,
+    '/effort @codex ': EFFORT.codex,
   },
 });
 const touch = id => sessions.find(s => s.session_id === id)
@@ -98,10 +105,24 @@ function input(text) {
     status();
     return ready();
   }
+  // /delete is a two-step command in the real controller: it asks the UI to
+  // confirm and only finishes the turn once an answer comes back
+  if (text.startsWith('/delete ')) {
+    pendingDelete = text.slice('/delete '.length).trim();
+    emit({ type: 'choice_request', prompt: `Delete “${pendingDelete}” permanently? This cannot be undone.`,
+      options: ['Delete it', 'Cancel'] });
+    return;
+  }
   if (text.startsWith('/')) { room('system', 'ok'); return ready(); }
 
   const models = /^@all\b/.test(text) ? ['claude', 'codex'] : [/^@codex\b/.test(text) ? 'codex' : 'claude'];
   setTimeout(() => {
+    // an agent that decided to write a file mid-turn: the real bridge blocks on
+    // the answer, so the companion must refuse without waiting for a timer
+    if (/\[mock:perm\]/.test(text)) {
+      emit({ type: 'permission_request', model: models[0], tool: 'Write',
+        path: '/tmp/notes-from-the-page.md', description: 'Write notes-from-the-page.md' });
+    }
     for (const model of models) {
       const stream_id = `${sid || 's0'}:room:${model}:${++streamSeq}`;
       const head = { stream_id, pane: 'room', model };
@@ -145,6 +166,17 @@ process.stdin.on('data', d => {
     let ev; try { ev = JSON.parse(line); } catch { continue; }
     log(ev);
     if (ev.type === 'input') input(String(ev.text || ''));
+    if (ev.type === 'choice_response' && pendingDelete) {
+      const target = pendingDelete; pendingDelete = null;
+      if (ev.index === 0) {
+        const i = sessions.findIndex(s => s.session_id === target);
+        if (i >= 0) sessions.splice(i, 1);
+        if (sid === target) sid = null;
+        room('system', `Deleted “${target}”.`);
+        projects();
+      } else room('system', 'Delete cancelled.');
+      ready();
+    }
   }
 });
 

@@ -11,17 +11,31 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { ROOT, HOME, PAGE_CHAT, readPage, savePage, findThread, pageWithSession } from './store.mjs';
+import { HOME, ROOT, PAGE_CHAT, readPage, savePage, findThread, pageWithSession, readConfig } from './store.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = path.join(PLUGIN, 'bridge-system-prompt.md');
 const PROJECT_TITLE = 'Plugin pages';
 const PROJECT_ID = 'plugin-pages';
-const PERMISSION_TIMEOUT_MS = 120000;
 const SESSION_TITLE_MAX = 80;
 const ARTICLE_MAX = 6000;
 const HISTORY_MAX = 20;
+const DOCX_COMMENTS_MAX = 50;
+const DOCX_DIGEST_MAX = 4000;
+// The bridge's own argparse defaults (--claude-effort high, --openai-effort
+// empty). Nothing on the wire ever tells us the live level — the status event
+// carries models but not effort — so the companion tracks it from the /effort
+// turns it sends, starting from what the child was born with.
+export const EFFORT_DEFAULTS = { claude: 'high', codex: null };
+// How long a reply should be, as the reader set it in config.json. One line,
+// at the end of every envelope: the system prompt defers to it.
+const VERBOSITY_LINE = {
+  short: 'Reply like a human in a chat: 2-3 crisp sentences, no essay structure, no filler.',
+  long: 'Reply conversationally, at most 4-5 sentences.',
+};
+export const verbosityLine = v => VERBOSITY_LINE[v] || VERBOSITY_LINE.short;
 // how long to wait for the `projects` event that names the live session
 const SID_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 15000;
 const RESUME_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 8000;
@@ -51,19 +65,99 @@ export function routedAgents(text) {
 const historyLines = msgs => (msgs || []).slice(-HISTORY_MAX)
   .map(m => `${m.author}: ${String(m.text || '').slice(0, 1000)}`).join('\n');
 
-export function envelope({ url, title, target, text, quote, history, articleText, first }) {
+// The page context rides the envelope twice over: once when the chat is born
+// (the bot has never seen this page), and again whenever the reader tells us
+// the text moved under them — a live Google Doc being edited between comments
+// is the case that forced it. Both are transient; neither is ever persisted.
+export function envelope({ url, title, target, text, quote, history,
+  articleText, articleChanged, first, docxDigest, verbosity }) {
+  const article = String(articleText || '').slice(0, ARTICLE_MAX);
   const ctx = first
-    ? `[web page: "${title}" · ${url}]\n${String(articleText || '').slice(0, ARTICLE_MAX)}\n---\n`
-    : '';
+    ? `[web page: "${title}" · ${url}]\n${article}\n---\n`
+    : (article && articleChanged
+      ? `[the page content has been updated since earlier in this chat]\n${article}\n---\n` : '');
   const prior = history && history.length
     ? `Earlier in this thread:\n${historyLines(history)}\n\n` : '';
+  // one length instruction per turn, never two: the reader's verbosity setting
+  // is the only thing that says how long a reply should be
+  const how = verbosityLine(verbosity);
   const body = target === PAGE_CHAT
-    ? `The user asked about this page:\n${prior}${text}\n\nReply concisely in this turn.`
+    ? `The user asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
     : `The user highlighted this passage:\n> ${String(quote || '').replace(/\n/g, '\n> ')}\n\n`
       + `${prior}and wrote:\n${text}\n\n`
-      + 'Reply concisely in this turn — your reply text is posted directly into the comment thread.\n'
-      + 'Keep it to a few sentences unless asked for more.';
-  return routePrefix(text) + ctx + body;
+      + `Your reply text is posted directly into the comment thread.\n${how}`;
+  const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
+  return routePrefix(text) + ctx + body + doc;
+}
+
+// --- .docx comment digest -----------------------------------------------
+// A .docx is a zip and its review comments live in word/comments.xml. Rather
+// than take a dependency for one file we read the zip's central directory
+// ourselves; zlib does the only genuinely hard part (raw deflate).
+const EOCD_SIG = 0x06054b50;
+const CD_SIG = 0x02014b50;
+const LOCAL_SIG = 0x04034b50;
+
+export function zipEntry(buf, name) {
+  // the end-of-central-directory record sits at the tail, behind a comment of
+  // up to 64KB — there is no other way in than scanning back for it
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i >= buf.length - 22 - 65535; i--) {
+    if (buf.readUInt32LE(i) === EOCD_SIG) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('not a zip (no end-of-central-directory record)');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  if (p === 0xffffffff) throw new Error('zip64 archives are not supported here');
+  for (let i = 0; i < count; i++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== CD_SIG) throw new Error('damaged central directory');
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    if (buf.toString('utf8', p + 46, p + 46 + nameLen) === name) {
+      if (local + 30 > buf.length || buf.readUInt32LE(local) !== LOCAL_SIG) throw new Error('damaged local header');
+      const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+      // a zero compressed size means the writer used a data descriptor: take
+      // the rest of the file and let the inflater stop where the stream ends
+      const raw = buf.subarray(start, csize ? start + csize : buf.length);
+      if (method === 0) return raw.toString('utf8');
+      if (method === 8) return zlib.inflateRawSync(raw, { finishFlush: zlib.constants.Z_SYNC_FLUSH }).toString('utf8');
+      throw new Error(`unsupported compression method ${method}`);
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return null; // no such part — for comments.xml that just means nobody commented
+}
+
+const XML_ENTITY = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const unxml = s => String(s)
+  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+  .replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => XML_ENTITY[e]);
+
+// "author: comment text" lines in document order. Anything unreadable — a
+// truncated upload, a zip we can't parse, a part that isn't XML — is logged
+// and dropped: a missing digest costs context, a thrown error costs the turn.
+export function commentsDigest(buf) {
+  let xml = null;
+  try { xml = zipEntry(buf, 'word/comments.xml'); }
+  catch (e) { console.error(`[docx] ${e.message} — comments ignored`); return ''; }
+  if (!xml) return '';
+  const lines = [];
+  const re = /<w:comment\b([^>]*)>([\s\S]*?)<\/w:comment>/g;
+  let m;
+  while ((m = re.exec(xml)) && lines.length < DOCX_COMMENTS_MAX) {
+    const author = unxml((/\bw:author="([^"]*)"/.exec(m[1]) || ['', ''])[1]).trim() || 'someone';
+    // paragraph and tab boundaries are the only structure worth keeping; every
+    // other tag is run/formatting noise between the words
+    const text = unxml(m[2].replace(/<\/w:p>|<w:tab\b[^>]*>|<w:br\b[^>]*>/g, ' ').replace(/<[^>]*>/g, ''))
+      .replace(/\s+/g, ' ').trim();
+    if (text) lines.push(`${author}: ${text}`);
+  }
+  return lines.join('\n').slice(0, DOCX_DIGEST_MAX);
 }
 
 // A bot turn produces TWO room entries: the tool-activity summary
@@ -94,7 +188,6 @@ export function createChat({ onEvent }) {
   let bootstrapped = false;   // "Plugin pages" created+opened in this process
   let activeSid = null;       // the session the bridge currently drives
   let sidWaiters = [];        // pending waits on a `projects` event
-  let permTimer = null;
   const queue = [];           // pending jobs, one in flight
   let current = null;         // {job, steps, i}
   const articleByUrl = new Map(); // transient page text, never persisted
@@ -104,6 +197,7 @@ export function createChat({ onEvent }) {
   let lastCtx = null;
   let lastStatus = null;
   let lastModels = null;
+  const effort = { ...EFFORT_DEFAULTS };
 
   const emit = ev => { try { onEvent(ev); } catch { } };
   // control turns carry no page: they never emit chat events
@@ -157,7 +251,6 @@ export function createChat({ onEvent }) {
   function died(error) {
     if (!proc) return;
     proc = null; available = false; ready = false; running = false; bootstrapped = false;
-    clearTimeout(permTimer);
     emit({ type: 'bridge', state: 'exited', ...(error ? { error } : {}) });
     // nothing in flight can ever finish now: tell every waiting page
     const stranded = current ? [current.job, ...queue] : [...queue];
@@ -189,24 +282,34 @@ export function createChat({ onEvent }) {
     s.auto_relay,
     ['claude', 'codex'].map(a => [s[a].pct, s[a].model, s[a].last_relay_at, s[a].last_relay_tier]),
   ]) : '');
-  const modelOptions = () => {
+  // both pickers read the same completion_context the TUI's autosuggest uses:
+  // the bridge is the only authority on what it will accept
+  const scopedList = cmd => {
     const scoped = (lastCtx && lastCtx.scoped) || null;
     if (!scoped) return null;
-    return { claude: scoped['/model @claude '] || [], codex: scoped['/model @codex '] || [] };
+    return { claude: scoped[`${cmd} @claude `] || [], codex: scoped[`${cmd} @codex `] || [] };
   };
+  const modelOptions = () => scopedList('/model');
+  const effortSnapshot = () => ({ current: { ...effort }, options: scopedList('/effort') });
+  const modelsEvent = () => ({ type: 'models', current: modelSnapshot(), status: statusSnapshot(), effort: effortSnapshot() });
 
   function handle(ev) {
     if (ev.type === 'ready') { onBridgeReady(); return; }
     if (ev.type === 'completion_context') { lastCtx = ev; return; }
     if (ev.type === 'status') {
       lastStatus = ev;
+      // today's bridge reports models but not effort; if a later one starts
+      // carrying it, the horse's mouth beats our bookkeeping
+      for (const a of ['claude', 'codex']) {
+        if (ev[`${a}_effort`] !== undefined) effort[a] = ev[`${a}_effort`] || null;
+      }
       // a /model turn lands as a status event: tell every tab, once per change
       const snap = modelSnapshot();
       const status = statusSnapshot();
-      const key = JSON.stringify(snap) + statusKey(status);
+      const key = JSON.stringify(snap) + statusKey(status) + JSON.stringify(effort);
       if (snap && key !== lastModels) {
         lastModels = key;
-        emit({ type: 'models', current: snap, status });
+        emit(modelsEvent());
       }
       return;
     }
@@ -243,17 +346,19 @@ export function createChat({ onEvent }) {
       return;
     }
     if (ev.type === 'permission_request') {
-      // v1 policy: reads and writes beneath the workspace are fine, anything
-      // outside it is denied. Nobody is at a keyboard to arbitrate.
-      const p = String(ev.path || '');
-      const rel = p ? path.relative(ROOT, path.resolve(p)) : '..';
-      const allow = !!p && !rel.startsWith('..') && !path.isAbsolute(rel);
-      clearTimeout(permTimer);
-      permTimer = setTimeout(() => send({ type: 'permission_response', allow: false }), PERMISSION_TIMEOUT_MS);
-      send({ type: 'permission_response', allow });
+      // The annotator reads the web and answers in a comment thread; it has no
+      // business writing files, and a page that talks an agent into writing one
+      // is the whole prompt-injection surface. So: deny, immediately (a pending
+      // permission stalls the turn for as long as it is pending), and say so in
+      // the thread that asked — silence would look like the bot ignoring it.
+      send({ type: 'permission_response', allow: false });
+      const who = String(ev.model || '').trim() || 'an agent';
+      if (current) {
+        chat(current.job, { kind: 'error',
+          error: `${who} asked to write a file — file-writing is disabled in the annotator` });
+      }
       return;
     }
-    if (ev.type === 'permission_cleared') { clearTimeout(permTimer); return; }
     if (ev.type === 'choice_request') {
       // the "where should this chat live?" picker would block the turn forever
       // (no arrow-key UI here): stay in Inbox when offered, else take the first
@@ -282,9 +387,20 @@ export function createChat({ onEvent }) {
       current.i++;
       if (current.i < current.steps.length) { sendStep(); return; }
       chat(job, { kind: 'turn-end', agents: current.agents });
+      if (job.control) controlDone(job.control);
       current = null;
     }
     pump();
+  }
+
+  // A finished control turn is the only evidence we get that the bridge took a
+  // setting: it answers /effort with a room line, never a status field. So the
+  // level is recorded when the turn completes, not when it is queued.
+  function controlDone(text) {
+    const m = /^\/effort @(claude|codex)\s+(\S+)/.exec(String(text));
+    if (!m || effort[m[1]] === m[2]) return;
+    effort[m[1]] = m[2];
+    emit(modelsEvent());
   }
 
   function sendStep() {
@@ -324,7 +440,12 @@ export function createChat({ onEvent }) {
     steps.push({
       text: envelope({ url: job.url, title, target: job.target, text: job.text,
         quote: job.quote, history: job.history, first: !sid,
-        articleText: job.articleText || articleByUrl.get(job.url) || '' }),
+        // a refresh only counts when this very message carried the new text:
+        // the cached copy is for pages whose first turn never got a session
+        articleText: job.articleText || articleByUrl.get(job.url) || '',
+        articleChanged: !!(job.articleChanged && job.articleText),
+        docxDigest: job.docxDigest,
+        verbosity: readConfig().verbosity }),
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that
       // it has an entry — this is the first moment its sid can be trusted
@@ -416,8 +537,11 @@ export function createChat({ onEvent }) {
       return { queued: true, position: queue.length + (current ? 1 : 0) };
     },
     // {current, options, status}: all null until the bridge has spoken, which
-    // the extension renders as "unknown yet" rather than an empty picker
-    models: () => ({ current: modelSnapshot(), options: modelOptions(), status: statusSnapshot() }),
+    // the extension renders as "unknown yet" rather than an empty picker.
+    // effort.current is the exception — the child's defaults are known before
+    // it starts, and nothing the bridge emits would ever tell us otherwise.
+    models: () => ({ current: modelSnapshot(), options: modelOptions(),
+      status: statusSnapshot(), effort: effortSnapshot() }),
     // only the page whose turn is actually running can interrupt it
     interrupt(url) {
       if (!current || !available || current.job.url !== url) return false;

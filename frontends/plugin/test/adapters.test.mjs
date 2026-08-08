@@ -508,6 +508,146 @@ const res = (body, extra) => Object.assign({
     A.pick({ toString() { throw new Error('boom'); } }) === null);
 }
 
+// ---- 9. the .docx export: the document's own comment threads -------------------
+// A txt export is prose only — every comment in the doc is dropped. The zip of
+// the same document carries them, so a mention on a Doc sends both. Everything
+// below is the same ladder asking for different bytes, and every failure is
+// silent: this is an attachment to a message the user already sent.
+{
+  const url = `https://docs.google.com/document/d/${ID}/edit`;
+
+  // ---- urls ----
+  eq('docx: export url', A.gdocsExportUrl(ID, null, 'docx'),
+    `https://docs.google.com/document/d/${ID}/export?format=docx`);
+  eq('docx: …account-scoped the way the page url spells it',
+    A.gdocsExportUrl(ID, { n: '1', where: 'pre' }, 'docx'),
+    `https://docs.google.com/u/1/document/d/${ID}/export?format=docx`);
+  eq('docx: …and the other spelling', A.gdocsExportUrl(ID, { n: '2', where: 'post' }, 'docx'),
+    `https://docs.google.com/document/u/2/d/${ID}/export?format=docx`);
+  eq('docx: an unknown format is never put on the wire',
+    A.gdocsExportUrl(ID, null, 'pdf'), A.gdocsExportUrl(ID));
+  eq('docx: no format at all is still txt', A.gdocsExportUrl(ID, null), A.gdocsExportUrl(ID, null, 'txt'));
+
+  const ladder = A.gdocsExportUrls(ID, null, null, 'docx');
+  ok('docx: the ladder is the same ladder', ladder.length === A.EXPORT_URL_MAX);
+  ok('docx: …all of it asking for the zip', ladder.every(u => /format=docx/.test(u)));
+  ok('docx: …starting with the url the page url implies', ladder[0] === A.gdocsExportUrl(ID, null, 'docx'));
+  ok('docx: …then the authuser cascade',
+    ladder[1] === A.gdocsExportUrl(ID, null, 'docx') + '&authuser=0');
+
+  // ---- the zip signature ----
+  const zip = n => {
+    const b = new Uint8Array(n || 64);
+    b[0] = 0x50; b[1] = 0x4b; b[2] = 0x03; b[3] = 0x04;
+    return b;
+  };
+  ok('docx: PK\\x03\\x04 is a zip', A.looksZip(zip()));
+  ok('docx: …and so is an empty archive', A.looksZip(new Uint8Array([0x50, 0x4b, 0x05, 0x06, 0, 0])));
+  ok('docx: a chooser page is not', A.looksZip(new TextEncoder().encode('<!DOCTYPE html><html>')) === false);
+  ok('docx: nor is a truncated body', A.looksZip(new Uint8Array([0x50, 0x4b])) === false);
+  ok('docx: nor is nothing at all', A.looksZip(null) === false && A.looksZip(new Uint8Array(0)) === false);
+
+  // ---- base64, which is how bytes cross sendMessage ----
+  eq('docx: base64 of the zip signature', A.bytesToBase64(new Uint8Array([0x50, 0x4b, 0x03, 0x04])), 'UEsDBA==');
+  const big = zip(200000);
+  eq('docx: a large body encodes without blowing the argument limit',
+    A.bytesToBase64(big), Buffer.from(big).toString('base64'));
+  eq('docx: an ArrayBuffer works too',
+    A.bytesToBase64(new Uint8Array([1, 2, 3]).buffer), Buffer.from([1, 2, 3]).toString('base64'));
+  eq('docx: size is read off the encoding, without decoding it', A.b64Size('UEsDBA=='), 4);
+  eq('docx: …with one pad char', A.b64Size(Buffer.from(zip(5)).toString('base64')), 5);
+  eq('docx: …and with none', A.b64Size(Buffer.from(zip(6)).toString('base64')), 6);
+  eq('docx: nothing is zero bytes', A.b64Size(''), 0);
+  eq('docx: the cap is 6MB', A.DOCX_MAX, 6 * 1024 * 1024);
+
+  // ---- the ladder, driven ----
+  const bytesLane = reply => {
+    const calls = [];
+    const fn = async u => { calls.push(u); return typeof reply === 'function' ? reply(u) : reply; };
+    fn.calls = calls;
+    return fn;
+  };
+  const okBytes = (bytes, extra) => Object.assign(
+    { ok: true, status: 200, contentType: A.DOCX_MAX ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : '',
+      bytes, size: bytes.length }, extra || {});
+  const mkd = (rb, env) => A.pick(url, Object.assign({
+    request: async () => ({ ok: false, error: 'text lane unused here' }),
+    requestBytes: rb, documentTitle: () => '',
+  }, env || {}));
+
+  {
+    const lane = bytesLane(okBytes(zip(128)));
+    const ad = mkd(lane);
+    const b64 = await ad.docx();
+    eq('docx: a real zip comes back base64-encoded', b64, A.bytesToBase64(zip(128)));
+    eq('docx: …after exactly one request', lane.calls.length, 1);
+    eq('docx: …at the docx export url', lane.calls[0], A.gdocsExportUrl(ID, null, 'docx'));
+    eq('docx: a success leaves no complaint behind', ad.docxError, '');
+    eq('docx: …and records which url answered', ad.docxUrl, A.gdocsExportUrl(ID, null, 'docx'));
+  }
+
+  {
+    // the background lane's shape: already encoded, because a Uint8Array does
+    // not survive sendMessage
+    const b64 = A.bytesToBase64(zip(96));
+    const ad = mkd(bytesLane({ ok: true, status: 200, contentType: '', b64, size: A.b64Size(b64) }));
+    eq('docx: an already-encoded answer is taken as it is', await ad.docx(), b64);
+  }
+
+  {
+    const chooser = new TextEncoder().encode(
+      '<!DOCTYPE html><html><body><h1>Choose an account</h1></body></html>');
+    const lane = bytesLane(okBytes(chooser, { contentType: 'text/html' }));
+    const ad = mkd(lane);
+    eq('docx: an account chooser served 200 is not a document', await ad.docx(), '');
+    ok('docx: …and says so', /not a \.docx zip/.test(ad.docxError), ad.docxError);
+    eq('docx: …after trying every account, like the text ladder does',
+      lane.calls.length, A.EXPORT_URL_MAX);
+  }
+
+  {
+    const lane = bytesLane(u => (/authuser=2/.test(u)
+      ? okBytes(zip(64))
+      : { ok: false, status: 404, error: 'HTTP 404' }));
+    const ad = mkd(lane);
+    eq('docx: the cascade finds the account that can read the doc',
+      await ad.docx(), A.bytesToBase64(zip(64)));
+    ok('docx: …and stops there', /authuser=2$/.test(ad.docxUrl), ad.docxUrl);
+  }
+
+  {
+    const lane = bytesLane({ ok: true, status: 200, contentType: '',
+      bytes: new Uint8Array(0), size: A.DOCX_MAX + 1 });
+    const ad = mkd(lane);
+    eq('docx: a document past the cap is dropped, not sent', await ad.docx(), '');
+    ok('docx: …saying it was too big', /over the 6MB cap/.test(ad.docxError), ad.docxError);
+    eq('docx: …without cascading — it is the right account, just a big file',
+      lane.calls.length, 1);
+  }
+
+  {
+    const ad = mkd(bytesLane({ ok: false, status: 500, error: 'HTTP 500' }));
+    eq('docx: a server error is silent too', await ad.docx(), '');
+    ok('docx: …and reported', /HTTP 500/.test(ad.docxError), ad.docxError);
+  }
+
+  {
+    // a world with no binary transport at all (a `request` override and
+    // nothing else): the attachment is simply absent
+    const ad = A.pick(url, { request: async () => ({ ok: false }), documentTitle: () => '' });
+    eq('docx: no binary transport means no attachment, never a throw', await ad.docx(), '');
+    ok('docx: …and it says why', /no binary transport/.test(ad.docxError), ad.docxError);
+  }
+
+  {
+    // the text ladder must not have moved: it still asks for txt
+    const f = stubFetch(res('The document.'));
+    const ad = A.pick(url, { fetch: f, documentTitle: () => '' });
+    await ad.articleText();
+    ok('docx: the prose export still asks for txt', /format=txt/.test(f.calls[0].url), f.calls[0].url);
+  }
+}
+
 // ---- report -------------------------------------------------------------------
 if (fail) {
   console.error('\nFAILED (' + fail + '):');

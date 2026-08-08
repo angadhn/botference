@@ -12,6 +12,7 @@ import os from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -138,6 +139,57 @@ const PAGE2 = 'https://ledger.test/2026/track-charges';
 const TITLE1 = 'The Quiet Return of the Night Train';
 const QUOTE1 = 'The math only works if the trains run full.';
 const ARTICLE = 'For most of the last two decades the night train was treated as a museum piece with a timetable.';
+const ARTICLE2 = 'REWRITTEN: the sleeper order book has doubled since the draft you saw.';
+
+// A real .docx, built here rather than checked in as a binary: the companion's
+// zip reader has to walk a genuine central directory, so the test writes one
+// (stored AND deflated entries, so both branches are exercised).
+const crc32 = zlib.crc32 ? d => zlib.crc32(d) : () => 0;
+function zipFile(entries) {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = Buffer.from(e.name, 'utf8');
+    const data = Buffer.from(e.data, 'utf8');
+    const method = e.store ? 0 : 8;
+    const comp = method ? zlib.deflateRawSync(data) : data;
+    const crc = crc32(data);
+    const head = Buffer.alloc(30);
+    head.writeUInt32LE(0x04034b50, 0); head.writeUInt16LE(20, 4); head.writeUInt16LE(method, 8);
+    head.writeUInt32LE(crc, 14); head.writeUInt32LE(comp.length, 18); head.writeUInt32LE(data.length, 22);
+    head.writeUInt16LE(name.length, 26);
+    local.push(head, name, comp);
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(method, 10); cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(comp.length, 20); cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(name.length, 28); cd.writeUInt32LE(offset, 42);
+    central.push(cd, name);
+    offset += head.length + name.length + comp.length;
+  }
+  const cdBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8); eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, cdBuf, eocd]);
+}
+const COMMENTS_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+  + '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+  + '<w:comment w:id="1" w:author="Priya Raman" w:date="2026-08-01T09:00:00Z" w:initials="PR">'
+  + '<w:p><w:r><w:t xml:space="preserve">The load-factor claim needs a </w:t></w:r>'
+  + '<w:r><w:t>source.</w:t></w:r></w:p></w:comment>'
+  + '<w:comment w:id="2" w:author="Tom &amp; Co" w:date="2026-08-02T11:30:00Z" w:initials="TC">'
+  + '<w:p><w:r><w:t>Agreed &amp; noted.</w:t></w:r></w:p>'
+  + '<w:p><w:r><w:t>Second paragraph of the same comment.</w:t></w:r></w:p></w:comment>'
+  + '<w:comment w:id="3" w:author="Empty" w:date="2026-08-02T11:31:00Z"><w:p/></w:comment>'
+  + '</w:comments>';
+const docxB64 = () => zipFile([
+  { name: '[Content_Types].xml', data: '<Types/>', store: true },
+  { name: 'word/document.xml', data: '<w:document><w:body/></w:document>' },
+  { name: 'word/comments.xml', data: COMMENTS_XML },
+]).toString('base64');
 
 async function main() {
   const root = tmpRoot('root');
@@ -170,7 +222,14 @@ async function main() {
 
   await test('GET /models before the bridge has ever run reports the empty state', async () => {
     const r = await GET(base, '/models');
-    assert.deepEqual(r.json, { ok: true, current: null, options: null, status: null, bridge: 'stopped' });
+    assert.deepEqual(r.json, {
+      ok: true, current: null, options: null, status: null,
+      // effort is the exception: the child's argparse defaults are knowable
+      // before it exists, and no bridge event ever reports the live level
+      effort: { current: { claude: 'high', codex: null }, options: null },
+      verbosity: 'short',
+      bridge: 'stopped',
+    });
   });
 
   await test('ws /ws upgrades and sends hello', async () => {
@@ -300,8 +359,9 @@ async function main() {
     assert.ok(turn.includes('Earlier in this thread:\nangadh: This is the whole argument of the piece.'),
       'thread history above the new message');
     assert.ok(turn.includes('and wrote:\n@claude does that hold outside peak season?'));
-    assert.ok(turn.endsWith('comment thread.\nKeep it to a few sentences unless asked for more.'),
-      'anchored turns carry the brevity reminder');
+    assert.ok(turn.endsWith('comment thread.\nReply like a human in a chat: '
+      + '2-3 crisp sentences, no essay structure, no filler.'),
+      'the turn ends with the reader\'s length instruction');
   });
 
   await test('the session id from the projects event is stored on the page', async () => {
@@ -419,6 +479,11 @@ async function main() {
     assert.ok(r.json.status.claude.tokens >= 42000, 'occupancy passes through');
     assert.equal(r.json.status.codex.window, 1050000);
     assert.equal(r.json.status.auto_relay, true);
+    // effort options come from the same completion_context the models do
+    assert.deepEqual(r.json.effort.current, { claude: 'high', codex: null });
+    assert.deepEqual(r.json.effort.options.claude, ['low', 'medium', 'high', 'xhigh']);
+    assert.ok(r.json.effort.options.codex.includes('minimal'));
+    assert.equal(r.json.verbosity, 'short');
   });
 
   await test('the bridge status event broadcast a models event', () => {
@@ -638,6 +703,359 @@ async function main() {
       ['Export Fixture (2).md', 'Export Fixture.md']);
   });
 
+  // --- page text that moves under the reader -----------------------------
+  await test('a later turn re-sends the page text only when the extension says it changed', async () => {
+    const url = 'https://ledger.test/2026/living-draft';
+    await POST(base, '/page', { url, title: 'Living Draft', site: 'ledger.test' });
+    // the envelope of the next turn to reach the bridge, whatever control
+    // steps precede it
+    const nextTurn = async from => waitFor(
+      () => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the user turn');
+
+    // first turn: article_changed is set, but a brand-new chat gets the
+    // ordinary page-context block — there is no "earlier" to differ from
+    let from = inputs(logFile).length;
+    await POST(base, '/thread', {
+      url, quote: 'the draft as it stood', prefix: '', suffix: '',
+      msg: { text: '@claude first look' }, article_text: ARTICLE, article_changed: true,
+    });
+    const first = await nextTurn(from);
+    assert.ok(first.includes(`[web page: "Living Draft" · ${url}]`), 'first-turn context');
+    assert.ok(first.includes(ARTICLE));
+    assert.ok(!first.includes('has been updated'), 'no refresh banner on turn one');
+    await waitFor(async () => (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.session_id,
+      'sid capture on the living draft');
+
+    // later turn, text moved: the refreshed article rides again, flagged
+    from = inputs(logFile).length;
+    await POST(base, '/reply', {
+      url, thread_id: '__page__', text: '@claude and now?',
+      article_text: ARTICLE2, article_changed: true,
+    });
+    const later = await nextTurn(from);
+    assert.ok(later.startsWith('@claude [the page content has been updated since earlier in this chat]\n'),
+      'the refresh banner leads the envelope');
+    assert.ok(later.includes(ARTICLE2), 'with the new text');
+    assert.ok(!later.includes(`[web page: "Living Draft"`), 'and not the first-turn header');
+
+    // later turn, text unchanged: no context at all, however much the
+    // extension sent along
+    from = inputs(logFile).length;
+    await POST(base, '/reply', {
+      url, thread_id: '__page__', text: '@claude quietly', article_text: ARTICLE2,
+    });
+    const quiet = await nextTurn(from);
+    assert.ok(!quiet.includes('has been updated'), 'unflagged text is not resent');
+    assert.ok(!quiet.includes(ARTICLE2));
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.ok(!JSON.stringify(page).includes('REWRITTEN'), 'page text is never persisted');
+  });
+
+  // --- .docx comments ----------------------------------------------------
+  await test('a .docx rides a mention and its comments reach the envelope', async () => {
+    const url = 'https://docs.google.test/document/d/abc/edit';
+    await POST(base, '/page', { url, title: 'Reviewed Doc', site: 'docs.google.test' });
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/reply', {
+      url, thread_id: '__page__', text: '@claude what are people objecting to?',
+      docx_b64: docxB64(),
+    });
+    assert.equal(r.json.queued, true);
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(turn.includes('\n[comments on this document]\n'), 'the digest is appended');
+    assert.ok(turn.includes('Priya Raman: The load-factor claim needs a source.'),
+      'runs inside one comment are joined');
+    assert.ok(turn.includes('Tom & Co: Agreed & noted. Second paragraph of the same comment.'),
+      'entities decoded, paragraphs flattened');
+    assert.ok(!turn.includes('Empty:'), 'a comment with no words is dropped');
+    assert.ok(!turn.includes('<w:'), 'no xml survives');
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.ok(!JSON.stringify(page).includes('Priya'), 'the document is never persisted');
+  });
+
+  await test('a corrupted .docx is ignored, not fatal', async () => {
+    const url = 'https://docs.google.test/document/d/broken/edit';
+    await POST(base, '/page', { url, title: 'Broken Doc', site: 'docs.google.test' });
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/reply', {
+      url, thread_id: '__page__', text: '@claude read this',
+      docx_b64: Buffer.from('PK truncated upload, no directory here').toString('base64'),
+    });
+    assert.equal(r.json.queued, true, 'the comment is still sent');
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(!turn.includes('[comments on this document]'), 'no digest, no crash');
+  });
+
+  await test('a .docx over 8MB is refused before anything is saved', async () => {
+    const url = 'https://docs.google.test/document/d/huge/edit';
+    await POST(base, '/page', { url, title: 'Huge Doc', site: 'docs.google.test' });
+    const r = await POST(base, '/reply', {
+      url, thread_id: '__page__', text: '@claude have a look',
+      docx_b64: Buffer.alloc(8 * 1024 * 1024 + 1024).toString('base64'),
+    });
+    assert.equal(r.status, 413);
+    assert.equal(r.json.ok, false);
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.deepEqual(page.page_chat, [], 'a refused request leaves no message behind');
+  });
+
+  // --- ticking a checklist -----------------------------------------------
+  const TICK_URL = 'https://ledger.test/2026/checklist';
+  const TICK_TEXT = [
+    'Three things worth doing:',
+    '- [ ] check the load factor',
+    '  * [ ] find a source for the 2019 figure',
+    '1. [ ] email the operator',
+    '',
+    'Note: - [ ] mid-line boxes are prose, not items.',
+  ].join('\n');
+  let tickTs = '';
+  await test('POST /tick toggles a bot checklist in every marker style', async () => {
+    process.env.BOTFERENCE_PROJECT_ROOT = root;
+    const store = await import('../store.mjs');
+    const page = store.blankPage({ url: TICK_URL, title: 'Checklist', site: 'ledger.test' });
+    tickTs = new Date().toISOString();
+    // authored by a BOT: ticking someone else's checklist is the whole point
+    page.page_chat = [{ author: 'claude', ts: tickTs, text: TICK_TEXT }];
+    store.savePage(page);
+
+    const tick = (index, checked) => POST(base, '/tick',
+      { url: TICK_URL, thread_id: '__page__', ts: tickTs, index, checked });
+    // the expected text, byte-for-byte, with the given LINES ticked
+    const marked = (...lines) => TICK_TEXT.split('\n')
+      .map((l, n) => (lines.includes(n) ? l.replace('[ ]', '[x]') : l)).join('\n');
+
+    const a = await tick(0, true);
+    assert.equal(a.json.ok, true);
+    assert.equal(a.json.text, marked(1), 'the dash item, and nothing else');
+    assert.equal((await tick(1, true)).json.text, marked(1, 2), 'the indented star item');
+    const c = await tick(2, true);
+    assert.equal(c.json.text, marked(1, 2, 3), 'the numbered item');
+    assert.ok(c.json.text.includes('Note: - [ ] mid-line boxes are prose'),
+      'a mid-line box is not a list item and is left alone');
+    const back = await tick(0, false);
+    assert.equal(back.json.text, marked(2, 3), 'and it unticks');
+    const stored = (await GET(base, `/page?url=${encodeURIComponent(TICK_URL)}`)).json;
+    assert.equal(stored.page_chat[0].text, back.json.text, 'the ticked text is on disk');
+    assert.equal(stored.page_chat[0].author, 'claude', 'and it is still the bot\'s message');
+  });
+
+  await test('POST /tick refuses an unknown message and an index off the end', async () => {
+    const bad = [
+      [{ url: TICK_URL, thread_id: '__page__', ts: 'not-a-ts', index: 0, checked: true }, 404],
+      [{ url: TICK_URL, thread_id: 't-nope', ts: tickTs, index: 0, checked: true }, 404],
+      [{ url: 'https://ledger.test/2026/never-seen', ts: tickTs, index: 0, checked: true }, 404],
+      [{ url: TICK_URL, thread_id: '__page__', ts: tickTs, index: 3, checked: true }, 400],
+      [{ url: TICK_URL, thread_id: '__page__', ts: tickTs, index: -1, checked: true }, 400],
+      [{ url: TICK_URL, thread_id: '__page__', ts: tickTs, checked: true }, 400],
+    ];
+    for (const [body, status] of bad) {
+      const r = await POST(base, '/tick', body);
+      assert.equal(r.status, status, JSON.stringify(body));
+      assert.equal(r.json.ok, false);
+    }
+  });
+
+  await test('POST /tick works in an anchored thread and broadcasts the page', async () => {
+    const url = 'https://ledger.test/2026/thread-checklist';
+    const t = (await POST(base, '/thread', {
+      url, quote: 'a passage', prefix: '', suffix: '', msg: { text: 'plan:\n- [ ] one\n- [ ] two' },
+    })).json.thread;
+    const before = stream.events.length;
+    const r = await POST(base, '/tick',
+      { url, thread_id: t.id, ts: t.msgs[0].ts, index: 1, checked: true });
+    assert.equal(r.json.text, 'plan:\n- [ ] one\n- [x] two');
+    await waitFor(() => stream.events.slice(before).some(e => e.type === 'page' && e.url === url),
+      'page invalidation after a tick');
+  });
+
+  // --- file writing is off ------------------------------------------------
+  await test('a permission request is denied at once and reported in the thread', async () => {
+    const url = 'https://ledger.test/2026/permission';
+    await POST(base, '/page', { url, title: 'Permission', site: 'ledger.test' });
+    const before = stream.events.length;
+    const responsesBefore = allLines(logFile).filter(e => e.type === 'permission_response').length;
+    const t = (await POST(base, '/thread', {
+      url, quote: 'worth writing up', prefix: '', suffix: '',
+      msg: { text: '@claude write this up for me [mock:perm]' },
+    })).json.thread;
+    // "at once": with the old 120s timer this wait would expire
+    await waitFor(() => allLines(logFile).filter(e => e.type === 'permission_response').length > responsesBefore,
+      'an immediate answer', 2000);
+    const answer = allLines(logFile).filter(e => e.type === 'permission_response').pop();
+    assert.equal(answer.allow, false, 'every permission request is denied');
+    const err = await waitFor(() => stream.events.slice(before)
+      .find(e => e.type === 'chat' && e.kind === 'error'), 'the thread is told');
+    assert.equal(err.url, url);
+    assert.equal(err.target, t.id);
+    assert.equal(err.error, 'claude asked to write a file — file-writing is disabled in the annotator');
+    await waitFor(() => stream.events.slice(before)
+      .some(e => e.kind === 'turn-end' && e.url === url), 'the turn still ends');
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.equal(page.threads[0].msgs.length, 2, 'and the reply still lands');
+  });
+
+  // --- reasoning effort ---------------------------------------------------
+  await test('POST /effort queues the control turn and updates the picker', async () => {
+    // the earlier tests left turns running; a control turn only proves it is
+    // silent once nothing else is talking
+    await waitFor(async () => (await GET(base, '/health')).json.queue === 0, 'the bridge to go idle');
+    const before = stream.events.length;
+    const sentBefore = inputs(logFile).length;
+    const r = await POST(base, '/effort', { agent: 'claude', level: 'xhigh' });
+    assert.deepEqual(r.json, { ok: true, queued: true });
+    await waitFor(() => inputs(logFile).length > sentBefore, 'effort at the bridge');
+    assert.deepEqual(inputs(logFile).slice(sentBefore), ['/effort @claude xhigh']);
+    const ev = await waitFor(() => stream.events.slice(before)
+      .find(e => e.type === 'models' && e.effort.current.claude === 'xhigh'), 'models event');
+    assert.equal(ev.effort.current.codex, null, 'codex is untouched and still unknown');
+    assert.equal(ev.verbosity, 'short', 'the panel event carries verbosity too');
+    assert.equal(stream.events.slice(before).filter(e => e.type === 'chat').length, 0,
+      'a control turn is not a page turn');
+    assert.equal((await GET(base, '/models')).json.effort.current.claude, 'xhigh');
+    const n = inputs(logFile).length;
+    assert.equal((await POST(base, '/effort', { agent: 'codex', level: 'minimal' })).json.ok, true);
+    await waitFor(() => inputs(logFile).length > n, 'codex effort');
+    assert.deepEqual(inputs(logFile).slice(n), ['/effort @codex minimal']);
+    await waitFor(async () => (await GET(base, '/models')).json.effort.current.codex === 'minimal',
+      'codex effort recorded');
+  });
+
+  await test('POST /effort refuses a bad agent and a level the bridge never offered', async () => {
+    const bad = [
+      { agent: 'gemini', level: 'high' },
+      { agent: 'claude', level: 'high; rm -rf /' },
+      { agent: 'claude', level: 'minimal' }, // a codex level, not a claude one
+      { agent: 'codex', level: 'xhigh' },
+    ];
+    for (const body of bad) {
+      const r = await POST(base, '/effort', body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.json.ok, false);
+    }
+  });
+
+  // --- reply length -------------------------------------------------------
+  await test('POST /verbosity persists, broadcasts, and changes the next envelope', async () => {
+    const cfgFile = path.join(root, '.botference', 'plugin', 'config.json');
+    const before = stream.events.length;
+    const r = await POST(base, '/verbosity', { level: 'long' });
+    assert.deepEqual(r.json, { ok: true, verbosity: 'long' });
+    assert.equal(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).verbosity, 'long', 'written to config.json');
+    const ev = await waitFor(() => stream.events.slice(before)
+      .find(e => e.type === 'models' && e.verbosity === 'long'), 'models broadcast');
+    assert.ok(ev.effort, 'the broadcast carries the whole panel');
+    assert.equal((await GET(base, '/models')).json.verbosity, 'long');
+
+    let from = inputs(logFile).length;
+    await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude at length please' });
+    const long = await waitFor(() => inputs(logFile).slice(from)
+      .find(t => t.startsWith('@claude ')), 'the long turn');
+    assert.ok(long.endsWith('Reply conversationally, at most 4-5 sentences.'));
+    assert.ok(!long.includes('crisp sentences'), 'one length instruction, never two');
+
+    assert.equal((await POST(base, '/verbosity', { level: 'short' })).json.verbosity, 'short');
+    from = inputs(logFile).length;
+    await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude briefly then' });
+    const short = await waitFor(() => inputs(logFile).slice(from)
+      .find(t => t.startsWith('@claude ')), 'the short turn');
+    assert.ok(short.endsWith('Reply like a human in a chat: 2-3 crisp sentences, no essay structure, no filler.'));
+    const bad = await POST(base, '/verbosity', { level: 'epic' });
+    assert.equal(bad.status, 400);
+    assert.equal(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).verbosity, 'short', 'a refusal changes nothing');
+  });
+
+  // --- forgetting a page --------------------------------------------------
+  await test('the index says which pages have a bot chat', async () => {
+    const idx = (await GET(base, '/index')).json;
+    assert.equal(idx[crypto.createHash('sha1').update(PAGE1).digest('hex')].has_session, true);
+    assert.equal(idx[crypto.createHash('sha1').update(TICK_URL).digest('hex')].has_session, false);
+  });
+
+  await test('POST /delete-page forgets the page and asks a running bridge to delete the chat', async () => {
+    const url = 'https://ledger.test/2026/regretted';
+    await POST(base, '/page', { url, title: 'Regretted', site: 'ledger.test' });
+    await POST(base, '/thread', {
+      url, quote: 'a thing said', prefix: '', suffix: '', msg: { text: '@claude thoughts?' },
+    });
+    const sid = (await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+      return p.session_id ? p : null;
+    }, 'sid capture on the regretted page')).session_id;
+
+    const before = stream.events.length;
+    const sentBefore = inputs(logFile).length;
+    const r = await POST(base, '/delete-page', { url, delete_session: true });
+    assert.deepEqual(r.json, { ok: true, session_deleted: true });
+    await waitFor(() => inputs(logFile).slice(sentBefore).includes(`/delete ${sid}`), '/delete at the bridge');
+    // the controller confirms deletions through a picker; nobody is at a
+    // keyboard, so the companion must answer it
+    const choice = await waitFor(() => allLines(logFile).filter(e => e.type === 'choice_response').pop(),
+      'the confirm answered');
+    assert.equal(choice.index, 0, 'confirmed, not cancelled');
+    await waitFor(() => stream.events.slice(before).some(e => e.type === 'page' && e.url === url),
+      'page invalidation');
+    assert.equal((await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.page, null);
+    assert.equal((await GET(base, '/index')).json[crypto.createHash('sha1').update(url).digest('hex')], undefined);
+    assert.equal(fs.existsSync(path.join(root, '.botference', 'plugin', 'pages',
+      `${crypto.createHash('sha1').update(url).digest('hex')}.json`)), false, 'the record is gone from disk');
+  });
+
+  await test('with the bridge stopped the session file is deleted from the work dir', async () => {
+    const stopRoot = tmpRoot('delstop');
+    const sessions = path.join(stopRoot, 'work', 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, 'sess-orphan.json'), '{"session_id":"sess-orphan"}');
+    const stop = await startServer({
+      root: stopRoot, env: { PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]) },
+    });
+    const url = 'https://ledger.test/2026/cold-delete';
+    const key = crypto.createHash('sha1').update(url).digest('hex');
+    const file = path.join(stopRoot, '.botference', 'plugin', 'pages', `${key}.json`);
+    await POST(stop.base, '/page', { url, title: 'Cold Delete', site: 'ledger.test' });
+    const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    rec.session_id = 'sess-orphan';
+    fs.writeFileSync(file, JSON.stringify(rec));
+
+    assert.equal((await GET(stop.base, '/health')).json.bridge, 'stopped', 'nothing has summoned it');
+    const r = await POST(stop.base, '/delete-page', { url, delete_session: true });
+    assert.deepEqual(r.json, { ok: true, session_deleted: true });
+    assert.equal(fs.existsSync(path.join(sessions, 'sess-orphan.json')), false, 'the chat is gone');
+    assert.equal(fs.existsSync(file), false);
+    assert.equal((await GET(stop.base, '/health')).json.bridge, 'stopped', 'and no bridge was started for it');
+
+    // a page with no session at all, and a session file that never existed
+    await POST(stop.base, '/page', { url: `${url}-2`, title: 'Cold Delete 2', site: 'ledger.test' });
+    const plain = await POST(stop.base, '/delete-page', { url: `${url}-2`, delete_session: true });
+    assert.deepEqual(plain.json, { ok: true, session_deleted: false });
+    assert.equal((await POST(stop.base, '/delete-page', { url })).status, 404, 'gone means gone');
+    stop.proc.kill();
+  });
+
+  await test('a session two pages claim is never deleted', async () => {
+    const sharedRoot = tmpRoot('shared');
+    const shared = await startServer({ root: sharedRoot });
+    const urls = ['https://ledger.test/2026/twin-a', 'https://ledger.test/2026/twin-b'];
+    for (const u of urls) {
+      await POST(shared.base, '/page', { url: u, title: `Twin ${u.slice(-1)}`, site: 'ledger.test' });
+      const f = path.join(sharedRoot, '.botference', 'plugin', 'pages',
+        `${crypto.createHash('sha1').update(u).digest('hex')}.json`);
+      const rec = JSON.parse(fs.readFileSync(f, 'utf8'));
+      rec.session_id = 'sess-shared';
+      fs.writeFileSync(f, JSON.stringify(rec));
+    }
+    const r = await POST(shared.base, '/delete-page', { url: urls[0], delete_session: true });
+    assert.equal(r.status, 409);
+    assert.match(r.json.error, /also claimed by/);
+    assert.ok((await GET(shared.base, `/page?url=${encodeURIComponent(urls[0])}`)).json.url,
+      'the page survives a refused delete');
+    // the page alone can still go; the chat behind it is what was protected
+    const keep = await POST(shared.base, '/delete-page', { url: urls[0] });
+    assert.deepEqual(keep.json, { ok: true, session_deleted: false });
+    assert.equal((await GET(shared.base, `/page?url=${encodeURIComponent(urls[0])}`)).json.page, null);
+    shared.proc.kill();
+  });
+
   // --- --no-agents ------------------------------------------------------
   await test('--no-agents persists the comment but refuses the summon', async () => {
     const offRoot = tmpRoot('noagents');
@@ -658,7 +1076,10 @@ async function main() {
     const health = await GET(off.base, '/health');
     assert.equal(health.json.bridge, 'disabled');
     const models = await GET(off.base, '/models');
-    assert.deepEqual(models.json, { ok: true, current: null, options: null, status: null, bridge: 'disabled' });
+    assert.deepEqual(models.json, { ok: true, current: null, options: null, status: null,
+      effort: null, verbosity: 'short', bridge: 'disabled' });
+    const effort = await POST(off.base, '/effort', { agent: 'claude', level: 'high' });
+    assert.equal(effort.status, 409);
     const setModel = await POST(off.base, '/model', { agent: 'claude', model: 'claude-opus-5' });
     assert.equal(setModel.status, 409);
     assert.deepEqual(setModel.json, { ok: false, error: 'agents are off on this companion' });

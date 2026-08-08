@@ -2,6 +2,20 @@
 
 ## 2026-08-08
 
+- **Web annotator round 4 — living documents, working checklists, and a
+  leash.** Page/doc text now re-ships with any mention when it actually
+  changed since last sent (hash-gated), and Google Docs margin comments
+  ride along as a digest (docx export parsed with a zlib-only zip
+  reader — still zero dependencies). Bot replies that propose actions
+  arrive as markdown checklists rendered as real clickable checkboxes —
+  tick/untick persists into the message. The gear popover gains
+  per-agent effort pickers and a short·long verbosity toggle (short =
+  2-3 crisp chat-register sentences, the default; long ≤ 4-5),
+  enforced per turn. Bots can no longer write files from web/doc
+  content: every write permission is denied instantly with a visible
+  notice. The Pages list shows which pages have bot chats and can
+  hard-delete a page together with its council session.
+
 - **Web annotator: Docs context and session binding actually hold.**
   Two live-caught bugs. (1) Google answers a wrong-account export with
   200 + an account chooser: the export URL now echoes the page's own

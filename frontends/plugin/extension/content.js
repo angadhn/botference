@@ -97,6 +97,34 @@
   let sentArticleText = false;   // this tab has already put it on the wire
   let pageHasSession = false;    // the record already carries a session_id
   const needContext = () => !sentArticleText && !pageHasSession;
+  // …and once a session DOES exist, the page can still change under it — a
+  // live Google Doc changes between two questions about it. Every
+  // mention-bearing message re-reads the page and compares this hash, so a
+  // rewritten document travels again (marked as a change) and an untouched one
+  // never does. Memory only: a reload re-reads the page anyway.
+  let lastContextHash = null;
+
+  // FNV-1a plus the length. Not a checksum of record — just enough that two
+  // different documents cannot look identical to a 32-bit comparison.
+  function hashText(s) {
+    const str = String(s == null ? '' : s);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return (h >>> 0).toString(16) + ':' + str.length;
+  }
+
+  // A promise that is not allowed to hold up a message the user has already
+  // sent. Used for the doc attachment: late is the same as absent.
+  function withTimeout(p, ms, fallback) {
+    return Promise.race([
+      Promise.resolve(p).catch(() => fallback),
+      new Promise(res => setTimeout(() => res(fallback), ms)),
+    ]);
+  }
+  const DOCX_TIMEOUT = 10000;
 
   // A burned first turn cannot be retried: after the session exists the page
   // text is never attached again. So when the adapter cannot read the
@@ -203,6 +231,62 @@
       }
     }
     return genericArticleText();
+  }
+
+  // The document's own comment threads, which only the .docx export carries
+  // (the txt export drops them). Adapter-only and best-effort in every
+  // direction: no adapter, no docx() method, a failed fetch or an oversized
+  // document all come back '' and the message goes out without it.
+  async function docxB64() {
+    if (!SITE || typeof SITE.docx !== 'function') return '';
+    const b64 = await withTimeout(SITE.docx(), DOCX_TIMEOUT, '');
+    if (!b64) {
+      console.warn('[botference] ' + (SITE.name || 'adapter') + ' sent no document comments: ' +
+        (SITE.docxError || 'no docx'));
+    }
+    return b64 || '';
+  }
+
+  // Everything a mention-bearing message carries about the page ITSELF, decided
+  // fresh every time one is sent:
+  //
+  //   no session yet   → the first-turn context, exactly as before (once)
+  //   session + changed→ the page text again, flagged `article_changed` so the
+  //                      companion can say "the document has been edited"
+  //   session + same   → nothing; the bots already have this text
+  //
+  // The hash is returned rather than stored: it is only committed once the
+  // POST it travelled on actually succeeded (see the two call sites).
+  async function mentionContext(text) {
+    if (!MENTION.test(text)) return null;
+    const out = {};
+    const t = await articleText();
+    if (t) {
+      const h = hashText(t);
+      if (needContext()) { out.article_text = t; out.hash = h; }
+      else if (pageHasSession && h !== lastContextHash) {
+        out.article_text = t; out.article_changed = true; out.hash = h;
+      }
+    }
+    const dx = await docxB64();
+    if (dx) out.docx_b64 = dx;
+    return out;
+  }
+
+  function applyContext(body, ctx) {
+    if (!ctx) return body;
+    if (ctx.article_text) body.article_text = ctx.article_text;
+    if (ctx.article_changed) body.article_changed = true;
+    if (ctx.docx_b64) body.docx_b64 = ctx.docx_b64;
+    return body;
+  }
+
+  // Only a message the companion actually accepted counts as having delivered
+  // the page: a failed POST must leave the next mention carrying it again.
+  function commitContext(ctx) {
+    if (!ctx || !ctx.article_text) return;
+    sentArticleText = true;
+    lastContextHash = ctx.hash;
   }
 
   // ---- anchoring / painting ------------------------------------------------
@@ -348,12 +432,11 @@
         if (pendingSel) body.index = pageOrderIndex(pendingSel.start);
         // an empty answer is NOT sent as an empty field: no article_text at
         // all, and the flag stays down so the next mention tries again
-        if (MENTION.test(text) && needContext()) {
-          const t = await articleText();
-          if (t) { body.article_text = t; sentArticleText = true; }
-        }
+        const ctx = await mentionContext(text);
+        applyContext(body, ctx);
         const r = await api('POST', '/thread', body);
         if (!r.ok) return { ok: false, error: r.error };
+        commitContext(ctx);
         const thread = (r.data && r.data.thread) || null;
         if (thread) {
           Anchor.rekey('__new__', thread.id);
@@ -375,12 +458,11 @@
 
       onReply: async (threadId, text) => {
         const body = { url: URL_NOW, thread_id: threadId, text };
-        if (MENTION.test(text) && needContext()) {
-          const t = await articleText();
-          if (t) { body.article_text = t; sentArticleText = true; }
-        }
+        const ctx = await mentionContext(text);
+        applyContext(body, ctx);
         const r = await api('POST', '/reply', body);
         if (!r.ok) return { ok: false, error: r.error };
+        commitContext(ctx);
         const msg = r.data && r.data.msg;
         if (msg) {
           const list = threadId === PAGE_TARGET
@@ -390,6 +472,19 @@
           drawer.setPage(PAGE);
         }
         return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position };
+      },
+
+      // A checkbox in a bot's markdown checklist was clicked. The companion
+      // owns the text — it rewrites the "- [ ]" in the stored message and
+      // answers with the whole new body, which the drawer renders back over
+      // its optimistic toggle. Nothing is persisted client-side: a refetch of
+      // /page shows the same state because the state IS the message text.
+      onTick: async (threadId, ts, index, checked) => {
+        const r = await api('POST', '/tick', {
+          url: URL_NOW, thread_id: threadId, ts, index, checked: !!checked,
+        });
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, text: r.data && typeof r.data.text === 'string' ? r.data.text : null };
       },
 
       onEdit: async (threadId, ts, text) => {
@@ -433,6 +528,36 @@
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, path: r.data && r.data.path };
       },
+      // Deleting a page takes its bot session with it (`delete_session`) — a
+      // page's chat is the page, and leaving an orphaned botference session
+      // behind is exactly the litter this view exists to clear. A refusal
+      // (409: a turn is running for it) comes back as ordinary text for the
+      // row to show.
+      //
+      // Deleting the page you are STANDING ON is the interesting case: the
+      // record is gone, so every highlight it painted is now a mark with no
+      // thread behind it. Unpaint them here, not on the next refetch — the
+      // drawer's own reset cannot reach into the page.
+      onDeletePage: async url => {
+        const r = await api('POST', '/delete-page', { url, delete_session: true });
+        if (!r.ok) return { ok: false, error: r.error };
+        const mine = normUrl(url) === URL_NOW;
+        if (mine) {
+          for (const t of (PAGE && PAGE.threads) || []) Anchor.unpaint(t.id);
+          for (const id of Anchor.paintedIds()) Anchor.unpaint(id);
+          pendingSel = null;
+          locs = {};
+          orphans = {};
+          PAGE = { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
+          // the conversation is gone, so the first-turn context is armed again
+          pageHasSession = false;
+          sentArticleText = false;
+          lastContextHash = null;
+          if (drawer) { drawer.setPage(PAGE); drawer.setOrphans({}); }
+          bg({ t: 'badge', count: 0 });
+        }
+        return { ok: true, session_deleted: !!(r.data && r.data.session_deleted), current: mine };
+      },
 
       // agents popover (behind the gear). The companion answers with the
       // bridge's real option lists and context gauges; the all-null shape
@@ -440,15 +565,30 @@
       // simply not started yet, which the drawer renders as "asleep" rather
       // than as an error. `status` is absent on an older companion — the
       // drawer then just omits the gauges.
+      // `effort` is the same shape as models ({current, options}) and is null
+      // for the same reason — the bridge has not spoken yet. `verbosity` is a
+      // companion-level preference, so it is a bare string and survives a
+      // sleeping bridge.
       onModels: async () => {
         const r = await api('GET', '/models');
         if (!r.ok) return { ok: false, error: r.error };
         const d = r.data || {};
         return { ok: true, current: d.current || {}, options: d.options || null,
-                 status: d.status || null, bridge: d.bridge || '' };
+                 status: d.status || null, bridge: d.bridge || '',
+                 effort: d.effort || null, verbosity: d.verbosity || '' };
       },
       onSetModel: async (agent, model) => {
         const r = await api('POST', '/model', { agent, model });
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, queued: r.data && r.data.queued };
+      },
+      onSetEffort: async (agent, level) => {
+        const r = await api('POST', '/effort', { agent, level });
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, queued: r.data && r.data.queued };
+      },
+      onSetVerbosity: async level => {
+        const r = await api('POST', '/verbosity', { level });
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, queued: r.data && r.data.queued };
       },
@@ -624,8 +764,11 @@
 
   // exposed for test/harness.html
   window.__bfp = {
-    activate, loadPage, reanchorAll, headline, articleText, normUrl,
+    activate, loadPage, reanchorAll, headline, articleText, normUrl, hashText,
     site: SITE, caps: CAPS,
+    // what the companion was last told the page said — the harness asserts the
+    // changed/unchanged decision against it rather than inferring it
+    get contextHash() { return lastContextHash; },
     // the two halves of the first-turn-context rule, observable so the harness
     // can assert the escape hatch instead of trusting it
     get sentContext() { return sentArticleText; },

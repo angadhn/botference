@@ -59,6 +59,18 @@
 
 *, *::before, *::after { box-sizing: border-box }
 
+/* color-scheme has to be re-stated INSIDE the shadow root. The host carries
+   `all: initial !important` inline (drawer.js pins its geometry there), and
+   inline !important beats the :host rules above — so the scheme they set never
+   reaches anything. Everything visual lives under .panel, and color-scheme
+   inherits, so one declaration per theme here paints every UA-drawn control
+   (checkboxes, select arrows, scrollbars) in the drawer's own theme rather
+   than the page's. */
+.panel { color-scheme: light }
+@media (prefers-color-scheme: dark) { :host(:not([data-theme="light"])) .panel { color-scheme: dark } }
+:host([data-theme="dark"]) .panel { color-scheme: dark }
+:host([data-theme="light"]) .panel { color-scheme: light }
+
 /* one control language for every button: 13px label, ≥30px tall hit area */
 button {
   font: 13px/1.2 var(--sans); padding: 7px 12px; cursor: pointer; margin: 0;
@@ -161,9 +173,13 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .pop-agentrow:last-of-type { margin-bottom: 2px }
 /* asleep/unknown: still both agents, still legible, visibly not in play */
 .pop-agentrow.asleep { opacity: .6 }
-.pop-line { display: flex; align-items: center; gap: 6px }
-.pop-row { flex: 1; min-width: 0; display: grid;
-  grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px }
+/* one grid per agent: name · picker · relay, with the effort picker on a
+   second row under the model it belongs to. The two <label>s inside are
+   display:contents so their cells line up in this grid rather than each
+   laying out its own — clicking a label still focuses its own select. */
+.pop-line { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center; gap: 5px 8px }
+.pop-row { display: contents }
 .pop-agent { display: inline-flex; align-items: center; gap: 5px;
   font: 700 12px/1.4 var(--sans); color: var(--author, var(--muted)) }
 .pop-mark { display: inline-flex; flex: none }
@@ -193,10 +209,36 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font-variant-numeric: tabular-nums }
 .pop-reset { margin: 3px 0 0; font: 12px/1.4 var(--sans); color: var(--muted) }
 
+/* the second picker's label: a sub-label, not an agent — indented under the
+   logomark so the eye reads it as belonging to the row above */
+.pop-sub { font: 12px/1.4 var(--sans); color: var(--muted); padding-left: 17px }
+/* the relay button spans both rows of its agent's grid */
+.popover button.relay { grid-row: span 2 }
+
 .pop-sleep { margin: 2px 0 0; font: 12px/1.45 var(--sans); color: var(--muted) }
 .pop-foot { display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--card-line) }
 .pop-auto { font: 12px/1.4 var(--sans); color: var(--muted) }
+/* how long the answers are: two states, so it is a switch, not a menu. One
+   pill, the chosen half filled — nothing here is smaller than 12px. */
+.pop-verbrow { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 8px }
+.pop-verblabel { font: 12px/1.4 var(--sans); color: var(--muted) }
+.pop-verb {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  background: var(--bg); border: 1px solid var(--card-line); border-radius: 999px;
+}
+.pop-verb .vsep { font: 12px/1 var(--sans); color: var(--muted); opacity: .55 }
+.pop-verb .vseg {
+  border: 0; background: transparent; color: var(--muted);
+  font: 12px/1.2 var(--sans); padding: 4px 10px; min-height: 24px; border-radius: 999px;
+}
+.pop-verb .vseg:hover { color: var(--accent); border-color: transparent }
+.pop-verb .vseg.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent); font-weight: 700;
+}
+
 .pop-hint { margin-top: 9px; font: 12px/1.4 var(--sans); color: var(--muted) }
 .pop-hint.err { color: var(--bad) }
 
@@ -250,13 +292,17 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .pages-title { font: 700 12px/1.4 var(--sans); text-transform: uppercase;
   letter-spacing: .05em; color: var(--muted) }
 
-.prow { display: flex; align-items: flex-start; gap: 2px;
+.prow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px;
   border-bottom: 1px solid var(--card-line) }
 .prow:last-child { border-bottom: 0 }
 /* where you already are: still listed, visibly not a destination */
 .prow.current { opacity: .58 }
+/* basis 0, not auto: the row wraps (so a refusal can claim a full-width line
+   of its own) and a two-line title must therefore never be able to push the
+   buttons onto a line of theirs — a flex item only wraps when its HYPOTHETICAL
+   size does not fit, and 0 always fits. */
 .prow-main {
-  flex: 1 1 auto; min-width: 0; display: block; text-align: left;
+  flex: 1 1 0; min-width: 0; display: block; text-align: left;
   border: 0; background: none; border-radius: 8px; padding: 9px 8px; min-height: 34px;
 }
 .prow-main:hover { color: var(--fg); border-color: transparent;
@@ -268,11 +314,22 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .pmeta { display: block; margin-top: 3px; font: 12px/1.45 var(--sans); color: var(--muted) }
 .pmeta .psite { text-transform: lowercase }
 .pmeta .pcur { color: var(--accent) }
-.prow .pexport { margin-top: 10px; display: inline-flex; align-items: center;
+.prow .pexport, .prow .pdel { margin-top: 10px; display: inline-flex; align-items: center;
   justify-content: center; opacity: .35 }
-.prow:hover .pexport, .prow .pexport:focus-visible { opacity: 1 }
+.prow:hover .pexport, .prow .pexport:focus-visible,
+.prow:hover .pdel, .prow .pdel:focus-visible { opacity: 1 }
 .prow .pexport:hover { color: inherit }
 .prow .pexport .obs { width: 13px; height: 15.6px; display: block }
+/* "there are bots in this one" — one muted bubble on the meta line */
+.pmeta .pchat { display: inline-flex; vertical-align: -2px; margin-left: 6px; opacity: .75 }
+.pmeta .pchat .cico { width: 13px; height: 13px; display: block }
+/* the same one-step inline confirm as a thread delete, in a row's width */
+.pconfirm { flex: none; display: flex; align-items: center; gap: 4px; margin-top: 9px;
+  font: 12px/1.4 var(--sans); color: var(--bad); white-space: nowrap }
+.pconfirm .rebtn { opacity: 1; text-decoration: underline }
+.pconfirm .yes { color: var(--bad); font-weight: 700 }
+/* a companion that refuses (a turn is running for that page) says so here */
+.prow-err { flex: 1 0 100%; padding: 0 8px 8px; font: 12px/1.45 var(--sans); color: var(--bad) }
 .empty { color: var(--muted); font: italic 13px/1.6 var(--sans); padding: 26px 4px; text-align: center }
 .empty b { display: block; font-style: normal; font-size: 14px; color: var(--fg); margin-bottom: 5px }
 
@@ -402,6 +459,21 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .md-list { margin: 4px 0 8px; padding-left: 20px }
 .md-list li { margin: 2px 0 }
 .md-list li::marker { color: var(--muted) }
+
+/* ── checklists: real checkboxes, not pictures of them ─────────────────── */
+/* The box IS the bullet, so the list loses its markers and its indent. A
+   ticked item stays legible — struck through and muted, never hidden. */
+.md-tasklist { list-style: none; padding-left: 2px }
+.md-tasklist li::marker { content: none }
+li.md-task { display: flex; align-items: flex-start; gap: 7px; margin: 3px 0 }
+.md-tick {
+  flex: none; width: 14px; height: 14px; margin: 3px 0 0; cursor: pointer;
+  accent-color: var(--accent);
+}
+.md-tick:disabled { cursor: progress; opacity: .6 }
+.md-tick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.md-tasktext { min-width: 0; overflow-wrap: anywhere }
+li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted) }
 .reply .stream-text {
   white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0;
   font: 14px/1.55 var(--serif); max-height: 260px; overflow-y: auto;

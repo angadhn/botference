@@ -11,7 +11,9 @@
 //   { name,                         // for logs/tests only
 //     capabilities: { highlights }, // false ⇒ no selection pill, no painting
 //     title(),                      // '' ⇒ fall back to the generic headline
-//     articleText() }               // Promise<string>; '' ⇒ generic extraction
+//     articleText(),                // Promise<string>; '' ⇒ generic extraction
+//     docx() }                      // Promise<base64>; optional attachment
+//                                   // ('' = nothing to attach, never an error)
 //
 // `pick(url, env)` walks the registry and returns the first adapter whose
 // match hits, or null for "this is an ordinary page" — content.js then uses
@@ -20,7 +22,8 @@
 //
 // The hard parts are deliberately pure so they run in node:
 // gdocsId · gdocsScope · gdocsExportUrl · gdocsExportUrls · accountFromUrls ·
-// stripDocsSuffix · cleanExport · looksHtml (see test/adapters.test.mjs).
+// stripDocsSuffix · cleanExport · looksHtml · looksZip · bytesToBase64 ·
+// b64Size (see test/adapters.test.mjs).
 // Everything that touches the world arrives through `env`
 // ({request, send, fetch, documentTitle, accountUrls}), which defaults to the
 // real globals.
@@ -86,12 +89,20 @@
   // No `&id=` rider: on this route the id is already in the path (the `?id=`
   // form belongs to the older /document/export endpoint), and one url is one
   // fewer thing to be wrong.
-  function gdocsExportUrl(id, scope) {
+  //
+  // `format` is 'txt' (the prose the bots read) or 'docx' (the same document as
+  // a zip, which is the ONLY way the doc's own comment threads travel — a txt
+  // export drops them entirely). Anything else is treated as txt rather than
+  // put on the wire: this url is validated again in background.js and a typo
+  // must not become a request.
+  const FORMATS = { txt: 1, docx: 1 };
+  function gdocsExportUrl(id, scope, format) {
     const eid = encodeURIComponent(String(id));
+    const fmt = FORMATS[format] ? format : 'txt';
     const n = scope && /^\d+$/.test(String(scope.n)) ? String(scope.n) : null;
-    if (n === null) return 'https://docs.google.com/document/d/' + eid + '/export?format=txt';
-    if (scope.where === 'pre') return 'https://docs.google.com/u/' + n + '/document/d/' + eid + '/export?format=txt';
-    return 'https://docs.google.com/document/u/' + n + '/d/' + eid + '/export?format=txt';
+    if (n === null) return 'https://docs.google.com/document/d/' + eid + '/export?format=' + fmt;
+    if (scope.where === 'pre') return 'https://docs.google.com/u/' + n + '/document/d/' + eid + '/export?format=' + fmt;
+    return 'https://docs.google.com/document/u/' + n + '/d/' + eid + '/export?format=' + fmt;
   }
 
   // ---- which account, when the url does not say --------------------------
@@ -131,18 +142,18 @@
   // the primary (what the page url itself says) plus that cascade
   const EXPORT_URL_MAX = 2 + AUTHUSER_MAX;
 
-  const withAuthuser = (id, n) =>
-    gdocsExportUrl(id, null) + '&authuser=' + encodeURIComponent(String(n));
+  const withAuthuser = (id, n, format) =>
+    gdocsExportUrl(id, null, format) + '&authuser=' + encodeURIComponent(String(n));
 
   // Every export url worth trying, in the order to try them: what the page url
   // says first (it is the only one that can be RIGHT rather than guessed),
   // then the page's own hint, then the cascade. Deduped, capped, deterministic.
-  function gdocsExportUrls(id, scope, hint) {
+  function gdocsExportUrls(id, scope, hint, format) {
     const out = [];
     const push = u => { if (u && out.indexOf(u) === -1 && out.length < EXPORT_URL_MAX) out.push(u); };
-    push(gdocsExportUrl(id, scope));
-    if (hint != null && /^\d{1,3}$/.test(String(hint))) push(withAuthuser(id, hint));
-    for (let n = 0; n <= AUTHUSER_MAX; n++) push(withAuthuser(id, n));
+    push(gdocsExportUrl(id, scope, format));
+    if (hint != null && /^\d{1,3}$/.test(String(hint))) push(withAuthuser(id, hint, format));
+    for (let n = 0; n <= AUTHUSER_MAX; n++) push(withAuthuser(id, n, format));
     return out;
   }
 
@@ -184,6 +195,50 @@
     let s = String(body == null ? '' : body);
     if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
     return OPENS_AS_MARKUP.test(s) || HAS_HTML_TAG.test(s.slice(0, 4096));
+  }
+
+  // ---- the .docx export (the doc's own comment threads) -------------------
+  //
+  // A txt export is prose only: every comment, reply and suggestion in the
+  // document is dropped. The .docx of the same document is a zip that carries
+  // them, so a mention on a Google Doc sends BOTH — the text for reading and
+  // the zip for the companion to pull comments out of. Bytes, not text: the
+  // body is binary and any string round-trip would corrupt it.
+  //
+  // 6MB of zip is already an enormous document; past that the attachment is
+  // dropped silently rather than made into the reason a message would not send.
+  const DOCX_MAX = 6 * 1024 * 1024;
+
+  // A zip — and therefore plausibly a .docx — always opens "PK\x03\x04".
+  // A chooser or a sign-in page opens '<', which is exactly what this rejects.
+  function looksZip(bytes) {
+    if (!bytes || bytes.length < 4) return false;
+    return bytes[0] === 0x50 && bytes[1] === 0x4b &&
+      (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);
+  }
+  // …and the same test on an already-encoded body: 'UEsD' is the base64 of
+  // "PK\x03", so the signature survives the encoding the background hands back.
+  const B64_ZIP = /^UEsD/;
+  // how many bytes a base64 string stands for, without decoding it
+  function b64Size(s) {
+    const t = String(s == null ? '' : s).replace(/[\r\n]/g, '');
+    if (!t) return 0;
+    let pad = 0;
+    if (t.endsWith('==')) pad = 2; else if (t.endsWith('=')) pad = 1;
+    return Math.max(0, Math.floor(t.length * 3 / 4) - pad);
+  }
+
+  // Chunked so a multi-megabyte document cannot blow the argument limit of
+  // String.fromCharCode (the naive apply(...bytes) dies around 100k).
+  const B64_CHUNK = 0x8000;
+  function bytesToBase64(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    let s = '';
+    for (let i = 0; i < b.length; i += B64_CHUNK) {
+      s += String.fromCharCode.apply(null, b.subarray(i, i + B64_CHUNK));
+    }
+    // btoa is present in browsers, in MV3 workers and in node ≥16
+    return typeof btoa === 'function' ? btoa(s) : Buffer.from(b).toString('base64');
   }
 
   // enough of a failed body to recognise it in a console line, on one line
@@ -248,15 +303,37 @@
   // The credentials mode is load-bearing on the page transport — see above.
   const PAGE_CREDENTIALS = 'same-origin';
 
+  // an attempt that asked for BYTES rather than text — same shape, with `b64`
+  // (and `size`) where `text` would be. The two lanes below produce it
+  // differently: a page fetch has the ArrayBuffer, the background worker has
+  // already encoded it (a service worker cannot hand a Uint8Array across
+  // sendMessage without it arriving as a plain object).
+  const noBytes = async () => ({ ok: false, error: 'no binary transport in this context', gone: true });
+
   // The transports this world actually has, in the order to try them.
   function transports(env) {
     if (env && typeof env.request === 'function') {
-      return [{ name: 'given', run: env.request }];
+      return [{ name: 'given', run: env.request, bytes: env.requestBytes || noBytes }];
     }
     const out = [];
     const f = (env && env.fetch) || (typeof fetch === 'function' ? fetch : null);
     if (f) {
-      out.push({ name: 'page', async run(url) {
+      out.push({ name: 'page', async bytes(url) {
+        let res;
+        try { res = await f(url, { credentials: PAGE_CREDENTIALS }); }
+        catch (e) { return { ok: false, error: 'fetch threw: ' + peek((e && e.message) || e), gone: true }; }
+        if (!res) return { ok: false, error: 'no response', gone: true };
+        const contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+        if (!res.ok) return { ok: false, status: res.status, contentType, error: 'HTTP ' + (res.status == null ? '?' : res.status) };
+        if (typeof res.arrayBuffer !== 'function') {
+          return { ok: false, status: res.status, contentType, error: 'this response cannot give bytes', gone: true };
+        }
+        let buf;
+        try { buf = await res.arrayBuffer(); }
+        catch (e) { return { ok: false, status: res.status, contentType, error: 'the body did not read: ' + peek((e && e.message) || e) }; }
+        const bytes = new Uint8Array(buf || 0);
+        return { ok: true, status: res.status == null ? 200 : res.status, contentType, bytes, size: bytes.length };
+      }, async run(url) {
         let res;
         try { res = await f(url, { credentials: PAGE_CREDENTIALS }); }
         catch (e) { return { ok: false, error: 'fetch threw: ' + peek((e && e.message) || e) }; }
@@ -271,7 +348,16 @@
     }
     const send = (env && env.send) || (hasRuntime() ? chrome.runtime.sendMessage.bind(chrome.runtime) : null);
     if (send) {
-      out.push({ name: 'background', async run(url) {
+      out.push({ name: 'background', async bytes(url) {
+        let r = null;
+        try { r = await sendMessage(send, { t: 'gdocs-export', url, want: 'bytes' }); }
+        catch (e) { return { ok: false, error: 'the background did not answer: ' + peek((e && e.message) || e), gone: true }; }
+        if (noSuchMessage(r)) return { ok: false, error: 'this build has no gdocs-export worker', gone: true };
+        if (r.ok && r.b64) return { ok: true, status: r.status || 200, contentType: r.contentType || '', b64: String(r.b64), size: b64Size(r.b64) };
+        if (r.ok) return { ok: false, status: r.status, contentType: r.contentType || '', error: 'the worker returned no bytes', gone: true };
+        return { ok: false, status: r.status, contentType: r.contentType || '',
+                 error: r.error || 'the background could not fetch it' };
+      }, async run(url) {
         let r = null;
         try { r = await sendMessage(send, { t: 'gdocs-export', url }); }
         catch (e) { return { ok: false, error: 'the background did not answer: ' + peek((e && e.message) || e), gone: true }; }
@@ -281,7 +367,10 @@
                  text: r.text || r.peek || '', error: r.error || 'the background could not fetch it' };
       } });
     }
-    if (!out.length) out.push({ name: 'none', run: async () => ({ ok: false, error: 'no transport in this context' }) });
+    if (!out.length) {
+      out.push({ name: 'none', run: async () => ({ ok: false, error: 'no transport in this context' }), bytes: noBytes });
+    }
+    for (const lane of out) if (!lane.bytes) lane.bytes = noBytes;
     return out;
   }
 
@@ -350,6 +439,60 @@
         // Every failure still resolves to '' — but it also SAYS SO on
         // lastError, and content.js no longer papers over it with a scrape of
         // the Docs UI. On this site '' means "no context", not "use the DOM".
+        // The same ladder, asking for the .docx instead — the document's own
+        // comment threads, which the txt export throws away. Every failure is
+        // silent by design: this is an ATTACHMENT to a message the user has
+        // already hit send on, and no comment in a doc is worth refusing to
+        // deliver their question over. It says why on docxError, and that is
+        // the whole of its complaint.
+        //
+        // Fresh on every mention: comments are the fastest-moving thing on a
+        // doc, and a cached zip would answer yesterday's question.
+        async docx() {
+          ad.docxError = '';
+          ad.docxUrl = '';
+          ad.docxAttempts = [];
+
+          let hint = null;
+          try { hint = accountFromUrls(accountUrls()); } catch { hint = null; }
+          const urls = gdocsExportUrls(id, scope, hint, 'docx');
+          ad.docxUrls = urls;
+
+          for (const lane of lanes) {
+            for (const url of urls) {
+              const r = await lane.bytes(url);
+              const status = r && r.status != null ? r.status : '?';
+              let why = '';
+              if (!r || (!r.ok && !r.error)) why = 'no response';
+              else if (!r.ok) why = r.error;
+              else if (r.size > DOCX_MAX) {
+                // a real document, simply too big to carry — trying another
+                // account would only find the same file again
+                why = 'the export is ' + Math.round(r.size / 1048576) + 'MB, over the ' +
+                  Math.round(DOCX_MAX / 1048576) + 'MB cap';
+                ad.docxAttempts.push({ url, status, why, via: lane.name });
+                break;
+              } else if (!r.size) why = 'HTTP ' + status + ' with an empty body';
+              else if (r.b64 ? !B64_ZIP.test(r.b64) : !looksZip(r.bytes)) {
+                // the account chooser / sign-in page again, served 200
+                why = 'HTTP ' + status + ' but the body is not a .docx zip — signed out, ' +
+                  'or this doc belongs to another signed-in account';
+              } else {
+                const b64 = r.b64 || bytesToBase64(r.bytes);
+                ad.docxUrl = url;
+                ad.docxVia = lane.name;
+                ad.docxBytes = r.size;
+                return b64;
+              }
+              ad.docxAttempts.push({ url, status, why, via: lane.name });
+              if (!authShaped(r)) break;
+            }
+            if (ad.docxUrl) break;
+          }
+          ad.docxError = ad.docxAttempts.map(a => a.via + ' ' + shortUrl(a.url) + ' → ' + a.why).join(' · ') ||
+            'no export url to try';
+          return '';
+        },
         async articleText() {
           ad.lastError = '';
           ad.usedUrl = '';
@@ -361,7 +504,7 @@
           try { hint = accountFromUrls(accountUrls()); } catch { hint = null; }
           ad.hintedAccount = hint;
 
-          const urls = gdocsExportUrls(id, scope, hint);
+          const urls = gdocsExportUrls(id, scope, hint, 'txt');
           ad.exportUrls = urls;
 
           for (const lane of lanes) {
@@ -414,8 +557,8 @@
     pick, REGISTRY,
     // pure, for the node tests
     gdocsId, gdocsScope, gdocsExportUrl, gdocsExportUrls, accountFromUrls,
-    stripDocsSuffix, cleanExport, looksHtml,
-    TEXT_LIMIT, AUTHUSER_MAX, EXPORT_URL_MAX, PAGE_CREDENTIALS,
+    stripDocsSuffix, cleanExport, looksHtml, looksZip, bytesToBase64, b64Size,
+    TEXT_LIMIT, AUTHUSER_MAX, EXPORT_URL_MAX, PAGE_CREDENTIALS, DOCX_MAX,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAdapters = api;
