@@ -1,0 +1,757 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Botference Web Annotator — harness</title>
+<!--
+  harness.html — the whole extension UI, running with no extension installed.
+
+    open frontends/plugin/test/harness.html            (file:// is enough)
+    botference see frontends/plugin/test/harness.html
+
+  It inlines its own sample article (deliberately NOT test/fixtures/article.html
+  — that file belongs to the companion and this page must never depend on it),
+  shims the four chrome.* APIs the extension actually uses, and stands up a
+  scripted fake companion that serves canned /page data and plays a real
+  streaming bot turn whenever a message mentions @claude.
+
+  Query params
+    ?dark=1          force the drawer's dark theme  (?light=1 forces light)
+    ?closed=1        leave the drawer shut (dormant page + restored highlights)
+    ?chat=1          open on the Page chat tab
+    ?stream=1        auto-play the bot streaming sequence on load
+    ?stream=freeze   turn-start + a few deltas, then stop — a stable
+                     screenshot of the streaming state (`see` has no wait knob)
+    ?offline=1       every companion call fails: onboarding notice + header state
+    ?demo=select     script a real selection, stop at the floating 💬 button
+    ?demo=compose    …and go on to open + pre-fill the new-comment composer
+    ?models=1        open the ⚙ models popover (screenshot state)
+    ?nobridge=1      …with the bridge not started: rows disabled + the hint
+    ?md=1            replace the page-chat reply with a markdown-heavy one, so
+                     links / bold / code / lists are all on screen
+    ?wide=NNN        start the drawer at NNN px instead of the stored width
+    ?selftest=1      drive the whole loop and write the tally into the status
+                     bar (also on #h-log[data-detail] for `chrome --dump-dom`)
+-->
+<style>
+  :root { color-scheme: light dark;
+    --pbg: #fdfcfa; --pfg: #23201b; --pmuted: #6f6759; --pline: #e6e0d4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --pbg: #14120f; --pfg: #e6ddcf; --pmuted: #948a79; --pline: #2e2921 }
+  }
+  html.forcedark { color-scheme: dark;
+    --pbg: #14120f; --pfg: #e6ddcf; --pmuted: #948a79; --pline: #2e2921 }
+  html.forcelight { color-scheme: light;
+    --pbg: #fdfcfa; --pfg: #23201b; --pmuted: #6f6759; --pline: #e6e0d4 }
+  body { margin: 0; background: var(--pbg); color: var(--pfg);
+    font: 18px/1.75 "Iowan Old Style", Charter, Georgia, ui-serif, serif; }
+  .bar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: .4rem;
+    align-items: center; padding: .5rem .9rem; background: var(--pbg);
+    border-bottom: 1px solid var(--pline);
+    font: 12px/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--pmuted) }
+  .bar strong { color: var(--pfg); font-weight: 600; margin-right: .4rem }
+  .bar button { font: 12px ui-sans-serif, system-ui, sans-serif; padding: .25rem .55rem;
+    border: 1px solid var(--pline); border-radius: 7px; background: transparent;
+    color: var(--pfg); cursor: pointer }
+  .bar button:hover { border-color: #d97757; color: #d97757 }
+  .bar .spacer { flex: 1 }
+  article { max-width: 40rem; margin: 0 auto; padding: 2.5rem 1.2rem 6rem }
+  article h1 { font-size: 2rem; line-height: 1.2; font-weight: 600; margin: 0 0 .3rem }
+  article .dek { color: var(--pmuted); font-style: italic; margin: 0 0 1.6rem }
+  article h2 { font-size: 1.25rem; margin: 2.2rem 0 .6rem }
+  article p { margin: 0 0 1.15rem }
+  article blockquote { margin: 1.4rem 0; padding-left: 1rem;
+    border-left: 3px solid var(--pline); color: var(--pmuted); font-style: italic }
+  article .byline { font: 13px ui-sans-serif, system-ui, sans-serif; color: var(--pmuted);
+    text-transform: uppercase; letter-spacing: .06em; margin: 0 0 2rem }
+</style>
+
+<div class="bar">
+  <strong>harness</strong>
+  <button id="h-open">open drawer</button>
+  <button id="h-chat">page chat</button>
+  <button id="h-stream">play bot stream</button>
+  <button id="h-md">play codex (markdown)</button>
+  <button id="h-dark">toggle dark</button>
+  <span class="spacer"></span>
+  <span id="h-log">fake companion ready</span>
+</div>
+
+<article>
+  <h1>The Quiet Machine</h1>
+  <p class="dek">Aragon spent four years building a side that wins without ever looking like it is trying.</p>
+  <p class="byline">By A. Reporter · 7 August 2026</p>
+
+  <p>Aragon opened the season with a draw. The mood in the stands was flat, and the
+  walk back to the tram stop was quieter than it has been in years — not angry, just
+  unconvinced. Nothing had gone wrong. Nothing had gone right either.</p>
+
+  <p>The manager said afterwards that the team “played within itself” — a phrase he
+  has used before, and one that has come to mean something specific here. It is not
+  an excuse. It is a description of the plan.</p>
+
+  <p>The report called it a <em>structural</em> failure of oversight, which is the
+  kind of sentence that survives a season and outlives a manager. Nobody at the club
+  disputed it. They simply kept doing what they had been doing, one week at a time.</p>
+
+  <h2>What the numbers actually say</h2>
+
+  <p>By the hour mark Aragon had found a rhythm, and the shape that had looked
+  passive for an hour started to look patient instead. Two passes into the channel,
+  a foul, a set piece, a goal. The mood in the stands was flat only in memory.</p>
+
+  <blockquote>“We are not trying to be exciting for sixty minutes. We are trying to
+  be unbeatable for ninety.”</blockquote>
+
+  <p>That is the whole philosophy, and it is why the underlying numbers have barely
+  moved in three seasons while the results have improved every year. Expected goals
+  conceded is down. Possession is down too. Neither fact is an accident.</p>
+
+  <p>Whether it survives contact with a European draw is the only question left, and
+  nobody inside the building seems especially worried about the answer.</p>
+</article>
+
+<script>
+// ───────────────────────────────────────────────────────────────────────────
+// 0. query params
+// ───────────────────────────────────────────────────────────────────────────
+const Q = new URLSearchParams(location.search);
+if (Q.get('dark') === '1') {
+  document.documentElement.classList.add('forcedark');
+  window.__BFP_THEME = 'dark';
+} else if (Q.get('light') === '1') {
+  document.documentElement.classList.add('forcelight');
+  window.__BFP_THEME = 'light';
+}
+const log = m => { document.getElementById('h-log').textContent = m; };
+// any uncaught error is a QA finding: put it where a screenshot will catch it
+window.__bfpErrors = [];
+function fault(kind, detail) {
+  window.__bfpErrors.push(kind + ': ' + detail);
+  const el = document.getElementById('h-log');
+  el.style.color = '#b3403a';
+  el.textContent = kind + ': ' + detail;
+  el.dataset.detail = window.__bfpErrors.join(' | ');
+}
+window.addEventListener('error', e => fault('JS ERROR', (e.message || '') + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno));
+window.addEventListener('unhandledrejection', e => fault('UNHANDLED REJECTION', (e.reason && (e.reason.stack || e.reason.message)) || e.reason));
+
+// ───────────────────────────────────────────────────────────────────────────
+// 1. the scripted fake companion
+//    Same shapes as SPEC.md's HTTP API and event stream — nothing more.
+// ───────────────────────────────────────────────────────────────────────────
+const PAGE_URL = 'https://example.com/sport/the-quiet-machine';
+const now = () => new Date().toISOString();
+const iso = mins => new Date(Date.now() - mins * 60000).toISOString();
+
+const RECORD = {
+  version: 1,
+  url: PAGE_URL,
+  title: 'The Quiet Machine',
+  site: 'example.com',
+  created_at: iso(90), updated_at: iso(3),
+  session_id: null,
+  threads: [
+    { id: 't-1754500000-a1b2',
+      quote: 'The mood in the stands was flat, and the walk back to the tram stop was quieter than it has been in years',
+      prefix: 'the season with a draw.', suffix: '— not angry, just unconvinced.',
+      orphaned: false,
+      msgs: [
+        { author: 'angadh', ts: iso(64), text: 'This is the line the whole piece hangs on. Keep it.' },
+      ] },
+    { id: 't-1754500100-c3d4',
+      quote: 'called it a structural failure of oversight',
+      prefix: 'The report', suffix: 'which is the kind of sentence',
+      orphaned: false,
+      msgs: [
+        { author: 'angadh', ts: iso(41), text: '@claude is "structural failure of oversight" a quote from the actual report, or the writer\'s paraphrase? It reads like both.' },
+        { author: 'claude', ts: iso(40), text: 'It reads as a paraphrase. A direct quotation would normally be inside quotation marks and attributed ("the report found a \'structural failure of oversight\'"); here the phrase is folded into the reporter\'s own sentence with "called it", which is the standard construction for summarising. Worth a check against the source document before it gets requoted downstream — paraphrases harden into quotes fast.' },
+        { author: 'angadh', ts: iso(38), text: 'Agreed. Flagging it for the desk.' },
+      ] },
+    { id: 't-1754500200-e5f6',
+      quote: 'Aragon were relegated in April after a run of eleven games without a win',
+      prefix: 'the following season', suffix: 'and the manager left',
+      orphaned: true,
+      msgs: [
+        { author: 'angadh', ts: iso(20), text: 'Anchored to a paragraph that has since been edited out — this is what an orphan looks like.' },
+      ] },
+  ],
+  page_chat: [
+    { author: 'angadh', ts: iso(12), text: '@claude one-line summary of the argument here?' },
+    { author: 'claude', ts: iso(11), text: 'The team is deliberately unspectacular: it trades possession and early tempo for control late in games, and the results have improved every year while the underlying numbers stayed flat.' },
+  ],
+};
+
+const CANNED_REPLY =
+  'Two things stand out. First, the piece never tests its own claim — "the underlying ' +
+  'numbers have barely moved" is asserted, not shown, and one table of xGA by season ' +
+  'would settle it. Second, the blockquote is doing the work the analysis should be ' +
+  'doing: it is the only place the philosophy is stated plainly, and it comes from the ' +
+  'manager rather than from the evidence. Both are fixable without changing the shape ' +
+  'of the article.';
+
+// Codex answers in markdown — the shape that shipped raw "[Part 1](https://…)"
+// into the drawer before the renderer existed. Every feature the renderer
+// supports appears here exactly once so the selftest can assert on it.
+const CANNED_MD =
+  'Sources, in order:\n\n' +
+  '- [Part 1](https://example.com/reports/aragon-part-1) — the original filing\n' +
+  '- [Part 2](https://example.com/reports/aragon-part-2), which **contradicts** the first on possession\n\n' +
+  'The phrase you flagged appears in `section 4.2` of the filing, *verbatim*.\n\n' +
+  '```js\n' +
+  "const xga = seasons.map(s => s.xgAgainst);\n" +
+  'console.log(xga.at(-1) < xga[0]);  // true\n' +
+  '```\n\n' +
+  '1. Pull the table\n' +
+  '2. Re-run the comparison\n\n' +
+  'Not a link: [nope](javascript:alert) stays plain text.';
+
+// tool-activity summaries (msg.kind === 'tools'). Two of them, and the second
+// deliberately arrives AFTER the answer — the drawer must still merge both into
+// one row and hoist it above the reply.
+const TOOLS_A = 'Explored\n└ Fetch https://example.com/reports/aragon-part-1\n└ Fetch https://example.com/reports/aragon-part-2';
+const TOOLS_B = 'Explored\n└ Read 2 documents';
+
+const MENTION = /@(claude|codex|all)\b/i;
+let queueDepth = 0;
+
+// ---- models (SPEC round 2: GET /models · POST /model · `models` event) ----
+const NOBRIDGE = Q.get('nobridge') === '1';
+const MODELS = {
+  current: { claude: 'sonnet', codex: 'gpt-5-codex' },
+  options: NOBRIDGE ? null : {
+    claude: ['opus', 'sonnet', 'haiku'],
+    codex: ['gpt-5-codex', 'gpt-5', 'o4-mini'],
+  },
+  bridge: NOBRIDGE ? 'stopped' : 'running',
+};
+const modelPosts = [];      // what the drawer POSTed, for the selftest
+const badges = [];          // every badge count the extension asked for
+
+// ?md=1 — a markdown-heavy bot reply already on screen at load, for screenshots,
+// with its tool activity stored out of order behind it
+if (Q.get('md') === '1') {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(10), text: '@codex link me the sources' });
+  RECORD.page_chat.push({ author: 'codex', ts: iso(9), kind: 'tools', text: TOOLS_A });
+  RECORD.page_chat.push({ author: 'codex', ts: iso(9), text: CANNED_MD });
+  RECORD.page_chat.push({ author: 'codex', ts: iso(8), kind: 'tools', text: TOOLS_B });
+}
+
+function stampMsg(text) { return { author: 'angadh', ts: now(), text }; }
+
+// Play a full turn: turn-start → stream deltas → stream-done → reply → turn-end,
+// then a `page` invalidation, exactly as the companion would.
+function playTurn(target, text) {
+  const streamId = 's-' + Math.random().toString(36).slice(2, 8);
+  const model = /@codex/i.test(text || '') ? 'codex' : 'claude';
+  const body = model === 'codex' ? CANNED_MD : CANNED_REPLY;
+  const ev = e => toContent({ t: 'ws', ev: Object.assign({ url: PAGE_URL, target }, e) });
+
+  log('turn running (' + model + ')');
+  // round 2: turn-start names the agents that are actually about to work
+  ev({ type: 'chat', kind: 'turn-start', agents: [model] });
+  const chunks = body.match(/.{1,34}(\s|$)/g) || [body];
+  let i = 0;
+  const tick = setInterval(() => {
+    if (i >= chunks.length) {
+      clearInterval(tick);
+      ev({ type: 'chat', kind: 'stream-done', model, stream_id: streamId });
+      const list = target === '__page__'
+        ? RECORD.page_chat
+        : (RECORD.threads.find(t => t.id === target) || { msgs: [] }).msgs;
+      const post = m => { list.push(m); ev({ type: 'chat', kind: 'reply', msg: m }); };
+      // codex is the tool user here: one summary before the answer, one after —
+      // the out-of-order case the drawer has to hoist and merge
+      if (model === 'codex') post({ author: model, ts: now(), kind: 'tools', text: TOOLS_A });
+      const msg = { author: model, ts: now(), text: body };
+      RECORD.updated_at = now();
+      post(msg);
+      if (model === 'codex') post({ author: model, ts: now(), kind: 'tools', text: TOOLS_B });
+      ev({ type: 'chat', kind: 'turn-end' });
+      toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+      queueDepth = Math.max(0, queueDepth - 1);
+      log('turn done (' + model + ')');
+      return;
+    }
+    ev({ type: 'chat', kind: 'stream', model, stream_id: streamId, text: chunks[i++] });
+  }, 90);
+}
+
+// A turn frozen mid-flight, so a screenshot always catches the streaming state:
+// turn-start plus a few deltas, then nothing. `botference see` has no wait knob.
+function freezeTurn(target) {
+  const ev = e => toContent({ t: 'ws', ev: Object.assign({ url: PAGE_URL, target }, e) });
+  ev({ type: 'chat', kind: 'turn-start', agents: ['claude'] });
+  ev({ type: 'chat', kind: 'stream', model: 'claude', stream_id: 's-frozen',
+       text: CANNED_REPLY.slice(0, 190) });
+  log('turn frozen mid-stream (screenshot state)');
+}
+
+// ?offline=1 — every call fails the way it does when the companion isn't
+// running, so the onboarding notice and the header state are screenshotable.
+const OFFLINE = Q.get('offline') === '1';
+
+function companion(method, path, body) {
+  if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
+  const route = String(path).split('?')[0];
+  if (method === 'GET' && route === '/index') {
+    return { ok: true, status: 200, data: {
+      'fakekey0000000000000000000000000000000a': {
+        url: PAGE_URL, title: RECORD.title, threads: RECORD.threads.length, updated_at: RECORD.updated_at },
+    } };
+  }
+  if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
+  if (method === 'POST' && route === '/page') {
+    if (body && body.title) RECORD.title = body.title;
+    if (body && body.site) RECORD.site = body.site;
+    return { ok: true, status: 200, data: RECORD };
+  }
+  if (method === 'POST' && route === '/thread') {
+    const thread = {
+      id: 't-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      quote: body.quote, prefix: body.prefix, suffix: body.suffix, orphaned: false,
+      msgs: [stampMsg(body.msg.text)],
+    };
+    RECORD.threads.push(thread);
+    RECORD.updated_at = now();
+    const queued = MENTION.test(body.msg.text);
+    if (queued) { queueDepth++; setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
+    return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined } };
+  }
+  if (method === 'POST' && route === '/reply') {
+    // "#fail" in a message is the harness's way of making a save go wrong, so
+    // the composer's keep-the-text-on-failure path is testable
+    if (/#fail\b/.test(body.text || '')) return { ok: false, status: 500, error: 'simulated failure' };
+    const msg = stampMsg(body.text);
+    const list = body.thread_id === '__page__'
+      ? RECORD.page_chat
+      : (RECORD.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
+    list.push(msg);
+    RECORD.updated_at = now();
+    const queued = MENTION.test(body.text);
+    if (queued) { queueDepth++; setTimeout(() => playTurn(body.thread_id, body.text), 350); }
+    return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined } };
+  }
+  if (method === 'POST' && route === '/edit') {
+    const list = body.thread_id === '__page__'
+      ? RECORD.page_chat : (RECORD.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
+    const m = list.find(x => x.ts === body.ts);
+    if (m) { m.text = body.text; m.edited = true; }
+    return { ok: true, status: 200, data: { ok: true, msg: m } };
+  }
+  if (method === 'POST' && route === '/delete') {
+    if (!body.ts) RECORD.threads = RECORD.threads.filter(t => t.id !== body.thread_id);
+    else {
+      const list = body.thread_id === '__page__'
+        ? RECORD.page_chat : (RECORD.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
+      const i = list.findIndex(x => x.ts === body.ts);
+      if (i >= 0) list.splice(i, 1);
+      // round 2, matching the companion: emptying a thread deletes the thread.
+      // The extension is never told which id vanished — it has to reconcile.
+      if (body.thread_id !== '__page__' && !list.length) {
+        RECORD.threads = RECORD.threads.filter(t => t.id !== body.thread_id);
+      }
+    }
+    RECORD.updated_at = now();
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true } };
+  }
+  if (method === 'GET' && route === '/models') {
+    return { ok: true, status: 200, data: {
+      ok: true, current: MODELS.current, options: MODELS.options, bridge: MODELS.bridge } };
+  }
+  if (method === 'POST' && route === '/model') {
+    modelPosts.push({ agent: body.agent, model: body.model });
+    MODELS.current[body.agent] = body.model;
+    log('model: ' + body.agent + ' → ' + body.model);
+    // the companion broadcasts the new state to every tab
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'models', current: { ...MODELS.current } } }), 40);
+    return { ok: true, status: 200, data: { ok: true, queued: true } };
+  }
+  if (method === 'POST' && route === '/orphan') {
+    const t = RECORD.threads.find(x => x.id === body.thread_id);
+    if (t) t.orphaned = !!body.orphaned;
+    log('orphan reported: ' + body.thread_id + ' → ' + body.orphaned);
+    return { ok: true, status: 200, data: { ok: true } };
+  }
+  if (method === 'POST' && route === '/export') {
+    log('exported');
+    return { ok: true, status: 200, data: { ok: true, path: '/Users/angadh/Vault/Web Clippings/The Quiet Machine.md' } };
+  }
+  if (method === 'POST' && route === '/interrupt') { log('interrupt sent'); return { ok: true, status: 200, data: { ok: true } }; }
+  if (method === 'GET' && route === '/health') return { ok: true, status: 200, data: { ok: true, bridge: 'running', queue: queueDepth } };
+  return { ok: false, status: 404, error: 'no such route ' + route };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 2. the chrome.* shim — exactly the surface the extension touches
+// ───────────────────────────────────────────────────────────────────────────
+const contentListeners = [];
+function toContent(msg) {
+  for (const fn of contentListeners) { try { fn(msg, {}, () => {}); } catch (e) { console.error(e); } }
+}
+const store = {};
+try {
+  const raw = localStorage.getItem('bfp-harness-store');
+  if (raw) Object.assign(store, JSON.parse(raw));
+} catch { /* file:// without storage — in-memory is fine */ }
+const persist = () => { try { localStorage.setItem('bfp-harness-store', JSON.stringify(store)); } catch {} };
+
+window.chrome = {
+  runtime: {
+    id: 'harness',
+    lastError: null,
+    getURL: p => '../extension/' + p,
+    sendMessage(msg, cb) {
+      const reply = (() => {
+        switch (msg && msg.t) {
+          case 'hello': return OFFLINE
+            ? { ok: true, known: false, threads: 0, connected: false, index: {} }
+            : { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {} };
+          case 'get-index': return companion('GET', '/index');
+          case 'api': return companion(msg.method, msg.path, msg.body);
+          case 'badge': badges.push(msg.count); return { ok: true };
+          case 'reconnect': setTimeout(() => toContent({ t: 'conn', connected: true }), 300); return { ok: true };
+          default: return { ok: false, error: 'unknown ' + (msg && msg.t) };
+        }
+      })();
+      // always async, like the real thing
+      setTimeout(() => cb && cb(reply), 15);
+    },
+    onMessage: { addListener: fn => contentListeners.push(fn) },
+  },
+  storage: {
+    local: {
+      get(key, cb) {
+        const keys = Array.isArray(key) ? key : [key];
+        const out = {};
+        for (const k of keys) if (k in store) out[k] = store[k];
+        setTimeout(() => cb && cb(out), 0);
+      },
+      set(obj, cb) { Object.assign(store, obj); persist(); setTimeout(() => cb && cb(), 0); },
+    },
+  },
+};
+</script>
+
+<script src="../extension/anchor.js"></script>
+<script src="../extension/drawer.js"></script>
+<script src="../extension/content.js"></script>
+
+<script>
+// ───────────────────────────────────────────────────────────────────────────
+// 3. harness controls + autopilot
+// ───────────────────────────────────────────────────────────────────────────
+const ready = () => window.__bfp && window.__bfp.drawer;
+function afterBoot(fn) {
+  const t = setInterval(() => { if (ready()) { clearInterval(t); fn(window.__bfp.drawer); } }, 40);
+}
+
+// Drive the real selection path end to end: select a phrase, fire mouseup so
+// content.js floats the 💬 button, then click it. `?demo=select` stops at the
+// button; `?demo=compose` goes on to open the composer and pre-fill it.
+function demoSelect(stopAtButton, fill) {
+  const p = [...document.querySelectorAll('article p')].find(el => el.textContent.includes('found a rhythm'));
+  const t = [...p.childNodes].find(n => n.nodeType === 3 && n.data.includes('found a rhythm'));
+  const from = t.data.indexOf('By the hour mark');
+  const to = t.data.indexOf('found a rhythm') + 'found a rhythm'.length;
+  const r = document.createRange();
+  r.setStart(t, from); r.setEnd(t, to);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  setTimeout(() => {
+    const d = window.__bfp.drawer;
+    if (!d) return log('demo: no drawer');
+    if (stopAtButton) { log('demo: 💬 button floated'); return; }
+    d.shadow.querySelector('.selbtn').click();
+    setTimeout(() => {
+      const ta = d.shadow.querySelector('.card.pending textarea');
+      if (!ta) return log('demo: composer did not open');
+      if (fill) { ta.value = fill; ta.dispatchEvent(new Event('input', { bubbles: true })); }
+      log('demo: composer open on the new anchor');
+    }, 120);
+  }, 260);
+}
+
+// ?selftest=1 — drives the whole loop in a real browser and writes the tally
+// into the status bar, so `botference see` screenshots a pass/fail result.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 6000) {
+  const t0 = Date.now();
+  for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(50); }
+}
+async function selftest() {
+  const out = [];
+  const check = (name, cond) => out.push((cond ? '✓ ' : '✗ ') + name);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+
+  check('3 threads restored', q('.pane[data-pane="comments"] .card').length === 3);
+  check('orphan badge shown', q('.badge.orphan-badge').length === 1);
+  check('highlights painted', document.querySelectorAll('mark.bfp-hl').length >= 3);
+  check('export button shows the Obsidian mark', !!S.querySelector('[data-act="export"] svg.obs polygon'));
+
+  // ---- push, don't cover · drag to resize ----
+  const htmlEl = document.documentElement;
+  const panel = S.querySelector('.panel');
+  const pw = () => parseInt(panel.style.width, 10);
+  check('drawer opens at a real width', pw() >= 320);
+  check('page is pushed aside, not covered', htmlEl.style.marginRight === pw() + 'px');
+
+  const grip = S.querySelector('.grip');
+  const want = window.BFPDrawer.clampWidth(540);
+  grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: window.innerWidth - pw() }));
+  window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: window.innerWidth - want }));
+  window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  check('dragging the grip resizes the drawer', pw() === want);
+  check('the page margin follows the drag', htmlEl.style.marginRight === want + 'px');
+  check('width persisted to storage', store['bfp:width'] === want);
+
+  d.close();
+  check('closing restores the page margin', htmlEl.style.marginRight === '');
+  await sleep(80);
+  d.open('comments');
+  check('re-opening restores the chosen width', pw() === want && htmlEl.style.marginRight === want + 'px');
+
+  // over-wide drags are clamped to half the viewport (never cover the article)
+  grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: window.innerWidth - want }));
+  window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 4 }));
+  window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  check('over-wide drag is clamped', pw() === window.BFPDrawer.clampWidth(1e6) && pw() <= Math.max(320, window.innerWidth / 2));
+  d.setWidth(want);
+
+  demoSelect(false);
+  const pending = await until(() => S.querySelector('.card.pending textarea'));
+  check('composer opened on selection', !!pending);
+  check('provisional highlight painted', !!document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
+
+  pending.value = '@claude what would you cut from this section?';
+  pending.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.card.pending .send').click();
+  const grew = await until(() => !S.querySelector('.card.pending') && q('.pane[data-pane="comments"] .card').length === 4);
+  check('thread saved (4 cards)', !!grew);
+  if (!grew) out.push('   dbg cards=' + q('.pane[data-pane="comments"] .card').length +
+    ' pending=' + !!S.querySelector('.card.pending') +
+    ' chip=' + JSON.stringify((S.querySelector('.status-chip') || {}).textContent || ''));
+  check('provisional highlight re-keyed', !document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
+
+  check('streaming reply rendered', !!await until(() => S.querySelector('.reply.streaming')));
+  check('working chip shows the claude logomark',
+    !!S.querySelector('.status-chip .avatar-ring[data-agent="claude"].working svg'));
+  check('a solo turn shows only that agent',
+    !S.querySelector('.status-chip .avatar-ring[data-agent="codex"]'));
+  check('the chip carries no visible text',
+    !/working|agents/i.test(S.querySelector('.status-chip').textContent.replace('✕ stop', '')));
+  const settled = await until(() => !S.querySelector('.reply.streaming'), 12000);
+  check('stream replaced by final reply', !!settled);
+  const bots = [...q('.pane[data-pane="comments"] .card')].pop().querySelectorAll('.reply.bot');
+  check('bot reply persisted in the new thread', bots.length === 1 && /Two things stand out/.test(bots[0].textContent));
+  check('working chip cleared', !S.querySelector('.status-chip .avatar-ring'));
+
+  S.querySelector('[data-act="export"]').click();
+  check('export reported', !!await until(() => /^exported/.test(S.querySelector('.footbar').textContent)));
+
+  // ---- ⚙ models popover ----
+  S.querySelector('[data-act="models"]').click();
+  const sels = await until(() => {
+    const s = S.querySelectorAll('.popover.models select');
+    return s.length === 2 && !s[0].disabled ? s : null;
+  });
+  check('gear opens a models popover with both agents', !!sels);
+  check('both option lists rendered',
+    !!sels && sels[0].options.length === 3 && sels[1].options.length === 3);
+  check('current models preselected',
+    !!sels && sels[0].value === 'sonnet' && sels[1].value === 'gpt-5-codex');
+  if (sels) { sels[0].value = 'opus'; sels[0].dispatchEvent(new Event('change', { bubbles: true })); }
+  check('changing a model POSTs /model',
+    !!await until(() => modelPosts.some(p => p.agent === 'claude' && p.model === 'opus')));
+  check('the models broadcast is reflected back in the popover', !!await until(() => {
+    const s = S.querySelector('.popover.models select[data-agent="claude"]');
+    return s && s.value === 'opus';
+  }));
+  S.querySelector('.popover.models').dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check('Esc closes the popover and leaves the drawer open',
+    S.querySelector('.popover.models').hidden && d.isOpen());
+
+  // ---- the chip shows WHO is working, and the ring follows the floor ----
+  const chatChip = () => S.querySelector('.pane[data-pane="chat"] .status-chip');
+  const ring = a => S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring[data-agent="' + a + '"]');
+  const evc = e => d.onEvent(Object.assign({ type: 'chat', target: '__page__' }, e));
+
+  evc({ kind: 'turn-start' });                       // no `agents` field at all
+  check('a turn-start without `agents` falls back to the generic chip',
+    !!chatChip() && /agents are working…/.test(chatChip().textContent) && !ring('claude'));
+  evc({ kind: 'turn-end' });
+
+  evc({ kind: 'turn-start', agents: ['claude', 'codex'] });
+  check('@all shows one logomark per engaged agent', !!ring('claude') && !!ring('codex'));
+  check('before any stream the ring sits on the first named agent',
+    ring('claude').classList.contains('working') && !ring('codex').classList.contains('working'));
+  check('the chip still says nothing out loud',
+    !/working|agents/i.test(chatChip().textContent.replace('✕ stop', '')));
+  check('state lives in the tooltip', /codex — waiting…/.test(ring('codex').title));
+  evc({ kind: 'stream', model: 'codex', stream_id: 's-floor', text: 'thinking' });
+  check('the ring follows the streaming model onto codex',
+    ring('codex').classList.contains('working') && !ring('claude').classList.contains('working'));
+  check('the tooltip follows too', /codex — working…/.test(ring('codex').title));
+  evc({ kind: 'stream', model: 'claude', stream_id: 's-floor2', text: 'my turn' });
+  check('the floor passes back to claude',
+    ring('claude').classList.contains('working') && !ring('codex').classList.contains('working'));
+  evc({ kind: 'turn-end' });
+  check('chip clears on turn-end', !chatChip());
+
+  // ---- markdown in a real codex reply ----
+  d.open('chat');
+  const chatBox = S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  chatBox.value = '@codex link me the sources';
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  check('a codex turn spins the codex ring only',
+    !!await until(() => ring('codex') && ring('codex').classList.contains('working') && !ring('claude')));
+  check('bot streams as plain text first',
+    !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.streaming .stream-text')));
+  check('the codex turn settles',
+    !!await until(() => !S.querySelector('.pane[data-pane="chat"] .reply.streaming'), 20000));
+  check('chip cleared after the codex turn', !chatChip());
+
+  const md = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.bot .ctext.md')].pop();
+  const mdA = md ? [...md.querySelectorAll('a')] : [];
+  check('final bot reply is rendered markdown, not raw text', !!md);
+  check('markdown: links become real anchors',
+    mdA.length === 2 && mdA[0].getAttribute('href') === 'https://example.com/reports/aragon-part-1');
+  check('markdown: links open safely',
+    mdA.length > 0 && mdA[0].getAttribute('target') === '_blank' &&
+    /noopener/.test(mdA[0].getAttribute('rel') || '') && /noreferrer/.test(mdA[0].getAttribute('rel') || ''));
+  check('markdown: no raw [text](url) left on screen', !!md && !/\]\(https/.test(md.textContent));
+  check('markdown: bold, italic and inline code',
+    !!md && !!md.querySelector('strong') && !!md.querySelector('em') &&
+    !!md.querySelector('code') && !/\*\*/.test(md.textContent));
+  check('markdown: fenced code block preserved verbatim',
+    !!md && !!md.querySelector('pre.md-code code') &&
+    /const xga = seasons\.map/.test(md.querySelector('pre.md-code code').textContent) &&
+    !/```/.test(md.textContent));
+  check('markdown: both list flavours',
+    !!md && md.querySelectorAll('ul.md-list li').length === 2 && md.querySelectorAll('ol.md-list li').length === 2);
+  check('markdown: non-http urls are never linkified',
+    !!md && !mdA.some(a => /javascript:/i.test(a.getAttribute('href') || '')) &&
+    /\[nope\]\(javascript:alert\)/.test(md.textContent));
+  check('markdown: user messages stay literal',
+    !!S.querySelector('.pane[data-pane="chat"] .reply.mine .ctext') &&
+    !S.querySelector('.pane[data-pane="chat"] .reply.mine .ctext.md'));
+
+  // ---- tool activity: one merged, collapsed, hoisted disclosure ----
+  const tools = S.querySelectorAll('.pane[data-pane="chat"] .tools');
+  const trow = tools[0];
+  check('two tool messages merge into exactly one row', tools.length === 1);
+  check('the row is not a reply card',
+    !!trow && !trow.querySelector('.bot-badge') && !trow.querySelector('.who'));
+  check('collapsed by default', !!trow && !!trow.querySelector('.tools-body[hidden]'));
+  check('labelled with the total step count',
+    !!trow && /Explored · 3 steps/.test(trow.querySelector('.tools-label').textContent));
+  check('hoisted above the answer even though a summary arrived after it',
+    !!trow && !!md && (trow.compareDocumentPosition(md) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+  trow.querySelector('.tools-head').click();
+  const topen = await until(() => {
+    const t = S.querySelector('.pane[data-pane="chat"] .tools .tools-body');
+    return t && !t.hidden ? t : null;
+  });
+  check('clicking expands it', !!topen);
+  check('every step is listed in order', !!topen &&
+    topen.textContent.indexOf('aragon-part-1') < topen.textContent.indexOf('aragon-part-2') &&
+    topen.textContent.indexOf('aragon-part-2') < topen.textContent.indexOf('Read 2 documents'));
+  check('the streamed text was never replaced by a tool summary',
+    !!md && /Sources, in order/.test(md.textContent));
+
+  // ---- the composer empties on success and holds on to failures ----
+  const chatTa = () => S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  chatTa().value = 'a plain note, no bots involved';
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  check('composer clears after a successful send', !!await until(() => chatTa() && chatTa().value === ''));
+  check('the sent text landed in the thread',
+    !!await until(() => /a plain note, no bots involved/.test(S.querySelector('.pane[data-pane="chat"]').textContent)));
+  chatTa().value = 'this one cannot be saved #fail';
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  // wait for the failure to land first — the box trivially still holds the text
+  // until the POST resolves, so asserting on it earlier proves nothing
+  check('a failed send says why', !!await until(() =>
+    /simulated failure/.test((S.querySelector('.pane[data-pane="chat"] .status-chip') || {}).textContent || '')));
+  check('a failed send keeps the text in the box',
+    !!chatTa() && /cannot be saved #fail/.test(chatTa().value));
+  chatTa().value = '';
+  d.note('__page__', null);
+  d.open('comments');
+
+  // ---- edit / delete affordances ----
+  const card1 = () => q('.pane[data-pane="comments"] .card')[0];
+  check('own message offers edit + delete',
+    !!card1().querySelector('.reply.mine [data-act="edit"]') && !!card1().querySelector('.reply.mine [data-act="del-msg"]'));
+  const botReply = S.querySelector('.reply.bot');
+  check('bot reply offers delete but not edit',
+    !!botReply.querySelector('[data-act="del-msg"]') && !botReply.querySelector('[data-act="edit"]'));
+
+  card1().querySelector('.reply.mine [data-act="edit"]').click();
+  const eta = await until(() => card1().querySelector('.reply.mine .ctext textarea'));
+  check('edit opens an inline textarea', !!eta);
+  eta.value = 'Edited in place.';
+  card1().querySelector('.reply.mine .ctext .send').click();
+  check('edit persisted', !!await until(() => /Edited in place\./.test(card1().textContent)));
+
+  // ---- reconcile: the companion deletes a thread whose last message goes.
+  // Nothing tells the extension which id vanished — it has to notice on the
+  // refetch and unpaint the highlight itself. (The round-1 bug: it did not.)
+  const emptied = card1().dataset.thread;
+  const nBefore = q('.pane[data-pane="comments"] .card').length;
+  check('the reconcile subject starts out painted',
+    !!document.querySelector('mark.bfp-hl[data-bfp="' + emptied + '"]'));
+  card1().querySelector('.reply.mine [data-act="del-msg"]').click();
+  check('deleting the last message drops the thread',
+    !!await until(() => q('.pane[data-pane="comments"] .card').length === nBefore - 1));
+  check('its stale highlight is reconciled off the page',
+    !document.querySelector('mark.bfp-hl[data-bfp="' + emptied + '"]'));
+  check('badge count updated on the delete',
+    !!await until(() => badges[badges.length - 1] === nBefore - 1));
+
+  const doomed = card1().dataset.thread;
+  const before = q('.pane[data-pane="comments"] .card').length;
+  card1().querySelector('[data-act="del-thread"]').click();
+  check('thread delete asks for confirmation', !!S.querySelector('.confirm [data-act="del-thread-yes"]'));
+  S.querySelector('.confirm [data-act="del-thread-yes"]').click();
+  check('thread deleted', !!await until(() => q('.pane[data-pane="comments"] .card').length === before - 1));
+  check('highlight unwrapped from the page', !document.querySelector('mark.bfp-hl[data-bfp="' + doomed + '"]'));
+
+  const bad = out.filter(l => l[0] === '✗');
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');  // via chrome --dump-dom
+  console.log(out.join('\n'));
+}
+
+document.getElementById('h-open').onclick = () => window.__bfp.activate().then(d => d.open('comments'));
+document.getElementById('h-chat').onclick = () => window.__bfp.activate().then(d => d.open('chat'));
+document.getElementById('h-stream').onclick = () => playTurn(RECORD.threads[1].id, '@claude what would you cut?');
+document.getElementById('h-md').onclick = () => playTurn('__page__', '@codex link me the sources');
+document.getElementById('h-dark').onclick = () => {
+  const on = document.documentElement.classList.toggle('forcedark');
+  if (window.__bfp.drawer) window.__bfp.drawer.setTheme(on ? 'dark' : 'light');
+};
+
+window.__bfp.activate(false).then(() => {
+  afterBoot(d => {
+    if (!OFFLINE) d.setConn(true);
+    if (window.__BFP_THEME) d.setTheme(window.__BFP_THEME);
+    if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
+    if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
+    if (Q.get('selftest') === '1') { setTimeout(selftest, 250); return; }
+    if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
+    const demo = Q.get('demo');
+    if (demo === 'select') setTimeout(() => demoSelect(true), 250);
+    else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);
+    // on the chat tab, freeze the page-chat turn instead — that pane's chip is
+    // above the fold, so a screenshot catches the working avatar
+    if (Q.get('stream') === 'freeze') setTimeout(() => freezeTurn(Q.get('chat') === '1' ? '__page__' : RECORD.threads[1].id), 200);
+    else if (Q.get('stream') === '1') setTimeout(() => playTurn(RECORD.threads[1].id, '@claude what would you cut?'), 500);
+    log('drawer mounted · ' + RECORD.threads.length + ' threads');
+  });
+});
+</script>

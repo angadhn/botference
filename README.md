@@ -370,6 +370,51 @@ export BOTFERENCE_TUNNEL_URL=https://council.example.com   # printed as the shar
 Without `BOTFERENCE_TUNNEL`, `--share` uses a quick tunnel with a
 random `trycloudflare.com` URL.
 
+## Web Annotator (`botference plugin`)
+
+The review-doc experience, injected into any static article page on the
+open web: a browser extension (Chromium/Brave, `frontends/plugin/extension`)
+plus a local companion server. Highlight text on a blog post or article,
+leave a comment, and — if the comment (or any later reply) mentions
+`@claude`, `@codex`, or `@all` — the bots answer inline in the same
+thread, streaming into a right-side drawer. Threads without bots stay
+private notes. Every page exports to one Obsidian note (quote +
+comment pairs, plus the page chat); bot conversations persist as
+council chats under the **Plugin pages** project, titled by the
+article's own headline.
+
+```bash
+botference plugin                # serve the companion on 127.0.0.1:4189
+botference plugin --service      # same, detached (stop: botference service stop plugin-web)
+botference plugin [--port N] [--no-agents]
+botference plugin --install-autostart    # macOS: run it at every login
+botference plugin --uninstall-autostart  # …and undo that
+```
+
+**Set-and-forget (macOS).** `--install-autostart`, run from the
+workspace you want the companion attached to, writes
+`~/Library/LaunchAgents/com.botference.plugin-web.plist` and loads it
+immediately: the companion is then running after every login, restarts
+if it dies, and appends its output to
+`.botference/logs/plugin-autostart.log` (check it with `launchctl list
+| grep com.botference.plugin-web`). Any `--port`/`--no-agents` you pass
+alongside is baked in, and the PATH it gets still finds `node`,
+`python3`, and your agent CLIs. Running one by hand still wins — it
+holds the workspace lock, and the autostart copy takes over within
+~10s of your Ctrl-C. `--uninstall-autostart` removes the job and the
+plist.
+
+One-time extension install: `brave://extensions` → Developer mode →
+Load unpacked → `frontends/plugin/extension`. The drawer has two tabs —
+**Comments** (threads anchored to highlights) and **Page chat** (one
+conversation about the whole page) — and remembers the last tab you
+used per site. Run the companion from your main workspace so bot chats
+land in that workspace's council. Vault location and export folder live
+in `.botference/plugin/config.json` (defaults to your vault's
+`Web Clippings/`). Static article pages only by design: anchors are
+quote-plus-context and degrade to an "orphaned" badge rather than ever
+losing a comment.
+
 ## Agent Eyes (`botference see`)
 
 Layout and design failures produce no errors and no warnings — an agent

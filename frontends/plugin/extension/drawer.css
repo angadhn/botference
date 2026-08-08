@@ -1,0 +1,406 @@
+/* drawer.css — the entire visual language of the annotator, injected into the
+   shadow root and nowhere else. Palette lifted verbatim from
+   frontends/review/assets/style.css so the drawer reads as the same product as
+   the review UI. Nothing here escapes the shadow boundary and no page rule
+   reaches in: every element below is a shadow-root descendant, and the host
+   itself is additionally pinned with !important inline styles from drawer.js.
+
+   SIZING: every length is in px on purpose. `rem` inside a shadow root still
+   resolves against the PAGE's root font-size, so a site that sets
+   `html { font-size: 10px }` would silently shrink the whole drawer. px (plus
+   one explicit font-size on .panel) makes the drawer's scale ours alone.
+   Floor for any text is 12px — nothing in here is fine print. */
+
+:host {
+  /* `all` must come first: it is a shorthand and would otherwise wipe the
+     declarations below it. Custom properties are exempt from `all`. */
+  all: initial;
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
+  --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
+  --hl: rgba(240, 195, 120, 0.55); --hl-active: rgba(228, 166, 80, 0.8);
+  --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
+  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --serif: "Iowan Old Style", "Source Serif Pro", Charter, Georgia, ui-serif, serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --claude: #d97757; --codex: #4a86c8; --bad: #b3403a;
+  --shadow: 0 4px 14px rgba(0, 0, 0, .22);
+  --author-l: 0.52;
+  color-scheme: light;
+  position: fixed; inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  contain: layout style;
+}
+@media (prefers-color-scheme: dark) {
+  :host(:not([data-theme="light"])) {
+    --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
+    --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
+    --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+    --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
+    --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+    --author-l: 0.72; color-scheme: dark;
+  }
+}
+/* explicit override wins in BOTH directions (harness ?dark=1, future toggle) */
+:host([data-theme="dark"]) {
+  --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
+  --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
+  --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+  --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
+  --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+  --author-l: 0.72; color-scheme: dark;
+}
+:host([data-theme="light"]) {
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
+  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+  --author-l: 0.52; color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box }
+
+/* one control language for every button: 13px label, ≥30px tall hit area */
+button {
+  font: 13px/1.2 var(--sans); padding: 7px 12px; cursor: pointer; margin: 0;
+  min-height: 30px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 8px;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+button:hover { border-color: var(--accent); color: var(--accent) }
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+button[disabled] { opacity: .45; cursor: default }
+button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
+
+/* ── floating selection button ─────────────────────────────────────────── */
+.selbtn {
+  position: fixed; pointer-events: auto; z-index: 2;
+  display: none; align-items: center; gap: 6px;
+  font: 13px/1.2 var(--sans); padding: 7px 14px; min-height: 32px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+.selbtn.on { display: inline-flex }
+.selbtn:hover { border-color: var(--accent); color: var(--accent) }
+.selbtn .glyph { font-size: 15px; line-height: 1 }
+
+/* ── panel ─────────────────────────────────────────────────────────────── */
+.panel {
+  position: fixed; top: 0; right: 0; width: 420px; max-width: 100vw; height: 100%;
+  pointer-events: auto; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--fg);
+  font: 14px/1.5 var(--sans);
+  border-left: 1px solid var(--card-line);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, .20);
+  transform: translateX(102%);
+  transition: transform .22s cubic-bezier(.32, .72, 0, 1);
+}
+.panel.open { transform: none }
+/* while dragging the edge, the slide transition would lag the pointer */
+.panel.dragging { transition: none }
+
+/* ── resize handle ─────────────────────────────────────────────────────── */
+/* 6px of hit area on the left edge; the visible line only appears on hover so
+   the drawer's border stays a border until you reach for it */
+.grip {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; z-index: 4;
+  cursor: ew-resize; background: transparent;
+  border-left: 2px solid transparent; transition: border-color .15s ease;
+}
+.grip:hover, .panel.dragging .grip { border-left-color: var(--accent) }
+
+.hdr {
+  flex: none; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px; align-items: start;
+  padding: 12px 14px 10px; background: var(--rail);
+  border-bottom: 1px solid var(--card-line);
+}
+.hdr .title {
+  grid-column: 1; font: 600 15px/1.35 var(--sans); color: var(--heading);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.hdr .acts { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 4px; align-items: center }
+.hdr .meta {
+  grid-column: 1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+}
+.hdr .site { text-transform: lowercase }
+.iconbtn { padding: 5px 9px; line-height: 1; font-size: 15px; background: transparent; min-height: 30px }
+/* the Obsidian mark is inline SVG (100×120 viewBox → 16×19.2px), so it keeps
+   its own purples on both themes; the button gives it a quiet hover ring */
+.iconbtn.obsidian { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px }
+.iconbtn.obsidian .obs { width: 16px; height: 19.2px; display: block }
+.iconbtn.obsidian:hover { border-color: #8B5CF6; background: color-mix(in srgb, #7C3AED 12%, transparent) }
+
+/* ── models popover (behind the ⚙) ─────────────────────────────────────── */
+.popover {
+  position: absolute; top: 52px; right: 12px; z-index: 6;
+  min-width: 236px; max-width: 300px; padding: 10px 12px 11px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 10px;
+  box-shadow: var(--shadow); font: 12px/1.45 var(--sans);
+}
+.popover[hidden] { display: none }
+.pop-head {
+  font: 700 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); margin-bottom: 8px;
+}
+.pop-row { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center;
+  gap: 8px; margin: 6px 0 }
+.pop-agent { font: 700 12px/1.4 var(--sans); color: var(--author, var(--muted)) }
+.popover select {
+  width: 100%; font: 12px/1.3 var(--sans); padding: 5px 7px; min-height: 28px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 7px; cursor: pointer;
+}
+.popover select:hover:not(:disabled) { border-color: var(--accent) }
+.popover select:disabled { opacity: .55; cursor: default }
+.pop-hint { margin-top: 9px; font: 12px/1.4 var(--sans); color: var(--muted) }
+.pop-hint.err { color: var(--bad) }
+
+.conn { display: inline-flex; align-items: center; gap: 5px }
+.conn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rev-line); flex: none }
+.conn.pending .dot { background: var(--muted) }
+.conn.off .dot { background: var(--bad) }
+.conn.off { color: var(--bad); cursor: pointer; text-decoration: underline dotted }
+
+/* ── tabs: a primary control, sized like one ───────────────────────────── */
+.tabs { flex: none; display: flex; gap: 6px; padding: 6px 14px 0; background: var(--rail);
+  border-bottom: 1px solid var(--card-line) }
+.tab {
+  border: 0; border-bottom: 2px solid transparent; border-radius: 7px 7px 0 0;
+  background: transparent; color: var(--muted); padding: 8px 10px 9px; min-height: 34px;
+  font: 600 13px/1.2 var(--sans); letter-spacing: .02em;
+}
+.tab:hover { color: var(--accent) }
+.tab.on { color: var(--fg); border-bottom-color: var(--accent) }
+.tab .count {
+  font: 12px/1 var(--sans); margin-left: 6px; padding: 2px 6px;
+  border-radius: 7px; background: var(--card); border: 1px solid var(--card-line); color: var(--muted);
+}
+
+.pane { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 12px 14px 24px }
+.pane[hidden] { display: none }
+.empty { color: var(--muted); font: italic 13px/1.6 var(--sans); padding: 26px 4px; text-align: center }
+.empty b { display: block; font-style: normal; font-size: 14px; color: var(--fg); margin-bottom: 5px }
+
+/* companion-not-running onboarding: the one state a new user WILL hit */
+.notice {
+  margin: 0 0 12px; padding: 10px 12px; border-radius: 10px;
+  background: color-mix(in srgb, var(--bad) 8%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
+  font: 13px/1.5 var(--sans); color: var(--fg);
+}
+.notice b { display: block; font-size: 13px; color: var(--bad); margin-bottom: 3px }
+.notice code { font: 12px var(--mono); background: var(--rail); padding: 1px 5px; border-radius: 5px }
+.notice button { display: block; margin-top: 9px }
+
+/* ── thread card (mirrors .card / .thread / .reply in the review UI) ────── */
+.card {
+  position: relative; margin: 0 0 12px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line);
+  border-left: 3px solid var(--author, var(--muted));
+  border-radius: 0 10px 10px 0; padding: 10px 12px;
+  font: 14px/1.5 var(--sans);
+  transition: box-shadow .15s ease, border-left-width .15s ease;
+}
+.card:hover { box-shadow: 0 3px 14px rgba(0, 0, 0, .16) }
+.card.focused { box-shadow: 0 6px 24px rgba(0, 0, 0, .26); border-left-width: 4px }
+.card.working { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent) }
+.card.pending { border-left-style: dashed }
+
+/* card header: the quote plus the thread-level delete, which sits at the top
+   right where GDocs puts a thread's overflow menu */
+.chead { display: flex; align-items: flex-start; gap: 4px }
+.chead .quote { flex: 1 1 auto; min-width: 0 }
+.rebtn {
+  flex: none; border: 0; background: none; color: var(--muted);
+  padding: 2px 6px; min-height: 24px; min-width: 24px; font: 13px/1 var(--sans);
+  opacity: .5; transition: opacity .15s ease, color .15s ease;
+}
+.rebtn:hover { opacity: 1; color: var(--bad); border-color: transparent }
+.card:hover .rebtn, .reply:hover .rebtn { opacity: 1 }
+.confirm { flex: none; display: flex; align-items: center; gap: 4px;
+  font: 12px/1.4 var(--sans); color: var(--bad); white-space: nowrap }
+.confirm .rebtn { opacity: 1; text-decoration: underline }
+.confirm .yes { color: var(--bad); font-weight: 700 }
+
+.quote {
+  font: italic 14px/1.5 var(--serif); color: var(--muted); cursor: pointer;
+  border-left: 2px solid var(--hl-active); padding: 2px 0 2px 9px; margin: 0 0 8px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.quote:hover { color: var(--fg); background: color-mix(in srgb, var(--hl) 45%, transparent) }
+.card.orphaned .quote { border-left-color: var(--card-line); cursor: default; text-decoration: line-through }
+.card.orphaned .quote:hover { background: none; color: var(--muted) }
+
+.badge {
+  font: 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .03em;
+  background: var(--rail); border-radius: 6px; padding: 1px 6px; margin-left: 6px;
+  color: var(--muted); vertical-align: baseline; white-space: nowrap;
+}
+.badge.bot-badge { color: var(--author, var(--muted)); background: color-mix(in srgb, var(--author, var(--muted)) 12%, transparent) }
+.badge.orphan-badge { color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent) }
+
+.thread { border-top: 1px dotted var(--card-line); padding-top: 6px; margin-top: 2px }
+.card.chatpane .thread { border-top: 0; padding-top: 0 }
+
+.reply {
+  position: relative; margin: 6px 0; padding: 7px 10px; border-radius: 8px;
+  background: color-mix(in srgb, var(--author, var(--muted)) 6%, var(--rail));
+  border-left: 2px solid color-mix(in srgb, var(--author, var(--muted)) 50%, transparent);
+  font-size: 14px; line-height: 1.5;
+}
+.reply.bot { background: color-mix(in srgb, var(--author, var(--muted)) 11%, var(--card));
+  border-left-color: var(--author, var(--muted)) }
+.reply.streaming { border-left-style: dashed }
+.reply .who {
+  display: flex; align-items: baseline; gap: 2px; margin-bottom: 3px;
+  font: 700 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+}
+.reply .who .author { color: var(--author, var(--muted)) }
+.reply .who .when { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 12px }
+.reply .ctext { white-space: pre-wrap; overflow-wrap: anywhere }
+/* while editing, the inline composer's own markup must not inherit pre-wrap */
+.reply .ctext:has(.composer) { white-space: normal }
+
+/* ── rendered markdown (bot replies only) ──────────────────────────────── */
+/* the blocks below carry their own spacing, so the container drops pre-wrap */
+.reply .ctext.md { white-space: normal }
+.ctext.md > :first-child { margin-top: 0 }
+.ctext.md > :last-child { margin-bottom: 0 }
+/* pre-line keeps a bot's deliberate single line breaks without turning the
+   whole paragraph into preformatted text */
+.md-p { margin: 0 0 8px; white-space: pre-line; overflow-wrap: anywhere }
+.md-h { margin: 10px 0 4px; font: 700 13px/1.4 var(--sans); color: var(--heading) }
+.ctext.md a {
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.ctext.md a:hover { color: var(--accent-hover) }
+.ctext.md code {
+  font: 12.5px/1.5 var(--mono); overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 1px 4px; border-radius: 4px;
+}
+.ctext.md pre.md-code {
+  margin: 6px 0 8px; padding: 8px 10px; border-radius: 8px; overflow-x: auto;
+  background: color-mix(in srgb, var(--accent) 7%, var(--rail));
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.ctext.md pre.md-code code {
+  display: block; background: none; padding: 0; white-space: pre;
+  font: 12.5px/1.5 var(--mono); color: var(--fg);
+}
+.md-list { margin: 4px 0 8px; padding-left: 20px }
+.md-list li { margin: 2px 0 }
+.md-list li::marker { color: var(--muted) }
+.reply .stream-text {
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0;
+  font: 14px/1.55 var(--serif); max-height: 260px; overflow-y: auto;
+}
+.reply .stream-text::after {
+  content: '▌'; color: var(--accent); animation: bfp-blink 1s steps(2) infinite;
+}
+/* always present, just quiet: hover-only controls are controls nobody finds */
+.reply .acts { position: absolute; top: 3px; right: 4px; display: flex; gap: 2px }
+.reply .acts .rebtn { opacity: .35 }
+.reply:hover .acts .rebtn, .reply .acts .rebtn:focus-visible { opacity: 1 }
+.reply .acts .rebtn[data-act="edit"]:hover { color: var(--accent) }
+/* the who-line must not run under the action buttons */
+.reply .who { padding-right: 56px }
+.reply .edited { font: italic 12px var(--sans); color: var(--muted); text-transform: none; letter-spacing: 0 }
+
+/* ── tool activity: a disclosure, not a message ────────────────────────── */
+/* Process detail sits below the conversation in the visual hierarchy: no card,
+   no author, no badge — a 12px muted row that opens into a mono block. */
+.tools { margin: 6px 0 2px }
+.tools-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  border: 0; background: none; border-radius: 6px; padding: 3px 5px; min-height: 24px;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+}
+.tools-head:hover { color: var(--accent); border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 7%, transparent) }
+.tools-head .caret { flex: none; font-size: 11px; line-height: 1;
+  transition: transform .15s ease }
+.tools.open .tools-head .caret { transform: rotate(180deg) }
+.tools-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tools-body {
+  margin: 3px 0 0 16px; padding: 7px 9px; border-radius: 7px;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  border-left: 2px solid var(--card-line);
+  font: 12px/1.55 var(--mono); color: var(--muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 220px; overflow-y: auto;
+}
+.tools-body[hidden] { display: none }
+
+/* ── composers ─────────────────────────────────────────────────────────── */
+.composer { margin-top: 9px }
+.composer textarea {
+  display: block; width: 100%; resize: vertical; min-height: 74px; max-height: 220px;
+  font: 14px/1.5 var(--sans); padding: 10px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 8px;
+}
+.composer textarea::placeholder { color: var(--muted) }
+/* the hint claims a full line of its own rather than squeezing between two
+   buttons — it wraps out of the row instead of wrapping inside it */
+.composer .crow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 7px }
+.composer .hint { flex: 1 1 190px; min-width: 0; font: 12px/1.35 var(--sans); color: var(--muted) }
+.composer .send { background: var(--accent); color: #fff; border-color: var(--accent); flex: none }
+.composer .send:hover { background: var(--accent-hover); color: #fff; border-color: var(--accent-hover) }
+.composer .cancel { flex: none }
+
+/* ── status ────────────────────────────────────────────────────────────── */
+.status-chip { font: 12px/1.4 var(--sans); color: var(--muted); margin-top: 7px;
+  display: flex; align-items: center; gap: 6px }
+.status-chip[hidden] { display: none }
+.status-chip.err { color: var(--bad) }
+.status-chip .spin { display: inline-block; animation: bfp-spin 1s linear infinite; color: var(--accent) }
+
+/* ── who is working: logomark + spinning ring (the review UI's .avatar-ring,
+   shrunk to sit inline in the chip). No text: the tooltip carries the state,
+   and the ring reserves its own space so nothing shifts when it starts. ── */
+.chip-agents { display: inline-flex; align-items: center; gap: 4px }
+.avatar-ring {
+  position: relative; flex: none; width: 24px; height: 24px; padding: 3px;
+  border-radius: 50%; opacity: .4; transition: opacity .2s ease;
+}
+.avatar-ring::before {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 2px dashed transparent;
+}
+.avatar-ring.working { opacity: 1 }
+.avatar-ring.working::before {
+  border-color: var(--author, var(--accent)); animation: bfp-spin 1s linear infinite;
+}
+.avatar {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+  border-radius: 50%; background: var(--author, var(--muted)); color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+}
+.avatar svg { width: 62%; height: 62%; display: block }
+.status-chip .stop { border: 0; background: none; color: var(--muted); padding: 2px 6px;
+  font-size: 12px; min-height: 24px }
+.status-chip .stop:hover { color: var(--bad) }
+
+.footbar {
+  flex: none; padding: 8px 14px; border-top: 1px solid var(--card-line);
+  background: var(--rail); font: 12px/1.4 var(--sans); color: var(--muted);
+  display: flex; align-items: center; gap: 8px; min-height: 34px;
+}
+.footbar .spin { display: inline-block; animation: bfp-spin 1s linear infinite; color: var(--accent) }
+.footbar .stop { margin-left: auto; flex: none; padding: 4px 10px; font-size: 12px; min-height: 26px }
+.footbar.err { color: var(--bad) }
+
+@keyframes bfp-spin { to { transform: rotate(360deg) } }
+@keyframes bfp-blink { 50% { opacity: 0 } }
+
+/* thin, quiet scrollbars — the drawer is chrome, not content */
+.pane::-webkit-scrollbar, .stream-text::-webkit-scrollbar { width: 9px }
+.pane::-webkit-scrollbar-thumb, .stream-text::-webkit-scrollbar-thumb {
+  background: var(--card-line); border-radius: 8px }

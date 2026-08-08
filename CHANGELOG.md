@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## 2026-08-08
+
+- **`botference plugin --install-autostart` — the companion, always
+  there (macOS).** Installs a login LaunchAgent
+  (`com.botference.plugin-web`) for the workspace you run it from, with
+  KeepAlive, a PATH that can still find `node`/`python3`/the agent CLIs,
+  any `--port`/`--no-agents` baked in, and output appended to
+  `.botference/logs/plugin-autostart.log`; it loads immediately
+  (`launchctl bootstrap gui/$UID`). A hand-run companion still wins —
+  it holds the workspace lock and the launchd copy takes over ~10s
+  after you Ctrl-C it. `--uninstall-autostart` boots it out and deletes
+  the plist (idempotent). Neither combines with `--service`.
+
+## 2026-08-07
+
+- **`botference plugin` — the web annotator.** The review-doc experience
+  on any static article page: a Chromium/Brave extension
+  (`frontends/plugin/extension`, load unpacked once) plus a local
+  companion server (port 4189). Highlight text → comment; an
+  `@claude`/`@codex`/`@all` mention in any message — including a later
+  reply — summons the bots, whose answers stream inline into a
+  right-side drawer (Comments tab: threads anchored to highlights;
+  Page chat tab: one conversation about the whole page; last-used tab
+  remembered per site). Anchors are quote+context and degrade to an
+  "orphaned" badge on changed pages, never losing a comment. Every page
+  exports to one Obsidian note (blockquoted highlight + thread per
+  entry, page chat appended); bot conversations persist as council
+  chats under the **Plugin pages** project, titled by the article's own
+  headline — archive/delete them from the council as usual.
+  `--service` runs the companion detached (`plugin-web`);
+  `--no-agents` serves annotations-only. Docs: README "Web Annotator",
+  man page, `botference plugin --help`.
+
 ## 2026-08-06
 
 - **`/relay @both` — reset both agents at once, token-efficiently.** The

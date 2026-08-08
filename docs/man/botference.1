@@ -11,6 +11,12 @@ botference \- a multi-LLM planning council for the terminal
 .B botference review
 [\fIdir\fR] [\fB\-\-share\fR [\fB\-\-service\fR]] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
 .br
+.B botference plugin
+[\fB\-\-port\fR \fIN\fR] [\fB\-\-service\fR] [\fB\-\-no-agents\fR]
+.br
+.B botference plugin
+\fB\-\-install-autostart\fR | \fB\-\-uninstall-autostart\fR
+.br
 .B botference service
 \fBstart\fR \fIname\fR \fB\-\-\fR \fIcommand\fR… | \fBstop\fR \fIname\fR|\fB\-\-all\fR | \fBlist\fR | \fBlogs\fR \fIname\fR [\fB\-n\fR \fIN\fR]
 .br
@@ -91,6 +97,43 @@ up). \fB\-\-hosted \-\-service\fR runs just the hosted server (no
 tunnel) under the managed service lifecycle, named after the directory
 unless \fB\-\-service-name\fR \fINAME\fR says otherwise; its ledger
 belongs to the paper's own directory, so stop it from there.
+.TP
+.B plugin
+Serve the web-annotator companion server for the browser extension
+(load \fIfrontends/plugin/extension\fR once via the browser's
+"Load unpacked"): highlight text on any static article page, leave
+comments, and \- when a comment or reply mentions \fB@claude\fR,
+\fB@codex\fR, or \fB@all\fR \- the bots answer inline in the same
+thread, streamed into the extension's right-side drawer (Comments and
+Page chat tabs). Every page exports to one Obsidian note; bot
+conversations persist as council chats under the "Plugin pages"
+project, titled by the article's headline. Run it from your main
+workspace so those chats land in that workspace's council. Agents
+auto-detect exactly as in \fBreview\fR. Flags: \fB\-\-port\fR \fIN\fR
+(default 4189, which the extension expects); \fB\-\-no-agents\fR /
+\fB\-\-agents\fR force the bridge off/on; \fB\-\-service\fR runs the
+companion detached under the managed service lifecycle as
+\fBplugin-web\fR (stop with \fBbotference service stop plugin-web\fR).
+Config (Obsidian vault path, export folder) in
+\fI.botference/plugin/config.json\fR.
+.IP
+\fB\-\-install-autostart\fR (macOS) makes the companion permanent
+instead of per-session: it writes
+\fI~/Library/LaunchAgents/com.botference.plugin-web.plist\fR for the
+workspace you run it from and loads it immediately
+(\fBlaunchctl bootstrap gui/$UID\fR, falling back to
+\fBlaunchctl load -w\fR), so the companion runs at every login and
+restarts if it dies. Any \fB\-\-port\fR/\fB\-\-no-agents\fR given
+alongside is baked in, together with a PATH that can still find
+\fBnode\fR, \fBpython3\fR, and the agent CLIs (launchd agents start
+with a minimal PATH). Output is appended to
+\fI<workspace>/.botference/logs/plugin-autostart.log\fR; check the job
+with \fBlaunchctl list | grep com.botference.plugin-web\fR. A companion
+you run by hand still wins: it holds the workspace lock, the launchd
+copy exits and is retried about every 10 seconds, so it takes over
+within ~10s of your Ctrl\-C. \fB\-\-uninstall-autostart\fR boots the job
+out and deletes the plist (a no-op if nothing was installed). Neither
+flag may be combined with \fB\-\-service\fR.
 .TP
 .B service
 Managed long-lived processes (dev servers, share tunnels) that survive

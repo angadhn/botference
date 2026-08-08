@@ -465,6 +465,8 @@ show_help() {
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
        botference plan [--web|--share [--no-auth] [--service]] [--port N]
        botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
+       botference plugin [--port N] [--service] [--no-agents]
+       botference plugin --install-autostart | --uninstall-autostart
        botference service <start|stop|list|logs> …
        botference see <url | :port | service-name> [label] [--viewport WxH]
 
@@ -485,6 +487,17 @@ Modes:
                     via cloudflared, --hosted for hosted mode without the tunnel,
                     --upgrade to refresh engine files). Requires pandoc. See
                     'botference review --help'.
+  plugin            Serve the web-annotator companion for the browser
+                    extension (frontends/plugin/extension — load unpacked
+                    once): highlight text on static article pages, comment,
+                    @-mention bots for inline replies, export pages to
+                    Obsidian. Bot chats land in this workspace's council
+                    under project "Plugin pages". Agents auto-detect like
+                    review; --service runs it detached as 'plugin-web';
+                    --install-autostart (macOS) hands this workspace's
+                    companion to launchd so it is running after every
+                    login (--uninstall-autostart removes it).
+                    See 'botference plugin --help'.
   service           Managed long-lived processes (servers, tunnels) that
                     survive the shell — and the whole process group — that
                     started them (the sanctioned way for agents to leave
