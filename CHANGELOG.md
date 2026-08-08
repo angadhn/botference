@@ -2,6 +2,21 @@
 
 ## 2026-08-08
 
+- **Web annotator: Docs context and session binding actually hold.**
+  Two live-caught bugs. (1) Google answers a wrong-account export with
+  200 + an account chooser: the export URL now echoes the page's own
+  `/u/<n>/` account scope (both URL spellings), HTML responses are
+  detected as failures, a failed read shows a dismissible warning in
+  Page chat instead of silently sending Docs menu chrome to the bots,
+  and a failure no longer burns the once-only context — the next
+  mention retries. (2) New pages could inherit the bridge's previous
+  session (new chats are invisible in panel snapshots until their
+  first turn, and `/rename` emits none): session capture now waits for
+  a snapshot proving a *different* active session after the first turn,
+  fails loudly ("its next comment starts a fresh chat") rather than
+  binding wrong, refuses a sid another page owns, and `/resume` is
+  confirmed before anything is sent into a chat.
+
 - **Web annotator: Google Docs support (Page chat).** New site-adapter
   layer in the extension; the Docs adapter fetches the document's
   plain-text export with your own session (private docs included, no

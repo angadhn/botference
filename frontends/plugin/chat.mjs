@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, HOME, PAGE_CHAT, readPage, savePage, findThread } from './store.mjs';
+import { ROOT, HOME, PAGE_CHAT, readPage, savePage, findThread, pageWithSession } from './store.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = path.join(PLUGIN, 'bridge-system-prompt.md');
@@ -22,6 +22,9 @@ const PERMISSION_TIMEOUT_MS = 120000;
 const SESSION_TITLE_MAX = 80;
 const ARTICLE_MAX = 6000;
 const HISTORY_MAX = 20;
+// how long to wait for the `projects` event that names the live session
+const SID_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 15000;
+const RESUME_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 8000;
 
 export const MENTION_RE = /@(claude|codex|all)\b/i;
 export const hasMention = text => MENTION_RE.test(String(text || ''));
@@ -90,6 +93,7 @@ export function createChat({ onEvent }) {
   let running = false;        // the startup `ready` has landed
   let bootstrapped = false;   // "Plugin pages" created+opened in this process
   let activeSid = null;       // the session the bridge currently drives
+  let sidWaiters = [];        // pending waits on a `projects` event
   let permTimer = null;
   const queue = [];           // pending jobs, one in flight
   let current = null;         // {job, steps, i}
@@ -208,7 +212,10 @@ export function createChat({ onEvent }) {
     }
     if (ev.type === 'projects') {
       const sid = activeSessionOf(ev);
-      if (sid) activeSid = sid;
+      if (sid) {
+        activeSid = sid;
+        for (const w of [...sidWaiters]) if (w.test(sid)) settleWaiter(w, sid);
+      }
       return;
     }
     if (ev.type === 'stream') {
@@ -257,15 +264,24 @@ export function createChat({ onEvent }) {
     }
   }
 
-  function onBridgeReady() {
+  async function onBridgeReady() {
     ready = true;
     if (!running) { running = true; emit({ type: 'bridge', state: 'running' }); }
     if (current) {
+      const job = current.job;
       const step = current.steps[current.i];
-      if (step && step.after) step.after();
+      // a step's `after` may wait on a projects event (sid capture/verify);
+      // nothing else can move meanwhile — `current` is still set, so pump()
+      // stays parked and no further input is in flight
+      if (step && step.after && (await step.after()) === false) {
+        if (current && current.job === job) { chat(job, { kind: 'turn-end', agents: current.agents }); current = null; }
+        pump();
+        return;
+      }
+      if (!current || current.job !== job) { pump(); return; } // bridge died mid-wait
       current.i++;
       if (current.i < current.steps.length) { sendStep(); return; }
-      chat(current.job, { kind: 'turn-end', agents: current.agents });
+      chat(job, { kind: 'turn-end', agents: current.agents });
       current = null;
     }
     pump();
@@ -274,6 +290,7 @@ export function createChat({ onEvent }) {
   function sendStep() {
     const step = current.steps[current.i];
     current.capturing = !!step.capture;
+    if (step.before) step.before();
     ready = false;
     send({ type: 'input', text: step.text, attachments: [] });
   }
@@ -297,28 +314,78 @@ export function createChat({ onEvent }) {
       bootstrapped = true;
     }
     const sid = page.session_id || null;
+    let sidBefore = null; // whatever the bridge was on when /new went out
     if (!sid) {
-      steps.push({ text: '/new' });
-      steps.push({ text: `/rename ${title}`, after: () => captureSid(job.url) });
+      steps.push({ text: '/new', before: () => { sidBefore = activeSid; } });
+      steps.push({ text: `/rename ${title}` });
     } else if (activeSid !== sid) {
-      steps.push({ text: `/resume ${sid}` });
+      steps.push({ text: `/resume ${sid}`, after: () => confirmResume(job, sid) });
     }
     steps.push({
       text: envelope({ url: job.url, title, target: job.target, text: job.text,
         quote: job.quote, history: job.history, first: !sid,
         articleText: job.articleText || articleByUrl.get(job.url) || '' }),
       capture: true,
+      // the new chat becomes visible to the bridge's own panel only now that
+      // it has an entry — this is the first moment its sid can be trusted
+      ...(sid ? {} : { after: () => captureNewSid(job, sidBefore) }),
     });
     return steps;
   }
 
-  function captureSid(url) {
-    if (!activeSid) return;
-    const page = readPage(url);
-    if (!page || page.session_id === activeSid) return;
-    page.session_id = activeSid;
+  // Which session is live is only ever learned from a `projects` event, and
+  // those arrive when the bridge feels like it — so waiting for one is part of
+  // the choreography, not an optimization.
+  function settleWaiter(w, sid) {
+    clearTimeout(w.timer);
+    sidWaiters = sidWaiters.filter(x => x !== w);
+    w.resolve(sid);
+  }
+  function waitForSid(test, ms = SID_WAIT_MS) {
+    if (activeSid && test(activeSid)) return Promise.resolve(activeSid);
+    return new Promise(resolve => {
+      const w = { test, resolve, timer: null };
+      w.timer = setTimeout(() => { sidWaiters = sidWaiters.filter(x => x !== w); resolve(null); }, ms);
+      sidWaiters.push(w);
+    });
+  }
+
+  // Capture the session `/new` created — AFTER the user turn, never after
+  // `/rename`. A chat with no transcript entries is invisible in the bridge's
+  // projects snapshot (project_panel_snapshot skips entry_count < 1) and
+  // /rename emits no snapshot at all, so before the first real turn the only
+  // sid on offer is the PREVIOUS page's. Capturing it there is how a new page
+  // ended up bound to another page's chat. Rule: accept only a sid that
+  // differs from the one active when /new was sent, and never one another
+  // page already owns; on failure leave session_id null (the next comment
+  // starts a fresh chat) rather than binding to a foreign session.
+  async function captureNewSid(job, sidBefore) {
+    const sid = await waitForSid(s => s && s !== sidBefore);
+    const page = sid ? readPage(job.url) : null;
+    const owner = sid && pageWithSession(sid, job.url);
+    if (!sid || !page || owner) {
+      chat(job, { kind: 'error',
+        error: owner
+          ? 'this page could not be given its own chat (the bridge reported a session another page owns) — its next comment starts a fresh one'
+          : "couldn't create a session for this page — its next comment starts a fresh chat" });
+      return;
+    }
+    if (page.session_id === sid) return;
+    page.session_id = sid;
     savePage(page);
     emit({ type: 'page', url: page.url });
+  }
+
+  // A /resume that quietly landed somewhere else would post the user's comment
+  // into a stranger's chat. Proceed only when the bridge confirms the session,
+  // or says nothing at all (no snapshot is not evidence of a miss).
+  async function confirmResume(job, sid) {
+    if (await waitForSid(s => s === sid, RESUME_WAIT_MS)) return true;
+    if (activeSid && activeSid !== sid) {
+      chat(job, { kind: 'error', error: "couldn't resume this page's chat — nothing was sent" });
+      return false;
+    }
+    return true;
   }
 
   function pump() {

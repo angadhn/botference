@@ -78,6 +78,76 @@ const ID = '1aBcD_efGH-2026QuietMachine';
     A.gdocsExportUrl(ID).startsWith('https://docs.google.com/'));
   eq('export url escapes anything odd in the id', A.gdocsExportUrl('a/b?c'),
     'https://docs.google.com/document/d/a%2Fb%3Fc/export?format=txt');
+  ok('export url carries no redundant &id= rider',
+    !/[?&]id=/.test(A.gdocsExportUrl(ID)));
+}
+
+// ---- 3b. the account the page is scoped to ----------------------------------
+// The live failure: a doc opened in a SECOND signed-in profile
+// (docs.google.com/u/1/…) exported from the bare url, which the DEFAULT
+// account answers 200 with an account chooser. The scope has to survive.
+{
+  eq('scope: an unscoped url has none', A.gdocsScope(`https://docs.google.com/document/d/${ID}/edit`), null);
+  eq('scope: the Docs app’s own form', A.gdocsScope(`https://docs.google.com/document/u/1/d/${ID}/edit`),
+    { n: '1', where: 'post' });
+  eq('scope: the form Drive links out with', A.gdocsScope(`https://docs.google.com/u/1/document/d/${ID}/edit`),
+    { n: '1', where: 'pre' });
+  eq('scope: the default account is still a scope, not an absence',
+    A.gdocsScope(`https://docs.google.com/document/u/0/d/${ID}/edit`), { n: '0', where: 'post' });
+  eq('scope: a two-digit account', A.gdocsScope(`https://docs.google.com/document/u/12/d/${ID}/edit`),
+    { n: '12', where: 'post' });
+  eq('scope: not a doc at all', A.gdocsScope('https://example.com/x'), null);
+
+  const url = n => `https://docs.google.com/document/u/${n}/d/${ID}/edit?tab=t.0`;
+  eq('export url: u/0 is preserved, not dropped',
+    A.gdocsExportUrl(ID, A.gdocsScope(url(0))),
+    `https://docs.google.com/document/u/0/d/${ID}/export?format=txt`);
+  eq('export url: u/1 keeps the second account',
+    A.gdocsExportUrl(ID, A.gdocsScope(url(1))),
+    `https://docs.google.com/document/u/1/d/${ID}/export?format=txt`);
+  eq('export url: a /u/1/ that came BEFORE /document/ stays where it was',
+    A.gdocsExportUrl(ID, A.gdocsScope(`https://docs.google.com/u/1/document/d/${ID}/edit`)),
+    `https://docs.google.com/u/1/document/d/${ID}/export?format=txt`);
+  eq('export url: no scope, no prefix',
+    A.gdocsExportUrl(ID, A.gdocsScope(`https://docs.google.com/document/d/${ID}/edit`)),
+    `https://docs.google.com/document/d/${ID}/export?format=txt`);
+  eq('export url: a junk scope is ignored rather than pasted in',
+    A.gdocsExportUrl(ID, { n: '1/../..', where: 'post' }),
+    `https://docs.google.com/document/d/${ID}/export?format=txt`);
+  for (const [name, u] of Object.entries({
+    'unscoped': `https://docs.google.com/document/d/${ID}/edit`,
+    'u/1 post': url(1),
+    'u/1 pre': `https://docs.google.com/u/1/document/d/${ID}/edit`,
+  })) {
+    ok('export url stays on docs.google.com (' + name + ')',
+      A.gdocsExportUrl(ID, A.gdocsScope(u)).startsWith('https://docs.google.com/'));
+  }
+}
+
+// ---- 3c. an export that is a web page, not a document ------------------------
+// This is the whole silent failure: status 200, and a login form or account
+// chooser in the body. Anything that opens as markup is a failure.
+{
+  const html = [
+    '<!doctype html><html lang="en"><head><title>Choose an account</title>',
+    '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">',
+    '<html><body>Sign in</body></html>',
+    '\n\n  <html>',
+    '﻿<!doctype html>',
+    '<?xml version="1.0"?><Error/>',
+    '<meta http-equiv="refresh" content="0;url=https://accounts.google.com/">',
+    '\n<!-- google --><html>',
+  ];
+  for (const s of html) ok('html sniff: ' + JSON.stringify(s.slice(0, 34)), A.looksHtml(s));
+
+  const text = [
+    'The Quiet Machine\n\nDraft seven.',
+    '﻿The Quiet Machine',
+    // a doc is allowed to talk about markup — the sniff only reads the opening
+    'A draft about the web\n\n' + 'x'.repeat(5000) + '\n<html> is not a document',
+    '', null, undefined,
+  ];
+  for (const s of text) ok('not html: ' + JSON.stringify(String(s).slice(0, 34)), !A.looksHtml(s));
 }
 
 // ---- 4. title cleanup --------------------------------------------------------
@@ -148,6 +218,29 @@ const res = (body, extra) => Object.assign({
   eq('adapter: fetched the export url exactly once', f.calls.length, 1);
   eq('adapter: …at the export url', f.calls[0].url, A.gdocsExportUrl(ID));
   eq('adapter: …with the user’s session', f.calls[0].init.credentials, 'include');
+  eq('adapter: a success leaves no error behind', ad.lastError, '');
+}
+
+// ---- 6b. the account-scoped tab fetches the account-scoped export ------------
+{
+  const cases = {
+    'the Docs app’s own url': [`https://docs.google.com/document/u/1/d/${ID}/edit?tab=t.0`,
+      `https://docs.google.com/document/u/1/d/${ID}/export?format=txt`],
+    'a Drive-style url': [`https://docs.google.com/u/2/document/d/${ID}/edit`,
+      `https://docs.google.com/u/2/document/d/${ID}/export?format=txt`],
+    'the default account, spelled out': [`https://docs.google.com/document/u/0/d/${ID}/edit`,
+      `https://docs.google.com/document/u/0/d/${ID}/export?format=txt`],
+    'no account in the url at all': [`https://docs.google.com/document/d/${ID}/edit`,
+      `https://docs.google.com/document/d/${ID}/export?format=txt`],
+  };
+  for (const [name, [url, want]] of Object.entries(cases)) {
+    const f = stubFetch(res('Body.'));
+    const ad = A.pick(url, { fetch: f, documentTitle: () => 'x - Google Docs' });
+    eq('scoped fetch: ' + name + ' — id survives', ad.id, ID);
+    eq('scoped fetch: ' + name + ' — export url', ad.exportUrl, want);
+    await ad.articleText();
+    eq('scoped fetch: ' + name + ' — that is the url fetched', f.calls[0].url, want);
+  }
 }
 
 // ---- 7. every failure resolves to '' (content.js then extracts generically) ----
@@ -169,6 +262,54 @@ const res = (body, extra) => Object.assign({
   eq('failure: no answer at all', await mk(stubFetch(null)).articleText(), '');
   eq('failure: no fetch in this world',
     await A.pick(url, { fetch: null, documentTitle: () => '' }).articleText(), '');
+
+  // the live one: the wrong account answers 200 with a chooser, and says
+  // text/html only sometimes — the body has to be enough on its own
+  const PICKER = '<!DOCTYPE html><html lang="en"><head><title>Choose an account</title></head>' +
+    '<body><h1>Choose an account</h1><p>to continue to Google Docs</p></body></html>';
+  eq('failure: a 200 account chooser, content-type and all',
+    await mk(stubFetch(res(PICKER, { headers: { get: () => 'text/html; charset=UTF-8' } }))).articleText(), '');
+  eq('failure: …and the same chooser mislabelled text/plain',
+    await mk(stubFetch(res(PICKER))).articleText(), '');
+  eq('failure: an html body with no doctype and a 200 text/plain',
+    await mk(stubFetch(res('<html><body>Sign in</body></html>'))).articleText(), '');
+  eq('failure: a meta-refresh to accounts.google.com',
+    await mk(stubFetch(res('<meta http-equiv="refresh" content="0;url=https://accounts.google.com/">'))).articleText(), '');
+  eq('failure: a 200 with nothing in it', await mk(stubFetch(res('   \n  '))).articleText(), '');
+
+  // …and every one of them says WHY, because content.js logs it and the user
+  // is told the bots will not see the page
+  {
+    const picker = mk(stubFetch(res(PICKER)));
+    await picker.articleText();
+    ok('failure: an html body is reported as html', /HTML/.test(picker.lastError), picker.lastError);
+    ok('failure: …with the status it really came back with', /^HTTP 200\b/.test(picker.lastError), picker.lastError);
+    ok('failure: …and a peek at the body, capped', /Choose an account/.test(picker.lastError) &&
+      picker.lastError.length < 200, picker.lastError);
+
+    const notFound = mk(stubFetch(res('nope', { ok: false, status: 404 })));
+    await notFound.articleText();
+    eq('failure: a 404 is reported as its status', notFound.lastError, 'HTTP 404');
+
+    const threw = mk(stubFetch(() => { throw new Error('Failed to fetch'); }));
+    await threw.articleText();
+    ok('failure: a network throw carries the message', /Failed to fetch/.test(threw.lastError), threw.lastError);
+
+    const empty = mk(stubFetch(res('   ')));
+    await empty.articleText();
+    ok('failure: an empty body says so', /empty/.test(empty.lastError), empty.lastError);
+
+    // the retry the extension now performs (a failed export never sets the
+    // sent-once flag): the second attempt succeeds and clears the reason
+    let n = 0;
+    const flaky = mk(stubFetch(() => (++n === 1 ? res(PICKER) : res('Real text.'))));
+    const first = await flaky.articleText();
+    const why = flaky.lastError;
+    const second = await flaky.articleText();
+    ok('failure: a later attempt that works clears the reason',
+      first === '' && !!why && second === 'Real text.' && flaky.lastError === '',
+      JSON.stringify([first, why, second, flaky.lastError]));
+  }
 
   // a very long doc is truncated here, not at the companion's 6000 — the
   // server does the real capping and this is only a transport ceiling

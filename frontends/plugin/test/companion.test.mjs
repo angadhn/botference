@@ -32,7 +32,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(pred, what, ms = 8000) {
   const t0 = Date.now();
   for (;;) {
-    const v = pred();
+    const v = await pred(); // predicates may be async (a fetch, a file read)
     if (v) return v;
     if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
     await sleep(20);
@@ -153,6 +153,7 @@ async function main() {
       PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
       MOCK_BRIDGE_LOG: logFile,
       MOCK_TURN_DELAY_MS: '250',
+      PLUGIN_SID_WAIT_MS: '600', // the sid-capture wait, shortened for tests
     },
   });
   const base = srv.base;
@@ -304,7 +305,11 @@ async function main() {
   });
 
   await test('the session id from the projects event is stored on the page', async () => {
-    const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+    // the sid only becomes visible after the turn, so the capture is a wait
+    const page = await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      return p.session_id ? p : null;
+    }, 'sid capture');
     assert.equal(page.session_id, 'sess-1');
   });
 
@@ -324,9 +329,35 @@ async function main() {
     assert.ok(sent[2].startsWith('@all '), '@all routes to the room');
     const start = stream.events.slice(before).find(e => e.kind === 'turn-start');
     assert.deepEqual(start.agents, ['claude', 'codex'], '@all engages both agents');
-    const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE2)}`)).json;
+    const page = await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(PAGE2)}`)).json;
+      return p.session_id ? p : null;
+    }, 'sid capture on page 2');
+    // REGRESSION: the bridge's snapshot still says sess-1 while the new chat
+    // is empty. Binding page 2 to sess-1 is the bug that put a new page in
+    // another page's council chat.
     assert.equal(page.session_id, 'sess-2');
+    assert.notEqual(page.session_id, 'sess-1', 'a new page never inherits the live session');
+    const first = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+    assert.equal(first.session_id, 'sess-1', 'and page 1 keeps its own');
     assert.deepEqual(page.threads[0].msgs.map(m => m.author), ['angadh', 'claude', 'codex']);
+  });
+
+  await test('a page whose session is never confirmed stays unbound and says so', async () => {
+    const url = 'https://ledger.test/2026/no-session';
+    await POST(base, '/page', { url, title: 'No Session', site: 'ledger.test' });
+    const before = stream.events.length;
+    await POST(base, '/thread', {
+      url, quote: 'unconfirmed', prefix: '', suffix: '',
+      msg: { text: '@claude hello [mock:nosid]' },
+    });
+    const err = await waitFor(() => stream.events.slice(before)
+      .find(e => e.type === 'chat' && e.kind === 'error'), 'capture failure error');
+    assert.match(err.error, /couldn't create a session for this page/);
+    assert.ok(stream.events.slice(before).some(e => e.kind === 'turn-end'), 'the turn still ends');
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.equal(page.session_id, null, 'better unbound than bound to a stranger');
+    assert.equal(page.threads[0].msgs.length, 2, 'the reply is still kept');
   });
 
   await test('returning to the first page resumes its session', async () => {

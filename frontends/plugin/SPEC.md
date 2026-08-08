@@ -330,7 +330,15 @@ Contract deltas agreed during live testing — authoritative over the sections a
   POSTing /orphan). First adapter: Google Docs — text via the doc's
   `/export?format=txt` fetched DIRECTLY from the content script with
   `credentials:'include'` (same-origin, user's session; never the background proxy),
-  title minus the " - Google Docs" suffix. Failures fall back to generic extraction.
+  title minus the " - Google Docs" suffix. The export URL preserves the page's
+  `/u/<n>/` account scope; HTML responses (account choosers serve 200) count as
+  failures. On highlights-off sites a failed adapter read sends NO article_text
+  (never generic junk), surfaces a dismissible warning in Page chat, and does not
+  consume the once-only context — the next mention retries. Session capture: a new
+  page's sid is captured only from a projects snapshot showing a session that
+  differs from the pre-/new active one (new chats are invisible until their first
+  turn; /rename emits no snapshot); failure leaves session_id null and errors the
+  turn; /resume is confirmed against the snapshot before the user turn is sent.
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

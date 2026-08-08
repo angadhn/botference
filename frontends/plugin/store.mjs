@@ -141,6 +141,19 @@ export function upsertPage({ url, title, site }) {
   return savePage(page);
 }
 
+// Two pages sharing one botference session is proof of the sid-inheritance
+// bug, never a legitimate state: every page gets its own /new chat.
+export function pageWithSession(sid, exceptUrl) {
+  if (!sid) return null;
+  const skip = exceptUrl ? pageKey(exceptUrl) : null;
+  for (const key of Object.keys(readIndex())) {
+    if (key === skip) continue;
+    const p = readJson(path.join(PAGES, `${key}.json`), null);
+    if (p && p.session_id === sid) return p.url;
+  }
+  return null;
+}
+
 export const PAGE_CHAT = '__page__';
 export const findThread = (page, id) => (page.threads || []).find(t => t.id === id) || null;
 // both comment threads and the page chat are "a list of msgs" to every caller

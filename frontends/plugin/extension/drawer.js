@@ -271,6 +271,7 @@
       liveAgents: {},      // target -> agents actually seen streaming this turn
       speaker: {},         // target -> the agent whose stream arrived most recently
       notes: {},           // target -> transient status line {text, err}
+      warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       sending: {},         // target -> true while its POST is in flight
       pending: null,       // {quote, prefix, suffix} while composing a new thread
@@ -684,6 +685,17 @@
     const nohlHtml = () => CAPS.highlights ? ''
       : `<div class="nohl">${esc(NOHL)}</div>`;
 
+    // Something the bots are about to answer WITHOUT — the page text a site
+    // adapter could not read (content.js sets it). It belongs in Page chat
+    // because that is where the user is typing the question, and it is
+    // dismissible because it reports a turn already spent, not a task: there
+    // is nothing to do here but reload the tab.
+    const warnHtml = () => D.warn
+      ? `<div class="ctxwarn" role="status"><span class="wtext">${esc(D.warn)}</span>` +
+        `<button class="rebtn wclose" data-act="warn-dismiss" type="button" ` +
+        `title="Dismiss" aria-label="Dismiss this warning">✕</button></div>`
+      : '';
+
     function renderComments() {
       const threads = (D.page && D.page.threads) || [];
       let html = offlineHtml() + nohlHtml();
@@ -701,7 +713,7 @@
     function renderChat() {
       const msgs = (D.page && D.page.page_chat) || [];
       const body = msgsHtml(PAGE_TARGET, msgs) + streamsHtml(PAGE_TARGET);
-      D.el.chat.innerHTML = offlineHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${authorColor(opts.author || 'you')}">
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${authorColor(opts.author || 'you')}">
         ${body ? `<div class="thread">${body}</div>` : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`}
         ${statusHtml(PAGE_TARGET)}
         ${composerHtml(PAGE_TARGET, 'Ask about this page…')}
@@ -1213,6 +1225,7 @@
         if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
         if (act === 'interrupt') { note(null, 'stopping…'); cb('onInterrupt')(); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }
+        if (act === 'warn-dismiss') { setWarning(''); return; }
         if (act === 'edit') { startEdit(btn); return; }
         if (act === 'del-msg') { doDelete(target, btn.dataset.ts); return; }
         if (act === 'del-thread') { D.confirm = target; render(); return; }
@@ -1428,6 +1441,15 @@
     }
 
     function setOrphans(map) { D.orphans = map || {}; render(); return D; }
+    // '' clears it — a later turn that DID read the page must not leave the
+    // warning standing behind it
+    function setWarning(text) {
+      const t = String(text == null ? '' : text);
+      if (D.warn === t) return D;
+      D.warn = t;
+      render();
+      return D;
+    }
     function setConn(on) {
       const changed = D.connected !== !!on || !D.connKnown;
       D.connected = !!on; D.connKnown = true;
@@ -1540,7 +1562,7 @@
     }
 
     Object.assign(D, {
-      mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme,
+      mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages,

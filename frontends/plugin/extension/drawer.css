@@ -287,6 +287,20 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .notice code { font: 12px var(--mono); background: var(--rail); padding: 1px 5px; border-radius: 5px }
 .notice button { display: block; margin-top: 9px }
 
+/* the page text a site adapter could not read: quieter than .notice (nothing
+   is broken — the bots are simply about to answer blind) but never silent,
+   because the first turn cannot be retried once it has gone out */
+.ctxwarn {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 0 0 12px; padding: 8px 6px 8px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--bad) 7%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--bad) 28%, transparent);
+  font: 12px/1.55 var(--sans); color: var(--fg);
+}
+.ctxwarn .wtext { flex: 1 1 auto; min-width: 0 }
+.ctxwarn .wclose { opacity: .6; font-size: 12px }
+.ctxwarn .wclose:hover { opacity: 1 }
+
 /* ── thread card (mirrors .card / .thread / .reply in the review UI) ────── */
 .card {
   position: relative; margin: 0 0 12px;

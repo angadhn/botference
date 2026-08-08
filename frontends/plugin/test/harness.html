@@ -37,7 +37,13 @@
                      a stubbed /export?format=txt. Exercises the site-adapter
                      path — highlights off, Page chat only, document text
                      fetched directly rather than scraped. `?selftest=1` runs
-                     the gdocs assertions instead of the article ones.
+                     the gdocs assertions instead of the article ones, and
+                     drives BOTH export worlds: an account-chooser page served
+                     200 (no article_text, a visible warning, no Docs UI junk)
+                     and then the real export.
+    ?badexport=1     (with ?gdocs=1) the export answers 200 with a Google
+                     account chooser instead of the document — the failure
+                     state, with its warning in Page chat (screenshot state)
     ?wide=NNN        start the drawer at NNN px instead of the stored width
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -170,6 +176,23 @@ for (let i = 1; DOC_TEXT.length < 14000; i++) {
 DOC_TEXT += 'SENTINEL-PAST-THE-CAP';
 const exportFetches = [];     // every direct fetch the adapter made
 
+// The live failure, reproduced: when the user's Docs session is scoped to a
+// second account, the export can answer 200 with an ACCOUNT CHOOSER instead of
+// the document. Nothing about that is an error — no status, no throw — which
+// is exactly why the Docs UI used to end up in the bots' context. Flip
+// DOC_FETCH_MODE to 'picker' to be in that world.
+let DOC_FETCH_MODE = Q.get('badexport') === '1' ? 'picker' : 'ok';
+const ACCOUNT_PICKER =
+  '<!DOCTYPE html><html lang="en"><head><title>Choose an account</title></head>' +
+  '<body><h1>Choose an account</h1><p>to continue to Google Docs</p></body></html>';
+
+// what content.js logged for debugging — the failure has to leave a trail
+const consoleWarns = [];
+{
+  const real = console.warn.bind(console);
+  console.warn = (...a) => { consoleWarns.push(a.map(String).join(' ')); real(...a); };
+}
+
 if (GDOCS) {
   window.__BFP_HREF = DOC_HREF;
   document.title = DOC_TITLE + ' - Google Docs';
@@ -179,6 +202,11 @@ if (GDOCS) {
   window.fetch = async (url, init) => {
     exportFetches.push({ url: String(url), credentials: init && init.credentials });
     if (String(url) === DOC_EXPORT) {
+      if (DOC_FETCH_MODE === 'picker') {
+        return { ok: true, status: 200,
+          headers: { get: () => 'text/html; charset=UTF-8' },
+          text: async () => ACCOUNT_PICKER };
+      }
       return { ok: true, status: 200,
         headers: { get: () => 'text/plain; charset=UTF-8' },
         text: async () => '﻿\r\n  ' + DOC_TEXT.replace(/\n/g, '\r\n') + '\r\n\r\n  ' };
@@ -1146,11 +1174,65 @@ async function selftestGdocs() {
     !document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
   sel.removeAllRanges();
 
-  // ---- first mention: the document itself, fetched directly ----
+  // ---- the export url follows the account the tab is signed in as ----
+  // A doc opened in a second profile exports from THAT profile; the bare url
+  // is answered by the default account, which is where the account chooser
+  // came from.
+  const scoped = window.BFPAdapters.pick('https://docs.google.com/document/u/1/d/' + DOC_ID + '/edit');
+  check('a doc opened under a second account exports from that account',
+    !!scoped && scoped.exportUrl === 'https://docs.google.com/document/u/1/d/' + DOC_ID + '/export?format=txt');
+  check('…and this tab’s unscoped doc still exports from the bare url',
+    window.BFPAdapters.pick(DOC_HREF).exportUrl === DOC_EXPORT);
+
+  // ---- the first-turn context is armed until a session actually exists ----
+  // The companion attaches the page text to the session-creating turn and
+  // never again, so a mention that died before /new must not count as spent.
+  check('the record this page loaded with has no session yet', RECORD.session_id === null);
+  check('…so nothing has suppressed the first-turn context',
+    window.__bfp.sentContext === false && window.__bfp.sessionKnown === false);
+  RECORD.session_id = 'sess-already-going';
+  await window.__bfp.loadPage();
+  check('a page that already has a session suppresses it', window.__bfp.sessionKnown === true);
+  RECORD.session_id = null;
+  await window.__bfp.loadPage();
+  check('…and a mention that never got as far as creating one re-arms it',
+    window.__bfp.sessionKnown === false && window.__bfp.sentContext === false);
+
+  // ---- the export bounces to an account chooser (the live failure) ----
+  // 200, text/html, and a page where the document should be. The turn goes out
+  // with NO context rather than with the Docs UI scraped off the page.
+  DOC_FETCH_MODE = 'picker';
+  chatTa().value = '@claude first read — what is this arguing?';
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  const burned = await until(() => postedMsgs.find(p => /first read/.test(p.text || '')));
+  check('a mention still goes out when the export fails', !!burned);
+  check('…carrying no article_text at all — not an empty one',
+    !!burned && burned.article_text === undefined && !('article_text' in burned && burned.article_text !== undefined));
+  check('…and no Google Docs UI text scraped in its place',
+    !postedMsgs.some(p => /File · Edit · View/.test(p.article_text || '')));
+  check('…the attempt did go to docs.google.com itself',
+    exportFetches.some(f => f.url === DOC_EXPORT));
+  const warn = await until(() => S.querySelector('.pane[data-pane="chat"] .ctxwarn'));
+  check('the drawer says so, in the pane the question was typed in',
+    !!warn && /couldn’t read the document text/.test(warn.textContent) &&
+    /the bots won’t see the page contents/.test(warn.textContent));
+  check('…at the same 12px floor as the drawer’s other pane notes',
+    !!warn && getComputedStyle(warn).fontSize === '12px');
+  check('…and the underlying failure was logged for debugging',
+    consoleWarns.some(l => /gdocs/.test(l) && /HTML/i.test(l) && /HTTP 200/.test(l)));
+  check('a failed export leaves the context armed for the next mention',
+    window.__bfp.sentContext === false);
+  await until(() => !S.querySelector('.pane[data-pane="chat"] .status-chip'), 20000);
+
+  // ---- the retry: the next mention carries the document, fetched directly ----
+  DOC_FETCH_MODE = 'ok';
   chatTa().value = '@claude what is this draft actually arguing?';
   S.querySelector('.pane[data-pane="chat"] .composer .send').click();
   const first = await until(() => postedMsgs.find(p => /what is this draft actually arguing/.test(p.text || '')));
-  check('the first @mention carries article_text', !!first && typeof first.article_text === 'string');
+  check('the mention after a failed export carries article_text after all',
+    !!first && typeof first.article_text === 'string');
+  check('…and the warning comes down once the document has been read',
+    !!await until(() => !S.querySelector('.pane[data-pane="chat"] .ctxwarn')));
   const at = (first && first.article_text) || '';
   check('…and it is the exported document', at.startsWith(DOC_HEAD));
   check('…not the page DOM, which holds no document text at all',
@@ -1187,6 +1269,15 @@ async function selftestGdocs() {
   check('still nothing painted after a full turn',
     document.querySelectorAll('mark.bfp-hl').length === 0);
 
+  // ---- the warning is dismissible: it reports a spent turn, not a task ----
+  d.setWarning('couldn’t read the document text — the bots won’t see the page contents (reload the tab to retry)');
+  const warn2 = await until(() => S.querySelector('.pane[data-pane="chat"] .ctxwarn'));
+  check('the warning can be raised again on a later failure', !!warn2);
+  if (warn2) warn2.querySelector('[data-act="warn-dismiss"]').click();
+  check('…and dismissed', !S.querySelector('.pane[data-pane="chat"] .ctxwarn'));
+  check('dismissing it leaves the conversation untouched',
+    S.querySelectorAll('.pane[data-pane="chat"] .reply.bot').length > botsBefore);
+
   const bad = out.filter(l => l[0] === '✗');
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
@@ -1216,6 +1307,9 @@ window.__bfp.activate(false).then(() => {
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     if (Q.get('selftest') === '1') { setTimeout(GDOCS ? selftestGdocs : selftest, 250); return; }
+    // the failure state without waiting for a bot turn: asking content.js for
+    // the first-turn context is what discovers the export is a chooser
+    if (GDOCS && Q.get('badexport') === '1') setTimeout(() => window.__bfp.articleText(), 250);
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
     if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
     const demo = Q.get('demo');

@@ -25,7 +25,13 @@
 //   title()                  headline for the page record; '' falls through to
 //                            the generic <h1>/og:title/document.title rule.
 //   articleText()            Promise<string> of first-turn context; '' (any
-//                            failure) falls through to the generic extraction.
+//                            failure) falls through to the generic extraction
+//                            — EXCEPT where highlights are off, because a page
+//                            whose text is not in the DOM has no honest
+//                            fallback: the generic extraction would scrape the
+//                            app's chrome (menus, tab titles) and hand it to
+//                            the bots as "the document". There we send no
+//                            article_text at all and warn the user instead.
 //                            Adapters may fetch their OWN origin directly —
 //                            Google Docs' text only exists behind the user's
 //                            session, which the background proxy (companion
@@ -85,7 +91,19 @@
   let locs = {};          // threadId -> {start,end}
   let pendingSel = null;  // {quote,prefix,suffix,start,end} awaiting the 💬 click
   let drawer = null;
-  let sentArticleText = false;
+  // The first-turn context travels once per page and the companion only ever
+  // uses it on the session-creating turn (chat.mjs: `first: !sid`). Two
+  // separate facts decide whether to send it, and neither implies the other:
+  let sentArticleText = false;   // this tab has already put it on the wire
+  let pageHasSession = false;    // the record already carries a session_id
+  const needContext = () => !sentArticleText && !pageHasSession;
+
+  // A burned first turn cannot be retried: after the session exists the page
+  // text is never attached again. So when the adapter cannot read the
+  // document, saying nothing is not an option — the bots would answer
+  // confidently about a page they never saw.
+  const CONTEXT_FAIL_NOTE =
+    'couldn’t read the document text — the bots won’t see the page contents (reload the tab to retry)';
 
   // ---- background API proxy ----------------------------------------------
   function bg(msg) {
@@ -154,14 +172,35 @@
 
   // First-turn context. An adapter gets first refusal — it may have to fetch
   // the real document from its own origin — and anything it cannot produce
-  // (non-200, network, signed out) comes back '' so the generic extraction
-  // still runs. Awaited at the two call sites below, before the POST.
+  // (non-200, network, signed out, an account chooser served 200) comes back
+  // ''. Awaited at the two call sites below, before the POST.
+  //
+  // What happens next depends on whether this page HAS text in the DOM:
+  //   highlights on  → the generic extraction still runs (an adapter is an
+  //                    optimisation there, not the only way in)
+  //   highlights off → nothing. Google Docs paints to a canvas, so the generic
+  //                    extraction returns the app's chrome — a menu bar and a
+  //                    tab title dressed up as the document. That is worse
+  //                    than no context, because it reads like context. Send
+  //                    none, log why, and put a warning where the user types.
   async function articleText() {
     if (SITE && SITE.articleText) {
+      let t = '';
       try {
-        const t = await SITE.articleText();
-        if (t) return t;
-      } catch { /* fall through to the page itself */ }
+        t = await SITE.articleText();
+      } catch (e) {
+        if (!SITE.lastError) SITE.lastError = 'threw: ' + String((e && e.message) || e);
+      }
+      if (t) {
+        if (drawer) drawer.setWarning('');
+        return t;
+      }
+      console.warn('[botference] ' + (SITE.name || 'adapter') + ' could not read this page: ' +
+        (SITE.lastError || 'no text') + ' — ' + (SITE.exportUrl || HREF));
+      if (!CAPS.highlights) {
+        if (drawer) drawer.setWarning(CONTEXT_FAIL_NOTE);
+        return '';
+      }
     }
     return genericArticleText();
   }
@@ -258,7 +297,12 @@
     PAGE = rec && rec.url ? rec : { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
     PAGE.threads = PAGE.threads || [];
     PAGE.page_chat = PAGE.page_chat || [];
-    if (PAGE.session_id) sentArticleText = true;
+    // The escape hatch for a burned turn: suppression follows the RECORD, not
+    // a memory of having tried. A mention that never got as far as creating a
+    // session leaves session_id null — the bots never received the page — so
+    // the next load arms the context again rather than treating the lost turn
+    // as the first one.
+    pageHasSession = !!PAGE.session_id;
     reanchorAll();
     if (drawer) drawer.setPage(PAGE);
     bg({ t: 'badge', count: PAGE.threads.length });
@@ -302,7 +346,12 @@
         // page order is the extension's knowledge, not the server's: tell it
         // where in the stack this thread belongs (companion honours `index`)
         if (pendingSel) body.index = pageOrderIndex(pendingSel.start);
-        if (MENTION.test(text) && !sentArticleText) { body.article_text = await articleText(); sentArticleText = true; }
+        // an empty answer is NOT sent as an empty field: no article_text at
+        // all, and the flag stays down so the next mention tries again
+        if (MENTION.test(text) && needContext()) {
+          const t = await articleText();
+          if (t) { body.article_text = t; sentArticleText = true; }
+        }
         const r = await api('POST', '/thread', body);
         if (!r.ok) return { ok: false, error: r.error };
         const thread = (r.data && r.data.thread) || null;
@@ -326,7 +375,10 @@
 
       onReply: async (threadId, text) => {
         const body = { url: URL_NOW, thread_id: threadId, text };
-        if (MENTION.test(text) && !sentArticleText) { body.article_text = await articleText(); sentArticleText = true; }
+        if (MENTION.test(text) && needContext()) {
+          const t = await articleText();
+          if (t) { body.article_text = t; sentArticleText = true; }
+        }
         const r = await api('POST', '/reply', body);
         if (!r.ok) return { ok: false, error: r.error };
         const msg = r.data && r.data.msg;
@@ -574,6 +626,10 @@
   window.__bfp = {
     activate, loadPage, reanchorAll, headline, articleText, normUrl,
     site: SITE, caps: CAPS,
+    // the two halves of the first-turn-context rule, observable so the harness
+    // can assert the escape hatch instead of trusting it
+    get sentContext() { return sentArticleText; },
+    get sessionKnown() { return pageHasSession; },
     get drawer() { return drawer; },
     get page() { return PAGE; },
   };

@@ -42,9 +42,14 @@ const completionContext = () => emit({
   },
 });
 const touch = id => sessions.find(s => s.session_id === id)
-  || (sessions.push({ session_id: id, title: 'Untitled' }), sessions[sessions.length - 1]);
+  || (sessions.push({ session_id: id, title: 'Untitled', entries: 0 }), sessions[sessions.length - 1]);
 
+// Faithful to project_panel_snapshot: a chat with no transcript entries is
+// invisible here, so a just-created session cannot be flagged active — the
+// snapshot still shows the PREVIOUS chat. This is what made a new page inherit
+// another page's session id.
 function projects() {
+  const visible = sessions.filter(s => s.entries > 0);
   emit({
     type: 'projects',
     active_project_id: 'plugin-pages',
@@ -52,8 +57,8 @@ function projects() {
     inbox_sessions: [],
     projects: [{
       id: 'plugin-pages', title: 'Plugin pages', status: 'active', next_action: '',
-      active: true, session_count: sessions.length,
-      sessions: sessions.map(s => ({
+      active: true, session_count: visible.length,
+      sessions: visible.map(s => ({
         session_id: s.session_id, title: s.title,
         updated_at: new Date().toISOString(), active: s.session_id === sid,
       })),
@@ -71,13 +76,15 @@ function input(text) {
     return ready();
   }
   if (text.startsWith('/rename ')) {
+    // the real _rename_session persists but never syncs the panel: no
+    // projects event here at all
     touch(sid).title = text.slice('/rename '.length);
-    projects();
     room('system', `Renamed chat to ${touch(sid).title}`);
     return ready();
   }
   if (text.startsWith('/resume ')) {
-    sid = text.slice('/resume '.length).trim(); touch(sid);
+    sid = text.slice('/resume '.length).trim();
+    touch(sid).entries ||= 1; // a resumable chat has content, so the panel sees it
     emit({ type: 'clear_panes' });
     // replayed history: the companion must NOT mistake these for new replies
     emit({ type: 'room', speaker: 'claude', text: 'MOCK claude reply.', restored: true });
@@ -118,6 +125,14 @@ function input(text) {
     if (/\[mock:pct\]/.test(text)) { use.claude_pct += 5; use.codex_pct += 4; }
     status();
     emit({ type: 'ready' });
+    // the chat has an entry now, so the panel can finally see it — and the
+    // snapshot lands AFTER the ready, exactly as the real bridge's post-turn
+    // sync does. [mock:nosid] withholds it, simulating a bridge that never
+    // confirms the new session.
+    if (sid && !/\[mock:nosid\]/.test(text)) {
+      touch(sid).entries += 1;
+      setTimeout(projects, 30);
+    }
   }, DELAY);
 }
 
