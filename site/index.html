@@ -4,15 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Botference — one room, three minds</title>
-<meta name="description" content="Botference is a multi-LLM planning council: you, Claude, and Codex in one terminal room. The bots debate each other directly and hand you an implementation plan.">
+<meta name="description" content="Botference is a multi-LLM council: you, Claude, and Codex in one room. It runs in your terminal, in your browser, over your documents — and, with the web annotator, on any article page you read.">
 <meta property="og:title" content="Botference — one room, three minds">
-<meta property="og:description" content="A planning council for your terminal: you, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
+<meta property="og:description" content="A council for your terminal, your browser, your documents — and any page on the web. You, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
 <meta property="og:image" content="https://botference.com/ink-ui.png">
 <meta property="og:url" content="https://botference.com">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Botference — one room, three minds">
-<meta name="twitter:description" content="A planning council for your terminal: you, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
+<meta name="twitter:description" content="A council for your terminal, your browser, your documents — and any page on the web. You, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
 <meta name="twitter:image" content="https://botference.com/ink-ui.png">
 <link rel="canonical" href="https://botference.com/">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🏛️</text></svg>">
@@ -23,7 +23,14 @@
   "name": "Botference",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
-  "description": "A multi-LLM planning council for the terminal: Claude Code and Codex debate each other in a free-form room, steered by you, and produce an implementation plan.",
+  "description": "A multi-LLM council: Claude Code and Codex debate each other in a free-form room, steered by you. Runs in the terminal, in the browser and on your phone, over your LaTeX and Markdown documents, and — via a browser extension — on any article page on the web.",
+  "featureList": [
+    "Free-form planning council in the terminal (botference plan)",
+    "Council on the web and phone with a per-agent context panel (botference plan --web)",
+    "Google-Docs-style document review with bots in the threads (botference review)",
+    "Web annotator: highlight and comment on any page, summon the bots inline (botference plugin)",
+    "Headless screenshots so agents can see their own UIs and charts (botference see)"
+  ],
   "url": "https://botference.com",
   "downloadUrl": "https://github.com/angadhn/botference",
   "license": "https://github.com/angadhn/botference/blob/main/LICENSE",
@@ -90,6 +97,17 @@
   .hero .actors { margin-top: 14px; font-size: 15px; }
   .actors b { font-weight: 700; }
   .actors .you { color: var(--you); } .actors .claude { color: var(--claude); } .actors .codex { color: var(--codex); }
+  .hero a.new {
+    display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    justify-content: center; margin-top: 22px; padding: 7px 15px;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: var(--panel); color: var(--muted); font-size: 13px; text-align: center;
+    transition: border-color .12s ease;
+  }
+  .hero a.new:hover { text-decoration: none; border-color: var(--accent); }
+  .hero a.new b { color: var(--accent); text-transform: uppercase; letter-spacing: .8px; font-size: 11px; }
+  .hero a.new code { color: var(--accent2); }
+
   .cta { margin-top: 34px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 
   .install {
@@ -142,6 +160,14 @@
   .transcript .sys { color: var(--warn); }
   .transcript .dim { color: var(--muted); }
 
+  section.surfaces { padding: 72px 0 12px; }
+  .card .cmd { display: block; margin-bottom: 10px; color: var(--accent2); font-size: 13px; }
+  .card .cmd::before { content: "$ "; color: var(--accent); }
+  .card .cmd.slash::before { content: none; }
+
+  section.annotate { padding: 72px 0 12px; }
+  section.annotate .term { margin-top: 30px; }
+
   section.quick { padding: 72px 0 12px; }
   .steps { counter-reset: step; display: grid; gap: 12px; }
   .step {
@@ -167,6 +193,10 @@
   footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
   footer .spacer { margin-left: auto; }
 
+  @media (max-width: 860px) {
+    nav .links a.hide-sm { display: none; }
+  }
+
   @media (max-width: 640px) {
     .hero { padding-top: 56px; }
     nav .links a.hide-sm { display: none; }
@@ -182,6 +212,8 @@
       <div class="links">
         <a class="hide-sm" href="#features">features</a>
         <a class="hide-sm" href="#how">how it works</a>
+        <a class="hide-sm" href="#surfaces">where it runs</a>
+        <a class="hide-sm" href="#annotator">annotator</a>
         <a class="hide-sm" href="#quickstart">quickstart</a>
         <a class="btn" href="https://github.com/angadhn/botference">GitHub</a>
         <a class="btn sponsor" href="https://github.com/sponsors/angadhn">♥ Sponsor</a>
@@ -196,14 +228,17 @@
     <div class="hero">
       <h1>One room.<br><em>Three minds.</em></h1>
       <p class="sub">
-        Botference is a planning council for your terminal: a free-form group chat
-        where the AIs debate each other directly — and hand you an implementation
-        plan you can take anywhere.
+        Botference is a council you can convene anywhere: a free-form group chat
+        where the AIs debate each other directly — in your terminal, in your browser,
+        over your documents, and on any page you're reading.
       </p>
       <p class="actors">
         <b class="you">you</b> steer · <b class="claude">Claude Code</b> argues ·
         <b class="codex">Codex</b> pushes back
       </p>
+      <a class="new" href="#annotator">
+        <b>new</b> <code>botference plugin</code> — highlight any article, summon the council in the margin
+      </a>
       <div class="cta">
         <a class="btn primary" href="#quickstart">Get started</a>
         <a class="btn" href="https://github.com/angadhn/botference">Star on GitHub</a>
@@ -280,6 +315,126 @@
         <div class="line"><span class="sys">System:</span> Writer consensus → lead set to @codex</div>
         <div class="line"><span class="you">[You]</span> /draft</div>
         <div class="line"><span class="sys">System:</span> Updated implementation-plan.md · Claude is reviewing draft round 1…</div>
+      </div>
+    </section>
+
+    <section class="surfaces" id="surfaces">
+      <h2>Where the council runs</h2>
+      <p class="lede">
+        Same council, same slash commands, same saved chats — met wherever the
+        thinking is actually happening.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3>Your terminal</h3>
+          <code class="cmd">botference plan</code>
+          <p>The Ink TUI, and the default. Projects panel on the left, council room on
+          the right, budgeted bot-to-bot debate in the middle.</p>
+        </div>
+        <div class="card">
+          <h3>Your browser and your phone</h3>
+          <code class="cmd">botference plan --web · --share</code>
+          <p>A chat app for the same council: streaming transcript, slash commands,
+          image attachments, markdown replies — <span class="k">tables render as
+          tables</span>. An <b>agents panel</b> gives each bot a context gauge
+          (<code>43% · 86k / 200k</code>), live tool activity, a model picker and a relay
+          button. <code>--share</code> adds a password gate and a tunnel: one URL, open
+          it on your phone.</p>
+        </div>
+        <div class="card">
+          <h3>Your documents</h3>
+          <code class="cmd">botference review</code>
+          <p>Google-Docs-style comments on rendered LaTeX or Markdown. Tag
+          <span class="k">@claude</span>/<span class="k">@codex</span> in a margin comment
+          and they reply in the thread and post suggestions that apply to the real source
+          — accept, ⚡ apply, ✓ commit. A hub puts every paper behind one door.</p>
+        </div>
+        <div class="card">
+          <h3>Any page on the web</h3>
+          <code class="cmd">botference plugin</code>
+          <p>The margin-comment experience, unbundled from your repo and injected into
+          articles you read. <a href="#annotator">See below →</a></p>
+        </div>
+        <div class="card">
+          <h3>Agents that can see</h3>
+          <code class="cmd">botference see &lt;service | file | url&gt;</code>
+          <p>Layout failures throw no errors. <code>see</code> renders headless Chrome at
+          phone and desktop viewports and writes PNGs the bot reads back — a running
+          service, a URL, or <span class="k">a local HTML or SVG file</span>, so a chart it
+          just wrote gets looked at before it says done.</p>
+        </div>
+        <div class="card">
+          <h3>Fresh memory on demand</h3>
+          <code class="cmd slash">/relay @both</code>
+          <p>When context fills, the healthier agent writes <b>one</b> shared handoff and
+          both sessions restart from it, in parallel — one generation instead of two. The
+          agents panel shows when each memory was last reset, and who wrote the handoff.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="annotate" id="annotator">
+      <h2>Comment on any page. Summon the council in the margin.</h2>
+      <p class="lede">
+        <code>botference plugin</code> is a browser extension plus a small local
+        companion. Highlight a passage on any article, leave a comment, and mention
+        <span class="k">@claude</span>, <span class="k">@codex</span> or
+        <span class="k">@all</span> — in the first comment or any later reply — and the
+        bots answer in that same thread, streaming into a drawer on the right. It is
+        <b>your</b> CLI subscription doing the reading: no API keys, no third-party
+        service, nothing leaving your machine but the page you were already on.
+      </p>
+
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i><span>defensesindepth.bio — botference plugin</span></div>
+        <img src="plugin-annotator.png" loading="lazy"
+             alt="A live essay open in the browser with two passages highlighted in yellow, and the botference annotator drawer open on the right: a Comments tab with a thread anchored to the first highlight, where Codex answers two follow-up questions inline with links back into the article's earlier parts.">
+      </div>
+      <p class="caption">Highlight → ask → <span class="k">@codex</span> answers in the
+      margin. The thread stays anchored to the sentence that started it.</p>
+
+      <div class="grid" style="margin-top:34px">
+        <div class="card">
+          <h3>One subscription is enough</h3>
+          <p>Tags route to whichever CLI you have installed — <span class="k">@claude</span>
+          alone works fine. With both, <span class="k">@all</span> gets you two models
+          disagreeing about the same paragraph, which is the whole point of a council.</p>
+        </div>
+        <div class="card">
+          <h3>It all lands in your notes</h3>
+          <p>Every page exports to <b>one Obsidian note</b>: each highlight as a
+          blockquote with its thread underneath, page chat appended. Bot conversations
+          also persist as council chats under a <b>Plugin pages</b> project, titled by the
+          article's own headline — archive or delete them like any other chat.</p>
+        </div>
+        <div class="card">
+          <h3>Comments outlive the page</h3>
+          <p>Anchors are quote-plus-context, so an edited article degrades a comment to an
+          <b>orphaned</b> badge rather than losing it. Two tabs in the drawer — threads on
+          highlights, and one <b>Page chat</b> about the whole article — with the last one
+          you used remembered per site.</p>
+        </div>
+      </div>
+
+      <div class="steps" style="margin-top:16px">
+        <div class="step"><div>
+          <b>Load the extension once</b>
+          <p>No store listing yet: <code>brave://extensions</code> (or
+          <code>chrome://extensions</code>) → Developer mode → Load unpacked →
+          <code>frontends/plugin/extension</code>.</p>
+        </div></div>
+        <div class="step"><div>
+          <b>Run the companion from your workspace</b>
+          <p><code>botference plugin</code> serves it on <code>127.0.0.1:4189</code>, so bot
+          chats land in that workspace's council. <code>--no-agents</code> for
+          annotations only.</p>
+        </div></div>
+        <div class="step"><div>
+          <b>Forget about it</b>
+          <p><code>botference plugin --install-autostart</code> (macOS) starts the companion
+          at every login and restarts it if it dies. <code>--uninstall-autostart</code>
+          undoes it.</p>
+        </div></div>
       </div>
     </section>
 
