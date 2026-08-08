@@ -3,17 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Botference — one room, three minds</title>
-<meta name="description" content="Botference is a multi-LLM council: you, Claude, and Codex in one room. It runs in your terminal, in your browser, over your documents — and, with the web annotator, on any article page you read.">
-<meta property="og:title" content="Botference — one room, three minds">
-<meta property="og:description" content="A council for your terminal, your browser, your documents — and any page on the web. You, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
-<meta property="og:image" content="https://botference.com/ink-ui.png">
-<meta property="og:url" content="https://botference.com">
+<title>Botference — one room, three minds: a multi-LLM planning council</title>
+<meta name="description" content="A multi-LLM planning council: Claude Code and Codex in one room — in your terminal, your browser, or as an AI web annotator that lets you chat with any webpage.">
+<meta name="author" content="Angadh Nanjangud">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="theme-color" content="#0b0e12">
+<meta property="og:site_name" content="Botference">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Botference — one room, three minds: a multi-LLM planning council">
+<meta property="og:description" content="Run Claude Code and Codex together in one free-form room: they debate, converge, and write the plan. In your terminal, your browser, over your documents — and, with the AI web annotator, on any page on the web.">
+<meta property="og:image" content="https://botference.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="Botference: one room, three minds — a multi-LLM planning council where Claude Code and Codex debate each other while you hold the floor.">
+<meta property="og:url" content="https://botference.com/">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Botference — one room, three minds">
-<meta name="twitter:description" content="A council for your terminal, your browser, your documents — and any page on the web. You, Claude Code, and Codex in one free-form room. The AIs debate, converge, and write the plan.">
-<meta name="twitter:image" content="https://botference.com/ink-ui.png">
+<meta name="twitter:title" content="Botference — one room, three minds: a multi-LLM planning council">
+<meta name="twitter:description" content="Run Claude Code and Codex together in one free-form room: they debate, converge, and write the plan. In your terminal, your browser, over your documents — and, with the AI web annotator, on any page on the web.">
+<meta name="twitter:image" content="https://botference.com/og-image.png">
+<meta name="twitter:image:alt" content="Botference: one room, three minds — a multi-LLM planning council where Claude Code and Codex debate each other while you hold the floor.">
 <link rel="canonical" href="https://botference.com/">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🏛️</text></svg>">
 <script type="application/ld+json">
@@ -31,11 +41,79 @@
     "Web annotator: highlight and comment on any page, summon the bots inline (botference plugin)",
     "Headless screenshots so agents can see their own UIs and charts (botference see)"
   ],
-  "url": "https://botference.com",
+  "url": "https://botference.com/",
   "downloadUrl": "https://github.com/angadhn/botference",
   "license": "https://github.com/angadhn/botference/blob/main/LICENSE",
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "softwareRequirements": "Claude Code CLI and/or Codex CLI (authenticated), Python 3, Node.js + npm",
+  "isAccessibleForFree": true,
+  "image": "https://botference.com/og-image.png",
+  "screenshot": [
+    "https://botference.com/ink-ui.png",
+    "https://botference.com/plugin-annotator.png"
+  ],
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "availability": "https://schema.org/InStock"
+  },
   "author": { "@type": "Person", "name": "Angadh Nanjangud", "url": "https://github.com/angadhn" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Can I chat with a webpage using my Claude subscription?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The web annotator talks to the Claude Code CLI already installed and authenticated on your machine, so it runs on your existing subscription. There are no API keys to paste and no third-party service in the middle — nothing leaves your machine but the page you were already reading."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I comment on any website with AI?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Load the browser extension once from frontends/plugin/extension, run botference plugin in your workspace, then highlight a passage on any page and leave a comment mentioning @claude, @codex or @all. The bots reply in that same margin thread, streaming into a drawer on the right."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use Claude Code and Codex together in one conversation?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "That is the point of the council. Both CLIs join one free-form room where a reply can hand the floor to the other model, recursively, until the thread converges and returns to you. Bot-to-bot debate runs against a visible turn and token budget, and typing interrupts at the next turn boundary."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need an API key to use Botference?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Botference drives the Claude Code and Codex CLIs you already have logged in, so it inherits their authentication and your existing plan. One CLI is enough to start — with both installed, @all gets you two models disagreeing about the same problem."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Botference free and open source?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes — MIT-licensed and built in the open, free to clone and run. The only cost is the CLI subscriptions you already pay for. Sponsorship is optional and funds continued development."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I run the planning council on my phone?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. botference plan --web serves the same council as a chat app — streaming transcript, slash commands, image attachments, markdown replies, plus a per-agent context panel. Adding --share puts a password gate and a tunnel in front of it: one URL to open on your phone."
+      }
+    }
+  ]
 }
 </script>
 <style>
@@ -169,6 +247,7 @@
   section.annotate .term { margin-top: 30px; }
 
   section.quick { padding: 72px 0 12px; }
+  section.faq { padding: 72px 0 12px; }
   .steps { counter-reset: step; display: grid; gap: 12px; }
   .step {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -208,13 +287,14 @@
 <header>
   <div class="wrap">
     <nav>
-      <a class="logo" href="#">botference<span>_</span></a>
+      <a class="logo" href="/" title="Botference — home">botference<span>_</span></a>
       <div class="links">
         <a class="hide-sm" href="#features">features</a>
         <a class="hide-sm" href="#how">how it works</a>
         <a class="hide-sm" href="#surfaces">where it runs</a>
         <a class="hide-sm" href="#annotator">annotator</a>
         <a class="hide-sm" href="#quickstart">quickstart</a>
+        <a class="hide-sm" href="#faq">faq</a>
         <a class="btn" href="https://github.com/angadhn/botference">GitHub</a>
         <a class="btn sponsor" href="https://github.com/sponsors/angadhn">♥ Sponsor</a>
       </div>
@@ -228,7 +308,7 @@
     <div class="hero">
       <h1>One room.<br><em>Three minds.</em></h1>
       <p class="sub">
-        Botference is a council you can convene anywhere: a free-form group chat
+        Botference is a multi-LLM planning council you can convene anywhere: a free-form group chat
         where the AIs debate each other directly — in your terminal, in your browser,
         over your documents, and on any page you're reading.
       </p>
@@ -252,13 +332,14 @@
     <div class="shot">
       <div class="term">
         <div class="bar"><i></i><i></i><i></i><span>botference plan — council</span></div>
-        <img src="ink-ui.png" alt="Botference Ink TUI: projects panel and council room where Claude and Codex debate a planning question" loading="lazy">
+        <img src="ink-ui.png" width="2448" height="1128" decoding="async"
+             alt="Botference terminal UI: a projects panel on the left and the council room on the right, where Claude Code and Codex debate a planning question turn by turn.">
       </div>
       <p class="caption">The council, live: Codex opens by naming the weakest point in Claude's framing. That's the point.</p>
     </div>
 
     <section class="features" id="features">
-      <h2>Why a council?</h2>
+      <h2>Why a multi-LLM council?</h2>
       <p class="lede">
         One model tells you what you want to hear. Two models with permission to
         disagree — and a human holding the floor — produce plans that survive contact
@@ -305,7 +386,7 @@
     </section>
 
     <section class="how" id="how">
-      <h2>How it works</h2>
+      <h2>How the council works</h2>
       <p class="lede">You talk. They talk to each other. Files come out.</p>
       <div class="transcript">
         <div class="line"><span class="you">[You]</span> @all Should the export pipeline be streaming or batch?</div>
@@ -374,7 +455,7 @@
     </section>
 
     <section class="annotate" id="annotator">
-      <h2>Comment on any page. Summon the council in the margin.</h2>
+      <h2>AI web annotator — comment on any page, summon the council</h2>
       <p class="lede">
         <code>botference plugin</code> is a browser extension plus a small local
         companion. Highlight a passage on any article, leave a comment, and mention
@@ -387,7 +468,7 @@
 
       <div class="term">
         <div class="bar"><i></i><i></i><i></i><span>defensesindepth.bio — botference plugin</span></div>
-        <img src="plugin-annotator.png" loading="lazy"
+        <img src="plugin-annotator.png" width="2024" height="1225" loading="lazy" decoding="async"
              alt="A live essay open in the browser with two passages highlighted in yellow, and the botference annotator drawer open on the right: a Comments tab with a thread anchored to the first highlight, where Codex answers two follow-up questions inline with links back into the article's earlier parts.">
       </div>
       <p class="caption">Highlight → ask → <span class="k">@codex</span> answers in the
@@ -454,6 +535,55 @@
           <b>Plan out loud</b>
           <p>Ask both minds anything. Let them argue. <code>/draft</code> when it converges, <code>/finalize</code> when you're happy. Take <code>implementation-plan.md</code> into any workflow you like.</p>
         </div></div>
+      </div>
+    </section>
+
+    <section class="faq" id="faq">
+      <h2>Questions people actually ask</h2>
+      <p class="lede">Short answers. Longer ones live in the README.</p>
+      <div class="grid">
+        <div class="card">
+          <h3>Can I chat with a webpage using my Claude subscription?</h3>
+          <p>Yes. The web annotator talks to the <b>Claude Code CLI</b> already installed and
+          authenticated on your machine, so it runs on your existing subscription. There are no
+          API keys to paste and no third-party service in the middle — nothing leaves your
+          machine but the page you were already reading.</p>
+        </div>
+        <div class="card">
+          <h3>How do I comment on any website with AI?</h3>
+          <p>Load the browser extension once from <code>frontends/plugin/extension</code>, run
+          <code>botference plugin</code> in your workspace, then highlight a passage on any page
+          and leave a comment mentioning <span class="k">@claude</span>,
+          <span class="k">@codex</span> or <span class="k">@all</span>. The bots reply in that
+          same margin thread, streaming into a drawer on the right.</p>
+        </div>
+        <div class="card">
+          <h3>Can I use Claude Code and Codex together in one conversation?</h3>
+          <p>That is the point of the council. Both CLIs join one free-form room where a reply can
+          hand the floor to the other model, recursively, until the thread converges and returns
+          to you. Bot-to-bot debate runs against a visible turn and token budget, and typing
+          interrupts at the next turn boundary.</p>
+        </div>
+        <div class="card">
+          <h3>Do I need an API key to use Botference?</h3>
+          <p>No. Botference drives the Claude Code and Codex CLIs you already have logged in, so
+          it inherits their authentication and your existing plan. One CLI is enough to start —
+          with both installed, <span class="k">@all</span> gets you two models disagreeing about
+          the same problem.</p>
+        </div>
+        <div class="card">
+          <h3>Is Botference free and open source?</h3>
+          <p>Yes — MIT-licensed and built in the open, free to clone and run. The only cost is the
+          CLI subscriptions you already pay for. <a href="https://github.com/sponsors/angadhn">Sponsorship</a>
+          is optional and funds continued development.</p>
+        </div>
+        <div class="card">
+          <h3>Can I run the planning council on my phone?</h3>
+          <p>Yes. <code>botference plan --web</code> serves the same council as a chat app —
+          streaming transcript, slash commands, image attachments, markdown replies, plus a
+          per-agent context panel. Adding <code>--share</code> puts a password gate and a tunnel in
+          front of it: one URL to open on your phone.</p>
+        </div>
       </div>
     </section>
 
