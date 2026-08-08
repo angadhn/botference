@@ -120,7 +120,7 @@ All bodies JSON. All error responses `{ok:false, error:"…"}` with 4xx/5xx.
 | POST | `/edit` | `{url, thread_id, ts, text}` | edits own (author=config.author) msg |
 | POST | `/delete` | `{url, thread_id, ts?}` | ts absent → whole thread; present → one msg |
 | POST | `/orphan` | `{url, thread_id, orphaned:bool}` | extension reports anchor status |
-| POST | `/export` | `{url}` | writes Obsidian note → `{ok, path}` |
+| POST | `/export` | `{url, mode?}` (`mode`: `all` (default) \| `comments`) | writes Obsidian note → `{ok, path, mode}` |
 | POST | `/interrupt` | `{url}` | forwards interrupt to bridge if that page's turn is running |
 | GET | `/test-page` | — | serves `test/fixtures/article.html` |
 
@@ -423,6 +423,17 @@ Contract deltas agreed during live testing — authoritative over the sections a
   links a font-only `katex-fonts.css` into the PAGE document (both web-accessible).
   Obsidian export is unchanged and deliberately so: the raw `$…$` source is what
   reaches the vault, because Obsidian typesets it itself.
+- Folding is the reader's, once they say so: any thread (or page chat) with 3+
+  drawn units carries a manual control in the same slot the expander uses —
+  "Hide N earlier replies" when it is open, "Show N earlier replies" when it is
+  not. A hand fold is tighter than the automatic one (KEEP_TAIL_SHUT = 1: the
+  root and the newest unit), and the choice outranks the rule for that target
+  for the rest of the session — in memory, per target, cleared with everything
+  else on a page delete. Neither direction is undone by a new reply: a folded
+  thread that gets an answer shows it at the bottom and stays folded, and one
+  opened by hand stays open however long it grows. `collapsePlan(units, manual)`
+  takes undefined (the rule decides) / FOLD_OPEN / FOLD_SHUT and is the whole
+  state machine (test/collapse.test.mjs).
 - Long threads fold: past 3 drawn units a thread (and the page chat) keeps its
   root and the last 2 units and hides the rest behind one `.showmore` line,
   "Show N earlier replies" — singular "Show 1 earlier reply" when the fold hides
@@ -436,6 +447,22 @@ Contract deltas agreed during live testing — authoritative over the sections a
   a page delete); the outbox, streaming blocks and the status chip render after
   the fold and are therefore always visible. `msgUnits`/`collapsePlan` are pure
   and unit-tested (test/collapse.test.mjs).
+- Export comes in two modes, chosen at the crystal: **Everything** (the note as
+  it has always been) and **Comments only** — the reading without the
+  conversation. "Comments only" drops every bot-authored message and every
+  message of the reader's own that carries a mention (`hasMention`, the
+  companion's own routing rule, and `isBotAuthor` from the same roster in
+  chat.mjs — there is no second regex), and drops the page chat entirely, since
+  it is bot conversation by nature. The blockquote ALWAYS survives, for every
+  thread, including one whose messages all filtered away: the passage someone
+  marked is the annotation. Mode rides POST /export as `mode` and comes back in
+  the answer; anything unrecognised (an older extension included) is `all`.
+  One note per page either way — a re-export REPLACES, so changing your mind is
+  one more click, not a second file. The chooser is two rows, one click each,
+  Esc dismisses, and the last choice is remembered in extension storage
+  (`bfp:exportMode`, the same idiom as the tab and the width) and preselected.
+  A row's crystal in the Pages view does NOT ask — it runs the remembered mode
+  straight away and names it in its tooltip.
 - Liveness: the drawer converges on the record without a reload, always. The
   event stream is a fast path, never the only one. Every content→background
   message carries `page_url` and re-registers the tab in the worker's routing

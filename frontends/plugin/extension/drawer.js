@@ -50,11 +50,12 @@
 //                                        → {ok, text}   (POST /tick) — `text`
 //                                        is the message's authoritative new
 //                                        body and replaces the optimistic tick
-//   onExport()                          → {ok, path} to show in the footbar
+//   onExport(mode)                      → {ok, path} to show in the footbar
+//                                         mode: 'all' | 'comments'
 //   onPages()                           → {ok, index:{pageKey:{url,title,threads,
 //                                         has_session,updated_at}}}   (GET /index)
 //   onOpenPage(url)                     → {ok}  open/focus a tab at that page
-//   onExportPage(url)                   → {ok, path}          (POST /export {url})
+//   onExportPage(url, mode)             → {ok, path}   (POST /export {url, mode})
 //   onDeletePage(url)                   → {ok, session_deleted, current}
 //                                         (POST /delete-page) — `current` says
 //                                         the deleted page is the one we are on
@@ -101,6 +102,7 @@
   const PAGE_TARGET = '__page__';
   const TAB_KEY = 'bfp:lastTab';
   const WIDTH_KEY = 'bfp:width';
+  const EXPORT_KEY = 'bfp:exportMode';
   const W_DEFAULT = 420, W_MIN = 320, W_MAX = 720;
 
   // The drawer pushes the page aside rather than covering it, so the width has
@@ -549,6 +551,20 @@
   const COLLAPSE_AT = 3;   // units on screen before any folding happens
   const KEEP_HEAD = 1;     // the thread root: the message under the quote
   const KEEP_TAIL = 2;     // the tail of the conversation, always live
+  // A fold the reader ASKED for is tighter than one the drawer chose: they
+  // want the thread out of the way, not tidied. The newest unit still shows,
+  // so a folded thread that gets an answer still says so.
+  const KEEP_TAIL_SHUT = 1;
+
+  // …and once they have said so, it is theirs. `manual` is undefined (the rule
+  // above decides), FOLD_OPEN (they opened it) or FOLD_SHUT (they folded it),
+  // and a manual choice survives everything that happens afterwards — a thread
+  // somebody folded must not spring open because a bot answered into it.
+  const FOLD_OPEN = 'open';
+  const FOLD_SHUT = 'shut';
+  // Whether a manual fold/unfold control is worth offering at all: three drawn
+  // units is the same threshold the automatic rule uses.
+  const foldable = units => ((units || []).length) >= COLLAPSE_AT;
 
   // The raw msgs list grouped exactly the way msgsHtml draws it.
   function msgUnits(list) {
@@ -567,11 +583,17 @@
   // What to draw, given those units: units [from, to) fold away and `hidden`
   // is what the expander line claims. Pure, and the only place the arithmetic
   // lives (test/collapse.test.mjs drives it directly).
-  function collapsePlan(units, expanded) {
+  //
+  // `manual` is the reader's own decision about THIS thread, and it outranks
+  // the threshold in both directions: FOLD_SHUT folds a thread the rule would
+  // have left alone, FOLD_OPEN (or a plain `true`, which is what the expander
+  // used to set) keeps one open however long it grows.
+  function collapsePlan(units, manual) {
     const n = (units || []).length;
-    const none = { collapsed: false, from: n, to: n, hidden: 0 };
-    if (expanded || n <= COLLAPSE_AT) return none;
-    const from = KEEP_HEAD, to = n - KEEP_TAIL;
+    const none = { collapsed: false, from: n, to: n, hidden: 0, manual: false };
+    const shut = manual === FOLD_SHUT;
+    if (!shut && (manual || n <= COLLAPSE_AT)) return none;
+    const from = KEEP_HEAD, to = n - (shut ? KEEP_TAIL_SHUT : KEEP_TAIL);
     if (to <= from) return none;
     // tool rows are process detail, not messages — the line says "9 earlier
     // replies" and the reader must find nine of them when it opens
@@ -582,7 +604,7 @@
     // hiding one message is worth the line ("Show 1 earlier reply"); hiding
     // none is not — a middle made only of tool rows has nothing to announce
     if (hidden < 1) return none;
-    return { collapsed: true, from, to, hidden };
+    return { collapsed: true, from, to, hidden, manual: shut };
   }
 
   // ── @-mentions: completing the handle you are typing ─────────────────────
@@ -626,11 +648,13 @@
     return out;
   }
 
-  // What the expander line says. A fold that hides exactly one message has to
-  // read "Show 1 earlier reply" — folds start at four units now, so the
-  // singular is the common case, not a curiosity.
-  function moreLabel(hidden) {
-    return 'Show ' + hidden + ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
+  // What the fold line says, in either direction. A fold that hides exactly one
+  // message has to read "Show 1 earlier reply" — folds start at four units, so
+  // the singular is the common case, not a curiosity — and the manual control
+  // is the same sentence with the other verb, because it is the same idea.
+  function moreLabel(hidden, action) {
+    return (action === 'hide' ? 'Hide ' : 'Show ') + hidden +
+      ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
   }
 
   // Official agent logomarks for the header presence cluster — the same Simple
@@ -733,6 +757,10 @@
       heard: {},
       // the open @-menu, if any: {target, start, end, caret, items, index}
       mention: null,
+      // 'all' | 'comments' — which export the crystal will run, remembered
+      // across sessions by content.js (setExportMode) and changed by choosing
+      exportMode: 'all',
+      exportOpen: false,
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       // OPTIMISTIC SEND (round 5). A message the user has committed to but the
@@ -833,6 +861,7 @@
         foot: shadow.querySelector('.footbar'),
         selbtn: shadow.querySelector('.selbtn'),
         pop: shadow.querySelector('.popover.models'),
+        exportpick: shadow.querySelector('.popover.exportpick'),
         grip: shadow.querySelector('.grip'),
       };
       // the Comments tab is left on screen — the drawer must read the same on
@@ -848,6 +877,7 @@
       paintTabs();
       restoreTab();
       restoreWidth();
+      restoreExportMode();
       return D;
     }
 
@@ -867,6 +897,7 @@
     </div>
   </div>
   <div class="popover models" role="dialog" aria-label="Models" hidden></div>
+  <div class="popover exportpick" role="menu" aria-label="Export to Obsidian" hidden></div>
   <nav class="tabs">
     <button class="tab on" data-tab="comments" type="button">Comments<span class="count">0</span></button>
     <button class="tab" data-tab="chat" type="button">Page chat</button>
@@ -944,6 +975,19 @@
     }
     function rememberWidth() {
       try { chrome.storage.local.set({ [WIDTH_KEY]: D.width }); } catch { /* ignore */ }
+    }
+
+    // ---- which export, remembered ---------------------------------------
+    // The same one-key-in-extension-storage idiom as the tab and the width:
+    // a preference this small has no business being a settings screen, and a
+    // reader who exports comments-only once almost always means it next time.
+    function restoreExportMode() {
+      try {
+        chrome.storage.local.get(EXPORT_KEY, r => setExportMode(r && r[EXPORT_KEY]));
+      } catch { /* no storage (harness fallback) — 'all', as it always was */ }
+    }
+    function rememberExportMode() {
+      try { chrome.storage.local.set({ [EXPORT_KEY]: D.exportMode }); } catch { /* ignore */ }
     }
 
     // Drag from the left edge. Width is measured off the viewport's right edge
@@ -1051,9 +1095,14 @@
 
     // The folded middle of a long thread. One line, no card, no chrome — it is
     // a way back into the scrollback, not a participant in the conversation.
+    // The same line, with the other verb, is how a thread is folded BY HAND:
+    // one control in one place that means "less of this" / "more of this",
+    // rather than a second widget somewhere else in the card.
     function moreHtml(target, hidden) {
-      const label = moreLabel(hidden);
-      return `<button class="showmore" data-act="expand" data-target="${esc(target)}" type="button" aria-expanded="false">${esc(label)}</button>`;
+      return `<button class="showmore" data-act="expand" data-target="${esc(target)}" type="button" aria-expanded="false">${esc(moreLabel(hidden))}</button>`;
+    }
+    function foldHtml(target, hidden) {
+      return `<button class="showmore fold" data-act="fold" data-target="${esc(target)}" type="button" aria-expanded="true">${esc(moreLabel(hidden, 'hide'))}</button>`;
     }
 
     // The thread root and the live tail stay on screen; everything between them
@@ -1061,12 +1110,20 @@
     // streaming block and the status chip are rendered by cardHtml AFTER this,
     // so a message being sent, a bot mid-answer and "agents are working…" are
     // never inside the fold.
+    //
+    // Open, and long enough to be worth folding, the same slot offers the way
+    // back: "Hide N earlier replies", which is what a reader who has finished
+    // with a thread wants and had no way to say.
     function msgsHtml(target, list) {
       const units = msgUnits(list);
-      const plan = collapsePlan(units, !!D.expanded[target]);
+      const plan = collapsePlan(units, D.expanded[target]);
+      // what folding this thread by hand WOULD hide — the label needs the
+      // number, and a thread with nothing to hide is offered no control
+      const byHand = plan.collapsed || !foldable(units) ? null : collapsePlan(units, FOLD_SHUT);
       const out = [];
       for (let i = 0; i < units.length; i++) {
         if (plan.collapsed && i === plan.from) out.push(moreHtml(target, plan.hidden));
+        else if (byHand && byHand.collapsed && i === byHand.from) out.push(foldHtml(target, byHand.hidden));
         if (plan.collapsed && i >= plan.from && i < plan.to) continue;
         out.push(unitHtml(target, units[i]));
       }
@@ -1435,6 +1492,11 @@
     const isCurrentUrl = u =>
       sameUrl(u, opts.currentUrl) || sameUrl(u, D.page && D.page.url);
 
+    // A row's crystal runs straight away in the remembered mode, so the row
+    // has to SAY which one that is — the chooser lives on the header's crystal.
+    const EXPORT_ROW_TIP = () => 'Export this page to Obsidian (' +
+      (D.exportMode === 'comments' ? 'comments only' : 'everything') + ')';
+
     function pageRowHtml(p) {
       const n = p.threads | 0;
       const cur = isCurrentUrl(p.url);
@@ -1452,7 +1514,7 @@
              <button class="rebtn yes" data-act="page-del-yes" data-url="${esc(p.url)}" type="button">yes</button>
              <button class="rebtn" data-act="page-del-no" type="button">no</button></span>`
         : `<button class="rebtn pexport" data-act="page-export" data-url="${esc(p.url)}" type="button"
-             title="Export this page to Obsidian" aria-label="Export this page to Obsidian">${OBSIDIAN_SVG}</button>
+             title="${esc(EXPORT_ROW_TIP())}" aria-label="${esc(EXPORT_ROW_TIP())}">${OBSIDIAN_SVG}</button>
            <button class="rebtn pdel" data-act="page-del" data-url="${esc(p.url)}" type="button"
              title="Delete this page and its chat" aria-label="Delete this page and its chat">✕</button>`;
       return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}">
@@ -2062,6 +2124,8 @@
           const inBox = e.target.closest && e.target.closest('.composer textarea');
           if (inBox) syncMention(inBox); else closeMention();
         }
+        // …and so does anything that is not the export chooser or its button
+        if (D.exportOpen && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
           if (card && card.dataset.thread !== PAGE_TARGET) focus(card.dataset.thread);
@@ -2074,7 +2138,8 @@
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
         if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
         if (act === 'verb') { setVerbosity(btn.dataset.level); return; }
-        if (act === 'export') { doExport(); return; }
+        if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
+        if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
         if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
@@ -2096,7 +2161,10 @@
         if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
         // one way only: a thread the reader has opened stays open for the
         // session. Re-folding it under them while they read is not a feature.
-        if (act === 'expand') { D.expanded[target] = true; render(); return; }
+        // both directions are the reader's own decision about this thread, and
+        // both stick for the session — a new reply never undoes either
+        if (act === 'expand') { D.expanded[target] = FOLD_OPEN; render(); return; }
+        if (act === 'fold') { D.expanded[target] = FOLD_SHUT; render(); return; }
         if (act === 'interrupt') { doInterrupt(btn); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }
         if (act === 'warn-dismiss') { setWarning(''); return; }
@@ -2157,8 +2225,11 @@
         }
         if (e.key === 'Escape') {
           e.stopPropagation();
-          // Esc peels one layer at a time: popover first, then the drawer
-          if (D.modelsOpen) closeModels(); else close();
+          // Esc peels one layer at a time: whichever popover is open, then the
+          // drawer itself
+          if (D.exportOpen) closeExportPick();
+          else if (D.modelsOpen) closeModels();
+          else close();
           return;
         }
         if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return;
@@ -2468,8 +2539,54 @@
       paintFoot();
       setTimeout(() => { if (String(D.foot).startsWith('exported')) { D.foot = ''; paintFoot(); } }, 6000);
     }
-    const doExport = () => exportFlow(() => cb('onExport')());
-    const doExportPage = url => exportFlow(() => cb('onExportPage')(url));
+    const doExport = mode => exportFlow(() => cb('onExport')(mode));
+    // A row in the pages list exports SILENTLY, in whichever mode was last
+    // chosen: those rows are one-click controls in a list, and a popover per
+    // row would turn tidying up into a dialogue. The mode is the same setting
+    // the chooser writes, and the row's tooltip says which one it will use.
+    const doExportPage = url => exportFlow(() => cb('onExportPage')(url, D.exportMode));
+
+    // ---- which export ------------------------------------------------------
+    // Two modes, one click each: the whole conversation, or the reading
+    // without it. The last choice is remembered (content.js persists it) and
+    // preselected, so the second export of a session is one click on the same
+    // row it was last time.
+    const EXPORT_PICK = [
+      ['comments', 'Comments only', 'highlights and your own notes'],
+      ['all', 'Everything', 'including the bot conversation'],
+    ];
+    function paintExportPick() {
+      if (!D.mounted || !D.el.exportpick) return;
+      D.el.exportpick.innerHTML =
+        `<div class="pop-head">Export to Obsidian</div>` +
+        EXPORT_PICK.map(([mode, name, why]) =>
+          `<button class="xrow${mode === D.exportMode ? ' on' : ''}" type="button" role="menuitem"
+             data-act="export-run" data-mode="${esc(mode)}"${mode === D.exportMode ? ' aria-current="true"' : ''}>
+             <span class="xname">${esc(name)}</span><span class="xwhy">${esc(why)}</span></button>`).join('');
+      D.el.exportpick.hidden = false;
+    }
+    function openExportPick() {
+      if (!D.mounted) return;
+      closeModels();
+      D.exportOpen = true;
+      paintExportPick();
+      if (typeof document !== 'undefined') document.addEventListener('mousedown', onExportDown, true);
+    }
+    function closeExportPick() {
+      D.exportOpen = false;
+      if (D.mounted && D.el.exportpick) { D.el.exportpick.hidden = true; D.el.exportpick.innerHTML = ''; }
+      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onExportDown, true);
+    }
+    const onExportDown = e => { if (!D.host || !D.host.contains(e.target)) closeExportPick(); };
+    // Choosing is also remembering: the next export, here or from a row in the
+    // pages list, uses this until it is changed again.
+    function pickExport(mode) {
+      D.exportMode = mode === 'comments' ? 'comments' : 'all';
+      closeExportPick();
+      rememberExportMode();
+      if (D.view === 'pages') renderPages();   // the rows' tooltips name the mode
+      doExport(D.exportMode);
+    }
 
     // Deleting a page from the library takes its bot session with it. The
     // companion may refuse (a turn is running for that page); that refusal is
@@ -2621,6 +2738,17 @@
     }
 
     function setOrphans(map) { D.orphans = map || {}; render(); return D; }
+    // The export mode this browser used last (content.js reads it out of
+    // extension storage on wake). Only preselects a row and labels the pages
+    // list's own crystals — nothing exports because of it.
+    function setExportMode(mode) {
+      const m = mode === 'comments' ? 'comments' : 'all';
+      if (m === D.exportMode) return D;
+      D.exportMode = m;
+      if (D.exportOpen) paintExportPick();
+      if (D.view === 'pages') renderPages();
+      return D;
+    }
     // Who this browser is on this companion. Arrives asynchronously (the
     // background asks storage, and /health on a local companion), so it can
     // land after the first render — hence a setter and a re-render rather than
@@ -2815,6 +2943,7 @@
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
+      setExportMode,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
@@ -2838,7 +2967,8 @@
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     // pure, for the node tests — no DOM, no KaTeX
     scanMath, protectMath,                                  // test/math.test.mjs
-    msgUnits, collapsePlan, moreLabel, COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL,  // test/collapse.test.mjs
+    msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
+    COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
   };
   root.BFPDrawer = api;

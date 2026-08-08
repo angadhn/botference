@@ -176,6 +176,19 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font: 700 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); margin-bottom: 8px;
 }
+/* the export chooser: two rows, one click each, no settings anywhere */
+.popover.exportpick { min-width: 232px; padding: 9px 9px 10px }
+.xrow {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: 7px 9px; margin-top: 3px; border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--fg);
+}
+.xrow:hover, .xrow:focus-visible { background: color-mix(in srgb, var(--accent) 12%, transparent) }
+/* the one it will use if you just click: marked, not preselected-looking */
+.xrow.on { border-color: var(--accent) }
+.xname { display: block; font: 600 13px/1.35 var(--sans) }
+.xwhy { display: block; font: 12px/1.4 var(--sans); color: var(--muted) }
+
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }
 /* asleep/unknown: still both agents, still legible, visibly not in play */
@@ -528,6 +541,10 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   text-align: left; cursor: pointer; min-height: 22px;
 }
 .showmore:hover { color: var(--accent); border-bottom-color: var(--accent) }
+/* the same line asking for the opposite thing: quieter still, because folding
+   a thread is housekeeping, not a way back into anything */
+.showmore.fold { opacity: .65; border-bottom-style: dotted }
+.showmore.fold:hover, .showmore.fold:focus-visible { opacity: 1 }
 
 /* TeX math (KaTeX). katex.min.css is linked into this same shadow root ahead
    of this file; its @font-face rules are inert there, so content.js plants a

@@ -37,11 +37,13 @@ const bot = t => ({ author: 'claude', ts: t, text: t });
 const tools = t => ({ author: 'claude', ts: t, kind: 'tools', text: 'Explored\n└ Read' });
 const ids = units => units.map(u => u.map(m => m.ts));
 
-const plan = (msgs, expanded) => D.collapsePlan(D.msgUnits(msgs), !!expanded);
+// `fold` is the reader's own decision: undefined (the rule decides),
+// D.FOLD_OPEN / D.FOLD_SHUT, or the plain `true` the expander used to set
+const plan = (msgs, fold) => D.collapsePlan(D.msgUnits(msgs), fold);
 // what a reader would actually see, in order
-function visible(msgs, expanded) {
+function visible(msgs, fold) {
   const units = D.msgUnits(msgs);
-  const p = D.collapsePlan(units, !!expanded);
+  const p = D.collapsePlan(units, fold);
   const out = [];
   for (let i = 0; i < units.length; i++) {
     if (p.collapsed && i === p.from) out.push('⋯' + p.hidden);
@@ -191,7 +193,58 @@ function visible(msgs, expanded) {
   ok('the root is still on screen', seen[0] === 'u0');
 }
 
-// ---- 7. degenerate input ----------------------------------------------------
+// ---- 7. the reader's own decision outranks the rule -------------------------
+{
+  const line = n => {
+    const msgs = [];
+    for (let i = 0; i < n; i++) msgs.push(i % 2 ? bot('b' + i) : you('u' + i));
+    return msgs;
+  };
+  // three units: short enough to read straight through, long enough to be
+  // worth a control — which is exactly the case the rule does not cover
+  const three = line(3);
+  eq('three units are left open by the rule', plan(three).collapsed, false);
+  ok('…but the control is offered', D.foldable(D.msgUnits(three)));
+  const shut3 = D.collapsePlan(D.msgUnits(three), D.FOLD_SHUT);
+  ok('…and folding by hand folds it', shut3.collapsed === true, JSON.stringify(shut3));
+  eq('…hiding the middle', shut3.hidden, 1);
+  eq('…leaving the root and the newest unit',
+    visible(three, D.FOLD_SHUT), ['u0', '⋯1', 'u2']);
+
+  eq('two units are not worth a control', D.foldable(D.msgUnits(line(2))), false);
+  eq('nothing at all is not either', D.foldable([]), false);
+  eq('null units', D.foldable(null), false);
+
+  // a fold somebody ASKED for is tighter than one the drawer chose
+  const twelve = line(12);
+  eq('the rule keeps two units of tail', plan(twelve).hidden, 12 - D.KEEP_HEAD - D.KEEP_TAIL);
+  eq('…a hand fold keeps one', D.collapsePlan(D.msgUnits(twelve), D.FOLD_SHUT).hidden,
+    12 - D.KEEP_HEAD - D.KEEP_TAIL_SHUT);
+  eq('…and still shows the newest unit',
+    visible(twelve, D.FOLD_SHUT).slice(-1), ['b11']);
+
+  // …and opening by hand keeps a long thread open, however long it gets
+  eq('a thread opened by hand stays open', plan(twelve, D.FOLD_OPEN).collapsed, false);
+  eq('the plain `true` the expander used to set still means open',
+    plan(twelve, true).collapsed, false);
+
+  // the whole point of remembering: replies keep arriving
+  const grown = twelve.concat([you('ask'), bot('answer')]);
+  eq('a new exchange does not unfold a thread that was folded by hand',
+    plan(grown, D.FOLD_SHUT).collapsed, true);
+  ok('…and lands where it can be seen, without unfolding anything',
+    visible(grown, D.FOLD_SHUT).indexOf('answer') !== -1,
+    JSON.stringify(visible(grown, D.FOLD_SHUT)));
+  eq('a new exchange does not re-fold a thread that was opened by hand',
+    plan(grown, D.FOLD_OPEN).collapsed, false);
+
+  // the labels are one sentence with two verbs
+  eq('the expander asks to show', D.moreLabel(4), 'Show 4 earlier replies');
+  eq('the control asks to hide', D.moreLabel(4, 'hide'), 'Hide 4 earlier replies');
+  eq('…and the singular holds on both', D.moreLabel(1, 'hide'), 'Hide 1 earlier reply');
+}
+
+// ---- 8. degenerate input ----------------------------------------------------
 {
   eq('no units', D.collapsePlan([], false).collapsed, false);
   eq('null units', D.collapsePlan(null, false).collapsed, false);

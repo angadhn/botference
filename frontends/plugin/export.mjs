@@ -2,6 +2,9 @@
 // overwrite) so re-exporting after a new comment never leaves a second copy.
 import fs from 'node:fs';
 import path from 'node:path';
+// the routing rules, reused rather than re-guessed: what counts as a mention
+// and who counts as a bot are decided in exactly one place
+import { hasMention, isBotAuthor } from './chat.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -23,8 +26,30 @@ const authored = msgs => msgs.map(m => `**${m.author}:** ${m.text}`).join('\n');
 // (collapsed), the vault does not
 const readable = msgs => (msgs || []).filter(m => m.kind !== 'tools');
 
-export function renderNote(page, cfg, now = new Date()) {
+// ---- what goes in the note ------------------------------------------------
+// Two modes, and the difference is a filter, not a second renderer:
+//
+//   'all'       everything, exactly as it always was
+//   'comments'  the reading, without the conversation: no bot messages, and no
+//               messages of your own that were addressed to a bot (a line
+//               containing @claude/@codex/@all is a question, not a note).
+//               Page chat goes entirely — it is bot conversation by nature.
+//
+// The highlight ALWAYS survives, for every thread, whether or not anything is
+// left underneath it: the passage someone marked is the annotation, and a
+// quote with no note under it still says "this mattered".
+export const EXPORT_MODES = ['all', 'comments'];
+export const exportMode = m => (m === 'comments' ? 'comments' : 'all');
+
+export function keptMsgs(msgs, mode) {
+  const list = readable(msgs);
+  if (exportMode(mode) !== 'comments') return list;
+  return list.filter(m => m && !isBotAuthor(m.author) && !hasMention(m.text));
+}
+
+export function renderNote(page, cfg, now = new Date(), mode = 'all') {
   const author = (cfg && cfg.author) || 'angadh';
+  const only = exportMode(mode);
   const parts = [
     ['---',
       `url: ${page.url}`,
@@ -36,14 +61,16 @@ export function renderNote(page, cfg, now = new Date()) {
   ];
   for (const t of page.threads || []) {
     parts.push(blockquote(t.quote));
-    const msgs = readable(t.msgs);
+    const msgs = keptMsgs(t.msgs, only);
     if (!msgs.length) continue;
     // a lone comment of your own reads as prose under its quote; anything
     // with a second voice in it needs the speakers named
     parts.push(msgs.length === 1 && msgs[0].author === author
       ? String(msgs[0].text) : authored(msgs));
   }
-  const chat = readable(page.page_chat);
+  // the page chat is a conversation with the bots from end to end, so
+  // "comments only" has nothing to take from it
+  const chat = only === 'comments' ? [] : readable(page.page_chat);
   if (chat.length) parts.push('## Page chat', authored(chat));
   return parts.join('\n\n') + '\n';
 }
@@ -62,12 +89,15 @@ function targetFile(dir, title, url) {
   return path.join(dir, `${base} (100).md`);
 }
 
-export function exportPage(page, cfg, now = new Date()) {
+// One note per page whichever mode wrote it: re-exporting is a REPLACEMENT,
+// so a reader who decides they wanted the conversation after all exports
+// again and gets it, rather than collecting variants of the same page.
+export function exportPage(page, cfg, now = new Date(), mode = 'all') {
   const dir = path.join(cfg.vault_path, cfg.export_folder);
   fs.mkdirSync(dir, { recursive: true });
   const file = targetFile(dir, page.title || page.url, page.url);
   const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, renderNote(page, cfg, now));
+  fs.writeFileSync(tmp, renderNote(page, cfg, now, mode));
   fs.renameSync(tmp, file);
   return file;
 }

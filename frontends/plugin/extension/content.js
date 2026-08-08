@@ -729,10 +729,13 @@
         return { ok: true };
       },
 
-      onExport: async () => {
-        const r = await api('POST', '/export', { url: URL_NOW });
+      // `mode` is the reader's choice from the crystal's chooser: 'comments'
+      // (highlights and their own notes, no bot conversation) or 'all'. An
+      // absent mode is 'all', which is what /export has always written.
+      onExport: async mode => {
+        const r = await api('POST', '/export', { url: URL_NOW, mode });
         if (!r.ok) return failure(r);
-        return { ok: true, path: r.data && r.data.path };
+        return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode };
       },
 
       // ---- the pages library -------------------------------------------
@@ -748,10 +751,10 @@
       // opening another page is a tab operation, so only the background can do
       // it — it also arms the one-shot auto-open flag that page will consume
       onOpenPage: url => bg({ t: 'open-page', url }),
-      onExportPage: async url => {
-        const r = await api('POST', '/export', { url });
+      onExportPage: async (url, mode) => {
+        const r = await api('POST', '/export', { url, mode });
         if (!r.ok) return failure(r);
-        return { ok: true, path: r.data && r.data.path };
+        return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode };
       },
       // Deleting a page takes its bot session with it (`delete_session`) — a
       // page's chat is the page, and leaving an orphaned botference session

@@ -42,6 +42,11 @@ const RESUME_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 8000;
 
 export const MENTION_RE = /@(claude|codex|all)\b/i;
 export const hasMention = text => MENTION_RE.test(String(text || ''));
+// The same roster from the other end: who WROTE a message. A bot's author is
+// the agent's own name (chat.handle stamps 'claude'/'codex' from the bridge's
+// speaker), so one list answers both questions and there is no second place
+// for the agent names to drift.
+export const isBotAuthor = a => /^(claude|codex)\b/i.test(String(a || '').trim());
 
 // strict routing: a comment that tags exactly one bot is that bot's alone;
 // @all (or both tagged) engages the room

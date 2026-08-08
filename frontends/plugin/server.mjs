@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest } from './chat.mjs';
-import { exportPage } from './export.mjs';
+import { exportPage, exportMode } from './export.mjs';
 import { createHosted, CORS_HEADERS } from './hosted.mjs';
 import { pageView, pagesView } from './views.mjs';
 
@@ -562,7 +562,12 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const page = pageOf(res, data);
       if (!page) return;
-      try { ok(res, { path: exportPage(page, store.readConfig()) }); }
+      // `mode` decides what goes in the note: "comments" is the reading
+      // without the conversation (see export.mjs). Anything unrecognised —
+      // including an older extension that sends nothing — means everything,
+      // which is what /export has always done.
+      const mode = exportMode(data.mode);
+      try { ok(res, { path: exportPage(page, store.readConfig(), new Date(), mode), mode }); }
       catch (e) { fail(res, 500, `export failed: ${e.message}`); }
     });
   }

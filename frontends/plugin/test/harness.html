@@ -23,7 +23,8 @@
     ?offline=1       every companion call fails: onboarding notice + header state
     ?demo=select     script a real selection, stop at the floating 💬 button
     ?demo=compose    …and go on to open + pre-fill the new-comment composer
-    ?models=1        open the ⚙ agents popover (screenshot state)
+    ?models=1        open the ⚙ agents popover
+    ?export=1        open the export chooser on the Obsidian crystal (screenshot state)
     ?nobridge=1      …with the bridge not started: the sleeping state
     ?noagents=1      …with the companion started --no-agents ("agents are off")
     ?nostatus=1      …with a companion that reports no `status` at all: the
@@ -35,6 +36,8 @@
                      broken formula that must survive as its own source
     ?long=1          grow the second comment thread past the fold, so the
                      "Show N earlier replies" line is on screen
+                     (&open=1 opens it, so the manual "Hide N earlier
+                     replies" control is on screen instead)
     ?pages=1         open the Pages view — the plugin's own list of every
                      annotated page (screenshot state)
     ?mention=1       the @-menu held open over the page-chat composer, with
@@ -525,7 +528,7 @@ const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
 const postedMsgs = [];      // every /thread + /reply body, for the article_text checks
 const orphanPosts = [];     // every /orphan body
-const exportPosts = [];     // every /export url — the header's and the rows'
+const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 
 // ---- the page library behind GET /index ---------------------------------
@@ -910,11 +913,15 @@ function companion(method, path, body) {
   // is this page from the header button and another page from a list row
   if (method === 'POST' && route === '/export') {
     const url = (body && body.url) || PAGE_URL;
-    exportPosts.push(url);
+    // the companion normalises anything it does not recognise to 'all', which
+    // is what /export has always written
+    const mode = (body && body.mode) === 'comments' ? 'comments' : 'all';
+    exportPosts.push({ url, mode });
     const entry = Object.values(indexMap()).find(p => p.url === url);
     const name = (entry && entry.title) || RECORD.title;
-    log('exported: ' + name);
-    return { ok: true, status: 200, data: { ok: true, path: '/Users/angadh/Vault/Web Clippings/' + name + '.md' } };
+    log('exported: ' + name + ' (' + mode + ')');
+    return { ok: true, status: 200,
+             data: { ok: true, mode, path: '/Users/angadh/Vault/Web Clippings/' + name + '.md' } };
   }
   if (method === 'POST' && route === '/interrupt') { log('interrupt sent'); return { ok: true, status: 200, data: { ok: true } }; }
   if (method === 'GET' && route === '/health') return { ok: true, status: 200, data: { ok: true, bridge: 'running', queue: queueDepth } };
@@ -1239,8 +1246,41 @@ async function selftest() {
   check('…and the answered thread carries no leftover status line',
     !S.querySelector('.pane[data-pane="comments"] .card .status-chip'));
 
+  // ---- the export crystal asks which export -------------------------------
+  // "I don't want to export more than I need": the crystal no longer runs
+  // straight away, it offers the two things a reader might mean. One click on
+  // either runs it, and the choice is remembered for next time.
+  const xpick = () => S.querySelector('.popover.exportpick');
+  const xrows = () => [...(xpick() ? xpick().querySelectorAll('.xrow') : [])];
+  const xrow = mode => xrows().find(r => r.dataset.mode === mode);
   S.querySelector('[data-act="export"]').click();
+  check('the crystal opens a chooser rather than exporting on the spot',
+    !!xpick() && !xpick().hidden && xrows().length === 2 && !exportPosts.length);
+  check('…offering the reading and the whole conversation',
+    !!xrow('comments') && !!xrow('all') &&
+    /Comments only/.test(xrow('comments').textContent) && /Everything/.test(xrow('all').textContent));
+  check('…with everything preselected, which is what it has always done',
+    xrow('all').classList.contains('on') && !xrow('comments').classList.contains('on'));
+  // Esc peels this layer and nothing else
+  S.querySelector('.panel').dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  check('Esc dismisses the chooser', !!xpick() && xpick().hidden);
+  check('…without exporting anything', !exportPosts.length);
+  check('…and without closing the drawer', d.isOpen());
+
+  S.querySelector('[data-act="export"]').click();
+  xrow('comments').click();
+  check('choosing "comments only" exports in that mode', !!await until(() =>
+    (exportPosts.length === 1 && exportPosts[0].mode === 'comments' ? true : null)));
   check('export reported', !!await until(() => /^exported/.test(S.querySelector('.footbar').textContent)));
+  check('…and the chooser closed behind it', !!xpick() && xpick().hidden);
+  S.querySelector('[data-act="export"]').click();
+  check('the choice is remembered and preselected next time',
+    !!xrow('comments') && xrow('comments').classList.contains('on') &&
+    !xrow('all').classList.contains('on'));
+  xrow('all').click();
+  check('…and choosing the other one exports everything', !!await until(() =>
+    (exportPosts.length === 2 && exportPosts[1].mode === 'all' ? true : null)));
 
   // ---- ⚙ agents popover: models, context gauges, relay ----
   S.querySelector('[data-act="models"]').click();
@@ -1886,6 +1926,8 @@ async function selftest() {
   // ---- owner-only endpoints answer 403 to everybody else -----------------
   ownerOnly = true;
   S.querySelector('[data-act="export"]').click();
+  // the crystal opens the chooser first now; the refusal comes from the run
+  S.querySelector('.popover.exportpick .xrow[data-mode="all"]').click();
   check('an owner-only export says so instead of failing silently',
     !!await until(() => /owner only/i.test(S.querySelector('.footbar').textContent)));
   check('…and reads as an error, not as a result',
@@ -2039,9 +2081,18 @@ async function selftest() {
     other.querySelector('.pcount').textContent === '1 thread' &&
     other.querySelector('.pwhen').textContent === '2h ago');
 
+  // A row's crystal is a one-click control in a list, so it does NOT ask: it
+  // uses whichever mode was last chosen at the header's crystal, and says so
+  // on hover rather than opening a popover per row.
+  check('a row says which export its crystal will run',
+    /comments only|everything/.test(
+      other.querySelector('[data-act="page-export"]').getAttribute('title') || ''));
   other.querySelector('[data-act="page-export"]').click();
+  check('…and runs it without asking, in the remembered mode',
+    !!await until(() => (exportPosts.slice(-1)[0].url === TUNNEL ? true : null)) &&
+    exportPosts.slice(-1)[0].mode === 'all');
   check('a row exports ITS page, not the one you are on',
-    !!await until(() => exportPosts.some(u => u === TUNNEL)));
+    !!await until(() => exportPosts.some(x => x.url === TUNNEL)));
   check('…and the returned path is reported in the footbar',
     !!await until(() => /^exported → .*Tunnel Vision\.md/.test(S.querySelector('.footbar').textContent)));
 
@@ -2378,7 +2429,10 @@ async function selftest() {
   d.setPage(RECORD);
   d.open('comments');
   const longCard = () => S.querySelector('.card[data-thread="' + LONG.id + '"]');
-  const more = () => longCard().querySelector('.showmore');
+  // two controls share the one slot now: the expander when it is folded, the
+  // manual "Hide N earlier replies" when it is open
+  const more = () => longCard().querySelector('.showmore[data-act="expand"]');
+  const foldBtn = () => longCard().querySelector('.showmore[data-act="fold"]');
   const bodyOf = () => longCard().querySelector('.thread').textContent;
   const shown = () => longCard().querySelectorAll('.reply').length;
 
@@ -2401,7 +2455,7 @@ async function selftest() {
     !!longCard().querySelector('.composer textarea'));
 
   more().click();
-  check('clicking it opens the thread in place', !longCard().querySelector('.showmore'));
+  check('clicking it opens the thread in place', !more());
   check('…showing every message', bodyOf().includes('Answer 2') && bodyOf().includes('Follow-up 3'));
   // one merged row per bot turn that used tools — the same count the pure
   // grouping function predicts from the record
@@ -2411,6 +2465,8 @@ async function selftest() {
     longCard().querySelectorAll('.tools').length === toolUnits && toolUnits === 6);
   check('a short thread is never folded',
     !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore'));
+  check('…and is not offered a fold control either — there is nothing to fold',
+    !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore.fold'));
 
   // the threshold itself: three drawn units still read straight through, the
   // fourth is what folds — and a fold that hides one reply says so in the
@@ -2420,12 +2476,14 @@ async function selftest() {
   OTHER.msgs.push({ author: 'claude', ts: iso(60), text: 'Unit two.' },
                   { author: 'angadh', ts: iso(58), text: 'Unit three.' });
   d.setPage(RECORD);
-  check('three units still read straight through', !otherCard().querySelector('.showmore'));
+  const otherMore = () => otherCard().querySelector('.showmore[data-act="expand"]');
+  const otherFold = () => otherCard().querySelector('.showmore[data-act="fold"]');
+  check('three units still read straight through', !otherMore());
   OTHER.msgs.push({ author: 'claude', ts: iso(56), text: 'Unit four.' });
   d.setPage(RECORD);
-  check('…and the fourth unit folds the thread', !!otherCard().querySelector('.showmore'));
+  check('…and the fourth unit folds the thread', !!otherMore());
   check('…hiding exactly one reply, in the singular',
-    otherCard().querySelector('.showmore').textContent.trim() === 'Show 1 earlier reply');
+    otherMore().textContent.trim() === 'Show 1 earlier reply');
   check('…with the root and the last two units still on screen', (() => {
     const t = otherCard().querySelector('.thread').textContent;
     return t.includes(OTHER.msgs[0].text.slice(0, 30))
@@ -2437,12 +2495,84 @@ async function selftest() {
   d.setPage(RECORD);
   for (let i = 1; i <= 8; i++) OTHER.msgs.push({ author: i % 2 ? 'claude' : 'angadh', ts: iso(30 - i), text: 'Line ' + i });
   d.setPage(RECORD);
-  check('the thread stays folded as it grows', !!otherCard().querySelector('.showmore'));
+  check('the thread stays folded as it grows', !!otherMore());
   OTHER.msgs.push({ author: 'claude', ts: iso(1), text: 'Brand new answer' });
   d.setPage(RECORD);
   check('a reply arriving in a folded thread is visible immediately',
     otherCard().querySelector('.thread').textContent.includes('Brand new answer'));
-  check('…without unfolding the middle', !!otherCard().querySelector('.showmore'));
+  check('…without unfolding the middle', !!otherMore());
+
+  // ---- folding by hand ----------------------------------------------------
+  // The automatic rule decides how a thread OPENS; from then on the reader
+  // decides. The same slot carries both directions — "Show N earlier replies"
+  // when it is folded, "Hide N earlier replies" when it is not — and whichever
+  // they chose sticks, including when the bots answer into it afterwards.
+  const foldOf = c => c.querySelector('.showmore[data-act="fold"]');
+  const moreOf = c => c.querySelector('.showmore[data-act="expand"]');
+
+  check('an open thread offers a way to fold it back', !!foldOf(longCard()));
+  check('…which says what it will hide, in the same words as the expander',
+    /^Hide \d+ earlier repl(y|ies)$/.test(foldOf(longCard()).textContent.trim()),
+    foldOf(longCard()).textContent);
+  foldOf(longCard()).click();
+  check('folding by hand folds it', !!moreOf(longCard()));
+  check('…tighter than the rule does, because it was asked for',
+    !bodyOf().includes('Answer 5') && bodyOf().includes('Answer 6'));
+  check('…keeping the thread root', bodyOf().includes(rootText.slice(0, 30)));
+  // and the whole point: it stays that way
+  LONG.msgs.push({ author: 'claude', ts: iso(1), text: 'An answer nobody asked to see.' });
+  d.setPage(RECORD);
+  check('a new reply does not undo a fold the reader asked for', !!moreOf(longCard()));
+  check('…and still lands where it can be seen',
+    bodyOf().includes('An answer nobody asked to see.'));
+  moreOf(longCard()).click();
+  check('opening it again is the same one control, the other way',
+    !moreOf(longCard()) && !!foldOf(longCard()));
+  LONG.msgs.push({ author: 'angadh', ts: iso(1), text: 'And one more of mine.' });
+  d.setPage(RECORD);
+  check('…and a thread opened by hand does not re-fold behind a new reply',
+    !moreOf(longCard()) && bodyOf().includes('Answer 2'));
+
+  // three units is the case the rule leaves alone and the reader may not want
+  const THREE = {
+    id: 't-1754500300-f9a0', quote: 'a passage with exactly three units under it',
+    prefix: '', suffix: '', orphaned: false,
+    msgs: [
+      { author: 'angadh', ts: iso(20), text: 'First unit here.' },
+      { author: 'claude', ts: iso(19), text: 'Second unit here.' },
+      { author: 'angadh', ts: iso(18), text: 'Third unit here.' },
+    ],
+  };
+  RECORD.threads.push(THREE);
+  const threeCard = () => S.querySelector('.card[data-thread="' + THREE.id + '"]');
+  d.setPage(RECORD);
+  check('a three-unit thread is left open by the rule', !moreOf(threeCard()));
+  check('…but is still offered the control', !!foldOf(threeCard()));
+  foldOf(threeCard()).click();
+  check('…and folds when asked', !!moreOf(threeCard()));
+  check('…hiding the middle and keeping the newest', (() => {
+    const t = threeCard().querySelector('.thread').textContent;
+    return !t.includes('Second unit here.') && t.includes('Third unit here.');
+  })());
+  moreOf(threeCard()).click();
+  check('…and opens again from the same place', !moreOf(threeCard()) && !!foldOf(threeCard()));
+
+  // the page chat is a thread like any other in this respect
+  d.open('chat');
+  const chatCard = () => S.querySelector('.pane[data-pane="chat"] .card.chatpane');
+  check('the page chat is offered the same control once it is long enough',
+    !!foldOf(chatCard()) || !!moreOf(chatCard()));
+  if (foldOf(chatCard())) {
+    foldOf(chatCard()).click();
+    check('…and folds by hand too', !!moreOf(chatCard()));
+    moreOf(chatCard()).click();
+    check('…and opens again', !moreOf(chatCard()));
+  } else {
+    moreOf(chatCard()).click();
+    check('…and opens by hand', !moreOf(chatCard()));
+    check('…leaving the fold control in its place', !!foldOf(chatCard()));
+  }
+  d.open('comments');
 
   // ---- the pages library: which ones have bots in them, and deleting ------
   S.querySelector('[data-act="pages"]').click();
@@ -2871,7 +3001,18 @@ window.__bfp.activate(false).then(() => {
         log('mention: the @-menu, open (screenshot state)');
       }, 250);
     }
+    // ?long=1&open=1 — the same grown thread, opened, so the manual fold
+    // control (the other half of the same slot) is what a screenshot catches
+    if (Q.get('long') === '1' && Q.get('open') === '1') {
+      setTimeout(() => {
+        const b = d.shadow.querySelector('.showmore[data-act="expand"]');
+        if (b) b.click();
+        log('long: opened by hand — the fold control is on screen');
+      }, 300);
+    }
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
+    // the export chooser, open (screenshot state)
+    if (Q.get('export') === '1') setTimeout(() => d.shadow.querySelector('[data-act="export"]').click(), 200);
     if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
     const demo = Q.get('demo');
     if (demo === 'select') setTimeout(() => demoSelect(true), 250);

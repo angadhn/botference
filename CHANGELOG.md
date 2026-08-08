@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## 2026-08-09
+
+- **Web annotator: fold a thread yourself.** Any thread with three or
+  more exchanges now carries a quiet control in the same place the
+  expander sits — "Hide 13 earlier replies" when it is open, "Show 13
+  earlier replies" when it is folded — so a thread you have finished
+  with can be put away, and a short one the automatic rule leaves open
+  can be folded anyway. A fold you asked for is tighter than one the
+  drawer chose (the quote's own message and the newest reply stay), and
+  whichever way you set it, it stays that way for the session: a bot
+  answering into a folded thread shows up at the bottom without
+  springing the middle open, and a thread you opened by hand never
+  re-folds behind your back. The page chat behaves the same.
+
+- **Web annotator: export what you actually want.** The Obsidian
+  crystal now asks: **Comments only** or **Everything**. "Comments only"
+  is the reading without the conversation — no bot replies, and none of
+  your own messages that were addressed to a bot, since those are
+  questions rather than notes — while every highlight survives,
+  including one whose whole thread filtered away, because the passage
+  you marked is the annotation. The page chat is left out of that mode
+  entirely. "Everything" is the note exactly as it was. Your choice is
+  remembered and preselected, the note is still one file per page
+  (re-exporting replaces it, so changing your mind costs one click), and
+  a row's crystal in the Pages list runs your remembered choice straight
+  away rather than asking again.
+
 ## 2026-08-08
 
 - **Web annotator: the drawer can no longer be left behind.** Live

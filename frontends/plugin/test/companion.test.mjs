@@ -656,6 +656,9 @@ async function main() {
   });
 
   // --- export -----------------------------------------------------------
+  // the "everything" note, kept so the comments-only test can prove that
+  // asking for everything again puts back exactly what was there before
+  let expectedAll = '';
   await test('POST /export writes the Obsidian note byte-for-byte', async () => {
     const url = 'https://example.test/export-fixture';
     await POST(base, '/page', { url, title: 'Export Fixture', site: 'example.test' });
@@ -705,6 +708,48 @@ async function main() {
     ].join('\n');
     assert.equal(r.json.path, path.join(vault, 'Web Clippings', 'Export Fixture.md'));
     assert.equal(fs.readFileSync(r.json.path, 'utf8'), expected);
+    assert.equal(r.json.mode, 'all', 'no mode asked for is the export as it always was');
+    expectedAll = expected;
+  });
+
+  await test('POST /export {mode:"comments"} writes the reading without the conversation', async () => {
+    const url = 'https://example.test/export-fixture';
+    const r = await POST(base, '/export', { url, mode: 'comments' });
+    assert.equal(r.json.ok, true);
+    assert.equal(r.json.mode, 'comments');
+    // the same note, replaced in place: one note per page, whichever mode
+    // wrote it last
+    assert.equal(r.json.path, path.join(vault, 'Web Clippings', 'Export Fixture.md'));
+    const note = fs.readFileSync(r.json.path, 'utf8');
+    assert.equal(note, [
+      '---',
+      `url: ${url}`,
+      'site: example.test',
+      `saved: ${new Date().toISOString().slice(0, 10)}`,
+      'tags: [web-annotation]',
+      '---',
+      '',
+      '# Export Fixture',
+      '',
+      '> Quote one goes here.',
+      '',
+      'A neat point.',
+      '',
+      '> Quote two — with an em dash.',
+      '',
+    ].join('\n'));
+    assert.ok(!note.includes('MOCK claude reply.'), 'no bot answers');
+    assert.ok(!note.includes('@claude is this right?'), 'no questions put to a bot');
+    assert.ok(!note.includes('## Page chat'), 'and no page chat at all');
+    assert.ok(note.includes('> Quote two — with an em dash.'),
+      'but the highlight survives a thread whose messages all filtered away');
+    // …and asking again for everything puts it all back
+    const back = await POST(base, '/export', { url, mode: 'all' });
+    assert.equal(back.json.mode, 'all');
+    assert.equal(fs.readFileSync(back.json.path, 'utf8'), expectedAll);
+    // an unrecognised mode is not an error: it is everything, as before
+    const odd = await POST(base, '/export', { url, mode: 'whatever' });
+    assert.equal(odd.json.mode, 'all');
   });
 
   await test('re-export overwrites in place; a different url gets " (2)"', async () => {
