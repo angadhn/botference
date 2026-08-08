@@ -194,7 +194,7 @@ const contextExtras = (data, docxDigest) => ({
 const DEDUPE_MS = 10000;
 const recentSends = new Map();
 function dedupeCheck(parts) {
-  const key = parts.map(p => String(p ?? '')).join(' ');
+  const key = parts.map(p => String(p ?? '')).join('\0');
   const now = Date.now();
   for (const [k, v] of recentSends) if (now - v.at > DEDUPE_MS) recentSends.delete(k);
   const hit = recentSends.get(key);
@@ -207,6 +207,16 @@ function dedupeCheck(parts) {
 // --- HTTP helpers -------------------------------------------------------
 const ok = (res, obj) => res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...obj }));
 const fail = (res, code, error) => res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error }));
+// /edit, /tick and /delete address a message by timestamp, and a timestamp is
+// not an identity: whole milliseconds, and a bot's tools summary and its answer
+// always share one. So those bodies may carry `author` and `kind` beside the
+// `ts` (see store.resolveMsg), and where a client sends no author the endpoints
+// that only ever touch your own message fall back to yours.
+const pick = (data, fallbackAuthor = null) => ({
+  ts: data.ts,
+  author: data.author != null && data.author !== '' ? data.author : fallbackAuthor,
+  kind: data.kind,
+});
 // The reading room posts plain HTML forms to the same endpoints the drawer
 // calls with JSON. One write path, two encodings: `_form` marks which, so the
 // answer can be a redirect back to the page instead of a wall of JSON.
@@ -417,15 +427,18 @@ export function handler(req, res) {
       if (!page) return;
       const msgs = store.msgsOf(page, data.thread_id || store.PAGE_CHAT);
       if (!msgs) return fail(res, 404, 'unknown thread');
-      const msg = msgs.find(m => m.ts === data.ts);
-      if (!msg) return fail(res, 404, 'unknown message');
+      // no author on the wire? this endpoint only ever rewrites your own
+      // message, so yours is the right tie-breaker for a shared timestamp
+      const found = store.resolveMsg(msgs, pick(data, me.handle));
+      if (!found) return fail(res, 404, 'unknown message');
+      const msg = found.msg;
       // the bots' words are theirs, and so is every other human's: you may
       // only rewrite what you wrote
       if (msg.author !== me.handle) return fail(res, 403, 'not your message');
       msg.text = String(data.text || '');
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { msg });
+      ok(res, { msg, ...(found.ambiguous ? { ambiguous: true } : {}) });
     });
   }
   // Ticking a checkbox in a message — usually a BOT's message, which is the
@@ -438,15 +451,18 @@ export function handler(req, res) {
       if (!page) return;
       const msgs = store.msgsOf(page, data.thread_id || store.PAGE_CHAT);
       if (!msgs) return fail(res, 404, 'unknown thread');
-      const msg = msgs.find(m => m.ts === data.ts);
-      if (!msg) return fail(res, 404, 'unknown message');
+      // a checklist lives in the answer, never in the tools summary stamped
+      // the same millisecond — resolveMsg knows that, given no kind
+      const found = store.resolveMsg(msgs, pick(data));
+      if (!found) return fail(res, 404, 'unknown message');
+      const msg = found.msg;
       const text = Number.isInteger(data.index) && data.index >= 0
         ? store.setCheckbox(msg.text, data.index, !!data.checked) : null;
       if (text === null) return fail(res, 400, 'index out of range');
       msg.text = text;
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { text });
+      ok(res, { text, ...(found.ambiguous ? { ambiguous: true } : {}) });
     });
   }
   if (req.method === 'POST' && url === '/delete') {
@@ -456,13 +472,18 @@ export function handler(req, res) {
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
+      // one resolution for the permission check AND the delete itself, so the
+      // two can never disagree about which of two same-millisecond messages
+      // this is. A guest who names nobody means themselves.
+      const found = data.ts
+        ? store.resolveMsg(store.msgsOf(page, target), pick(data, me.owner ? null : me.handle))
+        : null;
       // A guest may retract what they wrote and nothing else: sweeping a whole
       // thread (or the page chat) away takes other people's words with it, so
       // that stays the owner's call.
       if (!me.owner) {
         if (!data.ts) return fail(res, 403, 'owner only — you can delete your own messages');
-        const mine = (store.msgsOf(page, target) || []).find(m => m.ts === data.ts);
-        if (mine && mine.author !== me.handle) return fail(res, 403, 'not your message');
+        if (found && found.msg.author !== me.handle) return fail(res, 403, 'not your message');
       }
       let gone = false; // the whole thread went, not just a message
       if (!data.ts) {
@@ -476,9 +497,8 @@ export function handler(req, res) {
       } else {
         const msgs = store.msgsOf(page, target);
         if (!msgs) return fail(res, 404, 'unknown thread');
-        const i = msgs.findIndex(m => m.ts === data.ts);
-        if (i < 0) return fail(res, 404, 'unknown message');
-        msgs.splice(i, 1);
+        if (!found) return fail(res, 404, 'unknown message');
+        msgs.splice(found.index, 1);
         // deleting the last message of a thread deletes the thread: an empty
         // one is a highlight on the page that opens onto nothing
         if (target !== store.PAGE_CHAT && !msgs.length) {
@@ -488,7 +508,7 @@ export function handler(req, res) {
       }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { thread_deleted: gone });
+      ok(res, { thread_deleted: gone, ...(found && found.ambiguous ? { ambiguous: true } : {}) });
     });
   }
   // Forget a page entirely — record, index row and, if asked, the botference

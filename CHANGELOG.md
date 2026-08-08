@@ -2,6 +2,22 @@
 
 ## 2026-08-08
 
+- **Web annotator: honest status lines, safe message addressing, and the
+  braid.** The "queued…" indicator no longer outlives its turn — it is
+  written only when the turn genuinely hasn't started yet and is removed
+  the moment a reply lands (the turn often starts before the send
+  response returns, which is why it used to stick). Editing/ticking/
+  deleting now addresses messages by author and kind as well as
+  timestamp, so two messages stamped in the same millisecond (a bot's
+  "Explored" summary and its answer) can never receive each other's
+  edits — server and drawer both fixed, with `ambiguous:true` surfaced
+  when a tie is unbreakable. New visual identity: "The Braid" — three
+  strands (you, claude, codex) converging into one plan — as the site
+  share card, a full-bleed rope mark redrawn per size for the extension
+  icons (crisp at 16px), and the favicon. Also: Google Search Console
+  verification + GA4 analytics on botference.com, and a stray NUL byte
+  in server.mjs that made grep treat the file as binary is gone.
+
 - **Web annotator round 5 — instant sends and human collaborators.**
   Sending is now optimistic: your message appears in the thread the
   moment you hit Send (pending spinner, "reaching botference…"),

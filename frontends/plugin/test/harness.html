@@ -51,6 +51,9 @@
                      never lands, so the state holds for a screenshot.
     ?sending=fail    …and the same message after the send failed: the retry /
                      discard row
+    ?queued=1        a mention answered with {queued, position} and no turn
+                     started yet: the waiting line under the message, held
+                     still for a screenshot (it clears on the real turn-start)
     ?handles=1       a page chat with several people in it (mira, devraj) —
                      the multi-handle author colours (screenshot state)
     ?wide=NNN        start the drawer at NNN px instead of the stored width
@@ -430,6 +433,10 @@ const CHECKLIST_DONE = CANNED_CHECKLIST.replace('* [ ] Add one table', '* [x] Ad
 
 const MENTION = /@(claude|codex|all)\b/i;
 let queueDepth = 0;
+// ?queued=1 — a companion whose queue never gets pumped: the mention is
+// accepted, {queued:true} comes back, and no turn ever starts. The waiting line
+// then holds still for a screenshot instead of being overtaken by the chip.
+const HOLD_QUEUE = Q.get('queued') === '1';
 
 // ---- agents (round 2: GET /models · POST /model · `models` event;
 //      round 3: `status` context gauges · POST /relay) ----------------------
@@ -676,7 +683,7 @@ function companion(method, path, body) {
       return { ok: true, status: 200, data: { ok: true, thread, queued: false, reason: GUEST_REASON } };
     }
     const queued = mention;
-    if (queued) { queueDepth++; setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
+    if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
     return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined } };
   }
   if (method === 'POST' && route === '/reply') {
@@ -706,7 +713,7 @@ function companion(method, path, body) {
       return { ok: true, status: 200, data: { ok: true, msg, queued: false, reason: GUEST_REASON } };
     }
     const queued = mention;
-    if (queued) { queueDepth++; setTimeout(() => playTurn(body.thread_id, body.text), 350); }
+    if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(body.thread_id, body.text), 350); }
     return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined } };
   }
   if (method === 'POST' && route === '/edit') {
@@ -1123,6 +1130,11 @@ async function selftest() {
   const bots = [...q('.pane[data-pane="comments"] .card')].pop().querySelectorAll('.reply.bot');
   check('bot reply persisted in the new thread', bots.length === 1 && /Two things stand out/.test(bots[0].textContent));
   check('working chip cleared', !S.querySelector('.status-chip .avatar-ring'));
+  // …and nothing at all in its place. This send was deliberately slow, so its
+  // {queued:true} answer came back with the turn already running — the exact
+  // shape of the bug where "queued…" was left under an answered comment.
+  check('…and the answered thread carries no leftover status line',
+    !S.querySelector('.pane[data-pane="comments"] .card .status-chip'));
 
   S.querySelector('[data-act="export"]').click();
   check('export reported', !!await until(() => /^exported/.test(S.querySelector('.footbar').textContent)));
@@ -1383,6 +1395,58 @@ async function selftest() {
       replyCount('double-clicked on purpose') === 1, 20000));
   slowPost = 0;
 
+  // ---- "queued…" is a wait, and a wait has to end -------------------------
+  // The live complaint: the queue position that came back from a mention-bearing
+  // send stayed on screen forever — still saying "queued…" after the bots had
+  // answered and the queue was empty. So the word is now pinned to the window it
+  // describes: from the send's answer to that target's turn-start, superseded by
+  // the working chip there, and gone the moment the turn ends. Removal is silent;
+  // the reply is the only "ready" there is.
+  const chatStatus = () => [...S.querySelectorAll('.pane[data-pane="chat"] .status-chip')];
+  const chatStatusText = () => chatStatus().map(c => c.textContent).join(' | ');
+  const chatRing = () => S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring');
+
+  (await until(freeChat, 8000)).value = '@claude how deep is the queue right now?';
+  chatSend().click();
+  const queuedLine = await until(() => /queued/.test(chatStatusText()) ? chatStatusText() : null, 3000);
+  check('a queued mention says so, at the composer it was sent from', !!queuedLine);
+  check('…as a wait, not as a problem',
+    !S.querySelector('.pane[data-pane="chat"] .status-chip.err'));
+  check('the working chip supersedes it at turn-start — never both at once',
+    !!await until(() => (chatRing() && !/queued/.test(chatStatusText())) ? true : null, 9000));
+  check('and the turn ending takes the indicator away entirely',
+    !!await until(() => !chatStatus().length, 25000));
+  check('…leaving no stale status line anywhere in the drawer',
+    !S.querySelector('.status-chip'));
+  check('…and no "ready" text in its place: the reply is the signal',
+    !/ready|queued/i.test(chatPane().textContent));
+
+  // The mechanism behind the bug: the companion pumps its queue from inside the
+  // call that answers the POST, so turn-start regularly arrives BEFORE
+  // {queued:true} does. A late answer must not write the word down at all.
+  slowPost = 1000;
+  let sawQueued = false;
+  const queuedWatch = setInterval(() => {
+    if (/queued/.test(chatStatusText())) sawQueued = true;
+  }, 20);
+  (await until(freeChat, 8000)).value = '@claude and once more, answered slowly';
+  chatSend().click();
+  check('a turn can start before its own POST has answered', !!await until(chatRing, 9000));
+  slowPost = 0;
+  check('…and the finished turn leaves nothing under the message',
+    !!await until(() => (!chatStatus().length && !pendingCards().length), 25000));
+  clearInterval(queuedWatch);
+  check('…and the late {queued} answer was never written down at all', !sawQueued);
+
+  // Belt and braces: an older companion (or a dropped event) can start pouring
+  // text out with no turn-start in front of it. The wait ends on the evidence.
+  d.note('__page__', 'queued…', false, true);
+  d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'stream',
+              model: 'claude', stream_id: 's-nostart', text: 'answering already…' });
+  check('text arriving with no turn-start of its own still ends the wait',
+    !chatStatus().length);
+  d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'turn-end' });
+
   // ---- your own messages are markdown too --------------------------------
   // Same renderer as the bots get, same safety rules — people paste links into
   // their own comments and a pasted link should be a link. What is STORED stays
@@ -1426,6 +1490,25 @@ async function selftest() {
         .find(x => /Filed under/.test(x.textContent));
       return el && el.querySelector('a') ? el : null;
     }));
+
+  // …even when something else was stamped in the very same millisecond. The
+  // companion stamps whole milliseconds, so a ts is an address, not an
+  // identity — a bot's tool summary and its answer always share one. The
+  // editor has to open on the row that was clicked, not on the first message
+  // that happens to carry that timestamp.
+  const twinIdx = RECORD.page_chat.findIndex(m => m.text === MINE_MD);
+  RECORD.page_chat.splice(twinIdx, 0, { author: 'claude', ts: RECORD.page_chat[twinIdx].ts,
+    text: 'Stamped in the same millisecond as the message below it.' });
+  await window.__bfp.loadPage();
+  const twinned = await until(() =>
+    [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine:not(.sending) .ctext.md')]
+      .find(x => /Filed under/.test(x.textContent)) || null);
+  const twinReply = twinned.closest('.reply');
+  twinReply.querySelector('[data-act="edit"]').click();
+  const twinTa = await until(() => twinReply.querySelector('.ctext textarea'));
+  check('a message sharing its timestamp with another still edits as itself',
+    !!twinTa && twinTa.value === MINE_MD);
+  twinReply.querySelector('.ctext .cancel').click();
 
   // ---- a resend the companion already has ({deduped:true}) ---------------
   const DUP = 'this one gets sent twice';
@@ -2303,6 +2386,19 @@ window.__bfp.activate(false).then(() => {
         ta.dispatchEvent(new Event('input', { bubbles: true }));
         d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
         log('sending: a message in flight (screenshot state)');
+      }, 250);
+    }
+    // the wait itself, held still: the send is answered {queued, position} and
+    // the companion never pumps its queue, so the line stays on screen
+    if (HOLD_QUEUE) {
+      setTimeout(() => {
+        d.open('chat');
+        const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
+        if (!ta) return log('queued: no composer');
+        ta.value = '@claude what is the strongest sentence in this piece?';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
+        log('queued: a mention waiting its turn (screenshot state)');
       }, 250);
     }
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);

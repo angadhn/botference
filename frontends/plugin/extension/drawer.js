@@ -370,7 +370,16 @@
       turnAgents: {},      // target -> ['claude'|'codex'] as announced by turn-start
       liveAgents: {},      // target -> agents actually seen streaming this turn
       speaker: {},         // target -> the agent whose stream arrived most recently
-      notes: {},           // target -> transient status line {text, err}
+      // target -> status line {text, err, transient}. `transient` marks a line
+      // that is only true WHILE WE WAIT ("queued…", "stopping…"): the working
+      // chip supersedes it and any turn boundary removes it. A plain note (a
+      // refusal, an error) is a message and survives the turn.
+      notes: {},
+      // target -> a counter bumped on every turn boundary for that target. The
+      // companion pumps its queue from inside the call that answers the POST,
+      // so `turn-start` regularly beats {queued:true} back to us; a send whose
+      // generation has already moved on has missed its window to say "queued".
+      turnSeq: {},
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       // OPTIMISTIC SEND (round 5). A message the user has committed to but the
@@ -620,7 +629,7 @@
       // anchors. What is STORED stays the raw markdown; only the rendering
       // changes, which is why the editor reads msg.text and not this DOM.
       const body = `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`;
-      return `<div class="reply${bot ? ' bot' : ''}${mine ? ' mine' : ''}" data-ts="${esc(r.ts)}" style="--author:${authorColor(r.author)}">
+      return `<div class="reply${bot ? ' bot' : ''}${mine ? ' mine' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}" style="--author:${authorColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}</div>`;
     }
@@ -737,12 +746,17 @@
     // every bot file-write and says so, then lets the turn finish). Showing
     // only the chip would swallow that message, and showing only the note
     // would claim the turn had stopped when it has not.
+    // …with one exception, and it is the whole point of `transient`: a waiting
+    // line ("queued…") is a claim about a turn that has NOT started, so the
+    // chip does not sit beside it, it replaces it. Structural, so the promise
+    // holds even if an event went missing.
     function statusHtml(target) {
       const note = D.notes[target];
       const noteHtml = note
         ? `<div class="status-chip${note.err ? ' err' : ''}">${esc(note.text)}</div>` : '';
       if (D.running[target]) {
-        return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>` + noteHtml;
+        return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>`
+          + (note && note.transient ? '' : noteHtml);
       }
       return noteHtml;
     }
@@ -1631,11 +1645,26 @@
       cb('onFocus')(id);
     }
 
-    function note(target, text, err) {
+    function note(target, text, err, transient) {
       const key = target == null ? PAGE_TARGET : target;
-      if (text) D.notes[key] = { text, err: !!err }; else delete D.notes[key];
+      if (text) D.notes[key] = { text, err: !!err, transient: !!transient };
+      else delete D.notes[key];
       render();
     }
+
+    // A waiting line lives and dies with the wait. Removal is SILENT: the reply
+    // that arrives is the only "ready" anyone needs, so nothing takes its place.
+    function clearWaiting(target) {
+      const n = D.notes[target];
+      if (!n || !n.transient) return false;
+      delete D.notes[target];
+      return true;
+    }
+    // True only inside the window the word "queued" describes: this target has
+    // no turn running and none has begun or ended since the send left.
+    const queueWindowOpen = (key, epoch) =>
+      key != null && !D.running[key] && D.turnSeq[key] === epoch;
+    const bumpTurn = target => { D.turnSeq[target] = (D.turnSeq[target] || 0) + 1; };
 
     const composerBox = target =>
       D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] textarea');
@@ -1696,6 +1725,12 @@
     async function deliver(target, entry) {
       entry.state = 'sending';
       entry.error = '';
+      // Which turn generation this send belongs to, sampled BEFORE the await:
+      // anything that moves this target's counter while the POST is out means
+      // the bots started (or finished) first and "queued…" is already false. A
+      // brand-new thread has no id and no history yet, so its window is open
+      // exactly while its minted id has never been named by a turn event.
+      const epoch = target === '__new__' ? undefined : D.turnSeq[target];
       let res;
       try {
         res = target === '__new__'
@@ -1727,10 +1762,13 @@
       // sender (a guest with no bot access, or a companion started
       // --no-agents). That is not a failed send — the message is saved — so it
       // is said next to the composer and nothing is rolled back.
+      // A refusal is a message about this send and outranks any wait: it says
+      // why the bots are not coming, and must never be dressed up as "queued".
       if (res.reason) note(key == null ? null : key, res.reason, true);
-      else if (res.queued) note(key, res.position > 1 ? `queued (#${res.position})` : 'queued…');
-      else note(target === '__new__' ? null : target, null);
-      render();
+      else if (!res.queued) note(target === '__new__' ? null : target, null);
+      else if (queueWindowOpen(key, epoch)) {
+        note(key, res.position > 1 ? `queued (#${res.position})` : 'queued…', false, true);
+      } else render();   // the turn is already under way, or already over: say nothing
     }
 
     const findOut = (target, id) => outboxFor(target).find(e => e.id === id) || null;
@@ -1775,7 +1813,7 @@
       // screen now, so reading textContent back would hand the user their own
       // sentence with the syntax stripped out — and then save that as the
       // message. The record is the only source of truth for an editor.
-      const msg = findMsg(target, ts);
+      const msg = findMsg(target, ts, reply.getAttribute('data-author'));
       const old = msg && msg.text != null ? String(msg.text)
         : (body ? body.textContent : '');
       body.innerHTML = `<div class="composer" data-target="__edit__">
@@ -1801,12 +1839,24 @@
     //
     // Optimistic in between: the box has already moved (this runs on `change`),
     // the label greys immediately, and a refusal puts both back.
-    function findMsg(target, ts) {
+    //
+    // A timestamp is how a message is addressed, but it is NOT an identity: the
+    // companion stamps in whole milliseconds and two messages regularly share
+    // one — a bot's tool summary and the answer it belongs to always do, and a
+    // reply can land in the same tick as the message before it. So the row's
+    // own author (and the fact that a rendered answer is never the tools row
+    // beside it) breaks the tie; otherwise the editor would open on somebody
+    // else's sentence and the checklist would tick in the wrong message.
+    function findMsg(target, ts, author) {
       if (!D.page) return null;
       const list = target === PAGE_TARGET
         ? (D.page.page_chat || [])
         : (((D.page.threads || []).find(t => t.id === target) || {}).msgs || []);
-      return list.find(m => m && m.ts === ts) || null;
+      const hits = list.filter(m => m && m.ts === ts);
+      if (hits.length < 2) return hits[0] || null;
+      const same = a => String(a || '').toLowerCase() === String(author || '').toLowerCase();
+      const named = author == null ? hits : hits.filter(m => same(m.author));
+      return named.find(m => m.kind !== 'tools') || named[0] || hits[0] || null;
     }
 
     async function doTick(box) {
@@ -1832,7 +1882,7 @@
       }
       // reconcile from the authoritative body, then let render() rebuild the
       // list from it — the checkbox states come back out of the text
-      const msg = findMsg(target, ts);
+      const msg = findMsg(target, ts, reply && reply.getAttribute('data-author'));
       if (msg && typeof r.text === 'string' && r.text) msg.text = r.text;
       box.disabled = false;
       render();
@@ -1844,7 +1894,7 @@
     async function doInterrupt(btn) {
       const card = btn && btn.closest && btn.closest('.card[data-thread]');
       const target = card ? card.getAttribute('data-thread') : null;
-      note(target, 'stopping…');
+      note(target, 'stopping…', false, true);   // a wait, not a message: the turn's end takes it away
       let r;
       try { r = await cb('onInterrupt')(); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
@@ -1896,6 +1946,7 @@
       if (r.current) {
         D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
         D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
+        D.turnSeq = {};   // a send still in flight for the dead page can no longer claim a queue slot
         D.confirm = null; D.focused = null; D.pending = null;
         D.foot = ''; D.footErr = false;
       }
@@ -2062,6 +2113,7 @@
       switch (ev.kind) {
         case 'turn-start':
           D.running[target] = true;
+          bumpTurn(target);   // closes the "queued…" window for any send still in flight
           // an older companion sends no `agents`; the chip then stays generic
           D.turnAgents[target] = Array.isArray(ev.agents) ? ev.agents.filter(Boolean) : [];
           D.liveAgents[target] = [];
@@ -2070,6 +2122,9 @@
           render();
           break;
         case 'stream': {
+          // text is arriving, so whatever we were waiting for has begun — even
+          // if the turn-start that should have said so never reached us
+          if (clearWaiting(target)) render();
           const key = ev.stream_id || (ev.model + ':' + target);
           const s = D.streams[key] || (D.streams[key] = { who: ev.model || 'claude', target, text: '' });
           s.text += (ev.text || '');
@@ -2100,10 +2155,13 @@
             }
           }
           appendMsg(target, ev.msg);
+          clearWaiting(target);   // the answer is here; nothing is waiting on anything
           render();
           break;
         case 'turn-end':
           delete D.running[target];
+          bumpTurn(target);
+          clearWaiting(target);   // never leave "queued…" (or "stopping…") behind a finished turn
           delete D.turnAgents[target];
           delete D.liveAgents[target];
           delete D.speaker[target];
@@ -2119,7 +2177,9 @@
             delete D.turnAgents[target];
             delete D.liveAgents[target];
             delete D.speaker[target];
+            bumpTurn(target);   // no turn in flight: this error IS the end of one
           }
+          // overwrites any "queued…" outright — the reason replaces the wait
           note(target, ev.error || 'the bots hit an error', true);
           break;
       }

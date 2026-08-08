@@ -385,6 +385,21 @@ Contract deltas agreed during live testing — authoritative over the sections a
   --here overrides); extension options page (companion URL / password / display
   name, test-connection); offline notice is a numbered walkthrough naming
   --install-autostart; completions cover plugin in zsh + bash.
+- Message resolution: /edit, /tick, and /delete (single-message form) accept optional
+  `author` (matched after handle sanitization) and `kind` ("tools" addresses a bot's
+  tool-activity summary; otherwise the non-tools message is preferred) alongside `ts`,
+  because timestamps are addresses, not identities — two messages can share a
+  millisecond. Both are preferences (legacy payloads on a unique ts are unchanged);
+  /edit always, and /delete for guests, defaults author to the caller's own handle.
+  An unbreakable tie resolves to the first match with `ambiguous:true` in the
+  response. store.resolveMsg() is the single resolver. The drawer's queued status is
+  lifecycle-scoped: written only if the turn hasn't already started (epoch check),
+  superseded by the working chip at turn-start, structurally removed at
+  reply/turn-end/error.
+- Identity assets: extension icons are a full-bleed braid mark (per-size redrawn
+  variants in icons/make-icons.mjs + braid.svg source; the 16px read is the
+  acceptance bar); site/og-image.png is the braid share card; site/favicon.png from
+  the same mark.
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

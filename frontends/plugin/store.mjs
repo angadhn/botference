@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { sanitizeHandle } from './hosted.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(PLUGIN, '..', '..');
@@ -224,6 +225,38 @@ export function msgsOf(page, threadId) {
   if (threadId === PAGE_CHAT) return page.page_chat;
   const t = findThread(page, threadId);
   return t ? t.msgs : null;
+}
+
+// Addressing a message by its timestamp alone is a bug waiting to happen: the
+// companion stamps whole milliseconds, and two messages legitimately share one
+// — a bot's kind:"tools" summary and the answer it belongs to always do, and
+// two quick replies can land in the same tick. So /edit, /tick and /delete may
+// send discriminators alongside the ts, and this is the one place they are
+// honored:
+//   author  narrows to that person's message (sanitized on both sides: a guest
+//           handle is stored sanitized, and a client may echo back the raw one)
+//   kind    "tools" asks FOR the tool summary; anything else, or nothing at
+//           all, prefers the answer beside it — which is the message a reader
+//           ever means to edit or tick
+// Each filter is a preference, not a requirement: one that would leave nothing
+// is skipped, so an older payload that sends neither field resolves exactly as
+// it always did. A tie nothing can break goes to the FIRST match and says so
+// (ambiguous), leaving the caller free to warn instead of silently guessing.
+export function resolveMsg(msgs, { ts, author, kind } = {}) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  let hits = list.filter(m => m && m.ts === ts);
+  if (!hits.length) return null;
+  if (hits.length > 1 && author != null && String(author) !== '') {
+    const want = sanitizeHandle(author);
+    const named = hits.filter(m => sanitizeHandle(m.author) === want);
+    if (named.length) hits = named;
+  }
+  if (hits.length > 1) {
+    const wantTools = String(kind || '') === 'tools';
+    const byKind = hits.filter(m => (m.kind === 'tools') === wantTools);
+    if (byKind.length) hits = byKind;
+  }
+  return { msg: hits[0], index: list.indexOf(hits[0]), ambiguous: hits.length > 1 };
 }
 
 export function addThread(page, { quote, prefix, suffix, text, author, index }) {

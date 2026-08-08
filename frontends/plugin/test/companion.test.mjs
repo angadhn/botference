@@ -880,6 +880,137 @@ async function main() {
       'page invalidation after a tick');
   });
 
+  // --- addressing a message: ts + discriminators --------------------------
+  // The companion stamps whole milliseconds, so a timestamp names a message
+  // only by luck. These build the collisions that really happen — a bot's
+  // tools summary beside its answer, two bots answering in the same tick —
+  // straight into the record, and check that a save, a tick or a delete lands
+  // where the reader pointed.
+  const sameMs = async (url, msgs) => {
+    process.env.BOTFERENCE_PROJECT_ROOT = root;
+    const store = await import('../store.mjs');
+    const page = store.blankPage({ url, title: 'Same Millisecond', site: 'ledger.test' });
+    page.page_chat = msgs;
+    store.savePage(page);
+    return page;
+  };
+  const chatOf = async url =>
+    (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.page_chat;
+
+  await test('a tools summary and the answer share a ts: /edit and /tick take the answer', async () => {
+    const me = (await GET(base, '/whoami')).json.handle;
+    const url = 'https://ledger.test/2026/tools-collision';
+    const ts = new Date().toISOString();
+    await sameMs(url, [
+      { author: me, ts, kind: 'tools', text: 'Explored · 2 steps\n- [ ] not this box' },
+      { author: me, ts, text: 'the answer\n- [ ] the real box' },
+    ]);
+    const ticked = await POST(base, '/tick',
+      { url, thread_id: '__page__', ts, index: 0, checked: true, author: me });
+    assert.equal(ticked.json.text, 'the answer\n- [x] the real box', 'the answer was ticked');
+    assert.ok(!('ambiguous' in ticked.json), 'the tools/answer split is not a tie');
+    const edited = await POST(base, '/edit',
+      { url, thread_id: '__page__', ts, text: 'revised answer', author: me });
+    assert.equal(edited.json.msg.text, 'revised answer');
+    let chat = await chatOf(url);
+    assert.equal(chat[0].text, 'Explored · 2 steps\n- [ ] not this box', 'the tools row is untouched');
+    assert.equal(chat[1].text, 'revised answer');
+    // and kind:"tools" is how you ask for the other one on purpose
+    const onTools = await POST(base, '/edit',
+      { url, thread_id: '__page__', ts, text: 'Explored · 3 steps', author: me, kind: 'tools' });
+    assert.equal(onTools.json.msg.kind, 'tools');
+    chat = await chatOf(url);
+    assert.equal(chat[0].text, 'Explored · 3 steps');
+    assert.equal(chat[1].text, 'revised answer', 'the answer stayed put');
+  });
+
+  await test('author steers between two authors stamped the same millisecond', async () => {
+    const url = 'https://ledger.test/2026/two-bots-one-ms';
+    const ts = new Date().toISOString();
+    const fresh = () => sameMs(url, [
+      { author: 'claude', ts, text: 'claude:\n- [ ] claude box' },
+      { author: 'codex', ts, text: 'codex:\n- [ ] codex box' },
+    ]);
+    await fresh();
+    const r = await POST(base, '/tick',
+      { url, thread_id: '__page__', ts, index: 0, checked: true, author: 'codex' });
+    assert.equal(r.json.text, 'codex:\n- [x] codex box');
+    let chat = await chatOf(url);
+    assert.equal(chat[0].text, 'claude:\n- [ ] claude box', 'the other bot was not touched');
+    // an unknown name is no reason to refuse: the ts still names a message
+    const stray = await POST(base, '/tick',
+      { url, thread_id: '__page__', ts, index: 0, checked: true, author: 'gemini' });
+    assert.equal(stray.status, 200);
+    assert.equal(stray.json.ambiguous, true, 'nothing narrowed it, so say so');
+
+    await fresh();
+    await POST(base, '/delete', { url, thread_id: '__page__', ts, author: 'claude' });
+    chat = await chatOf(url);
+    assert.deepEqual(chat.map(m => m.author), ['codex'], 'the named message went, alone');
+  });
+
+  await test('an unbreakable tie resolves to the first message and says ambiguous', async () => {
+    const url = 'https://ledger.test/2026/true-tie';
+    const ts = new Date().toISOString();
+    await sameMs(url, [
+      { author: 'claude', ts, text: 'first:\n- [ ] a' },
+      { author: 'claude', ts, text: 'second:\n- [ ] b' },
+    ]);
+    const r = await POST(base, '/tick',
+      { url, thread_id: '__page__', ts, index: 0, checked: true, author: 'claude' });
+    assert.equal(r.json.ambiguous, true, 'the client can warn instead of trusting it');
+    assert.equal(r.json.text, 'first:\n- [x] a', 'and the first is the one that moved');
+    const chat = await chatOf(url);
+    assert.equal(chat[1].text, 'second:\n- [ ] b');
+  });
+
+  await test('a legacy payload with no author or kind behaves exactly as before', async () => {
+    const me = (await GET(base, '/whoami')).json.handle;
+    const url = 'https://ledger.test/2026/legacy-payload';
+    const ts = new Date().toISOString();
+    const other = new Date(Date.now() + 1000).toISOString();
+    await sameMs(url, [
+      { author: me, ts, text: 'mine\n- [ ] box' },
+      { author: 'claude', ts: other, text: 'the bot\'s' },
+    ]);
+    const ticked = await POST(base, '/tick',
+      { url, thread_id: '__page__', ts, index: 0, checked: true });
+    assert.equal(ticked.json.text, 'mine\n- [x] box');
+    assert.ok(!('ambiguous' in ticked.json), 'a unique ts is never ambiguous');
+    const edited = await POST(base, '/edit', { url, thread_id: '__page__', ts, text: 'mine, revised' });
+    assert.equal(edited.json.msg.text, 'mine, revised');
+    assert.ok(!('ambiguous' in edited.json));
+    // still the bots' words, still refused, with nothing on the wire but a ts
+    const denied = await POST(base, '/edit', { url, thread_id: '__page__', ts: other, text: 'nope' });
+    assert.equal(denied.status, 403);
+    const gone = await POST(base, '/delete', { url, thread_id: '__page__', ts: other });
+    assert.equal(gone.json.ok, true);
+    assert.deepEqual((await chatOf(url)).map(m => m.text), ['mine, revised']);
+  });
+
+  await test('a same-ms bot answer is safe from the owner\'s own edit and delete', async () => {
+    const me = (await GET(base, '/whoami')).json.handle;
+    const url = 'https://ledger.test/2026/mine-and-theirs';
+    const ts = new Date().toISOString();
+    await sameMs(url, [
+      { author: 'claude', ts, text: 'the bot answered' },
+      { author: me, ts, text: 'and I typed at the same instant' },
+    ]);
+    // no author on the wire: /edit and /delete may only touch yours anyway, so
+    // yours is the tie-breaker — this used to 403 on the bot's message
+    const edited = await POST(base, '/edit', { url, thread_id: '__page__', ts, text: 'my words, revised' });
+    assert.equal(edited.status, 200);
+    assert.equal(edited.json.msg.author, me);
+    // /delete is different: the owner may retract a bot's reply on purpose, so
+    // there is no implicit "mine" — the row's author is what points it
+    const mine = await POST(base, '/delete', { url, thread_id: '__page__', ts, author: me });
+    assert.ok(!('ambiguous' in mine.json), 'the author settled it');
+    assert.deepEqual((await chatOf(url)).map(m => m.author), ['claude'], 'the bot\'s answer survived');
+    const theirs = await POST(base, '/delete', { url, thread_id: '__page__', ts, author: 'claude' });
+    assert.equal(theirs.json.ok, true);
+    assert.deepEqual(await chatOf(url), [], 'and the owner can still take the bot\'s away');
+  });
+
   // --- file writing is off ------------------------------------------------
   await test('a permission request is denied at once and reported in the thread', async () => {
     const url = 'https://ledger.test/2026/permission';
