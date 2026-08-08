@@ -23,8 +23,11 @@
     ?offline=1       every companion call fails: onboarding notice + header state
     ?demo=select     script a real selection, stop at the floating 💬 button
     ?demo=compose    …and go on to open + pre-fill the new-comment composer
-    ?models=1        open the ⚙ models popover (screenshot state)
-    ?nobridge=1      …with the bridge not started: rows disabled + the hint
+    ?models=1        open the ⚙ agents popover (screenshot state)
+    ?nobridge=1      …with the bridge not started: the sleeping state
+    ?noagents=1      …with the companion started --no-agents ("agents are off")
+    ?nostatus=1      …with a companion that reports no `status` at all: the
+                     popover must simply omit the gauges
     ?md=1            replace the page-chat reply with a markdown-heavy one, so
                      links / bold / code / lists are all on screen
     ?wide=NNN        start the drawer at NNN px instead of the stored width
@@ -213,17 +216,32 @@ const TOOLS_B = 'Explored\n└ Read 2 documents';
 const MENTION = /@(claude|codex|all)\b/i;
 let queueDepth = 0;
 
-// ---- models (SPEC round 2: GET /models · POST /model · `models` event) ----
+// ---- agents (round 2: GET /models · POST /model · `models` event;
+//      round 3: `status` context gauges · POST /relay) ----------------------
+// The sleeping shape the companion really sends is all-null with
+// bridge:"stopped" — current included. ?nostatus=1 is the older companion that
+// never heard of gauges: the popover has to drop them, not break.
 const NOBRIDGE = Q.get('nobridge') === '1';
+const NOAGENTS = Q.get('noagents') === '1';
+const NOSTATUS = Q.get('nostatus') === '1' || NOBRIDGE || NOAGENTS;
 const MODELS = {
-  current: { claude: 'sonnet', codex: 'gpt-5-codex' },
-  options: NOBRIDGE ? null : {
+  current: NOBRIDGE || NOAGENTS ? null : { claude: 'sonnet', codex: 'gpt-5-codex' },
+  options: NOBRIDGE || NOAGENTS ? null : {
     claude: ['opus', 'sonnet', 'haiku'],
     codex: ['gpt-5-codex', 'gpt-5', 'o4-mini'],
   },
-  bridge: NOBRIDGE ? 'stopped' : 'running',
+  // pct is authoritative and is never derived from tokens/window by the client
+  status: NOSTATUS ? null : {
+    claude: { pct: 43, tokens: 86000, window: 200000, model: 'sonnet',
+              last_relay_at: iso(12), last_relay_tier: 'full' },
+    codex: { pct: 12, tokens: 33000, window: 272000, model: 'gpt-5-codex',
+             last_relay_at: null, last_relay_tier: null },
+    auto_relay: true,
+  },
+  bridge: NOAGENTS ? 'disabled' : NOBRIDGE ? 'stopped' : 'running',
 };
 const modelPosts = [];      // what the drawer POSTed, for the selftest
+const relayPosts = [];      // …and every /relay body
 const badges = [];          // every badge count the extension asked for
 
 // ?md=1 — a markdown-heavy bot reply already on screen at load, for screenshots,
@@ -356,11 +374,39 @@ function companion(method, path, body) {
   }
   if (method === 'GET' && route === '/models') {
     return { ok: true, status: 200, data: {
-      ok: true, current: MODELS.current, options: MODELS.options, bridge: MODELS.bridge } };
+      ok: true, current: MODELS.current, options: MODELS.options,
+      status: MODELS.status, bridge: MODELS.bridge } };
+  }
+  // POST /relay {agent:"claude"|"codex"|"both"} — the companion refuses with
+  // 409 when the bridge has nothing to hand off. codex is scripted as the
+  // refusal here so the popover's inline-error path is exercised for real.
+  if (method === 'POST' && route === '/relay') {
+    relayPosts.push({ agent: body && body.agent });
+    if (!/^(claude|codex|both)$/.test(String(body && body.agent))) {
+      return { ok: false, status: 400, error: 'bad agent' };
+    }
+    if (MODELS.bridge === 'disabled') {
+      return { ok: false, status: 409, error: 'agents are off on this companion' };
+    }
+    if (body.agent === 'codex') {
+      log('relay refused: codex idle');
+      return { ok: false, status: 409, error: 'agents are idle — nothing to relay' };
+    }
+    // a real relay resets that agent's context, and the companion pushes the
+    // new numbers to every tab — the drawer must move the gauge without a refetch
+    for (const a of body.agent === 'both' ? ['claude', 'codex'] : [body.agent]) {
+      if (MODELS.status && MODELS.status[a]) {
+        Object.assign(MODELS.status[a], { pct: 4, tokens: 8000, last_relay_at: now(), last_relay_tier: 'full' });
+      }
+    }
+    log('relayed: ' + body.agent);
+    setTimeout(() => toContent({ t: 'ws', ev: {
+      type: 'models', current: MODELS.current, status: MODELS.status } }), 40);
+    return { ok: true, status: 200, data: { ok: true, queued: true } };
   }
   if (method === 'POST' && route === '/model') {
     modelPosts.push({ agent: body.agent, model: body.model });
-    MODELS.current[body.agent] = body.model;
+    if (MODELS.current) MODELS.current[body.agent] = body.model;
     log('model: ' + body.agent + ' → ' + body.model);
     // the companion broadcasts the new state to every tab
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'models', current: { ...MODELS.current } } }), 40);
@@ -549,7 +595,7 @@ async function selftest() {
   S.querySelector('[data-act="export"]').click();
   check('export reported', !!await until(() => /^exported/.test(S.querySelector('.footbar').textContent)));
 
-  // ---- ⚙ models popover ----
+  // ---- ⚙ agents popover: models, context gauges, relay ----
   S.querySelector('[data-act="models"]').click();
   const sels = await until(() => {
     const s = S.querySelectorAll('.popover.models select');
@@ -560,6 +606,31 @@ async function selftest() {
     !!sels && sels[0].options.length === 3 && sels[1].options.length === 3);
   check('current models preselected',
     !!sels && sels[0].value === 'sonnet' && sels[1].value === 'gpt-5-codex');
+  check('each agent row carries its own logomark',
+    !!S.querySelector('.pop-agentrow[data-agent="claude"] .pop-mark svg') &&
+    !!S.querySelector('.pop-agentrow[data-agent="codex"] .pop-mark svg'));
+
+  // context gauges — pct comes from the companion and is never recomputed here
+  const row = a => S.querySelector('.pop-agentrow[data-agent="' + a + '"]');
+  const gauge = a => row(a).querySelector('.gauge');
+  const fillW = a => gauge(a).querySelector('.gauge-fill').style.width;
+  const label = a => gauge(a).querySelector('.gauge-label').textContent;
+  check('the gauge is filled to the reported percent', fillW('claude') === '43%');
+  check('the gauge is labelled in whole percents and compact tokens',
+    label('claude') === '43% · 86k / 200k');
+  check('the second agent gets its own gauge',
+    fillW('codex') === '12%' && label('codex') === '12% · 33k / 272k');
+  const bar = gauge('claude').querySelector('.gauge-bar');
+  const tick = gauge('claude').querySelector('.gauge-tick');
+  check('the gauge carries a tick at the 50% auto-relay threshold',
+    !!tick && Math.abs(parseFloat(getComputedStyle(tick).left) - bar.clientWidth / 2) <= 1);
+  check('the threshold is named once, in the footer',
+    /auto-relay at 50%/.test(S.querySelector('.pop-auto').textContent));
+  check('a past relay reads as a relative memory reset',
+    /memory reset 12m ago/.test(row('claude').querySelector('.pop-reset').textContent));
+  check('an agent that has never relayed shows no reset line',
+    row('codex').querySelector('.pop-reset').hidden);
+
   if (sels) { sels[0].value = 'opus'; sels[0].dispatchEvent(new Event('change', { bubbles: true })); }
   check('changing a model POSTs /model',
     !!await until(() => modelPosts.some(p => p.agent === 'claude' && p.model === 'opus')));
@@ -567,6 +638,63 @@ async function selftest() {
     const s = S.querySelector('.popover.models select[data-agent="claude"]');
     return s && s.value === 'opus';
   }));
+
+  // ---- relay ----
+  const relayBtn = a => a === 'both'
+    ? S.querySelector('.pop-foot button.relay')
+    : row(a).querySelector('button.relay');
+  check('relay buttons say what they do',
+    /hand off to a fresh session \(context reset\)/.test(relayBtn('claude').title) &&
+    /hand off to a fresh session \(context reset\)/.test(relayBtn('both').title));
+  relayBtn('claude').click();
+  check('every relay button is disabled while the POST is in flight',
+    relayBtn('claude').disabled && relayBtn('codex').disabled && relayBtn('both').disabled);
+  check('relay POSTs the agent it was asked about',
+    !!await until(() => relayPosts.some(p => p.agent === 'claude')) &&
+    !relayPosts.some(p => p.agent === 'codex'));
+  check('the buttons come back when the POST lands',
+    !!await until(() => !relayBtn('claude').disabled));
+  check('a completed relay reports back inline',
+    /claude relayed/.test(S.querySelector('.pop-hint').textContent));
+  check('the models broadcast moves the gauge live, in place',
+    !!await until(() => fillW('claude') === '4%'));
+  check('…and the label moves with it', label('claude') === '4% · 8k / 200k');
+  check('…and the reset line re-dates itself',
+    /memory reset just now/.test(row('claude').querySelector('.pop-reset').textContent));
+  check('the other agent’s gauge was left alone', fillW('codex') === '12%');
+
+  relayBtn('codex').click();
+  check('a refused relay is surfaced inline, not thrown away', !!await until(() => {
+    const h = S.querySelector('.pop-hint');
+    return /agents are idle — nothing to relay/.test(h.textContent) && h.classList.contains('err');
+  }));
+  relayBtn('both').click();
+  check('“relay both” POSTs agent:both',
+    !!await until(() => relayPosts.some(p => p.agent === 'both')));
+  check('relaying both moves both gauges', !!await until(() => fillW('codex') === '4%'));
+
+  // ---- the sleeping state (the live complaint: it used to read as broken) ----
+  const sleepLine = () => S.querySelector('.pop-sleep');
+  d.onEvent({ type: 'models', bridge: 'stopped', current: null, options: null, status: null });
+  check('a stopped bridge says the agents are asleep, not that something failed',
+    !sleepLine().hidden &&
+    /^agents are asleep — they wake on the first @mention$/.test(sleepLine().textContent));
+  check('both agent rows stay on screen, dimmed',
+    S.querySelectorAll('.pop-agentrow.asleep').length === 2 &&
+    !!S.querySelector('.pop-agentrow[data-agent="codex"] .pop-mark svg'));
+  check('a sleeping bridge has no gauges to show', gauge('claude').hidden && gauge('codex').hidden);
+  check('a sleeping agent can still be asked to relay', !relayBtn('claude').disabled);
+
+  d.onEvent({ type: 'models', bridge: 'disabled', options: null, status: null });
+  check('a companion started --no-agents says that instead',
+    /^agents are off on this companion$/.test(sleepLine().textContent));
+  check('relay is not offered when the agents are off',
+    relayBtn('claude').disabled && relayBtn('both').disabled);
+
+  d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options, status: MODELS.status });
+  check('waking up puts the popover back', sleepLine().hidden && !relayBtn('claude').disabled &&
+    !S.querySelector('.pop-agentrow.asleep'));
+
   S.querySelector('.popover.models').dispatchEvent(
     new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   check('Esc closes the popover and leaves the drawer open',

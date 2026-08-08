@@ -166,6 +166,25 @@ export function createChat({ onEvent }) {
 
   const modelSnapshot = () => (lastStatus
     ? { claude: lastStatus.claude_model || null, codex: lastStatus.codex_model || null } : null);
+  // context occupancy + relay state, as the drawer's agent panel wants it
+  const agentStatus = a => ({
+    pct: lastStatus[`${a}_pct`] ?? null,
+    tokens: lastStatus[`${a}_tokens`] ?? null,
+    window: lastStatus[`${a}_window`] ?? null,
+    model: lastStatus[`${a}_model`] || null,
+    last_relay_at: lastStatus[`${a}_last_relay_at`] ?? null,
+    last_relay_tier: lastStatus[`${a}_last_relay_tier`] ?? null,
+  });
+  const statusSnapshot = () => (lastStatus
+    ? { claude: agentStatus('claude'), codex: agentStatus('codex'), auto_relay: !!lastStatus.auto_relay }
+    : null);
+  // what makes a status worth telling every tab about: occupancy percentage,
+  // models, relay state. Raw token counts move on every heartbeat and would
+  // turn the event stream into a firehose for no visible change.
+  const statusKey = s => (s ? JSON.stringify([
+    s.auto_relay,
+    ['claude', 'codex'].map(a => [s[a].pct, s[a].model, s[a].last_relay_at, s[a].last_relay_tier]),
+  ]) : '');
   const modelOptions = () => {
     const scoped = (lastCtx && lastCtx.scoped) || null;
     if (!scoped) return null;
@@ -179,8 +198,12 @@ export function createChat({ onEvent }) {
       lastStatus = ev;
       // a /model turn lands as a status event: tell every tab, once per change
       const snap = modelSnapshot();
-      const key = JSON.stringify(snap);
-      if (snap && key !== lastModels) { lastModels = key; emit({ type: 'models', current: snap }); }
+      const status = statusSnapshot();
+      const key = JSON.stringify(snap) + statusKey(status);
+      if (snap && key !== lastModels) {
+        lastModels = key;
+        emit({ type: 'models', current: snap, status });
+      }
       return;
     }
     if (ev.type === 'projects') {
@@ -325,9 +348,9 @@ export function createChat({ onEvent }) {
       pump();
       return { queued: true, position: queue.length + (current ? 1 : 0) };
     },
-    // {current, options}: null until the bridge has spoken, which the
-    // extension renders as "models unknown yet" rather than an empty picker
-    models: () => ({ current: modelSnapshot(), options: modelOptions() }),
+    // {current, options, status}: all null until the bridge has spoken, which
+    // the extension renders as "unknown yet" rather than an empty picker
+    models: () => ({ current: modelSnapshot(), options: modelOptions(), status: statusSnapshot() }),
     // only the page whose turn is actually running can interrupt it
     interrupt(url) {
       if (!current || !available || current.job.url !== url) return false;

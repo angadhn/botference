@@ -2,6 +2,29 @@
 
 ## 2026-08-08
 
+- **Web annotator: the ⚙ popover is now a small agents panel.** Per
+  agent: logomark, model picker, a council-style context gauge (whole
+  percents, compact tokens, a tick at the 50% auto-relay threshold) and
+  "memory reset Nm ago" relay provenance, plus relay / relay-both
+  buttons (`POST /relay` → `/relay @…` control turns; an idle bridge
+  refuses with "agents are idle — nothing to relay" instead of
+  spawning). Agent status rides on `GET /models` and the `models`
+  broadcast, pushed only on meaningful change. The sleeping state is
+  explicit — dimmed rows, "agents are asleep — they wake on the first
+  @mention" — instead of an empty-looking popover.
+- **Web annotator: tool activity reads like Claude Code.** Bridge tool
+  summaries (`stream_id` suffix `:tools`) persist as `kind:"tools"`
+  msgs, render as one collapsed "Explored · N steps" row always hoisted
+  above the answer, and stay out of Obsidian exports. Turn events carry
+  the engaged `agents`, and the working chip is now logomark
+  avatar-rings whose spinner follows the floor on `@all` turns.
+- **Web annotator fixes from live use**: deleting a thread's last
+  message deletes the thread (stale empty threads heal on read, so
+  orphaned highlights unpaint); composers clear only on successful
+  send; bot replies render safe markdown; the drawer pushes the page
+  aside and is drag-resizable; comment-thread replies are terser by
+  prompt; export button wears the Obsidian crystal.
+
 - **`botference plugin --install-autostart` — the companion, always
   there (macOS).** Installs a login LaunchAgent
   (`com.botference.plugin-web`) for the workspace you run it from, with

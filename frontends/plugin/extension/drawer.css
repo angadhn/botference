@@ -133,22 +133,36 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .iconbtn.obsidian .obs { width: 16px; height: 19.2px; display: block }
 .iconbtn.obsidian:hover { border-color: #8B5CF6; background: color-mix(in srgb, #7C3AED 12%, transparent) }
 
-/* ── models popover (behind the ⚙) ─────────────────────────────────────── */
+/* ── agents popover (behind the ⚙) ─────────────────────────────────────── */
+/* One row per agent: logomark + model picker + relay, then a context gauge
+   under it. The council's agents panel, boiled down to popover scale — 12px is
+   the floor here as everywhere, so it stays small by having FEWER things, not
+   smaller ones. */
 .popover {
   position: absolute; top: 52px; right: 12px; z-index: 6;
-  min-width: 236px; max-width: 300px; padding: 10px 12px 11px;
+  min-width: 258px; max-width: 320px; padding: 10px 12px 11px;
   background: var(--card); color: var(--fg);
   border: 1px solid var(--card-line); border-radius: 10px;
   box-shadow: var(--shadow); font: 12px/1.45 var(--sans);
 }
 .popover[hidden] { display: none }
+/* author rules below (flex/grid) outrank the UA's [hidden] rule; restore it */
+.popover [hidden] { display: none }
 .pop-head {
   font: 700 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); margin-bottom: 8px;
 }
-.pop-row { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center;
-  gap: 8px; margin: 6px 0 }
-.pop-agent { font: 700 12px/1.4 var(--sans); color: var(--author, var(--muted)) }
+.pop-agentrow { margin: 0 0 10px }
+.pop-agentrow:last-of-type { margin-bottom: 2px }
+/* asleep/unknown: still both agents, still legible, visibly not in play */
+.pop-agentrow.asleep { opacity: .6 }
+.pop-line { display: flex; align-items: center; gap: 6px }
+.pop-row { flex: 1; min-width: 0; display: grid;
+  grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px }
+.pop-agent { display: inline-flex; align-items: center; gap: 5px;
+  font: 700 12px/1.4 var(--sans); color: var(--author, var(--muted)) }
+.pop-mark { display: inline-flex; flex: none }
+.pop-mark svg { width: 12px; height: 12px; display: block }
 .popover select {
   width: 100%; font: 12px/1.3 var(--sans); padding: 5px 7px; min-height: 28px;
   background: var(--bg); color: var(--fg);
@@ -156,6 +170,28 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .popover select:hover:not(:disabled) { border-color: var(--accent) }
 .popover select:disabled { opacity: .55; cursor: default }
+.popover button.relay { flex: none; font: 12px/1.2 var(--sans); padding: 5px 8px; min-height: 28px }
+
+/* the gauge: one bar, one tick at the auto-relay threshold, one label. No
+   axis, no gridlines — the tick IS the scale. */
+.gauge { display: flex; align-items: center; gap: 8px; margin: 6px 0 0 }
+.gauge-bar {
+  position: relative; flex: 1; min-width: 40px; height: 6px; border-radius: 3px;
+  background: var(--rail); border: 1px solid var(--card-line); overflow: hidden;
+}
+/* author-coloured, like everything else that belongs to one agent */
+.gauge-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+  background: var(--author, var(--accent)); border-radius: 3px 0 0 3px }
+.gauge-tick { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+  background: var(--fg); opacity: .45 }
+.gauge-label { flex: none; font: 12px/1.4 var(--sans); color: var(--muted);
+  font-variant-numeric: tabular-nums }
+.pop-reset { margin: 3px 0 0; font: 12px/1.4 var(--sans); color: var(--muted) }
+
+.pop-sleep { margin: 2px 0 0; font: 12px/1.45 var(--sans); color: var(--muted) }
+.pop-foot { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--card-line) }
+.pop-auto { font: 12px/1.4 var(--sans); color: var(--muted) }
 .pop-hint { margin-top: 9px; font: 12px/1.4 var(--sans); color: var(--muted) }
 .pop-hint.err { color: var(--bad) }
 

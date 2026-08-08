@@ -169,7 +169,7 @@ async function main() {
 
   await test('GET /models before the bridge has ever run reports the empty state', async () => {
     const r = await GET(base, '/models');
-    assert.deepEqual(r.json, { ok: true, current: null, options: null, bridge: 'stopped' });
+    assert.deepEqual(r.json, { ok: true, current: null, options: null, status: null, bridge: 'stopped' });
   });
 
   await test('ws /ws upgrades and sends hello', async () => {
@@ -381,12 +381,21 @@ async function main() {
     assert.deepEqual(r.json.current, { claude: 'claude-fable-5', codex: 'gpt-5.6-sol' });
     assert.ok(r.json.options.claude.includes('claude-opus-5'));
     assert.ok(r.json.options.codex.includes('gpt-5.5'));
+    assert.deepEqual(r.json.status.claude, {
+      pct: 4, tokens: r.json.status.claude.tokens, window: 1000000,
+      model: 'claude-fable-5', last_relay_at: null, last_relay_tier: null,
+    });
+    assert.ok(r.json.status.claude.tokens >= 42000, 'occupancy passes through');
+    assert.equal(r.json.status.codex.window, 1050000);
+    assert.equal(r.json.status.auto_relay, true);
   });
 
   await test('the bridge status event broadcast a models event', () => {
     const ev = stream.events.filter(e => e.type === 'models').pop();
     assert.ok(ev, 'a models event');
     assert.equal(ev.current.claude, 'claude-fable-5');
+    assert.equal(ev.status.claude.pct, 4);
+    assert.equal(ev.status.auto_relay, true);
   });
 
   await test('POST /model queues the control turn verbatim and rebroadcasts', async () => {
@@ -402,6 +411,42 @@ async function main() {
     assert.equal(stream.events.slice(before).filter(e => e.type === 'chat').length, 0);
     const models = (await GET(base, '/models')).json;
     assert.equal(models.current.claude, 'claude-opus-5');
+  });
+
+  await test('token creep is not broadcast; a pct change is', async () => {
+    const quiet = stream.events.length;
+    await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude quick one' });
+    await waitFor(() => stream.events.slice(quiet).some(e => e.kind === 'turn-end'), 'turn-end');
+    assert.equal(stream.events.slice(quiet).filter(e => e.type === 'models').length, 0,
+      'a heartbeat status that only moved tokens is not news');
+    const before = stream.events.length;
+    await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude another [mock:pct]' });
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'turn-end');
+    const ev = stream.events.slice(before).find(e => e.type === 'models');
+    assert.ok(ev, 'an occupancy change reaches every tab');
+    assert.equal(ev.status.claude.pct, 9);
+    assert.equal(ev.status.codex.pct, 7);
+    assert.ok(ev.status.claude.tokens > 42000, 'the payload still carries live tokens');
+  });
+
+  await test('POST /relay hands the control turn to the bridge verbatim', async () => {
+    const before = stream.events.length;
+    const sentBefore = inputs(logFile).length;
+    const r = await POST(base, '/relay', { agent: 'both' });
+    assert.deepEqual(r.json, { ok: true, queued: true });
+    await waitFor(() => inputs(logFile).length > sentBefore, 'relay at the bridge');
+    assert.deepEqual(inputs(logFile).slice(sentBefore), ['/relay @both']);
+    assert.equal(stream.events.slice(before).filter(e => e.type === 'chat').length, 0,
+      'a control turn is not a page turn');
+    for (const agent of ['claude', 'codex']) {
+      const n = inputs(logFile).length;
+      assert.equal((await POST(base, '/relay', { agent })).json.ok, true);
+      await waitFor(() => inputs(logFile).length > n, `relay @${agent}`);
+      assert.deepEqual(inputs(logFile).slice(n), [`/relay @${agent}`]);
+    }
+    const bad = await POST(base, '/relay', { agent: 'everyone' });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.json.ok, false);
   });
 
   await test('POST /model refuses a bad agent, a bad id, and an unlisted model', async () => {
@@ -582,10 +627,13 @@ async function main() {
     const health = await GET(off.base, '/health');
     assert.equal(health.json.bridge, 'disabled');
     const models = await GET(off.base, '/models');
-    assert.deepEqual(models.json, { ok: true, current: null, options: null, bridge: 'disabled' });
+    assert.deepEqual(models.json, { ok: true, current: null, options: null, status: null, bridge: 'disabled' });
     const setModel = await POST(off.base, '/model', { agent: 'claude', model: 'claude-opus-5' });
     assert.equal(setModel.status, 409);
     assert.deepEqual(setModel.json, { ok: false, error: 'agents are off on this companion' });
+    const relay = await POST(off.base, '/relay', { agent: 'both' });
+    assert.equal(relay.status, 409);
+    assert.deepEqual(relay.json, { ok: false, error: 'agents are off on this companion' });
     const page = (await GET(off.base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
     assert.equal(page.threads[0].msgs[0].text, '@claude thoughts?');
     es.close();
@@ -598,6 +646,11 @@ async function main() {
     const real = await startServer({ root: realRoot });
     const health = await GET(real.base, '/health');
     assert.deepEqual(health.json, { ok: true, bridge: 'stopped', queue: 0 });
+    // a relay with nothing running must refuse rather than spawn the bridge
+    const relay = await POST(real.base, '/relay', { agent: 'claude' });
+    assert.equal(relay.status, 409);
+    assert.deepEqual(relay.json, { ok: false, error: 'agents are idle — nothing to relay' });
+    assert.equal((await GET(real.base, '/health')).json.bridge, 'stopped', 'still no bridge');
     const page = await GET(real.base, '/test-page');
     assert.equal(page.status, 200);
     assert.ok(page.body.includes('<h1>The Quiet Return of the Night Train</h1>'));

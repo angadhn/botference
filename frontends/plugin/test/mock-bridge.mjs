@@ -19,10 +19,18 @@ const MODELS = {
   codex: ['gpt-5.6-sol', 'gpt-5.5', 'o3'],
 };
 const live = { claude: 'claude-fable-5', codex: 'gpt-5.6-sol' };
+// occupancy: tokens creep on every status (the heartbeat), pct only when a
+// turn asks for it — the companion must broadcast on the latter, not the former
+const use = { claude_tokens: 42000, codex_tokens: 31000, claude_pct: 4, codex_pct: 3 };
 const status = () => emit({
   type: 'status', mode: 'plan', lead: 'claude', route: '@all', project: 'plugin-pages',
   claude_model: live.claude, codex_model: live.codex,
-  claude_pct: 3, codex_pct: 2,
+  claude_pct: use.claude_pct, codex_pct: use.codex_pct,
+  claude_tokens: use.claude_tokens, claude_window: 1000000,
+  codex_tokens: use.codex_tokens, codex_window: 1050000,
+  claude_last_relay_at: null, claude_last_relay_tier: null,
+  codex_last_relay_at: null, codex_last_relay_tier: null,
+  auto_relay: true,
 });
 const completionContext = () => emit({
   type: 'completion_context',
@@ -105,6 +113,10 @@ function input(text) {
       emit({ type: 'stream', kind: 'done', ...head });
       room(model, `MOCK ${model} reply.`);
     }
+    // every turn burns context: tokens always move, pct only on demand
+    use.claude_tokens += 1200; use.codex_tokens += 900;
+    if (/\[mock:pct\]/.test(text)) { use.claude_pct += 5; use.codex_pct += 4; }
+    status();
     emit({ type: 'ready' });
   }, DELAY);
 }

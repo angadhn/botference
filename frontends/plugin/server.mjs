@@ -140,9 +140,9 @@ export function handler(req, res) {
   // Both are null until the bridge has started and spoken — the extension
   // renders that as "unknown yet", never as an empty list.
   if (req.method === 'GET' && url === '/models') {
-    const m = chat ? chat.models() : { current: null, options: null };
+    const m = chat ? chat.models() : { current: null, options: null, status: null };
     return ok(res, {
-      current: m.current, options: m.options,
+      current: m.current, options: m.options, status: m.status,
       bridge: NO_AGENTS ? 'disabled' : chat.state(),
     });
   }
@@ -290,6 +290,18 @@ export function handler(req, res) {
       const options = (chat.models().options || {})[agent];
       if (options && options.length && !options.includes(model)) return fail(res, 400, `unknown model for ${agent}`);
       chat.control(`/model @${agent} ${model}`);
+      ok(res, { queued: true });
+    });
+  }
+  // hand an agent's own context back to it (compaction/handoff). Never worth
+  // starting the bridge for: with nothing running there is no context to relay.
+  if (req.method === 'POST' && url === '/relay') {
+    return readBody(req, res, data => {
+      const agent = String(data.agent || '');
+      if (!['claude', 'codex', 'both'].includes(agent)) return fail(res, 400, 'agent must be claude, codex or both');
+      if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
+      if (chat.state() !== 'running') return fail(res, 409, 'agents are idle — nothing to relay');
+      chat.control(`/relay @${agent}`);
       ok(res, { queued: true });
     });
   }

@@ -283,6 +283,42 @@ tags: [web-annotation]
   scripts with a `chrome` shim + scripted fake companion responses, so the full drawer
   UI renders without installing the extension (used for screenshot QA).
 
+## Amendments (rounds 2–3, shipped)
+
+Contract deltas agreed during live testing — authoritative over the sections above:
+
+- `server.mjs --no-agents`: no bridge ever; mentions persist but return
+  `{ok:true, queued:false, reason:"agents are off on this companion"}` + a `chat`/`error`
+  event; `/health` reports `bridge:"disabled"`.
+- `POST /thread` accepts optional `index` (page-order insert) and auto-creates the page
+  shell. `POST /delete` with `ts`: deleting a thread's last message deletes the thread
+  (`{ok:true, thread_deleted:true}`); `store.readPage()` prunes empty-msgs threads
+  retroactively on any read.
+- Tool activity: room entries whose `stream_id` ends in `:tools` (fallback: "Explored"
+  + branch lines) persist as msgs with `kind:"tools"`; excluded from Obsidian export;
+  drawer groups a turn's tools msgs into one collapsed "Explored · N steps" row hoisted
+  above the answer. `reply` events carry `kind`; tools replies append (never replace
+  the streamed block).
+- Turn events carry `agents:["claude"|"codex",...]` (from the route prefix) on
+  `turn-start`/`turn-end`; drawer shows logomark avatar-ring spinners, the spinning ring
+  following the live stream `model` on @all turns.
+- `GET /models` → `{ok, current, options, status, bridge}`;
+  `status = {claude:{pct,tokens,window,model,last_relay_at,last_relay_tier}, codex:{…},
+  auto_relay}` (null until the bridge speaks). `{"type":"models"}` broadcasts the same
+  shape, fired only on meaningful change (pct/model/relay/auto_relay — not token creep).
+  `POST /model {agent, model}` queues a `/model` control turn (starts the bridge if
+  needed); `POST /relay {agent:"claude"|"codex"|"both"}` queues `/relay` (409 "agents
+  are idle — nothing to relay" when the bridge is stopped; never spawns).
+- Drawer: pushes the page aside via inline `margin-right` on `<html>` (restored on
+  close); left-edge drag resize clamped [320, min(720, 50vw)], persisted globally,
+  double-click resets 420. Gear popover = minimal agents panel (model selects, context
+  gauges with 50% tick, relay buttons, sleeping/off states). Bot replies render
+  markdown (safe DOM building, http/https links only). Composers clear only on
+  successful send. Export button = inline Obsidian crystal SVG.
+- Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
+  LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
+  instance wins the lock; launchd takes over ~10s after it exits).
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

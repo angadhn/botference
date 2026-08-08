@@ -282,17 +282,28 @@
         return { ok: true, path: r.data && r.data.path };
       },
 
-      // model picker (gear popover). The companion answers with the bridge's
-      // real option lists; `options:null` means the bridge has not started yet,
-      // which the drawer renders as a disabled row rather than an error.
+      // agents popover (behind the gear). The companion answers with the
+      // bridge's real option lists and context gauges; the all-null shape
+      // (`options:null, status:null, bridge:"stopped"`) means the bridge has
+      // simply not started yet, which the drawer renders as "asleep" rather
+      // than as an error. `status` is absent on an older companion — the
+      // drawer then just omits the gauges.
       onModels: async () => {
         const r = await api('GET', '/models');
         if (!r.ok) return { ok: false, error: r.error };
         const d = r.data || {};
-        return { ok: true, current: d.current || {}, options: d.options || null, bridge: d.bridge || '' };
+        return { ok: true, current: d.current || {}, options: d.options || null,
+                 status: d.status || null, bridge: d.bridge || '' };
       },
       onSetModel: async (agent, model) => {
         const r = await api('POST', '/model', { agent, model });
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, queued: r.data && r.data.queued };
+      },
+      // 409 "agents are idle — nothing to relay" is an ordinary answer here,
+      // not a transport failure: hand the text back for the popover to show.
+      onRelay: async agent => {
+        const r = await api('POST', '/relay', { agent });
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, queued: r.data && r.data.queued };
       },

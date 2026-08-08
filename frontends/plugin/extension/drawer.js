@@ -20,8 +20,11 @@
 //   onInterrupt()
 //   onJump(threadId)                    quote clicked: scroll page to highlight
 //   onFocus(threadId|null)              card focused/blurred: tint the highlight
-//   onModels()                          → {ok, current, options, bridge}  (GET /models)
+//   onModels()                          → {ok, current, options, status, bridge}
+//                                                                         (GET /models)
 //   onSetModel(agent, model)            → {ok, queued}                    (POST /model)
+//   onRelay(agent)                      → {ok, queued} | {ok:false,error} (POST /relay)
+//                                         agent: 'claude'|'codex'|'both'
 //   onClose() / onReconnect() / onSelect()
 (function (root) {
   'use strict';
@@ -255,8 +258,9 @@
       connKnown: false,    // false until the background has told us either way
       bridge: '',
       foot: '',
-      models: { current: {}, options: null, bridge: '', note: '', loading: false },
+      models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false },
       modelsOpen: false,
+      relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
       pushed: null,        // saved inline style of <html> while the page is pushed
       host: null, shadow: null, el: {},
@@ -718,50 +722,207 @@
       D.el.foot.classList.toggle('err', !!D.footErr && !anyRunning);
     }
 
-    // ---- models popover --------------------------------------------------
-    // Deliberately behind a gear: two selects in the header would be clutter on
-    // a control almost nobody touches twice a day. Built with DOM nodes because
-    // the option list is whatever the bridge reports and never needs to be
-    // markup.
+    // ---- agents popover --------------------------------------------------
+    // Deliberately behind a gear: a model picker, two context gauges and a
+    // relay button in the header would be clutter on controls almost nobody
+    // touches twice a day. It is the council's agents panel boiled down to
+    // what fits in a popover. Built with DOM nodes because everything in it —
+    // option lists, gauge numbers, companion error text — is data reported by
+    // the bridge, and none of it should ever become markup.
+
+    // The companion's empty state is {current:null, options:null, status:null,
+    // bridge:"stopped"}: nothing is broken, the bridge simply has not been
+    // started — it starts on the first @mention. "disabled" is the one state
+    // the user cannot fix from here (companion launched --no-agents).
+    const SLEEP_TEXT = {
+      asleep: 'agents are asleep — they wake on the first @mention',
+      off: 'agents are off on this companion',
+    };
+    function popMode() {
+      const m = D.models;
+      if (m.bridge === 'disabled') return 'off';
+      // a companion that never answered is not the same as a sleeping bridge:
+      // say nothing about the agents, the error line already speaks
+      if (m.err && !m.options) return 'unknown';
+      if (m.bridge === 'stopped' || !m.options) return 'asleep';
+      return 'live';
+    }
+
+    // 86000 → "86k", 1500 → "1.5k", 640 → "640"
+    function compactK(n) {
+      if (n == null || !isFinite(n)) return '';
+      const a = Math.abs(n);
+      if (a < 1000) return String(Math.round(n));
+      const v = n / 1000;
+      return (a < 10000 ? Math.round(v * 10) / 10 : Math.round(v)) + 'k';
+    }
+    function relTime(ts) {
+      const t = Date.parse(ts);
+      if (!isFinite(t)) return '';
+      const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+      if (s < 45) return 'just now';
+      const min = Math.round(s / 60);
+      if (min < 60) return min + 'm ago';
+      const h = Math.round(min / 60);
+      if (h < 24) return h + 'h ago';
+      return Math.round(h / 24) + 'd ago';
+    }
+
+    function optionList(agent) {
+      const cur = (D.models.current && D.models.current[agent]) || '';
+      const list = (D.models.options && D.models.options[agent]) || null;
+      if (!list || !list.length) return [cur || '—'];
+      // a model the bridge no longer offers is still what is running: show it
+      return list.indexOf(cur) === -1 && cur ? [cur].concat(list) : list.slice();
+    }
+    function buildSelect(agent) {
+      const sel = mk('select');
+      sel.setAttribute('data-agent', agent);
+      const cur = (D.models.current && D.models.current[agent]) || '';
+      const list = (D.models.options && D.models.options[agent]) || null;
+      for (const o of optionList(agent)) {
+        const opt = mk('option');
+        opt.value = o;
+        opt.textContent = o;
+        if (o === cur) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.disabled = !(list && list.length);
+      return sel;
+    }
+    function relayButton(agent, label, title) {
+      const b = mk('button', agent === 'both' ? 'relay both' : 'relay');
+      b.type = 'button';
+      b.setAttribute('data-act', 'relay');
+      b.setAttribute('data-agent', agent);
+      b.title = title;
+      b.textContent = label;
+      return b;
+    }
+
+    const RELAY_TIP = 'hand off to a fresh session (context reset)';
+
     function paintModels() {
       const pop = D.el.pop;
       if (!pop) return;
       pop.textContent = '';
       const head = mk('div', 'pop-head');
-      head.textContent = 'Models';
+      head.textContent = 'Agents';
       pop.appendChild(head);
 
-      const m = D.models;
       for (const agent of AGENT_ORDER) {
+        const group = mk('div', 'pop-agentrow');
+        group.setAttribute('data-agent', agent);
+        group.style.setProperty('--author', authorColor(agent));
+
+        const line = mk('div', 'pop-line');
         const row = mk('label', 'pop-row');
         const name = mk('span', 'pop-agent');
-        name.style.setProperty('--author', authorColor(agent));
-        name.textContent = agent;
-        const sel = mk('select');
-        sel.setAttribute('data-agent', agent);
-        const list = (m.options && m.options[agent]) || null;
-        const cur = (m.current && m.current[agent]) || '';
-        if (list && list.length) {
-          const all = list.indexOf(cur) === -1 && cur ? [cur].concat(list) : list;
-          for (const o of all) {
-            const opt = mk('option');
-            opt.value = o;
-            opt.textContent = o;
-            if (o === cur) opt.selected = true;
-            sel.appendChild(opt);
-          }
-        } else {
-          const opt = mk('option');
-          opt.textContent = cur || '—';
-          sel.appendChild(opt);
-          sel.disabled = true;
-        }
+        const mark = mk('span', 'pop-mark');
+        mark.innerHTML = MARKS[agent] || '';       // authored SVG, never data
+        name.appendChild(mark);
+        name.appendChild(document.createTextNode(agent));
         row.appendChild(name);
-        row.appendChild(sel);
-        pop.appendChild(row);
+        row.appendChild(buildSelect(agent));
+        line.appendChild(row);
+        // outside the <label>: a click on a label is forwarded to its control,
+        // which would drop the select open every time you asked for a relay
+        line.appendChild(relayButton(agent, 'relay', agent + ' — ' + RELAY_TIP));
+        group.appendChild(line);
+
+        const g = mk('div', 'gauge');
+        g.hidden = true;
+        const bar = mk('span', 'gauge-bar');
+        bar.appendChild(mk('span', 'gauge-fill'));
+        const tick = mk('span', 'gauge-tick');
+        tick.title = 'auto-relay at 50%';
+        bar.appendChild(tick);
+        g.appendChild(bar);
+        g.appendChild(mk('span', 'gauge-label'));
+        group.appendChild(g);
+
+        const reset = mk('div', 'pop-reset');
+        reset.hidden = true;
+        group.appendChild(reset);
+        pop.appendChild(group);
       }
+
+      const sleep = mk('div', 'pop-sleep');
+      sleep.hidden = true;
+      pop.appendChild(sleep);
+
+      const foot = mk('div', 'pop-foot');
+      foot.appendChild(mk('span', 'pop-auto'));
+      foot.appendChild(relayButton('both', 'relay both', 'both agents — ' + RELAY_TIP));
+      pop.appendChild(foot);
+
       pop.appendChild(mk('div', 'pop-hint'));
+      syncModels();
+    }
+
+    // Everything the companion can change under an open popover is repainted
+    // in place — no rebuild, so a `models` broadcast never yanks the select the
+    // user is mid-way through using.
+    function syncModels() {
+      const pop = D.el.pop;
+      if (!pop || !pop.querySelector('.pop-agentrow')) return;
+      const m = D.models;
+      const mode = popMode();
+      const st = m.status || {};
+
+      for (const agent of AGENT_ORDER) {
+        const group = pop.querySelector('.pop-agentrow[data-agent="' + agent + '"]');
+        if (!group) continue;
+        group.classList.toggle('asleep', mode !== 'live');
+
+        const sel = group.querySelector('select');
+        const cur = (m.current && m.current[agent]) || '';
+        const want = optionList(agent);
+        const have = [].map.call(sel.options, o => o.value);
+        if (have.join(' ') !== want.join(' ')) {
+          group.querySelector('.pop-row').replaceChild(buildSelect(agent), sel);
+        } else {
+          if (cur && sel.value !== cur) sel.value = cur;
+          sel.disabled = !(m.options && m.options[agent] && m.options[agent].length);
+        }
+        paintGauge(group, agent, st[agent]);
+      }
+
+      const sleep = pop.querySelector('.pop-sleep');
+      sleep.textContent = SLEEP_TEXT[mode] || '';
+      sleep.hidden = !SLEEP_TEXT[mode];
+
+      const auto = pop.querySelector('.pop-auto');
+      const ar = m.status ? m.status.auto_relay : null;
+      auto.textContent = ar == null ? '' : (ar ? 'auto-relay at 50%' : 'auto-relay off');
+
+      // one bridge, one queue: while any relay is in flight every relay button
+      // waits, including the one in the footer
+      pop.querySelectorAll('button.relay').forEach(b => { b.disabled = D.relaying || mode === 'off'; });
       paintModelHint();
+    }
+
+    // pct is whatever the companion reported and is never recomputed from
+    // tokens/window — a pushed event's token count may be newer than its pct.
+    function paintGauge(group, agent, s) {
+      const g = group.querySelector('.gauge');
+      const reset = group.querySelector('.pop-reset');
+      const pct = s && s.pct != null && isFinite(s.pct)
+        ? Math.max(0, Math.min(100, Math.round(s.pct))) : null;
+      if (pct == null) {
+        g.hidden = true;
+      } else {
+        const tk = compactK(s.tokens), win = compactK(s.window);
+        g.querySelector('.gauge-fill').style.width = pct + '%';
+        g.querySelector('.gauge-label').textContent =
+          tk && win ? pct + '% · ' + tk + ' / ' + win : pct + '%';
+        g.title = agent + (s.model ? ' · ' + s.model : '') + ' · ' + pct + '% of the context window used';
+        g.hidden = false;
+      }
+      const rel = s && s.last_relay_at ? relTime(s.last_relay_at) : '';
+      reset.textContent = rel ? 'memory reset ' + rel : '';
+      reset.title = rel && s.last_relay_tier ? 'last relay: ' + s.last_relay_tier : '';
+      reset.hidden = !rel;
     }
 
     function paintModelHint() {
@@ -769,10 +930,14 @@
       if (!el) return;
       const m = D.models;
       el.classList.toggle('err', !!m.err);
-      el.textContent = m.loading ? 'loading…'
+      // when the agents are asleep the sleep line has already said so; a second
+      // line of small print under it would only repeat itself
+      const text = m.loading ? 'loading…'
         : m.note ? m.note
-        : m.options ? 'takes effect on the next turn'
-        : 'starts with first @mention';
+        : popMode() === 'live' ? 'takes effect on the next turn'
+        : '';
+      el.textContent = text;
+      el.hidden = !text;
     }
 
     async function openModels() {
@@ -789,10 +954,13 @@
       if (r && r.ok !== false) {
         D.models.current = r.current || {};
         D.models.options = r.options || null;
+        // a companion that never heard of `status` simply has no gauges
+        D.models.status = r.status || null;
         D.models.bridge = r.bridge || '';
         D.models.err = false;
       } else {
         D.models.options = null;
+        D.models.status = null;
         D.models.note = (r && r.error) || 'could not reach the companion';
         D.models.err = true;
       }
@@ -822,6 +990,30 @@
         D.models.err = false;
       }
       paintModelHint();
+    }
+
+    // Relay = hand the agent a fresh session carrying a summary of this one.
+    // The companion refuses it when there is nothing to relay ("agents are
+    // idle"); that refusal is normal traffic, so it lands inline in the
+    // popover, not in a thrown error.
+    async function doRelay(agent) {
+      if (D.relaying) return;
+      D.relaying = true;
+      D.models.note = agent === 'both' ? 'relaying both…' : 'relaying ' + agent + '…';
+      D.models.err = false;
+      syncModels();                       // disables every relay button first
+      let r;
+      try { r = await cb('onRelay')(agent); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.relaying = false;
+      if (!r || r.ok === false) {
+        D.models.note = (r && r.error) || 'could not reach the companion';
+        D.models.err = true;
+      } else {
+        D.models.note = agent === 'both' ? 'both agents relayed' : agent + ' relayed';
+        D.models.err = false;
+      }
+      syncModels();
     }
 
     // ---- events ---------------------------------------------------------
@@ -858,6 +1050,7 @@
         const target = btn.dataset.target;
         if (act === 'close') { close(); return; }
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
+        if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
         if (act === 'export') { doExport(); return; }
         if (act === 'jump') {
           const card = btn.closest('.card');
@@ -1073,12 +1266,16 @@
     function onEvent(ev) {
       if (!ev) return;
       if (ev.type === 'bridge') { D.bridge = ev.error ? (ev.state + ' — ' + ev.error) : ev.state; paintFoot(); return; }
-      // model switches are broadcast to every tab; keep the popover honest
+      // Model switches, context gauges and relays are broadcast to every tab;
+      // this is the push channel that keeps an open popover honest. It fires on
+      // meaningful change only (pct/model/relay/auto_relay — not token creep),
+      // so it is cheap to render straight into the live DOM.
       if (ev.type === 'models') {
         if (ev.current) D.models.current = Object.assign({}, D.models.current, ev.current);
         if (ev.options !== undefined) D.models.options = ev.options;
+        if (ev.status !== undefined) D.models.status = ev.status;
         if (ev.bridge) D.models.bridge = ev.bridge;
-        if (D.modelsOpen) paintModels();
+        if (D.modelsOpen) syncModels();
         return;
       }
       if (ev.type !== 'chat') return;
