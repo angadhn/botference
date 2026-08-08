@@ -124,6 +124,58 @@ const ID = '1aBcD_efGH-2026QuietMachine';
   }
 }
 
+// ---- 3d. the authuser cascade ------------------------------------------------
+// The other multi-account failure: NO /u/<n>/ anywhere in the url, because the
+// account is picked by cookie. `authuser=N` overrides that cookie, so the
+// candidate list is "what the url says" followed by every account worth trying.
+{
+  const bare = `https://docs.google.com/document/d/${ID}/export?format=txt`;
+  const au = n => bare + '&authuser=' + n;
+
+  const plain = A.gdocsExportUrls(ID, null, null);
+  eq('cascade: the url the page implies comes first', plain[0], bare);
+  eq('cascade: then authuser 0..4', plain.slice(1), [au(0), au(1), au(2), au(3), au(4)]);
+  eq('cascade: and stops there', plain.length, A.EXPORT_URL_MAX);
+  eq('cascade: the cap is the primary plus 0..4', A.EXPORT_URL_MAX, 2 + A.AUTHUSER_MAX);
+
+  const scoped = A.gdocsExportUrls(ID, A.gdocsScope(`https://docs.google.com/document/u/3/d/${ID}/edit`), null);
+  eq('cascade: a scoped page still tries its own account first',
+    scoped[0], `https://docs.google.com/document/u/3/d/${ID}/export?format=txt`);
+  ok('cascade: …and falls back through the same authuser ladder',
+    scoped.slice(1).join('|') === [au(0), au(1), au(2), au(3), au(4)].join('|'));
+
+  const hinted = A.gdocsExportUrls(ID, null, '2');
+  eq('cascade: a hinted account is tried straight after the plain url', hinted[1], au(2));
+  eq('cascade: …and is not repeated later in the ladder',
+    hinted.filter(u => u === au(2)).length, 1);
+  eq('cascade: …so the list is still capped', hinted.length, A.EXPORT_URL_MAX);
+  eq('cascade: a junk hint is ignored', A.gdocsExportUrls(ID, null, '../evil'), plain);
+  eq('cascade: every candidate is on docs.google.com',
+    plain.filter(u => u.startsWith('https://docs.google.com/document/')).length, plain.length);
+}
+
+// ---- 3e. asking the page which account it is signed in as --------------------
+// Docs writes its own account into its own chrome. Cheaper and more accurate
+// than the cascade, which stays as the fallback.
+{
+  eq('hint: an authuser rider on a widget url',
+    A.accountFromUrls(['https://ogs.google.com/widget/app?authuser=2&origin=x']), '2');
+  eq('hint: the Docs home button’s own path',
+    A.accountFromUrls(['/document/u/1/']), '1');
+  eq('hint: an absolute docs url',
+    A.accountFromUrls([`https://docs.google.com/u/4/document/d/${ID}/edit`]), '4');
+  eq('hint: the first one wins',
+    A.accountFromUrls(['/nothing/here', '/document/u/3/', '?authuser=1']), '3');
+  eq('hint: account 0 is a hint like any other', A.accountFromUrls(['?authuser=0']), '0');
+  eq('hint: nothing to go on', A.accountFromUrls(['/edit', 'https://example.com/u/x/']), null);
+  eq('hint: no links at all', A.accountFromUrls([]), null);
+  eq('hint: not a list', A.accountFromUrls(null), null);
+  eq('hint: a lookalike host is not a source',
+    A.accountFromUrls(['https://evil.example/u/9/']), null);
+  eq('hint: an avatar url that merely contains /u/ deeper in is not one',
+    A.accountFromUrls(['https://lh3.googleusercontent.com/a/AAcHT/u/7/photo.jpg']), null);
+}
+
 // ---- 3c. an export that is a web page, not a document ------------------------
 // This is the whole silent failure: status 200, and a login form or account
 // chooser in the body. Anything that opens as markup is a failure.
@@ -217,8 +269,15 @@ const res = (body, extra) => Object.assign({
   eq('adapter: text is the cleaned export', text, 'The Quiet Machine\n\nDraft seven.');
   eq('adapter: fetched the export url exactly once', f.calls.length, 1);
   eq('adapter: …at the export url', f.calls[0].url, A.gdocsExportUrl(ID));
-  eq('adapter: …with the user’s session', f.calls[0].init.credentials, 'include');
+  // NOT 'include'. /export 302s to googleusercontent with ACAO:* , which is
+  // illegal for a credentialed request — 'include' made the fetch throw
+  // "Failed to fetch" on every private doc. 'same-origin' still sends cookies
+  // on the docs.google.com hop, which is the hop that mints the tokened url.
+  eq('adapter: …with same-origin credentials, not include',
+    f.calls[0].init.credentials, 'same-origin');
+  eq('adapter: the credentials mode is stated once, in the module', A.PAGE_CREDENTIALS, 'same-origin');
   eq('adapter: a success leaves no error behind', ad.lastError, '');
+  eq('adapter: …and records which url answered', ad.usedUrl, A.gdocsExportUrl(ID));
 }
 
 // ---- 6b. the account-scoped tab fetches the account-scoped export ------------
@@ -283,13 +342,18 @@ const res = (body, extra) => Object.assign({
     const picker = mk(stubFetch(res(PICKER)));
     await picker.articleText();
     ok('failure: an html body is reported as html', /HTML/.test(picker.lastError), picker.lastError);
-    ok('failure: …with the status it really came back with', /^HTTP 200\b/.test(picker.lastError), picker.lastError);
-    ok('failure: …and a peek at the body, capped', /Choose an account/.test(picker.lastError) &&
-      picker.lastError.length < 200, picker.lastError);
+    ok('failure: …with the status it really came back with',
+      /HTTP 200 but the body is HTML/.test(picker.lastError), picker.lastError);
+    ok('failure: …and a peek at the body', /Choose an account/.test(picker.lastError), picker.lastError);
+    ok('failure: …and which transport tried it', /^page /.test(picker.lastError), picker.lastError);
+    ok('failure: …once per attempt, all of them',
+      picker.lastError.split(' · ').length === A.EXPORT_URL_MAX, picker.lastError);
+    ok('failure: the url in the reason is readable, not 40 chars of id',
+      !picker.lastError.includes(ID) && /\/d\/…\//.test(picker.lastError), picker.lastError);
 
     const notFound = mk(stubFetch(res('nope', { ok: false, status: 404 })));
     await notFound.articleText();
-    eq('failure: a 404 is reported as its status', notFound.lastError, 'HTTP 404');
+    ok('failure: a 404 is reported as its status', /HTTP 404/.test(notFound.lastError), notFound.lastError);
 
     const threw = mk(stubFetch(() => { throw new Error('Failed to fetch'); }));
     await threw.articleText();
@@ -300,9 +364,10 @@ const res = (body, extra) => Object.assign({
     ok('failure: an empty body says so', /empty/.test(empty.lastError), empty.lastError);
 
     // the retry the extension now performs (a failed export never sets the
-    // sent-once flag): the second attempt succeeds and clears the reason
+    // sent-once flag): a whole cascade fails, the NEXT call succeeds and
+    // clears the reason
     let n = 0;
-    const flaky = mk(stubFetch(() => (++n === 1 ? res(PICKER) : res('Real text.'))));
+    const flaky = mk(stubFetch(() => (++n <= A.EXPORT_URL_MAX ? res(PICKER) : res('Real text.'))));
     const first = await flaky.articleText();
     const why = flaky.lastError;
     const second = await flaky.articleText();
@@ -316,6 +381,122 @@ const res = (body, extra) => Object.assign({
   const long = 'A'.repeat(40000);
   const t = await mk(stubFetch(res(long))).articleText();
   eq('long doc: trimmed to the transport ceiling', t.length, A.TEXT_LIMIT);
+}
+
+// ---- 7b. the transport ladder --------------------------------------------------
+// The live failure: credentials:'include' made the page fetch throw on the
+// googleusercontent redirect. That is fixed by the credentials mode above; the
+// background worker stays as the fallback for a page whose CSP blocks the
+// request outright, and must NOT be used when the page can do it itself.
+{
+  const url = `https://docs.google.com/document/d/${ID}/edit`;
+  const PICKER = '<!doctype html><html>Choose an account</html>';
+  const bgOk = text => {
+    const sent = [];
+    const send = (msg, cb) => { sent.push(msg); cb({ ok: true, status: 200, contentType: 'text/plain', text }); };
+    send.sent = sent;
+    return send;
+  };
+
+  {
+    // the page can do it: the worker is never even asked
+    const f = stubFetch(res('Straight from the page.'));
+    const send = bgOk('from the worker');
+    const ad = A.pick(url, { fetch: f, send, documentTitle: () => '' });
+    eq('ladder: the page transport answers', await ad.articleText(), 'Straight from the page.');
+    eq('ladder: …and the worker was never bothered', send.sent.length, 0);
+    eq('ladder: …which is recorded', ad.usedVia, 'page');
+  }
+
+  {
+    // CSP (or the old CORS bug): the page fetch throws, the worker saves it
+    const f = stubFetch(() => { throw new TypeError('Failed to fetch'); });
+    const send = bgOk('Rescued by the worker.');
+    const ad = A.pick(url, { fetch: f, send, documentTitle: () => '' });
+    eq('ladder: a page fetch that throws falls back to the worker',
+      await ad.articleText(), 'Rescued by the worker.');
+    eq('ladder: …by the documented message', send.sent[0].t, 'gdocs-export');
+    eq('ladder: …carrying the export url', send.sent[0].url, A.gdocsExportUrl(ID));
+    eq('ladder: …and only after the page lane gave up', f.calls.length, 1);
+    eq('ladder: the working transport is recorded', ad.usedVia, 'background');
+  }
+
+  {
+    // an install whose worker predates this message: not a refusal, just absent
+    const f = stubFetch(() => { throw new TypeError('Failed to fetch'); });
+    const send = (msg, cb) => cb({ ok: false, error: 'unknown message "gdocs-export"' });
+    const ad = A.pick(url, { fetch: f, send, documentTitle: () => '' });
+    eq('ladder: an older worker is treated as no worker', await ad.articleText(), '');
+    ok('ladder: …and the page failure is what gets reported',
+      /Failed to fetch/.test(ad.lastError), ad.lastError);
+  }
+
+  {
+    // the worker refuses the url outright — a real answer, reported as one
+    const f = stubFetch(() => { throw new TypeError('Failed to fetch'); });
+    const send = (msg, cb) => cb({ ok: false, error: 'gdocs-export: refused — this is not a Google Docs export url' });
+    const ad = A.pick(url, { fetch: f, send, documentTitle: () => '' });
+    eq('ladder: a worker refusal is not retried as a fetch', await ad.articleText(), '');
+    ok('ladder: …and says so', /refused/.test(ad.lastError), ad.lastError);
+  }
+
+  {
+    // the chooser: cascade every account on the page lane, THEN the worker
+    let n = 0;
+    const f = stubFetch(() => (++n <= A.EXPORT_URL_MAX ? res(PICKER) : res('never')));
+    const send = bgOk('The document, from the worker.');
+    const ad = A.pick(url, { fetch: f, send, documentTitle: () => '' });
+    eq('ladder: a chooser cascades the whole ladder before giving up on the page',
+      await ad.articleText(), 'The document, from the worker.');
+    eq('ladder: …which is every candidate url, once', f.calls.length, A.EXPORT_URL_MAX);
+    eq('ladder: …in the documented order',
+      f.calls.map(c => c.url), A.gdocsExportUrls(ID, null, null));
+  }
+
+  {
+    // the cascade stops when the account is not the question
+    const f = stubFetch(res('boom', { ok: false, status: 500 }));
+    const ad = A.pick(url, { fetch: f, documentTitle: () => '' });
+    eq('ladder: a 500 is not retried against five other accounts',
+      await ad.articleText(), '');
+    eq('ladder: …one attempt, not six', f.calls.length, 1);
+  }
+
+  {
+    // the second account is the right one: stop the moment a document arrives
+    const want = `https://docs.google.com/document/d/${ID}/export?format=txt&authuser=1`;
+    const f = stubFetch(u => (u === want ? res('The second account’s copy.') : res(PICKER)));
+    const ad = A.pick(url, { fetch: f, documentTitle: () => '' });
+    eq('ladder: the cascade stops at the account that works',
+      await ad.articleText(), 'The second account’s copy.');
+    eq('ladder: …without trying the rest', f.calls.length, 3);   // plain, authuser=0, authuser=1
+    eq('ladder: …and remembers which url it was', ad.usedUrl, want);
+  }
+
+  {
+    // the page's own links name the account, so the cascade is not needed
+    const want = `https://docs.google.com/document/d/${ID}/export?format=txt&authuser=3`;
+    const f = stubFetch(u => (u === want ? res('The third account’s copy.') : res(PICKER)));
+    const ad = A.pick(url, {
+      fetch: f, documentTitle: () => '',
+      accountUrls: () => ['https://ogs.google.com/widget?authuser=3'],
+    });
+    eq('ladder: a hint from the page short-circuits the cascade',
+      await ad.articleText(), 'The third account’s copy.');
+    eq('ladder: …to two requests, not four', f.calls.length, 2);
+    eq('ladder: the hint is recorded', ad.hintedAccount, '3');
+  }
+
+  {
+    // a page that says nothing, and a DOM walk that throws, are both survivable
+    const f = stubFetch(res('Fine.'));
+    const ad = A.pick(url, {
+      fetch: f, documentTitle: () => '',
+      accountUrls: () => { throw new Error('detached'); },
+    });
+    eq('ladder: a broken account hint does not take the export down',
+      await ad.articleText(), 'Fine.');
+  }
 }
 
 // ---- 8. the registry is a registry, not a special case ------------------------

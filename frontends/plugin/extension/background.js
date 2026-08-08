@@ -1,8 +1,10 @@
 // background.js — MV3 service worker for the Botference Web Annotator.
 //
-// Content scripts NEVER touch the network. The companion serves no CORS
-// headers, so every fetch and the WS both live here, where host_permissions
-// grant cross-origin access. This worker owns:
+// Content scripts never touch the COMPANION's network. The companion serves no
+// CORS headers, so every fetch to it and the WS both live here, where
+// host_permissions grant cross-origin access. (The one exception is a site
+// adapter reading its own origin with the user's session — see adapters.js —
+// and even that falls back to {t:'gdocs-export'} below.) This worker owns:
 //
 //   • the WebSocket to ws://127.0.0.1:4189/ws (exponential backoff reconnect,
 //     chrome.alarms keepalive so an idle worker still reconnects)
@@ -27,6 +29,22 @@
 //   {t:'api', method:'GET'|'POST', path:'/page?url=…', body?:{…}}
 //        → {ok:true, status:200, data:{…}}          companion answered
 //        → {ok:false, error:'…', status?:N, data?:…} transport or 4xx/5xx
+//   {t:'gdocs-export', url}           FALLBACK transport for the Google Docs
+//                                     adapter's plain-text export. The content
+//                                     script fetches it itself first (with
+//                                     credentials:'same-origin' — adapters.js
+//                                     explains why that mode and not
+//                                     'include'); this exists for a page whose
+//                                     CSP blocks the request outright, since a
+//                                     content script's fetch rides the PAGE's
+//                                     connect-src in Chromium.
+//                                     `url` is NOT a general fetch target: it
+//                                     is validated to https + host exactly
+//                                     docs.google.com + the document export
+//                                     route, and nothing else is ever
+//                                     requested. This is not a proxy.
+//        → {ok:true, status:200, contentType:'…', text:'…'}
+//        → {ok:false, status?:N, error:'…', peek?:'…'}
 //   {t:'badge', count:N}              set this tab's badge (N=0 clears it)
 //        → {ok:true}
 //   {t:'reconnect'}                   user-visible "retry" affordance
@@ -227,6 +245,46 @@ function refreshAllBadges() {
   }
 }
 
+// ---- the Google Docs export (fallback transport, see the contract) -------
+// The ONLY non-companion url this worker will ever fetch, and it is pinned to
+// one route: https, host exactly docs.google.com, the document export path,
+// format=txt, and at most an authuser rider. A content script cannot turn this
+// into a general-purpose proxy by asking nicely.
+//
+// The response is not served by docs.google.com itself: /export 302s to
+// doc-XX-XX-docstext.googleusercontent.com with a `dat=` auth token in the
+// query, which is why manifest.json's host_permissions list that host too —
+// without it this fetch dies on the redirect exactly as the page's did.
+// Credentials are 'include' HERE (and only here): the worker's own origin is
+// the extension, so 'same-origin' would send no cookies at all, and CORS is
+// satisfied by the host permission rather than by response headers.
+const GDOCS_EXPORT_URL =
+  /^https:\/\/docs\.google\.com\/(?:u\/\d{1,3}\/)?document\/(?:u\/\d{1,3}\/)?d\/[A-Za-z0-9_-]{8,}\/export\?format=txt(?:&authuser=\d{1,3})?$/;
+const GDOCS_TEXT_MAX = 300000;   // the adapter keeps 12000; this is the wire cap
+const peek = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, 80);
+
+async function gdocsExport(rawUrl) {
+  const url = String(rawUrl == null ? '' : rawUrl);
+  let u;
+  try { u = new URL(url); } catch { return { ok: false, error: 'gdocs-export: not a url' }; }
+  if (u.protocol !== 'https:' || u.hostname !== 'docs.google.com' || !GDOCS_EXPORT_URL.test(url)) {
+    return { ok: false, error: 'gdocs-export: refused — this is not a Google Docs export url' };
+  }
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow' });
+  } catch (e) {
+    return { ok: false, error: 'fetch threw: ' + peek((e && e.message) || e) };
+  }
+  const contentType = (res.headers && res.headers.get('content-type')) || '';
+  let text = '';
+  try { text = await res.text(); } catch (e) { text = ''; }
+  if (!res.ok) {
+    return { ok: false, status: res.status, contentType, error: 'HTTP ' + res.status, peek: peek(text) };
+  }
+  return { ok: true, status: res.status, contentType, text: text.slice(0, GDOCS_TEXT_MAX) };
+}
+
 // ---- opening a page from the drawer's pages list -------------------------
 // Tab work can only happen here. Matching is on normUrl, not the raw string,
 // so a link with a tracking query or a trailing slash still finds the tab the
@@ -294,6 +352,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         forceReconnect();
         return { ok: true };
       }
+      case 'gdocs-export': return gdocsExport(msg.url);
       case 'open-page': return openPage(msg.url);
       default:
         return { ok: false, error: 'unknown message ' + JSON.stringify(msg && msg.t) };

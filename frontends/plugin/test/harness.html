@@ -100,6 +100,10 @@
   <button id="h-md">play codex (markdown)</button>
   <button id="h-dark">toggle dark</button>
   <span class="spacer"></span>
+  <!-- the running selftest, written by check() and never by the fake
+       companion's log() — a stalled run must still say where it got to,
+       because a screenshot is the only instrument this page has -->
+  <span id="h-prog"></span>
   <span id="h-log">fake companion ready</span>
 </div>
 
@@ -176,12 +180,44 @@ for (let i = 1; DOC_TEXT.length < 14000; i++) {
 DOC_TEXT += 'SENTINEL-PAST-THE-CAP';
 const exportFetches = [];     // every direct fetch the adapter made
 
-// The live failure, reproduced: when the user's Docs session is scoped to a
-// second account, the export can answer 200 with an ACCOUNT CHOOSER instead of
-// the document. Nothing about that is an error — no status, no throw — which
-// is exactly why the Docs UI used to end up in the bots' context. Flip
-// DOC_FETCH_MODE to 'picker' to be in that world.
+// The two live failures, reproduced. DOC_FETCH_MODE picks the world:
+//
+//   'ok'      the export answers with the document
+//   'picker'  200 + an ACCOUNT CHOOSER instead of the document. No status, no
+//             throw — which is exactly why the Docs UI used to end up in the
+//             bots' context. Cured by the authuser cascade when one of the
+//             other accounts can read the doc ('cascade' below), and by the
+//             warning banner when none can.
+//   'cascade' the chooser for every url EXCEPT authuser=2 — a doc that
+//             belongs to the third signed-in account on a page whose url
+//             carries no /u/<n>/ at all
+//   'cors'    the page's own fetch throws, exactly as it did in the field:
+//             /export 302s to googleusercontent with ACAO:*, which the browser
+//             rejects for a credentialed request. The background worker is the
+//             fallback that still gets the text.
 let DOC_FETCH_MODE = Q.get('badexport') === '1' ? 'picker' : 'ok';
+const DOC_EXPORT_AUTH = n => DOC_EXPORT + '&authuser=' + n;
+const CASCADE_WINNER = DOC_EXPORT_AUTH(2);
+
+// What docs.google.com would answer for a given export url in the current
+// world — {ok, status, contentType, body}. Shared by the page fetch and the
+// background shim below, because the server does not care which asked. The
+// document body arrives as Docs really sends it: a BOM, CRLFs, and padding
+// either side that the adapter has to trim off.
+const DOC_BODY = () => '﻿\r\n  ' + DOC_TEXT.replace(/\n/g, '\r\n') + '\r\n\r\n  ';
+function exportAnswer(url) {
+  const u = String(url);
+  const picker = { ok: true, status: 200, contentType: 'text/html; charset=UTF-8', body: ACCOUNT_PICKER };
+  const doc = { ok: true, status: 200, contentType: 'text/plain; charset=UTF-8', body: DOC_BODY() };
+  if (u !== DOC_EXPORT && u.indexOf(DOC_EXPORT + '&authuser=') !== 0) {
+    return { ok: false, status: 404, contentType: '', body: '' };
+  }
+  // one account, and only one, holds this doc — every other url gets the
+  // chooser, exactly as a cookie-selected multi-account session behaves
+  if (DOC_FETCH_MODE === 'cascade') return u === CASCADE_WINNER ? doc : picker;
+  if (DOC_FETCH_MODE === 'picker') return picker;
+  return doc;
+}
 const ACCOUNT_PICKER =
   '<!DOCTYPE html><html lang="en"><head><title>Choose an account</title></head>' +
   '<body><h1>Choose an account</h1><p>to continue to Google Docs</p></body></html>';
@@ -197,21 +233,16 @@ if (GDOCS) {
   window.__BFP_HREF = DOC_HREF;
   document.title = DOC_TITLE + ' - Google Docs';
 
-  // the export endpoint, exactly as Docs answers it: a BOM, CRLFs, and
-  // padding either side that the adapter has to trim off
+  // the page's own transport: a Response-shaped wrapper around exportAnswer()
   window.fetch = async (url, init) => {
-    exportFetches.push({ url: String(url), credentials: init && init.credentials });
-    if (String(url) === DOC_EXPORT) {
-      if (DOC_FETCH_MODE === 'picker') {
-        return { ok: true, status: 200,
-          headers: { get: () => 'text/html; charset=UTF-8' },
-          text: async () => ACCOUNT_PICKER };
-      }
-      return { ok: true, status: 200,
-        headers: { get: () => 'text/plain; charset=UTF-8' },
-        text: async () => '﻿\r\n  ' + DOC_TEXT.replace(/\n/g, '\r\n') + '\r\n\r\n  ' };
-    }
-    return { ok: false, status: 404, headers: { get: () => '' }, text: async () => '' };
+    exportFetches.push({ url: String(url), credentials: init && init.credentials, via: 'page' });
+    // the field failure: /export 302s to googleusercontent, whose ACAO:* is
+    // illegal for a credentialed request, so the fetch never resolves at all
+    if (DOC_FETCH_MODE === 'cors') throw new TypeError('Failed to fetch');
+    const a = exportAnswer(url);
+    return { ok: a.ok, status: a.status,
+      headers: { get: () => a.contentType },
+      text: async () => a.body };
   };
 
   // the body: app chrome with real text (the only selectable thing on a Docs
@@ -622,6 +653,22 @@ window.chrome = {
             // needed the user's own session must NOT have come through here
             apiCalls.push({ method: msg.method, path: msg.path });
             return companion(msg.method, msg.path, msg.body);
+          // the FALLBACK transport, standing in for background.js's worker:
+          // same strict route check, same {ok,status,contentType,text} shape.
+          // It answers even when window.fetch is throwing, because that is the
+          // whole point of it — the worker is not subject to the page's CSP or
+          // to the redirect's CORS headers.
+          case 'gdocs-export': {
+            const url = String(msg.url || '');
+            exportFetches.push({ url, credentials: 'include', via: 'background' });
+            if (!/^https:\/\/docs\.google\.com\/(?:u\/\d{1,3}\/)?document\/(?:u\/\d{1,3}\/)?d\/[A-Za-z0-9_-]{8,}\/export\?format=txt(?:&authuser=\d{1,3})?$/.test(url)) {
+              return { ok: false, error: 'gdocs-export: refused — this is not a Google Docs export url' };
+            }
+            const a = exportAnswer(url);
+            return a.ok
+              ? { ok: true, status: a.status, contentType: a.contentType, text: a.body }
+              : { ok: false, status: a.status, contentType: a.contentType, error: 'HTTP ' + a.status };
+          }
           case 'badge': badges.push(msg.count); return { ok: true };
           // stands in for background.js's openPage(): there are no tabs here,
           // so record the ask and arm the same one-shot flag the real worker
@@ -705,13 +752,30 @@ function demoSelect(stopAtButton, fill) {
 // ?selftest=1 — drives the whole loop in a real browser and writes the tally
 // into the status bar, so `botference see` screenshots a pass/fail result.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Progress, in its own element: `see` fast-forwards timers under a fixed
+// virtual-time budget, so a selftest that outgrows it is simply cut off
+// mid-run. Without this the screenshot shows the fake companion's last log
+// line and nothing about how far the checks got.
+// It shows the VERDICT, not just the name: a run that is merely slow and a run
+// that is failing look identical otherwise, and `until()` spends six seconds of
+// the budget on every check that will fail anyway.
+let firstBad = '';
+function progress(out, name) {
+  const el = document.getElementById('h-prog');
+  if (!el) return;
+  const last = out[out.length - 1] || '';
+  if (!firstBad && last[0] === '✗') firstBad = name;
+  el.style.color = firstBad ? '#b3403a' : '';
+  el.textContent = out.length + ' checks · ' + last +
+    (firstBad && firstBad !== name ? '  ||  first ✗: ' + firstBad : '');
+}
 async function until(fn, ms = 6000) {
   const t0 = Date.now();
   for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(50); }
 }
 async function selftest() {
   const out = [];
-  const check = (name, cond) => out.push((cond ? '✓ ' : '✗ ') + name);
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
   const d = window.__bfp.drawer, S = d.shadow;
   const q = sel => S.querySelectorAll(sel);
 
@@ -1112,7 +1176,7 @@ async function selftest() {
 // reached the companion on the first mention.
 async function selftestGdocs() {
   const out = [];
-  const check = (name, cond) => out.push((cond ? '✓ ' : '✗ ') + name);
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
   const d = window.__bfp.drawer, S = d.shadow;
   const q = sel => S.querySelectorAll(sel);
   const ctab = S.querySelector('.tab[data-tab="comments"]');
@@ -1184,6 +1248,45 @@ async function selftestGdocs() {
   check('…and this tab’s unscoped doc still exports from the bare url',
     window.BFPAdapters.pick(DOC_HREF).exportUrl === DOC_EXPORT);
 
+  // ---- the transport ladder ----
+  // The field failure: /export 302s to a googleusercontent host whose
+  // Access-Control-Allow-Origin is `*`, which is illegal for a CREDENTIALED
+  // request — so credentials:'include' made the fetch throw and every private
+  // doc came back empty. 'same-origin' still sends cookies on the
+  // docs.google.com hop (the one that mints the tokened redirect) and none on
+  // the cross-origin hop, where the `dat=` token is the authorisation.
+  const since = n => exportFetches.slice(n);
+  let mark = exportFetches.length;
+  const viaPage = await window.__bfp.articleText();
+  check('the page fetches the export itself when it can', viaPage.startsWith(DOC_HEAD));
+  check('…with same-origin credentials, never include',
+    since(mark).length > 0 && since(mark).every(f => f.via !== 'page' || f.credentials === 'same-origin'));
+  check('…and never wakes the background worker to do it',
+    !since(mark).some(f => f.via === 'background'));
+
+  mark = exportFetches.length;
+  DOC_FETCH_MODE = 'cors';
+  const viaWorker = await window.__bfp.articleText();
+  check('a page fetch that throws falls through to the background worker',
+    viaWorker.startsWith(DOC_HEAD));
+  check('…and that is where the request went',
+    since(mark).some(f => f.via === 'background' && f.url === DOC_EXPORT));
+  check('…after the page lane was tried first', since(mark)[0].via === 'page');
+
+  mark = exportFetches.length;
+  DOC_FETCH_MODE = 'cascade';
+  const viaCascade = await window.__bfp.articleText();
+  check('a chooser cascades authuser=N until an account can read the doc',
+    viaCascade.startsWith(DOC_HEAD));
+  check('…in order: the plain url, then 0, 1, 2 — and no further',
+    since(mark).map(f => f.url).join('|') ===
+      [DOC_EXPORT, DOC_EXPORT_AUTH(0), DOC_EXPORT_AUTH(1), DOC_EXPORT_AUTH(2)].join('|'));
+  check('…all of it from the page, since the page could fetch',
+    since(mark).every(f => f.via === 'page'));
+  DOC_FETCH_MODE = 'ok';
+  check('none of the ladder ever went through the companion proxy',
+    !apiCalls.some(c => /export\?format=txt/.test(decodeURIComponent(c.path || ''))));
+
   // ---- the first-turn context is armed until a session actually exists ----
   // The companion attaches the page text to the session-creating turn and
   // never again, so a mention that died before /new must not count as spent.
@@ -1202,6 +1305,7 @@ async function selftestGdocs() {
   // 200, text/html, and a page where the document should be. The turn goes out
   // with NO context rather than with the Docs UI scraped off the page.
   DOC_FETCH_MODE = 'picker';
+  const botsBeforeBurn = S.querySelectorAll('.pane[data-pane="chat"] .reply.bot').length;
   chatTa().value = '@claude first read — what is this arguing?';
   S.querySelector('.pane[data-pane="chat"] .composer .send').click();
   const burned = await until(() => postedMsgs.find(p => /first read/.test(p.text || '')));
@@ -1222,7 +1326,14 @@ async function selftestGdocs() {
     consoleWarns.some(l => /gdocs/.test(l) && /HTML/i.test(l) && /HTTP 200/.test(l)));
   check('a failed export leaves the context armed for the next mention',
     window.__bfp.sentContext === false);
-  await until(() => !S.querySelector('.pane[data-pane="chat"] .status-chip'), 20000);
+  // That mention still started a turn. Wait for it to LAND and for the
+  // composer to come back — a send in flight freezes the box, and a click
+  // against a frozen composer is silently dropped, not queued.
+  check('the burned turn still gets an answer', !!await until(() =>
+    S.querySelectorAll('.pane[data-pane="chat"] .reply.bot').length > botsBeforeBurn &&
+    !S.querySelector('.pane[data-pane="chat"] .status-chip'), 20000));
+  const composerFree = () => { const ta = chatTa(); return ta && !ta.disabled ? ta : null; };
+  check('…and the composer is usable again', !!await until(composerFree, 5000));
 
   // ---- the retry: the next mention carries the document, fetched directly ----
   DOC_FETCH_MODE = 'ok';
@@ -1239,7 +1350,9 @@ async function selftestGdocs() {
     !/File · Edit · View/.test(at) && !/^\s*$/.test(at));
   check('the export was fetched straight from docs.google.com',
     exportFetches.some(f => f.url === DOC_EXPORT));
-  check('…with the user’s own session', exportFetches.some(f => f.credentials === 'include'));
+  check('…with the user’s own session, in the mode the redirect allows',
+    exportFetches.some(f => f.via === 'page' && f.credentials === 'same-origin') &&
+    !exportFetches.some(f => f.via === 'page' && f.credentials === 'include'));
   check('…and never through the background companion proxy',
     !apiCalls.some(c => /export\?format=txt/.test(decodeURIComponent(c.path || ''))));
   check('BOM, CRLFs and padding are trimmed off',
