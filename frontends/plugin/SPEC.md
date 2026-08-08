@@ -364,6 +364,27 @@ Contract deltas agreed during live testing — authoritative over the sections a
   page (+ its council session via a /delete control turn when the bridge runs, direct
   session-file unlink when stopped; 409 when another page claims the sid). Pages
   rows show a chat badge and a ✕ with inline confirm.
+- Round 5 — send integrity: optimistic send (message renders instantly as a pending
+  card "reaching botference…", composer clears; reconciles on the POST, retry/discard
+  on failure; per-composer in-flight latch), plus a server dedupe: identical
+  author+text into the same target within 10s → {ok, deduped:true} echoing the kept
+  msg, no bot turn.
+- Round 5 — collaboration: server `--hosted` (PLUGIN_PASSWORD; localhost-direct stays
+  the unauthenticated owner) with gate page + HMAC cookie for browsers and
+  Bearer + x-plugin-handle headers for the remote extension (CORS ACAO:* hosted-only;
+  WS/SSE take ?auth=&handle=). Handles are sanitized (lowercase, [^\w-]→-, ≤40);
+  authors are stamped server-side; /edit own-only, /export /delete-page /model
+  /effort /verbosity /relay /interrupt owner-only. Guest @mentions persist but refuse
+  without a grant (.botference/plugin/grants.json, mtime-watched, daily caps;
+  usage in grant-usage.json). GET /whoami → {hosted, owner, handle}. Server-rendered
+  reading room for extension-less guests: GET /pages + /p/<pageKey> (review palette,
+  form-POST composers). Envelopes name non-owner askers.
+- Round 5 — launcher/UX: --share = hosted + cloudflared tunnel (generates
+  PLUGIN_PASSWORD, share line; --service variant 'plugin-share'); sticky workspace
+  (~/.botference/plugin-workspace records the last workspace; any-directory reuse,
+  --here overrides); extension options page (companion URL / password / display
+  name, test-connection); offline notice is a numbered walkthrough naming
+  --install-autostart; completions cover plugin in zsh + bash.
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

@@ -12,6 +12,7 @@ _botference() {
     'archive:archive current thread, restore blank templates'
     'build:build loop (default)'
     'review:set up + serve the document-review interface'
+    'plugin:serve the web-annotator companion for the browser extension'
     'see:headless screenshots of a URL or running service (agent eyes)'
     'service:managed long-lived processes (servers, tunnels)'
     'help:show usage'
@@ -33,6 +34,18 @@ _botference() {
         '--no-agents[serve without the agent bridge (comments only)]' \
         '--upgrade[refresh engine files in an existing review/]' \
         '*:document repo:_files -/'
+      ;;
+    plugin)
+      _arguments \
+        '--share[hosted mode + cloudflared tunnel: one shareable URL + password]' \
+        '--hosted[password-protected hosted mode (PLUGIN_PASSWORD)]' \
+        '--service[run detached as a managed service, then return control]' \
+        '--port[companion port (default 4189)]:port' \
+        '--here[use the current directory as the workspace, not the last one]' \
+        '--agents[force the agent bridge on]' \
+        '--no-agents[serve without the agent bridge (annotations only)]' \
+        '--install-autostart[run the companion for this workspace at every login]' \
+        '--uninstall-autostart[remove that login autostart]'
       ;;
     plan)
       _arguments \

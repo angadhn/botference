@@ -70,7 +70,7 @@ const historyLines = msgs => (msgs || []).slice(-HISTORY_MAX)
 // the text moved under them — a live Google Doc being edited between comments
 // is the case that forced it. Both are transient; neither is ever persisted.
 export function envelope({ url, title, target, text, quote, history,
-  articleText, articleChanged, first, docxDigest, verbosity }) {
+  articleText, articleChanged, first, docxDigest, verbosity, asker }) {
   const article = String(articleText || '').slice(0, ARTICLE_MAX);
   const ctx = first
     ? `[web page: "${title}" · ${url}]\n${article}\n---\n`
@@ -81,10 +81,16 @@ export function envelope({ url, title, target, text, quote, history,
   // one length instruction per turn, never two: the reader's verbosity setting
   // is the only thing that says how long a reply should be
   const how = verbosityLine(verbosity);
+  // On a shared page several people write into one thread, so the turn says
+  // WHO is asking (the history lines already carry the others' names). Absent
+  // for the owner: their own annotator has always said "the user".
+  // (the highlight may be someone else's, so only the WRITING is attributed)
+  const who = asker ? String(asker) : 'The user';
+  const wrote = asker ? `and ${asker} wrote:` : 'and wrote:';
   const body = target === PAGE_CHAT
-    ? `The user asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
+    ? `${who} asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
     : `The user highlighted this passage:\n> ${String(quote || '').replace(/\n/g, '\n> ')}\n\n`
-      + `${prior}and wrote:\n${text}\n\n`
+      + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
   return routePrefix(text) + ctx + body + doc;
@@ -444,7 +450,7 @@ export function createChat({ onEvent }) {
         // the cached copy is for pages whose first turn never got a session
         articleText: job.articleText || articleByUrl.get(job.url) || '',
         articleChanged: !!(job.articleChanged && job.articleText),
-        docxDigest: job.docxDigest,
+        docxDigest: job.docxDigest, asker: job.asker,
         verbosity: readConfig().verbosity }),
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that

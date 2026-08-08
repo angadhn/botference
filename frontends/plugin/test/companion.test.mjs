@@ -60,32 +60,43 @@ function startServer({ root, args = [], env = {} }) {
     return m ? `http://127.0.0.1:${m[1]}` : null;
   }, `server on ${root} to listen (got: ${out.slice(0, 300)})`).then(base => ({ proc, base, out: () => out }));
 }
-function request(base, method, urlPath, body) {
+// `headers` carries hosted-mode credentials (and Host, which is what tells the
+// server a request came through a tunnel rather than off the loopback);
+// `raw` sends a form-encoded body, as the reading room's composers do.
+function request(base, method, urlPath, body, headers = {}, raw = null) {
   return new Promise((resolve, reject) => {
-    const data = body === undefined ? null : JSON.stringify(body);
+    const data = raw !== null ? raw : (body === undefined ? null : JSON.stringify(body));
+    const type = raw !== null ? 'application/x-www-form-urlencoded' : 'application/json';
     const req = http.request(base + urlPath, {
       method,
-      headers: data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {},
+      headers: {
+        ...(data === null ? {} : { 'content-type': type, 'content-length': Buffer.byteLength(data) }),
+        ...headers,
+      },
     }, res => {
       let buf = '';
       res.on('data', c => { buf += c; });
       res.on('end', () => {
         let json = null; try { json = JSON.parse(buf); } catch { }
-        resolve({ status: res.statusCode, json, body: buf });
+        resolve({ status: res.statusCode, headers: res.headers, json, body: buf });
       });
     });
     req.on('error', reject);
-    if (data) req.write(data);
+    if (data !== null) req.write(data);
     req.end();
   });
 }
-const GET = (b, p) => request(b, 'GET', p);
-const POST = (b, p, body) => request(b, 'POST', p, body || {});
+const GET = (b, p, h) => request(b, 'GET', p, undefined, h);
+const POST = (b, p, body, h) => request(b, 'POST', p, body || {}, h);
+const FORM = (b, p, fields, h) =>
+  request(b, 'POST', p, undefined, h, new URLSearchParams(fields).toString());
+// what a browser sends back on the next request after a Set-Cookie
+const cookieJar = res => (res.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
 
 // SSE client: every event lands in `events`, tests wait on predicates
-function openEvents(base) {
+function openEvents(base, query = '') {
   const events = [];
-  const req = http.get(base + '/events', res => {
+  const req = http.get(base + '/events' + query, res => {
     let buf = '';
     res.on('data', c => {
       buf += c;
@@ -1054,6 +1065,382 @@ async function main() {
     assert.deepEqual(keep.json, { ok: true, session_deleted: false });
     assert.equal((await GET(shared.base, `/page?url=${encodeURIComponent(urls[0])}`)).json.page, null);
     shared.proc.kill();
+  });
+
+  // --- the double-click guard -------------------------------------------
+  // Its own server: these tests assert on what reached the bridge, and the
+  // main instance's log is a fixture for the choreography tests above.
+  {
+    const dupRoot = tmpRoot('dupe');
+    const dupLog = path.join(dupRoot, 'bridge-log.jsonl');
+    fs.mkdirSync(path.join(dupRoot, '.botference', 'plugin'), { recursive: true });
+    fs.writeFileSync(path.join(dupRoot, '.botference', 'plugin', 'config.json'),
+      JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    const dup = await startServer({
+      root: dupRoot,
+      env: {
+        PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+        MOCK_BRIDGE_LOG: dupLog, MOCK_TURN_DELAY_MS: '120', PLUGIN_SID_WAIT_MS: '400',
+      },
+    });
+    const es = openEvents(dup.base);
+    await waitFor(() => es.events.some(e => e.type === 'hello'), 'sse hello (dedupe)');
+    await POST(dup.base, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+
+    let dupThread = null;
+    await test('a double-clicked highlight comment is stored once', async () => {
+      const body = { url: PAGE1, quote: QUOTE1, prefix: '', suffix: '', msg: { text: '  The math is the argument.  ' } };
+      const [a, b] = await Promise.all([POST(dup.base, '/thread', body), POST(dup.base, '/thread', body)]);
+      const first = a.json.deduped ? b : a;
+      const second = a.json.deduped ? a : b;
+      dupThread = first.json.thread;
+      assert.equal(first.json.deduped, undefined, 'the first send is a real send');
+      assert.equal(second.json.ok, true);
+      assert.equal(second.json.deduped, true, 'the second is swallowed');
+      assert.equal(second.json.thread.id, dupThread.id, 'and echoes the message that was kept');
+      const page = (await GET(dup.base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(page.threads.length, 1, 'one thread on disk');
+      assert.equal(page.threads[0].msgs.length, 1);
+    });
+
+    await test('a different comment on the same highlight is not a duplicate', async () => {
+      const r = await POST(dup.base, '/thread', {
+        url: PAGE1, quote: QUOTE1, prefix: '', suffix: '', msg: { text: 'A second, different thought.' },
+      });
+      assert.equal(r.json.deduped, undefined);
+      const page = (await GET(dup.base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(page.threads.length, 2);
+    });
+
+    await test('a double-clicked mention queues exactly one bot turn', async () => {
+      const body = { url: PAGE1, thread_id: '__page__', text: '@claude ping about the load factors' };
+      const [a, b] = await Promise.all([POST(dup.base, '/reply', body), POST(dup.base, '/reply', body)]);
+      const first = a.json.deduped ? b : a;
+      const second = a.json.deduped ? a : b;
+      assert.equal(first.json.queued, true);
+      assert.equal(second.json.deduped, true);
+      assert.equal(second.json.queued, undefined, 'a swallowed send queues nothing');
+      assert.equal(second.json.msg.ts, first.json.msg.ts, 'the kept message is echoed');
+      await waitFor(() => es.events.some(e => e.type === 'chat' && e.kind === 'turn-end'), 'turn-end');
+      const asked = inputs(dupLog).filter(t => t.includes('ping about the load factors'));
+      assert.equal(asked.length, 1, 'the bots were asked once');
+      const page = (await GET(dup.base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(page.page_chat.filter(m => m.author === 'angadh').length, 1);
+    });
+
+    await test('the same words in another thread are a different message', async () => {
+      const r = await POST(dup.base, '/reply', { url: PAGE1, thread_id: dupThread.id, text: 'A repeated line.' });
+      const s = await POST(dup.base, '/reply', { url: PAGE1, thread_id: '__page__', text: 'A repeated line.' });
+      assert.equal(r.json.deduped, undefined);
+      assert.equal(s.json.deduped, undefined, 'dedupe is scoped to one thread');
+    });
+
+    es.close();
+    dup.proc.kill();
+  }
+
+  // --- hosted mode: several humans, one workspace ------------------------
+  {
+    const PW = 'night-train-pw';
+    const OWNER_PW = 'owner-pw';
+    const hostRoot = tmpRoot('hosted');
+    const hostLog = path.join(hostRoot, 'bridge-log.jsonl');
+    const hostDir = path.join(hostRoot, '.botference', 'plugin');
+    fs.mkdirSync(hostDir, { recursive: true });
+    fs.writeFileSync(path.join(hostDir, 'config.json'),
+      JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    const h = await startServer({
+      root: hostRoot,
+      args: ['--hosted'],
+      env: {
+        PLUGIN_PASSWORD: PW, PLUGIN_OWNER_PASSWORD: OWNER_PW,
+        PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+        MOCK_BRIDGE_LOG: hostLog, MOCK_TURN_DELAY_MS: '120', PLUGIN_SID_WAIT_MS: '400',
+      },
+    });
+    const hb = h.base;
+    // a request that came "through the tunnel": public Host, no loopback claim
+    const REMOTE = { host: 'annotations.example' };
+    const ADA = { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' };
+    const key = crypto.createHash('sha1').update(PAGE1).digest('hex');
+    // the owner (localhost) sets the page up, as the extension would
+    await POST(hb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+    const ownerThread = (await POST(hb, '/thread', {
+      url: PAGE1, quote: QUOTE1, prefix: '', suffix: '', msg: { text: 'The whole argument.' },
+    })).json.thread;
+
+    await test('hosted mode keeps localhost the owner, with no auth at all', async () => {
+      const me = await GET(hb, '/whoami');
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' });
+      assert.equal((await POST(hb, '/verbosity', { level: 'short' })).status, 200,
+        'the owner keeps every owner-only endpoint on the bare port');
+      assert.equal((await GET(hb, '/health')).json.owner, true);
+      assert.ok(fs.existsSync(path.join(hostDir, '.auth-secret')), 'the cookie secret is on disk');
+    });
+
+    await test('an unauthenticated API call is 401 JSON', async () => {
+      const r = await GET(hb, '/index', REMOTE);
+      assert.equal(r.status, 401);
+      assert.deepEqual(r.json, { ok: false, error: 'auth required' });
+      const w = await POST(hb, '/reply', { url: PAGE1, text: 'sneak' }, REMOTE);
+      assert.equal(w.status, 401);
+    });
+
+    await test('an unauthenticated browser gets the password gate, not a dialog', async () => {
+      const r = await GET(hb, '/pages', { ...REMOTE, accept: 'text/html,*/*' });
+      assert.equal(r.status, 401);
+      assert.equal(r.headers['www-authenticate'], undefined, 'never the browser basic-auth dialog');
+      assert.match(r.body, /<form method="POST" action="\/auth">/);
+      assert.match(r.body, /name="handle"/);
+      assert.match(r.body, /prefers-color-scheme: dark/);
+      const p = await GET(hb, `/p/${key}`, { ...REMOTE, accept: 'text/html' });
+      assert.equal(p.status, 401, 'a page link is gated too');
+    });
+
+    let adaCookie = '';
+    await test('the gate takes a name and the password together and issues a cookie', async () => {
+      const bad = await FORM(hb, '/auth', { handle: 'ada', password: 'wrong', next: '/pages' }, REMOTE);
+      assert.equal(bad.status, 401);
+      assert.match(bad.body, /wrong password/);
+      const nameless = await FORM(hb, '/auth', { handle: '', password: PW, next: '/pages' }, REMOTE);
+      assert.match(nameless.body, /enter a name/);
+      const taken = await FORM(hb, '/auth', { handle: 'angadh', password: PW, next: '/pages' }, REMOTE);
+      assert.match(taken.body, /is the owner&#39;s name here/, 'and says so plainly, escaped');
+      const good = await FORM(hb, '/auth', { handle: 'Ada L', password: PW, next: '/pages' }, REMOTE);
+      assert.equal(good.status, 303);
+      assert.equal(good.headers.location, '/pages');
+      adaCookie = cookieJar(good);
+      assert.match(adaCookie, /plugin_auth=\d+\.guest\.[0-9a-f]{64}/);
+      assert.match(adaCookie, /plugin_handle=ada-l/, 'the handle cookie is readable and sanitized');
+      const listing = await GET(hb, '/pages', { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
+      assert.equal(listing.status, 200);
+      assert.match(listing.body, /Annotated pages/);
+    });
+
+    await test('the owner password signs the owner in from any device', async () => {
+      const r = await FORM(hb, '/auth', { handle: 'whoever', password: OWNER_PW, next: '/pages' }, REMOTE);
+      assert.equal(r.status, 303);
+      const jar = cookieJar(r);
+      assert.match(jar, /plugin_auth=\d+\.owner\./);
+      const me = await GET(hb, '/whoami', { ...REMOTE, cookie: jar });
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' },
+        'the owner is always the configured author, whatever name was typed');
+      assert.equal((await POST(hb, '/verbosity', { level: 'short' }, { ...REMOTE, cookie: jar })).status, 200);
+    });
+
+    await test('a tampered cookie is worth nothing', async () => {
+      const forged = `plugin_auth=${Date.now() + 1e6}.owner.${'0'.repeat(64)}`;
+      const r = await GET(hb, '/whoami', { ...REMOTE, cookie: forged });
+      assert.equal(r.status, 401);
+    });
+
+    await test('bearer + x-plugin-handle is the remote extension\'s way in', async () => {
+      const me = await GET(hb, '/whoami', ADA);
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: false, handle: 'ada' });
+      const idx = await GET(hb, '/index', ADA);
+      assert.equal(idx.status, 200);
+      assert.equal(idx.json[key].url, PAGE1);
+    });
+
+    await test('a guest with no name, and one wearing the owner\'s, are both refused', async () => {
+      const nameless = await POST(hb, '/reply', { url: PAGE1, text: 'hi' },
+        { ...REMOTE, authorization: `Bearer ${PW}` });
+      assert.equal(nameless.status, 400);
+      assert.deepEqual(nameless.json, { ok: false, error: 'a name is required — send x-plugin-handle' });
+      const spoof = await POST(hb, '/reply', { url: PAGE1, text: 'hi' },
+        { ...ADA, 'x-plugin-handle': 'angadh' });
+      assert.equal(spoof.status, 403);
+      assert.deepEqual(spoof.json, { ok: false, error: "that name is the owner's here — pick another" });
+      const page = (await GET(hb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(page.page_chat.length, 0, 'neither wrote anything');
+    });
+
+    let adaMsg = null;
+    await test('a guest\'s message is authored by their own handle', async () => {
+      const r = await POST(hb, '/reply', { url: PAGE1, thread_id: ownerThread.id, text: 'Agreed — and the return leg?' }, ADA);
+      assert.equal(r.status, 200);
+      adaMsg = r.json.msg;
+      assert.equal(adaMsg.author, 'ada');
+      const page = (await GET(hb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.deepEqual(page.threads[0].msgs.map(m => m.author), ['angadh', 'ada']);
+    });
+
+    await test('owner-only endpoints answer a guest with 403', async () => {
+      const calls = [
+        ['/export', { url: PAGE1 }],
+        ['/delete-page', { url: PAGE1 }],
+        ['/model', { agent: 'claude', model: 'claude-opus-5' }],
+        ['/effort', { agent: 'claude', level: 'high' }],
+        ['/verbosity', { level: 'long' }],
+        ['/relay', { agent: 'claude' }],
+        ['/interrupt', { url: PAGE1 }],
+      ];
+      for (const [route, body] of calls) {
+        const r = await POST(hb, route, body, ADA);
+        assert.equal(r.status, 403, `${route} must be owner-only`);
+        assert.deepEqual(r.json, { ok: false, error: 'owner only — ask the owner to do that' }, route);
+      }
+      assert.equal(fs.existsSync(path.join(vault, 'Web Clippings', `${TITLE1}.md`)), false,
+        'no guest wrote into the owner\'s vault');
+    });
+
+    await test('a guest may edit and retract only their own message', async () => {
+      const mine = await POST(hb, '/edit', {
+        url: PAGE1, thread_id: ownerThread.id, ts: adaMsg.ts, text: 'Agreed — and the return leg? (fixed)',
+      }, ADA);
+      assert.equal(mine.status, 200);
+      assert.match(mine.json.msg.text, /\(fixed\)$/);
+      const theirs = await POST(hb, '/edit', {
+        url: PAGE1, thread_id: ownerThread.id, ts: ownerThread.msgs[0].ts, text: 'rewritten by a guest',
+      }, ADA);
+      assert.equal(theirs.status, 403);
+      assert.deepEqual(theirs.json, { ok: false, error: 'not your message' });
+      const wholeThread = await POST(hb, '/delete', { url: PAGE1, thread_id: ownerThread.id }, ADA);
+      assert.equal(wholeThread.status, 403);
+      assert.deepEqual(wholeThread.json, { ok: false, error: 'owner only — you can delete your own messages' });
+      const notMine = await POST(hb, '/delete', {
+        url: PAGE1, thread_id: ownerThread.id, ts: ownerThread.msgs[0].ts,
+      }, ADA);
+      assert.equal(notMine.status, 403);
+      const ticked = await POST(hb, '/tick', {
+        url: PAGE1, thread_id: ownerThread.id, ts: adaMsg.ts, index: 0, checked: true,
+      }, ADA);
+      assert.equal(ticked.status, 400, 'a guest may tick — this message just has no checkbox');
+      assert.deepEqual(ticked.json, { ok: false, error: 'index out of range' });
+    });
+
+    await test('an ungranted guest\'s mention is kept but never reaches the bots', async () => {
+      const es = openEvents(hb, `?auth=${PW}&handle=ada`);
+      await waitFor(() => es.events.some(e => e.type === 'hello'), 'sse hello over query auth');
+      const r = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude what do you make of this?' }, ADA);
+      assert.equal(r.status, 200);
+      assert.equal(r.json.ok, true);
+      assert.equal(r.json.queued, false);
+      assert.equal(r.json.reason, "the owner hasn't granted you bot access");
+      const err = await waitFor(() => es.events.find(e => e.type === 'chat' && e.kind === 'error'), 'error event');
+      assert.equal(err.url, PAGE1);
+      assert.equal(err.target, '__page__');
+      assert.equal(err.error, "the owner hasn't granted you bot access");
+      const page = (await GET(hb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(page.page_chat.at(-1).text, '@claude what do you make of this?', 'the message survives');
+      assert.equal(page.page_chat.at(-1).author, 'ada');
+      assert.equal(fs.existsSync(hostLog), false, 'the bridge was never spawned for a guest with no grant');
+      es.close();
+    });
+
+    await test('a grant written while the server runs takes effect on the next mention', async () => {
+      fs.writeFileSync(path.join(hostDir, 'grants.json'),
+        JSON.stringify({ ada: { agents: true, daily_cap: 2 } }, null, 2));
+      const es = openEvents(hb, `?auth=${PW}&handle=ada`);
+      await waitFor(() => es.events.some(e => e.type === 'hello'), 'sse hello (granted)');
+      const r = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude the return leg, then?' }, ADA);
+      assert.equal(r.json.queued, true, 'no restart was needed');
+      assert.equal(r.json.position, 1);
+      const reply = await waitFor(() => es.events.find(e => e.type === 'chat' && e.kind === 'reply'), 'bot reply');
+      assert.equal(reply.msg.author, 'claude');
+      const page = (await GET(hb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.deepEqual(page.page_chat.slice(-2).map(m => m.author), ['ada', 'claude'],
+        'the guest owns their question, the bot owns its answer');
+      const asked = inputs(hostLog).filter(t => t.includes('the return leg, then?'));
+      assert.equal(asked.length, 1);
+      assert.match(asked[0], /^@claude .*\bada asked about this page:/s,
+        'the turn names who is asking, since a shared page holds several people');
+      es.close();
+    });
+
+    await test('the daily cap refuses the mention after the budget is spent', async () => {
+      const second = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude one more, sorry' }, ADA);
+      assert.equal(second.json.queued, true, 'two of two');
+      const third = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude and another' }, ADA);
+      assert.equal(third.json.ok, true);
+      assert.equal(third.json.queued, false);
+      assert.equal(third.json.reason, "you have used today's agent budget (2 of 2)");
+      const usage = JSON.parse(fs.readFileSync(path.join(hostDir, 'grant-usage.json'), 'utf8'));
+      assert.equal(usage.date, new Date().toISOString().slice(0, 10));
+      assert.equal(usage.counts.ada, 2, 'the ledger holds a date and a count, nothing else');
+      const page = (await GET(hb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(page.page_chat.at(-1).text, '@claude and another', 'the refused message is still kept');
+      // the owner is never metered
+      const mine = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude owner asking' });
+      assert.equal(mine.json.queued, true);
+    });
+
+    await test('CORS preflights are answered in hosted mode', async () => {
+      const r = await request(hb, 'OPTIONS', '/reply', undefined, {
+        ...REMOTE, origin: 'chrome-extension://abc', 'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization,x-plugin-handle',
+      });
+      assert.equal(r.status, 204);
+      assert.equal(r.headers['access-control-allow-origin'], '*');
+      assert.equal(r.headers['access-control-allow-headers'], 'authorization, content-type, x-plugin-handle');
+      assert.match(r.headers['access-control-allow-methods'], /POST/);
+      const authed = await GET(hb, '/index', ADA);
+      assert.equal(authed.headers['access-control-allow-origin'], '*', 'and on the answers themselves');
+      const refused = await GET(hb, '/index', REMOTE);
+      assert.equal(refused.headers['access-control-allow-origin'], '*', 'including the 401, or the tab sees nothing');
+    });
+
+    await test('the reading room renders the quotes and messages for an authed guest', async () => {
+      const list = await GET(hb, '/pages', { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
+      assert.match(list.body, new RegExp(`href="/p/${key}"`));
+      assert.ok(list.body.includes(TITLE1));
+      const p = await GET(hb, `/p/${key}`, { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
+      assert.equal(p.status, 200);
+      assert.match(p.headers['content-type'], /text\/html/);
+      assert.ok(p.body.includes(QUOTE1), 'the highlighted passage, as a blockquote');
+      assert.ok(p.body.includes('The whole argument.'), 'the owner\'s comment');
+      assert.ok(p.body.includes('Agreed — and the return leg? (fixed)'), 'the guest\'s reply');
+      assert.ok(p.body.includes('MOCK claude reply.'), 'and what the bots said');
+      assert.ok(p.body.includes(`<a href="${PAGE1}"`), 'the title links out to the article');
+      assert.match(p.body, new RegExp(`value="${ownerThread.id}"`), 'a reply composer bound to the thread');
+      assert.match(p.body, /value="__page__"/, 'and one for the page chat');
+      assert.equal((p.body.match(/action="\/reply"/g) || []).length, 2, 'one composer per thread + page chat');
+      assert.ok(!p.body.includes('<script src'), 'no build step, no external script');
+      const missing = await GET(hb, `/p/${'0'.repeat(40)}`, { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
+      assert.equal(missing.status, 404);
+    });
+
+    await test('a composer post from the reading room appends and redirects back', async () => {
+      const r = await FORM(hb, '/reply', {
+        url: PAGE1, thread_id: ownerThread.id, text: 'Posted from the web view.', redirect: `/p/${key}`,
+      }, { ...REMOTE, cookie: adaCookie });
+      assert.equal(r.status, 303);
+      assert.equal(r.headers.location, `/p/${key}#${ownerThread.id}`);
+      const page = (await GET(hb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      const last = page.threads[0].msgs.at(-1);
+      assert.equal(last.text, 'Posted from the web view.');
+      assert.equal(last.author, 'ada-l', 'the cookie names the author');
+      const refused = await FORM(hb, '/reply', {
+        url: PAGE1, thread_id: '__page__', text: '@claude from the web view', redirect: `/p/${key}`,
+      }, { ...REMOTE, cookie: adaCookie });
+      assert.equal(refused.status, 303);
+      assert.match(refused.headers.location,
+        /^\/p\/[0-9a-f]{40}\?notice=the%20owner%20hasn/, 'the refusal rides back as a notice');
+    });
+
+    h.proc.kill();
+
+    await test('--hosted without PLUGIN_PASSWORD refuses to start', async () => {
+      const bare = tmpRoot('nopw');
+      const proc = spawn(process.execPath, [SERVER, '--hosted'], {
+        env: { ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: bare, PLUGIN_PASSWORD: '' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      spawned.push(proc);
+      let err = '';
+      proc.stderr.on('data', d => { err += d; });
+      const code = await new Promise(r => proc.on('exit', r));
+      assert.equal(code, 1);
+      assert.match(err, /--hosted requires PLUGIN_PASSWORD/);
+    });
+  }
+
+  await test('a local companion answers no preflight and sets no CORS header', async () => {
+    const r = await request(base, 'OPTIONS', '/reply', undefined, { origin: 'https://evil.test' });
+    assert.equal(r.status, 404);
+    assert.equal(r.headers['access-control-allow-origin'], undefined);
+    const g = await GET(base, '/index');
+    assert.equal(g.headers['access-control-allow-origin'], undefined, 'never in local mode');
   });
 
   // --- --no-agents ------------------------------------------------------

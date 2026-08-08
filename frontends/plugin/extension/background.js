@@ -1,12 +1,13 @@
 // background.js — MV3 service worker for the Botference Web Annotator.
 //
-// Content scripts never touch the COMPANION's network. The companion serves no
-// CORS headers, so every fetch to it and the WS both live here, where
-// host_permissions grant cross-origin access. (The one exception is a site
-// adapter reading its own origin with the user's session — see adapters.js —
-// and even that falls back to {t:'gdocs-export'} below.) This worker owns:
+// Content scripts never touch the COMPANION's network. A local companion
+// serves no CORS headers, so every fetch to it and the WS both live here,
+// where host_permissions grant cross-origin access. (The one exception is a
+// site adapter reading its own origin with the user's session — see
+// adapters.js — and even that falls back to {t:'gdocs-export'} below.)
+// This worker owns:
 //
-//   • the WebSocket to ws://127.0.0.1:4189/ws (exponential backoff reconnect,
+//   • the WebSocket to the companion's /ws (exponential backoff reconnect,
 //     chrome.alarms keepalive so an idle worker still reconnects)
 //   • the /index cache — the "which pages have annotations" list a content
 //     script consults to decide whether to wake up at all
@@ -50,6 +51,13 @@
 //        → {ok:true, status:200, contentType:'…', text:'…'}
 //        → {ok:true, status:200, contentType:'…', b64:'…'}   (want:'bytes')
 //        → {ok:false, status?:N, error:'…', peek?:'…'}
+//   {t:'identity'}                    who this browser is to the companion, as
+//                                     the COMPANION sees it (GET /whoami, then
+//                                     /health, then the configured handle).
+//                                     Drives the drawer's "is this MY message"
+//                                     test and the composer's author colour.
+//        → {ok:true, handle:'…'|'', owner:'…', hosted:bool,
+//           base:'…', remote:bool, auth:bool}
 //   {t:'badge', count:N}              set this tab's badge (N=0 clears it)
 //        → {ok:true}
 //   {t:'reconnect'}                   user-visible "retry" affordance
@@ -82,9 +90,49 @@
 // ─────────────────────────────────────────────────────────────────────────
 'use strict';
 
-const HOST = 'http://127.0.0.1:4189';
-const WS_URL = 'ws://127.0.0.1:4189/ws';
+// config.js is a plain classic script (window/self-global, no imports) exactly
+// so this worker and the options page can share it verbatim.
+importScripts('config.js');
+const CFG = self.BFPConfig;
 const KEEPALIVE = 'bfp-keepalive';
+
+// ---- where the companion is, and who we are to it ------------------------
+// Round 5: the companion may be remote and password-protected. Nothing else in
+// this file knows that — it asks CONF for a url and CFG for the headers. A
+// remote https companion needs no new host permission: it answers the CORS
+// preflight itself, and that is what grants this fetch.
+let CONF = { base: CFG.DEFAULT_BASE, password: '', handle: '' };
+let identityCache = null;      // {handle, base} once /health has been asked
+
+// Every request waits for the first storage read — a fetch fired against the
+// default while a remote companion is configured would look like "companion
+// offline" for no reason.
+let configReady = loadConfig();
+async function loadConfig() {
+  CONF = await CFG.readConfig();
+  return CONF;
+}
+
+// The options page writes straight to chrome.storage.local, so this is the
+// whole "apply the new settings" path: re-read, drop what the old companion
+// told us, and reconnect the socket to the new address.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  const keys = Object.values(CFG.KEYS);
+  if (!Object.keys(changes).some(k => keys.indexOf(k) !== -1)) return;
+  configReady = (async () => {
+    const before = CONF;
+    CONF = await CFG.readConfig();
+    if (before.base === CONF.base && before.password === CONF.password &&
+        before.handle === CONF.handle) return CONF;
+    identityCache = null;
+    indexCache = {};
+    indexAt = 0;
+    forceReconnect();
+    refreshIndex(true);
+    return CONF;
+  })();
+});
 
 // ---- normUrl (duplicated in content.js and in the companion's store.mjs;
 // the three must agree exactly — SPEC.md defines it) ----------------------
@@ -120,15 +168,25 @@ const tabCounts = new Map(); // tabId -> thread count (for the badge)
 const indexEntryFor = nu => Object.values(indexCache).find(v => v && normUrl(v.url) === nu) || null;
 
 // ---- HTTP ----------------------------------------------------------------
+// A 401 ("auth required") is the one failure the user can only fix somewhere
+// else, so it says where. Every other status keeps the companion's own words —
+// "owner only — ask the owner to do that", "not your message", "a name is
+// required — send x-plugin-handle" — because those are sentences meant to be
+// read, and the drawer shows them where they happened.
+const AUTH_FAIL = 'auth required — check the password on the extension’s options page';
+
 async function api(method, path, body) {
+  await configReady;
   const init = { method: method || 'GET', cache: 'no-store' };
+  const headers = CFG.authHeaders(CONF.password, CONF.handle);
   if (body !== undefined && body !== null) {
-    init.headers = { 'content-type': 'application/json' };
+    headers['content-type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  if (Object.keys(headers).length) init.headers = headers;
   let res;
   try {
-    res = await fetch(HOST + path, init);
+    res = await fetch(CFG.httpUrl(CONF.base, path), init);
   } catch (e) {
     return { ok: false, error: 'companion unreachable (' + (e && e.message ? e.message : e) + ')' };
   }
@@ -136,9 +194,44 @@ async function api(method, path, body) {
   const text = await res.text().catch(() => '');
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   if (!res.ok) {
-    return { ok: false, status: res.status, data, error: (data && data.error) || ('HTTP ' + res.status) };
+    const err = res.status === 401 ? AUTH_FAIL : ((data && data.error) || ('HTTP ' + res.status));
+    return { ok: false, status: res.status, data, error: err };
   }
   return { ok: true, status: res.status, data };
+}
+
+// Who this browser is to the companion — the name the drawer compares message
+// authors against to decide which ones are the reader's own.
+//
+// The companion is the authority, not this side: GET /whoami answers
+// {hosted, owner, handle}, and on a hosted companion the handle it reports is
+// the sanitised one it will actually STAMP on messages (the header we send is
+// only a request). Local mode has no handle, so the owner's name is the answer.
+// An older companion has no /whoami; /health, then the configured handle, then
+// nothing, and the drawer keeps its own default.
+async function identity() {
+  await configReady;
+  if (identityCache && identityCache.base === CONF.base &&
+      identityCache.handle_conf === CONF.handle) return identityCache.value;
+  const pick = d => CFG.sanitizeHandle(d.handle || d.owner || d.author || '');
+  let handle = '', hosted = false, owner = '';
+  let r = await api('GET', '/whoami');
+  if (r.ok && r.data && r.data.ok !== false) {
+    hosted = !!r.data.hosted;
+    owner = String(r.data.owner || '');
+    handle = pick(r.data);
+  } else {
+    r = await api('GET', '/health');
+    const d = (r.ok && r.data) || {};
+    hosted = !!d.hosted;
+    owner = String(d.owner || '');
+    handle = pick(d);
+  }
+  if (!handle) handle = CFG.sanitizeHandle(CONF.handle);
+  const value = { ok: true, handle, owner, hosted, base: CONF.base,
+                  remote: !CFG.isLocal(CONF.base), auth: !!CONF.password };
+  identityCache = { base: CONF.base, handle_conf: CONF.handle, value };
+  return value;
 }
 
 async function refreshIndex(force) {
@@ -164,11 +257,17 @@ function refreshIndexSoon() {
 }
 
 // ---- WebSocket -----------------------------------------------------------
-function ensureSocket() {
+// A WebSocket cannot carry headers, so the password and handle ride as query
+// params on the /ws url (CFG.wsUrlFor). The reconnect/backoff logic below is
+// exactly as it was — only the address is now a function of the settings.
+async function ensureSocket() {
   if (wsState === 'open' || wsState === 'connecting') return;
   wsState = 'connecting';
+  await configReady;
+  // a second caller may have won the race while we awaited the config
+  if (wsState !== 'connecting') return;
   try {
-    ws = new WebSocket(WS_URL);
+    ws = new WebSocket(CFG.wsUrlFor(CONF.base, CONF.password, CONF.handle));
   } catch {
     wsState = 'closed';
     scheduleRetry();
@@ -384,6 +483,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         forceReconnect();
         return { ok: true };
       }
+      case 'identity': return identity();
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'open-page': return openPage(msg.url);
       default:

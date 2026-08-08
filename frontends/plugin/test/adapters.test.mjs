@@ -648,6 +648,199 @@ const res = (body, extra) => Object.assign({
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// extension/config.js + extension/options.js — the remote-companion settings
+// ═══════════════════════════════════════════════════════════════════════════
+// Both files are deliberately pure enough to run here: config.js does every bit
+// of thinking about WHERE the companion is and WHO we are to it, and options.js
+// turns a /health answer into the sentence the settings page shows. The rules
+// they encode are contracts with the companion (the handle sanitiser especially
+// — see below), so they are unit-tested rather than eyeballed in a browser.
+const C = require(path.join(here, '..', 'extension', 'config.js'));
+const O = require(path.join(here, '..', 'extension', 'options.js'));
+
+// ---- 10. normalizeBase ------------------------------------------------------
+{
+  eq('base: the default is the local companion', C.DEFAULT_BASE, 'http://127.0.0.1:4189');
+  eq('base: a full local url is left alone',
+    C.normalizeBase('http://127.0.0.1:4189'), 'http://127.0.0.1:4189');
+  eq('base: a trailing slash goes (every api path starts with one)',
+    C.normalizeBase('http://127.0.0.1:4189/'), 'http://127.0.0.1:4189');
+  eq('base: so do several', C.normalizeBase('http://127.0.0.1:4189///'), 'http://127.0.0.1:4189');
+  eq('base: surrounding whitespace goes',
+    C.normalizeBase('  http://127.0.0.1:4189  '), 'http://127.0.0.1:4189');
+  // a password typed against a cleartext host is the one mistake this can stop
+  eq('base: a bare remote host is assumed to be https',
+    C.normalizeBase('companion.example.com'), 'https://companion.example.com');
+  eq('base: …but a bare LOCAL host is not (nobody runs TLS on 127.0.0.1)',
+    C.normalizeBase('127.0.0.1:4189'), 'http://127.0.0.1:4189');
+  eq('base: …localhost either', C.normalizeBase('localhost:4189'), 'http://localhost:4189');
+  eq('base: an explicit http remote is honoured, not upgraded behind your back',
+    C.normalizeBase('http://companion.example.com'), 'http://companion.example.com');
+  eq('base: a path prefix survives (a companion behind a reverse proxy)',
+    C.normalizeBase('https://example.com/plugin/'), 'https://example.com/plugin');
+  eq('base: a query is not part of a base', C.normalizeBase('https://x.example/?a=1'), 'https://x.example');
+  eq('base: nor a hash', C.normalizeBase('https://x.example/#top'), 'https://x.example');
+  eq('base: a port is kept', C.normalizeBase('https://x.example:8443'), 'https://x.example:8443');
+  for (const [name, raw] of Object.entries({
+    empty: '', spaces: '   ', 'a file url': 'file:///etc/passwd',
+    'a javascript url': 'javascript:alert(1)', 'a chrome url': 'chrome://settings',
+    'null': null, undefined: undefined, 'not a url at all': 'http://',
+  })) {
+    eq('base: junk (' + name + ') falls back to the default', C.normalizeBase(raw), '');
+  }
+  ok('base: …and every caller substitutes the default for that',
+    C.httpUrl('', '/health') === C.DEFAULT_BASE + '/health');
+  eq('base: httpUrl joins without doubling the slash',
+    C.httpUrl('https://x.example/plugin/', '/page?url=a'), 'https://x.example/plugin/page?url=a');
+}
+
+// ---- 11. isLocal ------------------------------------------------------------
+{
+  ok('local: the default companion is local', C.isLocal(C.DEFAULT_BASE));
+  ok('local: 127.0.0.1 is', C.isLocal('http://127.0.0.1:4189'));
+  ok('local: localhost is', C.isLocal('http://localhost:4189'));
+  ok('local: a hosted companion is not', !C.isLocal('https://companion.example.com'));
+  ok('local: and a lookalike hostname is not',
+    !C.isLocal('https://127.0.0.1.evil.example'));
+}
+
+// ---- 12. the handle: EXACTLY the companion's own rule -----------------------
+// The server lowercases, replaces [^\w-] with '-' and caps at 40. The extension
+// has to produce the same string, because the author the server STAMPS is what
+// the drawer compares against to decide "is this my message" — a mismatch and
+// the edit affordance quietly disappears from your own comments.
+{
+  eq('handle: lowercased', C.sanitizeHandle('Angadh'), 'angadh');
+  eq('handle: spaces become dashes', C.sanitizeHandle('Mira K'), 'mira-k');
+  eq('handle: trimmed first', C.sanitizeHandle('  mira  '), 'mira');
+  eq('handle: punctuation becomes dashes', C.sanitizeHandle('dev.raj@example.com'), 'dev-raj-example-com');
+  eq('handle: underscores and dashes survive', C.sanitizeHandle('a_b-c'), 'a_b-c');
+  eq('handle: digits survive', C.sanitizeHandle('user42'), 'user42');
+  eq('handle: non-ascii cannot ride along in a header', C.sanitizeHandle('miéra'), 'mi-ra');
+  // the CRLF is deleted (not turned into dashes) because control characters go
+  // before anything else does — what matters is that no header can be forged
+  eq('handle: newlines cannot inject a header', C.sanitizeHandle('mira\r\nX-Evil: 1'), 'mirax-evil--1');
+  ok('handle: …and nothing header-breaking survives at all',
+    !/[\r\n ]/.test(C.sanitizeHandle('a\r\nb c')));
+  eq('handle: capped at 40', C.sanitizeHandle('m'.repeat(80)).length, 40);
+  eq('handle: the cap is the companion’s', C.HANDLE_MAX, 40);
+  eq('handle: empty stays empty', C.sanitizeHandle(''), '');
+  eq('handle: null stays empty', C.sanitizeHandle(null), '');
+  eq('handle: idempotent', C.sanitizeHandle(C.sanitizeHandle('Mira K')), 'mira-k');
+}
+
+// ---- 13. auth headers -------------------------------------------------------
+{
+  eq('auth: no password means NO headers at all — a local companion wants none',
+    C.authHeaders('', 'mira'), {});
+  eq('auth: …whitespace is not a password', C.authHeaders('   ', 'mira'), {});
+  eq('auth: a password is a bearer token, and the handle rides with it',
+    C.authHeaders('s3cret', 'Mira K'),
+    { Authorization: 'Bearer s3cret', 'x-plugin-handle': 'mira-k' });
+  eq('auth: no handle set means no handle header (the server will say so)',
+    C.authHeaders('s3cret', ''), { Authorization: 'Bearer s3cret' });
+  eq('auth: a password with a CRLF in it cannot write a header of its own',
+    C.authHeaders('s3cret\r\nX-Evil: 1', ''), { Authorization: 'Bearer s3cretX-Evil: 1' });
+  ok('auth: no cookie is ever involved',
+    Object.keys(C.authHeaders('s3cret', 'mira')).every(k => !/cookie/i.test(k)));
+}
+
+// ---- 14. the WS url ---------------------------------------------------------
+// A WebSocket cannot carry headers, so the same two values ride as query params.
+{
+  eq('ws: local, no password', C.wsUrlFor('http://127.0.0.1:4189', '', ''),
+    'ws://127.0.0.1:4189/ws');
+  eq('ws: an empty base falls back to the default companion',
+    C.wsUrlFor('', '', ''), 'ws://127.0.0.1:4189/ws');
+  eq('ws: https becomes wss', C.wsUrlFor('https://c.example.com', '', ''),
+    'wss://c.example.com/ws');
+  eq('ws: the credentials ride as query params',
+    C.wsUrlFor('https://c.example.com', 's3cret', 'Mira K'),
+    'wss://c.example.com/ws?auth=s3cret&handle=mira-k');
+  eq('ws: the handle is the sanitised one, same as the header',
+    new URL(C.wsUrlFor('https://c.example.com', 'p', 'Mira K')).searchParams.get('handle'), 'mira-k');
+  eq('ws: no password ⇒ nothing in the query, not an empty auth=',
+    C.wsUrlFor('https://c.example.com', '', 'mira'), 'wss://c.example.com/ws');
+  eq('ws: a path prefix is kept', C.wsUrlFor('https://c.example.com/plugin', '', ''),
+    'wss://c.example.com/plugin/ws');
+  eq('ws: a password with url-special characters is encoded',
+    new URL(C.wsUrlFor('https://c.example.com', 'a b&c=d', '')).searchParams.get('auth'), 'a b&c=d');
+}
+
+// ---- 15. storage round-trip (the injectable chrome.storage.local) -----------
+{
+  const mk = () => {
+    const data = {};
+    return { data,
+      get: (keys, cb) => cb(Object.fromEntries(keys.filter(k => k in data).map(k => [k, data[k]]))),
+      set: (obj, cb) => { Object.assign(data, obj); cb(); } };
+  };
+  const store = mk();
+  const written = await C.writeConfig({ base: '  COMPANION.example.com/plugin/ ', password: ' s3cret ', handle: 'Mira K' }, store);
+  eq('storage: the base is normalised on the way in',
+    written[C.KEYS.base], 'https://companion.example.com/plugin');
+  eq('storage: the handle is sanitised on the way in', written[C.KEYS.handle], 'mira-k');
+  eq('storage: the password is trimmed, not mangled', written[C.KEYS.password], 's3cret');
+  const back = await C.readConfig(store);
+  eq('storage: what comes back is what the wire will use',
+    back, { base: 'https://companion.example.com/plugin', password: 's3cret', handle: 'mira-k' });
+
+  const empty = await C.readConfig(mk());
+  eq('storage: a browser that has never been configured gets the local defaults',
+    empty, { base: C.DEFAULT_BASE, password: '', handle: '' });
+
+  const junk = mk();
+  junk.data[C.KEYS.base] = 'file:///etc/passwd';
+  const fixed = await C.readConfig(junk);
+  eq('storage: a stored base that is no longer legal falls back to local',
+    fixed.base, C.DEFAULT_BASE);
+
+  const throws = { get: () => { throw new Error('no storage'); }, set: () => { throw new Error('no storage'); } };
+  eq('storage: a storage area that throws still yields a usable config',
+    await C.readConfig(throws), { base: C.DEFAULT_BASE, password: '', handle: '' });
+}
+
+// ---- 16. options.js: what the “test connection” button says -----------------
+{
+  const v = r => O.healthVerdict(r);
+  eq('verdict: nothing answered', v({ ok: false, error: 'could not reach https://x' }),
+    { cls: 'err', text: 'could not reach https://x' });
+  eq('verdict: no answer and nothing to say',
+    v({ ok: false }).text, 'no answer — is the companion running at that address?');
+  ok('verdict: a 401 blames the password and only the password',
+    v({ ok: false, status: 401, error: 'auth required' }).cls === 'err' &&
+    /password was rejected/.test(v({ ok: false, status: 401 }).text));
+  // reached · authenticated · simply not the owner — that is a working setup
+  ok('verdict: a 403 is a SUCCESS for a guest, not a failure',
+    v({ ok: false, status: 403, error: 'owner only' }).cls === 'ok');
+  ok('verdict: …and says which half is which',
+    /not its owner/.test(v({ ok: false, status: 403 }).text));
+  ok('verdict: another status is quoted as it came',
+    /HTTP 502/.test(v({ ok: false, status: 502, error: 'bad gateway' }).text) &&
+    /bad gateway/.test(v({ ok: false, status: 502, error: 'bad gateway' }).text));
+  eq('verdict: a healthy local companion',
+    v({ ok: true, data: { ok: true, bridge: 'running', queue: 0 } }).text,
+    'connected · agents running');
+  eq('verdict: …with a queue', v({ ok: true, data: { bridge: 'running', queue: 2 } }).text,
+    'connected · agents running · queue 2');
+  eq('verdict: a hosted companion says who it thinks you are',
+    v({ ok: true, data: { bridge: 'stopped', handle: 'mira-k' } }).text,
+    'connected · agents stopped · you are “mira-k”');
+  eq('verdict: an older companion that reports nothing still says connected',
+    v({ ok: true, data: {} }).text, 'connected');
+
+  eq('saved line: a local companion',
+    O.describeSaved({ base: '', password: '', handle: '' }),
+    'saved → http://127.0.0.1:4189 · local, no password');
+  eq('saved line: a hosted one, as somebody',
+    O.describeSaved({ base: 'companion.example.com', password: 'p', handle: 'Mira K' }),
+    'saved → https://companion.example.com · as “mira-k”, with a password');
+  eq('saved line: a password with no name is worth pointing out',
+    O.describeSaved({ base: 'companion.example.com', password: 'p', handle: '' }),
+    'saved → https://companion.example.com · with a password, no name set');
+}
+
 // ---- report -------------------------------------------------------------------
 if (fail) {
   console.error('\nFAILED (' + fail + '):');

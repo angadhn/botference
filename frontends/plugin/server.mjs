@@ -4,13 +4,22 @@
 // Obsidian (export.mjs) and streams live turn events to the extension's
 // background service worker over WS (SSE as fallback).
 //
-// Loopback only, no auth, no CORS headers: every request comes from the
-// extension's background worker, which bypasses CORS and is the only thing
+// Loopback only by default, no auth, no CORS headers: every request comes from
+// the extension's background worker, which bypasses CORS and is the only thing
 // that can reach 127.0.0.1:4189 in the first place.
+//
+// --hosted opens the same server to other people over a tunnel (see
+// hosted.mjs): password gate + HMAC cookie for browsers, bearer token for the
+// remote extension, CORS answered, and a server-rendered reading room at
+// /pages and /p/<pageKey> for collaborators with no extension at all.
+// Localhost stays the owner and stays unauthenticated.
 //
 // Run:    node frontends/plugin/server.mjs
 // Flags:  --no-agents   never spawn the bridge (annotations still work)
+//         --hosted      shared-URL mode; requires PLUGIN_PASSWORD
 // Env:    PORT, BOTFERENCE_PROJECT_ROOT, BOTFERENCE_HOME,
+//         PLUGIN_PASSWORD (hosted: the shared password),
+//         PLUGIN_OWNER_PASSWORD (hosted, optional: signs the owner in remotely),
 //         PLUGIN_BRIDGE_CMD (tests: JSON argv array replacing the python bridge)
 import http from 'node:http';
 import fs from 'node:fs';
@@ -20,10 +29,27 @@ import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest } from './chat.mjs';
 import { exportPage } from './export.mjs';
+import { createHosted, CORS_HEADERS } from './hosted.mjs';
+import { pageView, pagesView } from './views.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 4189);
 const NO_AGENTS = process.argv.includes('--no-agents');
+const HOSTED = process.argv.includes('--hosted');
+if (HOSTED && !process.env.PLUGIN_PASSWORD) {
+  console.error('--hosted requires PLUGIN_PASSWORD to be set, e.g.  PLUGIN_PASSWORD=… botference plugin --hosted');
+  console.error("(or use 'botference plugin --share', which generates one and opens a tunnel for you)");
+  process.exit(1);
+}
+// identity, auth and the guest-agent budget all live in one place
+const hosted = createHosted({
+  hosted: HOSTED,
+  dir: store.DIR,
+  ownerHandle: () => store.readConfig().author,
+  password: process.env.PLUGIN_PASSWORD || '',
+  ownerPassword: process.env.PLUGIN_OWNER_PASSWORD || '',
+});
+const NO_GRANT_REASON = "the owner hasn't granted you bot access";
 const AGENTS_OFF_REASON = 'agents are off on this companion';
 const AGENTS_OFF_ERROR = "agents are off — restart 'botference plugin' with claude/codex CLIs available";
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
@@ -103,16 +129,38 @@ function onChatEvent(ev) {
   broadcast(ev);
 }
 
+// A guest's mention spends the OWNER's agents on the owner's machine, so it is
+// off by default and metered when on: grants.json is hand-edited, re-read on
+// every mention, and the daily counter is a budget, not an attendance log.
+// The message itself is always kept — a refusal loses the comment nowhere.
+function guestRefusal(me) {
+  if (!HOSTED || me.owner) return null;
+  const grant = hosted.grantFor(me.handle);
+  if (!grant) return NO_GRANT_REASON;
+  const used = hosted.grantUsed(me.handle);
+  if (used >= grant.daily_cap) return `you have used today's agent budget (${used} of ${grant.daily_cap})`;
+  hosted.grantSpend(me.handle);
+  return null;
+}
+
 // an @-mention in any message — first comment or tenth reply — is the only
 // thing that summons the bots
-function summon(page, target, text, extras = {}) {
+function summon(page, target, text, extras = {}, me = { owner: true }) {
   if (!hasMention(text)) return {};
   if (NO_AGENTS) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: AGENTS_OFF_ERROR });
     return { queued: false, reason: AGENTS_OFF_REASON };
   }
+  const refused = guestRefusal(me);
+  if (refused) {
+    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: refused });
+    return { queued: false, reason: refused };
+  }
   const { position } = chat.submit({
     url: page.url, target, text, title: page.title,
+    // on a shared page the bots are answering a room, not one reader: name
+    // whoever is asking, unless it is the owner (whose annotator never did)
+    asker: me.owner ? '' : me.handle,
     quote: target === store.PAGE_CHAT ? '' : (store.findThread(page, target) || {}).quote,
     history: priorMsgs(page, target),
     ...extras,
@@ -136,12 +184,37 @@ const contextExtras = (data, docxDigest) => ({
   docxDigest,
 });
 
+// --- the double-click guard ---------------------------------------------
+// A send over a tunnel can take a second, the button gives no receipt, and
+// hands are fast: the same comment arrives twice. The second copy is not a
+// second thought — same author, same words, same thread, seconds apart — so it
+// is swallowed and the first message is echoed back. Crucially it also queues
+// NO second bot turn: the expensive half of a double-click is the agent run.
+// Memory only: a repeat after a restart is a repeat the reader meant.
+const DEDUPE_MS = 10000;
+const recentSends = new Map();
+function dedupeCheck(parts) {
+  const key = parts.map(p => String(p ?? '')).join(' ');
+  const now = Date.now();
+  for (const [k, v] of recentSends) if (now - v.at > DEDUPE_MS) recentSends.delete(k);
+  const hit = recentSends.get(key);
+  return {
+    hit: hit ? hit.value : null,
+    remember(value) { recentSends.set(key, { at: now, value }); },
+  };
+}
+
 // --- HTTP helpers -------------------------------------------------------
 const ok = (res, obj) => res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...obj }));
 const fail = (res, code, error) => res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error }));
+// The reading room posts plain HTML forms to the same endpoints the drawer
+// calls with JSON. One write path, two encodings: `_form` marks which, so the
+// answer can be a redirect back to the page instead of a wall of JSON.
+const isForm = req => /^application\/x-www-form-urlencoded/i.test(req.headers['content-type'] || '');
 function readBody(req, res, fn) {
   let body = '';
   let over = false;
+  const form = isForm(req);
   req.on('data', c => {
     if (over) return;
     body += c;
@@ -151,10 +224,23 @@ function readBody(req, res, fn) {
   });
   req.on('end', () => {
     if (over) return;
-    let data; try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
+    let data;
+    if (form) {
+      data = Object.fromEntries(new URLSearchParams(body));
+      data._form = true;
+    } else {
+      try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
+    }
     fn(data);
   });
 }
+// a form post lands back on the page it came from, with any refusal to show
+const backTo = (data, page, hash, notice) => {
+  const to = String(data.redirect || '');
+  const base = /^\/p\/[0-9a-f]{40}$/.test(to) ? to : `/p/${store.pageKey(page.url)}`;
+  return base + (notice ? `?notice=${encodeURIComponent(notice)}` : '') + (hash ? `#${hash}` : '');
+};
+const seeOther = (res, location) => res.writeHead(303, { location, 'cache-control': 'no-store' }).end();
 const queryUrl = reqUrl => {
   const q = String(reqUrl || '').split('?')[1] || '';
   const m = /(?:^|&)url=([^&]*)/.exec(q);
@@ -169,14 +255,66 @@ function pageOf(res, data) {
   return page;
 }
 
+// Hosted-mode gatekeepers. In local mode every one of these is a no-op: the
+// owner is the only person who can reach the port.
+// owner-only: the acts that spend the owner's machine (bots, relays) or write
+// outside .botference (the Obsidian vault), plus destroying other people's work
+function notOwner(req, res) {
+  if (hosted.isOwner(req)) return false;
+  req.resume(); // the body is never read: drain it so the client sees the 403
+  fail(res, 403, 'owner only — ask the owner to do that');
+  return true;
+}
+// who is writing. A guest with no name (or one that would impersonate the
+// owner) is refused before anything is stored.
+function authorOf(req, res) {
+  const me = hosted.identity(req);
+  if (me.error) { fail(res, me.code, me.error); return null; }
+  return me;
+}
+
 export function handler(req, res) {
   const url = req.url.split('?')[0];
+  // CORS, hosted only: the remote extension is cross-origin against a public
+  // hostname. Wildcard origin is safe precisely because API auth is a bearer
+  // header — a wildcard can never carry the cookie the browsers use.
+  if (HOSTED) for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
+  if (req.method === 'OPTIONS') {
+    if (!HOSTED) return fail(res, 404, 'not found');
+    return res.writeHead(204, { 'content-length': '0' }).end();
+  }
+  if (HOSTED && req.method === 'POST' && url === '/auth') return hosted.authEndpoint(req, res);
+  if (!hosted.authorized(req)) return hosted.denied(req, res);
+
+  // --- the reading room: collaborators without the extension -------------
+  if (req.method === 'GET' && (url === '/' || url === '/pages')) {
+    if (url === '/') return res.writeHead(302, { location: '/pages' }).end();
+    const html = pagesView({ index: store.readIndex(), me: hosted.identity(req) });
+    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+  }
+  if (req.method === 'GET' && url.startsWith('/p/')) {
+    const key = url.slice(3);
+    const page = store.readPageByKey(key);
+    if (!page) return fail(res, 404, 'unknown page');
+    const notice = new URLSearchParams(req.url.split('?')[1] || '').get('notice') || '';
+    const html = pageView({ page, key, me: hosted.identity(req), notice });
+    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+  }
 
   if (req.method === 'GET' && url === '/health') {
+    const me = hosted.identity(req);
     return ok(res, {
       bridge: NO_AGENTS ? 'disabled' : chat.state(),
       queue: chat ? chat.queueLength() : 0,
+      // hosted only: a remote extension has to know its own standing before it
+      // can render (or gray out) the owner's controls
+      ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),
     });
+  }
+  // the same standing on its own, for a client that only wants to ask "who am I"
+  if (req.method === 'GET' && url === '/whoami') {
+    const me = hosted.identity(req);
+    return ok(res, { hosted: HOSTED, owner: me.owner, handle: me.handle, error: me.error });
   }
   // model picker: what the bots are running on, and what they could run on.
   // Both are null until the bridge has started and spoken — the extension
@@ -223,45 +361,67 @@ export function handler(req, res) {
       if (!data.url) return fail(res, 400, 'url required');
       if (!data.quote) return fail(res, 400, 'quote required');
       if (!text.trim()) return fail(res, 400, 'empty comment');
+      const me = authorOf(req, res);
+      if (!me) return;
       const docxDigest = docxDigestOf(res, data, text);
       if (docxDigest === null) return; // 413: nothing is saved, nothing is queued
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
+      // same person, same words, same highlight, seconds apart: one comment
+      const dedupe = dedupeCheck([store.pageKey(page.url), 'thread', me.handle, data.quote, text.trim()]);
+      if (dedupe.hit) return ok(res, { thread: dedupe.hit, deduped: true });
       const thread = store.addThread(page, {
         quote: data.quote, prefix: data.prefix, suffix: data.suffix,
-        text, author: store.readConfig().author, index: data.index,
+        text, author: me.handle, index: data.index,
       });
+      dedupe.remember(thread);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { thread, ...summon(page, thread.id, text, contextExtras(data, docxDigest)) });
+      ok(res, { thread, ...summon(page, thread.id, text, contextExtras(data, docxDigest), me) });
     });
   }
   if (req.method === 'POST' && url === '/reply') {
     return readBody(req, res, data => {
       const text = String(data.text || '');
       if (!text.trim()) return fail(res, 400, 'empty reply');
+      const me = authorOf(req, res);
+      if (!me) return;
       const docxDigest = docxDigestOf(res, data, text);
       if (docxDigest === null) return;
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
-      const msg = store.appendMsg(page, target, { author: store.readConfig().author, text });
+      const dedupe = dedupeCheck([store.pageKey(page.url), target, me.handle, text.trim()]);
+      const anchor = target === store.PAGE_CHAT ? '' : target;
+      if (dedupe.hit) {
+        return data._form
+          ? seeOther(res, backTo(data, page, anchor))
+          : ok(res, { msg: dedupe.hit, deduped: true });
+      }
+      const msg = store.appendMsg(page, target, { author: me.handle, text });
       if (!msg) return fail(res, 404, 'unknown thread');
+      dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { msg, ...summon(page, target, text, contextExtras(data, docxDigest)) });
+      const summoned = summon(page, target, text, contextExtras(data, docxDigest), me);
+      // the reading room posted a form: back to the page, carrying any refusal
+      if (data._form) return seeOther(res, backTo(data, page, anchor, summoned.reason));
+      ok(res, { msg, ...summoned });
     });
   }
   if (req.method === 'POST' && url === '/edit') {
     return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
       const page = pageOf(res, data);
       if (!page) return;
       const msgs = store.msgsOf(page, data.thread_id || store.PAGE_CHAT);
       if (!msgs) return fail(res, 404, 'unknown thread');
       const msg = msgs.find(m => m.ts === data.ts);
       if (!msg) return fail(res, 404, 'unknown message');
-      // the bots' words are theirs: only your own messages are editable
-      if (msg.author !== store.readConfig().author) return fail(res, 403, 'not your message');
+      // the bots' words are theirs, and so is every other human's: you may
+      // only rewrite what you wrote
+      if (msg.author !== me.handle) return fail(res, 403, 'not your message');
       msg.text = String(data.text || '');
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
@@ -291,9 +451,19 @@ export function handler(req, res) {
   }
   if (req.method === 'POST' && url === '/delete') {
     return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
+      // A guest may retract what they wrote and nothing else: sweeping a whole
+      // thread (or the page chat) away takes other people's words with it, so
+      // that stays the owner's call.
+      if (!me.owner) {
+        if (!data.ts) return fail(res, 403, 'owner only — you can delete your own messages');
+        const mine = (store.msgsOf(page, target) || []).find(m => m.ts === data.ts);
+        if (mine && mine.author !== me.handle) return fail(res, 403, 'not your message');
+      }
       let gone = false; // the whole thread went, not just a message
       if (!data.ts) {
         if (target === store.PAGE_CHAT) page.page_chat = [];
@@ -325,6 +495,7 @@ export function handler(req, res) {
   // chat behind it. Hard delete on both sides: nothing is archived, because a
   // page the reader deleted from the drawer should not resurface in /resume.
   if (req.method === 'POST' && url === '/delete-page') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       const page = pageOf(res, data);
       if (!page) return;
@@ -361,7 +532,10 @@ export function handler(req, res) {
       ok(res, { thread });
     });
   }
+  // the export writes into the OWNER's Obsidian vault, on the owner's disk:
+  // never something a guest can trigger
   if (req.method === 'POST' && url === '/export') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       const page = pageOf(res, data);
       if (!page) return;
@@ -370,6 +544,7 @@ export function handler(req, res) {
     });
   }
   if (req.method === 'POST' && url === '/model') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       const agent = String(data.agent || '');
       const model = String(data.model || '');
@@ -387,6 +562,7 @@ export function handler(req, res) {
   // reasoning effort: the same picker shape as /model, but the bridge never
   // reports the live level, so the companion is the one keeping score
   if (req.method === 'POST' && url === '/effort') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       const agent = String(data.agent || '');
       const level = String(data.level || '');
@@ -403,6 +579,7 @@ export function handler(req, res) {
   // one: it lives in config.json and is enforced in the envelope, so it holds
   // across restarts and applies to the very next turn.
   if (req.method === 'POST' && url === '/verbosity') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       const level = String(data.level || '');
       if (!store.VERBOSITY_LEVELS.includes(level)) return fail(res, 400, 'level must be short or long');
@@ -414,6 +591,7 @@ export function handler(req, res) {
   // hand an agent's own context back to it (compaction/handoff). Never worth
   // starting the bridge for: with nothing running there is no context to relay.
   if (req.method === 'POST' && url === '/relay') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       const agent = String(data.agent || '');
       if (!['claude', 'codex', 'both'].includes(agent)) return fail(res, 400, 'agent must be claude, codex or both');
@@ -423,7 +601,9 @@ export function handler(req, res) {
       ok(res, { queued: true });
     });
   }
+  // stopping a turn stops it for everyone in the room
   if (req.method === 'POST' && url === '/interrupt') {
+    if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       if (!data.url) return fail(res, 400, 'url required');
       ok(res, { interrupted: !!(chat && chat.interrupt(store.normUrl(data.url))) });
@@ -438,6 +618,9 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   const server = http.createServer(handler);
   attachWs(server, {
     path: '/ws',
+    // a browser cannot set headers on an upgrade, so the shared password may
+    // ride the query string (?auth=…&handle=…); cookies work too
+    authorize: req => hosted.authorized(req),
     onOpen(ws) {
       ws.send(JSON.stringify({ type: 'hello' }));
       wsClients.add(ws);
@@ -453,6 +636,10 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     const p = server.address().port;
     console.log(`Web annotator companion live at http://127.0.0.1:${p} — workspace: ${store.ROOT}`);
     if (NO_AGENTS) console.log('--no-agents: bots are off; annotations and export still work');
+    if (HOSTED) {
+      console.log('--hosted: remote visitors need the password; localhost stays the owner');
+      console.log(`  reading room: /pages   agent grants: ${hosted.grantsFile}`);
+    }
   });
   // heartbeat: dead extension workers surface, live ones stay warm
   setInterval(() => {

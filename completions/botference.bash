@@ -5,7 +5,7 @@ _botference() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "init plan research-plan archive build review service see help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "init plan research-plan archive build review plugin service see help" -- "$cur") )
     return
   fi
   case "${COMP_WORDS[1]}" in
@@ -14,6 +14,8 @@ _botference() {
         -*) COMPREPLY=( $(compgen -W "--share --service --hosted --port --agents --no-agents --upgrade" -- "$cur") ) ;;
         *)  COMPREPLY=( $(compgen -d -- "$cur") ) ;;
       esac ;;
+    plugin)
+      COMPREPLY=( $(compgen -W "--share --hosted --service --port --here --agents --no-agents --install-autostart --uninstall-autostart" -- "$cur") ) ;;
     service)
       if [ "$COMP_CWORD" -eq 2 ]; then
         COMPREPLY=( $(compgen -W "start stop list logs help" -- "$cur") )

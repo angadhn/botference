@@ -10,12 +10,29 @@
 //   const d = BFPDrawer.create({ hostname, cssUrl, theme, capabilities, on… });
 //   d.mount(); d.setPage(record); d.open('comments');
 //
+// `d.setAuthor(handle)` tells the drawer who the READER is on this companion.
+// It matters now that a page's messages can come from any number of handles (a
+// shared companion): "my message" — the one with the ✎ on it — is the one whose
+// author matches this, and every other handle simply gets its own colour.
+//
 // `capabilities` is what content.js's site adapter says this page can do
 // (default {highlights:true}). With {highlights:false} — Google Docs, whose
 // text is painted to a canvas — the drawer opens on Page chat whatever the
 // per-site memory says, and the Comments tab stays visible but inert.
 //
 // Callbacks (all optional, all may return a Promise):
+// Sending is OPTIMISTIC: the message appears in its thread and the composer
+// empties before onSave/onReply is even called (they are slow — they re-read
+// the page and may attach a document). Both may answer:
+//   {ok:true, queued, position}   normal; the bots were summoned or not
+//   {ok:true, reason:'…'}         saved, but the bots will NOT run for this
+//                                 sender (a guest, or --no-agents) — shown at
+//                                 the composer, nothing rolled back
+//   {ok:true, deduped:true}       the companion already had this message; the
+//                                 caller must have reconciled it idempotently
+//   {ok:false, error:'…'}         the pending message stays on screen with a
+//                                 retry and a discard
+//
 //   onSave({quote,prefix,suffix,text})  new anchored thread committed
 //   onCancelNew()                       the pending new-thread card dismissed
 //   onReply(threadId, text)             threadId '__page__' = page chat
@@ -327,10 +344,19 @@
       notes: {},           // target -> transient status line {text, err}
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
-      sending: {},         // target -> true while its POST is in flight
+      // OPTIMISTIC SEND (round 5). A message the user has committed to but the
+      // companion has not confirmed lives here, not in the composer: it is
+      // rendered as a real (dimmed, spinner-bearing) message in its thread the
+      // instant Send is pressed, and the composer empties. On success it is
+      // dropped and the server's own copy takes its place; on failure it stays
+      // put with a retry, so the text is never in limbo and never lost.
+      outbox: {},          // target -> [{id, text, state:'sending'|'failed', error, seen}]
+      sendLock: {},        // target -> true for the synchronous span of a send
       pending: null,       // {quote, prefix, suffix} while composing a new thread
       confirm: null,       // threadId whose "delete thread?" confirm is showing
       toolsOpen: {},       // tool-activity disclosure key -> expanded
+      // who WE are on this companion (setAuthor); '' until the background says
+      author: opts.author || '',
       focused: null,
       // a page with no highlights has no Comments to open on
       tab: CAPS.highlights ? 'comments' : 'chat',
@@ -691,13 +717,66 @@
       return noteHtml;
     }
 
+    // The composer is NEVER frozen by a send in flight: the message has already
+    // left it (see D.outbox) and the next one can be typed straight away. The
+    // one exception is a brand-new thread, where a second send before the
+    // server has minted an id would create a second thread for the same
+    // passage — that button waits.
     function composerHtml(target, label, extra) {
       const draft = D.drafts[target] || '';
-      const busy = D.sending[target] ? ' disabled' : '';
+      const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
       return `<div class="composer" data-target="${esc(target)}">
-        <textarea rows="2" placeholder="${esc(label)}"${busy}>${esc(draft)}</textarea>
+        <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
         <div class="crow"><span class="hint">${esc(HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
       </div>`;
+    }
+
+    // ---- the outbox: messages sent but not yet confirmed -------------------
+    // Rendered as ordinary messages so the thread reads in the order it was
+    // written, dimmed with a spinner while the POST is out, and turned into a
+    // retry/discard row if it fails. Everything here is per-target.
+    const SENDING_TEXT = 'reaching botference…';
+    const SEND_FAIL = 'couldn’t reach the companion';
+    let outSeq = 0;
+
+    const outboxFor = t => D.outbox[t] || [];
+    const inFlight = t => outboxFor(t).some(e => e.state === 'sending');
+    function realMsgs(target) {
+      if (!D.page) return [];
+      if (target === PAGE_TARGET) return D.page.page_chat || [];
+      const t = (D.page.threads || []).find(x => x.id === target);
+      return (t && t.msgs) || [];
+    }
+    // How many human messages with exactly this text the record already holds.
+    // The pending copy is hidden as soon as that count passes the number it was
+    // created with — which is how the same message never appears twice even
+    // though the record can be updated (setPage, a `page` refetch, another tab)
+    // BEFORE the POST that carried it resolves here.
+    function countSame(target, text) {
+      const t = String(text == null ? '' : text).trim();
+      let n = 0;
+      for (const m of realMsgs(target)) {
+        if (m && !isBot(m.author) && String(m.text == null ? '' : m.text).trim() === t) n++;
+      }
+      return n;
+    }
+    function outboxVisible(target) {
+      return outboxFor(target).filter(e =>
+        e.state === 'failed' || countSame(target, e.text) <= e.seen);
+    }
+    function outboxHtml(target) {
+      const author = D.author || opts.author || 'you';
+      return outboxVisible(target).map(e => {
+        const failed = e.state === 'failed';
+        const state = failed
+          ? `<div class="sendstate err"><span class="stext">${esc(e.error || SEND_FAIL)}</span>` +
+            `<button class="rebtn retry" data-act="send-retry" data-target="${esc(target)}" data-out="${esc(e.id)}" type="button" title="send it again">↻ retry</button>` +
+            `<button class="rebtn discard" data-act="send-discard" data-target="${esc(target)}" data-out="${esc(e.id)}" type="button" title="put it back in the box" aria-label="discard">✕</button></div>`
+          : `<div class="sendstate"><span class="spin">◐</span><span class="stext">${esc(SENDING_TEXT)}</span></div>`;
+        return `<div class="reply mine sending${failed ? ' failed' : ''}" data-out="${esc(e.id)}" style="--author:${authorColor(author)}">
+          <span class="who"><span class="author">${esc(author)}</span><span class="when">now</span></span>
+          <div class="ctext">${esc(e.text)}</div>${state}</div>`;
+      }).join('');
     }
 
     function cardHtml(t) {
@@ -717,7 +796,7 @@
           <div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}</div>
           ${head}
         </div>
-        <div class="thread">${msgs}${streamsHtml(t.id)}</div>
+        <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
         ${composerHtml(t.id, 'Reply…')}
       </div>`;
@@ -725,23 +804,38 @@
 
     function pendingHtml() {
       const p = D.pending;
-      return `<div class="card pending" data-thread="__new__" style="--author:${authorColor(opts.author || 'you')}">
+      const out = outboxHtml('__new__');
+      return `<div class="card pending" data-thread="__new__" style="--author:${authorColor(D.author || opts.author || 'you')}">
         <div class="quote" title="the passage you selected">“${esc(p.quote)}”</div>
+        ${out ? `<div class="thread">${out}</div>` : ''}
         ${composerHtml('__new__', 'Comment on this passage…',
           '<button class="cancel" data-act="cancel-new" type="button">Cancel</button>')}
         ${statusHtml('__new__')}
       </div>`;
     }
 
-    const sameAuthor = a => String(a || '').toLowerCase() === String(opts.author || 'angadh').toLowerCase();
+    // Whose messages carry the edit affordance. A page's messages may now come
+    // from ANY handle (a shared companion), so "mine" is the identity this
+    // browser is configured with — the handle from the options page, or, on a
+    // local companion, whatever the owner is called. content.js supplies it
+    // (setAuthor) as soon as the background has answered.
+    const sameAuthor = a =>
+      String(a || '').toLowerCase() === String(D.author || opts.author || 'angadh').toLowerCase();
 
-    // The companion is a local process the user has to have started. When it
-    // is down that is the single most important thing on screen — say so in
-    // plain words, with the fix and a retry, not a 12px grey dot.
+    // The companion is a process the user has to have started. When it is down
+    // that is the single most important thing on screen — so it gets the actual
+    // steps, in order, with the commands as copyable code, not a name-drop and
+    // not a 12px grey dot.
     const offlineHtml = () => (D.connKnown && !D.connected)
-      ? `<div class="notice"><b>Companion not running</b>` +
-        `<div>Nothing can be saved or answered until the companion is listening on ` +
-        `<code>127.0.0.1:4189</code>. Start it with <code>botference plugin</code>, then retry.</div>` +
+      ? `<div class="notice"><b>Companion offline — the plugin needs its local server:</b>` +
+        `<ol class="steps">` +
+        `<li>open Terminal</li>` +
+        `<li>run: <code>botference plugin</code>` +
+        `<div class="sub">first time? run it from your botference folder; after that it works from anywhere</div></li>` +
+        `<li>come back and hit retry</li>` +
+        `</ol>` +
+        `<div class="alt">one-time alternative: <code>botference plugin --install-autostart</code> ` +
+        `— starts at login, no terminal again (macOS)</div>` +
         `<button data-act="retry" type="button">↻ Retry connection</button></div>`
       : '';
 
@@ -777,8 +871,8 @@
 
     function renderChat() {
       const msgs = (D.page && D.page.page_chat) || [];
-      const body = msgsHtml(PAGE_TARGET, msgs) + streamsHtml(PAGE_TARGET);
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${authorColor(opts.author || 'you')}">
+      const body = msgsHtml(PAGE_TARGET, msgs) + outboxHtml(PAGE_TARGET) + streamsHtml(PAGE_TARGET);
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${authorColor(D.author || opts.author || 'you')}">
         ${body ? `<div class="thread">${body}</div>` : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`}
         ${statusHtml(PAGE_TARGET)}
         ${composerHtml(PAGE_TARGET, 'Ask about this page…')}
@@ -899,10 +993,9 @@
         const target = c.getAttribute('data-target');
         const ta = c.querySelector('textarea');
         if (!target || !ta) return;
-        // A send in flight owns its composer. Harvesting here would read the
-        // just-sent text back out of the still-live textarea and undo the
-        // clear — which is exactly why sent messages used to stay in the box.
-        if (D.sending[target]) return;
+        // No in-flight exception is needed any more: a sent message leaves the
+        // composer synchronously (queueSend) and lives in D.outbox until the
+        // companion confirms it, so there is nothing here to read back.
         if (ta.value) D.drafts[target] = ta.value; else delete D.drafts[target];
       });
     }
@@ -1455,9 +1548,11 @@
           return;
         }
         if (act === 'send') { doSend(target); return; }
+        if (act === 'send-retry') { retrySend(target, btn.dataset.out); return; }
+        if (act === 'send-discard') { discardSend(target, btn.dataset.out); return; }
         if (act === 'cancel-new') { cancelNew(); return; }
         if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
-        if (act === 'interrupt') { note(null, 'stopping…'); cb('onInterrupt')(); return; }
+        if (act === 'interrupt') { doInterrupt(btn); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }
         if (act === 'warn-dismiss') { setWarning(''); return; }
         if (act === 'edit') { startEdit(btn); return; }
@@ -1510,39 +1605,133 @@
       render();
     }
 
-    async function doSend(target) {
+    const composerBox = target =>
+      D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] textarea');
+
+    // OPTIMISTIC SEND. Everything the user can see happens before the first
+    // `await`: the message is appended to its thread, the composer empties, and
+    // the render lands. Only then does the slow half run — content.js re-reads
+    // the page and may fetch a .docx before the POST even starts, which is what
+    // made a send feel broken and made people click Send twice.
+    //
+    // Which is the other half of the fix: a second click has nothing to send
+    // (the box is empty) and the same-tick latch catches the pathological case
+    // where two events fire off one gesture. One gesture, one POST.
+    function doSend(target) {
       if (!target || target === '__edit__') return;
-      harvestDrafts();
-      const text = (D.drafts[target] || '').trim();
-      if (!text) return;
-      // in-flight: the composer is frozen and its text is no longer a draft.
-      // On success the draft is dropped (the box comes back empty); on failure
-      // it is left exactly as typed so nothing the user wrote is ever lost.
-      D.sending[target] = true;
-      const box = D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] textarea');
-      if (box) box.disabled = true;
+      if (D.sendLock[target]) return;
+      // a brand-new thread must not be created twice while its id is in flight
+      if (target === '__new__' && inFlight(target)) return;
+      D.sendLock[target] = true;
       try {
-        let res;
-        if (target === '__new__') {
-          res = await cb('onSave')({ ...D.pending, text });
-          if (res && res.ok !== false) { D.pending = null; delete D.drafts['__new__']; if (box) box.value = ''; }
-        } else {
-          res = await cb('onReply')(target, text);
-          if (res && res.ok !== false) { delete D.drafts[target]; if (box) box.value = ''; }
-        }
-        // a fresh thread's status chip has to land on the id the SERVER minted
-        // (content.js normalises /thread's {ok, thread} into thread_id; accept
-        // the raw {thread:{id}} shape too so neither side can drift silently)
-        const newId = res && (res.thread_id || (res.thread && res.thread.id)) || null;
-        if (res && res.ok === false) note(target === '__new__' ? '__new__' : target, res.error || 'save failed', true);
-        else if (res && res.queued) note(target === '__new__' ? newId : target, res.position > 1 ? `queued (#${res.position})` : 'queued…');
-        else note(target === '__new__' ? null : target, null);
-      } catch (e) {
-        note(target, String(e && e.message || e), true);
+        harvestDrafts();
+        const text = (D.drafts[target] || '').trim();
+        if (!text) return;
+        const btn = D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .send');
+        if (btn) btn.disabled = true;          // released by the render below
+        deliver(target, queueSend(target, text));
       } finally {
-        delete D.sending[target];
-        render();
+        delete D.sendLock[target];
       }
+    }
+
+    // The synchronous half: the message becomes a pending message, the composer
+    // is emptied, the last error line goes.
+    function queueSend(target, text) {
+      const list = D.outbox[target] || (D.outbox[target] = []);
+      const twins = list.filter(e => e.text === text).length;
+      const entry = { id: 'o-' + (++outSeq), text, state: 'sending', error: '',
+                      seen: countSame(target, text) + twins };
+      list.push(entry);
+      delete D.drafts[target];
+      delete D.notes[target];
+      const box = composerBox(target);
+      if (box) box.value = '';
+      render();
+      return entry;
+    }
+
+    function dropOutbox(target, entry) {
+      const list = D.outbox[target];
+      if (!list) return;
+      const i = list.indexOf(entry);
+      if (i >= 0) list.splice(i, 1);
+      if (!list.length) delete D.outbox[target];
+    }
+
+    // The asynchronous half. Retry re-enters here with the same entry, so this
+    // is also the whole retry path.
+    async function deliver(target, entry) {
+      entry.state = 'sending';
+      entry.error = '';
+      let res;
+      try {
+        res = target === '__new__'
+          ? await cb('onSave')({ ...D.pending, text: entry.text })
+          : await cb('onReply')(target, entry.text);
+      } catch (e) {
+        res = { ok: false, error: String((e && e.message) || e) };
+      }
+      if (!res || res.ok === false) {
+        // the text stays exactly where the user can see it, with a way to send
+        // it again — never silently back in a box they have stopped looking at
+        entry.state = 'failed';
+        entry.error = (res && res.error) || SEND_FAIL;
+        render();
+        return;
+      }
+      // Success. The record now holds the server's own copy (content.js pushed
+      // it, idempotently — a {deduped:true} answer echoes the message that was
+      // already there, and pushing it twice is what that guard is for), so the
+      // pending copy simply goes.
+      dropOutbox(target, entry);
+      // a fresh thread's status chip has to land on the id the SERVER minted
+      // (content.js normalises /thread's {ok, thread} into thread_id; accept
+      // the raw {thread:{id}} shape too so neither side can drift silently)
+      const newId = (res.thread_id || (res.thread && res.thread.id)) || null;
+      if (target === '__new__') D.pending = null;
+      const key = target === '__new__' ? newId : target;
+      // The companion took the message but will not summon the bots for this
+      // sender (a guest with no bot access, or a companion started
+      // --no-agents). That is not a failed send — the message is saved — so it
+      // is said next to the composer and nothing is rolled back.
+      if (res.reason) note(key == null ? null : key, res.reason, true);
+      else if (res.queued) note(key, res.position > 1 ? `queued (#${res.position})` : 'queued…');
+      else note(target === '__new__' ? null : target, null);
+      render();
+    }
+
+    const findOut = (target, id) => outboxFor(target).find(e => e.id === id) || null;
+
+    function retrySend(target, id) {
+      const e = findOut(target, id);
+      if (!e || e.state === 'sending') return;
+      // its baseline may have moved while it sat there failed
+      e.seen = countSame(target, e.text) +
+        outboxFor(target).filter(x => x !== e && x.text === e.text && x.state === 'sending').length;
+      e.state = 'sending';
+      e.error = '';
+      render();
+      deliver(target, e);
+    }
+
+    // Discard = "I will deal with this myself": the text goes back into the
+    // composer rather than into the bin, on top of whatever is already there.
+    function discardSend(target, id) {
+      const e = findOut(target, id);
+      if (!e) return;
+      dropOutbox(target, e);
+      harvestDrafts();
+      const cur = D.drafts[target] || '';
+      const text = cur ? e.text + '\n\n' + cur : e.text;
+      D.drafts[target] = text;
+      // the LIVE textarea too, not just the draft: render() harvests the DOM
+      // before it rebuilds it, and an empty box would delete the draft again
+      const live = composerBox(target);
+      if (live) live.value = text;
+      render();
+      const box = composerBox(target);
+      if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
     }
 
     function startEdit(btn) {
@@ -1611,6 +1800,19 @@
       render();
     }
 
+    // Stopping a turn is the owner's privilege on a shared companion (403), and
+    // a stop that did not stop anything must say so — in the thread whose chip
+    // was clicked, or in the footbar's case the page chat.
+    async function doInterrupt(btn) {
+      const card = btn && btn.closest && btn.closest('.card[data-thread]');
+      const target = card ? card.getAttribute('data-thread') : null;
+      note(target, 'stopping…');
+      let r;
+      try { r = await cb('onInterrupt')(); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (r && r.ok === false) note(target, r.error || 'could not stop that turn', true);
+    }
+
     async function doDelete(target, ts) {
       const r = await cb('onDelete')(target, ts || null);
       if (r && r.ok === false) note(target, r.error || 'delete failed', true);
@@ -1655,7 +1857,7 @@
       if (D.pages.list) D.pages.list = D.pages.list.filter(p => !sameUrl(p.url, url));
       if (r.current) {
         D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
-        D.speaker = {}; D.notes = {}; D.toolsOpen = {};
+        D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
         D.confirm = null; D.focused = null; D.pending = null;
         D.foot = ''; D.footErr = false;
       }
@@ -1723,6 +1925,9 @@
       D.pending = null;
       delete D.drafts['__new__'];
       delete D.notes['__new__'];
+      // a comment that failed to save goes with the card it was written on —
+      // there is no anchor left to retry it against
+      delete D.outbox['__new__'];
       cb('onCancelNew')();
       render();
     }
@@ -1753,6 +1958,18 @@
     }
 
     function setOrphans(map) { D.orphans = map || {}; render(); return D; }
+    // Who this browser is on this companion. Arrives asynchronously (the
+    // background asks storage, and /health on a local companion), so it can
+    // land after the first render — hence a setter and a re-render rather than
+    // a constructor option. It decides which messages offer the ✎ and what
+    // colour the composer's own card is.
+    function setAuthor(name) {
+      const n = String(name == null ? '' : name).trim();
+      if (!n || n === D.author) return D;
+      D.author = n;
+      render();
+      return D;
+    }
     // '' clears it — a later turn that DID read the page must not leave the
     // warning standing behind it
     function setWarning(text) {
@@ -1883,7 +2100,7 @@
     }
 
     Object.assign(D, {
-      mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning,
+      mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages,

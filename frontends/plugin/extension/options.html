@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Botference Web Annotator — settings</title>
+<!--
+  The extension's only settings page (manifest options_ui). Three fields, one
+  test button: WHERE the companion is, the password that lets this browser in,
+  and the handle every message from here is signed with.
+
+  Palette and type are the drawer's, so this does not look like a different
+  product: 12px floor everywhere, px only, both themes via
+  prefers-color-scheme. No build step, no framework — config.js does the
+  thinking and options.js does the wiring.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #faf7f0; --card: #fff; --fg: #23201b; --muted: #6f6759;
+    --line: #e6e0d4; --accent: #d97757; --accent-hover: #c25e3f;
+    --good: #2f7d4f; --bad: #b3403a;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1712; --card: #241f18; --fg: #ece4d6; --muted: #9a9083;
+      --line: #372f25; --accent: #d97757; --accent-hover: #e9927a;
+      --good: #6cc38a; --bad: #e5726a;
+    }
+  }
+  * { box-sizing: border-box }
+  body {
+    margin: 0; padding: 28px 24px 40px; background: var(--bg); color: var(--fg);
+    font: 14px/1.55 var(--sans);
+  }
+  .wrap { max-width: 560px; margin: 0 auto }
+  h1 { font-size: 19px; line-height: 1.3; margin: 0 0 4px; font-weight: 600 }
+  .lede { font-size: 13px; color: var(--muted); margin: 0 0 22px }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 18px 16px;
+  }
+  .field { margin-bottom: 16px }
+  .field:last-of-type { margin-bottom: 6px }
+  label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px }
+  .hint { font-size: 12px; line-height: 1.45; color: var(--muted); margin: 4px 0 0 }
+  input[type="text"], input[type="password"] {
+    display: block; width: 100%; padding: 8px 10px; font: 14px/1.4 var(--sans);
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px }
+  button {
+    font: 13px/1.2 var(--sans); padding: 8px 14px; min-height: 32px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: var(--fg); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent) }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff }
+  button:disabled { opacity: .55; cursor: default }
+  #status { font-size: 12px; line-height: 1.45; color: var(--muted); min-height: 18px; flex: 1 1 180px }
+  #status.ok { color: var(--good) }
+  #status.err { color: var(--bad) }
+  code { font: 12px/1.5 var(--mono); background: color-mix(in srgb, var(--accent) 12%, transparent);
+    padding: 1px 5px; border-radius: 5px }
+  .foot { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 18px 2px 0 }
+</style>
+
+<div class="wrap">
+  <h1>Botference Web Annotator</h1>
+  <p class="lede">Which companion this browser talks to, and who it says you are.</p>
+
+  <div class="card">
+    <div class="field">
+      <label for="base">Companion URL</label>
+      <input id="base" type="text" spellcheck="false" autocapitalize="off"
+             autocomplete="off" placeholder="http://127.0.0.1:4189">
+      <p class="hint">The local companion is <code>http://127.0.0.1:4189</code> — start it with
+        <code>botference plugin</code>. A hosted one is its https address.</p>
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" spellcheck="false" autocomplete="off"
+             placeholder="(empty for a local companion)">
+      <p class="hint">Leave empty for your own machine. A hosted companion's password is sent as
+        a bearer token on every request — never as a cookie.</p>
+    </div>
+
+    <div class="field">
+      <label for="handle">Your name</label>
+      <input id="handle" type="text" spellcheck="false" autocomplete="off"
+             placeholder="e.g. angadh">
+      <p class="hint">Signs every comment you post and picks your colour in the drawer.
+        Only used when a password is set.</p>
+    </div>
+
+    <div class="row">
+      <button id="save" class="primary" type="button">Save</button>
+      <button id="test" type="button">Test connection</button>
+      <span id="status" role="status"></span>
+    </div>
+  </div>
+
+  <p class="foot">Settings apply immediately — the extension reconnects on save. No page reload needed.</p>
+</div>
+
+<script src="config.js"></script>
+<script src="options.js"></script>

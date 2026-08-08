@@ -143,6 +143,15 @@ export function readPage(url) {
   return page;
 }
 
+// The guest web view addresses pages by their key (the url is in the record,
+// not in the link), so it needs the one lookup the extension never does.
+// Goes through readPage so the same healing applies.
+export function readPageByKey(key) {
+  if (!/^[0-9a-f]{40}$/.test(String(key || ''))) return null;
+  const raw = readJson(path.join(PAGES, `${key}.json`), null);
+  return raw && raw.url ? readPage(raw.url) : null;
+}
+
 // the index is derived state: rewritten from the page record on every save,
 // so a hand-deleted page file can never leave a phantom row behind
 export function savePage(page) {

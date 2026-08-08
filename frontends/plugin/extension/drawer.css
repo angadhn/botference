@@ -341,8 +341,19 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font: 13px/1.5 var(--sans); color: var(--fg);
 }
 .notice b { display: block; font-size: 13px; color: var(--bad); margin-bottom: 3px }
-.notice code { font: 12px var(--mono); background: var(--rail); padding: 1px 5px; border-radius: 5px }
+/* the commands are meant to be COPIED, so they are selectable text in a box
+   that looks like one — not decoration inside a sentence */
+.notice code { font: 12px var(--mono); background: var(--rail); padding: 1px 5px; border-radius: 5px;
+  user-select: all; -webkit-user-select: all }
 .notice button { display: block; margin-top: 9px }
+/* the actual steps, numbered: this is the one place in the drawer where a
+   list of instructions beats a paragraph */
+.notice .steps { margin: 5px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.6 }
+.notice .steps li { margin: 3px 0 }
+.notice .steps li::marker { color: var(--muted) }
+.notice .sub, .notice .alt { font-size: 12px; line-height: 1.5; color: var(--muted) }
+.notice .sub { margin-top: 1px }
+.notice .alt { margin-top: 7px; padding-top: 6px; border-top: 1px dotted var(--card-line) }
 
 /* the page text a site adapter could not read: quieter than .notice (nothing
    is broken — the bots are simply about to answer blind) but never silent,
@@ -514,6 +525,27 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   max-height: 220px; overflow-y: auto;
 }
 .tools-body[hidden] { display: none }
+
+/* ── a message sent but not yet confirmed (optimistic send) ─────────────── */
+/* It is a real message card, one shade quieter: the point is that the thread
+   already reads correctly. The dashed rail is the same "not settled yet"
+   grammar the streaming bot reply uses. A failure is NOT dimmed — it needs
+   reading — and turns the status line into two controls. */
+.reply.sending { opacity: .68; border-left-style: dashed }
+.reply.sending.failed {
+  opacity: 1; border-left-style: solid; border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 7%, var(--rail));
+}
+.sendstate {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px; margin-top: 5px;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+}
+.sendstate.err { color: var(--bad) }
+.sendstate .stext { min-width: 0; overflow-wrap: anywhere }
+.sendstate .spin { display: inline-block; animation: bfp-spin 1s linear infinite; color: var(--accent) }
+.sendstate .rebtn { opacity: 1; padding: 1px 5px; min-height: 20px; font-size: 12px }
+.sendstate .retry { color: var(--accent); text-decoration: underline }
+.sendstate .retry:hover { color: var(--accent-hover) }
 
 /* ── composers ─────────────────────────────────────────────────────────── */
 .composer { margin-top: 9px }

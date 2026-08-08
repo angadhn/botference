@@ -12,7 +12,7 @@ botference \- a multi-LLM planning council for the terminal
 [\fIdir\fR] [\fB\-\-share\fR [\fB\-\-service\fR]] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
 .br
 .B botference plugin
-[\fB\-\-port\fR \fIN\fR] [\fB\-\-service\fR] [\fB\-\-no-agents\fR]
+[\fB\-\-port\fR \fIN\fR] [\fB\-\-service\fR] [\fB\-\-no-agents\fR] [\fB\-\-hosted\fR] [\fB\-\-share\fR [\fB\-\-service\fR]] [\fB\-\-here\fR]
 .br
 .B botference plugin
 \fB\-\-install-autostart\fR | \fB\-\-uninstall-autostart\fR
@@ -115,7 +115,19 @@ auto-detect exactly as in \fBreview\fR. Flags: \fB\-\-port\fR \fIN\fR
 companion detached under the managed service lifecycle as
 \fBplugin-web\fR (stop with \fBbotference service stop plugin-web\fR).
 Config (Obsidian vault path, export folder) in
-\fI.botference/plugin/config.json\fR.
+\fI.botference/plugin/config.json\fR. The workspace is sticky: after the
+first run, \fBbotference plugin\fR from any directory reuses the
+recorded workspace (\fB\-\-here\fR forces the current directory).
+\fB\-\-hosted\fR (requires PLUGIN_PASSWORD) adds a password gate with
+per-guest handles so collaborators see and comment on the same threads;
+guest @-mentions need a grant in
+\fI.botference/plugin/grants.json\fR (re-read live; daily caps).
+Extension-less guests get a server-rendered reading room at
+\fI/pages\fR. \fB\-\-share\fR is hosted mode plus a cloudflared quick
+tunnel (generates PLUGIN_PASSWORD when unset, prints one shareable URL);
+with \fB\-\-service\fR the share runs detached as \fBplugin-share\fR.
+Owner-only regardless of auth: export, page deletion, model/effort/
+verbosity, relay, interrupt.
 .IP
 \fB\-\-install-autostart\fR (macOS) makes the companion permanent
 instead of per-session: it writes

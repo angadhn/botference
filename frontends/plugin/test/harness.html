@@ -46,6 +46,13 @@
                      state, with its warning in Page chat (screenshot state)
     ?checklist=1     seed the page chat with a bot checklist (screenshot state
                      for the interactive checkboxes)
+    ?sending=1       a message sent and still in flight: the optimistic pending
+                     card, dimmed, spinning, composer already empty. The POST
+                     never lands, so the state holds for a screenshot.
+    ?sending=fail    …and the same message after the send failed: the retry /
+                     discard row
+    ?handles=1       a page chat with several people in it (mira, devraj) —
+                     the multi-handle author colours (screenshot state)
     ?wide=NNN        start the drawer at NNN px instead of the stored width
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -466,6 +473,18 @@ const tickPosts = [];       // …and every /tick body
 const deletePagePosts = []; // …and every /delete-page body
 let tickFail = false;       // the selftest flips this to exercise the revert
 let refuseDelete = false;   // …and this for the 409 refusal path
+
+// ---- round 5: the companion is no longer necessarily local, single-user or
+//      fast. Four worlds the selftest drives, all of them flags rather than
+//      query params so one run can visit every one of them. ---------------
+let slowPost = 0;           // ms of latency on POST /reply and /thread
+let dedupeNext = false;     // the next message is one the companion already has
+let guestRefuse = false;    // a guest whose @mentions the owner has not allowed
+let ownerOnly = false;      // every owner-only endpoint answers 403
+let IDENTITY = 'angadh';    // who {t:'identity'} says this browser is
+const GUEST_REASON = 'the owner hasn’t granted you bot access';
+const OWNER_ROUTES = /^\/(export|delete-page|model|effort|verbosity|relay|interrupt)$/;
+const dedupePosts = [];     // every message the companion answered deduped:true to
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
 const postedMsgs = [];      // every /thread + /reply body, for the article_text checks
@@ -513,6 +532,16 @@ function indexMap() {
 if (Q.get('checklist') === '1') {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(7), text: '@claude give me a checklist for the desk' });
   RECORD.page_chat.push({ author: 'claude', ts: iso(6), text: CHECKLIST_DONE });
+}
+
+// ?handles=1 — the shape of a shared companion: a page chat several people are
+// in, so the per-handle author colours are on screen at load
+if (Q.get('handles') === '1') {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(22), text: 'Parking this here — the second half is where the argument actually is.' });
+  RECORD.page_chat.push({ author: 'mira', ts: iso(18), text: 'I read it the other way round: the first half does the work, the second just restates it.' });
+  RECORD.page_chat.push({ author: 'devraj', ts: iso(14), text: 'Agreed with mira, and the xGA table backs her up.' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(11), text: 'Both readings hold. The **numbers** section is the hinge — it is the only place the piece commits to a claim it could be wrong about.' });
+  RECORD.page_chat.push({ author: 'sam-w', ts: iso(6), text: 'Late to this. Can we keep the quote about the tram stop?' });
 }
 
 if (Q.get('md') === '1') {
@@ -614,6 +643,13 @@ const OFFLINE = Q.get('offline') === '1';
 function companion(method, path, body) {
   if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
   const route = String(path).split('?')[0];
+  // A hosted companion has an owner and it has guests. Everything that changes
+  // the companion itself (the export, the page library, the agent controls) is
+  // the owner's, and a guest gets a plain 403 — which the drawer has to say
+  // out loud wherever it was triggered.
+  if (ownerOnly && OWNER_ROUTES.test(route)) {
+    return { ok: false, status: 403, error: 'owner only' };
+  }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
   if (method === 'POST' && route === '/page') {
@@ -630,7 +666,12 @@ function companion(method, path, body) {
     };
     RECORD.threads.push(thread);
     RECORD.updated_at = now();
-    const queued = MENTION.test(body.msg.text);
+    const mention = MENTION.test(body.msg.text);
+    // a guest's comment is still SAVED; only the bots are withheld
+    if (mention && guestRefuse) {
+      return { ok: true, status: 200, data: { ok: true, thread, queued: false, reason: GUEST_REASON } };
+    }
+    const queued = mention;
     if (queued) { queueDepth++; setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
     return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined } };
   }
@@ -639,13 +680,28 @@ function companion(method, path, body) {
     // "#fail" in a message is the harness's way of making a save go wrong, so
     // the composer's keep-the-text-on-failure path is testable
     if (/#fail\b/.test(body.text || '')) return { ok: false, status: 500, error: 'simulated failure' };
-    const msg = stampMsg(body.text);
     const list = body.thread_id === '__page__'
       ? RECORD.page_chat
       : (RECORD.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
+    // The companion recognises a message it already holds (a resend whose first
+    // answer was lost, a double-submit) and appends NOTHING: it echoes the
+    // message that is already there and says so. The extension must treat that
+    // as a success and must not end up rendering the sentence twice.
+    if (dedupeNext) {
+      dedupeNext = false;
+      dedupePosts.push(body.text);
+      const had = list.slice().reverse().find(m => m.text === body.text && !/^(claude|codex)/i.test(m.author));
+      return { ok: true, status: 200, data: { ok: true, deduped: true, msg: had || null } };
+    }
+    const msg = stampMsg(body.text);
     list.push(msg);
     RECORD.updated_at = now();
-    const queued = MENTION.test(body.text);
+    const mention = MENTION.test(body.text);
+    // saved, but this sender does not get to summon the bots
+    if (mention && guestRefuse) {
+      return { ok: true, status: 200, data: { ok: true, msg, queued: false, reason: GUEST_REASON } };
+    }
+    const queued = mention;
     if (queued) { queueDepth++; setTimeout(() => playTurn(body.thread_id, body.text), 350); }
     return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined } };
   }
@@ -797,6 +853,11 @@ function companion(method, path, body) {
   }
   if (method === 'POST' && route === '/interrupt') { log('interrupt sent'); return { ok: true, status: 200, data: { ok: true } }; }
   if (method === 'GET' && route === '/health') return { ok: true, status: 200, data: { ok: true, bridge: 'running', queue: queueDepth } };
+  // the companion is the authority on who you are; the {t:'identity'} shim
+  // above stands in for the background worker that asks this
+  if (method === 'GET' && route === '/whoami') {
+    return { ok: true, status: 200, data: { ok: true, hosted: false, owner: 'angadh', handle: IDENTITY } };
+  }
   return { ok: false, status: 404, error: 'no such route ' + route };
 }
 
@@ -860,6 +921,11 @@ window.chrome = {
             }
             return { ok: true, status: a.status, contentType: a.contentType, text: a.body };
           }
+          // who this browser is on this companion. Local and unconfigured =
+          // whatever /health calls the owner; a hosted one = the handle from
+          // the options page.
+          case 'identity': return { ok: true, handle: IDENTITY,
+            base: 'http://127.0.0.1:4189', remote: false, auth: false };
           case 'badge': badges.push(msg.count); return { ok: true };
           // stands in for background.js's openPage(): there are no tabs here,
           // so record the ask and arm the same one-shot flag the real worker
@@ -876,8 +942,13 @@ window.chrome = {
           default: return { ok: false, error: 'unknown ' + (msg && msg.t) };
         }
       })();
-      // always async, like the real thing
-      setTimeout(() => cb && cb(reply), 15);
+      // always async, like the real thing — and, when the selftest asks for it,
+      // as slow as the round-4 send really became (re-extract + a .docx fetch
+      // before the POST even starts). That latency is the whole reason the send
+      // has to be optimistic: this is where a second click used to land.
+      const slow = slowPost && msg && msg.t === 'api' && msg.method === 'POST' &&
+        /^\/(reply|thread)\b/.test(String(msg.path || ''));
+      setTimeout(() => cb && cb(reply), slow ? slowPost : 15);
     },
     onMessage: { addListener: fn => contentListeners.push(fn) },
   },
@@ -1011,7 +1082,24 @@ async function selftest() {
 
   pending.value = '@claude what would you cut from this section?';
   pending.dispatchEvent(new Event('input', { bubbles: true }));
+  // The new-thread path is the one where a double-click used to cost you two
+  // threads on the same passage. Sent slowly on purpose, clicked twice, and
+  // then asked how many threads the companion was told to create.
+  const threadPosts = () => apiCalls.filter(c => c.path === '/thread').length;
+  const tBefore = threadPosts();
+  slowPost = 1200;
   S.querySelector('.card.pending .send').click();
+  check('a new comment appears on its card the moment Send is pressed',
+    !!S.querySelector('.card.pending .reply.sending') &&
+    /what would you cut/.test(S.querySelector('.card.pending .reply.sending').textContent));
+  check('…and its Send button locks until the thread has a real id',
+    S.querySelector('.card.pending .send').disabled === true);
+  S.querySelector('.card.pending .send').click();
+  S.querySelector('.card.pending .send').click();
+  await sleep(40);
+  check('…so a double-clicked new comment creates exactly one thread',
+    threadPosts() === tBefore + 1);
+  slowPost = 0;
   const grew = await until(() => !S.querySelector('.card.pending') && q('.pane[data-pane="comments"] .card').length === 4);
   check('thread saved (4 cards)', !!grew);
   if (!grew) out.push('   dbg cards=' + q('.pane[data-pane="comments"] .card').length +
@@ -1229,23 +1317,206 @@ async function selftest() {
   check('the streamed text was never replaced by a tool summary',
     !!md && /Sources, in order/.test(md.textContent));
 
-  // ---- the composer empties on success and holds on to failures ----
+  // ---- OPTIMISTIC SEND ---------------------------------------------------
+  // The live complaint: round 4 put a page re-read and a .docx fetch in front
+  // of every POST, so Send did nothing visible for a second or two and people
+  // clicked it again — twice the message. The fix is that the message no longer
+  // waits for the companion at all: it is in the thread, dimmed and spinning,
+  // before the first await, and the composer is empty and ready for the next
+  // one. Which is also the double-click cure: there is nothing left to send.
+  const chatPane = () => S.querySelector('.pane[data-pane="chat"]');
   const chatTa = () => S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  const chatSend = () => S.querySelector('.pane[data-pane="chat"] .composer .send');
+  const pendingCards = () => [...S.querySelectorAll('.pane[data-pane="chat"] .reply.sending')];
+  const failedCard = () => pendingCards().find(c => c.classList.contains('failed')) || null;
+  const replyCount = t =>
+    [...S.querySelectorAll('.pane[data-pane="chat"] .reply')].filter(r => r.textContent.includes(t)).length;
+  const replyPosts = () => apiCalls.filter(c => c.path === '/reply').length;
+  const freeChat = () => { const t = chatTa(); return t && !t.disabled ? t : null; };
+
   chatTa().value = 'a plain note, no bots involved';
-  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
-  check('composer clears after a successful send', !!await until(() => chatTa() && chatTa().value === ''));
-  check('the sent text landed in the thread',
-    !!await until(() => /a plain note, no bots involved/.test(S.querySelector('.pane[data-pane="chat"]').textContent)));
+  chatSend().click();
+  check('the composer empties the instant Send is pressed — no await first',
+    chatTa().value === '');
+  check('…and the message is already in the thread', pendingCards().length === 1 &&
+    /a plain note, no bots involved/.test(pendingCards()[0].textContent));
+  check('…marked as still on its way', !!pendingCards()[0].querySelector('.sendstate .spin') &&
+    /reaching botference/.test(pendingCards()[0].textContent));
+  check('…quieter than a settled message, but perfectly readable', (() => {
+    const o = parseFloat(getComputedStyle(pendingCards()[0]).opacity);
+    return o < 1 && o > 0.4;
+  })());
+  check('…in its author’s own colour, like any other message',
+    pendingCards()[0].style.getPropertyValue('--author').trim() ===
+      window.BFPDrawer.authorColor('angadh'));
+  check('…and the status line sits at the drawer’s 12px floor',
+    getComputedStyle(pendingCards()[0].querySelector('.sendstate')).fontSize === '12px');
+  check('the pending message reconciles into the companion’s own copy',
+    !!await until(() => !pendingCards().length &&
+      /a plain note, no bots involved/.test(chatPane().textContent)));
+  check('…leaving exactly one of it on screen',
+    replyCount('a plain note, no bots involved') === 1);
+
+  // the actual bug: one gesture, two clicks, while the POST is still out
+  slowPost = 4000;
+  const dBefore = replyPosts();
+  chatTa().value = 'double-clicked on purpose';
+  chatSend().click();
+  chatSend().click();
+  chatSend().click();
+  check('a double-click during a slow send renders one pending message, not three',
+    pendingCards().length === 1);
+  check('…still spinning', !!pendingCards()[0].querySelector('.sendstate .spin'));
+  check('…with the composer already free for the next message',
+    chatTa().value === '' && !chatTa().disabled);
+  // ⌘↩ is the same handler and must not get past the same guard
+  chatTa().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
+  await sleep(40);
+  check('…and exactly one POST /reply left the extension', replyPosts() === dBefore + 1);
+  check('the slow send lands and reconciles like any other',
+    !!await until(() => !pendingCards().length &&
+      replyCount('double-clicked on purpose') === 1, 20000));
+  slowPost = 0;
+
+  // ---- a resend the companion already has ({deduped:true}) ---------------
+  const DUP = 'this one gets sent twice';
+  chatTa().value = DUP;
+  chatSend().click();
+  await until(() => !pendingCards().length && replyCount(DUP) === 1);
+  dedupeNext = true;
+  chatTa().value = DUP;
+  chatSend().click();
+  check('a deduped resend clears the composer, like a normal send', chatTa().value === '');
+  check('…is treated as a success, never as a failure',
+    !!await until(() => (!pendingCards().length && !failedCard()) ? true : null));
+  check('…and the sentence is on screen exactly once', replyCount(DUP) === 1);
+  check('…because the companion really did dedupe it, not because it was dropped',
+    dedupePosts.indexOf(DUP) !== -1);
+
+  // ---- a send that fails: nothing is lost, and there is a way out --------
   chatTa().value = 'this one cannot be saved #fail';
-  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
-  // wait for the failure to land first — the box trivially still holds the text
-  // until the POST resolves, so asserting on it earlier proves nothing
-  check('a failed send says why', !!await until(() =>
-    /simulated failure/.test((S.querySelector('.pane[data-pane="chat"] .status-chip') || {}).textContent || '')));
-  check('a failed send keeps the text in the box',
-    !!chatTa() && /cannot be saved #fail/.test(chatTa().value));
+  chatSend().click();
+  const failed = await until(failedCard);
+  check('a failed send stays on screen as the message it was', !!failed);
+  check('…with every word of it intact', !!failed && /cannot be saved #fail/.test(failed.textContent));
+  check('…saying what went wrong', !!failed && /simulated failure/.test(failed.textContent));
+  check('…and never a copy left behind in the composer', chatTa().value === '');
+  check('a failure is not dimmed — it is the one thing here to read',
+    !!failed && parseFloat(getComputedStyle(failed).opacity) === 1);
+  check('…and offers both ways out: send it again, or take it back',
+    !!failed && !!failed.querySelector('[data-act="send-retry"]') &&
+    !!failed.querySelector('[data-act="send-discard"]'));
+
+  const rBefore = replyPosts();
+  failed.querySelector('[data-act="send-retry"]').click();
+  check('retry puts it back in flight', !!pendingCards()[0] &&
+    !pendingCards()[0].classList.contains('failed') &&
+    !!pendingCards()[0].querySelector('.sendstate .spin'));
+  await sleep(40);
+  check('…with the same text, once', replyPosts() === rBefore + 1);
+  check('a retry that fails again comes back as a failure, not a ghost',
+    !!await until(failedCard));
+  check('…and there is still only one of it', pendingCards().length === 1);
+
+  failedCard().querySelector('[data-act="send-discard"]').click();
+  check('discarding hands the text back to the composer',
+    /cannot be saved #fail/.test(chatTa().value));
+  check('…and takes the failed card off the thread', !pendingCards().length);
+  check('…and never posted it', replyPosts() === rBefore + 1);
   chatTa().value = '';
+  chatTa().dispatchEvent(new Event('input', { bubbles: true }));
   d.note('__page__', null);
+
+  // ---- a guest whose mentions the owner has not allowed ------------------
+  // The companion SAVES the message and refuses only the bots. That is not a
+  // failed send: the composer clears, the message stays, and the reason lands
+  // where the question was typed.
+  guestRefuse = true;
+  (await until(freeChat, 8000)).value = '@claude does this hold up?';
+  chatSend().click();
+  check('a refused mention still saves the message', !!await until(() =>
+    !pendingCards().length && /does this hold up/.test(chatPane().textContent)));
+  const gchip = () => S.querySelector('.pane[data-pane="chat"] .status-chip');
+  check('…and says why, at the composer it was typed in',
+    !!gchip() && /granted you bot access/.test(gchip().textContent));
+  check('…as a problem, not as a queue position',
+    !!S.querySelector('.pane[data-pane="chat"] .status-chip.err') &&
+    !/queued/.test(gchip().textContent));
+  check('…and no bot turn was ever started for it',
+    !S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring'));
+  guestRefuse = false;
+  d.note('__page__', null);
+
+  // ---- owner-only endpoints answer 403 to everybody else -----------------
+  ownerOnly = true;
+  S.querySelector('[data-act="export"]').click();
+  check('an owner-only export says so instead of failing silently',
+    !!await until(() => /owner only/i.test(S.querySelector('.footbar').textContent)));
+  check('…and reads as an error, not as a result',
+    S.querySelector('.footbar').classList.contains('err'));
+  S.querySelector('[data-act="models"]').click();
+  await until(() => S.querySelector('.popover.models .vseg'));
+  S.querySelector('.popover.models .vseg[data-level="long"]').click();
+  check('an owner-only agent control says so in the popover',
+    !!await until(() => /owner only/i.test(S.querySelector('.pop-hint').textContent)));
+  check('…and the switch it moved goes back where it was',
+    S.querySelector('.popover.models .vseg[data-level="short"]').classList.contains('on'));
+  d.closeModels();
+  // stopping somebody else's turn is the owner's business too, and a stop that
+  // stopped nothing must not look like a stop that worked
+  d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'turn-start', agents: ['claude'] });
+  S.querySelector('.pane[data-pane="chat"] .status-chip .stop').click();
+  check('an owner-only interrupt says so in the thread it was clicked in',
+    !!await until(() => {
+      const c = [...S.querySelectorAll('.pane[data-pane="chat"] .status-chip.err')]
+        .find(x => /owner only/i.test(x.textContent));
+      return c || null;
+    }));
+  d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'turn-end' });
+  d.note('__page__', null);
+  ownerOnly = false;
+
+  // ---- many hands: a companion shared with other people ------------------
+  // Round 5: an author can be any handle at all, so the drawer cannot special
+  // -case "the owner and two bots" any more. Colours come from the review UI's
+  // hash, and "mine" is the identity this browser is configured with.
+  RECORD.page_chat.push({ author: 'mira', ts: iso(4),
+    text: 'I read this differently — the second half is the argument.' });
+  RECORD.page_chat.push({ author: 'devraj', ts: iso(3),
+    text: 'Agreed, and the numbers back it up.' });
+  await window.__bfp.loadPage();
+  const byAuthor = name => [...S.querySelectorAll('.pane[data-pane="chat"] .reply')]
+    .find(r => ((r.querySelector('.who .author') || {}).textContent || '') === name) || null;
+  const tint = r => (r && r.style.getPropertyValue('--author').trim()) || '';
+  check('a message from another handle renders under that handle',
+    !!byAuthor('mira') && !!byAuthor('devraj'));
+  check('every handle gets its own colour', tint(byAuthor('mira')) !== tint(byAuthor('devraj')));
+  check('…the review UI’s deterministic hash, not a palette slot',
+    /^oklch\(/.test(tint(byAuthor('mira'))) &&
+    tint(byAuthor('mira')) === window.BFPDrawer.authorColor('mira'));
+  check('…stable across renders and case', window.BFPDrawer.authorColor('mira') ===
+    window.BFPDrawer.authorColor('  MIRA '));
+  check('…and never one of the bots’ brand colours',
+    tint(byAuthor('mira')) !== 'var(--claude)' && tint(byAuthor('mira')) !== 'var(--codex)');
+  check('the bots keep theirs', window.BFPDrawer.authorColor('claude') === 'var(--claude)' &&
+    window.BFPDrawer.authorColor('codex') === 'var(--codex)');
+  check('…and it resolves to a real colour in this theme',
+    /^(oklch|rgb|color)/.test(getComputedStyle(byAuthor('mira').querySelector('.author')).color));
+  check('somebody else’s message cannot be edited, only deleted',
+    !byAuthor('mira').querySelector('[data-act="edit"]') &&
+    !!byAuthor('mira').querySelector('[data-act="del-msg"]'));
+  check('…while mine still can be', !!byAuthor('angadh') &&
+    !!byAuthor('angadh').querySelector('[data-act="edit"]'));
+
+  d.setAuthor('mira');
+  check('“mine” follows the configured identity, not a hardcoded name',
+    !!byAuthor('mira').querySelector('[data-act="edit"]') &&
+    !byAuthor('angadh').querySelector('[data-act="edit"]'));
+  d.setAuthor('angadh');
+  check('…and switching back restores it',
+    !!byAuthor('angadh').querySelector('[data-act="edit"]') &&
+    !byAuthor('mira').querySelector('[data-act="edit"]'));
+
   d.open('comments');
 
   // ---- edit / delete affordances ----
@@ -1928,6 +2199,24 @@ window.__bfp.activate(false).then(() => {
     // the failure state without waiting for a bot turn: asking content.js for
     // the first-turn context is what discovers the export is a chooser
     if (GDOCS && Q.get('badexport') === '1') setTimeout(() => window.__bfp.articleText(), 250);
+    // the optimistic send, frozen: a POST that never answers (?sending=1) or one
+    // that fails (?sending=fail). `see` has no wait knob, so the state has to be
+    // the one the page settles in.
+    const sending = Q.get('sending');
+    if (sending) {
+      slowPost = sending === 'fail' ? 0 : 600000;
+      setTimeout(() => {
+        d.open('chat');
+        const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
+        if (!ta) return log('sending: no composer');
+        ta.value = sending === 'fail'
+          ? 'One more thought before I forget it. #fail'
+          : 'One more thought before I forget it — the tram stop line is the whole piece.';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
+        log('sending: a message in flight (screenshot state)');
+      }, 250);
+    }
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
     if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
     const demo = Q.get('demo');

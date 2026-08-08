@@ -2,6 +2,26 @@
 
 ## 2026-08-08
 
+- **Web annotator round 5 — instant sends and human collaborators.**
+  Sending is now optimistic: your message appears in the thread the
+  moment you hit Send (pending spinner, "reaching botference…"),
+  reconciling when the server confirms — a failed send waits with a
+  retry instead of vanishing, and double-clicks can no longer produce
+  duplicates (structural fix + a 10s server dedupe). New collaboration
+  layer: `botference plugin --share` puts the companion behind a
+  password gate and a cloudflared tunnel; guests sign in with a name,
+  comment under their own handle (stable per-handle colors), and can
+  summon bots only within grants you set in
+  `.botference/plugin/grants.json` (daily caps, re-read live).
+  Extension-less guests — phones and iPads included — get a
+  server-rendered reading room at `/pages`. Remote collaborators with
+  the extension point it at your tunnel via its new options page (URL,
+  password, display name). Also: sticky workspace (`botference plugin`
+  works from any directory after the first run; `--here` overrides),
+  clearer step-by-step offline instructions in the drawer, plugin mode
+  in the zsh/bash completions, and owner-only enforcement on export,
+  deletion, model/effort/verbosity, relay, and interrupt.
+
 - **Web annotator round 4 — living documents, working checklists, and a
   leash.** Page/doc text now re-ships with any mention when it actually
   changed since last sent (hash-gated), and Google Docs margin comments

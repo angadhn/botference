@@ -465,7 +465,8 @@ show_help() {
 Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
        botference plan [--web|--share [--no-auth] [--service]] [--port N]
        botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
-       botference plugin [--port N] [--service] [--no-agents]
+       botference plugin [--port N] [--service] [--no-agents] [--hosted] [--share] [--here]
+       botference plugin --install-autostart | --uninstall-autostart
        botference plugin --install-autostart | --uninstall-autostart
        botference service <start|stop|list|logs> …
        botference see <url | :port | service-name> [label] [--viewport WxH]
@@ -496,7 +497,10 @@ Modes:
                     review; --service runs it detached as 'plugin-web';
                     --install-autostart (macOS) hands this workspace's
                     companion to launchd so it is running after every
-                    login (--uninstall-autostart removes it).
+                    login (--uninstall-autostart removes it); --share
+                    invites collaborators (password gate + tunnel, guest
+                    reading room at /pages); the workspace is sticky
+                    across directories (--here overrides).
                     See 'botference plugin --help'.
   service           Managed long-lived processes (servers, tunnels) that
                     survive the shell — and the whole process group — that

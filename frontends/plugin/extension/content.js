@@ -149,6 +149,44 @@
   }
   const api = (method, path, body) => bg({ t: 'api', method, path, body });
 
+  // A shared companion has an OWNER and it has guests. Owner-only endpoints
+  // (export, delete-page, the model/effort/verbosity/relay controls) answer 403
+  // to everybody else, and every one of those calls has a place to show a
+  // sentence — so the status is turned into that sentence here, once, instead
+  // of each call site failing silently in its own way.
+  // The companion's own sentences are the message wherever it wrote one
+  // ("owner only — ask the owner to do that", "not your message", "that name is
+  // the owner's here — pick another"); this only supplies words for a bare
+  // status with no body to speak for it.
+  const OWNER_ONLY = 'owner only — this companion belongs to someone else';
+  function failure(r) {
+    const said = String((r && r.error) || '').trim();
+    const bare = !said || /^HTTP \d+$/.test(said);
+    if (r && r.status === 403 && bare) return { ok: false, error: OWNER_ONLY };
+    return { ok: false, error: said || 'the companion did not answer' };
+  }
+
+  // ---- who we are ---------------------------------------------------------
+  // The handle configured on the options page, or (a local companion, nothing
+  // configured) whatever /health calls the owner. It decides which messages the
+  // drawer offers to edit — on a shared page the authors are other people's
+  // handles, and "mine" can no longer be a constant.
+  // Asked once, and only on a page that has actually woken up — a dormant tab
+  // has nobody to be.
+  const DEFAULT_AUTHOR = 'angadh';
+  let AUTHOR = DEFAULT_AUTHOR;
+  let identity = null;
+  function whoami() {
+    if (identity) return identity;
+    identity = bg({ t: 'identity' }).then(r => {
+      const h = (r && r.ok && r.handle) ? String(r.handle).trim() : '';
+      if (h) AUTHOR = h;
+      if (drawer) drawer.setAuthor(AUTHOR);
+      return AUTHOR;
+    }).catch(() => AUTHOR);
+    return identity;
+  }
+
   // ---- article extraction (SPEC) ------------------------------------------
   const collapse = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
 
@@ -396,6 +434,7 @@
   async function activate(openTab) {
     if (!active) {
       active = true;
+      whoami();
       drawer = makeDrawer();
       drawer.mount();
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
@@ -412,7 +451,9 @@
   function makeDrawer() {
     return Drawer.create({
       hostname: HOSTNAME,
-      author: 'angadh',
+      // the handle this browser signs with; refined by whoami() the moment the
+      // background answers (drawer.setAuthor)
+      author: AUTHOR,
       // what this site can actually do (see the adapter note at the top):
       // {highlights:false} turns off the selection pill and opens on Page chat
       capabilities: CAPS,
@@ -435,7 +476,7 @@
         const ctx = await mentionContext(text);
         applyContext(body, ctx);
         const r = await api('POST', '/thread', body);
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         commitContext(ctx);
         const thread = (r.data && r.data.thread) || null;
         if (thread) {
@@ -451,17 +492,31 @@
         pendingSel = null;
         bg({ t: 'badge', count: (PAGE.threads || []).length });
         loadPage();
-        return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position, thread_id: thread && thread.id };
+        // `reason` = saved, but the bots will not run for this sender (a guest
+        // with no bot access, or a companion started --no-agents). The drawer
+        // shows it at the composer; the comment itself is safe.
+        return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
+                 reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped),
+                 thread_id: thread && thread.id };
       },
 
       onCancelNew: () => { Anchor.unpaint('__new__'); pendingSel = null; },
 
+      // The message is already on screen (the drawer appended it optimistically
+      // before this ran), so everything here is reconciliation: the companion's
+      // own copy of the message replaces the pending one.
+      //
+      // {deduped:true} is the companion saying "I already had this" — the retry
+      // of a send whose answer got lost, or a double-submit that beat the
+      // client's own guard. It is a SUCCESS, and the msg it echoes is the
+      // existing one: the `ts` check below is what keeps it from being appended
+      // a second time.
       onReply: async (threadId, text) => {
         const body = { url: URL_NOW, thread_id: threadId, text };
         const ctx = await mentionContext(text);
         applyContext(body, ctx);
         const r = await api('POST', '/reply', body);
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         commitContext(ctx);
         const msg = r.data && r.data.msg;
         if (msg) {
@@ -470,8 +525,12 @@
             : ((PAGE.threads || []).find(t => t.id === threadId) || {}).msgs;
           if (list && !list.some(m => m.ts === msg.ts)) list.push(msg);
           drawer.setPage(PAGE);
+        } else if (r.data && r.data.deduped) {
+          // deduped with nothing echoed: the record is the only truth left
+          await loadPage();
         }
-        return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position };
+        return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
+                 reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped) };
       },
 
       // A checkbox in a bot's markdown checklist was clicked. The companion
@@ -483,13 +542,13 @@
         const r = await api('POST', '/tick', {
           url: URL_NOW, thread_id: threadId, ts, index, checked: !!checked,
         });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, text: r.data && typeof r.data.text === 'string' ? r.data.text : null };
       },
 
       onEdit: async (threadId, ts, text) => {
         const r = await api('POST', '/edit', { url: URL_NOW, thread_id: threadId, ts, text });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         await loadPage();
         return { ok: true };
       },
@@ -498,7 +557,7 @@
         const body = { url: URL_NOW, thread_id: threadId };
         if (ts) body.ts = ts;
         const r = await api('POST', '/delete', body);
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         if (!ts) Anchor.unpaint(threadId);
         await loadPage();
         return { ok: true };
@@ -506,7 +565,7 @@
 
       onExport: async () => {
         const r = await api('POST', '/export', { url: URL_NOW });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, path: r.data && r.data.path };
       },
 
@@ -516,7 +575,7 @@
       // cache: this list is the whole point of the view, and it is cheap.
       onPages: async () => {
         const r = await api('GET', '/index');
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         const d = r.data;
         return { ok: true, index: (d && typeof d === 'object' && d.ok !== false) ? d : {} };
       },
@@ -525,7 +584,7 @@
       onOpenPage: url => bg({ t: 'open-page', url }),
       onExportPage: async url => {
         const r = await api('POST', '/export', { url });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, path: r.data && r.data.path };
       },
       // Deleting a page takes its bot session with it (`delete_session`) — a
@@ -540,7 +599,7 @@
       // drawer's own reset cannot reach into the page.
       onDeletePage: async url => {
         const r = await api('POST', '/delete-page', { url, delete_session: true });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         const mine = normUrl(url) === URL_NOW;
         if (mine) {
           for (const t of (PAGE && PAGE.threads) || []) Anchor.unpaint(t.id);
@@ -571,7 +630,7 @@
       // sleeping bridge.
       onModels: async () => {
         const r = await api('GET', '/models');
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         const d = r.data || {};
         return { ok: true, current: d.current || {}, options: d.options || null,
                  status: d.status || null, bridge: d.bridge || '',
@@ -579,28 +638,34 @@
       },
       onSetModel: async (agent, model) => {
         const r = await api('POST', '/model', { agent, model });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
       },
       onSetEffort: async (agent, level) => {
         const r = await api('POST', '/effort', { agent, level });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
       },
       onSetVerbosity: async level => {
         const r = await api('POST', '/verbosity', { level });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
       },
       // 409 "agents are idle — nothing to relay" is an ordinary answer here,
       // not a transport failure: hand the text back for the popover to show.
       onRelay: async agent => {
         const r = await api('POST', '/relay', { agent });
-        if (!r.ok) return { ok: false, error: r.error };
+        if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
       },
 
-      onInterrupt: () => api('POST', '/interrupt', { url: URL_NOW }),
+      // owner-only on a shared companion: a refusal has to reach the chip the
+      // user clicked, not disappear into a fire-and-forget
+      onInterrupt: async () => {
+        const r = await api('POST', '/interrupt', { url: URL_NOW });
+        if (!r.ok) return failure(r);
+        return { ok: true };
+      },
       onReconnect: () => bg({ t: 'reconnect' }),
       onJump: id => Anchor.scrollTo(id),
       onFocus: id => {

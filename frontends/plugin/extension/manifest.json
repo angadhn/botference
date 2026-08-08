@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Botference Web Annotator",
   "version": "1.0.0",
-  "description": "Highlight any article, comment on it, @claude / @codex for inline replies, export the lot to Obsidian.",
+  "description": "Highlight, comment and summon @claude / @codex on any page. Needs the botference companion: run 'botference plugin'.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs"],
   "host_permissions": [
@@ -12,6 +12,10 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
   },
   "content_scripts": [
     {

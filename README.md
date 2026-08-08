@@ -386,7 +386,8 @@ article's own headline.
 ```bash
 botference plugin                # serve the companion on 127.0.0.1:4189
 botference plugin --service      # same, detached (stop: botference service stop plugin-web)
-botference plugin [--port N] [--no-agents]
+botference plugin --share        # hosted + cloudflared tunnel: invite collaborators
+botference plugin [--port N] [--no-agents] [--hosted] [--here]
 botference plugin --install-autostart    # macOS: run it at every login
 botference plugin --uninstall-autostart  # …and undo that
 ```
@@ -413,7 +414,26 @@ land in that workspace's council. Vault location and export folder live
 in `.botference/plugin/config.json` (defaults to your vault's
 `Web Clippings/`). Static article pages only by design: anchors are
 quote-plus-context and degrade to an "orphaned" badge rather than ever
-losing a comment.
+losing a comment. (Google Docs is the deliberate exception: a site
+adapter reads the doc's text and margin comments with your own session
+— Page chat only, since Docs paints to a canvas.)
+
+The workspace is sticky: after the first run, `botference plugin` from
+any directory reuses the recorded workspace (`--here` picks the current
+one instead). Put the launcher on PATH once (`ln -s "$PWD/botference"
+/usr/local/bin/botference` from the repo) and it runs from any terminal.
+
+**Collaborators** (`--share`): hosted mode behind a password gate plus a
+cloudflared tunnel — guests sign in with a name, see the same threads,
+and comment under their own handle; their @-mentions are refused
+politely unless granted in `.botference/plugin/grants.json`
+(`{"<handle>": {"agents": true, "daily_cap": 5}}`, re-read live).
+Guests without the extension get a server-rendered reading room at
+`/pages` — quotes, threads, and page chat with composers — which is
+also the phone/iPad way in. Remote collaborators *with* the extension
+point it at your tunnel from its options page (URL, password, display
+name). Owner-only stays owner-only: export, page deletion,
+model/effort/verbosity, relay, interrupt.
 
 ## Agent Eyes (`botference see`)
 

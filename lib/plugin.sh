@@ -10,7 +10,9 @@
 
 plugin_usage() {
   cat <<'HELP'
-Usage: botference plugin [--port N] [--service] [--no-agents] [--agents]
+Usage: botference plugin [--port N] [--service] [--no-agents] [--agents] [--here]
+       botference plugin --share [--service]
+       botference plugin --hosted [--service]
        botference plugin --install-autostart [--port N] [--no-agents]
        botference plugin --uninstall-autostart
 
@@ -23,16 +25,38 @@ Agents turn on automatically when the machine can run them: python3
 plus at least one agent CLI (claude or codex) on PATH. Without them
 highlights, comments, and Obsidian export still work.
 
+The workspace is sticky. Annotations live in one workspace's
+.botference/plugin, so after the first run 'botference plugin' from any
+directory reuses that same workspace (remembered in
+~/.botference/plugin-workspace) instead of starting an empty one in
+whatever folder you happen to be in. A directory that already has
+.botference/plugin state always wins; --here forces the current one.
+
 Options:
   --port N     Serve on port N (default 4189 — the extension expects
                4189 unless you change it in its background.js)
+  --here       Use the current directory as the workspace (and remember
+               it) instead of the one last used
+  --share      Share the annotations with other people: hosted mode plus
+               a cloudflared quick tunnel. Respects PLUGIN_PASSWORD (or
+               generates one and prints it) and prints a shareable https
+               URL; Ctrl-C stops server and tunnel together
+  --hosted     Hosted mode without the tunnel: PLUGIN_PASSWORD gates
+               every remote visitor, localhost stays the owner.
+               PLUGIN_OWNER_PASSWORD (optional) signs the owner in from
+               another device
   --service    Run detached under the managed service lifecycle
-               (name 'plugin-web'); stop with
-               'botference service stop plugin-web'
+               (name 'plugin-web', or 'plugin-share' with --share);
+               stop with 'botference service stop <name>'
   --agents     Force the agent bridge on (errors if python3 or an
                agent CLI is missing)
   --no-agents  Serve without the agent bridge (annotations only)
   --help, -h   Show this help
+
+Sharing, in short: collaborators open the URL and read/reply at /pages
+without installing anything. Their @-mentions are refused until you
+grant them agent access in .botference/plugin/grants.json, e.g.
+{"ada": {"agents": true, "daily_cap": 5}} — re-read live, no restart.
 
 Login autostart (macOS, set-and-forget — the companion is simply always
 there, no terminal to remember):
@@ -46,6 +70,55 @@ there, no terminal to remember):
                          when nothing is installed)
 Neither can be combined with --service — they are different lifecycles.
 HELP
+}
+
+# ── sticky workspace ─────────────────────────────────────────
+# The companion is a personal appliance, not a per-repo tool: every
+# annotation you have ever made lives in ONE workspace's
+# .botference/plugin. Starting it from a different directory would serve
+# an empty one and quietly lose sight of the history, so the workspace is
+# remembered and reused from anywhere. Precedence: a directory that
+# already holds plugin state (or --here) wins; then the remembered one;
+# then the current directory, on the very first run.
+PLUGIN_WORKSPACE_FILE="${HOME}/.botference/plugin-workspace"
+
+# sets PLUGIN_WS (absolute) and PLUGIN_WS_STICKY (true when it came from
+# the memo rather than from where we are standing)
+_plugin_pick_workspace() {
+  local force_here=${1:-false} pwd_dir saved
+  pwd_dir=$(pwd -P)
+  PLUGIN_WS="$pwd_dir"
+  PLUGIN_WS_STICKY=false
+  if [ "$force_here" = true ] || [ -d "${pwd_dir}/.botference/plugin" ]; then
+    return 0
+  fi
+  if [ -f "$PLUGIN_WORKSPACE_FILE" ]; then
+    saved=$(head -1 "$PLUGIN_WORKSPACE_FILE" 2>/dev/null || true)
+    if [ -n "$saved" ] && [ -d "$saved" ]; then
+      PLUGIN_WS="$saved"
+      PLUGIN_WS_STICKY=true
+    fi
+  fi
+}
+
+_plugin_remember_workspace() {
+  local ws=$1
+  mkdir -p "$(dirname "$PLUGIN_WORKSPACE_FILE")" 2>/dev/null || return 0
+  printf '%s\n' "$ws" > "$PLUGIN_WORKSPACE_FILE" 2>/dev/null || true
+}
+
+# Resolve, announce and enter the workspace. One line of output, and only
+# when the answer is not simply "here" — nobody should have to guess where
+# their annotations are being read from.
+_plugin_enter_workspace() {
+  local force_here=${1:-false}
+  _plugin_pick_workspace "$force_here"
+  if [ "$PLUGIN_WS" != "$(pwd -P)" ]; then
+    echo "  workspace: ${PLUGIN_WS}  (run with --here to use the current directory instead)"
+    cd "$PLUGIN_WS" || return 1
+  fi
+  _plugin_remember_workspace "$PLUGIN_WS"
+  export BOTFERENCE_PROJECT_ROOT="$PLUGIN_WS"
 }
 
 # ── login autostart (macOS LaunchAgent) ──────────────────────
@@ -226,6 +299,7 @@ plugin_autostart_uninstall() {
 
 run_plugin_mode() {
   local port="" service=false agents="auto" autostart="" arg
+  local hosted=false share=false here=false
   # args minus --service, for the --service re-exec below
   local passthrough=() _pt
   for _pt in "$@"; do
@@ -243,6 +317,9 @@ run_plugin_mode() {
       --uninstall-autostart) autostart="uninstall" ;;
       --no-agents) agents="off" ;;
       --agents) agents="on" ;;
+      --hosted) hosted=true ;;
+      --share) share=true; hosted=true ;;
+      --here) here=true ;;
       --port=*) port="${arg#--port=}" ;;
       --port)
         if [ "$#" -eq 0 ]; then
@@ -262,6 +339,23 @@ run_plugin_mode() {
 
   if [ -n "$port" ] && ! [[ "$port" =~ ^[0-9]+$ ]]; then
     echo "Error: --port expects a number, got '$port'." >&2
+    return 2
+  fi
+
+  # --- sharing and login autostart are different propositions ---
+  # A LaunchAgent would have to carry the shared password in a plist that
+  # launchd reads at every login; sharing is a thing you start on purpose
+  # and stop when the conversation is over.
+  if [ -n "$autostart" ] && { $hosted || $share; }; then
+    echo "Error: --install-autostart cannot be combined with --hosted/--share." >&2
+    echo "  Autostart runs the private local companion at login; start a share by hand" >&2
+    echo "  when you want one: botference plugin --share" >&2
+    return 2
+  fi
+  if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
+    echo "Error: --hosted requires PLUGIN_PASSWORD to be set, e.g." >&2
+    echo "  PLUGIN_PASSWORD=… botference plugin --hosted" >&2
+    echo "(or use --share, which generates one and opens a tunnel for you)" >&2
     return 2
   fi
 
@@ -288,6 +382,9 @@ run_plugin_mode() {
     return 1
   fi
 
+  # --- which workspace's annotations are we serving? (sticky) ---
+  _plugin_enter_workspace "$here" || return 1
+
   # --- --install-autostart: hand this workspace's companion to launchd ---
   if [ "$autostart" = "install" ]; then
     local boot_args=()
@@ -300,7 +397,25 @@ run_plugin_mode() {
     return $?
   fi
 
-  # --- --service: same server, detached under the managed lifecycle ---
+  # --- the shared password: generated once here so the tunnel, the printed
+  # line and any detached copy all agree on it ---
+  if $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
+    PLUGIN_PASSWORD=$(node -e 'console.log(require("crypto").randomBytes(8).toString("hex"))') || return 1
+    echo "  PLUGIN_PASSWORD not set — generated one for this session: ${PLUGIN_PASSWORD}"
+  fi
+  if $hosted; then export PLUGIN_PASSWORD; fi
+
+  # --- --share --service: re-run this exact share detached, under the managed
+  # service lifecycle; print the "share this:" line, then return ---
+  if $service && $share; then
+    source "${BOTFERENCE_HOME}/lib/service.sh"
+    run_share_as_service "plugin-share" "${BOTFERENCE_HOME}/botference" plugin \
+      ${passthrough[@]+"${passthrough[@]}"}
+    return $?
+  fi
+
+  # --- --service: same server (hosted or not), detached under the managed
+  # lifecycle. No tunnel here — that is --share. ---
   if $service; then
     source "${BOTFERENCE_HOME}/lib/service.sh"
     service_cmd_start "plugin-web" -- "${BOTFERENCE_HOME}/botference" plugin \
@@ -335,6 +450,7 @@ run_plugin_mode() {
 
   local server_args=()
   if ! $agents_on; then server_args+=(--no-agents); fi
+  if $hosted; then server_args+=(--hosted); fi
 
   echo "  Web annotator companion: http://127.0.0.1:${url_port}/  (Ctrl-C stops it)"
   if $agents_on; then
@@ -344,8 +460,44 @@ run_plugin_mode() {
   else
     echo "  agents: off — python3 + a claude/codex CLI on PATH are needed for bot replies."
   fi
+  if $hosted; then
+    echo "  hosted: remote visitors need the password; this machine stays the owner"
+    echo "  people without the extension read and reply at /pages"
+    echo "  their @-mentions are refused until you grant them agents in"
+    echo "  ${PLUGIN_WS}/.botference/plugin/grants.json"
+  fi
   echo "  Extension not installed yet? brave://extensions → Developer mode →"
   echo "  Load unpacked → ${engine}/extension"
 
-  exec node "$engine/server.mjs" ${server_args[@]+"${server_args[@]}"}
+  if ! $share; then
+    exec node "$engine/server.mjs" ${server_args[@]+"${server_args[@]}"}
+  fi
+
+  # --- --share: server + cloudflared tunnel, torn down together ---
+  # (same mechanics as review --share: lib/tunnel.sh, and BOTFERENCE_TUNNEL
+  # gives a stable URL instead of a random quick one)
+  source "${BOTFERENCE_HOME}/lib/tunnel.sh"
+  node "$engine/server.mjs" ${server_args[@]+"${server_args[@]}"} &
+  local server_pid=$!
+  trap 'stop_share_tunnel; kill "$server_pid" 2>/dev/null; exit 130' INT TERM
+
+  local tunnel_log
+  tunnel_log=$(mktemp "${TMPDIR:-/tmp}/plugin-tunnel.XXXXXX")
+  if start_share_tunnel "$url_port" "$tunnel_log"; then
+    print_share_line "${PLUGIN_PASSWORD}" "$url_port" "$tunnel_log"
+  else
+    if [ -n "${BOTFERENCE_TUNNEL:-}" ]; then
+      echo "  BOTFERENCE_TUNNEL is set ('${BOTFERENCE_TUNNEL}') but 'cloudflared' is not installed —" >&2
+      echo "  install it (e.g. 'brew install cloudflared') to use your named tunnel." >&2
+    else
+      echo "  cloudflared not found — no public URL. Install it (e.g. 'brew install cloudflared')" >&2
+      echo "  or tunnel by hand:  cloudflared tunnel --url http://localhost:${url_port}" >&2
+    fi
+    echo "  Serving locally in the meantime: http://localhost:${url_port}/  password: ${PLUGIN_PASSWORD}" >&2
+  fi
+  local rc=0
+  wait "$server_pid" || rc=$?
+  stop_share_tunnel
+  trap - INT TERM
+  return "$rc"
 }
