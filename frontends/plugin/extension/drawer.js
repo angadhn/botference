@@ -7,7 +7,8 @@
 //
 // Exposed as window.BFPDrawer (classic script, isolated content-script world).
 //
-//   const d = BFPDrawer.create({ hostname, cssUrl, theme, capabilities, on… });
+//   const d = BFPDrawer.create({ hostname, cssUrl, katexCssUrl, theme,
+//                                capabilities, on… });
 //   d.mount(); d.setPage(record); d.open('comments');
 //
 // `d.setAuthor(handle)` tells the drawer who the READER is on this companion.
@@ -150,6 +151,218 @@
     return e;
   };
 
+  // ── TeX math, for every message ────────────────────────────────────────
+  // Math is cut out of the source BEFORE the markdown parser ever sees it.
+  // It has to be: `x_1` is a subscript to TeX and an unclosed emphasis to
+  // markdown, `\\` is a line break to TeX and nothing to markdown, and a
+  // `*` inside \times would come back italicised. So scanMath() finds the
+  // spans, protectMath() swaps each one for a placeholder no markdown rule
+  // can match, markdown runs on the holed-out text, and substituteMath()
+  // puts the RENDERED formula back where the placeholder landed.
+  //
+  // Delimiters: $…$ and \(…\) inline, $$…$$ and \[…\] display. Rendering is
+  // KaTeX (vendored, extension/vendor/katex — no network, ever); with KaTeX
+  // absent or the TeX invalid the span degrades to its own source text, so a
+  // bad formula costs you a formula and never the message around it.
+  //
+  // A multi-line $$…$$ collapses to a one-line placeholder, so the drawer and
+  // the companion could in principle disagree about a checkbox's ordinal — but
+  // only if a line inside the TeX began with "- [ ] ", which is not something
+  // valid maths can contain. Not worth padding the placeholder for.
+  //
+  // The placeholder is NUL-delimited because NUL is the one character that
+  // cannot survive a keyboard, a bot, or the companion's JSON — and because
+  // no rule in this file (FENCE/BULLET/NUMBER/HEADING/TASK/INLINE) can match
+  // it, a placeholder passes through the parser as inert text.
+  const MATH_TOKEN = /\u0000(\d+)\u0000/;
+  const MATH_TOKEN_G = /\u0000(\d+)\u0000/g;
+  // a line that is nothing but one display placeholder — it becomes a block of
+  // its own rather than a lump inside a paragraph
+  const MATH_BLOCK = /^\s*\u0000(\d+)\u0000\s*$/;
+
+  // how many of `ch` in a row start at i
+  function runLen(s, i, ch) {
+    let n = 0;
+    while (s[i + n] === ch) n++;
+    return n;
+  }
+  // the next run of EXACTLY `want` copies of `ch` at or after `from`
+  function findRun(s, from, ch, want) {
+    for (let i = s.indexOf(ch, from); i >= 0; i = s.indexOf(ch, i)) {
+      const n = runLen(s, i, ch);
+      if (n === want) return i;
+      i += n;
+    }
+    return -1;
+  }
+  // a single $ never reaches past its own paragraph: an opening $ with no
+  // partner would otherwise swallow everything down to the next dollar sign
+  // three paragraphs later
+  function paraEnd(s, from) {
+    const m = /\n[ \t]*\n/.exec(s.slice(from));
+    return m ? from + m.index : s.length;
+  }
+
+  // Where a $…$ actually closes, or -1. Only the FIRST dollar after the opener
+  // is ever considered: if that one is not a closer the whole candidate is
+  // abandoned, rather than reaching past it for a later dollar. That is what
+  // keeps "the $5 fee scales as $n^2$" from typesetting "5 fee scales as $n^2"
+  // — the opener at "$5" dies on the space in front of the next dollar, the
+  // scanner walks on, and the real formula is found from "$n^2$".
+  function closeDollar(s, open, stop) {
+    let k = open + 1;
+    for (;;) {
+      k = s.indexOf('$', k);
+      if (k < 0 || k >= stop) return -1;
+      if (s[k - 1] !== '\\') break;                // \$ is a literal dollar
+      k++;
+    }
+    if (/\s/.test(s[k - 1])) return -1;            // "…$ 10" — not a closer
+    if (/\d/.test(s[k + 1] || '')) return -1;      // "…and$10" — an amount
+    return k;
+  }
+
+  // Every math span in `src`, in source order: {start, end, tex, display, raw}.
+  // Pure — no DOM, no KaTeX — so the node tests can drive it directly.
+  function scanMath(src) {
+    const s = String(src == null ? '' : src);
+    const out = [];
+    const add = (start, end, tex, display) => {
+      if (!tex.trim()) return false;               // "$$" / "\(\)" is not math
+      out.push({ start, end, tex, display, raw: s.slice(start, end) });
+      return true;
+    };
+    let i = 0;
+    while (i < s.length) {
+      const c = s[i];
+
+      if (c === '`') {
+        // a code run — an inline span or a fenced block, both closed by a run
+        // of the same length (the rule INLINE already uses). Everything inside
+        // is code: `$5` and a fenced block full of \alpha stay literal.
+        const run = runLen(s, i, '`');
+        const close = findRun(s, i + run, '`', run);
+        i = close < 0 ? i + run : close + run;
+        continue;
+      }
+
+      if (c === '\\') {
+        const n = s[i + 1];
+        if (n === '(' || n === '[') {
+          const shut = n === '(' ? '\\)' : '\\]';
+          const end = s.indexOf(shut, i + 2);
+          // like $$ above: an empty \(\) is eaten whole, never reopened
+          if (end > 0) { add(i, end + 2, s.slice(i + 2, end), n === '['); i = end + 2; continue; }
+        }
+        i += 2;                                    // \$ \\ \` — never an opener
+        continue;
+      }
+
+      if (c === '$') {
+        if (s[i + 1] === '$') {
+          // display math may run over as many lines as it likes; only the
+          // single-$ form is paragraph-bound
+          const end = s.indexOf('$$', i + 2);
+          // an empty pair is consumed whole rather than half: "$$ $$" is two
+          // dollar signs and a space, not an opener whose partner is the
+          // NEXT "$$" three words later
+          if (end > 0) { add(i, end + 2, s.slice(i + 2, end), true); i = end + 2; continue; }
+          i += 2;
+          continue;
+        }
+        const prev = i ? s[i - 1] : '';
+        const next = s[i + 1] || '';
+        // no space after the opening $, nothing word-like before it (kills
+        // "US$5"), and a closer inside the same paragraph — or this is a
+        // dollar sign and the scanner walks on
+        if (!/[A-Za-z0-9]/.test(prev) && next && !/\s/.test(next)) {
+          const k = closeDollar(s, i, paraEnd(s, i));
+          if (k > 0 && add(i, k + 1, s.slice(i + 1, k), false)) { i = k + 1; continue; }
+        }
+        i++;
+        continue;
+      }
+
+      i++;
+    }
+    return out;
+  }
+
+  // src → {text, spans}: the same string with every math span replaced by its
+  // placeholder. Also pure.
+  function protectMath(src) {
+    const s = String(src == null ? '' : src);
+    const spans = scanMath(s);
+    if (!spans.length) return { text: s, spans };
+    const parts = [];
+    let at = 0;
+    spans.forEach((sp, n) => {
+      parts.push(s.slice(at, sp.start), '\u0000' + n + '\u0000');
+      at = sp.end;
+    });
+    parts.push(s.slice(at));
+    return { text: parts.join(''), spans };
+  }
+
+  // One rendered formula. KaTeX builds real nodes (katex.render, not
+  // renderToString), so the no-HTML-string rule of this whole path holds.
+  function mathNode(span) {
+    const el = mk(span.display ? 'div' : 'span', 'md-math' + (span.display ? '' : ' inline'));
+    const K = root.katex;
+    try {
+      if (!K || !K.render) throw new Error('katex unavailable');
+      K.render(span.tex, el, {
+        displayMode: span.display,
+        throwOnError: true,     // caught right here — see below
+        strict: 'ignore',       // no console noise over \over and friends
+        trust: false,           // \href / \url never become links
+      });
+    } catch (e) {
+      // Fail soft, always. A formula the bot got half-right, or a KaTeX that
+      // did not load, shows the TeX as it was written — the reader loses the
+      // typesetting and keeps every word of the message.
+      // `raw` is ADDED, never assigned: an inline formula that failed is still
+      // inline, and dropping the class would break the sentence onto two lines
+      el.classList.add('raw');
+      el.textContent = span.raw;
+    }
+    return el;
+  }
+
+  // Put the formulas back. Walks the text nodes markdown produced and splits
+  // each one on its placeholders. Inside <code>/<pre> the SOURCE goes back
+  // instead of a rendering — scanMath skips code, so this only fires if the
+  // two disagree about where a backtick run ended, and code winning is the
+  // safe way to disagree.
+  function substituteMath(frag, spans) {
+    const walk = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
+    const hits = [];
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (MATH_TOKEN.test(n.nodeValue)) hits.push(n);
+    }
+    for (const node of hits) {
+      let code = false;
+      for (let p = node.parentNode; p && p !== frag; p = p.parentNode) {
+        const t = p.tagName;
+        if (t === 'CODE' || t === 'PRE') { code = true; break; }
+      }
+      const out = document.createDocumentFragment();
+      const text = node.nodeValue;
+      let at = 0, m;
+      MATH_TOKEN_G.lastIndex = 0;
+      while ((m = MATH_TOKEN_G.exec(text))) {
+        if (m.index > at) out.appendChild(document.createTextNode(text.slice(at, m.index)));
+        const span = spans[Number(m[1])];
+        if (!span) out.appendChild(document.createTextNode(m[0]));
+        else if (code) out.appendChild(document.createTextNode(span.raw));
+        else out.appendChild(mathNode(span));
+        at = m.index + m[0].length;
+      }
+      if (at < text.length) out.appendChild(document.createTextNode(text.slice(at)));
+      node.parentNode.replaceChild(out, node);
+    }
+  }
+
   function mdInline(text, out) {
     let s = String(text == null ? '' : text);
     for (let guard = 0; guard < 500; guard++) {
@@ -199,7 +412,8 @@
   }
 
   const isBlockStart = l =>
-    FENCE.test(l) || BULLET.test(l) || NUMBER.test(l) || HEADING.test(l) || !l.trim();
+    FENCE.test(l) || BULLET.test(l) || NUMBER.test(l) || HEADING.test(l) ||
+    MATH_BLOCK.test(l) || !l.trim();
 
   // The tick index a click reports back to the companion: the 0-based ordinal
   // of the checkbox WITHIN ITS MESSAGE, counted in document order. Reset per
@@ -208,13 +422,24 @@
 
   function renderMarkdown(src) {
     const frag = document.createDocumentFragment();
-    const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+    // math first, always: the parser below must never see a `_`, a `*` or a
+    // `\\` that belonged to a formula
+    const held = protectMath(String(src == null ? '' : src).replace(/\r\n?/g, '\n'));
+    const lines = held.text.split('\n');
     taskSeq = 0;
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
 
       if (!line.trim()) { i++; continue; }
+
+      // display math alone on its line is a block, not a lump in a paragraph
+      const solo = MATH_BLOCK.exec(line);
+      if (solo && held.spans[Number(solo[1])] && held.spans[Number(solo[1])].display) {
+        frag.appendChild(mathNode(held.spans[Number(solo[1])]));
+        i++;
+        continue;
+      }
 
       const fence = FENCE.exec(line);
       if (fence) {
@@ -281,6 +506,7 @@
       while (i < lines.length && !isBlockStart(lines[i])) buf.push(lines[i++]);
       mdInline(buf.join('\n'), frag.appendChild(mk('p', 'md-p')));
     }
+    if (held.spans.length) substituteMath(frag, held.spans);
     return frag;
   }
 
@@ -302,6 +528,55 @@
       el.appendChild(renderMarkdown(text));
     });
     mdSlots.clear();
+  }
+
+  // ── long threads collapse in the middle ────────────────────────────────
+  // A thread that has been going for a while is mostly scrollback: the reader
+  // wants the passage it started from and whatever was said last, not the
+  // twenty turns in between. So past a threshold the middle folds away behind
+  // one quiet line and the thread stops pushing every other card off screen.
+  //
+  // The unit of collapsing is NOT the message, it is what the drawer draws: a
+  // person's message is one unit, and a bot's whole turn — its merged tool row
+  // plus every answer in it — is another. Collapsing by message would let a
+  // turn's "Explored · 4 steps" row survive on its own, hovering above an
+  // answer that had been hidden, which is worse than showing nothing.
+  const COLLAPSE_AT = 6;   // units on screen before any folding happens
+  const KEEP_HEAD = 1;     // the thread root: the message under the quote
+  const KEEP_TAIL = 3;     // the tail of the conversation, always live
+
+  // The raw msgs list grouped exactly the way msgsHtml draws it.
+  function msgUnits(list) {
+    const msgs = (list || []).filter(Boolean);
+    const units = [];
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].kind !== 'tools' && !isBot(msgs[i].author)) { units.push([msgs[i]]); continue; }
+      const span = [];
+      while (i < msgs.length && (msgs[i].kind === 'tools' || isBot(msgs[i].author))) span.push(msgs[i++]);
+      i--;
+      units.push(span);
+    }
+    return units;
+  }
+
+  // What to draw, given those units: units [from, to) fold away and `hidden`
+  // is what the expander line claims. Pure, and the only place the arithmetic
+  // lives (test/collapse.test.mjs drives it directly).
+  function collapsePlan(units, expanded) {
+    const n = (units || []).length;
+    const none = { collapsed: false, from: n, to: n, hidden: 0 };
+    if (expanded || n <= COLLAPSE_AT) return none;
+    const from = KEEP_HEAD, to = n - KEEP_TAIL;
+    if (to <= from) return none;
+    // tool rows are process detail, not messages — the line says "9 earlier
+    // replies" and the reader must find nine of them when it opens
+    let hidden = 0;
+    for (let i = from; i < to; i++) {
+      for (const m of units[i]) if (m.kind !== 'tools') hidden++;
+    }
+    // one message behind a one-line control saves nothing and costs a click
+    if (hidden < 2) return none;
+    return { collapsed: true, from, to, hidden };
   }
 
   // Official agent logomarks for the header presence cluster — the same Simple
@@ -393,6 +668,10 @@
       pending: null,       // {quote, prefix, suffix} while composing a new thread
       confirm: null,       // threadId whose "delete thread?" confirm is showing
       toolsOpen: {},       // tool-activity disclosure key -> expanded
+      // target -> true once the reader has opened a long thread's hidden
+      // middle. In memory for the session only: a collapse is a reading
+      // convenience, not a decision worth persisting.
+      expanded: {},
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -440,6 +719,17 @@
       if (opts.theme) host.setAttribute('data-theme', opts.theme);
 
       const shadow = host.attachShadow({ mode: 'open' });
+      // KaTeX's own stylesheet goes in FIRST so drawer.css keeps the last word
+      // on anything the two both style. Its @font-face rules are inert in here
+      // — a shadow root does not register fonts — which is why content.js also
+      // links katex-fonts.css into the page document; without that half every
+      // formula draws in fallback serif.
+      if (opts.katexCssUrl) {
+        const kl = document.createElement('link');
+        kl.rel = 'stylesheet';
+        kl.href = opts.katexCssUrl;
+        shadow.appendChild(kl);
+      }
       const link = document.createElement('link');
       link.rel = 'stylesheet';
       link.href = opts.cssUrl || 'drawer.css';
@@ -670,23 +960,37 @@
     // A "span" is everything a bot produced between two user messages. Inside a
     // span the tools messages are pulled out, merged and emitted first, whatever
     // order they arrived in; the answers follow in their own order.
-    function msgsHtml(target, list) {
-      const msgs = (list || []).filter(Boolean);
+    function unitHtml(target, span) {
       const out = [];
-      for (let i = 0; i < msgs.length; i++) {
-        if (msgs[i].kind !== 'tools' && !isBot(msgs[i].author)) {
-          out.push(replyHtml(target, msgs[i], sameAuthor(msgs[i].author)));
-          continue;
-        }
-        const span = [];
-        while (i < msgs.length && (msgs[i].kind === 'tools' || isBot(msgs[i].author))) span.push(msgs[i++]);
-        i--;
-        const tools = span.filter(x => x.kind === 'tools');
-        if (tools.length) out.push(toolsHtml(target, tools));
-        for (const r of span) {
-          if (r.kind === 'tools') continue;
-          out.push(replyHtml(target, r, !isBot(r.author) && sameAuthor(r.author)));
-        }
+      const tools = span.filter(x => x.kind === 'tools');
+      if (tools.length) out.push(toolsHtml(target, tools));
+      for (const r of span) {
+        if (r.kind === 'tools') continue;
+        out.push(replyHtml(target, r, !isBot(r.author) && sameAuthor(r.author)));
+      }
+      return out.join('');
+    }
+
+    // The folded middle of a long thread. One line, no card, no chrome — it is
+    // a way back into the scrollback, not a participant in the conversation.
+    function moreHtml(target, hidden) {
+      const label = 'Show ' + hidden + ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
+      return `<button class="showmore" data-act="expand" data-target="${esc(target)}" type="button" aria-expanded="false">${esc(label)}</button>`;
+    }
+
+    // The thread root and the live tail stay on screen; everything between them
+    // folds behind moreHtml() until the reader asks for it. The outbox, the
+    // streaming block and the status chip are rendered by cardHtml AFTER this,
+    // so a message being sent, a bot mid-answer and "agents are working…" are
+    // never inside the fold.
+    function msgsHtml(target, list) {
+      const units = msgUnits(list);
+      const plan = collapsePlan(units, !!D.expanded[target]);
+      const out = [];
+      for (let i = 0; i < units.length; i++) {
+        if (plan.collapsed && i === plan.from) out.push(moreHtml(target, plan.hidden));
+        if (plan.collapsed && i >= plan.from && i < plan.to) continue;
+        out.push(unitHtml(target, units[i]));
       }
       return out.join('');
     }
@@ -1598,6 +1902,9 @@
         if (act === 'send-discard') { discardSend(target, btn.dataset.out); return; }
         if (act === 'cancel-new') { cancelNew(); return; }
         if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
+        // one way only: a thread the reader has opened stays open for the
+        // session. Re-folding it under them while they read is not a feature.
+        if (act === 'expand') { D.expanded[target] = true; render(); return; }
         if (act === 'interrupt') { doInterrupt(btn); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }
         if (act === 'warn-dismiss') { setWarning(''); return; }
@@ -1945,7 +2252,7 @@
       if (D.pages.list) D.pages.list = D.pages.list.filter(p => !sameUrl(p.url, url));
       if (r.current) {
         D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
-        D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
+        D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {}; D.expanded = {};
         D.turnSeq = {};   // a send still in flight for the dead page can no longer claim a queue slot
         D.confirm = null; D.focused = null; D.pending = null;
         D.foot = ''; D.footErr = false;
@@ -2208,8 +2515,15 @@
     return D;
   }
 
-  root.BFPDrawer = {
+  const api = {
     create, authorColor, isBot, HINT, PAGE_TARGET,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
+    // pure, for the node tests — no DOM, no KaTeX
+    scanMath, protectMath,                                  // test/math.test.mjs
+    msgUnits, collapsePlan, COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL,  // test/collapse.test.mjs
   };
+  root.BFPDrawer = api;
+  // classic script everywhere it matters; the require() is only so the math
+  // tokenizer can be unit-tested in node, as adapters.js already is
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

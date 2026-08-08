@@ -426,6 +426,17 @@ losing a comment. (Google Docs is the deliberate exception: a site
 adapter reads the doc's text and margin comments with your own session
 — Page chat only, since Docs paints to a canvas.)
 
+**Message formatting.** Every message renders markdown — yours and the
+bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX
+maths renders too: `$…$` inline and `$$…$$` on its own line for display
+(`\(…\)` / `\[…\]` also work), typeset by a vendored KaTeX with no
+network call of any kind. Prices are safe — "costs $5 and $10" stays
+prose — and a formula KaTeX cannot parse falls back to its own source
+rather than swallowing the message. Obsidian gets the raw `$…$` source,
+which it typesets itself. Long threads fold in the middle, keeping the
+opening message and the latest replies behind a "Show N earlier
+replies" line.
+
 The workspace is sticky: after the first run, `botference plugin` from
 any directory reuses the recorded workspace (`--here` picks the current
 one instead). Put the launcher on PATH once (`ln -s "$PWD/botference"

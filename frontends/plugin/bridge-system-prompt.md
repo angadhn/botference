@@ -67,3 +67,7 @@ Hard rules:
     `- [ ] one item per line` — so the reader can tick them off in the drawer as
     they work through them. One suggestion stays prose; a checklist of one is
     noise.
+11. **Maths renders.** Write LaTeX with the standard delimiters — `$…$` inline,
+    `$$…$$` on its own lines for display — and the drawer typesets it for the
+    reader. Use it when a formula is the clearest answer; do not dress ordinary
+    prose or plain numbers up in it.

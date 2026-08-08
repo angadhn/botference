@@ -53,6 +53,7 @@ frontends/plugin/
     content.js             ← selection UX, highlight painting, drawer host
     anchor.js              ← quote+context anchoring (adapt frontends/review/assets/span-match.js)
     drawer.js  drawer.css  ← the drawer UI (shadow DOM)
+    vendor/katex/          ← KaTeX 0.18.2 dist, vendored (see the math amendment)
     icons/                 ← simple generated PNGs (16/48/128)
 ```
 
@@ -400,6 +401,31 @@ Contract deltas agreed during live testing — authoritative over the sections a
   variants in icons/make-icons.mjs + braid.svg source; the 16px read is the
   acceptance bar); site/og-image.png is the braid share card; site/favicon.png from
   the same mark.
+- TeX math in messages: every message, whoever wrote it, renders `$…$` / `\(…\)`
+  inline and `$$…$$` / `\[…\]` display via KaTeX 0.18.2 vendored at
+  `extension/vendor/katex/` (katex.min.js as the first content script, woff2 only,
+  no CDN and no network). Math is tokenized OUT of the source before the markdown
+  parser runs and substituted back after, so `_`/`*`/`\\` inside TeX survive; code
+  spans and fenced blocks are skipped by the tokenizer and keep their `$` literal.
+  A single `$` opens math only when the next character is not a space, the
+  previous one is not alphanumeric, and a closer (not preceded by a space, not
+  followed by a digit) exists in the same paragraph — so "costs $5 and $10" stays
+  prose. Unparseable TeX and an unavailable KaTeX both degrade to the raw source
+  text; a formula never blanks or throws a message. `katex.min.css` is linked into
+  the shadow root, but its `@font-face` rules do not register there, so content.js
+  links a font-only `katex-fonts.css` into the PAGE document (both web-accessible).
+  Obsidian export is unchanged and deliberately so: the raw `$…$` source is what
+  reaches the vault, because Obsidian typesets it itself.
+- Long threads fold: past 6 drawn units a thread (and the page chat) keeps its
+  root and the last 3 units and hides the rest behind one `.showmore` line,
+  "Show N earlier replies", N counting messages and not tool rows. The unit of
+  folding is what the drawer draws — a person's message, or a bot's whole turn
+  (its merged tools row plus every answer in it) — so a tools disclosure can
+  never survive above an answer that was folded away. Expansion is one-way and
+  per-target, in memory for the session (`D.expanded`, cleared with the rest on
+  a page delete); the outbox, streaming blocks and the status chip render after
+  the fold and are therefore always visible. `msgUnits`/`collapsePlan` are pure
+  and unit-tested (test/collapse.test.mjs).
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

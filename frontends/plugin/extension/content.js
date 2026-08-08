@@ -447,8 +447,30 @@
     return drawer;
   }
 
+  // ---- KaTeX fonts live in the PAGE document, not the shadow root ------------
+  // @font-face rules inside a shadow root DO NOT REGISTER — the fonts are never
+  // fetched and every formula in the drawer falls back to the page's serif. So
+  // the font declarations, and only those, are linked into the page's own
+  // document (katex-fonts.css); katex.min.css itself stays in the shadow root
+  // with the rest of the drawer's styling, where it cannot leak out.
+  //
+  // This is the page's DOM, which is why it lives here rather than in
+  // drawer.js. A chrome-extension: <link> is exempt from the page's CSP as
+  // long as the file is web-accessible, the same way drawer.css already is.
+  const FONTS_ID = 'bfp-katex-fonts';
+  function ensureMathFonts() {
+    if (!(chrome.runtime && chrome.runtime.getURL)) return;
+    if (document.getElementById(FONTS_ID)) return;
+    const link = document.createElement('link');
+    link.id = FONTS_ID;
+    link.rel = 'stylesheet';
+    link.href = chrome.runtime.getURL('vendor/katex/katex-fonts.css');
+    (document.head || document.documentElement).appendChild(link);
+  }
+
   // ---- drawer wiring ---------------------------------------------------------
   function makeDrawer() {
+    ensureMathFonts();
     return Drawer.create({
       hostname: HOSTNAME,
       // the handle this browser signs with; refined by whoami() the moment the
@@ -463,6 +485,9 @@
       normUrl,
       theme: window.__BFP_THEME || null,
       cssUrl: (chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL('drawer.css') : 'drawer.css',
+      // the rest of KaTeX's stylesheet, inside the shadow root (see above)
+      katexCssUrl: (chrome.runtime && chrome.runtime.getURL)
+        ? chrome.runtime.getURL('vendor/katex/katex.min.css') : 'vendor/katex/katex.min.css',
 
       onSelect: () => commitSelection(),
 

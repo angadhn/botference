@@ -476,6 +476,33 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   display: block; background: none; padding: 0; white-space: pre;
   font: 12.5px/1.5 var(--mono); color: var(--fg);
 }
+/* the folded middle of a long thread: one quiet line, deliberately not a card
+   and not a button-looking button — it is a way back into the scrollback */
+.showmore {
+  display: block; width: 100%; margin: 2px 0 6px; padding: 4px 0;
+  background: none; border: 0; border-radius: 0;
+  border-bottom: 1px dashed var(--line);
+  font: 500 12px/1.4 var(--sans); color: var(--muted);
+  text-align: left; cursor: pointer; min-height: 22px;
+}
+.showmore:hover { color: var(--accent); border-bottom-color: var(--accent) }
+
+/* TeX math (KaTeX). katex.min.css is linked into this same shadow root ahead
+   of this file; its @font-face rules are inert there, so content.js plants a
+   font-only copy in the page document. Display math can be far wider than a
+   420px column — it scrolls in its own box rather than widening the drawer. */
+.ctext.md .md-math { display: block; margin: 8px 0; overflow-x: auto; overflow-y: hidden }
+.ctext.md .md-math.inline { display: inline; margin: 0; overflow: visible }
+.ctext.md .md-math .katex-display { margin: 0 }
+/* px, like every other size in here: the drawer's scale must not depend on the
+   page's root font-size (KaTeX's default 1.21em would inherit it) */
+.ctext.md .katex { font-size: 15px }
+/* a formula KaTeX could not parse, or a KaTeX that never loaded: the TeX as it
+   was written, so the message is never blanked by a stray backslash */
+.ctext.md .md-math.raw {
+  font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--muted);
+}
 .md-list { margin: 4px 0 8px; padding-left: 20px }
 .md-list li { margin: 2px 0 }
 .md-list li::marker { color: var(--muted) }

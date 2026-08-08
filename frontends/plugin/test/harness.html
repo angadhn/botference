@@ -30,6 +30,11 @@
                      popover must simply omit the gauges
     ?md=1            replace the page-chat reply with a markdown-heavy one, so
                      links / bold / code / lists are all on screen
+    ?math=1          a page chat full of TeX — inline, display, maths inside
+                     markdown, dollar AMOUNTS that must stay prose, and one
+                     broken formula that must survive as its own source
+    ?long=1          grow the second comment thread past the fold, so the
+                     "Show N earlier replies" line is on screen
     ?pages=1         open the Pages view — the plugin's own list of every
                      annotated page (screenshot state)
     ?gdocs=1         pretend to be a Google Doc: the url, the " - Google Docs"
@@ -412,6 +417,16 @@ const CANNED_MD =
   '2. Re-run the comparison\n\n' +
   'Not a link: [nope](javascript:alert) stays plain text.';
 
+// A reply carrying every case the maths renderer has to get right at once.
+// The `$5`/`$10` line is the one that matters most: it must come out as prose.
+const CANNED_MATH =
+  'The decay is exponential, so the amount left after $t$ seconds is $N_0 e^{-\\lambda t}$.\n\n' +
+  '$$N(t) = N_0 e^{-\\lambda t}, \\qquad t_{1/2} = \\frac{\\ln 2}{\\lambda}$$\n\n' +
+  'The **half-life** is where $N(t) = N_0/2$, and the *rate constant* $\\lambda$ has units of $\\mathrm{s}^{-1}$.\n\n' +
+  'The archive licence costs $5 per seat and $10 for the API — no maths in that sentence.\n\n' +
+  'Written in code it stays code: `$N_0$` and `\\lambda`.\n\n' +
+  'A formula I got wrong: $\\frobnicate{x}$ — you should still be able to read this line.';
+
 // tool-activity summaries (msg.kind === 'tools'). Two of them, and the second
 // deliberately arrives AFTER the answer — the drawer must still merge both into
 // one row and hoist it above the reply.
@@ -553,6 +568,29 @@ if (Q.get('handles') === '1') {
           'Also worth reading the [second filing](https://example.com/reports/aragon-part-2).' });
   RECORD.page_chat.push({ author: 'claude', ts: iso(11), text: 'Both readings hold. The **numbers** section is the hinge — it is the only place the piece commits to a claim it could be wrong about.' });
   RECORD.page_chat.push({ author: 'sam-w', ts: iso(6), text: 'Late to this. Can we keep the quote about the tram stop?' });
+}
+
+// ?math=1 — a reply full of TeX already on screen at load: inline, display,
+// a formula wrapped in markdown that must not mangle it, money that must NOT
+// become algebra, and one deliberately broken formula that has to survive as
+// its own source text rather than blanking the message.
+if (Q.get('math') === '1') {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(10), text: '@claude what is the decay law, and what did the licence cost?' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(9), text: CANNED_MATH });
+  // a person's own message is typeset too — the renderer does not care who wrote it
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(8),
+    text: 'Right, so with $\\lambda = 0.4$ the half-life is $t_{1/2} = \\ln 2 / \\lambda$. Still $5 a seat though.' });
+}
+
+// ?long=1 — a comment thread long enough to fold, so the "Show N earlier
+// replies" line and the messages either side of it are screenshotable
+if (Q.get('long') === '1') {
+  const t = RECORD.threads[1];
+  for (let i = 1; i <= 6; i++) {
+    t.msgs.push({ author: 'angadh', ts: iso(36 - i * 2), text: 'Follow-up ' + i + ': and what about the sentence after it?' });
+    t.msgs.push({ author: 'claude', ts: iso(35 - i * 2), kind: 'tools', text: 'Explored\n└ Read the filing' });
+    t.msgs.push({ author: 'claude', ts: iso(35 - i * 2), text: 'Answer ' + i + '. The construction is the same one, so the same caution applies.' });
+  }
 }
 
 if (Q.get('md') === '1') {
@@ -982,6 +1020,10 @@ window.chrome = {
 };
 </script>
 
+<!-- KaTeX, exactly as manifest.json loads it: first, and from the extension's
+     own vendor/ directory. No CDN here either — if this 404s, the drawer's
+     maths falls back to raw TeX and the selftest says so. -->
+<script src="../extension/vendor/katex/katex.min.js"></script>
 <script src="../extension/anchor.js"></script>
 <script src="../extension/adapters.js"></script>
 <script src="../extension/drawer.js"></script>
@@ -1987,6 +2029,130 @@ async function selftest() {
     chips().some(c => c.classList.contains('err') && /file-writing is disabled/.test(c.textContent)) &&
     !S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring'));
   d.note('__page__', null);
+
+  // ---- TeX maths, in a real message, in the real shadow root -------------
+  // The two things that can only be checked in a browser: that the vendored
+  // KaTeX is actually there (no CDN, no network), and that its fonts REGISTER
+  // — a @font-face rule inside a shadow root silently does not, which is the
+  // whole reason content.js plants a font-only stylesheet in the page.
+  check('KaTeX is vendored and loaded', !!(window.katex && window.katex.render));
+  const fontLink = document.getElementById('bfp-katex-fonts');
+  check('the KaTeX font stylesheet is in the PAGE document, not the shadow root',
+    !!fontLink && fontLink.parentNode.getRootNode() === document);
+  check('…and the faces it declares are registered on the document',
+    [...document.fonts].some(f => /KaTeX/.test(f.family)));
+  check('…while the shadow root gets the rest of katex.css',
+    [...S.querySelectorAll('link[rel="stylesheet"]')].some(l => /katex\.min\.css$/.test(l.href)));
+  // registering is half of it — they have to LOAD, or the formulas below are
+  // drawn in the page's fallback serif and nothing complains. Only asked over
+  // http: a file:// harness is an opaque origin and cannot fetch its own
+  // fonts, which is a browser rule and not a fault in the drawer.
+  if (location.protocol !== 'file:') {
+    let loaded = false;
+    try { await document.fonts.load('16px KaTeX_Main'); loaded = document.fonts.check('16px KaTeX_Main'); } catch (e) {}
+    check('…and they load, so the maths is not drawn in fallback serif', loaded);
+  }
+
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(2), text: '@claude the decay law?' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(1), text: CANNED_MATH });
+  d.setPage(RECORD);
+  d.open('chat');
+
+  const mathMsg = () => [...chatPane().querySelectorAll('.reply .ctext.md')]
+    .find(e => /decay is exponential/.test(e.textContent));
+  check('a bot reply renders its inline maths', !!mathMsg() &&
+    !!mathMsg().querySelector('.md-math.inline .katex'));
+  check('…and its display maths as a block of its own', !!mathMsg() &&
+    !!mathMsg().querySelector('div.md-math:not(.inline) .katex-display'));
+  check('…with the markdown around it still markdown',
+    !!mathMsg() && !!mathMsg().querySelector('strong') && !!mathMsg().querySelector('em'));
+  // the whole point of tokenizing before the markdown parser: e^{-\lambda t}
+  // came through with its braces and its backslash intact
+  // KaTeX keeps the source it was given in <annotation>; a plain includes()
+  // and not a regex, because this string is nothing but regex metacharacters
+  check('…and the TeX itself unmangled by the markdown parser',
+    !!mathMsg() && [...mathMsg().querySelectorAll('annotation')]
+      .map(a => a.textContent).join(' ').includes('e^{-\\lambda t}'));
+
+  const moneyP = () => [...(mathMsg() ? mathMsg().querySelectorAll('.md-p') : [])]
+    .find(p => /archive licence/.test(p.textContent));
+  check('dollar AMOUNTS stay prose, not algebra',
+    !!moneyP() && !moneyP().querySelector('.katex') &&
+    /\$5 per seat and \$10 for the API/.test(moneyP().textContent));
+  check('a formula inside backticks stays code', !!mathMsg() &&
+    [...mathMsg().querySelectorAll('code')].some(c => c.textContent === '$N_0$'));
+  // fail soft: the broken formula shows its own source and the line around it
+  // is still readable
+  const rawMath = () => mathMsg() && mathMsg().querySelector('.md-math.raw');
+  check('a formula KaTeX cannot parse falls back to its raw source',
+    !!rawMath() && rawMath().textContent === '$\\frobnicate{x}$');
+  check('…and the sentence it sits in survives',
+    !!mathMsg() && /you should still be able to read this line/.test(mathMsg().textContent));
+
+  // a person's own message is typeset by the same renderer
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(1), text: 'so $\\lambda = 0.4$ then' });
+  d.setPage(RECORD);
+  check('a human message renders maths too', [...chatPane().querySelectorAll('.reply .ctext.md')]
+    .some(e => /so .* then/.test(e.textContent) && e.querySelector('.md-math.inline .katex')));
+
+  // ---- long threads fold in the middle -----------------------------------
+  const LONG = RECORD.threads[1];
+  const rootText = LONG.msgs[0].text;
+  for (let i = 1; i <= 6; i++) {
+    LONG.msgs.push({ author: 'angadh', ts: iso(36 - i * 2), text: 'Follow-up ' + i + ' about the paraphrase.' });
+    LONG.msgs.push({ author: 'claude', ts: iso(35 - i * 2), kind: 'tools', text: 'Explored\n└ Read the filing' });
+    LONG.msgs.push({ author: 'claude', ts: iso(35 - i * 2), text: 'Answer ' + i + ' to the follow-up.' });
+  }
+  d.setPage(RECORD);
+  d.open('comments');
+  const longCard = () => S.querySelector('.card[data-thread="' + LONG.id + '"]');
+  const more = () => longCard().querySelector('.showmore');
+  const bodyOf = () => longCard().querySelector('.thread').textContent;
+  const shown = () => longCard().querySelectorAll('.reply').length;
+
+  check('a long thread folds behind one line', !!more());
+  check('…which is a quiet control, not a card',
+    !!more() && !more().closest('.reply') && more().tagName === 'BUTTON');
+  const claim = Number((more().textContent.match(/\d+/) || [0])[0]);
+  const hiddenNow = LONG.msgs.filter(m => m.kind !== 'tools').length - shown();
+  check('…and its count is the number of messages actually hidden',
+    claim === hiddenNow && claim > 0, more().textContent + ' vs ' + hiddenNow);
+  check('the thread root stays on screen', bodyOf().includes(rootText.slice(0, 30)));
+  check('…and so does the newest reply', bodyOf().includes('Answer 6'));
+  check('…while the middle is gone', !bodyOf().includes('Answer 2'));
+  // a turn's "Explored" row must never survive on its own above an answer that
+  // was folded away
+  check('no tool row is left stranded above a hidden answer',
+    longCard().querySelectorAll('.tools').length ===
+      longCard().querySelectorAll('.reply.bot').length);
+  check('the composer and its status row stay below the fold, always',
+    !!longCard().querySelector('.composer textarea'));
+
+  more().click();
+  check('clicking it opens the thread in place', !longCard().querySelector('.showmore'));
+  check('…showing every message', bodyOf().includes('Answer 2') && bodyOf().includes('Follow-up 3'));
+  // one merged row per bot turn that used tools — the same count the pure
+  // grouping function predicts from the record
+  const toolUnits = window.BFPDrawer.msgUnits(LONG.msgs)
+    .filter(u => u.some(m => m.kind === 'tools')).length;
+  check('…and every tool row with them',
+    longCard().querySelectorAll('.tools').length === toolUnits && toolUnits === 6);
+  check('a short thread is never folded',
+    !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore'));
+
+  // a new reply arrives in a thread that is still folded: it must show up at
+  // the bottom without the hidden middle springing open under the reader
+  d.setPage(RECORD);
+  const OTHER = RECORD.threads[0];
+  for (let i = 1; i <= 8; i++) OTHER.msgs.push({ author: i % 2 ? 'claude' : 'angadh', ts: iso(30 - i), text: 'Line ' + i });
+  d.setPage(RECORD);
+  const otherCard = () => S.querySelector('.card[data-thread="' + OTHER.id + '"]');
+  check('the second thread folded once it grew', !!otherCard().querySelector('.showmore'));
+  OTHER.msgs.push({ author: 'claude', ts: iso(1), text: 'Brand new answer' });
+  d.setPage(RECORD);
+  check('a reply arriving in a folded thread is visible immediately',
+    otherCard().querySelector('.thread').textContent.includes('Brand new answer'));
+  check('…without unfolding the middle', !!otherCard().querySelector('.showmore'));
 
   // ---- the pages library: which ones have bots in them, and deleting ------
   S.querySelector('[data-act="pages"]').click();

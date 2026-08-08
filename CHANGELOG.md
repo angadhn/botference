@@ -2,6 +2,24 @@
 
 ## 2026-08-08
 
+- **Web annotator: maths renders, and long threads fold.** Messages now
+  typeset LaTeX — `$…$` and `\(…\)` inline, `$$…$$` and `\[…\]` display —
+  for every author, in comment threads and page chat alike, using KaTeX
+  0.18.2 vendored into the extension (`extension/vendor/katex`, woff2
+  only): no CDN, no network call, nothing to install. Maths is cut out of
+  the source before the markdown parser sees it, so `x_1`, `a*b` and `\\`
+  come through as TeX rather than as mangled emphasis; dollar amounts
+  stay prose ("costs $5 and $10"), `$` inside code stays literal, an
+  unclosed delimiter is left as typed, and a formula KaTeX chokes on
+  degrades to its own source instead of blanking the message. Obsidian
+  export is deliberately untouched — the vault gets the raw `$…$`, which
+  Obsidian typesets itself. Separately, a thread past six exchanges now
+  keeps its opening message and the last few replies and folds the middle
+  behind a one-line "Show N earlier replies"; a bot turn's "Explored"
+  row can never be stranded above an answer that was hidden, and
+  pending sends, streaming replies and the working chip always stay
+  below the fold.
+
 - **Web annotator: honest status lines, safe message addressing, and the
   braid.** The "queued…" indicator no longer outlives its turn — it is
   written only when the turn genuinely hasn't started yet and is removed

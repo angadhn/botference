@@ -20,7 +20,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["anchor.js", "adapters.js", "drawer.js", "content.js"],
+      "js": ["vendor/katex/katex.min.js", "anchor.js", "adapters.js", "drawer.js", "content.js"],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -40,7 +40,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["drawer.css"],
+      "resources": [
+        "drawer.css",
+        "vendor/katex/katex.min.css",
+        "vendor/katex/katex-fonts.css",
+        "vendor/katex/fonts/*"
+      ],
       "matches": ["<all_urls>"]
     }
   ]
