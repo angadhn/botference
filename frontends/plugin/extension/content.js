@@ -7,7 +7,31 @@
 //
 // Owns: selection UX, article extraction, highlight painting (via anchor.js),
 // the drawer host (via drawer.js) and every call to the background's API proxy.
-// It never fetches anything itself — see the contract at the top of background.js.
+// It never fetches the COMPANION itself — see the contract at the top of
+// background.js. (A site adapter may fetch its own origin directly; see below.)
+//
+// ── SITE ADAPTERS (adapters.js) ────────────────────────────────────────────
+// Boot consults window.BFPAdapters.pick(href): the first adapter whose url
+// matcher hits replaces parts of this file's behaviour for that site.
+//
+//   capabilities.highlights  false ⇒ nothing on the page can be wrapped in a
+//                            <mark>, so: no 💬 selection pill, no provisional
+//                            or restored painting, the drawer opens on Page
+//                            chat and its Comments tab is disabled. Threads
+//                            that already exist for such a page still render
+//                            in the drawer, unpainted, badged orphan — and the
+//                            server is NOT told (the anchor is not lost, this
+//                            page simply cannot show it).
+//   title()                  headline for the page record; '' falls through to
+//                            the generic <h1>/og:title/document.title rule.
+//   articleText()            Promise<string> of first-turn context; '' (any
+//                            failure) falls through to the generic extraction.
+//                            Adapters may fetch their OWN origin directly —
+//                            Google Docs' text only exists behind the user's
+//                            session, which the background proxy (companion
+//                            only) and the bots can never reach.
+//
+// No adapter = the default: highlights on, extraction as it always was.
 (function () {
   'use strict';
 
@@ -16,6 +40,7 @@
 
   const Anchor = window.BFPAnchor;
   const Drawer = window.BFPDrawer;
+  const Adapters = window.BFPAdapters || null;
   if (!Anchor || !Drawer) return;
 
   // ---- normUrl: must match background.js and the companion's store.mjs ----
@@ -36,10 +61,23 @@
     }
   }
 
-  const URL_NOW = normUrl(location.href);
-  const HOSTNAME = location.hostname.replace(/^www\./, '');
+  // The address this content script considers itself to be on. Always
+  // location.href in a browser; test/harness.html sets __BFP_HREF so a site
+  // adapter can be exercised without being on that site. (Not a hole: a
+  // content script's `window` is its own isolated world — the page it runs on
+  // cannot reach this, exactly as with __BFP_THEME.)
+  const HREF = (typeof window.__BFP_HREF === 'string' && window.__BFP_HREF) || location.href;
+  const URL_NOW = normUrl(HREF);
+  const HOSTNAME = (() => {
+    try { return new URL(HREF).hostname.replace(/^www\./, ''); }
+    catch { return location.hostname.replace(/^www\./, ''); }
+  })();
   const MENTION = /@(claude|codex|all)\b/i;
   const PAGE_TARGET = '__page__';
+
+  // ---- the site adapter (see the header) ----------------------------------
+  const SITE = (Adapters && Adapters.pick(HREF)) || null;
+  const CAPS = Object.assign({ highlights: true }, (SITE && SITE.capabilities) || {});
 
   let active = false;
   let PAGE = null;        // the /page record
@@ -69,6 +107,15 @@
   const collapse = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
 
   function headline() {
+    if (SITE && SITE.title) {
+      let t = '';
+      try { t = collapse(SITE.title()); } catch { t = ''; }
+      if (t) return t;
+    }
+    return genericHeadline();
+  }
+
+  function genericHeadline() {
     for (const sel of ['article h1', 'main h1', 'h1']) {
       const h = document.querySelector(sel);
       if (h && collapse(h.textContent)) return collapse(h.textContent);
@@ -100,9 +147,23 @@
     return best || document.body;
   }
 
-  function articleText() {
+  function genericArticleText() {
     const el = articleRoot();
     return collapse(el.innerText || el.textContent).slice(0, 6000);
+  }
+
+  // First-turn context. An adapter gets first refusal — it may have to fetch
+  // the real document from its own origin — and anything it cannot produce
+  // (non-200, network, signed out) comes back '' so the generic extraction
+  // still runs. Awaited at the two call sites below, before the POST.
+  async function articleText() {
+    if (SITE && SITE.articleText) {
+      try {
+        const t = await SITE.articleText();
+        if (t) return t;
+      } catch { /* fall through to the page itself */ }
+    }
+    return genericArticleText();
   }
 
   // ---- anchoring / painting ------------------------------------------------
@@ -114,6 +175,19 @@
   function reanchorAll() {
     if (!PAGE) return;
     const threads = PAGE.threads || [];
+    // A site with no wrappable text (Google Docs' canvas): there is nothing to
+    // paint and nothing to re-locate. Threads that exist anyway — annotated
+    // before an adapter existed, or by a future adapter that loses highlights —
+    // stay in the drawer as orphans. The verdict is local only: /orphan is
+    // never posted, because the anchor is not lost, this page just cannot
+    // show it.
+    if (!CAPS.highlights) {
+      locs = {};
+      orphans = {};
+      for (const t of threads) orphans[t.id] = true;
+      if (drawer) drawer.setOrphans(orphans);
+      return;
+    }
     // RECONCILE, not just add: a thread can vanish from the record between two
     // refetches — deleted here, deleted in another tab, or emptied of its last
     // message (which deletes the thread server-side). Unpainting only the ids
@@ -211,6 +285,9 @@
     return Drawer.create({
       hostname: HOSTNAME,
       author: 'angadh',
+      // what this site can actually do (see the adapter note at the top):
+      // {highlights:false} turns off the selection pill and opens on Page chat
+      capabilities: CAPS,
       // the pages list needs to know which row is the page it is being shown
       // on; normUrl is ours, not the drawer's, so it is handed over with it
       currentUrl: URL_NOW,
@@ -225,7 +302,7 @@
         // page order is the extension's knowledge, not the server's: tell it
         // where in the stack this thread belongs (companion honours `index`)
         if (pendingSel) body.index = pageOrderIndex(pendingSel.start);
-        if (MENTION.test(text) && !sentArticleText) { body.article_text = articleText(); sentArticleText = true; }
+        if (MENTION.test(text) && !sentArticleText) { body.article_text = await articleText(); sentArticleText = true; }
         const r = await api('POST', '/thread', body);
         if (!r.ok) return { ok: false, error: r.error };
         const thread = (r.data && r.data.thread) || null;
@@ -249,7 +326,7 @@
 
       onReply: async (threadId, text) => {
         const body = { url: URL_NOW, thread_id: threadId, text };
-        if (MENTION.test(text) && !sentArticleText) { body.article_text = articleText(); sentArticleText = true; }
+        if (MENTION.test(text) && !sentArticleText) { body.article_text = await articleText(); sentArticleText = true; }
         const r = await api('POST', '/reply', body);
         if (!r.ok) return { ok: false, error: r.error };
         const msg = r.data && r.data.msg;
@@ -362,6 +439,8 @@
   }
 
   document.addEventListener('mouseup', e => {
+    // no highlights on this site: selecting text is just selecting text
+    if (!CAPS.highlights) return;
     if (drawer && inOurUI(e.target)) return;
     setTimeout(() => {
       const sel = window.getSelection();
@@ -387,6 +466,7 @@
 
   // 💬 clicked: freeze the anchor, paint it provisionally, open the composer
   function commitSelection() {
+    if (!CAPS.highlights) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     const index = freshIndex();
@@ -493,6 +573,7 @@
   // exposed for test/harness.html
   window.__bfp = {
     activate, loadPage, reanchorAll, headline, articleText, normUrl,
+    site: SITE, caps: CAPS,
     get drawer() { return drawer; },
     get page() { return PAGE; },
   };

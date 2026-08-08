@@ -32,6 +32,12 @@
                      links / bold / code / lists are all on screen
     ?pages=1         open the Pages view — the plugin's own list of every
                      annotated page (screenshot state)
+    ?gdocs=1         pretend to be a Google Doc: the url, the " - Google Docs"
+                     tab title, a canvas-painted body with no article text, and
+                     a stubbed /export?format=txt. Exercises the site-adapter
+                     path — highlights off, Page chat only, document text
+                     fetched directly rather than scraped. `?selftest=1` runs
+                     the gdocs assertions instead of the article ones.
     ?wide=NNN        start the drawer at NNN px instead of the stored width
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -67,6 +73,17 @@
     border-left: 3px solid var(--pline); color: var(--pmuted); font-style: italic }
   article .byline { font: 13px ui-sans-serif, system-ui, sans-serif; color: var(--pmuted);
     text-transform: uppercase; letter-spacing: .06em; margin: 0 0 2rem }
+
+  /* ?gdocs=1 — the shape of a Google Doc: a little real text in the app chrome
+     (the only thing on such a page a user CAN select) and a canvas where the
+     document should be. Nothing inside it is a text node. */
+  article.gdocs { max-width: 52rem; padding-top: 1.4rem }
+  .gchrome { font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; color: var(--pmuted);
+    border-bottom: 1px solid var(--pline); padding-bottom: .7rem; margin-bottom: 1.6rem }
+  .gchrome .gtitle { display: block; font-size: 17px; color: var(--pfg); margin-bottom: .25rem }
+  .gpage { background: #fff; border: 1px solid var(--pline); border-radius: 2px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.14); margin: 0 auto; width: 100%; max-width: 44rem }
+  .gpage canvas { display: block; width: 100%; height: auto }
 </style>
 
 <div class="bar">
@@ -127,6 +144,66 @@ if (Q.get('dark') === '1') {
   window.__BFP_THEME = 'light';
 }
 const log = m => { document.getElementById('h-log').textContent = m; };
+
+// ───────────────────────────────────────────────────────────────────────────
+// 0b. ?gdocs=1 — the site-adapter world
+//     Google Docs paints the document to a <canvas>: no text nodes to extract,
+//     none to wrap, and the bots cannot fetch docs.google.com themselves. The
+//     adapter's answer is a direct same-origin fetch of the txt export, which
+//     is stubbed here so the whole path runs with no network and no login.
+// ───────────────────────────────────────────────────────────────────────────
+const GDOCS = Q.get('gdocs') === '1';
+const DOC_ID = '1aBcD_efGH-2026QuietMachine';
+const DOC_HREF = 'https://docs.google.com/document/d/' + DOC_ID + '/edit?tab=t.0#heading=h.9k2xz1';
+const DOC_URL = 'https://docs.google.com/document/d/' + DOC_ID + '/edit?tab=t.0';  // == normUrl(DOC_HREF)
+const DOC_EXPORT = 'https://docs.google.com/document/d/' + DOC_ID + '/export?format=txt';
+const DOC_TITLE = 'The Quiet Machine — draft 7';
+const DOC_HEAD = 'THE QUIET MACHINE — editorial draft 7';
+// deliberately longer than both caps: the extension sends ~12000, the
+// companion trims to 6000. The sentinel sits past 12000 and must never travel.
+let DOC_TEXT = DOC_HEAD + '\n\n';
+for (let i = 1; DOC_TEXT.length < 14000; i++) {
+  DOC_TEXT += 'Section ' + i + '. Aragon spent four years building a side that wins without ever ' +
+    'looking like it is trying, and the claim of this draft is that the boredom is the strategy ' +
+    'rather than a symptom of one.\n\n';
+}
+DOC_TEXT += 'SENTINEL-PAST-THE-CAP';
+const exportFetches = [];     // every direct fetch the adapter made
+
+if (GDOCS) {
+  window.__BFP_HREF = DOC_HREF;
+  document.title = DOC_TITLE + ' - Google Docs';
+
+  // the export endpoint, exactly as Docs answers it: a BOM, CRLFs, and
+  // padding either side that the adapter has to trim off
+  window.fetch = async (url, init) => {
+    exportFetches.push({ url: String(url), credentials: init && init.credentials });
+    if (String(url) === DOC_EXPORT) {
+      return { ok: true, status: 200,
+        headers: { get: () => 'text/plain; charset=UTF-8' },
+        text: async () => '﻿\r\n  ' + DOC_TEXT.replace(/\n/g, '\r\n') + '\r\n\r\n  ' };
+    }
+    return { ok: false, status: 404, headers: { get: () => '' }, text: async () => '' };
+  };
+
+  // the body: app chrome with real text (the only selectable thing on a Docs
+  // page) over a canvas with the document painted into it
+  const art = document.querySelector('article');
+  art.className = 'gdocs';
+  art.innerHTML = '<div class="gchrome"><span class="gtitle">' + DOC_TITLE + '</span>' +
+    'File · Edit · View · Insert · Format · Tools · Extensions · Help</div>' +
+    '<div class="gpage"><canvas width="880" height="1140"></canvas></div>';
+  const cx = art.querySelector('canvas').getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, 880, 1140);
+  cx.fillStyle = '#1a1a1a'; cx.font = '600 30px Georgia, serif';
+  cx.fillText(DOC_TITLE, 96, 140);
+  cx.fillStyle = '#cfcac2';
+  for (let i = 0, y = 200; i < 34; i++, y += 26) {
+    if (i % 9 === 8) { y += 14; continue; }
+    cx.fillRect(96, y, 688 * (0.55 + ((i * 37) % 45) / 100), 11);
+  }
+}
+
 // any uncaught error is a QA finding: put it where a screenshot will catch it
 window.__bfpErrors = [];
 function fault(kind, detail) {
@@ -143,7 +220,7 @@ window.addEventListener('unhandledrejection', e => fault('UNHANDLED REJECTION', 
 // 1. the scripted fake companion
 //    Same shapes as SPEC.md's HTTP API and event stream — nothing more.
 // ───────────────────────────────────────────────────────────────────────────
-const PAGE_URL = 'https://example.com/sport/the-quiet-machine';
+const PAGE_URL = GDOCS ? DOC_URL : 'https://example.com/sport/the-quiet-machine';
 const now = () => new Date().toISOString();
 const iso = mins => new Date(Date.now() - mins * 60000).toISOString();
 
@@ -184,6 +261,25 @@ const RECORD = {
     { author: 'claude', ts: iso(11), text: 'The team is deliberately unspectacular: it trades possession and early tempo for control late in games, and the results have improved every year while the underlying numbers stayed flat.' },
   ],
 };
+
+// The Docs record: a stale title the /page upsert has to correct (proving the
+// adapter's headline travelled), an empty page chat so the first @mention is
+// genuinely the first, and one legacy anchored thread — the edge case where a
+// page was annotated before it lost highlights. It must still be listed.
+if (GDOCS) {
+  RECORD.url = DOC_URL;
+  RECORD.title = 'Untitled document';
+  RECORD.site = 'docs.google.com';
+  RECORD.page_chat = [];
+  RECORD.threads = [
+    { id: 't-1754500900-g7h8',
+      quote: 'the boredom is the strategy rather than a symptom of one',
+      prefix: 'the claim of this draft is that', suffix: 'Section 2.',
+      orphaned: false,
+      msgs: [{ author: 'angadh', ts: iso(30),
+               text: 'Anchored back when this was a web page. Nothing on a canvas can be painted.' }] },
+  ];
+}
 
 const CANNED_REPLY =
   'Two things stand out. First, the piece never tests its own claim — "the underlying ' +
@@ -245,6 +341,9 @@ const MODELS = {
 const modelPosts = [];      // what the drawer POSTed, for the selftest
 const relayPosts = [];      // …and every /relay body
 const badges = [];          // every badge count the extension asked for
+const apiCalls = [];        // every {t:'api'} path proxied through the background
+const postedMsgs = [];      // every /thread + /reply body, for the article_text checks
+const orphanPosts = [];     // every /orphan body
 const exportPosts = [];     // every /export url — the header's and the rows'
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 
@@ -348,6 +447,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: RECORD };
   }
   if (method === 'POST' && route === '/thread') {
+    postedMsgs.push({ route, text: body.msg && body.msg.text, article_text: body.article_text });
     const thread = {
       id: 't-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       quote: body.quote, prefix: body.prefix, suffix: body.suffix, orphaned: false,
@@ -360,6 +460,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined } };
   }
   if (method === 'POST' && route === '/reply') {
+    postedMsgs.push({ route, text: body.text, article_text: body.article_text });
     // "#fail" in a message is the harness's way of making a save go wrong, so
     // the composer's keep-the-text-on-failure path is testable
     if (/#fail\b/.test(body.text || '')) return { ok: false, status: 500, error: 'simulated failure' };
@@ -438,6 +539,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: { ok: true, queued: true } };
   }
   if (method === 'POST' && route === '/orphan') {
+    orphanPosts.push({ thread_id: body.thread_id, orphaned: body.orphaned });
     const t = RECORD.threads.find(x => x.id === body.thread_id);
     if (t) t.orphaned = !!body.orphaned;
     log('orphan reported: ' + body.thread_id + ' → ' + body.orphaned);
@@ -471,6 +573,9 @@ try {
   if (raw) Object.assign(store, JSON.parse(raw));
 } catch { /* file:// without storage — in-memory is fine */ }
 const persist = () => { try { localStorage.setItem('bfp-harness-store', JSON.stringify(store)); } catch {} };
+// A previous visit to docs.google.com left "comments" as this site's last tab.
+// The capability override has to beat it — that is the whole point.
+if (GDOCS) store['bfp:lastTab'] = Object.assign({}, store['bfp:lastTab'], { 'docs.google.com': 'comments' });
 
 window.chrome = {
   runtime: {
@@ -484,7 +589,11 @@ window.chrome = {
             ? { ok: true, known: false, threads: 0, connected: false, index: {} }
             : { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {} };
           case 'get-index': return companion('GET', '/index');
-          case 'api': return companion(msg.method, msg.path, msg.body);
+          case 'api':
+            // the proxy only ever talks to the companion; a site adapter that
+            // needed the user's own session must NOT have come through here
+            apiCalls.push({ method: msg.method, path: msg.path });
+            return companion(msg.method, msg.path, msg.body);
           case 'badge': badges.push(msg.count); return { ok: true };
           // stands in for background.js's openPage(): there are no tabs here,
           // so record the ask and arm the same one-shot flag the real worker
@@ -526,6 +635,7 @@ window.chrome = {
 </script>
 
 <script src="../extension/anchor.js"></script>
+<script src="../extension/adapters.js"></script>
 <script src="../extension/drawer.js"></script>
 <script src="../extension/content.js"></script>
 
@@ -968,9 +1078,131 @@ async function selftest() {
   console.log(out.join('\n'));
 }
 
+// ?gdocs=1&selftest=1 — the site-adapter world instead of the article one.
+// Everything the capability switch is supposed to turn off, plus proof that
+// the document's real text (which only exists behind the user's session)
+// reached the companion on the first mention.
+async function selftestGdocs() {
+  const out = [];
+  const check = (name, cond) => out.push((cond ? '✓ ' : '✗ ') + name);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const ctab = S.querySelector('.tab[data-tab="comments"]');
+  const chatTa = () => S.querySelector('.pane[data-pane="chat"] .composer textarea');
+
+  // ---- the adapter matched, and only here ----
+  const ad = window.BFPAdapters.pick(DOC_HREF);
+  check('a Google Docs url gets the docs adapter', !!ad && ad.name === 'gdocs');
+  check('a plain article url still gets none',
+    window.BFPAdapters.pick('https://example.com/sport/the-quiet-machine') === null);
+  check('the page is running with highlights off', window.__bfp.caps.highlights === false);
+  check('the headline drops the “ - Google Docs” suffix', window.__bfp.headline() === DOC_TITLE);
+  check('…and it is the title the record was upserted with',
+    !!await until(() => S.querySelector('.hdr .title').textContent === DOC_TITLE));
+
+  // ---- the drawer opens where the user can actually do something ----
+  check('the drawer opened on Page chat',
+    !S.querySelector('.pane[data-pane="chat"]').hidden &&
+    S.querySelector('.tab[data-tab="chat"]').classList.contains('on'));
+  check('…even though this site’s remembered tab was Comments',
+    store['bfp:lastTab']['docs.google.com'] === 'comments');
+  check('the comments pane is not the one on screen',
+    S.querySelector('.pane[data-pane="comments"]').hidden);
+
+  // ---- the Comments tab: present, inert, explained ----
+  check('the Comments tab is still on screen', !S.querySelector('.tabs').hidden && !!ctab);
+  check('…disabled', ctab.disabled === true);
+  check('…and it says why on hover',
+    /highlights aren’t supported on this site — use Page chat/.test(ctab.title));
+  ctab.click();
+  check('clicking it does not move the drawer off Page chat',
+    S.querySelector('.tab[data-tab="chat"]').classList.contains('on'));
+  const note = S.querySelector('.pane[data-pane="comments"] .nohl');
+  check('its pane carries the same sentence inline',
+    !!note && /^highlights aren’t supported on this site — use Page chat$/.test(note.textContent.trim()));
+  check('the note is 12px and muted', !!note &&
+    getComputedStyle(note).fontSize === '12px' &&
+    getComputedStyle(note).color === getComputedStyle(S.querySelector('.hdr .meta')).color);
+  check('no “select any text and hit 💬” invitation where 💬 never appears',
+    !S.querySelector('.pane[data-pane="comments"] .empty'));
+
+  // ---- the legacy thread: listed, unpainted, not reported ----
+  check('a thread anchored before the adapter existed is still listed',
+    q('.pane[data-pane="comments"] .card').length === 1);
+  check('…and shown as an orphan', q('.badge.orphan-badge').length === 1);
+  check('nothing was painted on a canvas page', document.querySelectorAll('mark.bfp-hl').length === 0);
+  check('…and the companion was never told the anchor was lost', orphanPosts.length === 0);
+
+  // ---- selection does nothing at all ----
+  const gt = document.querySelector('.gchrome .gtitle').firstChild;
+  const r = document.createRange();
+  r.setStart(gt, 0); r.setEnd(gt, gt.data.length);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await sleep(150);
+  check('selecting the app chrome floats no 💬 pill',
+    !S.querySelector('.selbtn').classList.contains('on'));
+  check('…and paints no provisional highlight',
+    !document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
+  sel.removeAllRanges();
+
+  // ---- first mention: the document itself, fetched directly ----
+  chatTa().value = '@claude what is this draft actually arguing?';
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  const first = await until(() => postedMsgs.find(p => /what is this draft actually arguing/.test(p.text || '')));
+  check('the first @mention carries article_text', !!first && typeof first.article_text === 'string');
+  const at = (first && first.article_text) || '';
+  check('…and it is the exported document', at.startsWith(DOC_HEAD));
+  check('…not the page DOM, which holds no document text at all',
+    !/File · Edit · View/.test(at) && !/^\s*$/.test(at));
+  check('the export was fetched straight from docs.google.com',
+    exportFetches.some(f => f.url === DOC_EXPORT));
+  check('…with the user’s own session', exportFetches.some(f => f.credentials === 'include'));
+  check('…and never through the background companion proxy',
+    !apiCalls.some(c => /export\?format=txt/.test(decodeURIComponent(c.path || ''))));
+  check('BOM, CRLFs and padding are trimmed off',
+    at === at.trim() && !/\r/.test(at) && at.charCodeAt(0) !== 0xfeff);
+  check('up to 12000 chars are sent (the companion caps at 6000)',
+    at.length <= 12000 && at.length > 11900);
+  check('nothing past the cap travels', !/SENTINEL-PAST-THE-CAP/.test(at));
+
+  // ---- and the turn works like any other page ----
+  check('the bots answer in Page chat',
+    !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.bot'), 20000));
+  check('the turn settles',
+    !!await until(() => !S.querySelector('.pane[data-pane="chat"] .reply.streaming'), 20000));
+
+  const botsBefore = S.querySelectorAll('.pane[data-pane="chat"] .reply.bot').length;
+  chatTa().value = '@claude and the counter-argument?';
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  const second = await until(() => postedMsgs.find(p => /counter-argument/.test(p.text || '')));
+  check('a later mention does not resend the document',
+    !!second && second.article_text === undefined);
+  // let that turn finish before the tally is written — otherwise the fake
+  // companion's own log() lands on top of the result a screenshot is here for
+  check('the second turn settles too', !!await until(() =>
+    S.querySelectorAll('.pane[data-pane="chat"] .reply.bot').length > botsBefore &&
+    !S.querySelector('.pane[data-pane="chat"] .status-chip'), 25000));
+  await sleep(150);
+  check('still nothing painted after a full turn',
+    document.querySelectorAll('mark.bfp-hl').length === 0);
+
+  const bad = out.filter(l => l[0] === '✗');
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (gdocs) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 document.getElementById('h-open').onclick = () => window.__bfp.activate().then(d => d.open('comments'));
 document.getElementById('h-chat').onclick = () => window.__bfp.activate().then(d => d.open('chat'));
-document.getElementById('h-stream').onclick = () => playTurn(RECORD.threads[1].id, '@claude what would you cut?');
+// on a page with no anchored threads to speak of (?gdocs=1), the stream plays
+// in the page chat instead
+const STREAM_TARGET = () => (RECORD.threads[1] || {}).id || '__page__';
+document.getElementById('h-stream').onclick = () => playTurn(STREAM_TARGET(), '@claude what would you cut?');
 document.getElementById('h-md').onclick = () => playTurn('__page__', '@codex link me the sources');
 document.getElementById('h-dark').onclick = () => {
   const on = document.documentElement.classList.toggle('forcedark');
@@ -983,7 +1215,7 @@ window.__bfp.activate(false).then(() => {
     if (window.__BFP_THEME) d.setTheme(window.__BFP_THEME);
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
-    if (Q.get('selftest') === '1') { setTimeout(selftest, 250); return; }
+    if (Q.get('selftest') === '1') { setTimeout(GDOCS ? selftestGdocs : selftest, 250); return; }
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
     if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
     const demo = Q.get('demo');
@@ -991,9 +1223,9 @@ window.__bfp.activate(false).then(() => {
     else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);
     // on the chat tab, freeze the page-chat turn instead — that pane's chip is
     // above the fold, so a screenshot catches the working avatar
-    if (Q.get('stream') === 'freeze') setTimeout(() => freezeTurn(Q.get('chat') === '1' ? '__page__' : RECORD.threads[1].id), 200);
-    else if (Q.get('stream') === '1') setTimeout(() => playTurn(RECORD.threads[1].id, '@claude what would you cut?'), 500);
-    log('drawer mounted · ' + RECORD.threads.length + ' threads');
+    if (Q.get('stream') === 'freeze') setTimeout(() => freezeTurn(Q.get('chat') === '1' ? '__page__' : STREAM_TARGET()), 200);
+    else if (Q.get('stream') === '1') setTimeout(() => playTurn(STREAM_TARGET(), '@claude what would you cut?'), 500);
+    log((GDOCS ? 'google docs mode · highlights off · ' : 'drawer mounted · ') + RECORD.threads.length + ' threads');
   });
 });
 </script>

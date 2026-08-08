@@ -2,6 +2,15 @@
 
 ## 2026-08-08
 
+- **Web annotator: Google Docs support (Page chat).** New site-adapter
+  layer in the extension; the Docs adapter fetches the document's
+  plain-text export with your own session (private docs included, no
+  sharing changes) and hands it to the bots as first-turn context, with
+  the doc's real title on the chat. Docs paints text to a canvas, so
+  highlighting is deliberately off there: the drawer opens straight to
+  Page chat and the Comments tab is disabled with an explanation. The
+  adapter registry is the slot for Notion/Office-style sites later.
+
 - **Web annotator: a Pages view — browse your annotation history inside
   the plugin.** A stacked-pages button in the drawer header lists every
   annotated page (title, site, thread count, last activity, newest

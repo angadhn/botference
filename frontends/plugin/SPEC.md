@@ -323,6 +323,14 @@ Contract deltas agreed during live testing — authoritative over the sections a
   manifest gained the `tabs` permission). Per-row Obsidian export button. Council
   filing underneath is unchanged — the plugin is simply the primary browser of its own
   history.
+- Site adapters (`extension/adapters.js`, classic script before content.js): registry
+  keyed by URL; an adapter may override title/articleText and declare
+  `capabilities.highlights:false` (no selection pill, drawer opens to Page chat,
+  Comments tab disabled with tooltip, existing anchors orphaned locally without
+  POSTing /orphan). First adapter: Google Docs — text via the doc's
+  `/export?format=txt` fetched DIRECTLY from the content script with
+  `credentials:'include'` (same-origin, user's session; never the background proxy),
+  title minus the " - Google Docs" suffix. Failures fall back to generic extraction.
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

@@ -7,8 +7,13 @@
 //
 // Exposed as window.BFPDrawer (classic script, isolated content-script world).
 //
-//   const d = BFPDrawer.create({ hostname, cssUrl, theme, on… });
+//   const d = BFPDrawer.create({ hostname, cssUrl, theme, capabilities, on… });
 //   d.mount(); d.setPage(record); d.open('comments');
+//
+// `capabilities` is what content.js's site adapter says this page can do
+// (default {highlights:true}). With {highlights:false} — Google Docs, whose
+// text is painted to a canvas — the drawer opens on Page chat whatever the
+// per-site memory says, and the Comments tab stays visible but inert.
 //
 // Callbacks (all optional, all may return a Promise):
 //   onSave({quote,prefix,suffix,text})  new anchored thread committed
@@ -251,6 +256,12 @@
     opts = opts || {};
     const cb = name => (...args) => (typeof opts[name] === 'function' ? opts[name](...args) : undefined);
 
+    // Site capabilities (content.js's adapter). Only `highlights` so far, and
+    // everything that reads it is one branch — the shape is here so the next
+    // adapter can turn something else off without a redesign.
+    const CAPS = Object.assign({ highlights: true }, opts.capabilities || {});
+    const NOHL = 'highlights aren’t supported on this site — use Page chat';
+
     const D = {
       page: null,          // the page record from /page
       orphans: {},         // threadId -> bool (content.js's live anchoring verdict)
@@ -266,7 +277,8 @@
       confirm: null,       // threadId whose "delete thread?" confirm is showing
       toolsOpen: {},       // tool-activity disclosure key -> expanded
       focused: null,
-      tab: 'comments',
+      // a page with no highlights has no Comments to open on
+      tab: CAPS.highlights ? 'comments' : 'chat',
       // 'threads' = the Comments/Page-chat tabs; 'pages' = the library of every
       // annotated page, which takes over the whole body and hides the tab bar
       view: 'threads',
@@ -331,9 +343,17 @@
         pop: shadow.querySelector('.popover.models'),
         grip: shadow.querySelector('.grip'),
       };
+      // the Comments tab is left on screen — the drawer must read the same on
+      // every site — but there is nothing behind it here, so it is inert and
+      // says why on hover
+      if (!CAPS.highlights) {
+        const ct = shadow.querySelector('.tab[data-tab="comments"]');
+        if (ct) { ct.disabled = true; ct.title = NOHL; ct.setAttribute('aria-disabled', 'true'); }
+      }
+
       applyWidth(D.width);
       wireEvents();
-      paintView();
+      paintTabs();
       restoreTab();
       restoreWidth();
       return D;
@@ -368,6 +388,8 @@
 
     // ---- tab memory (per hostname) --------------------------------------
     function restoreTab() {
+      // per-site memory is overridden, not consulted, where Comments is dead
+      if (!CAPS.highlights) return;
       const hn = opts.hostname || 'default';
       try {
         chrome.storage.local.get(TAB_KEY, r => {
@@ -377,6 +399,7 @@
       } catch { /* no storage (harness fallback) — keep the default */ }
     }
     function rememberTab() {
+      if (!CAPS.highlights) return;   // never write a forced choice back
       const hn = opts.hostname || 'default';
       try {
         chrome.storage.local.get(TAB_KEY, r => {
@@ -656,11 +679,18 @@
         `<button data-act="retry" type="button">↻ Retry connection</button></div>`
       : '';
 
+    // Sites where nothing can be wrapped keep the pane (and its history) but
+    // say so where the comments would be, in the same words as the tooltip.
+    const nohlHtml = () => CAPS.highlights ? ''
+      : `<div class="nohl">${esc(NOHL)}</div>`;
+
     function renderComments() {
       const threads = (D.page && D.page.threads) || [];
-      let html = offlineHtml();
+      let html = offlineHtml() + nohlHtml();
       html += D.pending ? pendingHtml() : '';
-      if (!threads.length && !D.pending) {
+      // "select any text and hit 💬" is a lie where selection does nothing —
+      // the note above has already said what to do instead
+      if (!threads.length && !D.pending && CAPS.highlights) {
         html += `<div class="empty"><b>No comments yet</b>Select any text on the page and hit 💬.</div>`;
       }
       html += threads.map(cardHtml).join('');
@@ -786,6 +816,7 @@
 
     function paintTabs() {
       if (!D.mounted) return;
+      if (!CAPS.highlights && D.tab !== 'chat') D.tab = 'chat';
       D.el.tabs.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === D.tab));
       paintView();
     }
@@ -1191,7 +1222,7 @@
 
       D.el.tabs.addEventListener('click', e => {
         const t = e.target.closest && e.target.closest('.tab');
-        if (!t) return;
+        if (!t || t.disabled) return;
         D.tab = t.dataset.tab;
         paintTabs();
         rememberTab();
@@ -1312,7 +1343,7 @@
     async function openPageRow(url) {
       if (!url) return;
       if (isCurrentUrl(url)) {
-        D.tab = 'comments';
+        D.tab = CAPS.highlights ? 'comments' : 'chat';
         showThreads();
         rememberTab();
         return;
@@ -1338,6 +1369,9 @@
     // ---- public surface -------------------------------------------------
     function open(tab) {
       mount();
+      // a caller that asks for Comments on a page that cannot have any (the
+      // boot path asks for the remembered tab, which may be stale) gets chat
+      if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
       // being asked for a specific tab (a highlight click, a new comment) is
       // always about THIS page — leave the pages library if it is up
       if (tab) { D.tab = tab; D.view = 'threads'; paintTabs(); rememberTab(); }
@@ -1370,6 +1404,7 @@
 
     function beginNew(anchor) {
       mount();
+      if (!CAPS.highlights) return D;   // nothing can be anchored here
       D.pending = anchor;
       D.tab = 'comments';
       paintTabs();
@@ -1404,6 +1439,7 @@
 
     function showSel(x, y) {
       mount();
+      if (!CAPS.highlights) return D;   // no pill where nothing can be marked
       const b = D.el.selbtn;
       b.style.left = Math.max(8, Math.min(x, window.innerWidth - 110)) + 'px';
       b.style.top = Math.max(8, Math.min(y, window.innerHeight - 40)) + 'px';

@@ -221,6 +221,13 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   border-radius: 7px; background: var(--card); border: 1px solid var(--card-line); color: var(--muted);
 }
 
+/* a site whose text cannot be wrapped (Google Docs paints to a canvas): the
+   tab stays where it always is — the drawer must read the same everywhere —
+   but it is inert, and the pane behind it says so in the same words */
+.tab[disabled] { opacity: .4; cursor: default }
+.tab[disabled]:hover { color: var(--muted) }
+.nohl { color: var(--muted); font: 12px/1.55 var(--sans); padding: 2px 2px 12px }
+
 /* the tab bar is display:flex, which outranks the UA's [hidden] rule — the
    pages view hides it outright, so restore it explicitly */
 .tabs[hidden] { display: none }
