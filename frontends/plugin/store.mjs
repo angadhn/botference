@@ -3,6 +3,7 @@
 // plus a small index the extension polls to know which pages have annotations.
 // Every write is atomic (tmp + rename), same as the rest of the repo.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -16,10 +17,25 @@ const PAGES = path.join(DIR, 'pages');
 const INDEX_FILE = path.join(DIR, 'index.json');
 const CONFIG_FILE = path.join(DIR, 'config.json');
 
+// Default vault: the nearest ancestor of the workspace that is an Obsidian
+// vault (has .obsidian/), else the home directory — the export folder is
+// created inside it either way. Only used to seed config.json on first run;
+// an existing config always wins.
+function detectVault() {
+  let dir = ROOT;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, '.obsidian'))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return os.homedir();
+}
+
 export const DEFAULT_CONFIG = {
-  vault_path: '/Users/angadhnanjangud/MySiteFromObsidianVault',
+  vault_path: detectVault(),
   export_folder: 'Web Clippings',
-  author: 'angadh',
+  author: os.userInfo().username,
 };
 
 const nowIso = () => new Date().toISOString();

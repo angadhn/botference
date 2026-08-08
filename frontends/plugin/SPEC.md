@@ -97,9 +97,9 @@ across the extension/server boundary (extension can't import server files).
 - `<ROOT>/.botference/plugin/config.json`, created on first run with defaults:
 
 ```jsonc
-{ "vault_path": "/Users/angadhnanjangud/MySiteFromObsidianVault",
+{ "vault_path": "<auto-detected: nearest ancestor with .obsidian/, else $HOME>",
   "export_folder": "Web Clippings",
-  "author": "angadh" }
+  "author": "<os username>" }
 ```
 
 - Atomic writes (tmp + rename), same as the rest of the repo.
