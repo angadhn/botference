@@ -30,6 +30,8 @@
                      popover must simply omit the gauges
     ?md=1            replace the page-chat reply with a markdown-heavy one, so
                      links / bold / code / lists are all on screen
+    ?pages=1         open the Pages view — the plugin's own list of every
+                     annotated page (screenshot state)
     ?wide=NNN        start the drawer at NNN px instead of the stored width
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -243,6 +245,34 @@ const MODELS = {
 const modelPosts = [];      // what the drawer POSTed, for the selftest
 const relayPosts = [];      // …and every /relay body
 const badges = [];          // every badge count the extension asked for
+const exportPosts = [];     // every /export url — the header's and the rows'
+const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
+
+// ---- the page library behind GET /index ---------------------------------
+// Three other pages plus this one, stored deliberately out of order so the
+// drawer has to sort them itself. Times are chosen so the expected order is
+// unambiguous: this page (just updated) · 2h · 2h20 · 3d.
+const OTHER_PAGES = {
+  'fakekey0000000000000000000000000000000b': {
+    url: 'https://www.longreads.example/2026/tunnel-vision',
+    title: 'Tunnel Vision', threads: 1, updated_at: iso(120) },
+  'fakekey0000000000000000000000000000000c': {
+    url: 'https://example.org/finance/the-long-quarter',
+    title: 'The Long Quarter: how a bank talked itself into a very expensive silence',
+    threads: 5, updated_at: iso(140) },
+  'fakekey0000000000000000000000000000000d': {
+    url: 'https://news.example.net/politics/the-committee-that-never-met',
+    title: 'The committee that never met', threads: 2, updated_at: iso(3 * 24 * 60) },
+};
+let indexEmpty = false;     // selftest flips this to exercise the empty state
+function indexMap() {
+  if (indexEmpty) return {};
+  return Object.assign({
+    'fakekey0000000000000000000000000000000a': {
+      url: PAGE_URL, title: RECORD.title,
+      threads: RECORD.threads.length, updated_at: RECORD.updated_at },
+  }, OTHER_PAGES);
+}
 
 // ?md=1 — a markdown-heavy bot reply already on screen at load, for screenshots,
 // with its tool activity stored out of order behind it
@@ -310,12 +340,7 @@ const OFFLINE = Q.get('offline') === '1';
 function companion(method, path, body) {
   if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
   const route = String(path).split('?')[0];
-  if (method === 'GET' && route === '/index') {
-    return { ok: true, status: 200, data: {
-      'fakekey0000000000000000000000000000000a': {
-        url: PAGE_URL, title: RECORD.title, threads: RECORD.threads.length, updated_at: RECORD.updated_at },
-    } };
-  }
+  if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
   if (method === 'POST' && route === '/page') {
     if (body && body.title) RECORD.title = body.title;
@@ -418,9 +443,15 @@ function companion(method, path, body) {
     log('orphan reported: ' + body.thread_id + ' → ' + body.orphaned);
     return { ok: true, status: 200, data: { ok: true } };
   }
+  // one note per page: the export is always about the url in the body, which
+  // is this page from the header button and another page from a list row
   if (method === 'POST' && route === '/export') {
-    log('exported');
-    return { ok: true, status: 200, data: { ok: true, path: '/Users/angadh/Vault/Web Clippings/The Quiet Machine.md' } };
+    const url = (body && body.url) || PAGE_URL;
+    exportPosts.push(url);
+    const entry = Object.values(indexMap()).find(p => p.url === url);
+    const name = (entry && entry.title) || RECORD.title;
+    log('exported: ' + name);
+    return { ok: true, status: 200, data: { ok: true, path: '/Users/angadh/Vault/Web Clippings/' + name + '.md' } };
   }
   if (method === 'POST' && route === '/interrupt') { log('interrupt sent'); return { ok: true, status: 200, data: { ok: true } }; }
   if (method === 'GET' && route === '/health') return { ok: true, status: 200, data: { ok: true, bridge: 'running', queue: queueDepth } };
@@ -455,6 +486,17 @@ window.chrome = {
           case 'get-index': return companion('GET', '/index');
           case 'api': return companion(msg.method, msg.path, msg.body);
           case 'badge': badges.push(msg.count); return { ok: true };
+          // stands in for background.js's openPage(): there are no tabs here,
+          // so record the ask and arm the same one-shot flag the real worker
+          // writes — the flag is the contract the next page load reads
+          case 'open-page': {
+            openPageCalls.push(msg.url);
+            const nu = window.__bfp ? window.__bfp.normUrl(msg.url) : msg.url;
+            store['bfp-autoopen:' + nu] = Date.now();
+            persist();
+            log('open-page: ' + msg.url);
+            return { ok: true, created: true, tabId: 99 };
+          }
           case 'reconnect': setTimeout(() => toContent({ t: 'conn', connected: true }), 300); return { ok: true };
           default: return { ok: false, error: 'unknown ' + (msg && msg.t) };
         }
@@ -473,6 +515,11 @@ window.chrome = {
         setTimeout(() => cb && cb(out), 0);
       },
       set(obj, cb) { Object.assign(store, obj); persist(); setTimeout(() => cb && cb(), 0); },
+      remove(key, cb) {
+        for (const k of (Array.isArray(key) ? key : [key])) delete store[k];
+        persist();
+        setTimeout(() => cb && cb(), 0);
+      },
     },
   },
 };
@@ -845,6 +892,72 @@ async function selftest() {
   check('thread deleted', !!await until(() => q('.pane[data-pane="comments"] .card').length === before - 1));
   check('highlight unwrapped from the page', !document.querySelector('mark.bfp-hl[data-bfp="' + doomed + '"]'));
 
+  // ---- Pages: the plugin's own history of annotated pages ----
+  const pane = () => S.querySelector('.pane[data-pane="pages"]');
+  const prows = () => S.querySelectorAll('.pane[data-pane="pages"] .prow');
+  const TUNNEL = 'https://www.longreads.example/2026/tunnel-vision';
+
+  S.querySelector('[data-act="pages"]').click();
+  const rows = await until(() => (prows().length ? prows() : null));
+  check('the pages button swaps the body for the list view',
+    !!rows && !pane().hidden && S.querySelector('.tabs').hidden &&
+    S.querySelector('.pane[data-pane="comments"]').hidden);
+  check('every page the companion knows about is listed', !!rows && rows.length === 4);
+  check('the list is sorted by last activity, newest first',
+    !!rows && [...rows].map(r => r.querySelector('.ptitle').textContent).join(' | ') ===
+      [RECORD.title, 'Tunnel Vision',
+       'The Long Quarter: how a bank talked itself into a very expensive silence',
+       'The committee that never met'].join(' | '));
+  const cur = pane().querySelector('.prow.current');
+  check('the page you are on is marked and dimmed',
+    !!cur && cur === rows[0] && /· this page/.test(cur.textContent) &&
+    parseFloat(getComputedStyle(cur).opacity) < 1);
+  check('…and nothing else is marked', pane().querySelectorAll('.prow.current').length === 1);
+  const other = [...rows].find(r => !r.classList.contains('current'));
+  check('each row carries site, thread count and a relative time',
+    !!other && other.querySelector('.psite').textContent === 'longreads.example' &&
+    other.querySelector('.pcount').textContent === '1 thread' &&
+    other.querySelector('.pwhen').textContent === '2h ago');
+
+  other.querySelector('[data-act="page-export"]').click();
+  check('a row exports ITS page, not the one you are on',
+    !!await until(() => exportPosts.some(u => u === TUNNEL)));
+  check('…and the returned path is reported in the footbar',
+    !!await until(() => /^exported → .*Tunnel Vision\.md/.test(S.querySelector('.footbar').textContent)));
+
+  other.querySelector('.prow-main').click();
+  check('clicking another page asks the background to open it',
+    !!await until(() => openPageCalls.some(u => u === TUNNEL)));
+  check('…and arms the one-shot auto-open flag for that page',
+    store['bfp-autoopen:' + TUNNEL] != null);
+
+  // live: the companion says a page changed while the list is on screen
+  OTHER_PAGES['fakekey0000000000000000000000000000000e'] = {
+    url: 'https://example.com/live/just-annotated',
+    title: 'Just annotated', threads: 1, updated_at: now() };
+  toContent({ t: 'ws', ev: { type: 'page', url: 'https://example.com/live/just-annotated' } });
+  check('a page event refreshes the list while it is open',
+    !!await until(() => prows().length === 5 && /Just annotated/.test(pane().textContent)));
+
+  indexEmpty = true;
+  toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+  check('an empty library says how to start one', !!await until(() => {
+    const e = pane().querySelector('.empty');
+    return !prows().length && e && /nothing annotated yet — highlight some text to start/.test(e.textContent);
+  }));
+  indexEmpty = false;
+
+  S.querySelector('[data-act="pages-back"]').click();
+  check('← Back returns to this page’s comments',
+    !d.isPagesOpen() && !S.querySelector('.pane[data-pane="comments"]').hidden &&
+    pane().hidden && !S.querySelector('.tabs').hidden);
+
+  S.querySelector('[data-act="pages"]').click();
+  const curRow = await until(() => pane().querySelector('.prow.current .prow-main'));
+  if (curRow) curRow.click();
+  check('clicking the row for the page you are on just goes back to it',
+    !!curRow && !d.isPagesOpen() && !S.querySelector('.pane[data-pane="comments"]').hidden);
+
   const bad = out.filter(l => l[0] === '✗');
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
@@ -872,6 +985,7 @@ window.__bfp.activate(false).then(() => {
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     if (Q.get('selftest') === '1') { setTimeout(selftest, 250); return; }
     if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
+    if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
     const demo = Q.get('demo');
     if (demo === 'select') setTimeout(() => demoSelect(true), 250);
     else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);

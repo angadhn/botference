@@ -17,6 +17,10 @@
 //   onEdit(threadId, ts, text)
 //   onDelete(threadId, ts|null)         null ts = delete the whole thread
 //   onExport()                          → {ok, path} to show in the footbar
+//   onPages()                           → {ok, index:{pageKey:{url,title,threads,
+//                                         updated_at}}}                (GET /index)
+//   onOpenPage(url)                     → {ok}  open/focus a tab at that page
+//   onExportPage(url)                   → {ok, path}          (POST /export {url})
 //   onInterrupt()
 //   onJump(threadId)                    quote clicked: scroll page to highlight
 //   onFocus(threadId|null)              card focused/blurred: tint the highlight
@@ -234,6 +238,15 @@
     '<polygon points="85,35 75,120 50,45" fill="#A78BFA"/>' +
     '<polygon points="25,120 75,120 50,45" fill="#7C3AED"/></svg>';
 
+  // Two stacked sheets: the header's own glyph for "every page you have
+  // annotated". Stroked in currentColor so it inherits the icon button's
+  // hover/active colour like the ⚙ and ✕ next to it.
+  const PAGES_SVG =
+    '<svg class="pico" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect x="2.3" y="1.8" width="8.2" height="10.4" rx="1.5"/>' +
+    '<path d="M5.5 14.2h6a1.7 1.7 0 0 0 1.7-1.7V4.7"/></svg>';
+
   function create(opts) {
     opts = opts || {};
     const cb = name => (...args) => (typeof opts[name] === 'function' ? opts[name](...args) : undefined);
@@ -254,6 +267,10 @@
       toolsOpen: {},       // tool-activity disclosure key -> expanded
       focused: null,
       tab: 'comments',
+      // 'threads' = the Comments/Page-chat tabs; 'pages' = the library of every
+      // annotated page, which takes over the whole body and hides the tab bar
+      view: 'threads',
+      pages: { list: null, loading: false, err: '' },
       connected: false,
       connKnown: false,    // false until the background has told us either way
       bridge: '',
@@ -308,6 +325,7 @@
         cCount: shadow.querySelector('.tab[data-tab="comments"] .count'),
         comments: shadow.querySelector('.pane[data-pane="comments"]'),
         chat: shadow.querySelector('.pane[data-pane="chat"]'),
+        pages: shadow.querySelector('.pane[data-pane="pages"]'),
         foot: shadow.querySelector('.footbar'),
         selbtn: shadow.querySelector('.selbtn'),
         pop: shadow.querySelector('.popover.models'),
@@ -315,6 +333,7 @@
       };
       applyWidth(D.width);
       wireEvents();
+      paintView();
       restoreTab();
       restoreWidth();
       return D;
@@ -329,6 +348,7 @@
     <div class="title">—</div>
     <div class="meta"><span class="site"></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
     <div class="acts">
+      <button class="iconbtn pages" data-act="pages" type="button" title="All annotated pages" aria-label="All annotated pages" aria-pressed="false">${PAGES_SVG}</button>
       <button class="iconbtn" data-act="models" type="button" title="Models" aria-label="Models">⚙</button>
       <button class="iconbtn obsidian" data-act="export" type="button" title="Export to Obsidian" aria-label="Export to Obsidian">${OBSIDIAN_SVG}</button>
       <button class="iconbtn" data-act="close" type="button" title="Close (Esc)">✕</button>
@@ -341,6 +361,7 @@
   </nav>
   <div class="pane" data-pane="comments"></div>
   <div class="pane" data-pane="chat" hidden></div>
+  <div class="pane pages" data-pane="pages" hidden></div>
   <div class="footbar"></div>
 </aside>`;
     }
@@ -657,6 +678,83 @@
       </div>`;
     }
 
+    // ---- the Pages view -------------------------------------------------
+    // The plugin's own history: every page the companion has a record for,
+    // browsable from inside the drawer instead of from the council. It is not
+    // a third tab — it replaces the whole body (tabs included) and comes back
+    // with the ← Back button, because it is about OTHER pages while the tabs
+    // are about this one.
+    function hostOf(u) {
+      try { return new URL(String(u)).hostname.replace(/^www\./, ''); } catch { return ''; }
+    }
+    // content.js owns normUrl (it must agree with the background and the
+    // companion); without it, fall back to a plain string compare.
+    function sameUrl(a, b) {
+      if (!a || !b) return false;
+      const n = typeof opts.normUrl === 'function' ? opts.normUrl : String;
+      return n(a) === n(b);
+    }
+    // Two names for the same page: the address content.js is running on, and
+    // the url on the record the companion answered with. They agree in the
+    // browser; in the harness only the record does, so accept either.
+    const isCurrentUrl = u =>
+      sameUrl(u, opts.currentUrl) || sameUrl(u, D.page && D.page.url);
+
+    function pageRowHtml(p) {
+      const n = p.threads | 0;
+      const cur = isCurrentUrl(p.url);
+      return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}">
+        <button class="prow-main" data-act="page-open" data-url="${esc(p.url)}" type="button"
+          title="${esc(cur ? 'back to this page’s comments' : p.url)}">
+          <span class="ptitle">${esc(p.title || p.url)}</span>
+          <span class="pmeta"><span class="psite">${esc(hostOf(p.url))}</span> · <span class="pcount">${n} thread${n === 1 ? '' : 's'}</span> · <span class="pwhen">${esc(relTime(p.updated_at))}</span>${cur ? '<span class="pcur"> · this page</span>' : ''}</span>
+        </button>
+        <button class="rebtn pexport" data-act="page-export" data-url="${esc(p.url)}" type="button"
+          title="Export this page to Obsidian" aria-label="Export this page to Obsidian">${OBSIDIAN_SVG}</button>
+      </div>`;
+    }
+
+    function renderPages() {
+      if (!D.mounted || !D.el.pages) return;
+      const list = D.pages.list;
+      let body;
+      if (!list && D.pages.loading) body = `<div class="empty">loading…</div>`;
+      else if (D.pages.err && !(list && list.length)) {
+        body = `<div class="empty"><b>Could not load your pages</b>${esc(D.pages.err)}</div>`;
+      } else if (!list || !list.length) {
+        body = `<div class="empty">nothing annotated yet — highlight some text to start</div>`;
+      } else {
+        body = list.map(pageRowHtml).join('');
+      }
+      D.el.pages.innerHTML = `<div class="pages-head">
+          <button class="backbtn" data-act="pages-back" type="button" title="Back to this page">← Back</button>
+          <span class="pages-title">All annotated pages</span>
+        </div>${body}`;
+    }
+
+    // /index is a map keyed by pageKey; the list is ours to order — newest
+    // conversation first, which is the only order anybody browses history in.
+    function toPageList(index) {
+      const out = [];
+      for (const k of Object.keys(index || {})) {
+        const v = index[k];
+        if (v && v.url) out.push(v);
+      }
+      return out.sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0));
+    }
+
+    // `quiet` = a live refresh behind an already-populated list: no loading
+    // flicker, and a companion that blinks out leaves the last list on screen.
+    async function loadPages(quiet) {
+      D.pages.loading = !quiet;
+      if (!quiet) { D.pages.err = ''; renderPages(); }
+      const r = await cb('onPages')();
+      D.pages.loading = false;
+      if (r && r.ok !== false) { D.pages.list = toPageList(r.index); D.pages.err = ''; }
+      else D.pages.err = (r && r.error) || 'could not reach the companion';
+      if (D.view === 'pages') renderPages();
+    }
+
     // Full re-render, but never at the cost of what the user is typing or
     // where they are scrolled: drafts are read back into D.drafts first and
     // scroll offsets restored after.
@@ -689,8 +787,24 @@
     function paintTabs() {
       if (!D.mounted) return;
       D.el.tabs.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === D.tab));
-      D.el.comments.hidden = D.tab !== 'comments';
-      D.el.chat.hidden = D.tab !== 'chat';
+      paintView();
+    }
+
+    // One switch decides what the body is: the tabbed thread views, or the
+    // pages library on top of both (tab bar included — there is nothing to
+    // switch between while you are browsing other pages).
+    function paintView() {
+      if (!D.mounted) return;
+      const pages = D.view === 'pages';
+      D.el.tabs.hidden = pages;
+      D.el.pages.hidden = !pages;
+      D.el.comments.hidden = pages || D.tab !== 'comments';
+      D.el.chat.hidden = pages || D.tab !== 'chat';
+      const btn = D.shadow.querySelector('[data-act="pages"]');
+      if (btn) {
+        btn.classList.toggle('on', pages);
+        btn.setAttribute('aria-pressed', pages ? 'true' : 'false');
+      }
     }
 
     function paintConn() {
@@ -1052,6 +1166,10 @@
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
         if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
         if (act === 'export') { doExport(); return; }
+        if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
+        if (act === 'pages-back') { showThreads(); return; }
+        if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
+        if (act === 'page-export') { doExportPage(btn.dataset.url); return; }
         if (act === 'jump') {
           const card = btn.closest('.card');
           if (card && !card.classList.contains('orphaned') && !card.classList.contains('pending')) {
@@ -1176,21 +1294,53 @@
       else render();
     }
 
-    async function doExport() {
+    // One export feedback path, whichever crystal was clicked: the header's
+    // (this page) or a row's in the pages list (that page).
+    async function exportFlow(run) {
       D.foot = 'exporting…'; D.footErr = false; paintFoot();
-      const r = await cb('onExport')();
+      const r = await run();
       if (r && r.ok === false) { D.foot = r.error || 'export failed'; D.footErr = true; }
       else D.foot = 'exported → ' + ((r && r.path) || 'Obsidian');
       paintFoot();
       setTimeout(() => { if (String(D.foot).startsWith('exported')) { D.foot = ''; paintFoot(); } }, 6000);
     }
+    const doExport = () => exportFlow(() => cb('onExport')());
+    const doExportPage = url => exportFlow(() => cb('onExportPage')(url));
+
+    // A row click on the page you are already on has nothing to open: it is
+    // just the way back to this page's comments.
+    async function openPageRow(url) {
+      if (!url) return;
+      if (isCurrentUrl(url)) {
+        D.tab = 'comments';
+        showThreads();
+        rememberTab();
+        return;
+      }
+      const r = await cb('onOpenPage')(url);
+      if (r && r.ok === false) { D.foot = r.error || 'could not open that page'; D.footErr = true; paintFoot(); }
+    }
+
+    function showPages() {
+      mount();
+      D.view = 'pages';
+      paintView();
+      if (!D.pages.list) renderPages();
+      loadPages(!!D.pages.list);
+      return D;
+    }
+    function showThreads() { mount(); D.view = 'threads'; paintTabs(); return D; }
+    // live: `page` events land here while the list is up, and nowhere else
+    function refreshPages() { if (D.view === 'pages') loadPages(true); return D; }
 
     const cssq = s => String(s).replace(/["\\]/g, '\\$&');
 
     // ---- public surface -------------------------------------------------
     function open(tab) {
       mount();
-      if (tab) { D.tab = tab; paintTabs(); rememberTab(); }
+      // being asked for a specific tab (a highlight click, a new comment) is
+      // always about THIS page — leave the pages library if it is up
+      if (tab) { D.tab = tab; D.view = 'threads'; paintTabs(); rememberTab(); }
       D.opened = true;
       // one frame so the CSS transition actually runs on first open
       requestAnimationFrame(() => { D.el.panel.classList.add('open'); pushPage(true); });
@@ -1357,7 +1507,9 @@
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
+      showPages, showThreads, refreshPages,
       isOpen: () => D.opened,
+      isPagesOpen: () => D.view === 'pages',
     });
     return D;
   }

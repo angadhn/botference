@@ -132,6 +132,11 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .iconbtn.obsidian { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px }
 .iconbtn.obsidian .obs { width: 16px; height: 19.2px; display: block }
 .iconbtn.obsidian:hover { border-color: #8B5CF6; background: color-mix(in srgb, #7C3AED 12%, transparent) }
+/* the stacked-pages glyph is stroked in currentColor, so it picks up the same
+   hover/active accent as the ⚙ and ✕ beside it */
+.iconbtn.pages { display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px }
+.iconbtn.pages .pico { width: 15px; height: 15px; display: block }
+.iconbtn.on { color: var(--accent); border-color: var(--accent) }
 
 /* ── agents popover (behind the ⚙) ─────────────────────────────────────── */
 /* One row per agent: logomark + model picker + relay, then a context gauge
@@ -216,8 +221,51 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   border-radius: 7px; background: var(--card); border: 1px solid var(--card-line); color: var(--muted);
 }
 
+/* the tab bar is display:flex, which outranks the UA's [hidden] rule — the
+   pages view hides it outright, so restore it explicitly */
+.tabs[hidden] { display: none }
+
 .pane { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 12px 14px 24px }
 .pane[hidden] { display: none }
+
+/* ── pages: the plugin's own history of annotated pages ────────────────── */
+/* A list, not cards: these are destinations, not conversations. Each row is
+   one button (title + one muted meta line) plus an always-present, quiet
+   Obsidian crystal, exactly like the message-level controls elsewhere. */
+.pane[data-pane="pages"] { padding-top: 0 }
+.pages-head {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+  padding: 11px 0 8px; margin-bottom: 2px;
+  background: var(--bg); border-bottom: 1px solid var(--card-line);
+}
+.backbtn { flex: none; background: transparent; font: 13px/1.2 var(--sans);
+  padding: 5px 9px; min-height: 28px }
+.pages-title { font: 700 12px/1.4 var(--sans); text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted) }
+
+.prow { display: flex; align-items: flex-start; gap: 2px;
+  border-bottom: 1px solid var(--card-line) }
+.prow:last-child { border-bottom: 0 }
+/* where you already are: still listed, visibly not a destination */
+.prow.current { opacity: .58 }
+.prow-main {
+  flex: 1 1 auto; min-width: 0; display: block; text-align: left;
+  border: 0; background: none; border-radius: 8px; padding: 9px 8px; min-height: 34px;
+}
+.prow-main:hover { color: var(--fg); border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 8%, transparent) }
+.ptitle {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font: 600 14px/1.4 var(--sans); color: var(--heading);
+}
+.pmeta { display: block; margin-top: 3px; font: 12px/1.45 var(--sans); color: var(--muted) }
+.pmeta .psite { text-transform: lowercase }
+.pmeta .pcur { color: var(--accent) }
+.prow .pexport { margin-top: 10px; display: inline-flex; align-items: center;
+  justify-content: center; opacity: .35 }
+.prow:hover .pexport, .prow .pexport:focus-visible { opacity: 1 }
+.prow .pexport:hover { color: inherit }
+.prow .pexport .obs { width: 13px; height: 15.6px; display: block }
 .empty { color: var(--muted); font: italic 13px/1.6 var(--sans); padding: 26px 4px; text-align: center }
 .empty b { display: block; font-style: normal; font-size: 14px; color: var(--fg); margin-bottom: 5px }
 

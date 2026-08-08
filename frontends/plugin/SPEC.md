@@ -315,6 +315,14 @@ Contract deltas agreed during live testing — authoritative over the sections a
   gauges with 50% tick, relay buttons, sleeping/off states). Bot replies render
   markdown (safe DOM building, http/https links only). Composers clear only on
   successful send. Export button = inline Obsidian crystal SVG.
+- Pages view: a stacked-pages header button swaps the drawer body to the full
+  annotation history (from `GET /index`, newest first, current page marked); clicking a
+  row makes the background open/focus a tab at that url after arming a one-shot
+  `bfp-autoopen:<normUrl>` flag in chrome.storage.local that content.js consumes on
+  load to auto-open the drawer (`{t:'open-page', url}` / `{t:'autoopen'}` messages;
+  manifest gained the `tabs` permission). Per-row Obsidian export button. Council
+  filing underneath is unchanged — the plugin is simply the primary browser of its own
+  history.
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).

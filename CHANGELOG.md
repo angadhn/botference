@@ -2,6 +2,15 @@
 
 ## 2026-08-08
 
+- **Web annotator: a Pages view — browse your annotation history inside
+  the plugin.** A stacked-pages button in the drawer header lists every
+  annotated page (title, site, thread count, last activity, newest
+  first, current page marked); clicking a row opens or focuses that
+  page in a tab with the drawer already open, and each row carries its
+  own export-to-Obsidian crystal. The council's "Plugin pages" project
+  keeps persisting underneath, but the plugin is now the front door to
+  its own chats.
+
 - **Web annotator: the ⚙ popover is now a small agents panel.** Per
   agent: logomark, model picker, a council-style context gauge (whole
   percents, compact tokens, a tick at the 50% auto-relay threshold) and

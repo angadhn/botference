@@ -211,6 +211,10 @@
     return Drawer.create({
       hostname: HOSTNAME,
       author: 'angadh',
+      // the pages list needs to know which row is the page it is being shown
+      // on; normUrl is ours, not the drawer's, so it is handed over with it
+      currentUrl: URL_NOW,
+      normUrl,
       theme: window.__BFP_THEME || null,
       cssUrl: (chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL('drawer.css') : 'drawer.css',
 
@@ -278,6 +282,25 @@
 
       onExport: async () => {
         const r = await api('POST', '/export', { url: URL_NOW });
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, path: r.data && r.data.path };
+      },
+
+      // ---- the pages library -------------------------------------------
+      // /index is the companion's map of every page it holds a record for.
+      // Fetched fresh through the proxy rather than read off the background's
+      // cache: this list is the whole point of the view, and it is cheap.
+      onPages: async () => {
+        const r = await api('GET', '/index');
+        if (!r.ok) return { ok: false, error: r.error };
+        const d = r.data;
+        return { ok: true, index: (d && typeof d === 'object' && d.ok !== false) ? d : {} };
+      },
+      // opening another page is a tab operation, so only the background can do
+      // it — it also arms the one-shot auto-open flag that page will consume
+      onOpenPage: url => bg({ t: 'open-page', url }),
+      onExportPage: async url => {
+        const r = await api('POST', '/export', { url });
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, path: r.data && r.data.path };
       },
@@ -409,6 +432,13 @@
       sendResponse({ ok: true });
       return;
     }
+    // a row in another tab's pages list asked for this page, and this tab was
+    // already loaded (so nothing would have read the storage flag)
+    if (msg.t === 'autoopen') {
+      activate().then(d => d && d.open());
+      sendResponse({ ok: true });
+      return;
+    }
     if (msg.t === 'conn') {
       if (drawer) drawer.setConn(!!msg.connected);
       sendResponse({ ok: true });
@@ -416,8 +446,11 @@
     }
     if (msg.t === 'ws') {
       const ev = msg.ev || {};
-      if (ev.type === 'page') { if (active) loadPage(); }
-      else if (drawer) drawer.onEvent(ev);
+      if (ev.type === 'page') {
+        if (active) loadPage();
+        // the pages list is a live view of /index; a no-op unless it is up
+        if (drawer) drawer.refreshPages();
+      } else if (drawer) drawer.onEvent(ev);
       sendResponse({ ok: true });
       return;
     }
@@ -425,7 +458,26 @@
   });
 
   // ---- boot ---------------------------------------------------------------------
+  // One-shot: a row clicked in another tab's pages list left a flag for this
+  // normUrl, which means the user asked for this page's drawer even though
+  // they have not clicked anything here. Consume it (delete first, so a crash
+  // between here and open() cannot leave the flag armed forever) and open.
+  const AUTOOPEN_KEY = 'bfp-autoopen:' + URL_NOW;
+  function consumeAutoOpen() {
+    try {
+      chrome.storage.local.get(AUTOOPEN_KEY, r => {
+        if (!r || r[AUTOOPEN_KEY] == null) return;
+        try {
+          if (chrome.storage.local.remove) chrome.storage.local.remove(AUTOOPEN_KEY);
+          else chrome.storage.local.set({ [AUTOOPEN_KEY]: null });
+        } catch { /* ignore */ }
+        activate().then(d => d && d.open());
+      });
+    } catch { /* no storage: the drawer simply stays shut */ }
+  }
+
   function boot() {
+    consumeAutoOpen();
     bg({ t: 'hello', url: location.href }).then(r => {
       if (!r || !r.ok) return;
       if (r.known) {

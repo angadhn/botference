@@ -31,6 +31,16 @@
 //        → {ok:true}
 //   {t:'reconnect'}                   user-visible "retry" affordance
 //        → {ok:true}
+//   {t:'open-page', url}              a row in the drawer's pages list was
+//                                     clicked: focus the tab already showing
+//                                     that normUrl, else open a new one. Also
+//                                     arms a one-shot
+//                                     `bfp-autoopen:<normUrl>` flag in
+//                                     chrome.storage.local so the drawer opens
+//                                     itself on arrival (content.js consumes
+//                                     and deletes it on load).
+//        → {ok:true, focused:true, tabId:N}   an existing tab was raised
+//        → {ok:true, created:true, tabId:N}   a new tab was opened
 //
 // background → content   (chrome.tabs.sendMessage to matching tabs only)
 //
@@ -40,6 +50,9 @@
 //   {t:'conn', connected:bool}        WS opened or dropped
 //   {t:'toggle'}                      the toolbar action was clicked on this
 //                                     tab — activate (or toggle) the drawer
+//   {t:'autoopen'}                    open-page raised a tab that was ALREADY
+//                                     loaded, so no page load will read the
+//                                     storage flag — open the drawer now
 //
 // Fire-and-forget in both directions; nothing here is request/response beyond
 // the sendResponse callbacks listed above.
@@ -214,6 +227,39 @@ function refreshAllBadges() {
   }
 }
 
+// ---- opening a page from the drawer's pages list -------------------------
+// Tab work can only happen here. Matching is on normUrl, not the raw string,
+// so a link with a tracking query or a trailing slash still finds the tab the
+// user already has open instead of duplicating it. The auto-open flag is set
+// BEFORE the tab is created — a fast local page could otherwise finish loading
+// and read storage before the write landed.
+const AUTOOPEN = 'bfp-autoopen:';
+
+async function openPage(rawUrl) {
+  const target = String(rawUrl || '');
+  if (!/^https?:/i.test(target)) return { ok: false, error: 'open-page needs an http(s) url' };
+  const nu = normUrl(target);
+  const key = AUTOOPEN + nu;
+  try { await chrome.storage.local.set({ [key]: Date.now() }); } catch { /* the tab still opens */ }
+
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({}); } catch { tabs = []; }
+  const hit = tabs.find(t => t && t.url && normUrl(t.url) === nu);
+  if (hit) {
+    try { await chrome.tabs.update(hit.id, { active: true }); } catch { /* tab died */ }
+    if (hit.windowId != null) { try { await chrome.windows.update(hit.windowId, { focused: true }); } catch {} }
+    // that tab has already loaded, so nothing there will ever read the flag:
+    // tell its content script directly and take the flag back down again
+    try {
+      await chrome.tabs.sendMessage(hit.id, { t: 'autoopen' });
+      await chrome.storage.local.remove(key);
+    } catch { /* no content script (yet) — the flag covers the next load */ }
+    return { ok: true, focused: true, tabId: hit.id };
+  }
+  const tab = await chrome.tabs.create({ url: target, active: true });
+  return { ok: true, created: true, tabId: tab && tab.id };
+}
+
 // ---- message router ------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = sender && sender.tab ? sender.tab.id : null;
@@ -248,6 +294,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         forceReconnect();
         return { ok: true };
       }
+      case 'open-page': return openPage(msg.url);
       default:
         return { ok: false, error: 'unknown message ' + JSON.stringify(msg && msg.t) };
     }

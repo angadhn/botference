@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Highlight any article, comment on it, @claude / @codex for inline replies, export the lot to Obsidian.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "activeTab", "scripting", "alarms"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs"],
   "host_permissions": ["http://127.0.0.1:4189/*"],
   "background": {
     "service_worker": "background.js"
