@@ -539,7 +539,11 @@ if (Q.get('checklist') === '1') {
 if (Q.get('handles') === '1') {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(22), text: 'Parking this here — the second half is where the argument actually is.' });
   RECORD.page_chat.push({ author: 'mira', ts: iso(18), text: 'I read it the other way round: the first half does the work, the second just restates it.' });
-  RECORD.page_chat.push({ author: 'devraj', ts: iso(14), text: 'Agreed with mira, and the xGA table backs her up.' });
+  // a person's own message is markdown too, links and all — the common case is
+  // exactly this: a pasted url and a word in bold
+  RECORD.page_chat.push({ author: 'devraj', ts: iso(14),
+    text: 'Agreed with mira, and the **xGA table** backs her up: https://example.org/xg-notes\n' +
+          'Also worth reading the [second filing](https://example.com/reports/aragon-part-2).' });
   RECORD.page_chat.push({ author: 'claude', ts: iso(11), text: 'Both readings hold. The **numbers** section is the hinge — it is the only place the piece commits to a claim it could be wrong about.' });
   RECORD.page_chat.push({ author: 'sam-w', ts: iso(6), text: 'Late to this. Can we keep the quote about the tram stop?' });
 }
@@ -1290,9 +1294,10 @@ async function selftest() {
   check('markdown: non-http urls are never linkified',
     !!md && !mdA.some(a => /javascript:/i.test(a.getAttribute('href') || '')) &&
     /\[nope\]\(javascript:alert\)/.test(md.textContent));
-  check('markdown: user messages stay literal',
-    !!S.querySelector('.pane[data-pane="chat"] .reply.mine .ctext') &&
-    !S.querySelector('.pane[data-pane="chat"] .reply.mine .ctext.md'));
+  // People paste links into their own comments too: the SAME renderer runs on
+  // every message, whoever wrote it, and the same safety rules with it.
+  check('markdown: the user’s own messages go through it as well',
+    !!S.querySelector('.pane[data-pane="chat"] .reply.mine .ctext.md'));
 
   // ---- tool activity: one merged, collapsed, hoisted disclosure ----
   const tools = S.querySelectorAll('.pane[data-pane="chat"] .tools');
@@ -1377,6 +1382,50 @@ async function selftest() {
     !!await until(() => !pendingCards().length &&
       replyCount('double-clicked on purpose') === 1, 20000));
   slowPost = 0;
+
+  // ---- your own messages are markdown too --------------------------------
+  // Same renderer as the bots get, same safety rules — people paste links into
+  // their own comments and a pasted link should be a link. What is STORED stays
+  // the raw text, which is what the editor has to hand back.
+  const MINE_MD = 'Filed under **structural**: https://example.org/xg-notes and the ' +
+    '[table](https://example.com/xga) — `4-2-3-1` again.\nNot a link: [nope](javascript:alert).';
+  (await until(freeChat, 8000)).value = MINE_MD;
+  chatSend().click();
+  const mine = await until(() =>
+    [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine:not(.sending) .ctext.md')]
+      .find(x => /Filed under/.test(x.textContent)) || null);
+  check('a message of your own is rendered markdown, not raw text', !!mine);
+  const mineA = mine ? [...mine.querySelectorAll('a')] : [];
+  check('…a markdown link in it becomes a real anchor',
+    mineA.some(a => a.getAttribute('href') === 'https://example.com/xga' &&
+      a.textContent === 'table'));
+  check('…and a url you simply pasted becomes one too',
+    mineA.some(a => a.getAttribute('href') === 'https://example.org/xg-notes'));
+  check('…opened as safely as the bots’ links are',
+    mineA.length > 0 && mineA.every(a => a.getAttribute('target') === '_blank' &&
+      /noopener/.test(a.getAttribute('rel') || '')));
+  check('…bold and inline code render as well',
+    !!mine && !!mine.querySelector('strong') && !!mine.querySelector('code'));
+  check('…and nothing of the syntax is left on screen',
+    !!mine && !/\*\*|\]\(https/.test(mine.textContent));
+  check('the same refusal applies to your own text: no javascript: links',
+    mineA.every(a => /^https?:/i.test(a.getAttribute('href') || '')) &&
+    /\[nope\]\(javascript:alert\)/.test(mine.textContent));
+
+  // the carve-out that matters: editing hands back the RAW markdown, never the
+  // rendered sentence with its syntax stripped out
+  const mineReply = mine.closest('.reply');
+  mineReply.querySelector('[data-act="edit"]').click();
+  const mta = await until(() => mineReply.querySelector('.ctext textarea'));
+  check('editing your own message round-trips the raw markdown, not the rendering',
+    !!mta && mta.value === MINE_MD);
+  mineReply.querySelector('.ctext .cancel').click();
+  check('…and cancelling puts the rendering back',
+    !!await until(() => {
+      const el = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine .ctext.md')]
+        .find(x => /Filed under/.test(x.textContent));
+      return el && el.querySelector('a') ? el : null;
+    }));
 
   // ---- a resend the companion already has ({deduped:true}) ---------------
   const DUP = 'this one gets sent twice';
@@ -1715,6 +1764,36 @@ async function selftest() {
     !/\[x\] Check "structural/.test((msgIn('__page__', listTs) || {}).text || ''));
   tickFail = false;
   d.note('__page__', null);
+
+  // ---- a checklist YOU wrote ---------------------------------------------
+  // Now that every message renders markdown, a checklist in your own message is
+  // a checklist. Nothing about /tick is author-specific — the companion rewrites
+  // the brackets in whichever message the ts points at — so this is here to
+  // prove there is no special case, not to add one.
+  const MY_LIST = 'Before I forget:\n- [ ] check the xGA table\n- [ ] ask about the draw';
+  const mineRow = () => [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine:not(.sending)')]
+    .find(x => /Before I forget/.test(x.textContent)) || null;
+  const myBoxes = () => { const r = mineRow(); return r ? [...r.querySelectorAll('.md-tick')] : []; };
+  (await until(free, 8000)).value = MY_LIST;
+  csend();
+  check('a checklist you wrote yourself renders as real checkboxes too',
+    !!await until(() => myBoxes().length === 2 ? true : null));
+  check('…unticked, and indexed within your message',
+    myBoxes().every(b => !b.checked) &&
+    myBoxes().map(b => b.getAttribute('data-tick')).join(',') === '0,1');
+  const myTs = mineRow().getAttribute('data-ts');
+  myBoxes()[1].click();
+  check('…and ticking one POSTs /tick against your own message',
+    !!await until(() => tickPosts.some(p =>
+      p.ts === myTs && p.index === 1 && p.checked === true && p.thread_id === '__page__')));
+  check('…which the companion wrote into that message’s text',
+    !!await until(() => /- \[x\] ask about the draw/.test((msgIn('__page__', myTs) || {}).text || '')));
+  check('…and the tick that stays on screen is the one it wrote', !!await until(() => {
+    const b = myBoxes();
+    return b.length === 2 && b[1].checked && !b[0].checked ? b : null;
+  }));
+  check('…while the raw brackets never reach the label',
+    !/\[[ xX]\]/.test(mineRow().querySelector('.ctext').textContent));
 
   // ---- per-mention context refresh --------------------------------------
   // The page can change under a live session — that is the whole point of a

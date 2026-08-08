@@ -107,12 +107,17 @@
     return Math.max(W_MIN, Math.min(Math.round(w) || W_DEFAULT, hi));
   }
 
-  // ── markdown, for bot replies only ─────────────────────────────────────
-  // Bot output is untrusted text. Every node below is built with createElement
-  // and textContent — there is no HTML string anywhere on this path, so markup
-  // inside a reply can never become markup on the page. Deliberately tiny:
-  // fenced code, `- `/`1. ` lists, #-headings, blank-line paragraphs,
-  // [text](http…), **bold**, *italic*, `code`. Anything else stays literal.
+  // ── markdown, for every message ────────────────────────────────────────
+  // Bot output is untrusted text; so, for these purposes, is the user's own
+  // (another person's, on a shared companion). Every node below is built with
+  // createElement and textContent — there is no HTML string anywhere on this
+  // path, so markup inside a message can never become markup on the page.
+  // Deliberately tiny: fenced code, `- `/`1. ` lists, `- [ ]` checkboxes,
+  // #-headings, blank-line paragraphs, [text](http…), bare http(s) urls,
+  // **bold**, *italic*, `code`. Anything else stays literal.
+  //
+  // What is STORED is always the raw text. This is a rendering, and the editor
+  // reads the record (findMsg) rather than reading a rendering back.
   const SAFE_URL = /^https?:\/\//i;
   const FENCE = /^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)\s*$/;
   // Any indent, not the usual ≤3: the companion counts a message's checkboxes
@@ -129,8 +134,15 @@
   const TASK = /^\[([ xX])\]\s+(.*)$/;
   const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
   // one alternation, tried left to right: code spans win over emphasis, so
-  // `**not bold**` inside backticks stays literal
-  const INLINE = /(`+)([\s\S]*?)\1|\[([^\]\n]*)\]\(\s*([^()\s]+)\s*\)|\*\*([\s\S]+?)\*\*|\*([^*\n]+)\*/;
+  // `**not bold**` inside backticks stays literal. The bare url comes LAST and
+  // is only ever reached at a position no other rule claimed — the leftmost
+  // match wins, so `[text](http…)` and a url inside backticks are both handled
+  // by the rule above it and never autolinked twice.
+  const INLINE = /(`+)([\s\S]*?)\1|\[([^\]\n]*)\]\(\s*([^()\s]+)\s*\)|\*\*([\s\S]+?)\*\*|\*([^*\n]+)\*|(https?:\/\/[^\s`<>*]+)/;
+  // sentence punctuation is not part of the url: "see https://x.example/a." —
+  // the full stop belongs to the sentence, and a pasted url in brackets keeps
+  // its brackets outside the link
+  const URL_TAIL = /[.,;:!?'"\)\]\}]+$/;
 
   const mk = (tag, cls) => {
     const e = document.createElement(tag);
@@ -163,6 +175,23 @@
         }
       } else if (m[5] !== undefined) mdInline(m[5], out.appendChild(mk('strong')));
       else if (m[6] !== undefined) mdInline(m[6], out.appendChild(mk('em')));
+      else if (m[7] !== undefined) {
+        // A url somebody just pasted, which is what a link in a person's own
+        // message almost always is. Same rules as a markdown link: http(s)
+        // only, opened in a new tab with no window.opener back-reference.
+        let url = m[7], tail = '';
+        const t = URL_TAIL.exec(url);
+        if (t) { tail = t[0]; url = url.slice(0, -tail.length); }
+        if (SAFE_URL.test(url) && url.length > 'https://'.length) {
+          const a = mk('a');
+          a.setAttribute('href', url);
+          a.setAttribute('target', '_blank');
+          a.setAttribute('rel', 'noopener noreferrer');
+          a.textContent = url;
+          out.appendChild(a);
+        } else out.appendChild(document.createTextNode(url));
+        if (tail) out.appendChild(document.createTextNode(tail));
+      }
       s = s.slice(m.index + m[0].length);
     }
     if (s) out.appendChild(document.createTextNode(s));
@@ -584,12 +613,13 @@
       const acts = `<div class="acts">` +
         (mine ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
         `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button></div>`;
-      // Bot text is markdown; the user's own text is exactly what they typed and
-      // stays literal (nobody wants their *asterisks* eaten). The markdown body
-      // is filled in from the DOM side by fillMarkdown() — never as a string.
-      const body = bot
-        ? `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`
-        : `<div class="ctext">${esc(r.text)}</div>`;
+      // EVERY message is markdown now, whoever wrote it — people paste links
+      // into their own comments and expect them to be links. Same renderer as
+      // the bots get, which is the point: it builds DOM with createElement and
+      // textContent (never an HTML string), and only http/https urls become
+      // anchors. What is STORED stays the raw markdown; only the rendering
+      // changes, which is why the editor reads msg.text and not this DOM.
+      const body = `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`;
       return `<div class="reply${bot ? ' bot' : ''}${mine ? ' mine' : ''}" data-ts="${esc(r.ts)}" style="--author:${authorColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}</div>`;
@@ -773,9 +803,11 @@
             `<button class="rebtn retry" data-act="send-retry" data-target="${esc(target)}" data-out="${esc(e.id)}" type="button" title="send it again">↻ retry</button>` +
             `<button class="rebtn discard" data-act="send-discard" data-target="${esc(target)}" data-out="${esc(e.id)}" type="button" title="put it back in the box" aria-label="discard">✕</button></div>`
           : `<div class="sendstate"><span class="spin">◐</span><span class="stext">${esc(SENDING_TEXT)}</span></div>`;
+        // rendered exactly like the settled message it is about to become, so
+        // nothing reflows or reformats under the reader when it lands
         return `<div class="reply mine sending${failed ? ' failed' : ''}" data-out="${esc(e.id)}" style="--author:${authorColor(author)}">
           <span class="who"><span class="author">${esc(author)}</span><span class="when">now</span></span>
-          <div class="ctext">${esc(e.text)}</div>${state}</div>`;
+          <div class="ctext md" data-md="${esc(mdSlot(e.text))}"></div>${state}</div>`;
       }).join('');
     }
 
@@ -1739,7 +1771,13 @@
       const target = btn.dataset.target, ts = btn.dataset.ts;
       if (!reply || reply.querySelector('textarea')) return;
       const body = reply.querySelector('.ctext');
-      const old = body ? body.textContent : '';
+      // The RAW stored text, never the rendered DOM. Messages are markdown on
+      // screen now, so reading textContent back would hand the user their own
+      // sentence with the syntax stripped out — and then save that as the
+      // message. The record is the only source of truth for an editor.
+      const msg = findMsg(target, ts);
+      const old = msg && msg.text != null ? String(msg.text)
+        : (body ? body.textContent : '');
       body.innerHTML = `<div class="composer" data-target="__edit__">
         <textarea rows="2">${esc(old)}</textarea>
         <div class="crow"><span class="hint"></span><button class="cancel" type="button">Cancel</button><button class="send" type="button">Save</button></div></div>`;

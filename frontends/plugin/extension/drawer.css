@@ -554,6 +554,10 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .sendstate .spin { display: inline-block; animation: bfp-spin 1s linear infinite; color: var(--accent) }
 .sendstate .rebtn { opacity: 1; padding: 1px 5px; min-height: 20px; font-size: 12px }
 .sendstate .retry { color: var(--accent); text-decoration: underline }
+/* a checklist in a message that has not been saved yet has no `ts` for the
+   companion to tick against — the boxes are drawn, they simply do not take
+   clicks until the message is real */
+.reply.sending .md-tick { pointer-events: none; opacity: .6 }
 .sendstate .retry:hover { color: var(--accent-hover) }
 
 /* ── composers ─────────────────────────────────────────────────────────── */
