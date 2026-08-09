@@ -462,7 +462,9 @@ process.stdin.on("data", d => { s += d; }).on("end", () => {
   let list = [];
   try { list = JSON.parse(s); } catch { }
   if (!Array.isArray(list)) list = [];
-  const t = list.find(x => x && x.name === process.argv[1] && !x.deleted_at);
+  // live tunnels carry deleted_at "0001-01-01T00:00:00Z" (Go zero time), not null
+  const gone = d => d && !String(d).startsWith("0001-");
+  const t = list.find(x => x && x.name === process.argv[1] && !gone(x.deleted_at));
   if (t && t.id) console.log(t.id);
 });' "$name"
 }

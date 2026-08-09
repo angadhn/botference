@@ -170,7 +170,7 @@ state="$HOME/.cloudflared/fake-tunnels.json"
 case "$1 $2" in
   "tunnel list") [ -f "$state" ] && cat "$state" || echo '[]' ;;
   "tunnel create")
-    printf '[{"id":"${UUID}","name":"%s","deleted_at":null}]\\n' "$3" > "$state"
+    printf '[{"id":"${UUID}","name":"%s","deleted_at":"0001-01-01T00:00:00Z"}]\\n' "$3" > "$state"
     : > "$HOME/.cloudflared/${UUID}.json" ;;
   "tunnel route")
     if [ "\${CFD_ROUTE_TAKEN:-}" = 1 ]; then
