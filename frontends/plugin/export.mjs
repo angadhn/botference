@@ -55,7 +55,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all') {
       `url: ${page.url}`,
       `site: ${page.site || ''}`,
       `saved: ${now.toISOString().slice(0, 10)}`,
-      'tags: [web-annotation]',
+      'tags: [botference-discuss]',
       '---'].join('\n'),
     `# ${page.title || page.url}`,
   ];
