@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Botference Web Annotator",
+  "name": "Botference Discuss",
   "version": "1.0.0",
-  "description": "Highlight, comment and summon @claude / @codex on any page. Needs the botference companion: run 'botference plugin'.",
+  "description": "Discuss any page with Claude and Codex: highlight, comment, @-mention the bots, export to Obsidian. Needs the companion: run 'botference discuss'.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs"],
   "host_permissions": [

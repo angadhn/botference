@@ -12,7 +12,8 @@ _botference() {
     'archive:archive current thread, restore blank templates'
     'build:build loop (default)'
     'review:set up + serve the document-review interface'
-    'plugin:serve the web-annotator companion for the browser extension'
+    'discuss:serve Discuss — annotate and discuss any web page with the bots'
+    'plugin:alias for discuss (the original name; still works)'
     'see:headless screenshots of a URL or running service (agent eyes)'
     'service:managed long-lived processes (servers, tunnels)'
     'help:show usage'
@@ -35,7 +36,7 @@ _botference() {
         '--upgrade[refresh engine files in an existing review/]' \
         '*:document repo:_files -/'
       ;;
-    plugin)
+    plugin|discuss)
       _arguments \
         '--share[hosted mode + cloudflared tunnel: one shareable URL + password]' \
         '--hosted[password-protected hosted mode (PLUGIN_PASSWORD)]' \

@@ -73,7 +73,7 @@ export const PROXY_HEADERS = [
 // tunnel. This is the whole owner/guest boundary, so it is deliberately three
 // independent tests, ALL of which must pass:
 //
-//   1. Host names this machine. A named tunnel (plugin.botference.com) carries
+//   1. Host names this machine. A named tunnel (discuss.botference.com) carries
 //      its public hostname here, because cloudflared forwards Host unchanged.
 //   2. No proxy headers. cloudflared's own hop to the companion also comes
 //      from 127.0.0.1, so the socket alone cannot tell tunnel traffic apart —
@@ -176,7 +176,7 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
 
   // An approved device is the owner outright, with nothing typed. This is the
   // review hub's own cookie, verified with the hub's own secret: a browser the
-  // owner approved for review.botference.com arrives at plugin.botference.com
+  // owner approved for review.botference.com arrives at discuss.botference.com
   // already carrying it, because the hub scopes it to the parent domain.
   const approvedDevice = req => !!deviceSession(cookieOf(req, 'hub_device'));
 
@@ -244,7 +244,7 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   function gatePage(next, bad, handle) {
     return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Web annotations</title>
+<title>Botference Discuss</title>
 <style>
 :root { --bg:#faf7f0; --fg:#2a2419; --muted:#8a7f6d; --card:#fff; --line:#e7dfd1;
   --accent:#d97757; --accent-hover:#c05f3f }
@@ -271,8 +271,8 @@ button:hover { background:var(--accent-hover) }
 .err { color:var(--accent); font-size:.85rem; margin:.7rem 0 0 }
 </style></head><body>
 <form method="POST" action="/auth">
-<h1>Web annotations</h1>
-<p>These pages are password-protected.</p>
+<h1>Botference Discuss</h1>
+<p>The annotated pages are password-protected.</p>
 <label for="g-handle">your name</label>
 <input id="g-handle" name="handle" value="${escHtml(handle || '')}" placeholder="e.g. ada" maxlength="40"
   autofocus autocapitalize="none" autocorrect="off" autocomplete="nickname" aria-label="your name">

@@ -137,7 +137,7 @@ test('--help documents the sharing flags and the sticky workspace', () => {
   assert.equal(r.code, 0);
   for (const bit of ['--share', '--hosted', '--here', 'PLUGIN_PASSWORD', 'grants.json',
     'sticky', 'plugin-workspace', '/pages', '--install-tunnel', '--uninstall-tunnel',
-    'plugin.botference.com', 'plugin-password']) {
+    'discuss.botference.com', 'plugin-password']) {
     assert.ok(r.out.includes(bit), `plugin_usage must mention ${bit}`);
   }
 });
@@ -209,13 +209,29 @@ exit 0`);
   const logLines = f => (fs.existsSync(f) ? read(f).trim().split('\n').filter(Boolean) : []);
 
   test('the ingress config points the hostname at the local companion, and 404s the rest', () => {
-    const r = tsh(`plugin_tunnel_config "${UUID}" /creds.json plugin.botference.com 4189`);
+    const r = tsh(`plugin_tunnel_config "${UUID}" /creds.json 4189 discuss.botference.com`);
     assert.match(r.out, /^tunnel: 11111111-2222-3333-4444-555555555555$/m);
     assert.match(r.out, /^credentials-file: \/creds\.json$/m);
-    assert.match(r.out, /^ {2}- hostname: plugin\.botference\.com$/m);
+    assert.match(r.out, /^ {2}- hostname: discuss\.botference\.com$/m);
     assert.match(r.out, /^ {4}service: http:\/\/127\.0\.0\.1:4189$/m);
     assert.match(r.out, /^ {2}- service: http_status:404$/m,
       'without a catch-all rule cloudflared refuses to start');
+  });
+
+  test('the old address is a second ingress rule, not a redirect', () => {
+    // one companion answering on two hostnames is what makes the rename
+    // free: an old bookmark reaches the same annotations, not a forward
+    const r = tsh(`plugin_tunnel_config "${UUID}" /creds.json 4189 `
+      + 'discuss.botference.com plugin.botference.com');
+    const lines = r.out.trim().split('\n');
+    const ingress = lines.slice(lines.indexOf('ingress:') + 1);
+    assert.deepEqual(ingress, [
+      '  - hostname: discuss.botference.com',
+      '    service: http://127.0.0.1:4189',
+      '  - hostname: plugin.botference.com',
+      '    service: http://127.0.0.1:4189',
+      '  - service: http_status:404',
+    ], 'the canonical hostname is first, and the catch-all is last');
   });
 
   test('the tunnel LaunchAgent runs cloudflared and never gives up on it', () => {
@@ -244,7 +260,9 @@ exit 0`);
     assert.equal(r.code, 0, r.out);
     const cfd = logLines(cfdLog).join('\n');
     assert.match(cfd, /^tunnel create botference-plugin$/m);
-    assert.match(cfd, /^tunnel route dns botference-plugin plugin\.botference\.com$/m);
+    assert.match(cfd, /^tunnel route dns botference-plugin discuss\.botference\.com$/m);
+    assert.match(cfd, /^tunnel route dns botference-plugin plugin\.botference\.com$/m,
+      'and the address from before the rename, so old bookmarks still land');
     assert.ok(fs.existsSync(CONFIG), 'the ingress config is written');
     assert.match(read(CONFIG), new RegExp(`credentials-file: ${p('.cloudflared', `${UUID}.json`)}`));
     assert.ok(fs.existsSync(TUNNEL_AGENT), 'the tunnel LaunchAgent is installed');
@@ -254,7 +272,13 @@ exit 0`);
     const lc = logLines(lcLog).join('\n');
     assert.match(lc, /bootstrap gui\/\d+ .*com\.botference\.plugin-tunnel\.plist/);
     assert.match(lc, /bootstrap gui\/\d+ .*com\.botference\.plugin-web\.plist/);
-    assert.match(r.out, /https:\/\/plugin\.botference\.com\/pages/, 'and it says where to go');
+    assert.match(r.out, /https:\/\/discuss\.botference\.com\/pages {3}← the canonical address/,
+      'and it says where to go, and which of the two is the real one');
+    assert.match(r.out, /https:\/\/plugin\.botference\.com\/pages {3}\(the old one/);
+    const cfg = read(CONFIG);
+    assert.ok(cfg.includes('- hostname: discuss.botference.com')
+      && cfg.includes('- hostname: plugin.botference.com'),
+      'both hostnames are served by the one companion');
   });
 
   test('the companion agent moves to hosted mode, and never carries the password', () => {
@@ -290,7 +314,7 @@ exit 0`);
     const line = logLines(nodeLog).pop() || '';
     assert.match(line, /server\.mjs --hosted\|/, line);
     assert.equal(line.split('|').pop(), pw, 'the server is handed the password from the file');
-    assert.match(r.out, /public address: https:\/\/plugin\.botference\.com\/pages/,
+    assert.match(r.out, /public address: https:\/\/discuss\.botference\.com\/pages/,
       'and a hosted companion behind the tunnel says where it can be reached');
   });
 

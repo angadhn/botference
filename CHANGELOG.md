@@ -2,6 +2,23 @@
 
 ## 2026-08-09
 
+- **botference.com is art-led now.** The landing page is the braid, drawn as responsive SVG instead of the raster share card, one sentence, the clone line, and one screenshot per surface (Council, Discuss) with a single caption each — the feature grids, transcript, quickstart steps and FAQ prose are gone, the FAQ surviving as a collapsed `<details>` so the FAQPage schema still matches what a reader can see.
+
+- **The web annotator is now Discuss, at discuss.botference.com.** It had
+  been "the plugin" — a name describing how it was wired rather than what
+  it is for, which is discussing whatever you are reading with Claude and
+  Codex. The extension calls itself Botference Discuss, so do the reading
+  room and the sign-in page, and `botference discuss` is the command
+  (`botference plugin` keeps working, and always will). Nothing under the
+  hood was renamed on purpose: your annotations, LaunchAgents, service
+  names and workspace memo all stay exactly where they are, so there is
+  nothing to migrate and nothing you typed last week to unlearn.
+  `plugin.botference.com` is still answered too — the tunnel serves both
+  addresses from one companion rather than redirecting, so an old
+  bookmark or an extension you configured before the rename lands on the
+  same annotations. Bookmark the new one; it is the one the installer
+  prints.
+
 - **Web annotator: your phone can annotate, not just read.** Until now a
   phone could see the conversation about a page but never the page, so
   the one thing you actually wanted to do out there — mark a sentence

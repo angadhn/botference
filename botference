@@ -44,10 +44,14 @@ if [ "${1:-}" = "see" ]; then
   exit $?
 fi
 
-# --- plugin mode: serve the web-annotator companion for the browser
-# extension (annotation storage, Obsidian export, agent bridge). Same
-# early-exit shape as review: it execs the node server. ---
-if [ "${1:-}" = "plugin" ]; then
+# --- discuss mode: serve the Discuss companion for the browser extension
+# (annotation storage, Obsidian export, agent bridge). Same early-exit
+# shape as review: it execs the node server.
+#
+# 'plugin' is the original name and stays an accepted spelling for good:
+# the product was renamed, but the command, the data directories and the
+# LaunchAgent labels were not, so nothing anyone typed or stored breaks. ---
+if [ "${1:-}" = "plugin" ] || [ "${1:-}" = "discuss" ]; then
   shift
   source "${BOTFERENCE_HOME}/lib/plugin.sh"
   export BOTFERENCE_ACTIVE_MODE="plugin"

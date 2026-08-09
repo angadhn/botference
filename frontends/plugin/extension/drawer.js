@@ -884,7 +884,7 @@
     function shell() {
       return `
 <button class="selbtn" type="button" title="Comment on this selection"><span class="glyph">💬</span>comment</button>
-<aside class="panel" role="complementary" aria-label="Botference annotations">
+<aside class="panel" role="complementary" aria-label="Botference Discuss">
   <div class="grip" title="Drag to resize · double-click to reset" role="separator" aria-orientation="vertical"></div>
   <div class="hdr">
     <div class="title">—</div>

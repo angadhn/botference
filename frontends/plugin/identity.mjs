@@ -6,7 +6,7 @@
 //   · an APPROVED DEVICE — `hub_device = exp.<deviceId>.<hmac>`, signed with
 //     ~/.botference/.review-hub-device-secret, 365 days, and scoped to the
 //     PARENT domain (Domain=botference.com) so every subdomain sees it. The
-//     annotator lives at plugin.botference.com, which is inside that scope, so
+//     annotator lives at discuss.botference.com, which is inside that scope, so
 //     a browser the owner already approved for the review portal arrives here
 //     already carrying proof. Nothing to enrol, nothing to type.
 //   · an OWNER PASSWORD — resolved by hub.mjs's ownerPassword() as

@@ -236,9 +236,9 @@ export function pagesView({ index, me, snapshots }) {
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
 <div class="meta">${escHtml(row.url)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div></li>`)
     .join('\n');
-  return shell('Annotated pages', `
+  return shell('Botference Discuss', `
 <header>${whoBadge(me)}
-<h1>Annotated pages</h1>
+<h1>Botference Discuss</h1>
 <p class="sub">everything highlighted and discussed in this workspace</p>
 </header>
 ${rows ? `<ul class="pages">${rows}</ul>` : '<p class="empty">No pages have been annotated yet.</p>'}`);

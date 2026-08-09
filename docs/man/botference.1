@@ -11,13 +11,13 @@ botference \- a multi-LLM planning council for the terminal
 .B botference review
 [\fIdir\fR] [\fB\-\-share\fR [\fB\-\-service\fR]] [\fB\-\-hosted\fR] [\fB\-\-port\fR \fIN\fR] [\fB\-\-no-agents\fR] [\fB\-\-upgrade\fR]
 .br
-.B botference plugin
+.B botference discuss
 [\fB\-\-port\fR \fIN\fR] [\fB\-\-service\fR] [\fB\-\-no-agents\fR] [\fB\-\-hosted\fR] [\fB\-\-share\fR [\fB\-\-service\fR]] [\fB\-\-here\fR]
 .br
-.B botference plugin
+.B botference discuss
 \fB\-\-install-autostart\fR | \fB\-\-uninstall-autostart\fR
 .br
-.B botference plugin
+.B botference discuss
 \fB\-\-install-tunnel\fR | \fB\-\-uninstall-tunnel\fR
 .br
 .B botference service
@@ -101,8 +101,12 @@ tunnel) under the managed service lifecycle, named after the directory
 unless \fB\-\-service-name\fR \fINAME\fR says otherwise; its ledger
 belongs to the paper's own directory, so stop it from there.
 .TP
-.B plugin
-Serve the web-annotator companion server for the browser extension
+.B discuss
+Serve \fBDiscuss\fR, the companion server for the browser extension.
+\fBplugin\fR is an accepted alias and remains one: the product was
+renamed, but the command, the \fI.botference/plugin\fR data directories
+and the \fBcom.botference.plugin-*\fR LaunchAgent labels were not, so
+nothing anyone typed or stored has to change.
 (load \fIfrontends/plugin/extension\fR once via the browser's
 "Load unpacked"): highlight text on any static article page, leave
 comments, and \- when a comment or reply mentions \fB@claude\fR,
@@ -119,7 +123,7 @@ companion detached under the managed service lifecycle as
 \fBplugin-web\fR (stop with \fBbotference service stop plugin-web\fR).
 Config (Obsidian vault path, export folder) in
 \fI.botference/plugin/config.json\fR. The workspace is sticky: after the
-first run, \fBbotference plugin\fR from any directory reuses the
+first run, \fBbotference discuss\fR from any directory reuses the
 recorded workspace (\fB\-\-here\fR forces the current directory).
 \fB\-\-hosted\fR (requires PLUGIN_PASSWORD) adds a password gate with
 per-guest handles so collaborators see and comment on the same threads;
@@ -181,7 +185,10 @@ Cloudflare) replaces \fB\-\-share\fR's disposable
 \fItrycloudflare.com\fR URL with one permanent address you can bookmark
 on a phone. It creates \- or reuses, so it is safe to re-run \- the
 named tunnel \fBbotference-plugin\fR, routes
-\fIplugin.botference.com\fR to it, writes
+\fIdiscuss.botference.com\fR to it (and keeps
+\fIplugin.botference.com\fR, the address from before the rename, routed
+and served by the same companion through a second ingress rule, so old
+bookmarks and configured extensions still land), writes
 \fI~/.cloudflared/botference-plugin.yml\fR (one ingress rule to
 \fIhttp://127.0.0.1:4189\fR plus the catch-all cloudflared insists on),
 installs a second LaunchAgent \fBcom.botference.plugin-tunnel\fR that
@@ -194,8 +201,9 @@ password is generated once \- four words and a number \- and kept in
 into a plist, because launchd runs the launcher and \fB\-\-hosted\fR
 with no \fBPLUGIN_PASSWORD\fR in the environment reads that file. The
 URL and the password are printed at the end. Override the address with
-\fBBOTFERENCE_PLUGIN_HOSTNAME\fR and the tunnel name with
-\fBBOTFERENCE_PLUGIN_TUNNEL\fR. No inbound port is opened: cloudflared
+\fBBOTFERENCE_PLUGIN_HOSTNAME\fR, the legacy one with
+\fBBOTFERENCE_PLUGIN_LEGACY_HOSTNAME\fR (empty to drop it), and the
+tunnel name with \fBBOTFERENCE_PLUGIN_TUNNEL\fR. No inbound port is opened: cloudflared
 dials out. This machine stays the unauthenticated owner on
 \fI127.0.0.1\fR while everything arriving through the tunnel is a
 guest \- told apart by the \fBHost\fR header and by the \fBCF-*\fR /
@@ -517,6 +525,7 @@ a sandbox CSP with an opaque origin.
 .BR PLUGIN_PASSWORD ,
 .BR PLUGIN_OWNER_PASSWORD ,
 .BR BOTFERENCE_PLUGIN_HOSTNAME ,
+.BR BOTFERENCE_PLUGIN_LEGACY_HOSTNAME ,
 .BR BOTFERENCE_PLUGIN_TUNNEL .
 See \fBbotference --help\fR for details.
 .SH EXAMPLES

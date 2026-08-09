@@ -78,7 +78,7 @@ function acquireLock() {
     let l = null;
     try { l = JSON.parse(fs.readFileSync(lockFile, 'utf8')); } catch { }
     if (l && l.pid !== process.pid && alive(l.pid)) {
-      console.error(`another web-annotator companion is attached to this workspace (pid ${l.pid}) — close it first`);
+      console.error(`another Discuss companion is attached to this workspace (pid ${l.pid}) — close it first`);
       process.exit(1);
     }
   }

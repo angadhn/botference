@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# ── botference plugin ────────────────────────────────────────
-# Serves the web-annotator companion (frontends/plugin/server.mjs): the
+# ── botference discuss (a.k.a. plugin) ───────────────────────
+# Serves the Discuss companion (frontends/plugin/server.mjs): the
 # local backend for the browser extension — annotation storage, Obsidian
 # export, and the agent bridge that answers @claude/@codex mentions made
 # on web pages. The launcher stays thin: all behavior lives in the node
@@ -10,15 +10,18 @@
 
 plugin_usage() {
   cat <<'HELP'
-Usage: botference plugin [--port N] [--service] [--no-agents] [--agents] [--here]
-       botference plugin --share [--service]
-       botference plugin --hosted [--service]
-       botference plugin --install-autostart [--port N] [--no-agents]
-       botference plugin --uninstall-autostart
-       botference plugin --install-tunnel [--port N] [--no-agents]
-       botference plugin --uninstall-tunnel
+Usage: botference discuss [--port N] [--service] [--no-agents] [--agents] [--here]
+       botference discuss --share [--service]
+       botference discuss --hosted [--service]
+       botference discuss --install-autostart [--port N] [--no-agents]
+       botference discuss --uninstall-autostart
+       botference discuss --install-tunnel [--port N] [--no-agents]
+       botference discuss --uninstall-tunnel
 
-Serve the web-annotator companion server for the browser extension
+('botference plugin' is the same command, and always will be — the
+product is called Discuss, the plumbing is still called plugin.)
+
+Serve the Discuss companion server for the browser extension
 (frontends/plugin/extension — load it once via brave://extensions →
 "Load unpacked"). Highlight text on any static article page, comment,
 @-mention bots for inline replies, export pages to Obsidian.
@@ -78,7 +81,7 @@ random tunnel every session:
   --install-tunnel    Give the companion a permanent public address:
                       creates (or reuses) the named cloudflared tunnel
                       'botference-plugin', routes DNS for
-                      plugin.botference.com to it, writes
+                      discuss.botference.com to it, writes
                       ~/.cloudflared/botference-plugin.yml, installs a
                       second LaunchAgent (com.botference.plugin-tunnel)
                       that runs the tunnel at every login, and switches
@@ -86,12 +89,16 @@ random tunnel every session:
                       password generated once and kept in
                       ~/.botference/plugin-password (0600, never in the
                       plist). Prints the URL and the password.
+                      plugin.botference.com — the address before the
+                      rename — is routed and served alongside it, so old
+                      bookmarks and extensions keep working.
   --uninstall-tunnel  Stop and remove the tunnel LaunchAgent and put the
                       companion back to plain localhost mode. The
-                      Cloudflare tunnel and its DNS record are left
+                      Cloudflare tunnel and its DNS records are left
                       alone, so re-installing is one command
-Override the address with BOTFERENCE_PLUGIN_HOSTNAME (and the tunnel
-name with BOTFERENCE_PLUGIN_TUNNEL) if the domain is not this one.
+Override the address with BOTFERENCE_PLUGIN_HOSTNAME (the legacy one with
+BOTFERENCE_PLUGIN_LEGACY_HOSTNAME, empty to drop it) and the tunnel name
+with BOTFERENCE_PLUGIN_TUNNEL, if the domain is not this one.
 HELP
 }
 
@@ -331,7 +338,13 @@ plugin_autostart_install() {
 
 PLUGIN_TUNNEL_LABEL="com.botference.plugin-tunnel"
 PLUGIN_TUNNEL_NAME="${BOTFERENCE_PLUGIN_TUNNEL:-botference-plugin}"
-PLUGIN_TUNNEL_HOSTNAME="${BOTFERENCE_PLUGIN_HOSTNAME:-plugin.botference.com}"
+# The product is called Discuss and lives at discuss.botference.com. Only the
+# NAME moved: the label, the tunnel, the data directories and the command are
+# all still 'plugin', because renaming those would cost a migration and buy
+# nothing. plugin.botference.com stays routed as a legacy door so a bookmark or
+# a configured extension made before the rename keeps working.
+PLUGIN_TUNNEL_HOSTNAME="${BOTFERENCE_PLUGIN_HOSTNAME:-discuss.botference.com}"
+PLUGIN_TUNNEL_LEGACY_HOSTNAME="${BOTFERENCE_PLUGIN_LEGACY_HOSTNAME-plugin.botference.com}"
 PLUGIN_TUNNEL_DIR="${HOME}/.cloudflared"
 PLUGIN_TUNNEL_CONFIG="${PLUGIN_TUNNEL_DIR}/${PLUGIN_TUNNEL_NAME}.yml"
 PLUGIN_PASSWORD_FILE="${HOME}/.botference/plugin-password"
@@ -404,23 +417,28 @@ _plugin_owner_password() {
 }
 
 # Emit the cloudflared config on stdout. Pure function of its arguments.
-#   plugin_tunnel_config <tunnel-uuid> <credentials-file> <hostname> <port>
-# The catch-all 404 is not decoration: without it cloudflared refuses to start,
-# and with it a request for any other hostname routed here is answered rather
-# than handed to the companion.
+#   plugin_tunnel_config <tunnel-uuid> <credentials-file> <port> <hostname…>
+# Every hostname gets its own ingress rule to the same local service, which is
+# how the canonical address and the legacy one are the same companion rather
+# than a redirect. The catch-all 404 is not decoration: without it cloudflared
+# refuses to start, and with it a request for any other hostname routed at this
+# tunnel is answered rather than handed to the companion.
 plugin_tunnel_config() {
-  local uuid=$1 creds=$2 hostname=$3 port=$4
-  cat <<YAML
-# botference — web annotator companion, permanent public address.
-# Written by 'botference plugin --install-tunnel'; edit at your own risk.
-tunnel: ${uuid}
-credentials-file: ${creds}
-no-autoupdate: true
-ingress:
-  - hostname: ${hostname}
-    service: http://127.0.0.1:${port}
-  - service: http_status:404
-YAML
+  local uuid=$1 creds=$2 port=$3
+  shift 3
+  printf '%s\n' '# botference Discuss — companion, permanent public address.'
+  printf '%s\n' "# Written by 'botference discuss --install-tunnel'; edit at your own risk."
+  printf 'tunnel: %s\n' "$uuid"
+  printf 'credentials-file: %s\n' "$creds"
+  printf '%s\n' 'no-autoupdate: true'
+  printf '%s\n' 'ingress:'
+  local h
+  for h in "$@"; do
+    [ -n "$h" ] || continue
+    printf '  - hostname: %s\n' "$h"
+    printf '    service: http://127.0.0.1:%s\n' "$port"
+  done
+  printf '%s\n' '  - service: http_status:404'
 }
 
 # Emit the tunnel LaunchAgent XML on stdout. Same shape as the companion's:
@@ -596,7 +614,7 @@ plugin_tunnel_install() {
   mkdir -p "$logdir" "$PLUGIN_TUNNEL_DIR" "$PLUGIN_AUTOSTART_DIR" || return 1
 
   echo ""
-  echo "🌐 Giving the web annotator a permanent address: https://${PLUGIN_TUNNEL_HOSTNAME}"
+  echo "🌐 Giving Discuss a permanent address: https://${PLUGIN_TUNNEL_HOSTNAME}"
   echo ""
 
   # 1. the tunnel itself — reuse before create, so this is safe to re-run
@@ -630,28 +648,54 @@ plugin_tunnel_install() {
 
   # 2. DNS — a CNAME for the hostname at <uuid>.cfargotunnel.com. Already
   # pointing at this tunnel is success, not failure.
-  local dns_out dns_rc=0
-  dns_out=$(cloudflared tunnel route dns "$PLUGIN_TUNNEL_NAME" "$PLUGIN_TUNNEL_HOSTNAME" 2>&1) || dns_rc=$?
-  if [ "$dns_rc" -eq 0 ]; then
-    echo "   2/6 DNS: ${PLUGIN_TUNNEL_HOSTNAME} → this tunnel"
-  elif printf '%s' "$dns_out" | grep -qiE 'already (exists|configured)|record with that host'; then
-    echo "   2/6 DNS: ${PLUGIN_TUNNEL_HOSTNAME} was already routed here"
-  else
+  #   _plugin_route_dns <hostname> ; 0 = routed (or already was)
+  _plugin_route_dns() {
+    local host=$1 out rc=0
+    out=$(cloudflared tunnel route dns "$PLUGIN_TUNNEL_NAME" "$host" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      PLUGIN_DNS_NOTE="${host} → this tunnel"
+      return 0
+    fi
+    if printf '%s' "$out" | grep -qiE 'already (exists|configured)|record with that host'; then
+      PLUGIN_DNS_NOTE="${host} was already routed here"
+      return 0
+    fi
+    PLUGIN_DNS_NOTE="$out"
+    return 1
+  }
+  if ! _plugin_route_dns "$PLUGIN_TUNNEL_HOSTNAME"; then
     echo "✗ could not route ${PLUGIN_TUNNEL_HOSTNAME} to the tunnel:" >&2
-    printf '   %s\n' "$dns_out" >&2
+    printf '   %s\n' "$PLUGIN_DNS_NOTE" >&2
     echo "   (is ${PLUGIN_TUNNEL_HOSTNAME#*.} a zone on this Cloudflare account?)" >&2
     return 1
   fi
+  echo "   2/6 DNS: ${PLUGIN_DNS_NOTE}"
+  # The legacy door is a courtesy, not a requirement: if it cannot be routed
+  # (a fresh account, a zone that is not yours) say so and carry on.
+  local legacy_ok=false
+  if [ -n "$PLUGIN_TUNNEL_LEGACY_HOSTNAME" ] \
+    && [ "$PLUGIN_TUNNEL_LEGACY_HOSTNAME" != "$PLUGIN_TUNNEL_HOSTNAME" ]; then
+    if _plugin_route_dns "$PLUGIN_TUNNEL_LEGACY_HOSTNAME"; then
+      legacy_ok=true
+      echo "       also: ${PLUGIN_DNS_NOTE}  (the old address, still answered)"
+    else
+      echo "       note: ${PLUGIN_TUNNEL_LEGACY_HOSTNAME} could not be routed — skipping it."
+      echo "             the new address is unaffected."
+    fi
+  fi
 
-  # 3. the ingress config
+  # 3. the ingress config — one rule per hostname, all to the same companion
+  local hosts=("$PLUGIN_TUNNEL_HOSTNAME")
+  $legacy_ok && hosts+=("$PLUGIN_TUNNEL_LEGACY_HOSTNAME")
   local cfg_tmp="${PLUGIN_TUNNEL_CONFIG}.tmp.$$"
-  plugin_tunnel_config "$uuid" "$creds" "$PLUGIN_TUNNEL_HOSTNAME" "$url_port" > "$cfg_tmp" || {
+  plugin_tunnel_config "$uuid" "$creds" "$url_port" "${hosts[@]}" > "$cfg_tmp" || {
     rm -f "$cfg_tmp"
     echo "✗ could not write ${PLUGIN_TUNNEL_CONFIG}." >&2
     return 1
   }
   mv "$cfg_tmp" "$PLUGIN_TUNNEL_CONFIG"
   echo "   3/6 config: ${PLUGIN_TUNNEL_CONFIG} → http://127.0.0.1:${url_port}"
+  [ "${#hosts[@]}" -gt 1 ] && echo "       serving ${#hosts[@]} hostnames: ${hosts[*]}"
 
   # 4. the password — once, ever
   local pw fresh=false
@@ -687,9 +731,13 @@ plugin_tunnel_install() {
   owner_pw=$(_plugin_owner_password || true)
 
   echo ""
-  echo "✅ Done — the annotations now live at one address that does not change."
+  echo "✅ Done — Discuss now lives at one address that does not change."
   echo ""
-  echo "🔗 https://${PLUGIN_TUNNEL_HOSTNAME}/pages"
+  echo "🔗 https://${PLUGIN_TUNNEL_HOSTNAME}/pages   ← the canonical address"
+  if $legacy_ok; then
+    echo "   https://${PLUGIN_TUNNEL_LEGACY_HOSTNAME}/pages   (the old one, still answered —"
+    echo "   same companion, same annotations; bookmark the one above)"
+  fi
   if [ -n "$owner_pw" ]; then
     echo "🔑 you (owner):   ${owner_pw}"
     echo "   ↑ the SAME password your review docs use — sign in with it and you have"
@@ -751,11 +799,12 @@ plugin_tunnel_uninstall() {
     echo "   ${PLUGIN_AUTOSTART_LABEL} is back to plain localhost mode (no password gate)"
   fi
   echo ""
-  echo "💡 The Cloudflare tunnel and the DNS record for ${PLUGIN_TUNNEL_HOSTNAME} are"
+  echo "💡 The Cloudflare tunnel and the DNS records for ${PLUGIN_TUNNEL_HOSTNAME} are"
   echo "   deliberately left in place, so 'botference plugin --install-tunnel' brings"
   echo "   the address straight back. To remove them from your account as well:"
   echo "     cloudflared tunnel delete ${PLUGIN_TUNNEL_NAME}"
   echo "     # then delete the ${PLUGIN_TUNNEL_HOSTNAME} CNAME in the Cloudflare dashboard"
+  echo "     #      (and ${PLUGIN_TUNNEL_LEGACY_HOSTNAME}, if you routed the old address too)"
   echo "   Your password stays in ${PLUGIN_PASSWORD_FILE} (delete it to mint a new one)."
   echo ""
 }

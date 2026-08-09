@@ -1378,7 +1378,7 @@ async function main() {
     });
 
     // The one that can silently hand the whole machine to the internet. A
-    // named tunnel (plugin.botference.com) puts cloudflared on THIS host, so
+    // named tunnel (discuss.botference.com) puts cloudflared on THIS host, so
     // its hop to the companion arrives from 127.0.0.1 exactly like the
     // extension's — a socket-peer test alone would call every visitor the
     // owner. Host is the first line of defence and the proxy headers are the
@@ -1387,7 +1387,7 @@ async function main() {
     await test('a request forwarded by a tunnel is never the owner, whatever it claims', async () => {
       const cases = [
         ['the named tunnel, as it really arrives', {
-          host: 'plugin.botference.com', 'cf-connecting-ip': '203.0.113.9', 'cf-ray': 'abc-LHR',
+          host: 'discuss.botference.com', 'cf-connecting-ip': '203.0.113.9', 'cf-ray': 'abc-LHR',
           'x-forwarded-for': '203.0.113.9', 'x-forwarded-proto': 'https',
         }],
         ['Host rewritten to localhost, CF headers intact', {
@@ -1447,7 +1447,7 @@ async function main() {
       assert.match(adaCookie, /plugin_handle=ada-l/, 'the handle cookie is readable and sanitized');
       const listing = await GET(hb, '/pages', { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
       assert.equal(listing.status, 200);
-      assert.match(listing.body, /Annotated pages/);
+      assert.match(listing.body, /Botference Discuss/, 'the reading room names the product');
     });
 
     await test('the owner password signs the owner in from any device', async () => {
@@ -1714,7 +1714,7 @@ async function main() {
       env: { PLUGIN_PASSWORD: 'guest-pw', BOTFERENCE_SECRETS_DIR: idSecrets },
     });
     const gb = g.base;
-    const REMOTE2 = { host: 'plugin.botference.com' };
+    const REMOTE2 = { host: 'discuss.botference.com' };
     await POST(gb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
 
     await test('the owner password is the review hub\'s own, generated where every paper reads it', async () => {
@@ -1740,7 +1740,7 @@ async function main() {
       const good = `hub_device=${mint(String(Date.now() + 1e6), id)}`;
       const me = await GET(gb, '/whoami', { ...REMOTE2, cookie: good });
       assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' },
-        'a phone approved for review.botference.com is the owner at plugin.botference.com too');
+        'a phone approved for review.botference.com is the owner at discuss.botference.com too');
       assert.equal((await POST(gb, '/verbosity', { level: 'short' }, { ...REMOTE2, cookie: good })).status, 200);
       // …and only genuinely signed, unexpired ones
       const wrongKey = `hub_device=${mint(String(Date.now() + 1e6), id, 'f'.repeat(48))}`;
@@ -1757,6 +1757,27 @@ async function main() {
       const me = await GET(gb, '/whoami', { ...REMOTE2, cookie: jar });
       assert.equal(me.json.owner, false);
       assert.equal((await POST(gb, '/export', { url: PAGE1 }, { ...REMOTE2, cookie: jar })).status, 403);
+    });
+
+    // The rename moved the address, not the auth. Nothing in hosted.mjs looks
+    // at WHICH public hostname a request arrived on — isLocalDirect only asks
+    // whether it was localhost — and the hub's device cookie is scoped to the
+    // parent domain, so it reaches every subdomain. Both doors, same rights.
+    await test('the address before the rename is the same companion, with the same rights', async () => {
+      const LEGACY = { host: 'plugin.botference.com' };
+      const mint = (exp, id) =>
+        `${exp}.${id}.${crypto.createHmac('sha256', DEVICE_SECRET).update(`${exp}.${id}`).digest('hex')}`;
+      const dev = `hub_device=${mint(String(Date.now() + 1e6), 'a1b2c3d4e5f6')}`;
+      const me = await GET(gb, '/whoami', { ...LEGACY, cookie: dev });
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' },
+        'an approved device is the owner on the old hostname too');
+      assert.equal((await GET(gb, '/whoami', LEGACY)).status, 401,
+        'and the old door is still a door, not a way around the gate');
+      const jar = cookieJar(await FORM(gb, '/auth',
+        { handle: 'ada', password: 'guest-pw', next: '/pages' }, LEGACY));
+      assert.match(jar, /plugin_auth=\d+\.guest\.ada\./);
+      assert.ok(!/Domain=/i.test(jar),
+        'sessions are host-only, so signing in on one hostname does not leak to the other');
     });
 
     await test('localhost is still the owner here, with no cookie and no password', async () => {
@@ -1782,7 +1803,7 @@ async function main() {
       env: { PLUGIN_PASSWORD: 'guest-pw' },
     });
     const sb = s.base;
-    const R = { host: 'plugin.botference.com' };
+    const R = { host: 'discuss.botference.com' };
     const key = crypto.createHash('sha1').update(PAGE1).digest('hex');
     // the real fixture, as the extension would clone it: the whole article,
     // scripts and styling and all

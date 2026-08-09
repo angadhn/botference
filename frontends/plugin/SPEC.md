@@ -1,4 +1,4 @@
-# Botference Web Annotator — build contract
+# Botference Discuss (the web annotator) — build contract
 
 Browser extension (Chromium MV3, Brave-first) + local companion server. Highlight text on
 static article pages, comment on it, @-mention bots for inline replies, export everything
@@ -603,6 +603,31 @@ Contract deltas agreed during live testing — authoritative over the sections a
     article for rows that have a snapshot, the conversation for those that do
     not. A page annotated before snapshots existed degrades to a one-line
     explanation naming the fix, with its comments one tap away.
+
+- The product is called **Discuss**, at **discuss.botference.com**. Only the
+  name and the address moved; nothing structural did, deliberately, because a
+  rename that costs a data migration is a rename not worth having. Still
+  `plugin` everywhere it is not read by a person: the `botference plugin`
+  command (with `botference discuss` as an equal alias), `.botference/plugin/`
+  and its `pages/`, `snapshots/`, `grants.json`, `~/.botference/plugin-*`,
+  the `com.botference.plugin-web` / `com.botference.plugin-tunnel` LaunchAgent
+  labels, the `plugin-web`/`plugin-share` service names, the
+  `botference-plugin` tunnel, this directory, and every file in it. Changed:
+  the extension's `name` ("Botference Discuss") and description, the reading
+  room's and the gate's titles, the drawer's aria-label, and the docs.
+  `plugin.botference.com` remains routed and served — `--install-tunnel`
+  writes a SECOND ingress rule to the same local service rather than a
+  redirect, so an old bookmark or a remote extension configured before the
+  rename reaches the same companion and the same annotations. The legacy
+  hostname is best-effort: if its DNS route fails the install says so and
+  carries on with the canonical one. `BOTFERENCE_PLUGIN_HOSTNAME` and
+  `BOTFERENCE_PLUGIN_LEGACY_HOSTNAME` (empty to drop it) override both.
+  Nothing in the server binds to a specific public hostname: `isLocalDirect`
+  only asks whether the Host is loopback, so every remote hostname is treated
+  identically, and the review hub's `hub_device` cookie is scoped to the parent
+  domain and therefore reaches both. Sessions are host-only cookies (no
+  `Domain`), so signing in at one hostname does not carry to the other — which
+  is why the canonical address is the one the install tells you to bookmark.
 
 ## Out of scope for v1 (do not build)
 

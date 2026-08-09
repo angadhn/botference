@@ -370,12 +370,16 @@ export BOTFERENCE_TUNNEL_URL=https://council.example.com   # printed as the shar
 Without `BOTFERENCE_TUNNEL`, `--share` uses a quick tunnel with a
 random `trycloudflare.com` URL.
 
-## Web Annotator (`botference plugin`)
+## Discuss (`botference discuss`)
 
-**Just want the plugin?** Three steps, nothing else needed:
+The web annotator: discuss any page on the open web with Claude and
+Codex. (`botference plugin` is the same command — the product was
+renamed, the plumbing was not.)
+
+**Just want it?** Three steps, nothing else needed:
 ```bash
 git clone https://github.com/angadhn/botference && cd botference
-./botference plugin --install-autostart     # macOS: companion runs at every login
+./botference discuss --install-autostart    # macOS: companion runs at every login
 ```
 then `brave://extensions` → Developer mode → Load unpacked → `frontends/plugin/extension`.
 (Bot replies need the `claude` and/or `codex` CLI logged in; without them you still get highlights, comments, and Obsidian export.)
@@ -392,13 +396,13 @@ council chats under the **Plugin pages** project, titled by the
 article's own headline.
 
 ```bash
-botference plugin                # serve the companion on 127.0.0.1:4189
-botference plugin --service      # same, detached (stop: botference service stop plugin-web)
-botference plugin --share        # hosted + cloudflared tunnel: invite collaborators
-botference plugin [--port N] [--no-agents] [--hosted] [--here]
-botference plugin --install-autostart    # macOS: run it at every login
-botference plugin --uninstall-autostart  # …and undo that
-botference plugin --install-tunnel       # macOS + your own domain: one permanent URL
+botference discuss               # serve the companion on 127.0.0.1:4189
+botference discuss --service     # same, detached (stop: botference service stop plugin-web)
+botference discuss --share       # hosted + cloudflared tunnel: invite collaborators
+botference discuss [--port N] [--no-agents] [--hosted] [--here]
+botference discuss --install-autostart    # macOS: run it at every login
+botference discuss --uninstall-autostart  # …and undo that
+botference discuss --install-tunnel       # macOS + your own domain: one permanent URL
 ```
 
 **Set-and-forget (macOS).** `--install-autostart`, run from the
@@ -438,7 +442,7 @@ which it typesets itself. Long threads fold in the middle, keeping the
 opening message and the latest replies behind a "Show N earlier
 replies" line.
 
-The workspace is sticky: after the first run, `botference plugin` from
+The workspace is sticky: after the first run, `botference discuss` from
 any directory reuses the recorded workspace (`--here` picks the current
 one instead). Put the launcher on PATH once (`ln -s "$PWD/botference"
 /usr/local/bin/botference` from the repo) and it runs from any terminal.
@@ -456,8 +460,8 @@ interrupt.
 
 ### On your phone: reading and annotating, not just reading
 
-Once the companion has a public address (below), the annotations are a
-bookmark. Two things make that worth doing.
+Once the companion has a public address (below), Discuss is a
+bookmark — `discuss.botference.com`. Two things make that worth doing.
 
 **You are the owner there, not a guest.** Signing in from a phone uses
 the *same* identity as your review docs — botference has one owner
@@ -503,13 +507,16 @@ your phone instead:
 
 ```bash
 brew install cloudflared && cloudflared tunnel login   # once, ever
-botference plugin --install-tunnel
+botference discuss --install-tunnel
 ```
 
 It prints two credentials at the end: **yours** (the shared botference
 owner password — full owner rights from anywhere) and the
 **collaborators'** guest password. It creates (or reuses) a named
-tunnel `botference-plugin`, routes `plugin.botference.com` to it, writes
+tunnel `botference-plugin`, routes `discuss.botference.com` to it (and
+keeps `plugin.botference.com`, the address from before the rename,
+routed and served by the same companion so old bookmarks still land),
+writes
 `~/.cloudflared/botference-plugin.yml` (one ingress rule to
 `http://127.0.0.1:4189`), installs a second LaunchAgent
 `com.botference.plugin-tunnel` that keeps the tunnel up at every login,
@@ -519,8 +526,9 @@ four words and a number, typeable from a phone — and kept in
 `~/.botference/plugin-password` (0600); it is **never** written into a
 plist, because launchd starts the launcher and the launcher reads the
 file. The final URL and password are printed at the end. Set
-`BOTFERENCE_PLUGIN_HOSTNAME` (and `BOTFERENCE_PLUGIN_TUNNEL`) if your
-domain is not this one.
+`BOTFERENCE_PLUGIN_HOSTNAME` (the legacy one with
+`BOTFERENCE_PLUGIN_LEGACY_HOSTNAME`, empty to drop it, and the tunnel
+name with `BOTFERENCE_PLUGIN_TUNNEL`) if your domain is not this one.
 
 No ports are opened: the tunnel dials out from your machine. This
 machine stays the unauthenticated owner on `http://127.0.0.1:4189`, and
