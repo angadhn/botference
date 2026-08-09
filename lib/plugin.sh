@@ -15,6 +15,8 @@ Usage: botference plugin [--port N] [--service] [--no-agents] [--agents] [--here
        botference plugin --hosted [--service]
        botference plugin --install-autostart [--port N] [--no-agents]
        botference plugin --uninstall-autostart
+       botference plugin --install-tunnel [--port N] [--no-agents]
+       botference plugin --uninstall-tunnel
 
 Serve the web-annotator companion server for the browser extension
 (frontends/plugin/extension — load it once via brave://extensions →
@@ -69,6 +71,27 @@ there, no terminal to remember):
   --uninstall-autostart  Stop and remove that LaunchAgent (safe to run
                          when nothing is installed)
 Neither can be combined with --service — they are different lifecycles.
+
+One permanent address (macOS + a Cloudflare-hosted domain), so the
+annotations have a URL you can bookmark on your phone instead of a fresh
+random tunnel every session:
+  --install-tunnel    Give the companion a permanent public address:
+                      creates (or reuses) the named cloudflared tunnel
+                      'botference-plugin', routes DNS for
+                      plugin.botference.com to it, writes
+                      ~/.cloudflared/botference-plugin.yml, installs a
+                      second LaunchAgent (com.botference.plugin-tunnel)
+                      that runs the tunnel at every login, and switches
+                      the companion's own LaunchAgent to --hosted with a
+                      password generated once and kept in
+                      ~/.botference/plugin-password (0600, never in the
+                      plist). Prints the URL and the password.
+  --uninstall-tunnel  Stop and remove the tunnel LaunchAgent and put the
+                      companion back to plain localhost mode. The
+                      Cloudflare tunnel and its DNS record are left
+                      alone, so re-installing is one command
+Override the address with BOTFERENCE_PLUGIN_HOSTNAME (and the tunnel
+name with BOTFERENCE_PLUGIN_TUNNEL) if the domain is not this one.
 HELP
 }
 
@@ -262,6 +285,10 @@ plugin_autostart_install() {
     return 1
   fi
 
+  # --install-tunnel installs this same agent as one step of a longer story
+  # and prints its own ending, so it asks for the work without the speech.
+  if [ "${PLUGIN_AUTOSTART_QUIET:-false}" = true ]; then return 0; fi
+
   echo ""
   echo "✅ Login autostart installed — the web annotator companion now starts at every login, and restarts if it dies."
   echo ""
@@ -287,6 +314,425 @@ plugin_autostart_install() {
   echo "   check it:  launchctl list | grep ${PLUGIN_AUTOSTART_LABEL}"
   echo "   remove it: botference plugin --uninstall-autostart"
   echo "   label:     ${PLUGIN_AUTOSTART_LABEL}"
+  echo ""
+}
+
+# ── permanent public address (named cloudflared tunnel) ──────────
+# --share is a conversation: a random trycloudflare URL that dies with the
+# terminal. This is the other proposition — ONE address, forever, so the
+# annotations can be a bookmark on a phone. A named Cloudflare tunnel owns
+# plugin.botference.com and dials out from this machine (no ports opened, no
+# inbound anything), a second LaunchAgent keeps it up, and the companion's own
+# LaunchAgent moves to --hosted so the password gate is what strangers meet.
+#
+# The password is generated once and lives in a 0600 file, never in the plist:
+# launchd starts the LAUNCHER, and the launcher reads the file. A plist is
+# world-readable and gets backed up; a secret does not belong in one.
+
+PLUGIN_TUNNEL_LABEL="com.botference.plugin-tunnel"
+PLUGIN_TUNNEL_NAME="${BOTFERENCE_PLUGIN_TUNNEL:-botference-plugin}"
+PLUGIN_TUNNEL_HOSTNAME="${BOTFERENCE_PLUGIN_HOSTNAME:-plugin.botference.com}"
+PLUGIN_TUNNEL_DIR="${HOME}/.cloudflared"
+PLUGIN_TUNNEL_CONFIG="${PLUGIN_TUNNEL_DIR}/${PLUGIN_TUNNEL_NAME}.yml"
+PLUGIN_PASSWORD_FILE="${HOME}/.botference/plugin-password"
+
+# A password for a person holding a phone, not a hex blob: four random words
+# and a number, crypto-random (never $RANDOM). The system dictionary gives
+# tens of thousands of candidates when it is there; the built-in list is the
+# fallback so this never fails on a machine without one.
+_plugin_generate_password() {
+  node - <<'JS'
+const crypto = require('crypto'), fs = require('fs');
+const FALLBACK = `amber anchor apple arbor arrow autumn basil beacon birch bloom
+  bramble bridge bronze burrow canyon cedar cinder cirrus clever cobalt copper
+  coral cotton crater crimson crocus dahlia damson dapple delta dune ember
+  fable falcon fennel fern ferry flint forest fossil garnet gentle glacier
+  granite gravel harbor hazel heather hollow indigo ivory jasper juniper kernel
+  lantern laurel ledger lichen lilac linen lobster locket lumen lupin marble
+  meadow medlar mercy minnow mirror morrow mosaic myrtle nectar nettle nimbus
+  nutmeg olive onyx opal orchard osprey otter parcel pebble pewter pigment
+  pilot pillar plover plumb pollen poplar prairie quarry quartz quiver ramble
+  raven ribbon rivet rosewood rudder saffron sage sandal sapling scarlet
+  sequoia shale sierra silver sorrel spruce stellar sumac summit sundial
+  syrup tamarind teal tempo thicket thistle timber topaz trellis tundra umber
+  valley velvet vessel violet walnut warbler weaver wicker willow window
+  winter wisteria yarrow yonder zephyr zinnia`.split(/\s+/).filter(Boolean);
+let words = [];
+for (const f of ['/usr/share/dict/words', '/usr/dict/words']) {
+  try {
+    const w = fs.readFileSync(f, 'utf8').split('\n').filter(x => /^[a-z]{4,7}$/.test(x));
+    if (w.length >= 2048) { words = w; break; }
+  } catch { }
+}
+if (!words.length) words = FALLBACK;
+const pick = () => words[crypto.randomInt(words.length)];
+console.log([pick(), pick(), pick(), pick(), String(crypto.randomInt(10, 100))].join('-'));
+JS
+}
+
+# The hosted password, on stdout. Read it if it is there, mint it if it is not
+# — an existing one is never replaced, because it is written down elsewhere by
+# now (a phone's password manager, a note) and rotating it silently would lock
+# the owner out of their own bookmark.
+_plugin_password_ensure() {
+  local pw
+  if [ -s "$PLUGIN_PASSWORD_FILE" ]; then
+    head -1 "$PLUGIN_PASSWORD_FILE"
+    return 0
+  fi
+  mkdir -p "$(dirname "$PLUGIN_PASSWORD_FILE")" || return 1
+  pw=$(_plugin_generate_password) || return 1
+  [ -n "$pw" ] || return 1
+  (umask 077; printf '%s\n' "$pw" > "$PLUGIN_PASSWORD_FILE") || return 1
+  chmod 600 "$PLUGIN_PASSWORD_FILE" 2>/dev/null || true
+  printf '%s\n' "$pw"
+}
+
+_plugin_password_read() {
+  [ -s "$PLUGIN_PASSWORD_FILE" ] || return 1
+  head -1 "$PLUGIN_PASSWORD_FILE"
+}
+
+# Emit the cloudflared config on stdout. Pure function of its arguments.
+#   plugin_tunnel_config <tunnel-uuid> <credentials-file> <hostname> <port>
+# The catch-all 404 is not decoration: without it cloudflared refuses to start,
+# and with it a request for any other hostname routed here is answered rather
+# than handed to the companion.
+plugin_tunnel_config() {
+  local uuid=$1 creds=$2 hostname=$3 port=$4
+  cat <<YAML
+# botference — web annotator companion, permanent public address.
+# Written by 'botference plugin --install-tunnel'; edit at your own risk.
+tunnel: ${uuid}
+credentials-file: ${creds}
+no-autoupdate: true
+ingress:
+  - hostname: ${hostname}
+    service: http://127.0.0.1:${port}
+  - service: http_status:404
+YAML
+}
+
+# Emit the tunnel LaunchAgent XML on stdout. Same shape as the companion's:
+# pure, so it can be linted before it is installed.
+#   plugin_tunnel_plist <label> <cloudflared-path> <config-file> <log>
+plugin_tunnel_plist() {
+  local label=$1 bin=$2 config=$3 log=$4
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+  printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+  printf '%s\n' '<plist version="1.0">'
+  printf '%s\n' '<dict>'
+  printf '  <key>Label</key>\n  <string>%s</string>\n' "$(_plugin_xml_escape "$label")"
+  printf '%s\n' '  <key>ProgramArguments</key>'
+  printf '%s\n' '  <array>'
+  local a
+  for a in "$bin" tunnel --no-autoupdate --config "$config" run; do
+    printf '    <string>%s</string>\n' "$(_plugin_xml_escape "$a")"
+  done
+  printf '%s\n' '  </array>'
+  printf '%s\n' '  <key>EnvironmentVariables</key>'
+  printf '%s\n' '  <dict>'
+  printf '    <key>HOME</key>\n    <string>%s</string>\n' "$(_plugin_xml_escape "$HOME")"
+  printf '    <key>TUNNEL_ORIGIN_CERT</key>\n    <string>%s</string>\n' \
+    "$(_plugin_xml_escape "${HOME}/.cloudflared/cert.pem")"
+  printf '%s\n' '  </dict>'
+  printf '%s\n' '  <key>RunAtLoad</key>'
+  printf '%s\n' '  <true/>'
+  # Unconditional KeepAlive, unlike the companion's: a tunnel that exits
+  # cleanly (network gone, edge closed the connection) must still come back.
+  printf '%s\n' '  <key>KeepAlive</key>'
+  printf '%s\n' '  <true/>'
+  printf '%s\n' '  <key>ThrottleInterval</key>'
+  printf '%s\n' '  <integer>10</integer>'
+  printf '  <key>StandardOutPath</key>\n  <string>%s</string>\n' "$(_plugin_xml_escape "$log")"
+  printf '  <key>StandardErrorPath</key>\n  <string>%s</string>\n' "$(_plugin_xml_escape "$log")"
+  printf '%s\n' '</dict>'
+  printf '%s\n' '</plist>'
+}
+
+# The UUID of a named tunnel, or nothing at all. `cloudflared tunnel list`
+# is the only reliable read — `create` on an existing name is an error, so
+# looking first is what makes the install idempotent.
+_plugin_tunnel_id() {
+  local name=$1 json
+  json=$(cloudflared tunnel list --output json 2>/dev/null) || return 1
+  printf '%s' "$json" | node -e '
+let s = "";
+process.stdin.on("data", d => { s += d; }).on("end", () => {
+  let list = [];
+  try { list = JSON.parse(s); } catch { }
+  if (!Array.isArray(list)) list = [];
+  const t = list.find(x => x && x.name === process.argv[1] && !x.deleted_at);
+  if (t && t.id) console.log(t.id);
+});' "$name"
+}
+
+# launchctl bootout + rm, for either of our labels. Prints nothing.
+_plugin_launchagent_remove() {
+  local label=$1 plist="${PLUGIN_AUTOSTART_DIR}/${1}.plist"
+  local domain="gui/$(id -u)"
+  launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
+  [ -f "$plist" ] && launchctl unload -w "$plist" >/dev/null 2>&1 || true
+  rm -f "$plist"
+}
+
+# Write, lint and load a LaunchAgent whose XML is already on disk at $2.
+_plugin_launchagent_load() {
+  local plist=$1 tmp=$2
+  if command -v plutil >/dev/null 2>&1 && ! plutil -lint "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "✗ the generated plist failed plutil -lint — refusing to install." >&2
+    return 1
+  fi
+  mv "$tmp" "$plist"
+  local domain="gui/$(id -u)"
+  launchctl bootout "${domain}/$(basename "${plist%.plist}")" >/dev/null 2>&1 || true
+  launchctl unload "$plist" >/dev/null 2>&1 || true
+  if launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1; then return 0; fi
+  if launchctl load -w "$plist" >/dev/null 2>&1; then return 0; fi
+  echo "✗ launchctl could not load ${plist}." >&2
+  echo "   try by hand: launchctl bootstrap ${domain} ${plist}" >&2
+  return 1
+}
+
+# The companion LaunchAgent's own record of how it was installed, so
+# --install-tunnel can add --hosted to it (and --uninstall-tunnel take it
+# away) without asking the user to repeat --port/--no-agents, and without
+# caring which directory either command is run from. Arguments are flags to
+# DROP from what it finds (so adding --hosted can never add it twice).
+#   sets PLUGIN_INSTALLED_WS, PLUGIN_INSTALLED_ARGS (array),
+#        PLUGIN_INSTALLED_PORT ("" when the agent takes the default);
+#        returns 1 when no companion agent is installed
+_plugin_read_installed_agent() {
+  local plist="${PLUGIN_AUTOSTART_DIR}/${PLUGIN_AUTOSTART_LABEL}.plist"
+  PLUGIN_INSTALLED_WS=""
+  PLUGIN_INSTALLED_ARGS=()
+  PLUGIN_INSTALLED_PORT=""
+  [ -f "$plist" ] || return 1
+  command -v plutil >/dev/null 2>&1 || return 1
+  PLUGIN_INSTALLED_WS=$(plutil -extract WorkingDirectory raw -o - "$plist" 2>/dev/null) || return 1
+  local args_json line
+  args_json=$(plutil -extract ProgramArguments json -o - "$plist" 2>/dev/null) || return 1
+  # everything after the 'plugin' mode word is the flag set we must preserve
+  while IFS= read -r line; do
+    [ -n "$line" ] && PLUGIN_INSTALLED_ARGS+=("$line")
+  # the drop list travels in the environment, not argv: node would read a bare
+  # '--hosted' on its own command line as one of ITS options
+  done < <(printf '%s' "$args_json" | PLUGIN_DROP="$*" node -e '
+let s = "";
+process.stdin.on("data", d => { s += d; }).on("end", () => {
+  let a = [];
+  try { a = JSON.parse(s); } catch { }
+  if (!Array.isArray(a)) a = [];
+  const i = a.indexOf("plugin");
+  const drop = new Set((process.env.PLUGIN_DROP || "").split(/\s+/).filter(Boolean));
+  for (const x of (i < 0 ? [] : a.slice(i + 1))) if (!drop.has(String(x))) console.log(x);
+});')
+  # --port comes in either spelling; the launcher writes the two-word one
+  local n=${#PLUGIN_INSTALLED_ARGS[@]} i=0
+  while [ "$i" -lt "$n" ]; do
+    case "${PLUGIN_INSTALLED_ARGS[$i]}" in
+      --port=*) PLUGIN_INSTALLED_PORT="${PLUGIN_INSTALLED_ARGS[$i]#--port=}" ;;
+      --port) [ $((i + 1)) -lt "$n" ] && PLUGIN_INSTALLED_PORT="${PLUGIN_INSTALLED_ARGS[$((i + 1))]}" ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+plugin_tunnel_install() {
+  local port=$1
+  shift
+  _plugin_require_macos || return 1
+  local url_port=${port:-4189}
+  local workspace="${BOTFERENCE_PROJECT_ROOT:-$(pwd -P)}"
+
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    echo "✗ 'cloudflared' not found on PATH — the permanent address is a Cloudflare tunnel." >&2
+    echo "   install it first:  brew install cloudflared" >&2
+    return 1
+  fi
+  local cfd
+  cfd=$(command -v cloudflared)
+  if [ ! -f "${PLUGIN_TUNNEL_DIR}/cert.pem" ]; then
+    echo "✗ cloudflared is not logged in to your Cloudflare account." >&2
+    echo "   run this once (it opens a browser; pick the zone for ${PLUGIN_TUNNEL_HOSTNAME#*.}):" >&2
+    echo "     cloudflared tunnel login" >&2
+    return 1
+  fi
+
+  # A companion LaunchAgent that is already installed decides the workspace and
+  # the port — this command adds an address to the companion the user has, it
+  # does not re-answer questions they already answered. Its flags come back
+  # with --hosted stripped so we can add exactly one.
+  local boot_args=(--hosted)
+  if _plugin_read_installed_agent --hosted; then
+    workspace="${PLUGIN_INSTALLED_WS:-$workspace}"
+    # what it already had, then anything given here — the launcher's own
+    # parser is last-wins, so an explicit --port/--no-agents still overrides
+    boot_args=(--hosted ${PLUGIN_INSTALLED_ARGS[@]+"${PLUGIN_INSTALLED_ARGS[@]}"} ${@+"$@"})
+    if [ -z "$port" ] && [ -n "$PLUGIN_INSTALLED_PORT" ]; then
+      port="$PLUGIN_INSTALLED_PORT"
+      url_port="$port"
+    fi
+  else
+    boot_args+=(${@+"$@"})
+  fi
+
+  local logdir="${workspace}/.botference/logs"
+  local tunnel_log="${logdir}/plugin-tunnel.log"
+  mkdir -p "$logdir" "$PLUGIN_TUNNEL_DIR" "$PLUGIN_AUTOSTART_DIR" || return 1
+
+  echo ""
+  echo "🌐 Giving the web annotator a permanent address: https://${PLUGIN_TUNNEL_HOSTNAME}"
+  echo ""
+
+  # 1. the tunnel itself — reuse before create, so this is safe to re-run
+  local uuid created=false
+  uuid=$(_plugin_tunnel_id "$PLUGIN_TUNNEL_NAME" 2>/dev/null || true)
+  if [ -n "$uuid" ]; then
+    echo "   1/6 tunnel '${PLUGIN_TUNNEL_NAME}' already exists — reusing it (${uuid})"
+  else
+    if ! cloudflared tunnel create "$PLUGIN_TUNNEL_NAME" >/dev/null 2>&1; then
+      echo "✗ 'cloudflared tunnel create ${PLUGIN_TUNNEL_NAME}' failed." >&2
+      echo "   run it by hand to see why." >&2
+      return 1
+    fi
+    uuid=$(_plugin_tunnel_id "$PLUGIN_TUNNEL_NAME" 2>/dev/null || true)
+    if [ -z "$uuid" ]; then
+      echo "✗ created the tunnel but cannot find its id in 'cloudflared tunnel list'." >&2
+      return 1
+    fi
+    created=true
+    echo "   1/6 created tunnel '${PLUGIN_TUNNEL_NAME}' (${uuid})"
+  fi
+
+  local creds="${PLUGIN_TUNNEL_DIR}/${uuid}.json"
+  if [ ! -f "$creds" ]; then
+    echo "✗ no credentials file for that tunnel at ${creds}." >&2
+    echo "   the tunnel exists in your Cloudflare account but this machine holds no key" >&2
+    echo "   for it. Either copy the credentials here, or delete and recreate it:" >&2
+    echo "     cloudflared tunnel delete ${PLUGIN_TUNNEL_NAME} && botference plugin --install-tunnel" >&2
+    return 1
+  fi
+
+  # 2. DNS — a CNAME for the hostname at <uuid>.cfargotunnel.com. Already
+  # pointing at this tunnel is success, not failure.
+  local dns_out dns_rc=0
+  dns_out=$(cloudflared tunnel route dns "$PLUGIN_TUNNEL_NAME" "$PLUGIN_TUNNEL_HOSTNAME" 2>&1) || dns_rc=$?
+  if [ "$dns_rc" -eq 0 ]; then
+    echo "   2/6 DNS: ${PLUGIN_TUNNEL_HOSTNAME} → this tunnel"
+  elif printf '%s' "$dns_out" | grep -qiE 'already (exists|configured)|record with that host'; then
+    echo "   2/6 DNS: ${PLUGIN_TUNNEL_HOSTNAME} was already routed here"
+  else
+    echo "✗ could not route ${PLUGIN_TUNNEL_HOSTNAME} to the tunnel:" >&2
+    printf '   %s\n' "$dns_out" >&2
+    echo "   (is ${PLUGIN_TUNNEL_HOSTNAME#*.} a zone on this Cloudflare account?)" >&2
+    return 1
+  fi
+
+  # 3. the ingress config
+  local cfg_tmp="${PLUGIN_TUNNEL_CONFIG}.tmp.$$"
+  plugin_tunnel_config "$uuid" "$creds" "$PLUGIN_TUNNEL_HOSTNAME" "$url_port" > "$cfg_tmp" || {
+    rm -f "$cfg_tmp"
+    echo "✗ could not write ${PLUGIN_TUNNEL_CONFIG}." >&2
+    return 1
+  }
+  mv "$cfg_tmp" "$PLUGIN_TUNNEL_CONFIG"
+  echo "   3/6 config: ${PLUGIN_TUNNEL_CONFIG} → http://127.0.0.1:${url_port}"
+
+  # 4. the password — once, ever
+  local pw fresh=false
+  [ -s "$PLUGIN_PASSWORD_FILE" ] || fresh=true
+  pw=$(_plugin_password_ensure) || {
+    echo "✗ could not create ${PLUGIN_PASSWORD_FILE}." >&2
+    return 1
+  }
+  if $fresh; then
+    echo "   4/6 password: generated one and saved it to ${PLUGIN_PASSWORD_FILE}"
+  else
+    echo "   4/6 password: keeping the one already in ${PLUGIN_PASSWORD_FILE}"
+  fi
+
+  # 5. the companion, in hosted mode. Rebuilt from the installed agent when
+  # there is one (so --port/--no-agents survive), otherwise from this call.
+  BOTFERENCE_PROJECT_ROOT="$workspace" PLUGIN_AUTOSTART_QUIET=true \
+    plugin_autostart_install "$port" ${boot_args[@]+"${boot_args[@]}"} || return 1
+  echo "   5/6 companion: ${PLUGIN_AUTOSTART_LABEL} now runs --hosted (workspace ${workspace})"
+
+  # 6. the tunnel LaunchAgent
+  local tplist="${PLUGIN_AUTOSTART_DIR}/${PLUGIN_TUNNEL_LABEL}.plist"
+  local tmp="${tplist}.tmp.$$"
+  plugin_tunnel_plist "$PLUGIN_TUNNEL_LABEL" "$cfd" "$PLUGIN_TUNNEL_CONFIG" "$tunnel_log" > "$tmp" || {
+    rm -f "$tmp"
+    echo "✗ could not write the tunnel LaunchAgent plist." >&2
+    return 1
+  }
+  _plugin_launchagent_load "$tplist" "$tmp" || return 1
+  echo "   6/6 tunnel agent: ${PLUGIN_TUNNEL_LABEL} runs it at every login"
+
+  echo ""
+  echo "✅ Done — the annotations now live at one address that does not change."
+  echo ""
+  echo "🔗 https://${PLUGIN_TUNNEL_HOSTNAME}/pages"
+  echo "🔑 password: ${pw}"
+  echo ""
+  echo "▶  Next steps"
+  echo "   1. bookmark that URL on your phone; sign in with any name + the password"
+  echo "   2. DNS and the tunnel can take a minute to meet — if it 502s, wait and retry"
+  echo "   3. give a collaborator bot access by naming them in"
+  echo "      ${workspace}/.botference/plugin/grants.json (read live, no restart):"
+  echo '      {"ada": {"agents": true, "daily_cap": 5}}'
+  echo ""
+  echo "🧩 For reference"
+  echo "   this machine is still the owner on http://127.0.0.1:${url_port}/ — no password there"
+  echo "   password file: ${PLUGIN_PASSWORD_FILE}  (0600; never written into a plist)"
+  echo "   tunnel config: ${PLUGIN_TUNNEL_CONFIG}"
+  echo "   tunnel logs:   ${tunnel_log}"
+  echo "   companion:     ${workspace}/.botference/logs/plugin-autostart.log"
+  echo "   check both:    launchctl list | grep com.botference"
+  echo "   remove it:     botference plugin --uninstall-tunnel"
+  $created && echo "   tunnel '${PLUGIN_TUNNEL_NAME}' (${uuid}) is new in your Cloudflare account"
+  echo ""
+}
+
+plugin_tunnel_uninstall() {
+  _plugin_require_macos || return 1
+  local tplist="${PLUGIN_AUTOSTART_DIR}/${PLUGIN_TUNNEL_LABEL}.plist"
+  local had_tunnel=false
+  [ -f "$tplist" ] && had_tunnel=true
+  _plugin_launchagent_remove "$PLUGIN_TUNNEL_LABEL"
+
+  echo ""
+  if $had_tunnel; then
+    echo "🗑  Public address off: ${PLUGIN_TUNNEL_LABEL} stopped and removed."
+    echo "   deleted: ${tplist}"
+  else
+    echo "✅ No tunnel LaunchAgent was installed — nothing to stop."
+    echo "   looked for: ${tplist}"
+  fi
+
+  # Put the companion back to plain localhost mode, keeping everything else
+  # about how it was installed. No companion agent installed = nothing to do;
+  # this command never installs one.
+  local restored=false
+  if _plugin_read_installed_agent --hosted; then
+    if BOTFERENCE_PROJECT_ROOT="${PLUGIN_INSTALLED_WS}" PLUGIN_AUTOSTART_QUIET=true \
+      plugin_autostart_install "$PLUGIN_INSTALLED_PORT" \
+      ${PLUGIN_INSTALLED_ARGS[@]+"${PLUGIN_INSTALLED_ARGS[@]}"}; then
+      restored=true
+    fi
+  fi
+  if $restored; then
+    echo "   ${PLUGIN_AUTOSTART_LABEL} is back to plain localhost mode (no password gate)"
+  fi
+  echo ""
+  echo "💡 The Cloudflare tunnel and the DNS record for ${PLUGIN_TUNNEL_HOSTNAME} are"
+  echo "   deliberately left in place, so 'botference plugin --install-tunnel' brings"
+  echo "   the address straight back. To remove them from your account as well:"
+  echo "     cloudflared tunnel delete ${PLUGIN_TUNNEL_NAME}"
+  echo "     # then delete the ${PLUGIN_TUNNEL_HOSTNAME} CNAME in the Cloudflare dashboard"
+  echo "   Your password stays in ${PLUGIN_PASSWORD_FILE} (delete it to mint a new one)."
   echo ""
 }
 
@@ -319,7 +765,7 @@ plugin_autostart_uninstall() {
 }
 
 run_plugin_mode() {
-  local port="" service=false agents="auto" autostart="" arg
+  local port="" service=false agents="auto" autostart="" tunnel="" arg
   local hosted=false share=false here=false
   # args minus --service, for the --service re-exec below
   local passthrough=() _pt
@@ -336,6 +782,8 @@ run_plugin_mode() {
       --service) service=true ;;
       --install-autostart) autostart="install" ;;
       --uninstall-autostart) autostart="uninstall" ;;
+      --install-tunnel) tunnel="install" ;;
+      --uninstall-tunnel) tunnel="uninstall" ;;
       --no-agents) agents="off" ;;
       --agents) agents="on" ;;
       --hosted) hosted=true ;;
@@ -374,10 +822,27 @@ run_plugin_mode() {
     echo "   when you want one: botference plugin --share" >&2
     return 2
   fi
+  # --- the permanent address is its own lifecycle too ---
+  if [ -n "$tunnel" ]; then
+    if $service || [ -n "$autostart" ] || $hosted || $share; then
+      echo "✗ --${tunnel}-tunnel is a one-off install, not a way to start a server." >&2
+      echo "   Run it on its own: botference plugin --${tunnel}-tunnel" >&2
+      echo "   (it installs the LaunchAgents itself, and puts the companion in hosted mode)" >&2
+      return 2
+    fi
+  fi
+
+  # --- hosted with no password in hand: the tunnel install left one on disk ---
+  # launchd runs THIS launcher, not the node server, precisely so the secret can
+  # be read from a 0600 file at start instead of sitting in a plist.
+  if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
+    PLUGIN_PASSWORD=$(_plugin_password_read || true)
+  fi
   if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
     echo "✗ --hosted requires PLUGIN_PASSWORD to be set, e.g." >&2
     echo "   PLUGIN_PASSWORD=… botference plugin --hosted" >&2
-    echo "   (or use --share, which generates one and opens a tunnel for you)" >&2
+    echo "   (or use --share, which generates one and opens a tunnel for you;" >&2
+    echo "    or --install-tunnel, which saves one in ${PLUGIN_PASSWORD_FILE})" >&2
     return 2
   fi
 
@@ -392,6 +857,10 @@ run_plugin_mode() {
       plugin_autostart_uninstall
       return $?
     fi
+  fi
+  if [ "$tunnel" = "uninstall" ]; then
+    plugin_tunnel_uninstall
+    return $?
   fi
 
   local engine="${BOTFERENCE_HOME}/frontends/plugin"
@@ -416,6 +885,18 @@ run_plugin_mode() {
     esac
     [ -n "$port" ] && boot_args+=(--port "$port")
     plugin_autostart_install "$port" ${boot_args[@]+"${boot_args[@]}"}
+    return $?
+  fi
+
+  # --- --install-tunnel: one address, forever (companion + tunnel agents) ---
+  if [ "$tunnel" = "install" ]; then
+    local tun_args=()
+    case "$agents" in
+      off) tun_args+=(--no-agents) ;;
+      on) tun_args+=(--agents) ;;
+    esac
+    [ -n "$port" ] && tun_args+=(--port "$port")
+    plugin_tunnel_install "$port" ${tun_args[@]+"${tun_args[@]}"}
     return $?
   fi
 
@@ -495,6 +976,9 @@ run_plugin_mode() {
     echo "   • people without the extension read and reply at /pages"
     echo "   • their @-mentions are refused until you grant them agents in"
     echo "     ${PLUGIN_WS}/.botference/plugin/grants.json"
+    if [ -f "${PLUGIN_AUTOSTART_DIR}/${PLUGIN_TUNNEL_LABEL}.plist" ]; then
+      echo "   • public address: https://${PLUGIN_TUNNEL_HOSTNAME}/pages"
+    fi
   fi
 
   # The extension is a one-time install, so the walkthrough only shows up

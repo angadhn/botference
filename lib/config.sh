@@ -467,7 +467,7 @@ Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
        botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
        botference plugin [--port N] [--service] [--no-agents] [--hosted] [--share] [--here]
        botference plugin --install-autostart | --uninstall-autostart
-       botference plugin --install-autostart | --uninstall-autostart
+       botference plugin --install-tunnel | --uninstall-tunnel
        botference service <start|stop|list|logs> …
        botference see <url | :port | service-name> [label] [--viewport WxH]
 
@@ -499,8 +499,12 @@ Modes:
                     companion to launchd so it is running after every
                     login (--uninstall-autostart removes it); --share
                     invites collaborators (password gate + tunnel, guest
-                    reading room at /pages); the workspace is sticky
-                    across directories (--here overrides).
+                    reading room at /pages); --install-tunnel gives it
+                    ONE permanent address instead (a named cloudflared
+                    tunnel at plugin.botference.com, hosted mode, a
+                    password saved in ~/.botference/plugin-password —
+                    --uninstall-tunnel reverses it); the workspace is
+                    sticky across directories (--here overrides).
                     See 'botference plugin --help'.
   service           Managed long-lived processes (servers, tunnels) that
                     survive the shell — and the whole process group — that

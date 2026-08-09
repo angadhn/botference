@@ -17,6 +17,9 @@ botference \- a multi-LLM planning council for the terminal
 .B botference plugin
 \fB\-\-install-autostart\fR | \fB\-\-uninstall-autostart\fR
 .br
+.B botference plugin
+\fB\-\-install-tunnel\fR | \fB\-\-uninstall-tunnel\fR
+.br
 .B botference service
 \fBstart\fR \fIname\fR \fB\-\-\fR \fIcommand\fR… | \fBstop\fR \fIname\fR|\fB\-\-all\fR | \fBlist\fR | \fBlogs\fR \fIname\fR [\fB\-n\fR \fIN\fR]
 .br
@@ -146,6 +149,41 @@ copy exits and is retried about every 10 seconds, so it takes over
 within ~10s of your Ctrl\-C. \fB\-\-uninstall-autostart\fR boots the job
 out and deletes the plist (a no-op if nothing was installed). Neither
 flag may be combined with \fB\-\-service\fR.
+.IP
+\fB\-\-install-tunnel\fR (macOS, plus a domain whose DNS is on
+Cloudflare) replaces \fB\-\-share\fR's disposable
+\fItrycloudflare.com\fR URL with one permanent address you can bookmark
+on a phone. It creates \- or reuses, so it is safe to re-run \- the
+named tunnel \fBbotference-plugin\fR, routes
+\fIplugin.botference.com\fR to it, writes
+\fI~/.cloudflared/botference-plugin.yml\fR (one ingress rule to
+\fIhttp://127.0.0.1:4189\fR plus the catch-all cloudflared insists on),
+installs a second LaunchAgent \fBcom.botference.plugin-tunnel\fR that
+runs the tunnel at every login (unconditional \fBKeepAlive\fR: a tunnel
+that exits because the edge hung up must still come back), and rebuilds
+the companion's own LaunchAgent with \fB\-\-hosted\fR, preserving the
+\fB\-\-port\fR/\fB\-\-no-agents\fR it was installed with. The shared
+password is generated once \- four words and a number \- and kept in
+\fI~/.botference/plugin-password\fR (mode 0600); it is never written
+into a plist, because launchd runs the launcher and \fB\-\-hosted\fR
+with no \fBPLUGIN_PASSWORD\fR in the environment reads that file. The
+URL and the password are printed at the end. Override the address with
+\fBBOTFERENCE_PLUGIN_HOSTNAME\fR and the tunnel name with
+\fBBOTFERENCE_PLUGIN_TUNNEL\fR. No inbound port is opened: cloudflared
+dials out. This machine stays the unauthenticated owner on
+\fI127.0.0.1\fR while everything arriving through the tunnel is a
+guest \- told apart by the \fBHost\fR header and by the \fBCF-*\fR /
+\fBX-Forwarded-*\fR headers Cloudflare stamps on, since cloudflared's
+own hop to the companion is loopback too.
+.IP
+\fB\-\-uninstall-tunnel\fR boots out and deletes the tunnel LaunchAgent
+and puts the companion back to plain localhost mode. The Cloudflare
+tunnel and the DNS record are deliberately left in place so
+re-installing is one command; the output names the
+\fBcloudflared tunnel delete botference-plugin\fR that removes them
+from the account as well. Neither tunnel flag may be combined with
+\fB\-\-service\fR, \fB\-\-hosted\fR, \fB\-\-share\fR, or the autostart
+flags \- it is a one-off install, not a way to start a server.
 .TP
 .B service
 Managed long-lived processes (dev servers, share tunnels) that survive
@@ -449,7 +487,11 @@ a sandbox CSP with an opaque origin.
 .BR REVIEW_HUB_PASSWORD ,
 .BR REVIEW_HUB_TUNNEL ,
 .BR BOTFERENCE_TUNNEL ,
-.BR BOTFERENCE_TUNNEL_URL .
+.BR BOTFERENCE_TUNNEL_URL ,
+.BR PLUGIN_PASSWORD ,
+.BR PLUGIN_OWNER_PASSWORD ,
+.BR BOTFERENCE_PLUGIN_HOSTNAME ,
+.BR BOTFERENCE_PLUGIN_TUNNEL .
 See \fBbotference --help\fR for details.
 .SH EXAMPLES
 .TP

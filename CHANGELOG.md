@@ -2,6 +2,37 @@
 
 ## 2026-08-09
 
+- **Web annotator: one address, forever.** `--share` was always a
+  conversation — a random `trycloudflare.com` URL that died with the
+  terminal, which is no use at all for the thing you actually want,
+  which is your annotations on your phone. `botference plugin
+  --install-tunnel` gives them a permanent one:
+  `https://plugin.botference.com/pages`, backed by a named Cloudflare
+  tunnel that dials out from your machine (no ports opened, nothing
+  inbound), kept up at every login by its own LaunchAgent, with the
+  companion moved to hosted mode so a password gate is what strangers
+  meet. The password is generated once — four words and a number, so it
+  can be typed from a phone screen — and lives in
+  `~/.botference/plugin-password` at mode 0600, never in a plist:
+  launchd starts the launcher, and the launcher reads the file. Run it
+  twice and it reuses the tunnel, the DNS record and the password;
+  `--uninstall-tunnel` takes the address down and puts the companion
+  back on localhost, leaving the Cloudflare side intact so bringing it
+  back is one command. Set `BOTFERENCE_PLUGIN_HOSTNAME` if the domain
+  is not this one.
+
+- **Web annotator: a tunnel is never the owner.** This machine is the
+  owner of its own annotations and needs no password for them — but
+  cloudflared runs on this machine too, so its hop to the companion
+  arrives from 127.0.0.1 exactly like the browser extension's, and the
+  distinction is the whole security boundary. It is now three
+  independent tests, all of which must pass: a loopback `Host`, a
+  loopback socket, and the absence of every header a proxy adds
+  (`CF-Connecting-IP`, `CF-Ray`, `CF-Visitor`, `X-Forwarded-*`,
+  `X-Real-IP`…). Cloudflare stamps those at its edge and a visitor
+  cannot suppress them, so a request that came through the tunnel is a
+  guest even if the `Host` line claims otherwise.
+
 - **Web annotator: fold a thread yourself.** Any thread with three or
   more exchanges now carries a quiet control in the same place the
   expander sits — "Hide 13 earlier replies" when it is open, "Show 13

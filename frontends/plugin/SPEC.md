@@ -501,6 +501,35 @@ Contract deltas agreed during live testing — authoritative over the sections a
 - Launcher: `botference plugin --install-autostart` / `--uninstall-autostart` (macOS
   LaunchAgent `com.botference.plugin-web`, KeepAlive SuccessfulExit=false, hand-run
   instance wins the lock; launchd takes over ~10s after it exits).
+- One permanent address. `--install-tunnel` / `--uninstall-tunnel` give the
+  companion a named Cloudflare tunnel instead of `--share`'s disposable
+  trycloudflare URL: tunnel `botference-plugin` (created once, reused after),
+  DNS route to `plugin.botference.com` (both overridable —
+  `BOTFERENCE_PLUGIN_TUNNEL`, `BOTFERENCE_PLUGIN_HOSTNAME`),
+  `~/.cloudflared/botference-plugin.yml` with a single ingress rule to
+  `http://127.0.0.1:<port>` plus the mandatory `http_status:404` catch-all, and
+  a second LaunchAgent `com.botference.plugin-tunnel` (unconditional KeepAlive
+  — a tunnel that exits cleanly because the edge hung up must still return).
+  The companion's own LaunchAgent gains `--hosted`, rebuilt from the plist it
+  already has so `--port`/`--no-agents` survive and exactly one `--hosted` is
+  ever added. The password is generated once (four dictionary words + a
+  number) into `~/.botference/plugin-password` (0600) and is NEVER written into
+  a plist: launchd runs the launcher, and `--hosted` with no `PLUGIN_PASSWORD`
+  in the environment reads that file. `--uninstall-tunnel` boots out the tunnel
+  agent and rebuilds the companion's without `--hosted`, leaving the Cloudflare
+  tunnel and DNS record in place (naming the `cloudflared tunnel delete` that
+  would remove them).
+- Owner vs guest, restated for a proxy that lives on this machine.
+  `isLocalDirect` is the entire boundary and now requires three independent
+  things: a loopback `Host`, a loopback socket peer, AND the absence of every
+  header in `PROXY_HEADERS` (`cf-connecting-ip`, `cf-ray`, `cf-visitor`,
+  `cf-ipcountry`, `cf-worker`, `x-forwarded-for`, `x-forwarded-proto`,
+  `x-forwarded-host`, `x-real-ip`). cloudflared's hop to the companion comes
+  from 127.0.0.1 like the extension's, so the socket cannot separate them;
+  Host does (cloudflared forwards the public hostname unchanged) and the
+  Cloudflare-stamped headers do even if Host is ever rewritten by an
+  `httpHostHeader` ingress setting. It fails closed: the worst a false
+  negative can do is ask the owner for their own password.
 
 ## Out of scope for v1 (do not build)
 

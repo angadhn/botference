@@ -60,15 +60,35 @@ const escHtml = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export { escHtml };
 
+// Headers no browser on this machine ever sends, and that every reverse proxy
+// in front of us does — cloudflared included. Their presence is proof the
+// request was forwarded, whatever the socket or the Host line claims.
+export const PROXY_HEADERS = [
+  'cf-connecting-ip', 'cf-ray', 'cf-visitor', 'cf-ipcountry', 'cf-worker',
+  'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip',
+];
+
 // A request that arrived directly on the loopback interface — NOT through the
-// tunnel. The tunnel's local hop also comes from 127.0.0.1, but it carries the
-// public hostname in Host plus Cf-*/forwarding headers, so requiring a
-// localhost Host AND the absence of those AND a loopback peer separates them.
+// tunnel. This is the whole owner/guest boundary, so it is deliberately three
+// independent tests, ALL of which must pass:
+//
+//   1. Host names this machine. A named tunnel (plugin.botference.com) carries
+//      its public hostname here, because cloudflared forwards Host unchanged.
+//   2. No proxy headers. cloudflared's own hop to the companion also comes
+//      from 127.0.0.1, so the socket alone cannot tell tunnel traffic apart —
+//      but the Cloudflare edge stamps CF-Connecting-IP/CF-Ray and cloudflared
+//      adds X-Forwarded-*, and neither can be suppressed by a visitor. This is
+//      the test that still holds if the tunnel is ever configured with
+//      httpHostHeader (which would rewrite Host to localhost).
+//   3. The peer really is loopback, so a LAN client cannot claim to be local.
+//
+// It fails closed in both directions: no test can be satisfied from outside,
+// and the worst a false negative does is ask the owner for their own password.
 // Anyone on the bare port already owns this filesystem: localhost IS the owner.
 export function isLocalDirect(req) {
   const host = String(req.headers.host || '').replace(/:\d+$/, '').toLowerCase();
   if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]') return false;
-  if (req.headers['cf-connecting-ip'] || req.headers['cf-ray'] || req.headers['x-forwarded-for']) return false;
+  for (const h of PROXY_HEADERS) if (req.headers[h]) return false;
   const ra = (req.socket && req.socket.remoteAddress) || '';
   return ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
 }

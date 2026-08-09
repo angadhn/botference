@@ -1359,6 +1359,39 @@ async function main() {
       assert.ok(fs.existsSync(path.join(hostDir, '.auth-secret')), 'the cookie secret is on disk');
     });
 
+    // The one that can silently hand the whole machine to the internet. A
+    // named tunnel (plugin.botference.com) puts cloudflared on THIS host, so
+    // its hop to the companion arrives from 127.0.0.1 exactly like the
+    // extension's — a socket-peer test alone would call every visitor the
+    // owner. Host is the first line of defence and the proxy headers are the
+    // second, which is what still holds if the tunnel is ever configured with
+    // httpHostHeader (rewriting Host to localhost).
+    await test('a request forwarded by a tunnel is never the owner, whatever it claims', async () => {
+      const cases = [
+        ['the named tunnel, as it really arrives', {
+          host: 'plugin.botference.com', 'cf-connecting-ip': '203.0.113.9', 'cf-ray': 'abc-LHR',
+          'x-forwarded-for': '203.0.113.9', 'x-forwarded-proto': 'https',
+        }],
+        ['Host rewritten to localhost, CF headers intact', {
+          host: 'localhost', 'cf-connecting-ip': '203.0.113.9', 'cf-ray': 'abc-LHR',
+        }],
+        ['a bare X-Forwarded-For on the loopback port', { host: '127.0.0.1', 'x-forwarded-for': '203.0.113.9' }],
+        ['a bare X-Forwarded-Proto (any reverse proxy at all)', { host: 'localhost', 'x-forwarded-proto': 'https' }],
+        ['X-Real-IP', { host: 'localhost', 'x-real-ip': '203.0.113.9' }],
+        ['CF-Visitor alone', { host: 'localhost', 'cf-visitor': '{"scheme":"https"}' }],
+      ];
+      for (const [what, headers] of cases) {
+        const me = await GET(hb, '/whoami', headers);
+        assert.equal(me.status, 401, `${what}: must be challenged, not welcomed`);
+        const owned = await POST(hb, '/export', { url: PAGE1 }, { ...headers, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' });
+        assert.equal(owned.status, 403, `${what}: and it must not be able to act as the owner`);
+      }
+      // the local extension, unchanged: no proxy headers, loopback Host
+      const local = await GET(hb, '/whoami', { host: '127.0.0.1' });
+      assert.deepEqual(local.json, { ok: true, hosted: true, owner: true, handle: 'angadh' },
+        'while the companion on this machine is still the owner, with no password');
+    });
+
     await test('an unauthenticated API call is 401 JSON', async () => {
       const r = await GET(hb, '/index', REMOTE);
       assert.equal(r.status, 401);

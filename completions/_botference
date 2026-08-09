@@ -45,7 +45,9 @@ _botference() {
         '--agents[force the agent bridge on]' \
         '--no-agents[serve without the agent bridge (annotations only)]' \
         '--install-autostart[run the companion for this workspace at every login]' \
-        '--uninstall-autostart[remove that login autostart]'
+        '--uninstall-autostart[remove that login autostart]' \
+        '--install-tunnel[permanent public address via a named cloudflared tunnel]' \
+        '--uninstall-tunnel[stop that tunnel and go back to localhost only]'
       ;;
     plan)
       _arguments \

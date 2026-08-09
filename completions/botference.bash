@@ -15,7 +15,7 @@ _botference() {
         *)  COMPREPLY=( $(compgen -d -- "$cur") ) ;;
       esac ;;
     plugin)
-      COMPREPLY=( $(compgen -W "--share --hosted --service --port --here --agents --no-agents --install-autostart --uninstall-autostart" -- "$cur") ) ;;
+      COMPREPLY=( $(compgen -W "--share --hosted --service --port --here --agents --no-agents --install-autostart --uninstall-autostart --install-tunnel --uninstall-tunnel" -- "$cur") ) ;;
     service)
       if [ "$COMP_CWORD" -eq 2 ]; then
         COMPREPLY=( $(compgen -W "start stop list logs help" -- "$cur") )

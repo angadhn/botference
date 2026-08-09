@@ -398,6 +398,7 @@ botference plugin --share        # hosted + cloudflared tunnel: invite collabora
 botference plugin [--port N] [--no-agents] [--hosted] [--here]
 botference plugin --install-autostart    # macOS: run it at every login
 botference plugin --uninstall-autostart  # …and undo that
+botference plugin --install-tunnel       # macOS + your own domain: one permanent URL
 ```
 
 **Set-and-forget (macOS).** `--install-autostart`, run from the
@@ -453,6 +454,44 @@ also the phone/iPad way in. Remote collaborators *with* the extension
 point it at your tunnel from its options page (URL, password, display
 name). Owner-only stays owner-only: export, page deletion,
 model/effort/verbosity, relay, interrupt.
+
+### Your own domain: one address, forever
+
+`--share` is a conversation — a random `trycloudflare.com` URL that dies
+with the terminal. If you own a domain whose DNS lives on Cloudflare,
+`--install-tunnel` gives the annotations an address you can bookmark on
+your phone instead:
+
+```bash
+brew install cloudflared && cloudflared tunnel login   # once, ever
+botference plugin --install-tunnel
+```
+
+It creates (or reuses) a named tunnel `botference-plugin`, routes
+`plugin.botference.com` to it, writes
+`~/.cloudflared/botference-plugin.yml` (one ingress rule to
+`http://127.0.0.1:4189`), installs a second LaunchAgent
+`com.botference.plugin-tunnel` that keeps the tunnel up at every login,
+and switches the companion's own LaunchAgent to `--hosted` so the
+password gate is what strangers meet. The password is generated once —
+four words and a number, typeable from a phone — and kept in
+`~/.botference/plugin-password` (0600); it is **never** written into a
+plist, because launchd starts the launcher and the launcher reads the
+file. The final URL and password are printed at the end. Set
+`BOTFERENCE_PLUGIN_HOSTNAME` (and `BOTFERENCE_PLUGIN_TUNNEL`) if your
+domain is not this one.
+
+No ports are opened: the tunnel dials out from your machine. This
+machine stays the unauthenticated owner on `http://127.0.0.1:4189`, and
+everything arriving through the tunnel is a guest — the companion tells
+them apart by the Host header *and* the `CF-*`/`X-Forwarded-*` headers
+Cloudflare stamps on, since cloudflared's own hop is loopback too.
+
+`--uninstall-tunnel` stops and removes the tunnel LaunchAgent and puts
+the companion back to plain localhost mode. It deliberately leaves the
+Cloudflare tunnel and the DNS record alone (re-installing is then one
+command) and prints the `cloudflared tunnel delete` you would run to
+remove them from your account as well.
 
 ## Agent Eyes (`botference see`)
 
