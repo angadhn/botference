@@ -75,7 +75,8 @@ const shell = (title, body) => `<!doctype html><html><head><meta charset="utf-8"
 <title>${escHtml(title)}</title><style>${STYLE}</style></head><body>
 <main>${body}</main></body></html>`;
 
-const whoBadge = me => `<span class="who">${escHtml(me.handle || 'guest')}${me.owner ? ' · owner' : ''}</span>`;
+const whoBadge = me => `<span class="who">${escHtml(me.handle || 'guest')}${me.owner ? ' · owner' : ''}`
+  + ` · <a href="/signout">sign out</a></span>`;
 
 // Reload when this page changes underneath the reader — but never mid-sentence:
 // a composer with text in it (or the focus) postpones the reload until it is
@@ -119,7 +120,7 @@ function composer(url, key, threadId, label) {
 </form>`;
 }
 
-export function pageView({ page, key, me, notice }) {
+export function pageView({ page, key, me, notice, snapshot }) {
   const threads = (page.threads || []).map((t, i) => `<section class="card" id="${escHtml(t.id)}">
 <blockquote>${escHtml(t.quote)}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
 ${(t.msgs || []).map(msgHtml).join('\n')}
@@ -129,7 +130,7 @@ ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
   return shell(page.title || page.url, `
 <header>${whoBadge(me)}
 <h1><a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(page.title || page.url)}</a></h1>
-<p class="sub">${escHtml(page.site || '')} · <a href="/pages">all annotated pages</a></p>
+<p class="sub">${escHtml(page.site || '')} · <a href="/pages">all annotated pages</a>${snapshot ? ` · <a href="/a/${escHtml(key)}">read the article ›</a>` : ''}</p>
 </header>
 ${notice ? `<div class="notice">${escHtml(notice)}</div>` : ''}
 <h2>comments${(page.threads || []).length ? '' : ' — none yet'}</h2>
@@ -142,11 +143,98 @@ ${composer(page.url, key, '__page__', 'ask about this page…')}
 ${liveScript(page.url)}`);
 }
 
-export function pagesView({ index, me }) {
+// --- the article view: the review-doc experience, for any article ---------
+// /p/<key> is the conversation; this is the PAGE, with the highlights painted
+// where they were made. The prose is the sanitized snapshot the extension
+// captured (sanitize.mjs); the painting, the anchoring and the making of new
+// highlights are all done in the browser by the extension's OWN anchor.js,
+// served from /assets — so a highlight made on a phone is the same kind of
+// object, anchored by the same code, as one made in the drawer on the Mac.
+const ARTICLE_STYLE = `
+/* a phone is the point of this view: nothing may push the page sideways */
+html, body { max-width:100%; overflow-x:hidden }
+.bar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:.6rem;
+  max-width:100%; padding:.55rem .8rem; background:var(--card);
+  border-bottom:1px solid var(--line) }
+.bar .t { flex:1 1 auto; min-width:0; font-weight:600; font-size:.9rem;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.bar a, .bar button.link { flex:0 0 auto; color:var(--accent); background:none; border:none;
+  padding:0; font:inherit; font-size:.8rem; cursor:pointer; white-space:nowrap }
+.bar button.pill { flex:0 0 auto; padding:.25rem .6rem; font-size:.78rem; border-radius:999px }
+article { max-width:min(42rem, 100%); margin:0 auto; padding:1.2rem 1.1rem 60vh;
+  overflow-wrap:anywhere }
+article img { max-width:100%; height:auto }
+article pre { overflow-x:auto }
+article table { display:block; overflow-x:auto; border-collapse:collapse }
+article td, article th { border:1px solid var(--line); padding:.3rem .5rem }
+article h1,article h2,article h3 { line-height:1.25 }
+#bfp-pill { position:fixed; z-index:20; transform:translate(-50%,-115%);
+  padding:.35rem .75rem; border-radius:999px; box-shadow:0 2px 10px rgba(0,0,0,.25) }
+#bfp-sheet { position:fixed; left:0; right:0; bottom:0; z-index:30; max-height:72vh;
+  display:flex; flex-direction:column; background:var(--card);
+  border-top:1px solid var(--line); border-radius:14px 14px 0 0;
+  box-shadow:0 -4px 24px rgba(0,0,0,.22); transform:translateY(101%);
+  transition:transform .18s ease }
+#bfp-sheet.open { transform:translateY(0) }
+#bfp-sheet .head { display:flex; align-items:center; gap:.6rem; padding:.7rem .9rem .4rem }
+#bfp-sheet .head .h { flex:1; font-size:.8rem; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.06em }
+#bfp-sheet .body { overflow-y:auto; padding:0 .9rem .9rem }
+#bfp-sheet blockquote { font-size:.88rem }
+.chip { display:inline-block; font-size:.75rem; color:var(--muted); margin:.4rem 0 0 }
+.x { background:none; border:none; color:var(--muted); font-size:1.2rem; cursor:pointer; padding:0 .2rem }
+.none { padding:2.5rem 1.1rem; text-align:center; color:var(--muted) }
+.none p { max-width:26rem; margin:0 auto .6rem }
+`;
+
+const jsonScript = (id, data, nonce) =>
+  `<script type="application/json" id="${id}" nonce="${escHtml(nonce)}">`
+  + JSON.stringify(data).replace(/</g, '\\u003c') + '</script>';
+
+export function articleView({ page, key, me, snapshot, info, nonce }) {
+  const n = escHtml(nonce);
+  const head = `<div class="bar"><a href="/pages">‹ pages</a>
+<span class="t">${escHtml(page.title || page.url)}</span>
+<button class="pill" id="bfp-chat">chat</button>
+${me.owner ? '<button class="pill" id="bfp-export">export</button>' : ''}
+<a href="/p/${escHtml(key)}">list</a></div>`;
+
+  // A page annotated before snapshots existed has no article to show. Say so
+  // in one line, offer the conversation, and name the one thing that fixes it.
+  const body = snapshot
+    ? `<article id="bfp-article">${snapshot}</article>`
+    : `<div class="none"><p>No readable copy of this article has been captured yet, so there
+is nothing to mark up here.</p><p>Open it once on the Mac with the extension running and the
+companion will keep a copy — after that this page works from anywhere.</p>
+<p><a href="/p/${escHtml(key)}">read the comments instead ›</a></p></div>`;
+
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escHtml(page.title || page.url)}</title>
+<style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style></head><body>
+${head}${body}
+<button id="bfp-pill" hidden>comment</button>
+<div id="bfp-sheet" aria-live="polite"><div class="head"><span class="h"></span>
+<button class="x" id="bfp-close" aria-label="close">×</button></div>
+<div class="body"></div></div>
+${jsonScript('bfp-data', {
+    url: page.url, key, me: { handle: me.handle, owner: !!me.owner },
+    threads: page.threads || [], page_chat: page.page_chat || [],
+    snapshot: !!snapshot, captured_at: (info && info.captured_at) || null,
+  }, nonce)}
+${snapshot ? `<script src="/assets/anchor.js" nonce="${n}"></script>
+<script src="/assets/reader.js" nonce="${n}"></script>` : ''}
+</body></html>`;
+}
+
+export function pagesView({ index, me, snapshots }) {
+  const has = k => !!(snapshots && snapshots.has && snapshots.has(k));
   const rows = Object.entries(index || {})
     .sort((a, b) => String(b[1].updated_at || '').localeCompare(String(a[1].updated_at || '')))
-    .map(([key, row]) => `<li><a href="/p/${escHtml(key)}">${escHtml(row.title || row.url)}</a>
-<div class="meta">${escHtml(row.url)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}</div></li>`)
+    // A row whose article we hold opens the article itself; one we do not
+    // still opens its conversation, which is all there has ever been.
+    .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
+<div class="meta">${escHtml(row.url)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div></li>`)
     .join('\n');
   return shell('Annotated pages', `
 <header>${whoBadge(me)}

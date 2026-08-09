@@ -22,8 +22,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { deviceSession, ownerPassword as sharedOwnerPassword } from './identity.mjs';
 
-export const AUTH_TTL_MS = 7 * 24 * 3600 * 1000; // 7 days
+export const AUTH_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days, renewed as you go
 export const DEFAULT_CAP = 5;                    // guest mentions per day
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
 const HTML_HEAD = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
@@ -119,26 +120,65 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
     }
   }
   const owner = () => String(ownerHandle() || '');
+  // The owner's credential is the one the review hub already hands to every
+  // paper server, so there is one password for everything (identity.mjs). An
+  // explicit ownerPassword argument still wins, for tests and for anyone
+  // running the companion on its own.
+  // Resolved once, at startup rather than on the first remote request: this is
+  // the credential the owner will type, so a hosted companion should establish
+  // it (and persist a new one, if the hub never has) before it serves anything.
+  const ownerPwMemo = (hosted && !ownerPassword) ? (sharedOwnerPassword() || '') : '';
+  const ownerPw = () => ownerPassword || ownerPwMemo;
 
-  // --- the cookie: exp + role, signed. Stateless, survives restarts. -----
-  const mac = (exp, role) => crypto.createHmac('sha256', secret).update(`${exp}.${role}`).digest('hex');
-  function cookieRole(req) {
-    const [exp, role, sig] = String(cookieOf(req, 'plugin_auth')).split('.');
-    if (!exp || !role || !sig || !/^\d+$/.test(exp) || Date.now() > Number(exp)) return null;
+  // --- the cookie: exp + role + HANDLE, signed. Stateless, survives restarts.
+  // The handle is inside the signature, not beside it: a guest cookie used to
+  // carry the role only, with the name in a separate unsigned `plugin_handle`
+  // cookie that identity() then trusted — so any signed-in guest could rename
+  // themselves to any other guest and write under their name. Signing the
+  // triple makes the name as unforgeable as the role.
+  const mac = (exp, role, handle) =>
+    crypto.createHmac('sha256', secret).update(`${exp}.${role}.${handle}`).digest('hex');
+  function cookieSession(req) {
+    const parts = String(cookieOf(req, 'plugin_auth')).split('.');
+    if (parts.length !== 4) return null; // 3-part cookies predate signed handles
+    const [exp, role, handle, sig] = parts;
+    if (!/^\d+$/.test(exp) || Date.now() > Number(exp)) return null;
     if (role !== 'owner' && role !== 'guest') return null;
-    return safeEqual(sig, mac(exp, role)) ? role : null;
+    if (!/^[\w-]{1,40}$/.test(handle)) return null;
+    return safeEqual(sig, mac(exp, role, handle)) ? { role, handle } : null;
   }
   function setCookies(req, role, handle) {
     const exp = String(Date.now() + AUTH_TTL_MS);
     const age = Math.floor(AUTH_TTL_MS / 1000);
     const secure = String(req.headers['x-forwarded-proto'] || '').includes('https') ? '; Secure' : '';
     return [
-      // the credential
-      `plugin_auth=${exp}.${role}.${mac(exp, role)}; Max-Age=${age}; Path=/; HttpOnly; SameSite=Lax${secure}`,
-      // a NAME, readable by the page; never trusted for anything but labeling
+      // the credential — role and name both under the signature
+      `plugin_auth=${exp}.${role}.${handle}.${mac(exp, role, handle)}; Max-Age=${age}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+      // a NAME the page may read for labeling; never trusted for anything
       `plugin_handle=${encodeURIComponent(handle)}; Max-Age=${age}; Path=/; SameSite=Lax${secure}`,
     ];
   }
+  // A phone that visits every few days should never meet the gate again. The
+  // cookie is re-issued once it is past half its life, so continued use
+  // extends it indefinitely while an abandoned session still expires.
+  function refreshCookies(req) {
+    if (!hosted) return null;
+    const s = cookieSession(req);
+    if (!s) return null;
+    const [exp] = String(cookieOf(req, 'plugin_auth')).split('.');
+    if (Number(exp) - Date.now() > AUTH_TTL_MS / 2) return null;
+    return setCookies(req, s.role, s.handle);
+  }
+  const signOutCookies = () => [
+    'plugin_auth=; Max-Age=0; Path=/',
+    'plugin_handle=; Max-Age=0; Path=/',
+  ];
+
+  // An approved device is the owner outright, with nothing typed. This is the
+  // review hub's own cookie, verified with the hub's own secret: a browser the
+  // owner approved for review.botference.com arrives at plugin.botference.com
+  // already carrying it, because the hub scopes it to the parent domain.
+  const approvedDevice = req => !!deviceSession(cookieOf(req, 'hub_device'));
 
   // the extension's credential: a bearer token on the header, or — for WS and
   // SSE, which cannot set headers from a browser — the same value in the query
@@ -150,24 +190,42 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
 
   function isOwner(req) {
     if (!hosted || isLocalDirect(req)) return true;
+    if (approvedDevice(req)) return true;
     const t = tokenOf(req);
-    if (t && ownerPassword && safeEqual(t, ownerPassword)) return true;
-    return cookieRole(req) === 'owner';
+    const opw = ownerPw();
+    if (t && opw && safeEqual(t, opw)) return true;
+    const s = cookieSession(req);
+    return !!s && s.role === 'owner';
   }
   function authorized(req) {
     if (!hosted || isLocalDirect(req)) return true;
+    if (approvedDevice(req)) return true;
     const t = tokenOf(req);
-    if (t) return safeEqual(t, password) || (!!ownerPassword && safeEqual(t, ownerPassword));
-    return !!cookieRole(req);
+    if (t) {
+      const opw = ownerPw();
+      return safeEqual(t, password) || (!!opw && safeEqual(t, opw));
+    }
+    return !!cookieSession(req);
   }
-  const handleOf = req => sanitizeHandle(req.headers['x-plugin-handle'])
-    || sanitizeHandle(queryOf(req).get('handle') || '')
-    || sanitizeHandle(decodeURIComponent(cookieOf(req, 'plugin_handle') || ''));
+  // A guest's name: from the extension's header (or the WS/SSE query), else
+  // from the SIGNED cookie. The unsigned `plugin_handle` cookie is never
+  // consulted — it exists so the page can print a name, not to prove one.
+  const handleOf = (req) => {
+    const s = cookieSession(req);
+    // A signed-in browser IS its signed name. Letting a header override it
+    // would hand the impersonation back: the cookie is the credential there,
+    // so the name inside it is the answer, full stop.
+    if (s && !tokenOf(req)) return s.handle;
+    return sanitizeHandle(req.headers['x-plugin-handle'])
+      || sanitizeHandle(queryOf(req).get('handle') || '')
+      || (s ? s.handle : '');
+  };
 
   // Who is writing this message. The owner is always the config author — on
-  // localhost, through the owner password, from any device — so their
-  // annotations stay one person across every way in. A guest is their handle
-  // and nothing else: unauthenticated names are refused rather than guessed.
+  // localhost, from an approved device, through the owner password, from any
+  // device — so their annotations stay one person across every way in. A guest
+  // is their handle and nothing else: unauthenticated names are refused
+  // rather than guessed.
   function identity(req) {
     if (!hosted || isLocalDirect(req)) return { handle: owner(), owner: true };
     if (isOwner(req)) return { handle: owner(), owner: true };
@@ -176,6 +234,9 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
     if (h === sanitizeHandle(owner())) {
       return { handle: null, owner: false, error: "that name is the owner's here — pick another", code: 403 };
     }
+    // A cookie-borne name is signed, so it cannot be swapped; a header-borne
+    // one is only as good as the bearer token beside it, which is the shared
+    // guest password. Both land here as the same kind of guest.
     return { handle: h, owner: false };
   }
 
@@ -236,9 +297,15 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
       const handle = sanitizeHandle(raw);
       const given = form.get('password') || '';
       // the owner password outranks the name rules: whatever was typed, this
-      // login is the owner, cookied under the owner's configured author
-      if (ownerPassword && safeEqual(given, ownerPassword)) {
-        res.writeHead(303, { 'set-cookie': setCookies(req, 'owner', owner()), location: next }).end();
+      // login is the owner, cookied under the owner's configured author. It is
+      // the same password the review hub hands to every paper, so the phone
+      // that opens a review opens the annotations with the same thing typed.
+      const opw = ownerPw();
+      if (opw && safeEqual(given, opw)) {
+        res.writeHead(303, {
+          'set-cookie': setCookies(req, 'owner', sanitizeHandle(owner()) || 'owner'),
+          location: next,
+        }).end();
         return;
       }
       if (!handle) {
@@ -306,5 +373,6 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
     hosted, grantsFile, usageFile,
     authorized, isOwner, identity, denied, authEndpoint, gatePage,
     grantFor, grantUsed, grantSpend,
+    refreshCookies, signOutCookies, ownerPassword: ownerPw,
   };
 }

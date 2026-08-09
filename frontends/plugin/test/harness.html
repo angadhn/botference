@@ -527,6 +527,7 @@ const dedupePosts = [];     // every message the companion answered deduped:true
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
 const postedMsgs = [];      // every /thread + /reply body, for the article_text checks
+const snapshots = [];       // every /snapshot body, for the phone-reading checks
 const orphanPosts = [];     // every /orphan body
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
@@ -924,6 +925,14 @@ function companion(method, path, body) {
              data: { ok: true, mode, path: '/Users/angadh/Vault/Web Clippings/' + name + '.md' } };
   }
   if (method === 'POST' && route === '/interrupt') { log('interrupt sent'); return { ok: true, status: 200, data: { ok: true } }; }
+  // the article snapshot: what a phone will read at /a/<key>. The harness only
+  // records it — the sanitizing is the companion's job (sanitize.mjs) and is
+  // tested there; what matters HERE is what the extension chose to send.
+  if (method === 'POST' && route === '/snapshot') {
+    snapshots.push(String((body && body.html) || ''));
+    log('snapshot posted (' + ((body && body.html) || '').length + ' bytes)');
+    return { ok: true, status: 200, data: { ok: true, stored: true } };
+  }
   if (method === 'GET' && route === '/health') return { ok: true, status: 200, data: { ok: true, bridge: 'running', queue: queueDepth } };
   // the companion is the authority on who you are; the {t:'identity'} shim
   // above stands in for the background worker that asks this
@@ -1227,6 +1236,23 @@ async function selftest() {
     ' pending=' + !!S.querySelector('.card.pending') +
     ' chip=' + JSON.stringify((S.querySelector('.status-chip') || {}).textContent || ''));
   check('provisional highlight re-keyed', !document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
+
+  // ---- the article snapshot: what a phone will read at /a/<key> -----------
+  // Annotating a page is what makes it worth being able to read elsewhere, so
+  // the capture rides the save. What goes on the wire has to be the ARTICLE:
+  // our own marks unwrapped (never removed — they wrap the very sentence the
+  // comment is about), the page furniture gone, every link absolute.
+  const snap = await until(() => snapshots[0]);
+  check('annotating a page captures the article for the phone', !!snap);
+  check('…with the prose intact', !!snap && /played within itself/.test(snap));
+  check('…and the sentence that was just highlighted still in it',
+    !!snap && /By the hour mark[\s\S]*?found a rhythm/.test(snap));
+  check('…with our own highlight marks unwrapped, not cut out',
+    !!snap && !/bfp-hl/.test(snap));
+  check('…no scripts or styles', !!snap && !/<script|<style|<iframe/i.test(snap));
+  check('…no event handlers', !!snap && !/\son[a-z]+\s*=/i.test(snap));
+  check('…and links made absolute while we still know the page',
+    !!snap && !/href="\/(?!\/)/.test(snap));
 
   check('streaming reply rendered', !!await until(() => S.querySelector('.reply.streaming')));
   check('working chip shows the claude logomark',

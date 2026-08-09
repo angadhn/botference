@@ -449,11 +449,50 @@ and comment under their own handle; their @-mentions are refused
 politely unless granted in `.botference/plugin/grants.json`
 (`{"<handle>": {"agents": true, "daily_cap": 5}}`, re-read live).
 Guests without the extension get a server-rendered reading room at
-`/pages` — quotes, threads, and page chat with composers — which is
-also the phone/iPad way in. Remote collaborators *with* the extension
-point it at your tunnel from its options page (URL, password, display
-name). Owner-only stays owner-only: export, page deletion,
-model/effort/verbosity, relay, interrupt.
+`/pages`. Remote collaborators *with* the extension point it at your
+tunnel from its options page (URL, password, display name). Owner-only
+stays owner-only: export, page deletion, model/effort/verbosity, relay,
+interrupt.
+
+### On your phone: reading and annotating, not just reading
+
+Once the companion has a public address (below), the annotations are a
+bookmark. Two things make that worth doing.
+
+**You are the owner there, not a guest.** Signing in from a phone uses
+the *same* identity as your review docs — botference has one owner
+credential, not one per tool. If your browser is already an approved
+device for the review hub, it is the owner at the annotator too, with
+nothing typed: the hub scopes its device cookie to the parent domain
+and the companion verifies it with the hub's own secret. Otherwise type
+the owner password — the one in
+`~/.botference/review-paper-secrets.json`, which the hub hands to every
+paper server, and which `--install-tunnel` prints for you. Either way
+you get every owner right remotely: export, delete, the agent controls,
+and `@claude`/`@codex` with no grant needed. Your machine on
+`127.0.0.1` stays the owner with no password at all, exactly as before.
+Sessions last 30 days and renew themselves as you use them, so the gate
+should be a once-a-year event. `/signout` ends one.
+
+**The article comes with it.** When you annotate a page, the extension
+sends the companion a clean copy of the prose, and `/a/<page>` serves
+that copy back with your highlights painted where you made them — tap
+one to open its thread, select text to start a new one, ask the bots,
+export to Obsidian. It is the review-doc experience for any article you
+read. New highlights made on the phone are ordinary threads: the phone
+runs the extension's own anchoring code, so a passage you mark on the
+train is highlighted in the page itself next time you open it on the
+Mac.
+
+The snapshot is sanitized on arrival — rebuilt from an allowlist, so no
+scripts, no iframes, no event handlers, no `javascript:` links survive —
+and served under a strict CSP that can run nothing the page did not
+itself nonce. Images are kept (an article without them reads poorly)
+and load from their original https sources. Pages annotated before this
+existed have no copy yet: their article view says so and points at the
+comments, and opening the page once on the Mac captures it. Annotating
+a brand-new URL from the phone is not built — the phone can only mark
+up pages your Mac has seen.
 
 ### Your own domain: one address, forever
 
@@ -467,8 +506,10 @@ brew install cloudflared && cloudflared tunnel login   # once, ever
 botference plugin --install-tunnel
 ```
 
-It creates (or reuses) a named tunnel `botference-plugin`, routes
-`plugin.botference.com` to it, writes
+It prints two credentials at the end: **yours** (the shared botference
+owner password — full owner rights from anywhere) and the
+**collaborators'** guest password. It creates (or reuses) a named
+tunnel `botference-plugin`, routes `plugin.botference.com` to it, writes
 `~/.cloudflared/botference-plugin.yml` (one ingress rule to
 `http://127.0.0.1:4189`), installs a second LaunchAgent
 `com.botference.plugin-tunnel` that keeps the tunnel up at every login,

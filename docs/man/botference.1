@@ -126,7 +126,33 @@ per-guest handles so collaborators see and comment on the same threads;
 guest @-mentions need a grant in
 \fI.botference/plugin/grants.json\fR (re-read live; daily caps).
 Extension-less guests get a server-rendered reading room at
-\fI/pages\fR. \fB\-\-share\fR is hosted mode plus a cloudflared quick
+\fI/pages\fR, and any page whose article has been captured also has an
+ARTICLE VIEW at \fI/a/<pageKey>\fR: the prose itself with the
+highlights painted in place, tap one for its thread, select text to
+start a new one, ask the bots, export. The extension sends that
+snapshot when a page is first annotated and again whenever the prose
+changes; the companion sanitizes it against an allowlist (no scripts,
+iframes, event handlers or non-http links survive) and serves it under
+a strict Content-Security-Policy. Highlights made from a phone are
+ordinary threads \- the article view runs the extension's own
+\fIanchor.js\fR \- so they appear in the page itself on the Mac. A page
+annotated before snapshots existed says so and offers its comments
+instead.
+.IP
+Owner identity is shared with the review documents rather than
+duplicated: a browser already approved as an owner DEVICE for the
+review hub is the owner here too, with nothing typed (the hub scopes
+its \fBhub_device\fR cookie to the parent domain and the companion
+verifies it with the hub's own secret), and the owner PASSWORD is
+resolved exactly as \fBhub.mjs\fR resolves it \-
+\fBPLUGIN_OWNER_PASSWORD\fR, then \fBREVIEW_HUB_PASSWORD\fR, then
+\fI.owner\fR in \fI~/.botference/review-paper-secrets.json\fR
+(generated and persisted there on first use), which is the same value
+the hub hands every paper as \fBREVIEW_OWNER_PASSWORD\fR. An owner
+authenticated either way has FULL owner rights remotely. Sessions are
+signed cookies carrying the role AND the name, last 30 days and renew
+themselves in use; \fI/signout\fR ends one.
+\fB\-\-share\fR is hosted mode plus a cloudflared quick
 tunnel (generates PLUGIN_PASSWORD when unset, prints one shareable URL);
 with \fB\-\-service\fR the share runs detached as \fBplugin-share\fR.
 Owner-only regardless of auth: export, page deletion, model/effort/

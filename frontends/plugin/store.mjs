@@ -15,6 +15,7 @@ export const HOME = process.env.BOTFERENCE_HOME || REPO;
 export const ROOT = process.env.BOTFERENCE_PROJECT_ROOT || REPO;
 export const DIR = path.join(ROOT, '.botference', 'plugin');
 const PAGES = path.join(DIR, 'pages');
+const SNAPS = path.join(DIR, 'snapshots');
 const INDEX_FILE = path.join(DIR, 'index.json');
 const CONFIG_FILE = path.join(DIR, 'config.json');
 
@@ -171,14 +172,44 @@ export function savePage(page) {
   return page;
 }
 
-// The page is gone: its record and its index row go together, or the pages
-// list keeps offering a row that opens onto nothing.
+// The page is gone: its record, its snapshot and its index row go together,
+// or the pages list keeps offering a row that opens onto nothing.
 export function deletePage(url) {
   try { fs.unlinkSync(pageFile(url)); } catch { }
+  try { fs.unlinkSync(snapshotFile(pageKey(url))); } catch { }
   const idx = readIndex();
   delete idx[pageKey(url)];
   writeJson(INDEX_FILE, idx);
 }
+
+// --- article snapshots ---------------------------------------------------
+// A readable copy of the article itself, so the page can be READ (and marked
+// up) from a phone that never visited it. One file per page, replaced whole on
+// every refresh: this is a cache of someone else's writing, not a version
+// history, and the only copy worth keeping is the current one.
+export const snapshotFile = key => path.join(SNAPS, `${String(key).replace(/[^0-9a-f]/gi, '')}.html`);
+
+export function saveSnapshot(url, html) {
+  fs.mkdirSync(SNAPS, { recursive: true });
+  const file = snapshotFile(pageKey(url));
+  const tmp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, String(html));
+  fs.renameSync(tmp, file);
+  return file;
+}
+
+export function readSnapshot(key) {
+  try { return fs.readFileSync(snapshotFile(key), 'utf8'); } catch { return ''; }
+}
+
+export function snapshotInfo(key) {
+  try {
+    const st = fs.statSync(snapshotFile(key));
+    return { bytes: st.size, captured_at: new Date(st.mtimeMs).toISOString() };
+  } catch { return null; }
+}
+
+export const hasSnapshot = key => !!snapshotInfo(key);
 
 export function blankPage({ url, title, site }) {
   const ts = nowIso();

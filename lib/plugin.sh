@@ -393,6 +393,16 @@ _plugin_password_read() {
   head -1 "$PLUGIN_PASSWORD_FILE"
 }
 
+# The OWNER's credential, which is not this file at all: it is the one the
+# review hub hands to every paper server (frontends/plugin/identity.mjs), so
+# the same thing typed at a review doc signs you in here. Printed at install
+# so the phone knows what to expect; generated on first use if the hub never
+# got there first.
+_plugin_owner_password() {
+  node -e 'import(process.argv[1]).then(m => console.log(m.ownerPassword()))' \
+    "${BOTFERENCE_HOME}/frontends/plugin/identity.mjs" 2>/dev/null
+}
+
 # Emit the cloudflared config on stdout. Pure function of its arguments.
 #   plugin_tunnel_config <tunnel-uuid> <credentials-file> <hostname> <port>
 # The catch-all 404 is not decoration: without it cloudflared refuses to start,
@@ -673,11 +683,22 @@ plugin_tunnel_install() {
   _plugin_launchagent_load "$tplist" "$tmp" || return 1
   echo "   6/6 tunnel agent: ${PLUGIN_TUNNEL_LABEL} runs it at every login"
 
+  local owner_pw
+  owner_pw=$(_plugin_owner_password || true)
+
   echo ""
   echo "✅ Done — the annotations now live at one address that does not change."
   echo ""
   echo "🔗 https://${PLUGIN_TUNNEL_HOSTNAME}/pages"
-  echo "🔑 password: ${pw}"
+  if [ -n "$owner_pw" ]; then
+    echo "🔑 you (owner):   ${owner_pw}"
+    echo "   ↑ the SAME password your review docs use — sign in with it and you have"
+    echo "     every owner right here too (export, delete, agent controls, bots)."
+    echo "     A browser you already approved for the review hub needs no password at all."
+    echo "🔑 collaborators: ${pw}   (guests: read, comment, bots only where granted)"
+  else
+    echo "🔑 password: ${pw}"
+  fi
   echo ""
   echo "▶  Next steps"
   echo "   1. bookmark that URL on your phone; sign in with any name + the password"
@@ -688,7 +709,8 @@ plugin_tunnel_install() {
   echo ""
   echo "🧩 For reference"
   echo "   this machine is still the owner on http://127.0.0.1:${url_port}/ — no password there"
-  echo "   password file: ${PLUGIN_PASSWORD_FILE}  (0600; never written into a plist)"
+  echo "   guest password: ${PLUGIN_PASSWORD_FILE}  (0600; never written into a plist)"
+  echo "   owner password: ~/.botference/review-paper-secrets.json  (shared with the review hub)"
   echo "   tunnel config: ${PLUGIN_TUNNEL_CONFIG}"
   echo "   tunnel logs:   ${tunnel_log}"
   echo "   companion:     ${workspace}/.botference/logs/plugin-autostart.log"

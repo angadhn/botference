@@ -2,6 +2,43 @@
 
 ## 2026-08-09
 
+- **Web annotator: your phone can annotate, not just read.** Until now a
+  phone could see the conversation about a page but never the page, so
+  the one thing you actually wanted to do out there — mark a sentence
+  and ask about it — was the one thing you could not. Annotating a page
+  now sends the companion a clean copy of the article, and
+  `plugin.botference.com/a/<page>` serves that copy back with your
+  highlights painted where you made them: tap one to open its thread,
+  select text to start a new one, ask `@claude`, export to Obsidian.
+  It is the review-doc experience, for any article you read. A passage
+  you mark on the train is highlighted in the page itself when you next
+  open it on the Mac, because the phone runs the extension's own
+  anchoring code rather than an imitation of it. The copy is rebuilt
+  from an allowlist on arrival — no scripts, no iframes, no event
+  handlers, no `javascript:` links — and served under a policy that can
+  run nothing the page did not itself nonce. Pages annotated before
+  this existed say so and offer their comments; opening one on the Mac
+  captures it.
+
+- **Web annotator: one owner identity, the one you already have.** You
+  were a guest on your own annotations: the remote password made
+  everybody a guest, so from a phone you could not export, delete, or
+  summon the bots without a grant. Owner identity is now the *same* one
+  the review documents use — a browser already approved as an owner
+  device for the review hub is the owner at the annotator too, with
+  nothing typed, and the owner password is the single value the hub
+  hands to every paper server. Sign in with it from anywhere and you
+  have every owner right. Your machine on `127.0.0.1` still needs no
+  password at all.
+
+- **Web annotator: a name you cannot take from someone.** A signed-in
+  guest's name lived outside the signature on their session cookie, so
+  anyone already through the gate could rename themselves to another
+  guest and write under that name. The name is now signed with the role;
+  moving it invalidates the cookie. Sessions also last 30 days and renew
+  themselves as you use them, so a phone should meet the password once
+  and then not again — and `/signout` is there when you want it.
+
 - **Web annotator: one address, forever.** `--share` was always a
   conversation — a random `trycloudflare.com` URL that died with the
   terminal, which is no use at all for the thing you actually want,

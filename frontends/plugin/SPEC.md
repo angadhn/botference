@@ -531,6 +531,79 @@ Contract deltas agreed during live testing — authoritative over the sections a
   `httpHostHeader` ingress setting. It fails closed: the worst a false
   negative can do is ask the owner for their own password.
 
+- One owner identity, shared with the review docs (`identity.mjs`). The review
+  hub had already solved "prove you are the owner from a phone" twice, and both
+  halves are reused here verbatim rather than re-invented:
+  · **an approved device** — hub.mjs's `hub_device = exp.<deviceId>.<hmac>`
+    cookie, signed with `~/.botference/.review-hub-device-secret`, 365 days,
+    scoped by the hub to the PARENT domain. plugin.botference.com is inside
+    that scope, so a browser already approved for review.botference.com is the
+    owner here with nothing typed. The annotator only ever VERIFIES that
+    cookie; minting one stays the hub's osascript approval flow.
+  · **the owner password** — resolved exactly as hub.mjs's `ownerPassword()`
+    does: `PLUGIN_OWNER_PASSWORD` → `REVIEW_HUB_PASSWORD` → `.owner` in
+    `~/.botference/review-paper-secrets.json`, generated and persisted there on
+    first use. That is the same value the hub hands every paper as
+    `REVIEW_OWNER_PASSWORD`, so it is one password for every botference thing.
+  An owner authenticated either way gets FULL owner rights remotely — export,
+  delete-page, model/effort/verbosity/relay/interrupt, and bot mentions with no
+  grant. Localhost-direct remains the unauthenticated owner, and `isLocalDirect`
+  (Host + PROXY_HEADERS + loopback peer) is still what separates it from tunnel
+  traffic.
+- Sessions carry a SIGNED name. `plugin_auth` is now `exp.role.handle.<hmac>`:
+  the handle used to sit outside the signature in the unsigned `plugin_handle`
+  cookie, which `identity()` then trusted — so any signed-in guest could rename
+  themselves to another guest and write under their name. The unsigned cookie
+  survives for labelling only and is never consulted for identity; a header
+  handle is honoured only alongside a bearer token (the extension's path).
+  TTL 30 days, re-issued whenever a request arrives past half its life, so a
+  phone in regular use never meets the gate twice. `GET /signout` clears it.
+- **Article snapshots** (`sanitize.mjs`, `store.mjs`, `reader.js`). The
+  extension captures the prose of an annotated page and the companion serves it
+  back, so the page can be READ and marked up from a phone that never visited
+  it.
+  · `POST /snapshot {url, html}` — owner-only (a snapshot is what everyone else
+    reads). The companion sanitizes on the way in and stores the result at
+    `.botference/plugin/snapshots/<pageKey>.html`, replaced whole on refresh,
+    ≤2 MB after sanitizing (`SNAPSHOT_MAX`; larger ⇒
+    `{ok:true, stored:false, reason}`). Answers `{ok, stored, bytes, dropped}`
+    and broadcasts a `page` event. Deleting a page deletes its snapshot.
+  · The extension sends on the cadence the article TEXT already used: once when
+    the page gets its first thread, and thereafter only when an FNV-1a hash of
+    the captured HTML changes (checked on every mention). It unwraps its own
+    `mark.bfp-hl` (never removes them — they wrap the sentence the comment is
+    about), drops the obvious furniture, and absolutizes href/src while it
+    still knows the page. Client cap 3 MB.
+  · `sanitizeArticle()` rebuilds the HTML from a token stream against an
+    allowlist: a KILL set dropped with its subtree (script/style/iframe/svg/
+    form/…), everything else either kept or UNWRAPPED (tag gone, words kept),
+    a per-element attribute allowlist (which is what removes every `on*` and
+    every `style` without a blocklist), href/src required to be literally
+    http(s) after control characters are stripped, and text re-escaped.
+  · `GET /a/<pageKey>` — the article view. Serves the snapshot under
+    `default-src 'none'; script-src 'nonce-…'; style-src 'nonce-…';
+    img-src https: data:; connect-src 'self'; form-action 'self';
+    base-uri 'none'; frame-ancestors 'none'` plus `referrer-policy: no-referrer`.
+    Remote images are allowed (an article without them reads poorly); the
+    reader's IP reaching the origin's CDN is the accepted cost.
+  · `GET /assets/anchor.js` serves the EXTENSION'S OWN anchor.js unchanged, and
+    `/assets/reader.js` the phone UI. Anchoring the phone by the same code is
+    what makes a highlight made there findable on the Mac: both sides store
+    `{quote, prefix, suffix}` from the same `buildAnchor`, and both re-find it
+    with the same `locate()`. The snapshot is only the article, the Mac indexes
+    the whole page, and the anchor survives the difference (tested).
+  · `reader.js`: paints every thread, tap a highlight → bottom sheet with that
+    thread and a composer, `chat` → page chat, selection → pill → new thread
+    (POST /thread with a freshly built anchor), owner-only export with the
+    same two-mode chooser, and the drawer's wait vocabulary
+    (`bridge_starting`/`busy`/turn-start → turn-end) driven by the same WS
+    events. Writes go to the same JSON endpoints the extension posts to.
+  · `/p/<pageKey>` is unchanged and remains the conversation view (stable
+    links, form redirects); it gains a link to the article. `/pages` opens the
+    article for rows that have a snapshot, the conversation for those that do
+    not. A page annotated before snapshots existed degrades to a one-line
+    explanation naming the fix, with its comments one tap away.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

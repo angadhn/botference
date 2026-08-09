@@ -22,6 +22,7 @@
 //         PLUGIN_OWNER_PASSWORD (hosted, optional: signs the owner in remotely),
 //         PLUGIN_BRIDGE_CMD (tests: JSON argv array replacing the python bridge)
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,9 +31,17 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest } from './chat.mjs';
 import { exportPage, exportMode } from './export.mjs';
 import { createHosted, CORS_HEADERS } from './hosted.mjs';
-import { pageView, pagesView } from './views.mjs';
+import { pageView, pagesView, articleView } from './views.mjs';
+import { sanitizeArticle } from './sanitize.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
+// The article view's scripts. anchor.js is the extension's own file, served
+// unchanged: the phone must anchor by exactly the code the Mac anchors by, or
+// a highlight made in one place would not be found in the other.
+const ASSETS = {
+  'anchor.js': path.join(PLUGIN, 'extension', 'anchor.js'),
+  'reader.js': path.join(PLUGIN, 'reader.js'),
+};
 const PORT = Number(process.env.PORT || 4189);
 const NO_AGENTS = process.argv.includes('--no-agents');
 const HOSTED = process.argv.includes('--hosted');
@@ -297,12 +306,24 @@ export function handler(req, res) {
     return res.writeHead(204, { 'content-length': '0' }).end();
   }
   if (HOSTED && req.method === 'POST' && url === '/auth') return hosted.authEndpoint(req, res);
+  // A session in daily use never expires: past half its life it is re-issued
+  // on the way past. setHeader (not writeHead) so every route below still
+  // writes its own headers normally.
+  if (HOSTED) {
+    const fresh = hosted.refreshCookies(req);
+    if (fresh) res.setHeader('set-cookie', fresh);
+  }
+  if (HOSTED && url === '/signout') {
+    return res.writeHead(303, { 'set-cookie': hosted.signOutCookies(), location: '/pages' }).end();
+  }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
 
   // --- the reading room: collaborators without the extension -------------
   if (req.method === 'GET' && (url === '/' || url === '/pages')) {
     if (url === '/') return res.writeHead(302, { location: '/pages' }).end();
-    const html = pagesView({ index: store.readIndex(), me: hosted.identity(req) });
+    const index = store.readIndex();
+    const snapshots = new Set(Object.keys(index).filter(k => store.hasSnapshot(k)));
+    const html = pagesView({ index, me: hosted.identity(req), snapshots });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
   if (req.method === 'GET' && url.startsWith('/p/')) {
@@ -310,7 +331,9 @@ export function handler(req, res) {
     const page = store.readPageByKey(key);
     if (!page) return fail(res, 404, 'unknown page');
     const notice = new URLSearchParams(req.url.split('?')[1] || '').get('notice') || '';
-    const html = pageView({ page, key, me: hosted.identity(req), notice });
+    const html = pageView({
+      page, key, me: hosted.identity(req), notice, snapshot: store.hasSnapshot(key),
+    });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
 
@@ -353,6 +376,69 @@ export function handler(req, res) {
     req.on('close', () => sseClients.delete(res));
     return;
   }
+  // --- the article itself, for a reader who never visited the page -------
+  // The extension posts a snapshot of the prose; the companion sanitizes it
+  // (sanitize.mjs) and keeps the latest one. Owner-only: a snapshot is what
+  // everyone else then READS, so a guest must not be able to rewrite the
+  // article under the owner's highlights.
+  if (req.method === 'POST' && url === '/snapshot') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      if (!data.url) return fail(res, 400, 'url required');
+      const page = store.readPage(data.url);
+      if (!page) return fail(res, 404, 'unknown page');
+      const { html, dropped, tooBig } = sanitizeArticle(String(data.html || ''));
+      if (tooBig) return ok(res, { stored: false, reason: 'article too large to snapshot' });
+      if (!html.trim()) return ok(res, { stored: false, reason: 'nothing readable to snapshot' });
+      store.saveSnapshot(data.url, html);
+      broadcast({ type: 'page', url: page.url });
+      return ok(res, { stored: true, bytes: Buffer.byteLength(html), dropped });
+    });
+  }
+  // the article view's two scripts: the extension's own anchoring code (so the
+  // phone anchors exactly as the Mac does) and the reader UI
+  if (req.method === 'GET' && url.startsWith('/assets/')) {
+    const name = url.slice('/assets/'.length);
+    const file = ASSETS[name];
+    if (!file) return fail(res, 404, 'not found');
+    return fs.readFile(file, (err, buf) => {
+      if (err) return fail(res, 404, 'not found');
+      res.writeHead(200, {
+        'content-type': 'application/javascript; charset=utf-8',
+        'cache-control': 'no-cache',
+      }).end(buf);
+    });
+  }
+  if (req.method === 'GET' && url.startsWith('/a/')) {
+    const key = url.slice(3);
+    const page = store.readPageByKey(key);
+    if (!page) return fail(res, 404, 'unknown page');
+    const me = hosted.identity(req);
+    const nonce = crypto.randomBytes(16).toString('base64');
+    const html = articleView({
+      page, key, me, snapshot: store.readSnapshot(key), info: store.snapshotInfo(key), nonce,
+    });
+    // Belt and braces over the sanitizer: even if something got through, this
+    // page can run no script it did not itself nonce, load no stylesheet, and
+    // reach no other origin. Images are the one remote thing allowed — an
+    // article without them reads poorly — and only over https.
+    return res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-security-policy': [
+        "default-src 'none'",
+        `script-src 'nonce-${nonce}'`,
+        `style-src 'nonce-${nonce}'`,
+        "img-src https: data:",
+        "connect-src 'self'",
+        "form-action 'self'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+      ].join('; '),
+      'referrer-policy': 'no-referrer',
+    }).end(html);
+  }
+
   if (req.method === 'GET' && url === '/test-page') {
     return fs.readFile(path.join(PLUGIN, 'test', 'fixtures', 'article.html'), (err, buf) => {
       if (err) return fail(res, 404, 'fixture missing');

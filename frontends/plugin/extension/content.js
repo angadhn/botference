@@ -238,6 +238,63 @@
     return collapse(el.innerText || el.textContent).slice(0, 6000);
   }
 
+  // ---- the article, as a thing a phone can read ---------------------------
+  // A readable copy of the prose, sent to the companion so /a/<key> can show
+  // the page — with its highlights — to someone who never visited it. The
+  // companion sanitizes whatever arrives (sanitize.mjs is the authority, since
+  // it must be safe against any client at all); this pass exists to keep the
+  // payload small and honest: our own marks come out, the obvious junk comes
+  // out, and every link is made absolute while we still know what page we are.
+  const SNAP_MAX = 3 * 1024 * 1024;
+  const SNAP_JUNK = 'script,style,iframe,noscript,svg,canvas,video,audio,form,button,'
+    + 'input,select,textarea,link,meta,template,object,embed,nav,footer';
+
+  function snapshotHtml() {
+    let root;
+    try { root = articleRoot(); } catch (_) { return ''; }
+    if (!root) return '';
+    let clone;
+    try { clone = root.cloneNode(true); } catch (_) { return ''; }
+    try {
+      // our own highlight marks are UNWRAPPED, never removed: they wrap the
+      // very text the anchors point at, so deleting them would delete the
+      // sentence the comment is about
+      clone.querySelectorAll('mark.bfp-hl').forEach((m) => {
+        const parent = m.parentNode;
+        if (!parent) return;
+        while (m.firstChild) parent.insertBefore(m.firstChild, m);
+        parent.removeChild(m);
+      });
+      clone.querySelectorAll('#bfp-root').forEach(n => n.remove());
+      clone.querySelectorAll(SNAP_JUNK).forEach(n => n.remove());
+      // relative URLs mean nothing on the companion's hostname
+      clone.querySelectorAll('a[href]').forEach((a) => {
+        try { a.setAttribute('href', a.href); } catch (_) { }
+      });
+      clone.querySelectorAll('img[src]').forEach((i) => {
+        try { i.setAttribute('src', i.src); } catch (_) { }
+      });
+    } catch (_) { /* a partial clean is still worth sending */ }
+    const html = clone.innerHTML || '';
+    return html.length > SNAP_MAX ? '' : html;
+  }
+
+  // Sent on the same cadence the article TEXT is: once when this page first
+  // gets an annotation, and thereafter only when the prose actually changed.
+  let lastSnapHash = null;
+  function maybeSnapshot() {
+    let html = '';
+    try { html = snapshotHtml(); } catch (_) { return; }
+    if (!html) return;
+    const h = hashText(html);
+    if (h === lastSnapHash) return;
+    lastSnapHash = h;
+    // fire and forget: a snapshot is never worth delaying a comment for
+    api('POST', '/snapshot', { url: URL_NOW, html })
+      .then((r) => { if (!r || !r.ok) lastSnapHash = null; })
+      .catch(() => { lastSnapHash = null; });
+  }
+
   // First-turn context. An adapter gets first refusal — it may have to fetch
   // the real document from its own origin — and anything it cannot produce
   // (non-200, network, signed out, an account chooser served 200) comes back
@@ -324,6 +381,11 @@
   // Only a message the companion actually accepted counts as having delivered
   // the page: a failed POST must leave the next mention carrying it again.
   function commitContext(ctx) {
+    // The snapshot rides the same cadence as the page text: every mention
+    // re-reads the article, so every mention is also a chance to notice the
+    // prose moved under an existing conversation. Its own hash gate makes a
+    // repeat cheap, so this is safe to call on each one.
+    maybeSnapshot();
     if (!ctx || !ctx.article_text) return;
     sentArticleText = true;
     lastContextHash = ctx.hash;
@@ -651,6 +713,9 @@
         }
         pendingSel = null;
         bg({ t: 'badge', count: (PAGE.threads || []).length });
+        // this page is now annotated, so it is worth being able to read it
+        // from a phone: capture the article the first time and on every change
+        maybeSnapshot();
         loadPage();
         watchSend();
         // `reason` = saved, but the bots will not run for this sender (a guest
