@@ -885,6 +885,13 @@
         if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
       },
+      // Which auth an agent bills. The companion applies it at the next bridge
+      // spawn and tells us whether that is now or after the running turn.
+      onSetKeyMode: async (agent, mode) => {
+        const r = await api('POST', '/key-mode', { agent, mode });
+        if (!r.ok) return failure(r);
+        return { ok: true, applies: r.data && r.data.applies };
+      },
       // 409 "agents are idle — nothing to relay" is an ordinary answer here,
       // not a transport failure: hand the text back for the popover to show.
       onRelay: async agent => {

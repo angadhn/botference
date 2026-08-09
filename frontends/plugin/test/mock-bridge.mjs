@@ -9,6 +9,20 @@ const LOG = process.env.MOCK_BRIDGE_LOG || '';
 const DELAY = Number(process.env.MOCK_TURN_DELAY_MS || 0);
 const emit = o => process.stdout.write(JSON.stringify(o) + '\n');
 const log = o => { if (LOG) { try { fs.appendFileSync(LOG, JSON.stringify(o) + '\n'); } catch { } } };
+// The real bridge spawns the CLIs, which read their API keys from the
+// environment — so which variables are PRESENT at spawn is the whole of the
+// key feature. Recorded once, as a plain presence/value map, so a test can
+// tell "absent" from "empty string": they are not the same thing to a CLI.
+if (process.env.MOCK_ENV_DUMP) {
+  const want = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CODEX_API_KEY'];
+  const seen = {};
+  for (const k of want) if (k in process.env) seen[k] = process.env[k];
+  try {
+    fs.appendFileSync(process.env.MOCK_ENV_DUMP,
+      JSON.stringify({ present: want.filter(k => k in process.env), values: seen }) + '\n');
+  } catch { }
+}
 const ready = () => setImmediate(() => emit({ type: 'ready' }));
 const room = (speaker, text) => emit({ type: 'room', speaker, text, blocks: [] });
 

@@ -2,6 +2,44 @@
 
 ## 2026-08-09
 
+- **Discuss: bring your own API key.** Discuss has always run on whatever
+  the `claude` and `codex` CLIs are logged into, and that is still the
+  default. If you would rather bill a key, the extension's options page
+  now takes one per agent and the drawer's gear menu says when to use
+  it: **auto** (a saved key is used, otherwise your subscription — the
+  same rule Claude Code applies), **subscription**, or **key**. Keys live
+  on the companion's machine in a 0600 file and only ever travel one
+  way: the page can save one or remove one, and all it can read back is
+  "set" or "unset". They cannot be set through the tunnel at all, not
+  even by you — a key has no reason to cross a network to reach the CLIs
+  running beside it. Removing one is a real delete, and anything meaning
+  "not a key" takes the variable out of the bots' environment rather
+  than blanking it, along with the other auth sources that could
+  override a subscription just as quietly.
+  One honest caveat, because the two CLIs genuinely differ: Claude Code
+  prefers a key whenever one is set, while Codex prefers its ChatGPT
+  login and only falls back to a key when you are logged out. The
+  billing picker says so rather than promising an override that would
+  not happen.
+
+- **Discuss: one anonymous ping a day, and a section of the README that
+  says exactly what is in it.** I have no idea whether anyone is using
+  this, which is the only thing that decides whether it keeps being
+  built. So the companion now sends one event a day: a random install id
+  and a version number. No URL, no page, no comment text, no name, no
+  location, no counts — the README quotes the literal payload and a test
+  asserts the payload matches it. `BOTFERENCE_NO_TELEMETRY=1` or
+  `"telemetry": false` in the config turns it off before anything
+  touches the network, and a clone with no analytics secret compiled in
+  never sends anything at all.
+
+- **Discuss: the install instructions stand on their own.** The site's
+  Discuss panel and the README now open with the three steps for people
+  who only want the annotator — clone, `./botference discuss`, load the
+  extension — instead of leaving them to work out which parts of a
+  planning-council README apply to them. The council is optional and now
+  reads that way.
+
 - **botference.com is art-led now.** The landing page is the braid, drawn as responsive SVG instead of the raster share card, one sentence, the clone line, and one screenshot per surface (Council, Discuss) with a single caption each — the feature grids, transcript, quickstart steps and FAQ prose are gone, the FAQ surviving as a collapsed `<details>` so the FAQPage schema still matches what a reader can see.
 
 - **The web annotator is now Discuss, at discuss.botference.com.** It had

@@ -629,6 +629,55 @@ Contract deltas agreed during live testing — authoritative over the sections a
   `Domain`), so signing in at one hostname does not carry to the other — which
   is why the canonical address is the one the install tells you to bookmark.
 
+- API keys (`keys.mjs`). Per-agent auth for the CLIs the bridge spawns, since
+  both already read a key from the environment. Stored in
+  `~/.botference/discuss-keys.json` (0600, mtime-watched like grants.json) as
+  `{keys:{claude,codex}, modes:{claude,codex}}`. Modes are `auto` (default —
+  a stored key is used, else the subscription, mirroring Claude Code itself),
+  `subscription`, `key`. `applyEnv()` is the only consumer: called at every
+  bridge spawn, it sets `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` when a key
+  applies and otherwise **deletes** them — absent, never empty, because an
+  empty key is not the same thing as no key to a CLI. It also always clears the
+  sibling auth sources (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_AWS_API_KEY`,
+  `ANTHROPIC_FOUNDRY_*`, `AWS_BEARER_TOKEN_BEDROCK`, `CLAUDE_CODE_USE_{BEDROCK,
+  VERTEX,FOUNDRY}`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`), any of which would
+  override a subscription just as a key would.
+  Routes, all **localhost-direct only** (stricter than owner-only — `isLocalDirect`,
+  so the remote owner is refused too and a key never crosses the tunnel):
+  `GET /keys` → `{claude:'set'|'unset', codex:…, modes:{…}}` and never key
+  material; `POST /keys {agent, key}`; `POST /keys/remove {agent}` →
+  `{removed:bool, …}`, a real delete rather than a blank overwrite;
+  `POST /key-mode {agent, mode}`. Each answers with the status plus
+  `applies:'now'|'next-restart'` — an environment is fixed at spawn, so an idle
+  bridge is stopped (respawning on the next mention) and a busy one is left to
+  finish. `GET /models` and the `models` broadcast carry `keys` (status +
+  modes) so the gear popover can render a per-agent billing picker, which —
+  like verbosity, and unlike model/effort — survives a sleeping bridge because
+  it is the companion's setting. Keys are never logged, never echoed into an
+  error, and never written to a page record.
+  **The CLIs disagree and the UI says so.** claude: a key set in the
+  environment beats the subscription (documented; no prompt in the `-p` mode
+  the bridge uses). codex: the stored ChatGPT login beats the key, which is
+  only consulted when logged out — so a saved key is a fallback there, and the
+  picker's tooltip says as much. codex's `forced_login_method=api` would force
+  it and DELETES `~/.codex/auth.json` in the process; it is never sent.
+- Usage beacon (`beacon.mjs`). One anonymous GA4 Measurement Protocol event,
+  `discuss_alive`, at most once per day, fired after `listen()` so nothing
+  about serving waits on it. Payload is exactly
+  `{client_id, non_personalized_ads:true, events:[{name, params:{app_version,
+  engagement_time_msec}}]}` — no URL, title, annotation, handle, username,
+  path, locale or counts. `client_id` is 16 random bytes minted once into
+  `.botference/plugin/.beacon` alongside the last-ping timestamp; an id that is
+  not 32 hex characters is discarded rather than trusted, so a hand-edited file
+  cannot become a meaningful identifier. Three independent opt-outs, all
+  checked before any network call: `BOTFERENCE_NO_TELEMETRY=1`,
+  `"telemetry": false` in config.json, and an empty/placeholder `API_SECRET`
+  (which is how it ships — a fresh clone never sends anything).
+  `BOTFERENCE_TELEMETRY_SECRET` overrides the constant, which is how the tests
+  exercise the send path without a secret existing in the repo. The day is
+  stamped BEFORE the request, so a dead network costs one skipped day rather
+  than a retry loop, and a failed send never surfaces.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

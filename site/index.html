@@ -201,6 +201,9 @@
   .beneath {
     margin: 16px 0 0; color: var(--muted); font-size: 12.5px; letter-spacing: .3px;
   }
+  /* under a surface the caption sits below a centred h2, so it centres too */
+  .surface .beneath { text-align: center; max-width: 620px; margin-inline: auto; }
+  .surface .beneath code { color: var(--text); }
   .beneath a { color: var(--muted); border-bottom: 1px solid var(--border); }
   .beneath a:hover { color: var(--accent); border-color: var(--accent); }
 
@@ -435,6 +438,14 @@
              alt="An essay open in the browser with two passages highlighted, and the Discuss drawer open on the right: a comment thread anchored to the first highlight, where Codex answers follow-up questions inline.">
       </figure>
       <h2><b>Discuss</b> — highlight anything on the web, ask the bots in the margin. <code>botference discuss</code></h2>
+      <div class="install">
+        <span><span class="dollar">$</span> <code>git clone https://github.com/angadhn/botference</code></span>
+        <span><span class="dollar">$</span> <code>cd botference &amp;&amp; ./botference discuss</code></span>
+      </div>
+      <p class="beneath">
+        then load <code>frontends/plugin/extension</code> unpacked in Chrome or Brave —
+        that is the whole install, the council is optional
+      </p>
     </section>
 
     <section class="faq">

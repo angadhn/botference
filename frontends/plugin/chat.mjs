@@ -14,6 +14,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { HOME, ROOT, PAGE_CHAT, readPage, savePage, findThread, pageWithSession, readConfig } from './store.mjs';
+import { applyEnv as applyKeyEnv } from './keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = path.join(PLUGIN, 'bridge-system-prompt.md');
@@ -237,10 +238,14 @@ export function createChat({ onEvent }) {
     // botference room would otherwise hand the child that room's workspace
     // paths and its tmux transport, neither of which apply here
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BOTFERENCE_')));
+    // API keys, per agent, decided fresh at every spawn (keys.mjs): a stored
+    // key becomes ANTHROPIC_API_KEY / OPENAI_API_KEY, and anything meaning
+    // "subscription" DELETES the variable rather than emptying it. This is the
+    // only place either key is put anywhere.
     proc = spawn(cmd, args, {
       cwd: HOME,
-      env: { ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: ROOT,
-        BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic' },
+      env: applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: ROOT,
+        BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic' }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     available = true;

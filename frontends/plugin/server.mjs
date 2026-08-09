@@ -30,9 +30,11 @@ import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest } from './chat.mjs';
 import { exportPage, exportMode } from './export.mjs';
-import { createHosted, CORS_HEADERS } from './hosted.mjs';
+import { createHosted, CORS_HEADERS, isLocalDirect } from './hosted.mjs';
 import { pageView, pagesView, articleView } from './views.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
+import * as keys from './keys.mjs';
+import * as beacon from './beacon.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // The article view's scripts. anchor.js is the extension's own file, served
@@ -119,12 +121,29 @@ function modelsPayload() {
   return {
     current: m.current, options: m.options, status: m.status, effort: m.effort,
     verbosity: store.readConfig().verbosity,
+    // which auth each agent will spawn with — status only, never the key
+    keys: keys.status(),
   };
+}
+
+// A key or a mode only reaches the CLIs at the next bridge spawn, because an
+// environment is fixed when a process starts. Rather than kill a turn to apply
+// it, take the cheap opportunity: a bridge sitting idle is stopped here and
+// respawns on the next mention, already carrying the new answer. A busy one is
+// left alone and the caller is told the change waits.
+function applyKeyChange() {
+  if (NO_AGENTS || !chat) return { applies: 'now' };
+  if (chat.state() !== 'running') return { applies: 'now' };
+  if (chat.queueLength() > 0) return { applies: 'next-restart' };
+  chat.stop();
+  return { applies: 'now' };
 }
 function onChatEvent(ev) {
   // chat.mjs knows nothing about config.json; the verbosity a tab renders
   // rides the same event as everything else in that panel
-  if (ev.type === 'models') return broadcast({ ...ev, verbosity: store.readConfig().verbosity });
+  if (ev.type === 'models') {
+    return broadcast({ ...ev, verbosity: store.readConfig().verbosity, keys: keys.status() });
+  }
   if (ev.type === 'chat' && ev.kind === 'reply') {
     const page = store.readPage(ev.url);
     if (page) {
@@ -357,6 +376,41 @@ export function handler(req, res) {
   // renders that as "unknown yet", never as an empty list.
   if (req.method === 'GET' && url === '/models') {
     return ok(res, { ...modelsPayload(), bridge: NO_AGENTS ? 'disabled' : chat.state() });
+  }
+
+  // --- API keys: written from this machine, never read back --------------
+  // Stricter than owner-only. The remote owner is still the owner, but a key
+  // typed into a phone would cross the tunnel, and there is no reason for it
+  // ever to: keys are configured where the CLIs they pay for actually run.
+  // isLocalDirect is the same three-part test the whole owner model rests on.
+  if (url === '/keys' || url === '/keys/remove' || url === '/key-mode') {
+    if (!isLocalDirect(req)) {
+      req.resume();
+      return fail(res, 403, 'API keys can only be set from this machine');
+    }
+    if (req.method === 'GET' && url === '/keys') return ok(res, keys.status());
+    if (req.method === 'POST' && url === '/keys') {
+      return readBody(req, res, data => {
+        const r = keys.setKey(data.agent, data.key);
+        if (!r.ok) return fail(res, 400, r.error);
+        return ok(res, { ...keys.status(), ...applyKeyChange() });
+      });
+    }
+    if (req.method === 'POST' && url === '/keys/remove') {
+      return readBody(req, res, data => {
+        const r = keys.removeKey(data.agent);
+        if (!r.ok) return fail(res, 400, r.error);
+        return ok(res, { removed: r.removed, ...keys.status(), ...applyKeyChange() });
+      });
+    }
+    if (req.method === 'POST' && url === '/key-mode') {
+      return readBody(req, res, data => {
+        const r = keys.setMode(data.agent, data.mode);
+        if (!r.ok) return fail(res, 400, r.error);
+        return ok(res, { ...keys.status(), ...applyKeyChange() });
+      });
+    }
+    return fail(res, 404, 'not found');
   }
   if (req.method === 'GET' && url === '/index') {
     return res.writeHead(200, JSON_HEAD).end(JSON.stringify(store.readIndex()));
@@ -754,6 +808,13 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
       console.log('--hosted: remote visitors need the password; localhost stays the owner');
       console.log(`  reading room: /pages   agent grants: ${hosted.grantsFile}`);
     }
+    // One anonymous "someone started this today", at most once a day, and only
+    // if this build was given an api secret at all (beacon.mjs). Deliberately
+    // after listen(): nothing about serving waits on it, and it cannot fail
+    // in a way anybody notices.
+    beacon.ping({ dir: store.DIR, config: store.readConfig() })
+      .then(r => { if (r.sent) console.log('· anonymous usage ping sent (BOTFERENCE_NO_TELEMETRY=1 to opt out)'); })
+      .catch(() => { });
   });
   // heartbeat: dead extension workers surface, live ones stay warm
   setInterval(() => {

@@ -376,13 +376,27 @@ The web annotator: discuss any page on the open web with Claude and
 Codex. (`botference plugin` is the same command — the product was
 renamed, the plumbing was not.)
 
-**Just want it?** Three steps, nothing else needed:
+### Just want Discuss?
+
+You clone the whole repo either way — it is one script and no build —
+but nothing below the extension is needed to use it. Three steps:
+
 ```bash
 git clone https://github.com/angadhn/botference && cd botference
-./botference discuss --install-autostart    # macOS: companion runs at every login
+./botference discuss
 ```
-then `brave://extensions` → Developer mode → Load unpacked → `frontends/plugin/extension`.
-(Bot replies need the `claude` and/or `codex` CLI logged in; without them you still get highlights, comments, and Obsidian export.)
+
+then `brave://extensions` (or `chrome://extensions`) → Developer mode →
+Load unpacked → `frontends/plugin/extension`. Highlight a passage on any
+article and leave a comment. Done — the terminal council is a separate
+thing you never have to run.
+
+Two optional extras: `./botference discuss --install-autostart` (macOS)
+makes the companion start at every login so there is no terminal to
+remember, and `--install-tunnel` gives it a permanent URL for your
+phone. Bot replies need the `claude` and/or `codex` CLI installed and
+logged in — without either, highlights, comments and Obsidian export
+all still work.
 
 The review-doc experience, injected into any static article page on the
 open web: a browser extension (Chromium/Brave, `frontends/plugin/extension`)
@@ -541,6 +555,81 @@ the companion back to plain localhost mode. It deliberately leaves the
 Cloudflare tunnel and the DNS record alone (re-installing is then one
 command) and prints the `cloudflared tunnel delete` you would run to
 remove them from your account as well.
+
+### API keys, if you would rather spend credit than a subscription
+
+Discuss drives the `claude` and `codex` CLIs, so by default it runs on
+whatever those are logged into and there is nothing to configure. If you
+would rather bill an API key, paste one per agent in the extension's
+options page. Keys are stored on the companion's machine in
+`~/.botference/discuss-keys.json` (mode 0600) and are **write-only over
+the API**: the page can save one and remove one, and the only thing it
+can ever read back is `set` or `unset`. They can only be set from the
+machine the companion runs on — a request through the tunnel is refused
+even when it is you, because a key has no business crossing a network to
+reach the CLIs running next to it.
+
+Each agent has a billing mode in the drawer's gear menu:
+
+| mode | what happens |
+|---|---|
+| `auto` (default) | a saved key is used; no key means your subscription — the same rule Claude Code itself applies |
+| `subscription` | never the key, even though it stays saved |
+| `key` | always the saved key |
+
+Anything that means "not a key" removes the variable from the bridge's
+environment rather than blanking it, and clears the other auth sources
+alongside it (`ANTHROPIC_AUTH_TOKEN`, the Bedrock/Vertex/Foundry
+switches), because an empty key and a leftover token are both ways to
+end up billing something you did not choose. Changes apply at the next
+bridge start; an idle bridge is restarted for you, a busy one finishes
+its turn first and the UI says so.
+
+**The two CLIs disagree, and Discuss does not pretend otherwise.**
+Claude Code prefers a key over your subscription whenever one is set —
+documented, and in the non-interactive mode the bridge uses there is not
+even a prompt. Codex is the other way round: its stored ChatGPT login
+wins, and a key in the environment is only consulted when you are *not*
+logged in. So for Codex a saved key is a fallback, not an override; to
+make it authoritative, run `codex login --with-api-key` yourself. (There
+is a config key that forces it, and it silently deletes your
+`~/.codex/auth.json` when it switches — Discuss never sends it.)
+
+## Usage ping
+
+Discuss sends one anonymous event a day so I can tell whether anyone is
+using it, which is the only thing deciding whether it keeps getting
+built. This is the entire payload:
+
+```json
+{
+  "client_id": "9f2c…",
+  "non_personalized_ads": true,
+  "events": [
+    { "name": "discuss_alive",
+      "params": { "app_version": "1.0.0", "engagement_time_msec": "1" } }
+  ]
+}
+```
+
+`client_id` is 16 random bytes generated once and kept in
+`.botference/plugin/.beacon`. It is not derived from your machine, your
+name, your workspace or anything else — delete that file and you are a
+new install. There is **no** URL, no page title, no annotation text, no
+handle, no username, no workspace path, no location, and no counts of
+anything. It fires at most once per day, on companion start, and a
+failed send waits until tomorrow rather than retrying.
+
+Turn it off completely:
+
+```bash
+BOTFERENCE_NO_TELEMETRY=1        # env, honoured by the LaunchAgent too
+```
+
+or put `"telemetry": false` in `.botference/plugin/config.json`. Both are
+checked before anything touches the network. Builds with no analytics
+secret compiled in — which is what a fresh clone is — never send
+anything at all.
 
 ## Agent Eyes (`botference see`)
 

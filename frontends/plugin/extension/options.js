@@ -118,10 +118,106 @@
     el('test').disabled = false;
   });
 
+  // ---- API keys ----------------------------------------------------------
+  // Write-only by design: this page can set a key and remove one, and the only
+  // thing it can ever read back is "set" or "unset". So the input boxes are
+  // never populated — there is nothing to populate them WITH — and the badge
+  // beside each label is the whole state.
+  const AGENTS = ['claude', 'codex'];
+  function sayKeys(v) {
+    const s = el('keystatus');
+    s.className = (v && v.cls) || '';
+    s.textContent = (v && v.text) || '';
+  }
+  function paintKeys(st) {
+    for (const a of AGENTS) {
+      const badge = el('st-' + a);
+      const set = st && st[a] === 'set';
+      badge.textContent = st ? (set ? 'set' : 'unset') : '—';
+      badge.classList.toggle('set', !!set);
+      el('rm-' + a).disabled = !set;
+    }
+  }
+  // Keys are refused over a tunnel, so this only ever talks to the companion
+  // as configured — a 403 here is the feature working, and says so.
+  async function keysApi(method, path, body) {
+    const cfg = await CFG.readConfig();
+    const headers = CFG.authHeaders(cfg.password, cfg.handle);
+    const init = { method, cache: 'no-store' };
+    if (body) {
+      init.body = JSON.stringify(body);
+      init.headers = { ...headers, 'content-type': 'application/json' };
+    } else if (Object.keys(headers).length) {
+      init.headers = headers;
+    }
+    let res;
+    try {
+      res = await fetch(CFG.httpUrl(cfg.base, path), init);
+    } catch (e) {
+      return { ok: false, error: 'could not reach the companion (' + ((e && e.message) || e) + ')' };
+    }
+    let data = null;
+    const text = await res.text().catch(() => '');
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    if (!res.ok) {
+      // a companion from before this feature has no such route at all, which
+      // is worth saying plainly rather than reporting as "not found"
+      const why = res.status === 404
+        ? 'this companion is too old to store API keys — restart it from this checkout'
+        : (data && data.error) || ('HTTP ' + res.status);
+      return { ok: false, status: res.status, error: why };
+    }
+    return { ok: true, data };
+  }
+  async function loadKeys() {
+    const r = await keysApi('GET', '/keys');
+    if (!r.ok) {
+      paintKeys(null);
+      // 403 is this working as intended: keys are refused over a tunnel, and
+      // a browser pointed at a hosted companion is exactly that case
+      const remote = r.status === 403;
+      sayKeys({ cls: remote ? '' : 'err',
+        text: remote ? 'keys are set on the companion\'s own machine, not from here' : r.error });
+      for (const a of AGENTS) {
+        el('save-' + a).disabled = remote;
+        el('key-' + a).disabled = remote;
+      }
+      return;
+    }
+    paintKeys(r.data);
+    sayKeys({ cls: '', text: '' });
+  }
+  for (const a of AGENTS) {
+    el('save-' + a).addEventListener('click', async () => {
+      const input = el('key-' + a);
+      const key = input.value.trim();
+      if (!key) { sayKeys({ cls: 'err', text: 'paste a key first' }); return; }
+      el('save-' + a).disabled = true;
+      const r = await keysApi('POST', '/keys', { agent: a, key });
+      el('save-' + a).disabled = false;
+      // whatever happens, the key does not linger in the DOM
+      input.value = '';
+      if (!r.ok) { sayKeys({ cls: 'err', text: r.error }); return; }
+      paintKeys(r.data);
+      sayKeys({ cls: 'ok', text: a + ' key saved' +
+        (r.data.applies === 'next-restart' ? ' — applies when the current turn finishes' : '') });
+    });
+    el('rm-' + a).addEventListener('click', async () => {
+      el('rm-' + a).disabled = true;
+      const r = await keysApi('POST', '/keys/remove', { agent: a });
+      if (!r.ok) { el('rm-' + a).disabled = false; sayKeys({ cls: 'err', text: r.error }); return; }
+      paintKeys(r.data);
+      sayKeys({ cls: 'ok', text: r.data.removed
+        ? a + ' key removed — back to the subscription'
+        : 'there was no ' + a + ' key to remove' });
+    });
+  }
+
   // ⌘/Ctrl+Enter anywhere on the page saves, like every other composer here
   document.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); el('save').click(); }
   });
 
   load();
+  loadKeys();
 })(typeof window !== 'undefined' ? window : globalThis);

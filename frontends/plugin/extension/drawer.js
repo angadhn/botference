@@ -66,6 +66,7 @@
 //                                            effort, verbosity}          (GET /models)
 //   onSetModel(agent, model)            → {ok, queued}                    (POST /model)
 //   onSetEffort(agent, level)           → {ok, queued} | {ok:false,error} (POST /effort)
+//   onSetKeyMode(agent, mode)           → {ok, applies} | {ok:false,error}  (POST /key-mode)
 //   onSetVerbosity(level)               → {ok, queued} | {ok:false,error} (POST /verbosity)
 //                                         level: 'short'|'long'
 //   onRelay(agent)                      → {ok, queued} | {ok:false,error} (POST /relay)
@@ -796,7 +797,9 @@
       // effort mirrors models ({current, options}, null until the bridge has
       // spoken); verbosity is a companion-level preference, so it is a string
       models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false,
-                effort: null, verbosity: '' },
+                effort: null, verbosity: '',
+                // {claude:'set'|'unset', codex:…, modes:{…}} — status, never keys
+                keys: null },
       modelsOpen: false,
       relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
@@ -1703,8 +1706,28 @@
     const modelList = a => (D.models.options && D.models.options[a]) || null;
     const effortCur = a => (D.models.effort && D.models.effort.current && D.models.effort.current[a]) || '';
     const effortList = a => (D.models.effort && D.models.effort.options && D.models.effort.options[a]) || null;
-    const pickerCur = (agent, kind) => (kind === 'effort' ? effortCur : modelCur)(agent);
-    const pickerList = (agent, kind) => (kind === 'effort' ? effortList : modelList)(agent);
+    // Which auth an agent will run on. Unlike model and effort this is the
+    // COMPANION's setting, not the bridge's, so its options never go null and
+    // its picker never greys out with a sleeping agent — the same reasoning as
+    // verbosity below. 'auto' mimics Claude Code: a saved key is used, and
+    // without one you are on your subscription.
+    const AUTH_MODES = ['auto', 'subscription', 'key'];
+    // never '' — the three modes are always known, so this picker has no
+    // "the bridge has not said yet" state to render. 'auto' is the default the
+    // companion applies when it has been told nothing, so it is the honest
+    // thing to show before the first /models lands (and the row is hidden
+    // until then anyway).
+    const authCur = a => (D.models.keys && D.models.keys.modes && D.models.keys.modes[a]) || 'auto';
+    const authList = () => AUTH_MODES.slice();
+    // one entry per kind of picker, so a third kind costs a row here and
+    // nothing anywhere else
+    const PICKERS = {
+      model: { cur: modelCur, list: modelList, attr: 'data-agent', row: '.pop-modelrow' },
+      effort: { cur: effortCur, list: effortList, attr: 'data-effort', row: '.pop-effort' },
+      auth: { cur: authCur, list: authList, attr: 'data-auth', row: '.pop-auth' },
+    };
+    const pickerCur = (agent, kind) => PICKERS[kind].cur(agent);
+    const pickerList = (agent, kind) => PICKERS[kind].list(agent);
 
     // '—' is not a level: it is "the bridge has not said". The companion
     // reports effort.current.codex as null until it has been set even once,
@@ -1720,7 +1743,7 @@
 
     function buildSelect(agent, kind) {
       const sel = mk('select');
-      sel.setAttribute(kind === 'effort' ? 'data-effort' : 'data-agent', agent);
+      sel.setAttribute(PICKERS[kind].attr, agent);
       const cur = pickerCur(agent, kind);
       const list = pickerList(agent, kind);
       for (const o of optionsFor(cur, list)) {
@@ -1815,6 +1838,15 @@
         eff.appendChild(effName);
         eff.appendChild(buildSelect(agent, 'effort'));
         line.appendChild(eff);
+
+        // and what it bills: the subscription it is logged into, or a key
+        const auth = mk('label', 'pop-row pop-auth');
+        auth.hidden = true;                    // until the companion reports keys
+        const authName = mk('span', 'pop-sub');
+        authName.textContent = 'billing';
+        auth.appendChild(authName);
+        auth.appendChild(buildSelect(agent, 'auth'));
+        line.appendChild(auth);
         group.appendChild(line);
 
         const g = mk('div', 'gauge');
@@ -1865,6 +1897,7 @@
 
         syncPicker(group, agent, 'model');
         syncPicker(group, agent, 'effort');
+        syncAuth(group, agent);
         paintGauge(group, agent, st[agent]);
       }
       syncVerbosity();
@@ -1887,9 +1920,8 @@
     // actually differs — replacing a <select> the user has open would close it
     // under their finger every time a `models` broadcast arrived.
     function syncPicker(group, agent, kind) {
-      const effort = kind === 'effort';
-      const row = group.querySelector(effort ? '.pop-effort' : '.pop-modelrow');
-      const sel = group.querySelector('select[' + (effort ? 'data-effort' : 'data-agent') + ']');
+      const row = group.querySelector(PICKERS[kind].row);
+      const sel = group.querySelector('select[' + PICKERS[kind].attr + ']');
       if (!row || !sel) return;
       const cur = pickerCur(agent, kind);
       const list = pickerList(agent, kind);
@@ -2036,6 +2068,54 @@
       syncModels();
     }
 
+    // Which auth an agent bills. A companion setting, not a bridge one, so it
+    // applies without a control turn — the companion restarts an idle bridge
+    // itself and says so when a running turn means the change has to wait.
+    async function pickAuth(agent, mode) {
+      D.models.note = agent + ' billing → ' + mode + '…';
+      D.models.err = false;
+      paintModelHint();
+      let r;
+      try { r = await cb('onSetKeyMode')(agent, mode); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        D.models.note = (r && r.error) || 'could not change billing';
+        D.models.err = true;
+      } else {
+        const k = D.models.keys || (D.models.keys = { modes: {} });
+        k.modes = Object.assign({}, k.modes, { [agent]: mode });
+        D.models.note = agent + ' billing → ' + mode
+          + (r.applies === 'next-restart' ? ' (from the next turn)' : '');
+        D.models.err = false;
+      }
+      syncModels();
+    }
+
+    // A picker whose options never change, so it only ever needs its value
+    // moved — and a note when the mode says "key" but none is saved, which is
+    // the one combination that silently does nothing.
+    function syncAuth(group, agent) {
+      const sel = group.querySelector('select[data-auth]');
+      const row = group.querySelector('.pop-auth');
+      if (!sel || !row) return;
+      // a companion too old to report its key status has nothing to switch
+      row.hidden = !(D.models.keys && D.models.keys.modes);
+      if (row.hidden) return;
+      const cur = pickerCur(agent, 'auth');
+      if (cur && sel.value !== cur) sel.value = cur;
+      const st = D.models.keys || {};
+      const missing = cur === 'key' && st[agent] !== 'set';
+      // codex is the honest exception: its stored ChatGPT login beats a key in
+      // the environment, so a key there is a fallback, not an override
+      const codexCaveat = agent === 'codex' && cur !== 'subscription' && st[agent] === 'set'
+        ? 'codex uses a key only when it is not logged in with ChatGPT'
+        : '';
+      sel.title = missing
+        ? 'no ' + agent + ' key saved — add one in the extension options, or this stays on the subscription'
+        : codexCaveat;
+      row.classList.toggle('warn', !!missing);
+    }
+
     // How long the answers are. Optimistic — the switch has to move under the
     // finger — and put back if the companion says no.
     async function setVerbosity(level) {
@@ -2104,6 +2184,8 @@
         // two selects per agent, told apart by which attribute carries the name
         const eff = sel.getAttribute('data-effort');
         if (eff) { pickEffort(eff, sel.value); return; }
+        const auth = sel.getAttribute('data-auth');
+        if (auth) { pickAuth(auth, sel.value); return; }
         pickModel(sel.getAttribute('data-agent'), sel.value);
       });
 

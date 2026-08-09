@@ -253,6 +253,8 @@ async function main() {
       // before it exists, and no bridge event ever reports the live level
       effort: { current: { claude: 'high', codex: null }, options: null },
       verbosity: 'short',
+      // which auth each agent would spawn with — status, never key material
+      keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
       bridge: 'stopped',
     });
   });
@@ -1791,6 +1793,171 @@ async function main() {
     g.proc.kill();
   }
 
+  // --- API keys: written from this machine, never read back ---------------
+  {
+    const kRoot = tmpRoot('keys');
+    const kDir = path.join(kRoot, '.botference', 'plugin');
+    fs.mkdirSync(kDir, { recursive: true });
+    fs.writeFileSync(path.join(kDir, 'config.json'),
+      JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    const kSecrets = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-keysec-'));
+    const envDump = path.join(kRoot, 'bridge-env.jsonl');
+    const kLog = path.join(kRoot, 'bridge-log.jsonl');
+    const k = await startServer({
+      root: kRoot,
+      env: {
+        BOTFERENCE_SECRETS_DIR: kSecrets,
+        PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+        MOCK_BRIDGE_LOG: kLog, MOCK_ENV_DUMP: envDump, MOCK_TURN_DELAY_MS: '40',
+        PLUGIN_SID_WAIT_MS: '400',
+        // an ambient key AND an ambient sibling auth source, as a shell that
+        // exported them would leave behind
+        ANTHROPIC_API_KEY: 'ambient-should-never-be-used',
+        ANTHROPIC_AUTH_TOKEN: 'ambient-token-should-never-be-used',
+        CLAUDE_CODE_USE_BEDROCK: '1',
+      },
+    });
+    const kb = k.base;
+    const KEYFILE = path.join(kSecrets, 'discuss-keys.json');
+    const CLAUDE_KEY = 'sk-ant-test-0123456789';
+    const CODEX_KEY = 'sk-openai-test-9876543210';
+    // Spawn a bridge and report the environment it was handed. Leaves the
+    // bridge IDLE on the way out: a key change only restarts a bridge that is
+    // not mid-turn, so a test that returned while one was running would leave
+    // the next one asserting against the previous spawn's environment.
+    const settle = () => waitFor(
+      async () => (await GET(kb, '/health')).json.queue === 0, 'the bridge to go idle');
+    const bridgeEnv = async (text) => {
+      fs.writeFileSync(envDump, '');
+      await POST(kb, '/page', { url: PAGE2, title: 'Keys', site: 'k.test' });
+      await POST(kb, '/reply', { url: PAGE2, thread_id: '__page__', text });
+      const line = await waitFor(
+        () => (fs.existsSync(envDump) && fs.readFileSync(envDump, 'utf8').trim().split('\n')[0]) || null,
+        'the bridge to be spawned and dump its env');
+      await settle();
+      return JSON.parse(line);
+    };
+
+    await test('a fresh companion holds no keys and says so without inventing one', async () => {
+      const r = await GET(kb, '/keys');
+      assert.deepEqual(r.json, {
+        ok: true, claude: 'unset', codex: 'unset',
+        modes: { claude: 'auto', codex: 'auto' },
+      });
+      assert.equal(fs.existsSync(KEYFILE), false, 'and writes no file until there is something to keep');
+    });
+
+    await test('auto with no key spawns the bridge with the variable ABSENT', async () => {
+      const env = await bridgeEnv('@claude first turn, no keys anywhere');
+      assert.deepEqual(env.present, [],
+        'no key and no OTHER auth source reaches the CLIs — the ambient ones are stripped, '
+        + 'because the mode is the answer, not whatever was lying around in a shell. '
+        + 'An ANTHROPIC_AUTH_TOKEN left behind would override the subscription just as a key would');
+      assert.equal('ANTHROPIC_API_KEY' in env.values, false);
+    });
+
+    await test('a key is stored 0600 and can never be read back', async () => {
+      const r = await POST(kb, '/keys', { agent: 'claude', key: CLAUDE_KEY });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.claude, 'set');
+      assert.equal(r.json.codex, 'unset');
+      assert.equal(JSON.stringify(r.json).includes(CLAUDE_KEY), false,
+        'the answer says "set", never the key');
+      const got = await GET(kb, '/keys');
+      assert.deepEqual(got.json, {
+        ok: true, claude: 'set', codex: 'unset',
+        modes: { claude: 'auto', codex: 'auto' },
+      });
+      assert.equal(fs.statSync(KEYFILE).mode & 0o777, 0o600);
+      assert.ok(fs.readFileSync(KEYFILE, 'utf8').includes(CLAUDE_KEY), 'it really was kept');
+      // and it is nowhere it could leak
+      const models = await GET(kb, '/models');
+      assert.equal(JSON.stringify(models.json).includes(CLAUDE_KEY), false);
+      assert.deepEqual(models.json.keys.modes, { claude: 'auto', codex: 'auto' });
+      assert.equal(models.json.keys.claude, 'set');
+    });
+
+    await test('auto with a key hands exactly that key to the CLI that reads it', async () => {
+      await POST(kb, '/keys', { agent: 'codex', key: CODEX_KEY });
+      const env = await bridgeEnv('@claude now with keys stored');
+      assert.deepEqual(env.present.sort(), ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+        'the two keys, and nothing else that could answer the same question');
+      assert.equal(env.values.ANTHROPIC_API_KEY, CLAUDE_KEY, 'claude reads ANTHROPIC_API_KEY');
+      assert.equal(env.values.OPENAI_API_KEY, CODEX_KEY, 'codex reads OPENAI_API_KEY');
+    });
+
+    await test('subscription mode keeps the key but never lets it into the env', async () => {
+      const r = await POST(kb, '/key-mode', { agent: 'claude', mode: 'subscription' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.claude, 'set', 'the key is still stored — this is a preference, not a delete');
+      assert.equal(r.json.modes.claude, 'subscription');
+      const env = await bridgeEnv('@claude on the subscription now');
+      assert.deepEqual(env.present, ['OPENAI_API_KEY'], 'only the agent that still wants a key gets one');
+      assert.equal('ANTHROPIC_API_KEY' in env.values, false,
+        'absent, not empty: an empty key is a different thing to a CLI than no key');
+      assert.ok(fs.readFileSync(KEYFILE, 'utf8').includes(CLAUDE_KEY), 'and the key survived the round trip');
+    });
+
+    await test('removing a key is a real delete, and auto goes straight back to the subscription', async () => {
+      await POST(kb, '/key-mode', { agent: 'claude', mode: 'auto' });
+      const r = await POST(kb, '/keys/remove', { agent: 'claude' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.removed, true);
+      assert.equal(r.json.claude, 'unset');
+      assert.equal(fs.readFileSync(KEYFILE, 'utf8').includes(CLAUDE_KEY), false,
+        'gone from the file, not merely overwritten with a blank');
+      const env = await bridgeEnv('@claude back on the subscription for good');
+      assert.deepEqual(env.present, ['OPENAI_API_KEY']);
+      assert.equal('ANTHROPIC_API_KEY' in env.values, false, 'absent, not empty');
+      const again = await POST(kb, '/keys/remove', { agent: 'claude' });
+      assert.equal(again.json.removed, false, 'removing nothing is fine, and says so');
+    });
+
+    await test('a key mode of "key" with nothing stored falls back rather than sending a blank', async () => {
+      await POST(kb, '/key-mode', { agent: 'claude', mode: 'key' });
+      const env = await bridgeEnv('@claude asked for a key it does not have');
+      assert.equal('ANTHROPIC_API_KEY' in env.values, false);
+      await POST(kb, '/key-mode', { agent: 'claude', mode: 'auto' });
+    });
+
+    await test('nonsense is refused before it reaches the file', async () => {
+      assert.equal((await POST(kb, '/keys', { agent: 'gemini', key: 'x' })).status, 400);
+      assert.equal((await POST(kb, '/keys', { agent: 'claude', key: '   ' })).status, 400);
+      assert.equal((await POST(kb, '/key-mode', { agent: 'claude', mode: 'whenever' })).status, 400);
+      const still = await GET(kb, '/keys');
+      assert.equal(still.json.claude, 'unset');
+    });
+
+    await test('a key never crosses the tunnel, not even for the owner', async () => {
+      // every shape of remote request, including one that IS the owner
+      const proxied = [
+        { host: 'discuss.botference.com' },
+        { host: 'discuss.botference.com', 'cf-connecting-ip': '203.0.113.9' },
+        { host: 'localhost', 'cf-connecting-ip': '203.0.113.9' },
+        { host: 'localhost', 'x-forwarded-for': '203.0.113.9' },
+      ];
+      for (const h of proxied) {
+        const w = await POST(kb, '/keys', { agent: 'codex', key: 'sk-stolen' }, h);
+        assert.equal(w.status, 403, JSON.stringify(h));
+        assert.deepEqual(w.json, { ok: false, error: 'API keys can only be set from this machine' });
+        assert.equal((await GET(kb, '/keys', h)).status, 403, 'not even the status');
+        assert.equal((await POST(kb, '/keys/remove', { agent: 'codex' }, h)).status, 403);
+        assert.equal((await POST(kb, '/key-mode', { agent: 'codex', mode: 'key' }, h)).status, 403);
+      }
+      const untouched = await GET(kb, '/keys');
+      assert.equal(untouched.json.codex, 'set', 'and nothing a remote caller sent was applied');
+      assert.equal(fs.readFileSync(KEYFILE, 'utf8').includes('sk-stolen'), false);
+    });
+
+    await test('the bridge log never contains a key', async () => {
+      assert.equal(fs.readFileSync(kLog, 'utf8').includes(CODEX_KEY), false);
+      assert.equal(fs.readFileSync(kLog, 'utf8').includes(CLAUDE_KEY), false);
+      assert.equal(k.out().includes(CODEX_KEY), false, 'nor does anything the companion printed');
+    });
+
+    k.proc.kill();
+  }
+
   // --- the article, readable (and markable) from a phone ------------------
   {
     const snapRoot = tmpRoot('snapshot');
@@ -1987,7 +2154,9 @@ async function main() {
     assert.equal(health.json.bridge, 'disabled');
     const models = await GET(off.base, '/models');
     assert.deepEqual(models.json, { ok: true, current: null, options: null, status: null,
-      effort: null, verbosity: 'short', bridge: 'disabled' });
+      effort: null, verbosity: 'short',
+      keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
+      bridge: 'disabled' });
     const effort = await POST(off.base, '/effort', { agent: 'claude', level: 'high' });
     assert.equal(effort.status, 409);
     const setModel = await POST(off.base, '/model', { agent: 'claude', model: 'claude-opus-5' });

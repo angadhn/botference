@@ -492,6 +492,12 @@ const MODELS = {
              last_relay_at: null, last_relay_tier: null },
     auto_relay: true,
   },
+  // which auth each agent bills, and whether a key exists at all. A companion
+  // setting, so it survives a sleeping bridge — and a companion too old to
+  // report it sends nothing, which is what ?nokeys=1 stands in for.
+  keys: Q.get('nokeys') === '1' ? undefined
+    : { claude: Q.get('claudekey') === '0' ? 'unset' : 'set', codex: 'unset',
+        modes: { claude: 'auto', codex: 'auto' } },
   // round 4: how hard each model thinks. Same null-until-the-bridge-speaks
   // rule as `options`, and codex's CURRENT is null until it has been set even
   // once — the drawer must show that as "—", not invent a level.
@@ -527,6 +533,8 @@ const dedupePosts = [];     // every message the companion answered deduped:true
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
 const postedMsgs = [];      // every /thread + /reply body, for the article_text checks
+const keyModePosts = [];    // every /key-mode body, for the billing-picker checks
+const KEYMODE_APPLIES = 'now';
 const snapshots = [];       // every /snapshot body, for the phone-reading checks
 const orphanPosts = [];     // every /orphan body
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
@@ -802,11 +810,20 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: {
       ok: true, current: MODELS.current, options: MODELS.options,
       status: MODELS.status, bridge: MODELS.bridge,
-      effort: MODELS.effort, verbosity: MODELS.verbosity } };
+      effort: MODELS.effort, verbosity: MODELS.verbosity, keys: MODELS.keys } };
   }
   // POST /tick {url, thread_id, ts, index, checked} — the companion owns the
   // message text, so it rewrites the brackets and answers with the new body.
   // Nothing about a checkbox is client state.
+  // POST /key-mode {agent, mode} — which auth an agent bills. A companion
+  // setting like verbosity: no control turn, and the answer says whether the
+  // bridge could be restarted for it now or has to wait for the running turn.
+  if (method === 'POST' && route === '/key-mode') {
+    keyModePosts.push(body);
+    if (MODELS.keys && MODELS.keys.modes) MODELS.keys.modes[body.agent] = body.mode;
+    log('key-mode ' + body.agent + ' → ' + body.mode);
+    return { ok: true, status: 200, data: { ok: true, applies: KEYMODE_APPLIES } };
+  }
   if (method === 'POST' && route === '/tick') {
     tickPosts.push({ thread_id: body.thread_id, ts: body.ts, index: body.index, checked: body.checked });
     if (tickFail) return { ok: false, status: 500, error: 'simulated tick failure' };
@@ -2361,6 +2378,47 @@ async function selftest() {
   d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options,
               status: MODELS.status, effort: MODELS.effort });
   check('waking up re-enables them', !effSel('claude').disabled);
+
+  // ---- which auth each agent bills ---------------------------------------
+  const authSel = a => S.querySelector('.popover.models select[data-auth="' + a + '"]');
+  const authRow = a => { const el = authSel(a); return el && el.closest('.pop-auth'); };
+  check('each agent says what it bills', !!authSel('claude') && !!authSel('codex'));
+  check('…labelled “billing”',
+    /billing/.test(authRow('claude').querySelector('.pop-sub').textContent));
+  check('…offering the three ways to pay',
+    [].map.call(authSel('claude').options, o => o.value).join(',') === 'auto,subscription,key');
+  check('…starting on auto, which is what Claude Code itself does',
+    authSel('claude').value === 'auto');
+  check('a saved key is not a mode — the picker still says auto',
+    MODELS.keys.claude === 'set' && authSel('claude').value === 'auto');
+
+  const kBefore = keyModePosts.length;
+  authSel('claude').value = 'subscription';
+  authSel('claude').dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(40);
+  check('choosing one POSTs /key-mode with the agent and the mode',
+    keyModePosts.length === kBefore + 1 &&
+    keyModePosts[kBefore].agent === 'claude' && keyModePosts[kBefore].mode === 'subscription');
+  check('…and reports back inline, like a model switch',
+    /claude billing → subscription/.test(S.querySelector('.pop-hint').textContent));
+  check('…leaving the picker where it was put', authSel('claude').value === 'subscription');
+
+  // asking for a key you have not saved is the one silently-nothing case
+  authSel('codex').value = 'key';
+  authSel('codex').dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(40);
+  check('asking for a key nobody saved is flagged rather than left to fail quietly',
+    authRow('codex').classList.contains('warn') && /no codex key saved/.test(authSel('codex').title));
+  check('…while an agent that has one is not flagged',
+    !authRow('claude').classList.contains('warn'));
+
+  d.onEvent({ type: 'models', bridge: 'stopped', current: null, options: null,
+              status: null, effort: null, keys: MODELS.keys });
+  check('billing survives a sleeping bridge — it is the companion’s setting, not the bridge’s',
+    !authRow('claude').hidden && !authSel('claude').disabled);
+  d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options,
+              status: MODELS.status, effort: MODELS.effort, keys: MODELS.keys });
+
   S.querySelector('.popover.models').dispatchEvent(
     new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 

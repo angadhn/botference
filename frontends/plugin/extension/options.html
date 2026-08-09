@@ -50,6 +50,18 @@
   }
   input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px }
+  .row.tight { margin-top: 0 }
+  .row.tight input { flex: 1 1 200px }
+  h2.sub { font-size: 15px; font-weight: 600; margin: 30px 0 4px }
+  .badge {
+    font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em;
+    padding: 2px 6px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); vertical-align: middle; margin-left: 6px;
+  }
+  .badge.set { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent) }
+  #keystatus { font-size: 12px; color: var(--muted) }
+  #keystatus.ok { color: var(--good) }
+  #keystatus.err { color: var(--bad) }
   button {
     font: 13px/1.2 var(--sans); padding: 8px 14px; min-height: 32px;
     border: 1px solid var(--line); border-radius: 8px;
@@ -77,7 +89,7 @@
       <input id="base" type="text" spellcheck="false" autocapitalize="off"
              autocomplete="off" placeholder="http://127.0.0.1:4189">
       <p class="hint">The local companion is <code>http://127.0.0.1:4189</code> — start it with
-        <code>botference plugin</code>. A hosted one is its https address.</p>
+        <code>botference discuss</code>. A hosted one is its https address.</p>
     </div>
 
     <div class="field">
@@ -101,6 +113,46 @@
       <button id="test" type="button">Test connection</button>
       <span id="status" role="status"></span>
     </div>
+  </div>
+
+  <h2 class="sub">API keys</h2>
+  <p class="lede">Optional. Discuss runs on whatever the <code>claude</code> and <code>codex</code>
+    CLIs are logged into; a key here makes that agent bill the key instead.</p>
+
+  <div class="card" id="keys-card">
+    <div class="field">
+      <label for="key-claude">Anthropic API key <span class="badge" id="st-claude">—</span></label>
+      <div class="row tight">
+        <input id="key-claude" type="password" spellcheck="false" autocomplete="off"
+               placeholder="sk-ant-…">
+        <button id="save-claude" type="button">Save</button>
+        <button id="rm-claude" type="button">Remove</button>
+      </div>
+      <p class="hint">Used as <code>ANTHROPIC_API_KEY</code> when the bots run. Claude Code
+        prefers a key over your subscription whenever one is set.</p>
+    </div>
+
+    <div class="field">
+      <label for="key-codex">OpenAI API key <span class="badge" id="st-codex">—</span></label>
+      <div class="row tight">
+        <input id="key-codex" type="password" spellcheck="false" autocomplete="off"
+               placeholder="sk-…">
+        <button id="save-codex" type="button">Save</button>
+        <button id="rm-codex" type="button">Remove</button>
+      </div>
+      <p class="hint">Used as <code>OPENAI_API_KEY</code> when the bots run — but note that
+        Codex only falls back to a key when it is <em>not</em> logged in with ChatGPT. If you
+        are logged in, the login wins; run <code>codex login --with-api-key</code> to change
+        that.</p>
+    </div>
+
+    <div class="row">
+      <span id="keystatus" role="status"></span>
+    </div>
+    <p class="hint">Keys are kept on the companion's machine in a 0600 file and are never sent
+      back to this page — it only ever learns “set” or “unset”. They can only be set from the
+      machine the companion runs on, never over a tunnel. Choose per agent when to use one in
+      the drawer's gear menu; the default uses a key if you have saved one.</p>
   </div>
 
   <p class="foot">Settings apply immediately — the extension reconnects on save. No page reload needed.</p>
