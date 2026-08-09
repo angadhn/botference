@@ -13,7 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { HOME, ROOT, PAGE_CHAT, readPage, savePage, findThread, pageWithSession, readConfig } from './store.mjs';
+import { HOME, ROOT, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
+  readConfig, saveAgents, AGENTS } from './store.mjs';
 import { applyEnv as applyKeyEnv } from './keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -305,13 +306,58 @@ export function createChat({ onEvent }) {
     if (!scoped) return null;
     return { claude: scoped[`${cmd} @claude `] || [], codex: scoped[`${cmd} @codex `] || [] };
   };
-  const modelOptions = () => scopedList('/model');
-  const effortSnapshot = () => ({ current: { ...effort }, options: scopedList('/effort') });
-  const modelsEvent = () => ({ type: 'models', current: modelSnapshot(), status: statusSnapshot(), effort: effortSnapshot() });
+  // …but a bridge that is not running says nothing at all, and a picker with no
+  // list is a picker nobody can use. So the lists it advertised last time stand
+  // in while it sleeps. Live lists always win: this is a cache, not a record.
+  const cachedList = kind => {
+    const saved = readConfig().agents[`${kind}_options`];
+    const has = AGENTS.some(a => (saved[a] || []).length);
+    return has ? { claude: [...saved.claude], codex: [...saved.codex] } : null;
+  };
+  const modelOptions = () => scopedList('/model') || cachedList('model');
+  // The reader's standing preferences, which win over the bridge's own report
+  // of what it is running. That looks backwards for a second and is not: a
+  // preference is imposed at every wake and relayed the moment it changes, so
+  // it IS the setting — the live value is a report that lags it by exactly one
+  // control turn, and a picker that snapped back to the old model for that
+  // second would be describing the past. The bridge's answer fills the silence
+  // wherever no preference has been stated.
+  const prefs = () => readConfig().agents;
+  const modelSnapshotWithPrefs = () => {
+    const live = modelSnapshot() || {};
+    const want = prefs().model;
+    const out = Object.fromEntries(AGENTS.map(a => [a, want[a] || live[a] || null]));
+    return AGENTS.some(a => out[a]) ? out : null;
+  };
+  const effortSnapshot = () => {
+    const want = prefs().effort;
+    return {
+      current: Object.fromEntries(AGENTS.map(a => [a, want[a] || effort[a] || null])),
+      options: scopedList('/effort') || cachedList('effort'),
+    };
+  };
+  const modelsEvent = () => ({ type: 'models', current: modelSnapshotWithPrefs(),
+    status: statusSnapshot(), effort: effortSnapshot() });
 
   function handle(ev) {
     if (ev.type === 'ready') { onBridgeReady(); return; }
-    if (ev.type === 'completion_context') { lastCtx = ev; return; }
+    if (ev.type === 'completion_context') {
+      lastCtx = ev;
+      // …and remember what it will accept, so the pickers still offer it after
+      // this child (and this companion) are gone. Once per spawn, and only ever
+      // lists with something in them — a bridge that mentioned no models is not
+      // evidence that there are none.
+      const patch = {};
+      for (const [kind, cmd] of [['model', '/model'], ['effort', '/effort']]) {
+        const got = scopedList(cmd) || {};
+        const keep = Object.fromEntries(AGENTS.filter(a => (got[a] || []).length).map(a => [a, got[a]]));
+        if (Object.keys(keep).length) patch[`${kind}_options`] = keep;
+      }
+      if (Object.keys(patch).length) {
+        try { saveAgents(patch); } catch { /* a cache, not a record */ }
+      }
+      return;
+    }
     if (ev.type === 'status') {
       lastStatus = ev;
       // today's bridge reports models but not effort; if a later one starts
@@ -385,9 +431,35 @@ export function createChat({ onEvent }) {
     }
   }
 
+  // The reader's model/effort preferences, as the control turns that impose
+  // them, put at the FRONT of the queue on the startup `ready`.
+  //
+  // Front, not back: the turn that woke the bridge is almost always the reason
+  // the preference was set in the first place ("use opus for this"), so it has
+  // to be in force before that turn goes out, not after it comes back. Safe
+  // there because a control turn is a bare slash command — no session
+  // choreography, no envelope, no reply capture (planSteps) — and the child's
+  // model/effort are process-wide, not per-session. Nothing it does moves
+  // `activeSid`, so the /new → capture rule the user turn depends on is
+  // untouched: that turn still runs its own bootstrap and samples `sidBefore`
+  // itself, several turns later.
+  //
+  // At the startup ready `current` is necessarily null (pump() cannot have
+  // fired: it needs `ready`, which nothing else sets), so unshifting here can
+  // never cut in front of a turn already in flight.
+  function queuePrefTurns() {
+    const want = prefs();
+    const jobs = [];
+    for (const a of AGENTS) {
+      if (want.model[a]) jobs.push(`/model @${a} ${want.model[a]}`);
+      if (want.effort[a]) jobs.push(`/effort @${a} ${want.effort[a]}`);
+    }
+    if (jobs.length) queue.unshift(...jobs.map(text => ({ control: text, url: null, target: null })));
+  }
+
   async function onBridgeReady() {
     ready = true;
-    if (!running) { running = true; emit({ type: 'bridge', state: 'running' }); }
+    if (!running) { running = true; emit({ type: 'bridge', state: 'running' }); queuePrefTurns(); }
     if (current) {
       const job = current.job;
       const step = current.steps[current.i];
@@ -564,11 +636,11 @@ export function createChat({ onEvent }) {
       pump();
       return { queued: true, position: queue.length + (current ? 1 : 0) };
     },
-    // {current, options, status}: all null until the bridge has spoken, which
-    // the extension renders as "unknown yet" rather than an empty picker.
-    // effort.current is the exception — the child's defaults are known before
-    // it starts, and nothing the bridge emits would ever tell us otherwise.
-    models: () => ({ current: modelSnapshot(), options: modelOptions(),
+    // {current, options, status}: null until either the bridge has spoken or
+    // the reader has stated a preference, which the extension renders as
+    // "unknown yet" rather than an empty picker. `status` alone stays strictly
+    // the bridge's: there is no such thing as a preferred context gauge.
+    models: () => ({ current: modelSnapshotWithPrefs(), options: modelOptions(),
       status: statusSnapshot(), effort: effortSnapshot() }),
     // only the page whose turn is actually running can interrupt it
     interrupt(url) {

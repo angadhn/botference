@@ -191,8 +191,15 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }
-/* asleep/unknown: still both agents, still legible, visibly not in play */
-.pop-agentrow.asleep { opacity: .6 }
+/* Asleep/unknown: still both agents, still legible, visibly not in play — but
+   the dimming is on what is STALE (who they are, what they were last using),
+   never on the controls. Model, effort and billing are stored preferences that
+   can be set with the agents asleep, and a control that works must not be
+   painted like one that does not. */
+.pop-agentrow.asleep .pop-agent,
+.pop-agentrow.asleep .pop-sub,
+.pop-agentrow.asleep .gauge,
+.pop-agentrow.asleep .pop-reset { opacity: .6 }
 /* one grid per agent: name · picker · relay, with the effort picker on a
    second row under the model it belongs to. The two <label>s inside are
    display:contents so their cells line up in this grid rather than each

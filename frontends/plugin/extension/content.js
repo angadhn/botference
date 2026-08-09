@@ -73,7 +73,6 @@
   // content script's `window` is its own isolated world — the page it runs on
   // cannot reach this, exactly as with __BFP_THEME.)
   const HREF = (typeof window.__BFP_HREF === 'string' && window.__BFP_HREF) || location.href;
-  const URL_NOW = normUrl(HREF);
   const HOSTNAME = (() => {
     try { return new URL(HREF).hostname.replace(/^www\./, ''); }
     catch { return location.hostname.replace(/^www\./, ''); }
@@ -84,6 +83,34 @@
   // ---- the site adapter (see the header) ----------------------------------
   const SITE = (Adapters && Adapters.pick(HREF)) || null;
   const CAPS = Object.assign({ highlights: true }, (SITE && SITE.capabilities) || {});
+
+  // ---- which page this is, decided ONCE ----------------------------------
+  // Resolved at load and never revisited, because a document's identity does
+  // not change while it is open. A site that rewrites its path with
+  // history.pushState (a URL per section of one article) must not turn one
+  // reading into several records, and the way to guarantee that is to have
+  // nothing left that reads `location` after this line. A real navigation
+  // reloads the content script, which is exactly when this should be redecided.
+  //
+  // The document's own `<link rel="canonical">` wins where it is safe to
+  // believe (adapters.js: same origin, never the site root, and only ever a
+  // parent whose slug the address bar has extended) — that is what merges
+  // /post-slug-section-3 back into /post-slug. A site adapter owns its own
+  // identity rules (Google Docs), so canonical is not consulted there.
+  const CANONICAL_HREF = (() => {
+    if (SITE || !Adapters || !Adapters.canonicalPageUrl) return '';
+    let el = null;
+    try { el = document.querySelector('link[rel~="canonical"]'); } catch { el = null; }
+    // .href resolves relative values against the document; the attribute is the
+    // fallback for a harness that builds the element by hand
+    const raw = el ? (el.href || el.getAttribute('href') || '') : '';
+    return Adapters.canonicalPageUrl(HREF, raw) || '';
+  })();
+  // Everything the extension sends — hello, /page, /thread, /reply, /snapshot,
+  // the routing key on every background message — comes from these two and
+  // nothing else.
+  const IDENT_HREF = CANONICAL_HREF || HREF;
+  const URL_NOW = normUrl(IDENT_HREF);
 
   let active = false;
   let PAGE = null;        // the /page record
@@ -139,7 +166,7 @@
       try {
         // page_url rides on everything: the worker's routing table is memory
         // only, and this is what puts this tab back in it after a respawn
-        chrome.runtime.sendMessage({ ...msg, page_url: HREF }, r => {
+        chrome.runtime.sendMessage({ ...msg, page_url: IDENT_HREF }, r => {
           const err = chrome.runtime && chrome.runtime.lastError;
           if (err) return resolve({ ok: false, error: err.message });
           resolve(r || { ok: false, error: 'no response from background' });
@@ -202,12 +229,24 @@
   }
 
   function genericHeadline() {
+    const og = (() => {
+      const el = document.querySelector('meta[property="og:title"], meta[name="og:title"]');
+      return (el && collapse(el.getAttribute('content'))) || '';
+    })();
     for (const sel of ['article h1', 'main h1', 'h1']) {
-      const h = document.querySelector(sel);
-      if (h && collapse(h.textContent)) return collapse(h.textContent);
+      const all = document.querySelectorAll(sel);
+      if (!all.length) continue;
+      // "the first <h1>" is only the article's name on a page that has ONE.
+      // Plenty of long pieces use h1 for their section headings too (appendices,
+      // chapters), and there the first one in document order is as likely to be
+      // "Appendix A" as the title — which is how a record ends up filed under a
+      // heading nobody would recognise. The page's own og:title is the honest
+      // answer in that case, because it exists to answer exactly this question.
+      if (all.length > 1 && og) return og;
+      const t = collapse(all[0].textContent);
+      if (t) return t;
     }
-    const og = document.querySelector('meta[property="og:title"], meta[name="og:title"]');
-    if (og && collapse(og.getAttribute('content'))) return collapse(og.getAttribute('content'));
+    if (og) return og;
     const t = collapse(document.title);
     // strip a trailing " - Site" / " | Site" / " — Site" suffix, but only when
     // what follows is short enough to be a site name and not part of the head
@@ -504,7 +543,7 @@
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
       // upsert the page shell so the server knows this page's real headline
       api('POST', '/page', { url: URL_NOW, title: headline(), site: HOSTNAME });
-      bg({ t: 'hello', url: location.href }).then(r => { if (r && r.ok) drawer.setConn(!!r.connected); });
+      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) drawer.setConn(!!r.connected); });
       await loadPage();
     }
     if (openTab !== false) drawer.open();
@@ -874,15 +913,19 @@
                  effort: d.effort || null, verbosity: d.verbosity || '',
                  keys: d.keys };
       },
+      // Both are stored preferences: they can be set with the agents asleep and
+      // are imposed at the next wake. `applies` says whether the running bridge
+      // was told just now or the setting is waiting for one — the drawer says
+      // which in the same line it confirms the choice.
       onSetModel: async (agent, model) => {
         const r = await api('POST', '/model', { agent, model });
         if (!r.ok) return failure(r);
-        return { ok: true, queued: r.data && r.data.queued };
+        return { ok: true, queued: r.data && r.data.queued, applies: r.data && r.data.applies };
       },
       onSetEffort: async (agent, level) => {
         const r = await api('POST', '/effort', { agent, level });
         if (!r.ok) return failure(r);
-        return { ok: true, queued: r.data && r.data.queued };
+        return { ok: true, queued: r.data && r.data.queued, applies: r.data && r.data.applies };
       },
       onSetVerbosity: async level => {
         const r = await api('POST', '/verbosity', { level });
@@ -1094,7 +1137,7 @@
   function boot() {
     consumeAutoOpen();
     startLiveness();
-    bg({ t: 'hello', url: location.href }).then(r => {
+    bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
       if (r.known) {
         // an annotated page: wake up and restore the highlights, but do not
@@ -1110,6 +1153,9 @@
   window.__bfp = {
     activate, loadPage, reanchorAll, headline, articleText, normUrl, hashText,
     site: SITE, caps: CAPS,
+    // the page identity this document settled on at load, and whether the
+    // document's own canonical link is what decided it
+    url: URL_NOW, identHref: IDENT_HREF, canonical: CANONICAL_HREF,
     // the liveness machinery, observable so the harness can drive a dead
     // worker and assert that the page converges anyway
     liveness: { resync, connectPort, watchSend, get log() { return resyncLog.slice(); },

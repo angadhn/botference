@@ -2,6 +2,31 @@
 
 ## 2026-08-09
 
+- **Discuss: one page, one identity — and the right title on it.** Some
+  sites rewrite the address bar as you move through a long article, and a
+  reading could end up scattered across several Discuss pages. The
+  extension now decides which page it is on once, when the document
+  loads, and never looks again; a `<link rel="canonical">` naming the
+  real article is preferred where believing it can only merge a section
+  back into its parent (never where it would merge two different pieces).
+  Separately, and this is what you actually saw on
+  defensesindepth.bio: a page that uses big headings for its appendices
+  was being filed under "Appendix A" instead of its own name, because the
+  first `<h1>` on the page was an appendix. Where a page has more than one
+  such heading, its own published title wins. Pages already filed under
+  the wrong name stay as they are — renaming them is a separate job.
+
+- **Discuss: pick the model before you ask the question.** The model and
+  effort pickers used to be dead until the agents were awake, which meant
+  the one moment you most want to choose a model — before the first
+  message — was the one moment you could not. Both are now preferences
+  the companion keeps: choose them whenever you like, and they are
+  imposed on the agents at every wake, ahead of the very message that
+  woke them. A running bridge is still told immediately; a sleeping one
+  is not woken just to be told, and the gear says which happened. The
+  option lists the agents advertise are remembered too, so the pickers
+  still work when nothing is running.
+
 - **Discuss: billing is a switch now, and it tells the truth.** Each agent's
   gear-menu control is two positions — subscription or API key — showing what
   your saved keys actually resolve to rather than the three-way mode

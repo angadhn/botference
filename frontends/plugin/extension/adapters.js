@@ -540,6 +540,50 @@
     },
   };
 
+  // ---- page identity ------------------------------------------------------
+  // WHICH page a document is, when the address bar and the document disagree.
+  //
+  // A site that rewrites its path with history.pushState as you move through a
+  // long article (a section per URL) hands the extension a different address
+  // every time you land, and every one of those becomes a page of its own with
+  // its own annotations. `<link rel="canonical">` is the document's own answer
+  // to "what am I", so prefer it — but only where believing it can merge a
+  // splinter back into its parent, and never where it could merge two genuinely
+  // different articles.
+  //
+  // Hence the guards, all of them refusals:
+  //   • same origin, http(s) only          — a canonical is not a redirect
+  //   • never the bare site root           — "/" is a claim about the site
+  //   • the location path must be the canonical path with extra characters
+  //     glued onto its LAST segment (/post-slug ← /post-slug-section-3), or
+  //     exactly equal to it. A canonical that drops whole path segments
+  //     (/2026 ← /2026/01/some-article) is a hub page, and believing it would
+  //     collapse a month of reading into one record.
+  //
+  // Returns the href to treat as this page's identity, or null for "no opinion
+  // — use the address bar". normUrl is applied by the caller afterwards, so
+  // this function never has to agree with anybody's copy of it.
+  const CANON_MIN_PREFIX = 8;             // '/post-sl' — shorter is not a slug
+  const trimPath = p => String(p || '').replace(/\/+$/, '');
+  function canonicalPageUrl(locationHref, canonicalHref) {
+    if (!canonicalHref) return null;
+    let loc, can;
+    try { loc = new URL(String(locationHref)); } catch { return null; }
+    // relative canonicals are legal and common ("/post-slug/")
+    try { can = new URL(String(canonicalHref), loc.href); } catch { return null; }
+    if (!/^https?:$/.test(loc.protocol) || !/^https?:$/.test(can.protocol)) return null;
+    if (can.origin !== loc.origin) return null;
+    const cPath = trimPath(can.pathname);
+    const lPath = trimPath(loc.pathname);
+    if (!cPath) return null;                       // the site root claims everything
+    if (cPath === lPath) return can.href;          // the same page, said tidily
+    if (cPath.length < CANON_MIN_PREFIX) return null;
+    if (!lPath.startsWith(cPath)) return null;
+    // what the address bar added must live inside the canonical's last segment
+    if (lPath.slice(cPath.length).includes('/')) return null;
+    return can.href;
+  }
+
   // ---- registry -----------------------------------------------------------
 
   const REGISTRY = [GDOCS];
@@ -556,6 +600,7 @@
   const api = {
     pick, REGISTRY,
     // pure, for the node tests
+    canonicalPageUrl,
     gdocsId, gdocsScope, gdocsExportUrl, gdocsExportUrls, accountFromUrls,
     stripDocsSuffix, cleanExport, looksHtml, looksZip, bytesToBase64, b64Size,
     TEXT_LIMIT, AUTHUSER_MAX, EXPORT_URL_MAX, PAGE_CREDENTIALS, DOCX_MAX,

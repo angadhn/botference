@@ -526,11 +526,12 @@ async function main() {
     assert.equal(ev.status.auto_relay, true);
   });
 
-  await test('POST /model queues the control turn verbatim and rebroadcasts', async () => {
+  await test('a model chosen while the bridge is live is relayed at once — and still stored', async () => {
     const before = stream.events.length;
     const sentBefore = inputs(logFile).length;
     const r = await POST(base, '/model', { agent: 'claude', model: 'claude-opus-5' });
-    assert.deepEqual(r.json, { ok: true, queued: true });
+    // `applies:'now'` is the whole difference from the sleeping case below
+    assert.deepEqual(r.json, { ok: true, queued: true, applies: 'now' });
     await waitFor(() => inputs(logFile).length > sentBefore, 'control turn at the bridge');
     assert.deepEqual(inputs(logFile).slice(sentBefore), ['/model @claude claude-opus-5']);
     const ev = await waitFor(() => stream.events.slice(before).find(e => e.type === 'models'), 'models event');
@@ -539,6 +540,13 @@ async function main() {
     assert.equal(stream.events.slice(before).filter(e => e.type === 'chat').length, 0);
     const models = (await GET(base, '/models')).json;
     assert.equal(models.current.claude, 'claude-opus-5');
+    // relaying it is not instead of remembering it: the next bridge gets it too
+    const cfg = JSON.parse(fs.readFileSync(
+      path.join(root, '.botference', 'plugin', 'config.json'), 'utf8'));
+    assert.equal(cfg.agents.model.claude, 'claude-opus-5', 'the preference is on disk');
+    assert.deepEqual(cfg.agents.model_options.claude,
+      ['claude-fable-5', 'claude-opus-5', 'claude-haiku-4-5'],
+      'and so are the lists the bridge advertised, for the pickers to use while it sleeps');
   });
 
   await test('token creep is not broadcast; a pct change is', async () => {
@@ -1111,7 +1119,7 @@ async function main() {
     const before = stream.events.length;
     const sentBefore = inputs(logFile).length;
     const r = await POST(base, '/effort', { agent: 'claude', level: 'xhigh' });
-    assert.deepEqual(r.json, { ok: true, queued: true });
+    assert.deepEqual(r.json, { ok: true, queued: true, applies: 'now' });
     await waitFor(() => inputs(logFile).length > sentBefore, 'effort at the bridge');
     assert.deepEqual(inputs(logFile).slice(sentBefore), ['/effort @claude xhigh']);
     const ev = await waitFor(() => stream.events.slice(before)
@@ -1127,6 +1135,109 @@ async function main() {
     assert.deepEqual(inputs(logFile).slice(n), ['/effort @codex minimal']);
     await waitFor(async () => (await GET(base, '/models')).json.effort.current.codex === 'minimal',
       'codex effort recorded');
+  });
+
+  // The complaint this answers: the pickers used to be dead until the agents
+  // were awake, so the one moment you most want to choose a model — before the
+  // first message — was the one moment you could not. Model and effort are
+  // preferences the companion keeps; the bridge is told at every wake.
+  await test('a model and an effort chosen before the agents have ever run are kept, and imposed at the first wake', async () => {
+    const coldRoot = tmpRoot('prefs');
+    const coldLog = path.join(coldRoot, 'bridge-log.jsonl');
+    const cold = await startServer({
+      root: coldRoot,
+      env: {
+        PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+        MOCK_BRIDGE_LOG: coldLog,
+        PLUGIN_SID_WAIT_MS: '600',
+      },
+    });
+    const url = 'https://ledger.test/2026/cold-prefs';
+    assert.equal((await GET(cold.base, '/health')).json.bridge, 'stopped', 'nothing has summoned it');
+
+    // no bridge has ever run here, so there are no lists to check against: the
+    // companion stores what it is given and lets the bridge refuse at wake
+    const m = await POST(cold.base, '/model', { agent: 'claude', model: 'claude-opus-5' });
+    assert.deepEqual(m.json, { ok: true, queued: false, applies: 'at-wake' });
+    const e = await POST(cold.base, '/effort', { agent: 'codex', level: 'max' });
+    assert.deepEqual(e.json, { ok: true, queued: false, applies: 'at-wake' });
+    assert.equal(fs.existsSync(coldLog), false, 'a preference must not wake the agents to store it');
+    assert.equal((await GET(cold.base, '/health')).json.bridge, 'stopped');
+
+    // and the picker reads them straight back, with the agents still asleep
+    const models = (await GET(cold.base, '/models')).json;
+    assert.equal(models.bridge, 'stopped');
+    assert.equal(models.current.claude, 'claude-opus-5');
+    assert.equal(models.effort.current.codex, 'max');
+    assert.equal(models.effort.current.claude, 'high', "the child's own default, still");
+    const cfg = JSON.parse(fs.readFileSync(
+      path.join(coldRoot, '.botference', 'plugin', 'config.json'), 'utf8'));
+    assert.deepEqual(cfg.agents.model, { claude: 'claude-opus-5', codex: null });
+    assert.deepEqual(cfg.agents.effort, { claude: null, codex: 'max' });
+
+    // now wake it with a real comment: the preferences go in FIRST, so the very
+    // turn that woke the bridge is already answered under them
+    await POST(cold.base, '/page', { url, title: 'Cold Prefs', site: 'ledger.test' });
+    await POST(cold.base, '/reply', { url, thread_id: '__page__', text: '@claude first thing I ask' });
+    const sent = await waitFor(() => {
+      const all = fs.existsSync(coldLog) ? inputs(coldLog) : [];
+      return all.some(t => t.startsWith('@claude ')) ? all : null;
+    }, 'the user turn to reach the bridge');
+    assert.deepEqual(sent.slice(0, 2),
+      ['/model @claude claude-opus-5', '/effort @codex max'],
+      'both preferences, before anything else the turn needed');
+    assert.ok(sent.indexOf('/project create Plugin pages') > 1, 'the bootstrap still happens, after them');
+    assert.ok(sent.findIndex(t => t.startsWith('@claude ')) > sent.indexOf('/effort @codex max'),
+      'and the user turn is answered with them already in force');
+
+    // the page still got its own session out of the same wake: preferences ride
+    // ahead of the choreography without disturbing it
+    await waitFor(async () => {
+      const page = (await GET(cold.base, `/page?url=${encodeURIComponent(url)}`)).json;
+      return page && page.session_id ? page : null;
+    }, "the page's own session id");
+    // …and waking taught the companion the lists, so the pickers work next time
+    const after = JSON.parse(fs.readFileSync(
+      path.join(coldRoot, '.botference', 'plugin', 'config.json'), 'utf8'));
+    assert.deepEqual(after.agents.effort_options.codex, ['minimal', 'low', 'medium', 'high', 'max']);
+    cold.proc.kill();
+  });
+
+  await test('a preference that a hand-edited config turned into a second command is never sent', async () => {
+    const evilRoot = tmpRoot('evilprefs');
+    const dir = path.join(evilRoot, '.botference', 'plugin');
+    fs.mkdirSync(dir, { recursive: true });
+    // config.json is a file a human can edit, and every value in it is
+    // interpolated into a slash command on the bridge's stdin
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+      agents: {
+        model: { claude: 'claude-opus-5\n/quit', codex: 'gpt-5.5' },
+        effort: { claude: { not: 'a string' }, codex: 'high' },
+        model_options: 'not a list',
+      },
+    }));
+    const evilLog = path.join(evilRoot, 'bridge-log.jsonl');
+    const evil = await startServer({
+      root: evilRoot,
+      env: { PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]), MOCK_BRIDGE_LOG: evilLog },
+    });
+    const url = 'https://ledger.test/2026/evil-prefs';
+    const models = (await GET(evil.base, '/models')).json;
+    assert.equal(models.current.claude, null, 'the smuggled newline is not a model');
+    assert.equal(models.current.codex, 'gpt-5.5', 'the honest one beside it still is');
+    assert.equal(models.effort.current.claude, 'high', 'a non-string effort falls back to the default');
+    assert.equal(models.options, null, 'a list that is not a list is no list at all');
+
+    await POST(evil.base, '/page', { url, title: 'Evil Prefs', site: 'ledger.test' });
+    await POST(evil.base, '/reply', { url, thread_id: '__page__', text: '@claude anything' });
+    const sent = await waitFor(() => {
+      const all = fs.existsSync(evilLog) ? inputs(evilLog) : [];
+      return all.some(t => t.startsWith('@claude ')) ? all : null;
+    }, 'the user turn to reach the bridge');
+    assert.ok(!sent.some(t => t.includes('/quit')), 'nothing ever sent /quit');
+    assert.deepEqual(sent.slice(0, 2), ['/model @codex gpt-5.5', '/effort @codex high'],
+      'only the values that survived normalisation were imposed');
+    evil.proc.kill();
   });
 
   await test('POST /effort refuses a bad agent and a level the bridge never offered', async () => {

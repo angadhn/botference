@@ -70,6 +70,12 @@
     ?handles=1       a page chat with several people in it (mira, devraj) —
                      the multi-handle author colours (screenshot state)
     ?wide=NNN        start the drawer at NNN px instead of the stored width
+    ?canon=1         the page is a pushState splinter of a longer article and
+                     carries a <link rel="canonical"> naming the real one: the
+                     identity must be the parent everywhere, before and after a
+                     pushState. http:// only — a file:// page has no origin for
+                     a canonical to share.
+    ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
 -->
@@ -340,7 +346,24 @@ window.addEventListener('unhandledrejection', e => fault('UNHANDLED REJECTION', 
 // 1. the scripted fake companion
 //    Same shapes as SPEC.md's HTTP API and event stream — nothing more.
 // ───────────────────────────────────────────────────────────────────────────
-const PAGE_URL = GDOCS ? DOC_URL : 'https://example.com/sport/the-quiet-machine';
+// ?canon=1 — this document is a pushState splinter of a longer article and
+// says so with its own <link rel="canonical">. Nothing is faked: the content
+// script reads the REAL location.href here (no __BFP_HREF), so a canonical
+// that survives the guards is the only thing that can move the identity — and
+// a pushState afterwards is a real one. Needs http:// (a file:// page has no
+// origin a canonical could share).
+const CANON = Q.get('canon') === '1';
+// /test/harness.html → /test/harness: the address bar has extended the
+// canonical's last segment, which is exactly the splinter shape
+const CANON_PARENT = CANON ? new URL('/test/harness', location.href).href : '';
+if (CANON) {
+  const link = document.createElement('link');
+  link.rel = 'canonical';
+  link.href = '/test/harness';          // relative, like most real ones
+  document.head.appendChild(link);
+}
+const PAGE_URL = GDOCS ? DOC_URL : CANON ? CANON_PARENT
+  : 'https://example.com/sport/the-quiet-machine';
 const now = () => new Date().toISOString();
 const iso = mins => new Date(Date.now() - mins * 60000).toISOString();
 
@@ -543,6 +566,10 @@ const orphanPosts = [];     // every /orphan body
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 const openOptionsCalls = []; // …and every {t:'open-options'}, with the agent it named
+const threadUrls = [];      // the url every /thread was filed against
+const replyUrls = [];       // …and every /reply
+const helloUrls = [];       // every {t:'hello'} url — the page identity, as announced
+const routeUrls = [];       // …and the page_url every background message routes by
 
 // ---- the page library behind GET /index ---------------------------------
 // Three other pages plus this one, stored deliberately out of order so the
@@ -737,6 +764,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: RECORD };
   }
   if (method === 'POST' && route === '/thread') {
+    threadUrls.push(body.url);
     postedMsgs.push(captured(route, body.msg && body.msg.text, body));
     const thread = {
       id: 't-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
@@ -756,6 +784,7 @@ function companion(method, path, body) {
                                             ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
   }
   if (method === 'POST' && route === '/reply') {
+    replyUrls.push(body.url);
     postedMsgs.push(captured(route, body.text, body));
     // "#fail" in a message is the harness's way of making a save go wrong, so
     // the composer's keep-the-text-on-failure path is testable
@@ -845,6 +874,8 @@ function companion(method, path, body) {
   }
   // POST /effort {agent, level} — queued like /model, and it starts the bridge
   // rather than refusing when idle. Only --no-agents is a 409.
+  // the same preference rules as /model: settable while the agents sleep, and
+  // validated against the option lists the companion still remembers
   if (method === 'POST' && route === '/effort') {
     effortPosts.push({ agent: body && body.agent, level: body && body.level });
     if (MODELS.bridge === 'disabled') return { ok: false, status: 409, error: 'agents are off on this companion' };
@@ -852,10 +883,11 @@ function companion(method, path, body) {
     const opts = (MODELS.effort && MODELS.effort.options && MODELS.effort.options[body.agent]) || [];
     if (opts.indexOf(body.level) === -1) return { ok: false, status: 400, error: 'bad effort level' };
     MODELS.effort.current[body.agent] = body.level;
-    log('effort: ' + body.agent + ' → ' + body.level);
+    const live = MODELS.bridge === 'running';
+    log('effort: ' + body.agent + ' → ' + body.level + (live ? '' : ' (at wake)'));
     setTimeout(() => toContent({ t: 'ws', ev: {
       type: 'models', current: { ...MODELS.current }, effort: MODELS.effort, verbosity: MODELS.verbosity } }), 40);
-    return { ok: true, status: 200, data: { ok: true, queued: true } };
+    return { ok: true, status: 200, data: { ok: true, queued: live, applies: live ? 'now' : 'at-wake' } };
   }
   // POST /verbosity {level} — a companion preference, so it answers with the
   // value it settled on and broadcasts the options along with it
@@ -916,13 +948,17 @@ function companion(method, path, body) {
       type: 'models', current: MODELS.current, status: MODELS.status } }), 40);
     return { ok: true, status: 200, data: { ok: true, queued: true } };
   }
+  // POST /model {agent, model} — a stored PREFERENCE, so it is accepted with
+  // the bridge asleep and answers `applies` with which of the two things
+  // happened: told to a running bridge now, or waiting for one to wake.
   if (method === 'POST' && route === '/model') {
     modelPosts.push({ agent: body.agent, model: body.model });
-    if (MODELS.current) MODELS.current[body.agent] = body.model;
-    log('model: ' + body.agent + ' → ' + body.model);
+    MODELS.current = { ...(MODELS.current || {}), [body.agent]: body.model };
+    const live = MODELS.bridge === 'running';
+    log('model: ' + body.agent + ' → ' + body.model + (live ? '' : ' (at wake)'));
     // the companion broadcasts the new state to every tab
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'models', current: { ...MODELS.current } } }), 40);
-    return { ok: true, status: 200, data: { ok: true, queued: true } };
+    return { ok: true, status: 200, data: { ok: true, queued: live, applies: live ? 'now' : 'at-wake' } };
   }
   if (method === 'POST' && route === '/orphan') {
     orphanPosts.push({ thread_id: body.thread_id, orphaned: body.orphaned });
@@ -1011,9 +1047,15 @@ window.chrome = {
     lastError: null,
     getURL: p => '../extension/' + p,
     sendMessage(msg, cb) {
+      // page_url rides on every message and is what the worker keys the tab by:
+      // if it ever disagreed with the url the POSTs carry, events would be
+      // delivered for a page nobody is looking at
+      if (msg && msg.page_url) routeUrls.push(msg.page_url);
       const reply = (() => {
         switch (msg && msg.t) {
-          case 'hello': return OFFLINE
+          case 'hello':
+            helloUrls.push(msg.url);
+            return OFFLINE
             ? { ok: true, known: false, threads: 0, connected: false, index: {} }
             : { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {} };
           case 'get-index': return companion('GET', '/index');
@@ -2384,15 +2426,79 @@ async function selftest() {
   d.onEvent({ type: 'models', verbosity: 'long' });
   check('…and a later broadcast moves it back', vbtn('long').classList.contains('on'));
 
-  d.onEvent({ type: 'models', bridge: 'stopped', current: null, options: null, status: null, effort: null });
-  check('a sleeping bridge disables the effort pickers too',
-    effSel('claude').disabled && effSel('codex').disabled);
-  check('…and shows them unset rather than empty', effSel('claude').value === '—');
+  // ---- model and effort are PREFERENCES: settable before anyone is awake ----
+  // The old rule was "a sleeping bridge disables the pickers", which meant the
+  // one moment you most want to choose a model — before the first message — was
+  // the one moment you could not. The companion stores the choice instead and
+  // imposes it at every wake, so the pickers stay live and keep offering the
+  // lists it remembers.
+  const modelSel = a => S.querySelector('.popover.models select[data-agent="' + a + '"]');
+  const hint = () => S.querySelector('.pop-hint').textContent;
+  // the fake companion goes to sleep for real — its own `bridge` decides
+  // whether a POST is relayed now or only stored for the next wake
+  const sleepCompanion = () => {
+    MODELS.bridge = 'stopped';
+    d.onEvent({ type: 'models', bridge: 'stopped', status: null,
+      current: { ...MODELS.current }, options: MODELS.options, effort: MODELS.effort });
+  };
+  const wakeCompanion = () => {
+    MODELS.bridge = 'running';
+    d.onEvent({ type: 'models', bridge: 'running', status: MODELS.status,
+      current: { ...MODELS.current }, options: MODELS.options, effort: MODELS.effort });
+  };
+
+  sleepCompanion();
+  check('a sleeping bridge no longer disables the pickers',
+    !effSel('claude').disabled && !effSel('codex').disabled &&
+    !modelSel('claude').disabled && !modelSel('codex').disabled);
+  check('…and they still say what is set, which the companion remembers for itself',
+    modelSel('claude').value === MODELS.current.claude &&
+    effSel('claude').value === MODELS.effort.current.claude);
+  check('…while the popover still says the agents are asleep',
+    /agents are asleep/.test(S.querySelector('.pop-sleep').textContent) &&
+    S.querySelectorAll('.pop-agentrow.asleep').length === 2);
+  check('…and the gauges, which really are stale, are gone',
+    S.querySelector('.pop-agentrow[data-agent="claude"] .gauge').hidden);
+
+  const mBefore = modelPosts.length;
+  modelSel('claude').value = 'haiku';
+  modelSel('claude').dispatchEvent(new Event('change', { bubbles: true }));
+  check('choosing a model with the agents asleep POSTs it anyway',
+    !!await until(() => modelPosts.length > mBefore || null) &&
+    modelPosts[mBefore].agent === 'claude' && modelPosts[mBefore].model === 'haiku');
+  check('…and says when it will take effect rather than implying it already has',
+    !!await until(() => /claude → haiku — applies when the agents wake/.test(hint()) || null));
+
+  const eBefore = effortPosts.length;
+  effSel('codex').value = 'xhigh';
+  effSel('codex').dispatchEvent(new Event('change', { bubbles: true }));
+  check('the same for effort',
+    !!await until(() => effortPosts.length > eBefore || null) &&
+    effortPosts[eBefore].agent === 'codex' && effortPosts[eBefore].level === 'xhigh');
+  check('…with the same honest wording',
+    !!await until(() => /codex effort → xhigh — applies when the agents wake/.test(hint()) || null));
+
   check('the reply-length switch survives it — that one is the companion’s',
     !S.querySelector('.pop-verbrow').hidden && !vbtn('long').disabled);
-  d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options,
-              status: MODELS.status, effort: MODELS.effort });
-  check('waking up re-enables them', !effSel('claude').disabled);
+
+  // waking up: the companion reports the preferences it imposed on the way in
+  wakeCompanion();
+  check('waking up keeps the pickers live and shows the preference in force',
+    !effSel('claude').disabled && modelSel('claude').value === 'haiku' &&
+    effSel('codex').value === 'xhigh');
+  effSel('claude').value = 'low';
+  effSel('claude').dispatchEvent(new Event('change', { bubbles: true }));
+  check('…and a change made to a live bridge drops the caveat, because it applies now',
+    !!await until(() => /claude effort → low$/.test(hint().trim()) || null));
+
+  // the one case that still cannot offer a choice: a companion that has never
+  // run the agents has no lists to remember
+  d.onEvent({ type: 'models', bridge: 'stopped', current: null, options: null, status: null, effort: null });
+  check('a companion that has never run the agents has no lists, and says so with a dead picker',
+    effSel('claude').disabled && modelSel('claude').disabled);
+  check('…showing unset rather than empty', effSel('claude').value === '—');
+  wakeCompanion();
+  check('and a bridge that comes back re-enables everything', !effSel('claude').disabled);
 
   // ---- which auth each agent bills: a two-position switch ----------------
   // The companion stores three modes; the drawer shows the two a reader can be
@@ -2822,6 +2928,81 @@ async function selftest() {
   console.log(out.join('\n'));
 }
 
+// ?canon=1&selftest=canon — one document, one identity, for as long as it is
+// open. The page is a splinter url whose canonical names the real article, and
+// the whole test is that nothing anywhere ever mentions the splinter — before
+// or after a history.pushState moves the address bar under it.
+async function selftestCanonical() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? '✓ ' : '✗ ') + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const splinter = location.href;
+
+  check('the browser really is on the splinter url', /harness\.html/.test(splinter));
+  check('…and the document says which page it actually is',
+    window.__bfp.canonical === CANON_PARENT);
+  check('the identity is the canonical parent, not the address bar',
+    window.__bfp.url === CANON_PARENT && CANON_PARENT !== splinter);
+  check('…which is the same answer normUrl would give for the parent',
+    window.__bfp.url === window.__bfp.normUrl(CANON_PARENT));
+
+  check('the hello that woke the background carried it',
+    helloUrls.length > 0 && helloUrls.every(u => u === CANON_PARENT));
+  check('…and so does the page_url every message is routed by',
+    routeUrls.length > 0 && routeUrls.every(u => u === CANON_PARENT));
+  check('the record was fetched for the parent, never for the splinter',
+    apiCalls.some(c => c.path === '/page?url=' + encodeURIComponent(CANON_PARENT)) &&
+    !apiCalls.some(c => decodeURIComponent(c.path || '').includes('harness.html')));
+
+  // an annotation, made the way a reader makes one
+  const p = [...document.querySelectorAll('article p')].find(el => el.textContent.includes('found a rhythm'));
+  const t = [...p.childNodes].find(n => n.nodeType === 3 && n.data.includes('found a rhythm'));
+  const r = document.createRange();
+  r.setStart(t, t.data.indexOf('By the hour mark'));
+  r.setEnd(t, t.data.indexOf('found a rhythm') + 'found a rhythm'.length);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await sleep(300);
+  S.querySelector('.selbtn').click();
+  const ta = await until(() => S.querySelector('.card.pending textarea'));
+  ta.value = 'the identity of this page is the article, not the section';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.card.pending [data-act="send"]').click();
+  const threads = await until(() => (RECORD.threads.length ? RECORD.threads : null));
+  check('a new thread was filed', !!threads);
+  check('…against the parent url', threadUrls.every(u => u === CANON_PARENT));
+
+  // the splinter happening for real, mid-session
+  const before = helloUrls.length;
+  history.pushState({}, '', '/test/harness.html-appendix-d');
+  check('the address bar really moved', location.pathname.endsWith('-appendix-d'));
+  await sleep(120);
+  check('…and nothing said hello about it', helloUrls.length === before);
+  check('…the identity did not budge', window.__bfp.url === CANON_PARENT);
+
+  d.open('chat');
+  const chat = await until(() => S.querySelector('.pane[data-pane="chat"] .composer textarea'));
+  chat.value = 'and still the same page after a pushState';
+  chat.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  await until(() => replyUrls.length ? true : null);
+  check('a message sent after the pushState is still filed against the parent',
+    replyUrls.every(u => u === CANON_PARENT));
+  check('…and the splinter never reached the companion at all',
+    !apiCalls.some(c => decodeURIComponent(c.path || '').includes('-appendix-d')) &&
+    !threadUrls.concat(replyUrls, helloUrls, routeUrls).some(u => String(u).includes('-appendix-d')));
+  history.replaceState({}, '', splinter);
+
+  const bad = out.filter(l => l[0] === '✗');
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (canonical) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?gdocs=1&selftest=1 — the site-adapter world instead of the article one.
 // Everything the capability switch is supposed to turn off, plus proof that
 // the document's real text (which only exists behind the user's session)
@@ -3133,6 +3314,7 @@ window.__bfp.activate(false).then(() => {
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     if (Q.get('selftest') === '1') { setTimeout(GDOCS ? selftestGdocs : selftest, 250); return; }
+    if (Q.get('selftest') === 'canon') { setTimeout(selftestCanonical, 250); return; }
     // the failure state without waiting for a bot turn: asking content.js for
     // the first-turn context is what discovers the export is a chooser
     if (GDOCS && Q.get('badexport') === '1') setTimeout(() => window.__bfp.articleText(), 250);

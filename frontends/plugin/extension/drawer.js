@@ -2116,11 +2116,16 @@
         D.models.err = true;
       } else {
         D.models.current = Object.assign({}, D.models.current, { [agent]: model });
-        D.models.note = agent + ' → ' + model;
+        D.models.note = agent + ' → ' + model + whenApplied(r);
         D.models.err = false;
       }
       paintModelHint();
     }
+
+    // Model and effort are stored preferences now, so they can be set with the
+    // agents asleep. Saying only "claude → opus" there would read as a switch
+    // that had happened; this is the half-sentence that keeps it honest.
+    const whenApplied = r => (r && r.applies === 'at-wake' ? ' — applies when the agents wake' : '');
 
     // Effort rides the same road as the model switch: queued as a control turn,
     // reported inline, and never a dialog. The companion's refusal text (an
@@ -2139,7 +2144,7 @@
       } else {
         const eff = D.models.effort || (D.models.effort = { current: {}, options: null });
         eff.current = Object.assign({}, eff.current, { [agent]: level });
-        D.models.note = agent + ' effort → ' + level;
+        D.models.note = agent + ' effort → ' + level + whenApplied(r);
         D.models.err = false;
       }
       syncModels();

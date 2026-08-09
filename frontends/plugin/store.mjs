@@ -44,8 +44,51 @@ export const DEFAULT_CONFIG = {
   // how long the bots' replies should run; the envelope carries the matching
   // instruction on every turn
   verbosity: 'short',
+  // Which model and how hard it thinks, per agent — the reader's standing
+  // PREFERENCE, not a report of the live bridge. The bridge is a lazily-spawned
+  // child that dies whenever it likes, so a setting that only ever lived inside
+  // it could not be chosen before the first message (which is exactly when
+  // anyone wants to choose it). These are applied at every wake, and relayed
+  // immediately when there is something to relay to.
+  //   *_options = the lists the bridge last advertised, cached so the pickers
+  //   still work while it sleeps. A cache, never an authority: the bridge
+  //   refuses anything it no longer offers.
+  agents: {
+    model: { claude: null, codex: null },
+    effort: { claude: null, codex: null },
+    model_options: { claude: [], codex: [] },
+    effort_options: { claude: [], codex: [] },
+  },
 };
 export const VERBOSITY_LEVELS = ['short', 'long'];
+export const AGENTS = ['claude', 'codex'];
+
+// Every one of these values is interpolated into a slash command written to the
+// bridge's stdin (`/model @claude <value>`), and config.json is a file a human
+// can edit. So the charset is the security boundary, not a formality: a value
+// carrying a newline would post a second command of its own choosing.
+const MODEL_RE = /^[\w.-]{1,64}$/;
+const EFFORT_RE = /^[\w-]{1,32}$/;
+const OPTIONS_MAX = 64;
+const cleanPref = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
+const cleanList = (v, re) => (Array.isArray(v)
+  ? [...new Set(v.filter(x => cleanPref(x, re)))].slice(0, OPTIONS_MAX) : []);
+
+// A hand-edited (or older, or half-written) config must never reach the bridge
+// as a command, and must never leave a picker with half a shape to read.
+export function normalizeAgents(raw) {
+  const a = (raw && typeof raw === 'object') ? raw : {};
+  const per = (obj, fn) => {
+    const src = (obj && typeof obj === 'object') ? obj : {};
+    return Object.fromEntries(AGENTS.map(x => [x, fn(src[x])]));
+  };
+  return {
+    model: per(a.model, v => cleanPref(v, MODEL_RE)),
+    effort: per(a.effort, v => cleanPref(v, EFFORT_RE)),
+    model_options: per(a.model_options, v => cleanList(v, MODEL_RE)),
+    effort_options: per(a.effort_options, v => cleanList(v, EFFORT_RE)),
+  };
+}
 
 // The controller's session files, resolved exactly as core/paths.py resolves
 // work_dir — we delete chats out of that directory when the bridge isn't
@@ -118,6 +161,7 @@ export function readConfig() {
   const merged = { ...DEFAULT_CONFIG, ...cfg };
   // a hand-edited config must never make the envelope say something strange
   if (!VERBOSITY_LEVELS.includes(merged.verbosity)) merged.verbosity = DEFAULT_CONFIG.verbosity;
+  merged.agents = normalizeAgents(merged.agents);
   return merged;
 }
 
@@ -127,6 +171,17 @@ export function saveConfig(patch) {
   const cfg = { ...readConfig(), ...patch };
   writeJson(CONFIG_FILE, cfg);
   return readConfig();
+}
+
+// The agents block is two levels deep, and saveConfig's merge is one: patching
+// {model:{claude}} through saveConfig would drop codex's preference and both
+// cached lists. Everything that touches a preference or a cached list comes
+// through here instead.
+export function saveAgents(patch) {
+  const cur = readConfig().agents;
+  const next = { ...cur };
+  for (const k of Object.keys(patch || {})) next[k] = { ...cur[k], ...patch[k] };
+  return saveConfig({ agents: normalizeAgents(next) }).agents;
 }
 
 export const readIndex = () => readJson(INDEX_FILE, {});

@@ -711,6 +711,21 @@ export function handler(req, res) {
       catch (e) { fail(res, 500, `export failed: ${e.message}`); }
     });
   }
+  // Model and effort are the reader's standing PREFERENCES, stored in
+  // config.json and imposed on the bridge at every wake — so they can be chosen
+  // before the agents have ever run, which is when anybody actually wants to
+  // choose them. A running bridge is told at once as well; a sleeping one is
+  // NOT woken for a setting (waking costs twenty seconds and an idle child).
+  // `applies` says which of those happened, and the drawer says so in words.
+  const setAgentPref = (res, kind, agent, value, control) => {
+    store.saveAgents({ [kind]: { [agent]: value } });
+    const live = chat.state() === 'running';
+    if (live) chat.control(control);
+    // a preference the bridge has not been told about yet still moved: every
+    // other tab's picker has to follow it now, not at the next wake
+    broadcast({ type: 'models', ...modelsPayload() });
+    ok(res, { queued: live, applies: live ? 'now' : 'at-wake' });
+  };
   if (req.method === 'POST' && url === '/model') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
@@ -719,12 +734,12 @@ export function handler(req, res) {
       if (agent !== 'claude' && agent !== 'codex') return fail(res, 400, 'agent must be claude or codex');
       if (!/^[\w.-]+$/.test(model)) return fail(res, 400, 'bad model id');
       if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
-      // when the bridge has published its lists, the model must be on them;
-      // before that we forward blind and let the bridge refuse
+      // when the bridge has published its lists — or the cache remembers the
+      // ones it published last time — the model must be on them; before that we
+      // store blind and let the bridge refuse at wake
       const options = (chat.models().options || {})[agent];
       if (options && options.length && !options.includes(model)) return fail(res, 400, `unknown model for ${agent}`);
-      chat.control(`/model @${agent} ${model}`);
-      ok(res, { queued: true });
+      setAgentPref(res, 'model', agent, model, `/model @${agent} ${model}`);
     });
   }
   // reasoning effort: the same picker shape as /model, but the bridge never
@@ -739,8 +754,7 @@ export function handler(req, res) {
       if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
       const options = (chat.models().effort.options || {})[agent];
       if (options && options.length && !options.includes(level)) return fail(res, 400, `unknown effort level for ${agent}`);
-      chat.control(`/effort @${agent} ${level}`);
-      ok(res, { queued: true });
+      setAgentPref(res, 'effort', agent, level, `/effort @${agent} ${level}`);
     });
   }
   // how long the bots' replies should be. A companion setting, not a bridge

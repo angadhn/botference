@@ -841,6 +841,56 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
     'saved → https://companion.example.com · with a password, no name set');
 }
 
+// ---- page identity: which page a document is ----------------------------------
+// The rule exists to merge a pushState splinter back into its parent
+// (/post-slug-section-3 → /post-slug) and to do nothing else whatsoever.
+{
+  const canon = A.canonicalPageUrl;
+  const POST = 'https://ledger.test/a-long-argument-about-trains';
+  const SECTION = POST + '-appendix-a';
+
+  eq('the splinter case: a section url takes the canonical parent',
+    canon(SECTION, POST), POST);
+  eq('…and the parent itself is simply confirmed',
+    canon(POST, POST), POST);
+  eq('a relative canonical resolves against the document',
+    canon(SECTION, '/a-long-argument-about-trains'), POST);
+  eq('a trailing slash is the same claim (normUrl settles the rest)',
+    canon(SECTION, POST + '/'), POST + '/');
+
+  eq('no canonical, no opinion', canon(SECTION, ''), null);
+  eq('a canonical on another origin is a redirect, not an identity',
+    canon(SECTION, 'https://elsewhere.test/a-long-argument-about-trains'), null);
+  eq('…and so is another scheme on the same host',
+    canon(SECTION, 'http://ledger.test/a-long-argument-about-trains'), null);
+  eq('a non-http canonical is never followed',
+    canon(SECTION, 'javascript:alert(1)'), null);
+  eq('…nor is a non-http location',
+    canon('file:///tmp/page.html', 'file:///tmp/other.html'), null);
+  eq('the bare site root claims everything, so it claims nothing',
+    canon(SECTION, 'https://ledger.test/'), null);
+  eq('…even written without the slash', canon(SECTION, 'https://ledger.test'), null);
+
+  // the guard that matters: a hub page must never swallow a month of reading
+  eq('a canonical that drops whole path segments is a hub, and refused',
+    canon('https://ledger.test/2026/01/some-article', 'https://ledger.test/2026'), null);
+  eq('…however plausible the prefix looks',
+    canon('https://ledger.test/section/one/two', 'https://ledger.test/section/one'), null);
+  eq('a canonical that is not a prefix at all is refused',
+    canon(SECTION, 'https://ledger.test/an-entirely-different-piece'), null);
+  eq('a prefix too short to be a slug is refused',
+    canon('https://ledger.test/abcdefg', 'https://ledger.test/abc'), null);
+  eq('…and the length guard is on the canonical, not on the address bar',
+    canon('https://ledger.test/a-long-argument-about-trains-and-more', POST), POST);
+
+  eq('garbage in, no opinion out', canon('not a url', POST), null);
+  eq('…in either argument', canon(SECTION, '::::'), null);
+  eq('a canonical differing only by query is still the same path',
+    canon(SECTION, POST + '?utm_source=newsletter'), POST + '?utm_source=newsletter');
+  eq('a canonical differing only by hash is the same page',
+    canon(POST, POST + '#appendix-a'), POST + '#appendix-a');
+}
+
 // ---- report -------------------------------------------------------------------
 if (fail) {
   console.error('\nFAILED (' + fail + '):');

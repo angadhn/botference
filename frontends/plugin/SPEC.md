@@ -678,6 +678,54 @@ Contract deltas agreed during live testing — authoritative over the sections a
   only consulted when logged out — so a saved key is a fallback there, and the
   picker's tooltip says as much. codex's `forced_login_method=api` would force
   it and DELETES `~/.codex/auth.json` in the process; it is never sent.
+- Page identity is decided ONCE per document load (`content.js`), and nothing
+  downstream reads `location` again. `normUrl` is unchanged and stays byte-identical
+  in its three copies — the choice happens *before* normUrl, in content.js only:
+
+      IDENT_HREF = canonicalPageUrl(location.href, <link rel="canonical">) || location.href
+      URL_NOW    = normUrl(IDENT_HREF)
+
+  and `URL_NOW`/`IDENT_HREF` are the only things sent anywhere (hello, `page_url` on
+  every background message, /page, /thread, /reply, /snapshot). A site that rewrites
+  its path with `history.pushState` as you move through one article therefore cannot
+  splinter it into several records: a real navigation reloads the content script,
+  which is precisely when the identity should be redecided, and nothing else can.
+  `canonicalPageUrl` (adapters.js, pure, node-tested) is a stack of refusals — same
+  origin and http(s), never the bare site root, and the address bar's path must be the
+  canonical's path with extra characters glued onto its LAST segment (`/post-slug` ←
+  `/post-slug-appendix-a`) or equal to it. A canonical that drops whole path segments
+  (`/2026` ← `/2026/01/some-article`) is a hub page and is refused: merging a splinter
+  is worth doing, merging two different articles is not. A site adapter owns its own
+  identity (Google Docs), so canonical is not consulted there.
+  Records that split before this existed stay split — there is no migration.
+- Titles: `genericHeadline()` takes the first `<h1>` only on a page that has ONE.
+  A long piece that uses `h1` for its section headings (appendices, chapters) is as
+  likely to hand back "Appendix A" as its own name, so where several exist the page's
+  `og:title` — which exists to answer exactly this — wins instead.
+- Model and effort are PREFERENCES, not bridge state (`config.json` →
+  `agents:{model,effort,model_options,effort_options}`, all per-agent). The bridge is
+  a lazily-spawned child, so a setting that lived only inside it could not be chosen
+  before the first message — which is precisely when anyone wants to choose it.
+  `POST /model` and `POST /effort` therefore always store, and answer
+  `{queued, applies:'now'|'at-wake'}`: a running bridge is also told at once (the same
+  control turn as before), a sleeping one is **never woken for a setting**. Both
+  broadcast `models` so other tabs follow immediately.
+  At every wake the stored preferences are queued as control turns at the FRONT of the
+  queue (`queuePrefTurns`, on the startup `ready`) — ahead of the turn that woke the
+  bridge, so that turn is already answered under them. Safe there because a control
+  turn is a bare slash command (no choreography, no envelope, no capture) and the
+  child's model/effort are process-wide, not per-session: nothing it does moves
+  `activeSid`, so the `/new` → capture rule is untouched, and at the startup `ready`
+  nothing can be in flight to cut in front of.
+  `GET /models` and the broadcast report the preference over the bridge's live answer
+  (the live value lags a preference by exactly one control turn; the bridge fills in
+  only where no preference has been stated). `status` stays strictly the bridge's.
+  `*_options` caches the lists `completion_context` advertised, so the pickers still
+  work — and POSTs are still validated — while the bridge sleeps; a companion that has
+  never run the agents has no lists and its pickers are honestly dead. Every value is
+  interpolated into a slash command on the bridge's stdin, so `normalizeAgents()`
+  re-validates the whole block on every read (`[\w.-]` / `[\w-]`, lists capped): a
+  hand-edited config.json cannot smuggle a second command in.
 - Usage beacon (`beacon.mjs`). One anonymous GA4 Measurement Protocol event,
   `discuss_alive`, at most once per day, fired after `listen()` so nothing
   about serving waits on it. Payload is exactly
