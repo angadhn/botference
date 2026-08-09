@@ -866,9 +866,13 @@
         const r = await api('GET', '/models');
         if (!r.ok) return failure(r);
         const d = r.data || {};
+        // `keys` is status only ({claude:'set'|'unset', …, modes:{…}}) and is
+        // passed through undefined-as-undefined: a companion too old to have
+        // it must leave the billing switches out, not show them empty
         return { ok: true, current: d.current || {}, options: d.options || null,
                  status: d.status || null, bridge: d.bridge || '',
-                 effort: d.effort || null, verbosity: d.verbosity || '' };
+                 effort: d.effort || null, verbosity: d.verbosity || '',
+                 keys: d.keys };
       },
       onSetModel: async (agent, model) => {
         const r = await api('POST', '/model', { agent, model });
@@ -892,6 +896,12 @@
         if (!r.ok) return failure(r);
         return { ok: true, applies: r.data && r.data.applies };
       },
+      // The drawer can ask WHICH auth to bill, but never for the key itself:
+      // this panel is injected into whatever page you are reading and its DOM
+      // is that page's DOM, so a key is typed on the extension's own options
+      // page and nowhere else. `agent` is a hint the options page uses to focus
+      // that agent's field — only the background can open it.
+      onOpenOptions: agent => bg({ t: 'open-options', agent }),
       // 409 "agents are idle — nothing to relay" is an ordinary answer here,
       // not a transport failure: hand the text back for the popover to show.
       onRelay: async agent => {

@@ -76,6 +76,17 @@
 //                                     and deletes it on load).
 //        → {ok:true, focused:true, tabId:N}   an existing tab was raised
 //        → {ok:true, created:true, tabId:N}   a new tab was opened
+//   {t:'open-options', agent?}       the drawer's billing switch (or its "API
+//                                    keys…" link) asking for the extension's
+//                                    OWN options page — the only place an API
+//                                    key is ever typed, because the drawer
+//                                    renders inside whatever page you are
+//                                    reading and its DOM is that page's.
+//                                    `agent` ('claude'|'codex') arms a one-shot
+//                                    `bfp:focus-key` hint in
+//                                    chrome.storage.local; options.js focuses
+//                                    that key field and deletes the hint.
+//        → {ok:true, focus:'claude'|'codex'|''}
 //
 // background → content   (chrome.tabs.sendMessage to matching tabs only)
 //
@@ -513,6 +524,21 @@ async function openPage(rawUrl) {
   return { ok: true, created: true, tabId: tab && tab.id };
 }
 
+// ---- the extension's own settings page -----------------------------------
+// Opening it is a chrome.runtime call, so only this worker can do it. The
+// `agent` hint is stored rather than passed in a url: options_ui pages are
+// opened by Chrome itself, with no query string of ours on them.
+const FOCUS_KEY = 'bfp:focus-key';
+async function openOptions(agent) {
+  const want = agent === 'claude' || agent === 'codex' ? agent : '';
+  try {
+    if (want) await chrome.storage.local.set({ [FOCUS_KEY]: want });
+    else await chrome.storage.local.remove(FOCUS_KEY);
+  } catch { /* the page is still worth opening */ }
+  await chrome.runtime.openOptionsPage();
+  return { ok: true, focus: want };
+}
+
 // ---- the content script's port -------------------------------------------
 // Two jobs, both about survival rather than data: it re-registers the tab the
 // moment a new worker starts, and its `onDisconnect` in the content script is
@@ -576,6 +602,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'identity': return identity();
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'open-page': return openPage(msg.url);
+      case 'open-options': return openOptions(msg.agent);
       default:
         return { ok: false, error: 'unknown message ' + JSON.stringify(msg && msg.t) };
     }

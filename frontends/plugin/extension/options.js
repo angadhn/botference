@@ -213,11 +213,43 @@
     });
   }
 
+  // ---- "the drawer sent me here" ----------------------------------------
+  // The drawer's billing switch cannot take a key — it renders inside whatever
+  // page you are reading — so it asks for this page instead and leaves the name
+  // of the field it meant in chrome.storage.local. One shot: the hint is spent
+  // on arrival whether or not a key ends up being typed, because a stale hint
+  // would grab the focus of an options page opened for something else entirely.
+  const FOCUS_KEY = 'bfp:focus-key';
+  function focusRequestedKey() {
+    const store = typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+    if (!store) return;
+    try {
+      store.get([FOCUS_KEY], r => {
+        const agent = r && r[FOCUS_KEY];
+        if (AGENTS.indexOf(agent) === -1) return;
+        try { store.remove(FOCUS_KEY); } catch { /* it was only a hint */ }
+        const input = el('key-' + agent);
+        const field = input && input.closest('.field');
+        if (!field) return;
+        // keys cannot be set from a browser pointed at a remote companion, and
+        // loadKeys has already said so — pointing at a dead field would only
+        // argue with it
+        if (input.disabled) return;
+        field.classList.add('called');
+        if (field.scrollIntoView) field.scrollIntoView({ block: 'center' });
+        input.focus();
+        sayKeys({ cls: '', text: 'paste your ' + agent + ' key here — the drawer sent you' });
+      });
+    } catch { /* no storage: the page still works, it just does not point */ }
+  }
+
   // ⌘/Ctrl+Enter anywhere on the page saves, like every other composer here
   document.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); el('save').click(); }
   });
 
   load();
-  loadKeys();
+  // the hint is read only once the key status is on screen: loadKeys clears the
+  // status line when it succeeds, and would wipe the pointer with it
+  loadKeys().then(focusRequestedKey);
 })(typeof window !== 'undefined' ? window : globalThis);

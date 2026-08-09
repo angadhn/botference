@@ -24,6 +24,9 @@
     ?demo=select     script a real selection, stop at the floating 💬 button
     ?demo=compose    …and go on to open + pre-fill the new-comment composer
     ?models=1        open the ⚙ agents popover
+    ?models=pending  …and ask codex to bill a key nobody has saved: the billing
+                     switch held mid-flight, waiting on the companion
+                     (screenshot state)
     ?export=1        open the export chooser on the Obsidian crystal (screenshot state)
     ?nobridge=1      …with the bridge not started: the sleeping state
     ?noagents=1      …with the companion started --no-agents ("agents are off")
@@ -539,6 +542,7 @@ const snapshots = [];       // every /snapshot body, for the phone-reading check
 const orphanPosts = [];     // every /orphan body
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
+const openOptionsCalls = []; // …and every {t:'open-options'}, with the agent it named
 
 // ---- the page library behind GET /index ---------------------------------
 // Three other pages plus this one, stored deliberately out of order so the
@@ -1060,6 +1064,17 @@ window.chrome = {
             persist();
             log('open-page: ' + msg.url);
             return { ok: true, created: true, tabId: 99 };
+          }
+          // stands in for background.js's openOptions(): there is no options
+          // page here, so record the ask and arm the same one-shot focus hint
+          // the real worker writes — that hint is the contract options.js reads
+          case 'open-options': {
+            const want = msg.agent === 'claude' || msg.agent === 'codex' ? msg.agent : '';
+            openOptionsCalls.push(want || null);
+            if (want) store['bfp:focus-key'] = want; else delete store['bfp:focus-key'];
+            persist();
+            log('open-options' + (want ? ': ' + want : ''));
+            return { ok: true, focus: want };
           }
           case 'reconnect': setTimeout(() => toContent({ t: 'conn', connected: true }), 300); return { ok: true };
           default: return { ok: false, error: 'unknown ' + (msg && msg.t) };
@@ -2379,45 +2394,126 @@ async function selftest() {
               status: MODELS.status, effort: MODELS.effort });
   check('waking up re-enables them', !effSel('claude').disabled);
 
-  // ---- which auth each agent bills ---------------------------------------
-  const authSel = a => S.querySelector('.popover.models select[data-auth="' + a + '"]');
-  const authRow = a => { const el = authSel(a); return el && el.closest('.pop-auth'); };
-  check('each agent says what it bills', !!authSel('claude') && !!authSel('codex'));
+  // ---- which auth each agent bills: a two-position switch ----------------
+  // The companion stores three modes; the drawer shows the two a reader can be
+  // billed for, because `auto` is only ever one of them in disguise.
+  const billSeg = a => S.querySelector('.pop-agentrow[data-agent="' + a + '"] .pop-bill');
+  const bbtn = (a, pos) =>
+    S.querySelector('.pop-agentrow[data-agent="' + a + '"] .bseg[data-bill="' + pos + '"]');
+  const billRow = a => { const s = billSeg(a); return s && s.closest('.pop-auth'); };
+  const billOn = a => {
+    const on = billSeg(a) && billSeg(a).querySelector('.bseg.on');
+    return on ? on.getAttribute('data-bill') : '';
+  };
+  const modelsSays = extra => d.onEvent(Object.assign(
+    { type: 'models', bridge: 'running', options: MODELS.options,
+      status: MODELS.status, effort: MODELS.effort, keys: MODELS.keys }, extra));
+
+  check('billing is a switch, not a menu', !!bbtn('claude', 'subscription') && !!bbtn('claude', 'key'));
+  check('…with no third position for “auto”, which is not a thing you can be billed for',
+    billSeg('claude').querySelectorAll('.bseg').length === 2 &&
+    !S.querySelector('.popover.models select[data-auth]'));
+  check('…reading “subscription · API key”',
+    billSeg('claude').textContent.replace(/\s+/g, '') === 'subscription·APIkey');
   check('…labelled “billing”',
-    /billing/.test(authRow('claude').querySelector('.pop-sub').textContent));
-  check('…offering the three ways to pay',
-    [].map.call(authSel('claude').options, o => o.value).join(',') === 'auto,subscription,key');
-  check('…starting on auto, which is what Claude Code itself does',
-    authSel('claude').value === 'auto');
-  check('a saved key is not a mode — the picker still says auto',
-    MODELS.keys.claude === 'set' && authSel('claude').value === 'auto');
+    /billing/.test(billRow('claude').querySelector('.pop-sub').textContent));
+  check('…at the drawer’s 12px floor',
+    getComputedStyle(bbtn('claude', 'subscription')).fontSize === '12px');
+  check('…and it is the companion that says where it sits: claude has a key, so auto reads as the key',
+    MODELS.keys.claude === 'set' && billOn('claude') === 'key');
+  check('…while codex, which has none, reads as the subscription',
+    MODELS.keys.codex === 'unset' && billOn('codex') === 'subscription');
+  check('…and only codex carries the ChatGPT caveat, because only codex has it',
+    !/ChatGPT/.test(billSeg('claude').title));
 
   const kBefore = keyModePosts.length;
-  authSel('claude').value = 'subscription';
-  authSel('claude').dispatchEvent(new Event('change', { bubbles: true }));
+  bbtn('claude', 'subscription').click();
+  check('flipping it moves at once, like every other switch in here',
+    billOn('claude') === 'subscription');
   await sleep(40);
-  check('choosing one POSTs /key-mode with the agent and the mode',
+  check('…and POSTs /key-mode with the agent and the EXPLICIT mode, never “auto”',
     keyModePosts.length === kBefore + 1 &&
     keyModePosts[kBefore].agent === 'claude' && keyModePosts[kBefore].mode === 'subscription');
-  check('…and reports back inline, like a model switch',
+  check('…reporting back inline, like a model switch',
     /claude billing → subscription/.test(S.querySelector('.pop-hint').textContent));
-  check('…leaving the picker where it was put', authSel('claude').value === 'subscription');
 
-  // asking for a key you have not saved is the one silently-nothing case
-  authSel('codex').value = 'key';
-  authSel('codex').dispatchEvent(new Event('change', { bubbles: true }));
+  // asking for a key you have not saved: the one setting that could not work
+  const kBefore2 = keyModePosts.length;
+  const optBefore = openOptionsCalls.length;
+  bbtn('codex', 'key').click();
   await sleep(40);
-  check('asking for a key nobody saved is flagged rather than left to fail quietly',
-    authRow('codex').classList.contains('warn') && /no codex key saved/.test(authSel('codex').title));
-  check('…while an agent that has one is not flagged',
-    !authRow('claude').classList.contains('warn'));
+  check('asking for a key nobody saved is never sent as a mode',
+    keyModePosts.length === kBefore2);
+  check('…and the switch does not settle into a position it cannot hold',
+    billOn('codex') === '' && bbtn('codex', 'key').classList.contains('pending') &&
+    bbtn('codex', 'key').getAttribute('aria-pressed') === 'mixed');
+  check('…it says why, in one line',
+    /no codex key saved — opening settings/.test(S.querySelector('.pop-hint').textContent));
+  check('…and opens the extension’s own page, at that agent’s field',
+    openOptionsCalls.length === optBefore + 1 && openOptionsCalls[optBefore] === 'codex');
+  check('…arming the one-shot hint options.js reads', store['bfp:focus-key'] === 'codex');
+  check('no key is ever typed in the drawer: there is no field to type one in',
+    !S.querySelector('.popover.models input'));
+
+  modelsSays();
+  check('a companion that still says “no key” puts the switch back where it was',
+    billOn('codex') === 'subscription' && !bbtn('codex', 'key').classList.contains('pending'));
+  check('…and says so rather than leaving the reader to notice',
+    /no codex key saved — codex stays on the subscription/.test(S.querySelector('.pop-hint').textContent));
+
+  // the same flip, this time with somebody saving the key on the options page
+  bbtn('codex', 'key').click();
+  await sleep(20);
+  check('…the switch waits again', bbtn('codex', 'key').classList.contains('pending'));
+  MODELS.keys = { ...MODELS.keys, codex: 'set' };
+  modelsSays();
+  check('a key that really was saved settles it into “API key” on its own',
+    billOn('codex') === 'key' && !bbtn('codex', 'key').classList.contains('pending'));
+  check('…with no mode of its own POSTed — the key is what changed, not the setting',
+    keyModePosts.length === kBefore2);
+  check('…and codex’s honest caveat now on the switch',
+    /codex uses a key only when it is not logged in with ChatGPT/.test(billSeg('codex').title));
+
+  // a mode the companion still calls "key" after the key went away
+  MODELS.keys = { claude: 'set', codex: 'unset', modes: { claude: 'subscription', codex: 'key' } };
+  modelsSays();
+  check('a stored “key” with no key left is flagged rather than left to fail quietly',
+    billOn('codex') === 'key' && billRow('codex').classList.contains('warn') &&
+    /no codex key saved/.test(billSeg('codex').title));
+  check('…while an agent whose setting is honest is not flagged',
+    !billRow('claude').classList.contains('warn'));
+
+  // coming back from the options page is the moment a key may have appeared,
+  // and saving one raises no event of its own — so a waiting switch asks again
+  MODELS.keys = { claude: 'set', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } };
+  modelsSays();
+  bbtn('codex', 'key').click();
+  await sleep(20);
+  MODELS.keys = { ...MODELS.keys, codex: 'set' };
+  window.dispatchEvent(new Event('focus'));
+  check('a switch left waiting refetches when the window comes back, and settles on the answer',
+    !!await until(() => billOn('codex') === 'key' || null));
+  MODELS.keys = { claude: 'set', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } };
+  modelsSays();
+
+  // the popover's own way to the page where keys are actually typed
+  const keysLink = S.querySelector('.popover.models [data-act="keys"]');
+  check('the popover offers a quiet way to manage the keys themselves',
+    !!keysLink && /API keys/.test(keysLink.textContent));
+  check('…at 12px, like everything else in here',
+    getComputedStyle(keysLink).fontSize === '12px');
+  const optBefore2 = openOptionsCalls.length;
+  keysLink.click();
+  await sleep(20);
+  check('…and it opens the same options page, naming no field in particular',
+    openOptionsCalls.length === optBefore2 + 1 && openOptionsCalls[optBefore2] === null &&
+    store['bfp:focus-key'] === undefined);
 
   d.onEvent({ type: 'models', bridge: 'stopped', current: null, options: null,
               status: null, effort: null, keys: MODELS.keys });
   check('billing survives a sleeping bridge — it is the companion’s setting, not the bridge’s',
-    !authRow('claude').hidden && !authSel('claude').disabled);
-  d.onEvent({ type: 'models', bridge: 'running', options: MODELS.options,
-              status: MODELS.status, effort: MODELS.effort, keys: MODELS.keys });
+    !billRow('claude').hidden && !bbtn('claude', 'subscription').disabled);
+  modelsSays();
 
   S.querySelector('.popover.models').dispatchEvent(
     new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -3094,7 +3190,14 @@ window.__bfp.activate(false).then(() => {
         log('long: opened by hand — the fold control is on screen');
       }, 300);
     }
-    if (Q.get('models') === '1') setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
+    if (Q.get('models')) setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);
+    // the one state the switch cannot reach on its own: a key asked for and
+    // not yet answered for. Nothing here ever broadcasts, so it stays put.
+    if (Q.get('models') === 'pending') setTimeout(() => {
+      const b = d.shadow.querySelector('.bseg[data-agent="codex"][data-bill="key"]');
+      if (b) b.click();
+      log('billing: a key asked for that nobody has saved (screenshot state)');
+    }, 500);
     // the export chooser, open (screenshot state)
     if (Q.get('export') === '1') setTimeout(() => d.shadow.querySelector('[data-act="export"]').click(), 200);
     if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);

@@ -244,20 +244,47 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .pop-verbrow { display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin-top: 8px }
 .pop-verblabel { font: 12px/1.4 var(--sans); color: var(--muted) }
-.pop-verb {
+.pop-verb, .pop-bill {
   display: inline-flex; align-items: center; gap: 2px; padding: 2px;
   background: var(--bg); border: 1px solid var(--card-line); border-radius: 999px;
 }
-.pop-verb .vsep { font: 12px/1 var(--sans); color: var(--muted); opacity: .55 }
-.pop-verb .vseg {
+.pop-verb .vsep, .pop-bill .vsep { font: 12px/1 var(--sans); color: var(--muted); opacity: .55 }
+.pop-verb .vseg, .pop-bill .bseg {
   border: 0; background: transparent; color: var(--muted);
   font: 12px/1.2 var(--sans); padding: 4px 10px; min-height: 24px; border-radius: 999px;
 }
-.pop-verb .vseg:hover { color: var(--accent); border-color: transparent }
-.pop-verb .vseg.on {
+.pop-verb .vseg:hover, .pop-bill .bseg:hover { color: var(--accent); border-color: transparent }
+.pop-verb .vseg.on, .pop-bill .bseg.on {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent); font-weight: 700;
 }
+
+/* billing: a row of its own across the agent's grid rather than a third thing
+   in the picker column — two whole words and a switch do not fit beside a
+   64px name, and this is the one control in here that is about money */
+.pop-row.pop-auth { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; grid-column: 1 / -1; margin-top: 1px }
+.pop-bill { flex: none; padding: 1px }
+.pop-bill .bseg { padding: 4px 9px; white-space: nowrap }
+/* Asked for a key, waiting to hear whether there is one. Everything the
+   chosen position is, this is not: dashed rather than solid, hollow rather
+   than filled, italic rather than bold. A switch that has not settled must not
+   be mistakable for one that has — at 12px a mere outline is not enough. */
+.pop-bill .bseg.pending {
+  color: var(--accent); font-style: italic; font-weight: 400; background: transparent;
+  outline: 1px dashed var(--accent); outline-offset: -2px;
+}
+.pop-auth.warn .pop-bill { border-color: var(--bad) }
+
+/* the only route to the extension's own settings, which is the only place a
+   key is ever typed — quiet, because almost nobody needs it twice */
+.pop-keysrow { display: flex; justify-content: flex-end; margin-top: 6px }
+.pop-keyslink {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font: 12px/1.4 var(--sans); padding: 2px 0; min-height: 0;
+  text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.pop-keyslink:hover { color: var(--accent) }
 
 .pop-hint { margin-top: 9px; font: 12px/1.4 var(--sans); color: var(--muted) }
 .pop-hint.err { color: var(--bad) }

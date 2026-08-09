@@ -63,10 +63,19 @@
 //   onJump(threadId)                    quote clicked: scroll page to highlight
 //   onFocus(threadId|null)              card focused/blurred: tint the highlight
 //   onModels()                          → {ok, current, options, status, bridge,
-//                                            effort, verbosity}          (GET /models)
+//                                            effort, verbosity, keys}    (GET /models)
+//                                         keys: {claude:'set'|'unset', codex:…,
+//                                         modes:{…}} — status, never key material
 //   onSetModel(agent, model)            → {ok, queued}                    (POST /model)
 //   onSetEffort(agent, level)           → {ok, queued} | {ok:false,error} (POST /effort)
 //   onSetKeyMode(agent, mode)           → {ok, applies} | {ok:false,error}  (POST /key-mode)
+//   onOpenOptions(agent|null)           → {ok}  open the extension's OWN options
+//                                         page, optionally asking it to focus one
+//                                         agent's key field. The only key
+//                                         affordance the drawer has: a key is
+//                                         never typed in here (see SPEC.md — this
+//                                         panel renders inside the page you are
+//                                         reading, and its DOM is that page's)
 //   onSetVerbosity(level)               → {ok, queued} | {ok:false,error} (POST /verbosity)
 //                                         level: 'short'|'long'
 //   onRelay(agent)                      → {ok, queued} | {ok:false,error} (POST /relay)
@@ -799,7 +808,12 @@
       models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false,
                 effort: null, verbosity: '',
                 // {claude:'set'|'unset', codex:…, modes:{…}} — status, never keys
-                keys: null },
+                keys: null,
+                // the agent whose billing switch has been flipped to "API key"
+                // with no key saved: held mid-flight until the companion says
+                // whether one turned up. Never a mode — the drawer does not get
+                // to invent one.
+                keyPending: null },
       modelsOpen: false,
       relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
@@ -1707,24 +1721,28 @@
     const effortCur = a => (D.models.effort && D.models.effort.current && D.models.effort.current[a]) || '';
     const effortList = a => (D.models.effort && D.models.effort.options && D.models.effort.options[a]) || null;
     // Which auth an agent will run on. Unlike model and effort this is the
-    // COMPANION's setting, not the bridge's, so its options never go null and
-    // its picker never greys out with a sleeping agent — the same reasoning as
-    // verbosity below. 'auto' mimics Claude Code: a saved key is used, and
-    // without one you are on your subscription.
-    const AUTH_MODES = ['auto', 'subscription', 'key'];
-    // never '' — the three modes are always known, so this picker has no
-    // "the bridge has not said yet" state to render. 'auto' is the default the
-    // companion applies when it has been told nothing, so it is the honest
-    // thing to show before the first /models lands (and the row is hidden
-    // until then anyway).
+    // COMPANION's setting, not the bridge's, so it never goes null and never
+    // greys out with a sleeping agent — the same reasoning as verbosity below.
+    //
+    // The companion stores THREE modes: 'auto' (a saved key is used, else the
+    // subscription — Claude Code's own rule), 'subscription' and 'key'. The
+    // drawer shows TWO, because 'auto' is not a thing a reader can be billed
+    // for: it is whichever of the other two the saved keys resolve it to, and
+    // that resolution is the only answer worth putting on screen. Moving the
+    // switch stores the explicit mode; nothing here ever writes 'auto' back.
+    const keyStatus = a => (D.models.keys && D.models.keys[a]) || 'unset';
     const authCur = a => (D.models.keys && D.models.keys.modes && D.models.keys.modes[a]) || 'auto';
-    const authList = () => AUTH_MODES.slice();
+    const BILL_POS = ['subscription', 'key'];
+    const BILL_LABEL = { subscription: 'subscription', key: 'API key' };
+    function effAuth(agent) {
+      const mode = authCur(agent);
+      return mode === 'auto' ? (keyStatus(agent) === 'set' ? 'key' : 'subscription') : mode;
+    }
     // one entry per kind of picker, so a third kind costs a row here and
     // nothing anywhere else
     const PICKERS = {
       model: { cur: modelCur, list: modelList, attr: 'data-agent', row: '.pop-modelrow' },
       effort: { cur: effortCur, list: effortList, attr: 'data-effort', row: '.pop-effort' },
-      auth: { cur: authCur, list: authList, attr: 'data-auth', row: '.pop-auth' },
     };
     const pickerCur = (agent, kind) => PICKERS[kind].cur(agent);
     const pickerList = (agent, kind) => PICKERS[kind].list(agent);
@@ -1770,6 +1788,48 @@
     const VERB_TIP = 'how the bots talk: short = 2-3 crisp sentences; long = at most 4-5';
     const VERB_LEVELS = ['short', 'long'];
 
+    // The popover's switch idiom, in one place: two positions, a middle dot,
+    // one of them on. Two states are a switch and not a menu — and the reply
+    // length and each agent's billing are both exactly two states, so they had
+    // better look like the same kind of control rather than two inventions.
+    //   o = {cls, seg, act, attr, positions:[{value,label}], label, title, attrs}
+    function segSwitch(o) {
+      const seg = mk('span', o.cls);
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', o.label);
+      if (o.title) seg.title = o.title;
+      o.positions.forEach((p, i) => {
+        if (i) {
+          const sep = mk('span', 'vsep');
+          sep.setAttribute('aria-hidden', 'true');
+          sep.textContent = '·';
+          seg.appendChild(sep);
+        }
+        const b = mk('button', o.seg);
+        b.type = 'button';
+        b.setAttribute('data-act', o.act);
+        b.setAttribute(o.attr, p.value);
+        for (const k in (o.attrs || {})) b.setAttribute(k, o.attrs[k]);
+        if (o.title) b.title = o.title;
+        b.textContent = p.label;
+        seg.appendChild(b);
+      });
+      return seg;
+    }
+
+    // Which auth this agent bills, as a switch the reader can act on. The
+    // labels are the two answers; there is no third position for 'auto',
+    // because "whatever the keys resolve to" is not something anyone chooses.
+    const BILL_TIP = 'what this agent bills: your CLI login, or the API key saved in the extension’s settings';
+    function billSwitch(agent) {
+      return segSwitch({
+        cls: 'pop-bill', seg: 'bseg', act: 'bill', attr: 'data-bill',
+        label: agent + ' billing', title: BILL_TIP,
+        attrs: { 'data-agent': agent },
+        positions: BILL_POS.map(v => ({ value: v, label: BILL_LABEL[v] })),
+      });
+    }
+
     // The one preference in here that is not about an agent: how long an answer
     // in a 420px column is allowed to be. Two states, so it is a switch and not
     // a menu — segmented, 12px, and it says what each end means on hover.
@@ -1777,27 +1837,28 @@
       const row = mk('div', 'pop-verbrow');
       const label = mk('span', 'pop-verblabel');
       label.textContent = 'replies';
-      const seg = mk('span', 'pop-verb');
-      seg.setAttribute('role', 'group');
-      seg.setAttribute('aria-label', 'reply length');
-      seg.title = VERB_TIP;
-      VERB_LEVELS.forEach((level, i) => {
-        if (i) {
-          const sep = mk('span', 'vsep');
-          sep.setAttribute('aria-hidden', 'true');
-          sep.textContent = '·';
-          seg.appendChild(sep);
-        }
-        const b = mk('button', 'vseg');
-        b.type = 'button';
-        b.setAttribute('data-act', 'verb');
-        b.setAttribute('data-level', level);
-        b.title = VERB_TIP;
-        b.textContent = level;
-        seg.appendChild(b);
-      });
       row.appendChild(label);
-      row.appendChild(seg);
+      row.appendChild(segSwitch({
+        cls: 'pop-verb', seg: 'vseg', act: 'verb', attr: 'data-level',
+        label: 'reply length', title: VERB_TIP,
+        positions: VERB_LEVELS.map(v => ({ value: v, label: v })),
+      }));
+      return row;
+    }
+
+    // A quiet way to the only place a key is ever typed. The drawer renders
+    // inside whatever page you are reading — its DOM is that page's DOM — so
+    // the extension's own options page takes the key and this is a link to it,
+    // never a field.
+    function keysRow() {
+      const row = mk('div', 'pop-keysrow');
+      const b = mk('button', 'pop-keyslink');
+      b.type = 'button';
+      b.setAttribute('data-act', 'keys');
+      b.title = 'add or remove the keys these switches bill to — opens the extension’s settings, '
+        + 'the only place a key is ever typed';
+      b.textContent = 'API keys…';
+      row.appendChild(b);
       return row;
     }
 
@@ -1839,13 +1900,15 @@
         eff.appendChild(buildSelect(agent, 'effort'));
         line.appendChild(eff);
 
-        // and what it bills: the subscription it is logged into, or a key
-        const auth = mk('label', 'pop-row pop-auth');
+        // and what it bills: the subscription it is logged into, or a key.
+        // A <div> and not a <label> like the rows above it — a label forwards
+        // its clicks to one control, and this one has two.
+        const auth = mk('div', 'pop-row pop-auth');
         auth.hidden = true;                    // until the companion reports keys
         const authName = mk('span', 'pop-sub');
         authName.textContent = 'billing';
         auth.appendChild(authName);
-        auth.appendChild(buildSelect(agent, 'auth'));
+        auth.appendChild(billSwitch(agent));
         line.appendChild(auth);
         group.appendChild(line);
 
@@ -1875,6 +1938,7 @@
       foot.appendChild(relayButton('both', 'relay both', 'both agents — ' + RELAY_TIP));
       pop.appendChild(foot);
       pop.appendChild(verbosityRow());
+      pop.appendChild(keysRow());
 
       pop.appendChild(mk('div', 'pop-hint'));
       syncModels();
@@ -2009,6 +2073,8 @@
         D.models.effort = r.effort || null;
         D.models.verbosity = r.verbosity || '';
         D.models.bridge = r.bridge || '';
+        // …and one too old to have keys at all leaves the billing row out
+        ingestKeys(r.keys);
         D.models.err = false;
       } else {
         D.models.options = null;
@@ -2018,6 +2084,17 @@
         D.models.err = true;
       }
       if (D.modelsOpen) paintModels();
+    }
+
+    // The same GET, without the repaint: used when the only thing that can
+    // have moved is the companion's own answer about the keys.
+    async function refreshModels() {
+      let r;
+      try { r = await cb('onModels')(); }
+      catch { return; }
+      if (!r || r.ok === false) return;
+      ingestKeys(r.keys);
+      if (D.modelsOpen) syncModels();
     }
 
     function closeModels() {
@@ -2068,51 +2145,98 @@
       syncModels();
     }
 
-    // Which auth an agent bills. A companion setting, not a bridge one, so it
+    // The switch was moved. A companion setting, not a bridge one, so it
     // applies without a control turn — the companion restarts an idle bridge
     // itself and says so when a running turn means the change has to wait.
-    async function pickAuth(agent, mode) {
-      D.models.note = agent + ' billing → ' + mode + '…';
+    //
+    // "API key" with no key saved is not a setting that could work, so it is
+    // not sent: the switch is held mid-flight and the options page — the only
+    // place a key is ever typed — is opened at that agent's field. What settles
+    // it is the companion's own answer about the keys, never this click.
+    async function doBill(agent, pos) {
+      if (!agent || BILL_POS.indexOf(pos) === -1) return;
+      if (pos === 'key' && keyStatus(agent) !== 'set') {
+        D.models.keyPending = agent;
+        D.models.note = 'no ' + agent + ' key saved — opening settings…';
+        D.models.err = false;
+        syncModels();
+        cb('onOpenOptions')(agent);
+        return;
+      }
+      if (effAuth(agent) === pos && !D.models.keyPending) return;
+      D.models.keyPending = null;
+      const k = D.models.keys || (D.models.keys = {});
+      const prev = (k.modes && k.modes[agent]) || 'auto';
+      // optimistic, like every other switch in here: it has to move under the
+      // finger, and it goes back if the companion says no
+      k.modes = Object.assign({}, k.modes, { [agent]: pos });
+      D.models.note = agent + ' billing → ' + BILL_LABEL[pos] + '…';
       D.models.err = false;
-      paintModelHint();
+      syncModels();
       let r;
-      try { r = await cb('onSetKeyMode')(agent, mode); }
+      try { r = await cb('onSetKeyMode')(agent, pos); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
+        k.modes = Object.assign({}, k.modes, { [agent]: prev });
         D.models.note = (r && r.error) || 'could not change billing';
         D.models.err = true;
       } else {
-        const k = D.models.keys || (D.models.keys = { modes: {} });
-        k.modes = Object.assign({}, k.modes, { [agent]: mode });
-        D.models.note = agent + ' billing → ' + mode
+        D.models.note = agent + ' billing → ' + BILL_LABEL[pos]
           + (r.applies === 'next-restart' ? ' (from the next turn)' : '');
         D.models.err = false;
       }
       syncModels();
     }
 
-    // A picker whose options never change, so it only ever needs its value
-    // moved — and a note when the mode says "key" but none is saved, which is
-    // the one combination that silently does nothing.
+    // Everything the companion says about keys arrives here, and nowhere else
+    // writes D.models.keys except the optimistic half of doBill. A pending
+    // switch is settled by this and only by this: either the key turned up (and
+    // `auto` now resolves to it, so the switch lands on "API key" by itself) or
+    // it did not, and the switch goes back where it was. No key, no key mode.
+    function ingestKeys(k) {
+      if (k === undefined) return;     // a companion too old to mention them
+      D.models.keys = k || null;
+      const pending = D.models.keyPending;
+      if (!pending) return;
+      D.models.keyPending = null;
+      if (!(k && k[pending] === 'set')) {
+        D.models.note = 'no ' + pending + ' key saved — ' + pending + ' stays on the subscription';
+        D.models.err = false;
+      }
+    }
+
+    // A switch with two positions and a third thing that is not a position:
+    // "asked for a key, waiting to hear whether there is one".
     function syncAuth(group, agent) {
-      const sel = group.querySelector('select[data-auth]');
+      const seg = group.querySelector('.pop-bill');
       const row = group.querySelector('.pop-auth');
-      if (!sel || !row) return;
+      if (!seg || !row) return;
       // a companion too old to report its key status has nothing to switch
       row.hidden = !(D.models.keys && D.models.keys.modes);
       if (row.hidden) return;
-      const cur = pickerCur(agent, 'auth');
-      if (cur && sel.value !== cur) sel.value = cur;
-      const st = D.models.keys || {};
-      const missing = cur === 'key' && st[agent] !== 'set';
+      const pending = D.models.keyPending === agent;
+      const cur = pending ? '' : effAuth(agent);
+      // the companion still says "key" but there is no key left to bill: the
+      // CLIs would quietly fall back, so the row says so instead
+      const missing = !pending && authCur(agent) === 'key' && keyStatus(agent) !== 'set';
       // codex is the honest exception: its stored ChatGPT login beats a key in
       // the environment, so a key there is a fallback, not an override
-      const codexCaveat = agent === 'codex' && cur !== 'subscription' && st[agent] === 'set'
+      const codexCaveat = agent === 'codex' && cur === 'key' && keyStatus(agent) === 'set'
         ? 'codex uses a key only when it is not logged in with ChatGPT'
         : '';
-      sel.title = missing
-        ? 'no ' + agent + ' key saved — add one in the extension options, or this stays on the subscription'
-        : codexCaveat;
+      const tip = missing
+        ? 'no ' + agent + ' key saved — add one in the extension’s settings, or this stays on the subscription'
+        : codexCaveat || BILL_TIP;
+      seg.title = tip;
+      seg.querySelectorAll('.bseg').forEach(b => {
+        const pos = b.getAttribute('data-bill');
+        const on = pos === cur;
+        const mid = pending && pos === 'key';
+        b.classList.toggle('on', on);
+        b.classList.toggle('pending', mid);
+        b.setAttribute('aria-pressed', mid ? 'mixed' : on ? 'true' : 'false');
+        b.title = tip;
+      });
       row.classList.toggle('warn', !!missing);
     }
 
@@ -2182,12 +2306,21 @@
         if (!sel || sel.tagName !== 'SELECT' || sel.disabled) return;
         if (sel.value === NOPICK) return;      // the placeholder is not a choice
         // two selects per agent, told apart by which attribute carries the name
+        // (billing is a switch, not a select — it goes through the click path)
         const eff = sel.getAttribute('data-effort');
         if (eff) { pickEffort(eff, sel.value); return; }
-        const auth = sel.getAttribute('data-auth');
-        if (auth) { pickAuth(auth, sel.value); return; }
         pickModel(sel.getAttribute('data-agent'), sel.value);
       });
+
+      // Coming back from the options page is the moment a key may have been
+      // saved, and nothing about saving one produces an event of its own. So a
+      // billing switch left waiting asks again the moment this window is
+      // focused — the answer that settles it is always the companion's.
+      if (typeof window !== 'undefined') {
+        window.addEventListener('focus', () => {
+          if (D.modelsOpen && D.models.keyPending) refreshModels();
+        });
+      }
 
       // a checkbox in a bot's checklist. `change` and not `click`, so keyboard
       // toggles count too — and the box has already moved by the time we get
@@ -2220,6 +2353,8 @@
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
         if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
         if (act === 'verb') { setVerbosity(btn.dataset.level); return; }
+        if (act === 'bill') { doBill(btn.dataset.agent, btn.dataset.bill); return; }
+        if (act === 'keys') { cb('onOpenOptions')(null); return; }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
@@ -2907,6 +3042,10 @@
         if (ev.effort !== undefined) D.models.effort = ev.effort;
         if (ev.verbosity) D.models.verbosity = ev.verbosity;
         if (ev.bridge) D.models.bridge = ev.bridge;
+        // which auth each agent bills, and whether there is a key to bill —
+        // the companion's own setting, and the only thing that can settle a
+        // billing switch waiting on a key
+        ingestKeys(ev.keys);
         if (D.modelsOpen) syncModels();
         return;
       }

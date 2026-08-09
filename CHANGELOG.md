@@ -2,6 +2,16 @@
 
 ## 2026-08-09
 
+- **Discuss: billing is a switch now, and it tells the truth.** Each agent's
+  gear-menu control is two positions — subscription or API key — showing what
+  your saved keys actually resolve to rather than the three-way mode
+  underneath. Ask for a key you have not saved and it does not pretend:
+  the switch is held mid-flight and the extension's settings open at that
+  key's field, which is still the only place a key is ever typed (the drawer
+  runs inside the pages you read). Save one and the switch settles itself;
+  don't, and it goes back. Settings now lead with the keys, and the companion
+  address moved below them as the optional thing it is.
+
 - **Discuss: bring your own API key.** Discuss has always run on whatever
   the `claude` and `codex` CLIs are logged into, and that is still the
   default. If you would rather bill a key, the extension's options page

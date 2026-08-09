@@ -651,10 +651,27 @@ Contract deltas agreed during live testing — authoritative over the sections a
   `applies:'now'|'next-restart'` — an environment is fixed at spawn, so an idle
   bridge is stopped (respawning on the next mention) and a busy one is left to
   finish. `GET /models` and the `models` broadcast carry `keys` (status +
-  modes) so the gear popover can render a per-agent billing picker, which —
+  modes) so the gear popover can render a per-agent billing control, which —
   like verbosity, and unlike model/effort — survives a sleeping bridge because
   it is the companion's setting. Keys are never logged, never echoed into an
   error, and never written to a page record.
+  **Entry stays on the options page; the drawer only ever links to it.** The
+  drawer is injected into whatever page the reader is on — its DOM is that
+  page's DOM — so a key is typed on the extension's own options page and
+  nowhere else, and both the billing control and the popover's quiet "API keys…"
+  link do the same thing about it: send `{t:'open-options', agent?}` to
+  background.js, which arms a one-shot `bfp:focus-key` hint in
+  `chrome.storage.local` and calls `chrome.runtime.openOptionsPage()`
+  (options.js focuses that field and deletes the hint).
+  **The control is a two-position switch: subscription ↔ API key.** The stored
+  mode stays the tri-state above; the switch shows what it RESOLVES to (`auto`
+  = the key when one is saved, else the subscription), and moving it POSTs the
+  explicit mode, never `auto`. Asking for "API key" with no key saved is not a
+  setting that could work, so it is not sent: the switch is held visibly
+  mid-flight, the options page opens at that agent's field, and only the
+  companion's next `keys` — a `models` broadcast, or the refetch the drawer
+  fires when its window is focused again — settles it, into "API key" if a key
+  really was saved and back to "subscription" if not. No key, no key mode.
   **The CLIs disagree and the UI says so.** claude: a key set in the
   environment beats the subscription (documented; no prompt in the `-p` mode
   the bridge uses). codex: the stored ChatGPT login beats the key, which is

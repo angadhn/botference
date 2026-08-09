@@ -2,9 +2,15 @@
 <meta charset="utf-8">
 <title>Botference Discuss — settings</title>
 <!--
-  The extension's only settings page (manifest options_ui). Three fields, one
-  test button: WHERE the companion is, the password that lets this browser in,
-  and the handle every message from here is signed with.
+  The extension's only settings page (manifest options_ui), and the only place
+  an API key is ever typed: the drawer renders inside whatever page you are
+  reading, so its DOM is that page's DOM and no secret goes near it. The drawer
+  links here instead, and may leave a `bfp:focus-key` hint asking for one field
+  by name (options.js reads it once and forgets it).
+
+  Keys come FIRST because they are what most people came for. The companion
+  fields below — where it is, the password, the name — are for the rarer case
+  of a companion on another machine; on your own Mac they stay empty forever.
 
   Palette and type are the drawer's, so this does not look like a different
   product: 12px floor everywhere, px only, both themes via
@@ -53,6 +59,12 @@
   .row.tight { margin-top: 0 }
   .row.tight input { flex: 1 1 200px }
   h2.sub { font-size: 15px; font-weight: 600; margin: 30px 0 4px }
+  h2.sub.first { margin-top: 4px }
+  h2.sub .opt { font-weight: 400; font-size: 13px; color: var(--muted) }
+  .lede.tight { margin-bottom: 12px }
+  /* the drawer asked for this field by name — say so without shouting */
+  .field.called label { color: var(--accent) }
+  .field.called input { border-color: var(--accent) }
   .badge {
     font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em;
     padding: 2px 6px; border-radius: 999px; border: 1px solid var(--line);
@@ -81,43 +93,13 @@
 
 <div class="wrap">
   <h1>Botference Discuss</h1>
-  <p class="lede">Which companion this browser talks to, and who it says you are.</p>
+  <p class="lede">What the bots bill to, and — only if you need it — where the companion lives.</p>
 
-  <div class="card">
-    <div class="field">
-      <label for="base">Companion URL</label>
-      <input id="base" type="text" spellcheck="false" autocapitalize="off"
-             autocomplete="off" placeholder="http://127.0.0.1:4189">
-      <p class="hint">The local companion is <code>http://127.0.0.1:4189</code> — start it with
-        <code>botference discuss</code>. A hosted one is its https address.</p>
-    </div>
-
-    <div class="field">
-      <label for="password">Password</label>
-      <input id="password" type="password" spellcheck="false" autocomplete="off"
-             placeholder="(empty for a local companion)">
-      <p class="hint">Leave empty for your own machine. A hosted companion's password is sent as
-        a bearer token on every request — never as a cookie.</p>
-    </div>
-
-    <div class="field">
-      <label for="handle">Your name</label>
-      <input id="handle" type="text" spellcheck="false" autocomplete="off"
-             placeholder="e.g. angadh">
-      <p class="hint">Signs every comment you post and picks your colour in the drawer.
-        Only used when a password is set.</p>
-    </div>
-
-    <div class="row">
-      <button id="save" class="primary" type="button">Save</button>
-      <button id="test" type="button">Test connection</button>
-      <span id="status" role="status"></span>
-    </div>
-  </div>
-
-  <h2 class="sub">API keys</h2>
-  <p class="lede">Optional. Discuss runs on whatever the <code>claude</code> and <code>codex</code>
-    CLIs are logged into; a key here makes that agent bill the key instead.</p>
+  <h2 class="sub first">API keys</h2>
+  <p class="lede tight">Optional. Discuss runs on whatever the <code>claude</code> and <code>codex</code>
+    CLIs are logged into; a key here makes that agent bill the key instead. This page is the only
+    place a key is ever typed — the drawer sits inside the pages you read, so nothing secret goes
+    in it.</p>
 
   <div class="card" id="keys-card">
     <div class="field">
@@ -151,8 +133,47 @@
     </div>
     <p class="hint">Keys are kept on the companion's machine in a 0600 file and are never sent
       back to this page — it only ever learns “set” or “unset”. They can only be set from the
-      machine the companion runs on, never over a tunnel. Choose per agent when to use one in
-      the drawer's gear menu; the default uses a key if you have saved one.</p>
+      machine the companion runs on, never over a tunnel. Each agent's billing switch lives in
+      the drawer's ⚙ menu; with a key saved it starts on <em>API key</em>, and without one it
+      cannot leave <em>subscription</em>.</p>
+  </div>
+
+  <h2 class="sub">Remote companion <span class="opt">— optional</span></h2>
+  <p class="lede tight">Only if this browser talks to a companion on <em>another</em> machine.
+    Most people never touch any of this: leave it empty and the extension uses the companion
+    running on this Mac (<code>http://127.0.0.1:4189</code>, started with
+    <code>botference discuss</code>).</p>
+
+  <div class="card">
+    <div class="field">
+      <label for="base">Companion URL</label>
+      <input id="base" type="text" spellcheck="false" autocapitalize="off"
+             autocomplete="off" placeholder="http://127.0.0.1:4189">
+      <p class="hint">Empty means the local companion at <code>http://127.0.0.1:4189</code>.
+        A hosted one is its https address.</p>
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" spellcheck="false" autocomplete="off"
+             placeholder="(empty for a local companion)">
+      <p class="hint">Leave empty for your own machine. A hosted companion's password is sent as
+        a bearer token on every request — never as a cookie.</p>
+    </div>
+
+    <div class="field">
+      <label for="handle">Your name</label>
+      <input id="handle" type="text" spellcheck="false" autocomplete="off"
+             placeholder="e.g. angadh">
+      <p class="hint">Signs every comment you post and picks your colour in the drawer.
+        Only used when a password is set.</p>
+    </div>
+
+    <div class="row">
+      <button id="save" class="primary" type="button">Save</button>
+      <button id="test" type="button">Test connection</button>
+      <span id="status" role="status"></span>
+    </div>
   </div>
 
   <p class="foot">Settings apply immediately — the extension reconnects on save. No page reload needed.</p>
