@@ -1,7 +1,9 @@
 // viewer.js — render the PDF, and get out of the way.
 //
-// This module has exactly three jobs, and deliberately no fourth:
+// This module has exactly four jobs, and deliberately no fifth:
 //
+//   0. decide WHAT DOCUMENT THIS IS, and publish the answer before a single
+//      line of the annotator has been loaded (see BOOT below).
 //   1. put the document on screen, page by page, WITH PDF.js's text layer.
 //      That layer — absolutely positioned <span>s of transparent text over the
 //      canvas — is the whole trick: it is ordinary DOM text, so selection,
@@ -13,10 +15,36 @@
 //   3. say, quietly, when there is nothing to select — a scanned PDF is an
 //      image, and there is no OCR here.
 //
-// It does NOT own the identity, the title-as-record, the snapshot or the
-// anchors: adapters.js's `pdf` adapter reads this page's DOM back out and
-// answers for all four. One direction of knowledge, so there is one place to
-// look when a quote lands on the wrong page.
+// It does NOT own the title-as-record, the snapshot or the anchors:
+// adapters.js's `pdf` adapter reads this page's DOM back out and answers for
+// all three. One direction of knowledge, so there is one place to look when a
+// quote lands on the wrong page.
+//
+// ── BOOT: THE IDENTITY COMES FIRST ─────────────────────────────────────────
+// content.js decides which page it is on ONCE, at parse time, and nothing
+// downstream ever asks again. For a web PDF the answer is sitting in this
+// page's own address (`#raw=https://…`), so the annotator used to be five
+// <script> tags in viewer.html and the order did not matter.
+//
+// A LOCAL pdf has no such answer. `file:///Users/me/Downloads/paper.pdf` is
+// where the file is today, not what it is: move it, rename it, or read it on
+// another Mac and every comment made on it is filed against an address that no
+// longer exists. So a local PDF is identified by its BYTES —
+// `bfp-pdf://sha256/<hex>`, adapters.js — and those bytes have to be fetched
+// and hashed before content.js may parse.
+//
+// Hence one boot path for both:
+//
+//   adapters.js  →  which document is this address showing?
+//   (file: only) →  read the bytes, SHA-256 them, build the pseudo-url
+//   publish      →  window.__BFP_PDF_IDENT
+//   inject       →  katex, anchor, drawer, content — the manifest's chain
+//   render       →  PDF.js, from the bytes we already have
+//
+// And the refusal that goes with it: a local file whose bytes could not be
+// read has NO identity, so the annotator is not loaded at all. Filing comments
+// under this page's chrome-extension:// address would be worse than useless —
+// it moves with the extension id and is nobody's document.
 //
 // ── SCALE ──────────────────────────────────────────────────────────────────
 // One number, `scale`, is the viewport scale AND the CSS custom property
@@ -33,7 +61,7 @@ import {
 const asset = p => new URL('../vendor/pdfjs/' + p, import.meta.url).href;
 GlobalWorkerOptions.workerSrc = asset('build/pdf.worker.min.mjs');
 
-const Adapters = window.BFPAdapters || null;
+let Adapters = null;              // adapters.js, injected first (see boot)
 const $ = id => document.getElementById(id);
 const docEl = $('doc');
 const noticeEl = $('notice');
@@ -42,39 +70,45 @@ const noticeEl = $('notice');
 // adapters.js parses it, not this file: the extension has exactly one rule for
 // "which document is a viewer address showing", and both sides must read the
 // url the same way or the record and the render disagree.
-const SRC = Adapters ? Adapters.pdfViewerSrc(location.href) : null;
+let SRC = null;                   // the document's own address: http(s) or file:
+let LOCAL = false;                // …and file: is the one that needs hashing
+let localBytes = null;            // the bytes, read once, hashed and rendered
 
 function notice(html) {
   noticeEl.innerHTML = html;
   noticeEl.hidden = false;
 }
 
-// The escape hatch, and the reason it needs the worker: navigating straight
-// back to the PDF would be caught by the same redirect that brought us here.
-// The worker parks a one-shot allow rule in front of its own redirect rule,
-// and Chrome's built-in viewer gets the page.
+// The one sentence anybody needs when a local PDF will not open. Written once,
+// shown here and on the options page, and never softened: it names the toggle,
+// where it lives, and what to do to it.
+const FILE_ACCESS_HELP =
+  'Local PDFs need “Allow access to file URLs” — brave://extensions → ' +
+  'Botference Discuss → Details → toggle it on.';
+
+// The escape hatch, and the reason a web PDF needs the worker for it:
+// navigating straight back would be caught by the same redirect that brought
+// us here, so the worker parks a one-shot allow rule in front of its own rule
+// and Chrome's built-in viewer gets the page. A local file is not redirected by
+// anything (declarativeNetRequest cannot touch a file: navigation), so it is
+// simply navigated to.
 async function openOriginal(ev) {
   if (ev) ev.preventDefault();
   if (!SRC) return;
-  try {
-    await new Promise(resolve => {
-      try { chrome.runtime.sendMessage({ t: 'pdf-bypass', url: SRC }, () => resolve()); }
-      catch { resolve(); }
-    });
-  } catch { /* the navigation is still worth attempting */ }
+  if (!LOCAL) {
+    try {
+      await new Promise(resolve => {
+        try { chrome.runtime.sendMessage({ t: 'pdf-bypass', url: SRC }, () => resolve()); }
+        catch { resolve(); }
+      });
+    } catch { /* the navigation is still worth attempting */ }
+  }
   location.href = SRC;
 }
 $('original').addEventListener('click', openOriginal);
 
-if (!SRC) {
-  $('doc-title').textContent = 'Not a PDF address';
-  notice('This viewer needs a <code>?src=</code> pointing at an http(s) PDF. ' +
-         'It is opened for you when you navigate to a PDF on the web.');
-  $('original').hidden = true;
-}
-
 // ---- the title -------------------------------------------------------------
-const fileName = (SRC && Adapters) ? Adapters.pdfNameFromUrl(SRC) : '';
+let fileName = '';
 
 // TWO names, and keeping them apart is the whole of the rename fix.
 //
@@ -102,7 +136,6 @@ function setOwnTitle(t) {
   window.__BFP_PDF_TITLE = ownName;
   paintTitle();
 }
-setOwnTitle('');
 
 // The reader's name for this page, live. A rename made anywhere — this drawer,
 // another tab, the reading room on a phone — broadcasts a `page` event, which
@@ -116,7 +149,6 @@ function watchTitle() {
   } catch (_) { /* fall through and try again */ }
   setTimeout(watchTitle, 300);
 }
-watchTitle();
 
 // The annotator boots from the same DOM this module is still filling in, so it
 // is told whenever there is more of it. Debounced: forty pages landing in a
@@ -349,7 +381,11 @@ async function buildTextLayer(p) {
 async function run() {
   if (!SRC) return;
   const task = getDocument({
-    url: SRC,
+    // A local file has already been read, whole, so that its bytes could be
+    // hashed into an identity: it is handed straight to PDF.js rather than
+    // fetched a second time. A web PDF keeps the url, so PDF.js can range-request
+    // a 300-page paper instead of waiting for all of it.
+    ...(localBytes ? { data: new Uint8Array(localBytes) } : { url: SRC }),
     // the reader's own session: a paper behind a library login is the common
     // case, and the extension has host permissions, so CORS is not in the way
     withCredentials: true,
@@ -416,4 +452,143 @@ function escapeHtml(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-run();
+// ---- boot: identity, annotator, render -------------------------------------
+//
+// The order is the contract (see the note at the top of this file), so it is
+// written here as five plain steps rather than distributed over five <script>
+// tags in the HTML.
+
+// Classic scripts, injected in order. `async = false` is not decoration: a
+// dynamically inserted script defaults to async, and the chain would then run
+// in whatever order the disk answered in — content.js before the drawer it
+// needs.
+function loadScript(rel) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = new URL(rel, import.meta.url).href;
+    s.async = false;
+    s.onload = () => resolve(true);
+    s.onerror = () => reject(new Error('could not load ' + rel));
+    document.head.appendChild(s);
+  });
+}
+async function loadScripts(list) { for (const rel of list) await loadScript(rel); }
+
+// Does this extension have the reader's permission to read files at all? Only
+// an extension PAGE can ask (chrome.extension does not exist in a service
+// worker), so the answer is also written down where the worker can see it: it
+// uses it to decide whether reopening a local PDF in here could possibly work.
+function fileSchemeAccess() {
+  return new Promise(resolve => {
+    try {
+      if (chrome && chrome.extension && chrome.extension.isAllowedFileSchemeAccess) {
+        chrome.extension.isAllowedFileSchemeAccess(a => resolve(!!a));
+        return;
+      }
+    } catch { /* fall through */ }
+    resolve(null);                                   // cannot be asked here
+  });
+}
+function rememberFileAccess(allowed) {
+  if (allowed == null) return;
+  try { chrome.storage.local.set({ 'bfp:file-access': !!allowed }); } catch { /* a hint, not a state */ }
+}
+
+// The bytes of a local file. XMLHttpRequest and not fetch(): Chrome's fetch
+// refuses the file: scheme outright ("URL scheme must be http or https"),
+// while XHR is exactly what the "Allow access to file URLs" toggle governs —
+// which is also why a refusal here is a permissions answer and is reported as
+// one. A file: response carries status 0 on success, so the RESPONSE is what
+// is checked, never the code.
+function readLocalFile(url) {
+  return new Promise(resolve => {
+    let xhr;
+    try { xhr = new XMLHttpRequest(); } catch { resolve({ ok: false }); return; }
+    xhr.open('GET', url);
+    xhr.responseType = 'arraybuffer';
+    xhr.onload = () => {
+      const buf = xhr.response;
+      if (buf && buf.byteLength) resolve({ ok: true, bytes: buf });
+      else resolve({ ok: false, empty: true });
+    };
+    xhr.onerror = () => resolve({ ok: false });
+    try { xhr.send(); } catch { resolve({ ok: false }); }
+  });
+}
+
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Adapters.bytesToHex(new Uint8Array(digest));
+}
+
+// A local PDF that cannot be read is not a failure to hide: say which of the
+// two things it is, offer the file itself as the way out, and stop. Nothing is
+// filed, because there is nothing to file it under.
+function refuseLocal(reason) {
+  $('doc-title').textContent = fileName || 'Could not open';
+  $('doc-meta').textContent = '';
+  notice(reason + ' <a href="#" id="notice-original">Open it in the browser instead</a>.');
+  const a = $('notice-original');
+  if (a) a.addEventListener('click', openOriginal);
+}
+
+async function boot() {
+  // 1. the parser, and nothing else — adapters.js defines globals and acts on
+  //    nothing, so loading it before an identity exists is safe.
+  try { await loadScript('../adapters.js'); } catch { /* reported below */ }
+  Adapters = window.BFPAdapters || null;
+  SRC = Adapters ? Adapters.pdfViewerSrc(location.href) : null;
+  LOCAL = !!(SRC && Adapters.isFileUrl(SRC));
+  // the NAME, not the file name: a title is not "paper.pdf". The file's own
+  // name (extension and all) travels separately, as the record's `file_name`.
+  fileName = SRC && Adapters ? Adapters.pdfNameFromUrl(SRC) : '';
+  setOwnTitle('');
+
+  if (!SRC) {
+    $('doc-title').textContent = 'Not a PDF address';
+    notice('This viewer needs a <code>?src=</code> pointing at a PDF — an http(s) url, ' +
+           'or a <code>file://</code> one on this machine. It is opened for you when you ' +
+           'navigate to a PDF.');
+    $('original').hidden = true;
+    return;
+  }
+
+  // 2. the identity. A web PDF has one already; a local one is its bytes.
+  let ident = SRC;
+  if (LOCAL) {
+    const allowed = await fileSchemeAccess();
+    rememberFileAccess(allowed);
+    if (allowed === false) { refuseLocal(escapeHtml(FILE_ACCESS_HELP)); return; }
+    const got = await readLocalFile(SRC);
+    if (!got.ok) {
+      // The toggle can be on and the file still unreadable (moved, deleted,
+      // renamed while the tab sat open), so both are named rather than guessed
+      // between.
+      refuseLocal(got.empty
+        ? 'This file is empty, or it could not be read.'
+        : 'This file could not be read. If it is still there, ' + escapeHtml(FILE_ACCESS_HELP));
+      return;
+    }
+    localBytes = got.bytes;
+    let hex = '';
+    try { hex = await sha256Hex(localBytes); } catch { hex = ''; }
+    ident = Adapters.pdfHashUrl(hex);
+    if (!ident) { refuseLocal('This file could not be identified (its contents would not hash).'); return; }
+  }
+
+  // 3. publish it, before anything that reads it exists.
+  window.__BFP_PDF_IDENT = ident;
+  // the file's own name, extension and all — the adapter sends it with the
+  // record, and this is here so a reader looking at the page can see it too
+  window.__BFP_PDF_FILE = LOCAL ? Adapters.pdfFileName(SRC) : '';
+
+  // 4. the annotator, in the manifest's own order.
+  try { await loadScripts(['../vendor/katex/katex.min.js', '../anchor.js', '../drawer.js', '../content.js']); }
+  catch (e) { console.warn('[botference] the annotator did not load:', (e && e.message) || e); }
+  watchTitle();
+
+  // 5. …and the document itself.
+  await run();
+}
+
+boot();

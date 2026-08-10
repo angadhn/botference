@@ -75,6 +75,8 @@
   label.check input { width: 16px; height: 16px; accent-color: var(--accent) }
   #pdfstatus, #keystatus { font-size: 12px; color: var(--muted) }
   #pdfstatus.ok { color: var(--good) }
+  #filehint.on { color: var(--good) }
+  #filehint.off { color: var(--bad) }
   #keystatus.ok { color: var(--good) }
   #keystatus.err { color: var(--bad) }
   button {
@@ -141,22 +143,30 @@
       cannot leave <em>subscription</em>.</p>
   </div>
 
-  <h2 class="sub">Web PDFs</h2>
-  <p class="lede tight">A PDF on the web opens in the browser's own viewer, which no extension can
-    reach into — so Discuss brings its own, and web PDFs become pages you can highlight, comment
-    on and export like any other.</p>
+  <h2 class="sub">PDFs</h2>
+  <p class="lede tight">A PDF opens in the browser's own viewer, which no extension can
+    reach into — so Discuss brings its own, and PDFs become pages you can highlight, comment
+    on and export like any other. On the web and on your own disk.</p>
 
   <div class="card">
     <div class="field">
       <label class="check" for="pdf">
         <input id="pdf" type="checkbox" checked>
-        Open web PDFs in Discuss
+        Open PDFs in Discuss
       </label>
-      <p class="hint">Applies to addresses ending in <code>.pdf</code>. Anything else — a
-        <code>/download?id=…</code> link, a PDF served without one — is left alone; click the
-        toolbar button on it and it opens here too. Local <code>file://</code> PDFs are
-        deliberately not supported: a path on your disk is not a stable identity for a record.
-        Turn this off and PDFs go back to the browser's viewer.</p>
+      <p class="hint">On the web this applies to addresses ending in <code>.pdf</code>. Anything
+        else — a <code>/download?id=…</code> link, a PDF served without one — is left alone; click
+        the toolbar button on it and it opens here too. Turn this off and PDFs go back to the
+        browser's viewer.</p>
+    </div>
+    <div class="field">
+      <label>Local PDFs</label>
+      <p class="hint" id="filehint">Checking…</p>
+      <p class="hint">A file on your disk is filed by what it <em>is</em> rather than where it is:
+        Discuss identifies it by a hash of its contents, so you can move it, rename it or keep two
+        copies and it stays the same page with the same comments. Edit the file and it becomes a
+        new one — a different document with a different name is exactly what it is. The file itself
+        is never uploaded or stored; what your phone reads is the text, as with any PDF.</p>
     </div>
     <div class="row">
       <span id="pdfstatus" role="status"></span>

@@ -7,7 +7,8 @@
   "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs", "declarativeNetRequest"],
   "host_permissions": [
     "http://*/*",
-    "https://*/*"
+    "https://*/*",
+    "file:///*"
   ],
   "background": {
     "service_worker": "background.js"

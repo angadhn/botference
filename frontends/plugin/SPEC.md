@@ -797,9 +797,10 @@ Contract deltas agreed during live testing — authoritative over the sections a
   A PDF on the open web is handed to the browser's OWN viewer, which is another
   extension's document: no content script runs there, `scripting` cannot reach
   it, and there is no DOM to select, wrap or anchor in. So the extension becomes
-  the viewer. **http/https only — `file://` is refused deliberately** and no
-  file-URL permission is requested: a path on one disk is not an identity a
-  record can be filed under.
+  the viewer. **http/https only in this round** — `file://` was refused because
+  a path on one disk is not an identity a record can be filed under. (The
+  "Local PDFs" amendment below keeps that reasoning and answers it: the
+  identity is the file's BYTES, not its path.)
   · **Interception.** A dynamic `declarativeNetRequest` redirect rule, installed
     at every worker start (dynamic, not static, because the target carries the
     extension id): main-frame requests matching
@@ -1156,6 +1157,116 @@ Contract deltas agreed during live testing — authoritative over the sections a
     (`connKnown:false` → "connecting…") covers the gap, and a `conn` event
     clears the banner and refetches with nothing clicked. Shared layer, so
     articles get it too.
+
+- **Local PDFs** (`file://`, and the identity that makes them possible).
+  The papers people actually annotate are on their own disk. The reason they
+  were refused was never the rendering — the viewer is the same viewer — it was
+  that `file:///Users/me/Downloads/paper.pdf` is where a document IS, not what
+  it is, and a record filed under a path is stranded the first time the file is
+  moved into a folder or renamed after being read.
+  · **Identity: the bytes.** A local PDF is filed under
+    `bfp-pdf://sha256/<64 lowercase hex>` — the SHA-256 of the whole file,
+    computed in the viewer with `crypto.subtle.digest`. It is a url in shape so
+    that every layer beneath carries it unchanged: `normUrl` leaves it
+    byte-identical (no query, no fragment, no trailing slash), `pageKey` is the
+    ordinary sha1 of that, and store/server/export have always treated identity
+    as a string (proved, not assumed: one round trip through `/page`,
+    `/thread`, `/snapshot`, `/rename-page`, `/tag-page`, `/export`, `/p/<key>`
+    and `/pages` in companion.test.mjs — **zero server changes were needed for
+    the scheme itself**). `bfp://library` set the precedent; this is a scheme of
+    its own so the two can never be confused, and `adapters.js` owns the
+    constant.
+    **The semantics, which are designed and not incidental:** the same bytes
+    anywhere are the same page — move the file, rename it, keep two copies, sync
+    it to another Mac; a MODIFIED file (annotated in Preview, re-downloaded as
+    v2) is a different document and gets a fresh page, the old one keeping its
+    comments under the old hash; and the same paper read from the web and from
+    disk is two pages, because one is identified by a url and the other by its
+    contents. The file itself is NEVER uploaded, copied or stored — the snapshot
+    is the per-page text extract, exactly as for a web PDF, and that is what a
+    phone reads.
+  · **Identity moves FIRST — the boot path.** `viewer.html` no longer carries
+    the script chain as `<script>` tags. content.js decides which page it is on
+    ONCE, at parse time, and a local PDF's identity does not exist until its
+    bytes have been read and hashed. So `viewer.js` is the only script the page
+    loads: it injects `adapters.js` (the extension's only parser for a viewer
+    address — a second copy of that rule is how the record and the render come
+    to disagree), resolves the identity, publishes it on
+    `window.__BFP_PDF_IDENT`, and only then injects the annotator —
+    katex → anchor → drawer → content, `async = false` so insertion order is
+    execution order. One boot path for both kinds of source; the http(s) case is
+    unchanged in every observable way. `pdfIdentity(src, published)` is the
+    whole decision, pure and tested: a url identifies itself, a file: source
+    takes the published hash, and a file: source with NO hash has no identity at
+    all — in which case the annotator is not injected and nothing is filed.
+  · **Getting in.** DNR cannot redirect a `file:` navigation (it is not a
+    network request), so the redirect rule is untouched and irrelevant here.
+    Two ways in, both verified in a real browser: the **toolbar** (an action
+    click whose content script does not answer → `openInPdfViewer`, now allowing
+    `file:///…pdf`), and the **`tabs.onUpdated` belt**, which does deliver
+    main-frame `file:` urls once file access is granted and reopens them in the
+    viewer once per tab per url. The belt is gated on file access being known-on
+    (`bfp:file-access` in extension storage): hijacking a PDF the browser was
+    displaying perfectly well, into a viewer that can read nothing, would be
+    vandalism. UNKNOWN counts as yes exactly once — the viewer then either works
+    or names the toggle, and writes the answer down.
+  · **Permissions, the minimum.** `host_permissions` gains `file:///*` — that is
+    all. It is what lets the extension PAGE read the file; the content-script
+    `<all_urls>` match already covers `file:` and was not widened. Neither
+    grants anything by itself: Chrome's per-extension **"Allow access to file
+    URLs"** switch is the real gate, cannot be set or prompted for by an
+    extension, and is off by default. `chrome.extension.isAllowedFileSchemeAccess()`
+    (extension pages only — it does not exist in a service worker) is asked on
+    the options page and in the viewer, and the answer is stored for the worker.
+    When it is off, both say the same sentence and never fail mutely:
+    *Local PDFs need "Allow access to file URLs" — brave://extensions →
+    Botference Discuss → Details → toggle it on.*
+    The bytes are read with **XMLHttpRequest**, not `fetch` — Chrome's fetch
+    refuses the `file:` scheme outright, while XHR is exactly what that toggle
+    governs. A file: response has status 0 on success, so the response is what
+    is checked.
+  · **The record.** The adapter supplies `kind:'pdf'` as before and now also
+    `site:'local pdf'` — `siteOf()` on the pseudo-url would answer `sha256`,
+    which names an algorithm rather than a place — plus `file_name`, the file's
+    own name (extension included, path never). `store.upsertPage` stores it and
+    refreshes it on every visit, so re-opening the same bytes under a new name
+    records the new name. `inferKind` answers `pdf` for a `bfp-pdf://` url, for
+    a record read without an adapter to ask. Title, rename/`custom_title`, tags,
+    filters, the pages list and the phone all work off the record exactly as
+    they do for any page; the drawer and `/pages` show "local pdf" and "a PDF on
+    your Mac" rather than a hostname or 64 hex characters, and a heading whose
+    identity is not an address is not rendered as a link.
+  · **Export.** The frontmatter `url:` carries the pseudo-url, because that is
+    what a re-export matches a note on (`notesForUrl`/`targetFile`) and is the
+    integrity of replace-on-re-export. Beside it, and only when there is one, a
+    `file:` line names the file the page was opened from — a hash tells a reader
+    nothing, and the frontmatter is where Obsidian shows it. Every note written
+    before this is byte-for-byte unchanged.
+  · **Nothing is annotated at a path.** With file access granted, `<all_urls>`
+    makes content.js run on `file:` documents, so it now returns immediately on
+    one (unless `__BFP_HREF` names another address — the harness's existing
+    escape). Two reasons, both real: a record under a path has the identity
+    problem this whole amendment exists to solve, and — found in testing —
+    Chrome's built-in PDF viewer is an iframe inside an empty top-level document
+    AT the file: url, where the content script does run and would ANSWER the
+    toolbar's `{t:'toggle'}`, so the "no content script answered" fallback never
+    fired and clicking the button filed the empty shell under its path.
+  · **One neighbouring bug, fixed here.** `viewer.html` is an extension page, and
+    `chrome.runtime.sendMessage` from an extension page reaches every OTHER
+    extension context — including this same content.js in a second viewer tab.
+    Chrome delivers whichever listener answers first, so an open viewer tab was
+    answering its neighbour's `hello` with `{ok:false, error:'unknown'}` and
+    that neighbour then sat dormant on a page it had annotations for. content.js
+    no longer answers messages it does not understand; the worker's answer wins.
+  · **Testing.** `test/pdf.test.mjs` (the hex formatter against known vectors,
+    the pseudo-url, `normUrl`/`pageKey` stability, `pdfIdentity`, the adapter on
+    both source kinds, and a real file moved and renamed on a real filesystem —
+    same identity, same page key — then edited, and honestly a different one);
+    `test/pdfrules.test.mjs` (`looksLocalPdfUrl`, kept a separate question from
+    the redirect rule's shape); `test/companion.test.mjs` (the round trip);
+    harness `?pdf=local&selftest=1` (the identity-before-chain contract with a
+    stubbed digest, and that a hash published AFTER the chain changes nothing);
+    `test/pdf-render.test.mjs` asserts the same contract in a real Chromium.
 
 ## Out of scope for v1 (do not build)
 

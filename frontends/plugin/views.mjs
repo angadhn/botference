@@ -213,7 +213,12 @@ ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
   const tags = tagsOf(page);
   return shell(name, `
 <header>${whoBadge(me)}
-<h1><a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(name)}</a></h1>
+<h1>${/^https?:/i.test(page.url)
+  // …and a page whose identity is not an address is not a link. The library and
+  // a local PDF (identified by the hash of its bytes) both live here, and a
+  // heading that cannot be followed should not pretend it can be.
+  ? `<a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(name)}</a>`
+  : escHtml(name)}</h1>
 <p class="sub">${escHtml(page.site || '')} · <a href="/pages">all annotated pages</a>${snapshot ? ` · <a href="/a/${escHtml(key)}">read the article ›</a>` : ''}</p>
 ${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${encodeURIComponent(t)}">${escHtml(t)}</a>`).join('')}</div>` : ''}
 ${me && me.owner ? metaEdit(page, key) : ''}
@@ -328,6 +333,12 @@ const KIND_LABEL = { article: 'Articles', pdf: 'PDFs', gdocs: 'Docs' };
 export const rowKind = row =>
   (PAGE_KINDS.includes(String(row && row.kind)) ? row.kind : inferKind(row && row.url));
 const rowTags = row => (Array.isArray(row && row.tags) ? row.tags : []);
+// WHERE a row's document is, in the slot that usually holds a url. A local
+// PDF's identity is the hash of its bytes — 64 characters that mean nothing to
+// anybody, and deliberately say nothing about where the file is — so the row
+// says the one true thing about its whereabouts instead.
+export const rowAddress = url =>
+  (/^bfp-pdf:/i.test(String(url || '')) ? 'on your Mac' : String(url || ''));
 const filterHref = (kind, tag) => {
   const q = new URLSearchParams();
   if (kind) q.set('kind', kind);
@@ -369,7 +380,7 @@ export function pagesView({ index, me, snapshots, library, libraryKey, kind = ''
     // A row whose article we hold opens the article itself; one we do not
     // still opens its conversation, which is all there has ever been.
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
-<div class="meta">${escHtml(row.url)} · ${escHtml(KIND_LABEL[rowKind(row)].replace(/s$/, '').toLowerCase())} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
+<div class="meta">${escHtml(rowAddress(row.url))} · ${escHtml(KIND_LABEL[rowKind(row)].replace(/s$/, '').toLowerCase())} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
   rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
 }</li>`)
     .join('\n');

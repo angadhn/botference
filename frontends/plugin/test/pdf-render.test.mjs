@@ -149,6 +149,11 @@ for (let i = 0; i < 60; i++) {
       notice: notice && !notice.hidden ? notice.textContent : '',
       pages: A.pdfPagesFromDom(document),
       identity: (A.pick(location.href, {}) || {}).identityHref || '',
+      // the boot contract, in a real browser: viewer.js publishes the page
+      // identity and only THEN injects the annotator, so both of these are
+      // true by the time anything is on screen
+      published: window.__BFP_PDF_IDENT || '',
+      chain: !!(window.BFPAnchor && window.BFPDrawer),
     };
   })()`);
   if (state && state.ready) break;
@@ -156,6 +161,9 @@ for (let i = 0; i < 60; i++) {
 
 ok('the viewer renders the PDF at all', !!(state && state.ready),
   'last state ' + JSON.stringify(state));
+eq('the identity is published before the annotator is injected',
+  state && state.published, src);
+ok('…and the annotator was in fact injected, in order', !!(state && state.chain));
 
 if (state && state.ready) {
   eq('every page gets a page box', state.boxes, 2);

@@ -159,6 +159,13 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     ['---',
       `url: ${page.url}`,
       `site: ${page.site || ''}`,
+      // A PDF read off this disk has no url worth reading: its identity is the
+      // hash of its bytes (`bfp-pdf://sha256/…`), which is exactly what makes
+      // it survive being moved and renamed — and exactly what tells a person
+      // nothing. So the file it was opened from is named beside it. Written
+      // only when there is one, so every note ever exported before this is
+      // byte-for-byte what it was.
+      ...(page.file_name ? [`file: ${page.file_name}`] : []),
       `saved: ${now.toISOString().slice(0, 10)}`,
       tagsLine(page),
       '---'].join('\n'),

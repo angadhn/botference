@@ -1610,6 +1610,10 @@
     // with the ← Back button, because it is about OTHER pages while the tabs
     // are about this one.
     function hostOf(u) {
+      // A local PDF is filed under the hash of its bytes (bfp-pdf://sha256/…),
+      // which has a "hostname" of `sha256` — a word about the algorithm, not
+      // about where the document came from. Say where it came from.
+      if (/^bfp-pdf:/i.test(String(u || ''))) return 'local pdf';
       try { return new URL(String(u)).hostname.replace(/^www\./, ''); } catch { return ''; }
     }
     // content.js owns normUrl (it must agree with the background and the

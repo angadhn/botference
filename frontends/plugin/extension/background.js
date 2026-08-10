@@ -559,7 +559,6 @@ const PDF_RULE_ID = PR.PDF_RULE_ID;
 const PDF_BYPASS_ID = PR.PDF_BYPASS_ID;
 const PDF_BYPASS_MS = PR.PDF_BYPASS_MS;
 const PDF_VIEWER_PATH = PR.PDF_VIEWER_PATH;
-const looksPdfUrl = PR.looksPdfUrl;
 const viewerBase = () => chrome.runtime.getURL(PDF_VIEWER_PATH);
 const viewerUrlFor = u => PR.viewerUrlFor(viewerBase(), u);
 
@@ -707,10 +706,39 @@ function rememberReopen(tabId, url) {
   return true;
 }
 
+// ── AND THE SAME BELT FOR A FILE ON THIS DISK ──────────────────────────────
+// A local PDF has no redirect in front of it at all: declarativeNetRequest acts
+// on network requests and a file: navigation is not one. So for `file:///…pdf`
+// this listener is not a belt, it is the ONLY automatic way in — the toolbar
+// button being the other, deliberate one.
+//
+// It is gated on the reader having granted "Allow access to file URLs",
+// because without that the viewer can read nothing and reopening a PDF that
+// the browser was showing perfectly well would be pure vandalism. Only an
+// extension PAGE can ask (chrome.extension does not exist in a worker), so the
+// viewer and the options page write the answer down and this reads it.
+// UNKNOWN means "nobody has asked yet" and is treated as yes exactly once per
+// tab per url: the viewer then either works, or explains which toggle to turn
+// on and records the answer so this never fires again.
+const FILE_ACCESS_KEY = 'bfp:file-access';
+async function fileAccessKnown() {
+  try {
+    const got = await chrome.storage.local.get(FILE_ACCESS_KEY);
+    const v = got && got[FILE_ACCESS_KEY];
+    return v === undefined ? null : !!v;
+  } catch { return null; }
+}
+
 async function maybeReopenPdf(tabId, url) {
-  if (tabId == null || !looksPdfUrl(url)) return false;
+  if (tabId == null || !PR.looksAnyPdfUrl(url)) return false;
   await configReady;
   if (CONF.pdf === false) return false;                 // the reader turned it off
+  if (PR.looksLocalPdfUrl(url)) {
+    if (await fileAccessKnown() === false) return false;
+    if (!rememberReopen(tabId, url)) return false;
+    try { await chrome.tabs.update(tabId, { url: viewerUrlFor(url) }); return true; }
+    catch { return false; }
+  }
   const b = await readBypass();
   if (b && b.url === url && !PR.bypassExpired(b, Date.now())) {
     // this is the "open it in the browser instead" they just asked for, and it
@@ -734,6 +762,12 @@ const AUTOOPEN = 'bfp-autoopen:';
 
 async function openPage(rawUrl) {
   const target = String(rawUrl || '');
+  // A local PDF is identified by its BYTES (bfp-pdf://sha256/…), which is what
+  // makes it survive being moved and renamed — and is also why the browser
+  // cannot be asked to go there. Say so, rather than failing without a word.
+  if (/^bfp-pdf:/i.test(target)) {
+    return { ok: false, error: 'this is a PDF on your disk — open the file itself and Discuss will find it' };
+  }
   if (!/^https?:/i.test(target)) return { ok: false, error: 'open-page needs an http(s) url' };
   const nu = normUrl(target);
   const key = AUTOOPEN + nu;
@@ -865,11 +899,19 @@ chrome.action.onClicked.addListener(tab => {
 // So the click is taken as "annotate this", and the url is opened in ours.
 // A tab that turns out not to be a PDF is not left guessing: the viewer says
 // so and offers the way back.
+//
+// A `file://` tab reaches here for the same reason and by the same route (no
+// content script answered), and is the ONLY deliberate way into the viewer for
+// a PDF on this disk. It is held to a stricter test — the address must end in
+// `.pdf` — because a local file that is not a PDF has no viewer to be opened
+// in, whereas a web address that lies about its extension at least has an
+// origin that might serve one.
 function openInPdfViewer(tab) {
   if (!tab || tab.id == null) return;
   const url = String(tab.url || '');
-  if (!/^https?:/i.test(url)) return;                 // chrome://, the store, a PDF we cannot fetch
   if (url.startsWith(chrome.runtime.getURL(''))) return;
+  const web = /^https?:/i.test(url);
+  if (!web && !PR.looksLocalPdfUrl(url)) return;      // chrome://, the store, a local file that is not a PDF
   chrome.tabs.update(tab.id, { url: viewerUrlFor(url) }).catch(() => {});
 }
 
@@ -880,10 +922,11 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status === 'loading') { tabUrls.delete(tabId); tabCounts.delete(tabId); }
   // a tab that has just LANDED somewhere new is allowed to be reopened again
   if (info.url && reopened.get(tabId) !== info.url) reopened.delete(tabId);
-  // …and a tab that landed on a PDF the redirect did not catch is one we can
-  // still rescue (see maybeReopenPdf)
+  // …and a tab that landed on a PDF the redirect did not catch — or on a local
+  // one, which no redirect could ever catch — is one we can still rescue
+  // (see maybeReopenPdf)
   const here = info.url || (tab && tab.url) || '';
-  if (here && looksPdfUrl(here)) maybeReopenPdf(tabId, here);
+  if (here && PR.looksAnyPdfUrl(here)) maybeReopenPdf(tabId, here);
 });
 
 chrome.alarms.create(KEEPALIVE, { periodInMinutes: 0.5 });

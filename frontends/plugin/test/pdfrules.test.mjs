@@ -46,6 +46,23 @@ const VIEWER = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/pdf/viewer.h
                    'chrome-extension://x/pdf/viewer.html', '']) {
     ok('not a pdf url: ' + u, !R.looksPdfUrl(u));
   }
+
+  // A PDF on this disk is a SEPARATE question, deliberately: no redirect rule
+  // can act on a file: navigation (it is not a network request), so the local
+  // shape is never asked about the rule and the rule's shape never grows a
+  // scheme it cannot serve. The toolbar and the tabs.onUpdated belt ask this.
+  for (const u of ['file:///Users/a/x.pdf', 'file:///Users/a/My%20Paper.PDF',
+                   'file:///Volumes/Backup/deep/path/paper.pdf']) {
+    ok('a local pdf: ' + u, R.looksLocalPdfUrl(u));
+    ok('…and therefore a pdf: ' + u, R.looksAnyPdfUrl(u));
+    ok('…but not one the redirect rule could ever catch: ' + u, !R.looksPdfUrl(u));
+  }
+  for (const u of ['file:///Users/a/notes.txt', 'file:///Users/a/x.pdf?v=2', 'file:///Users/a/',
+                   'file://server/share/x.pdf', 'https://a.test/x.pdf', '']) {
+    ok('not a local pdf: ' + u, !R.looksLocalPdfUrl(u));
+  }
+  ok('a web pdf is still a pdf to the belt', R.looksAnyPdfUrl('https://a.test/x.pdf'));
+  ok('…and an ordinary page is neither', !R.looksAnyPdfUrl('https://a.test/story'));
 }
 
 // ---- 2. the redirect rule is written ONCE -----------------------------------

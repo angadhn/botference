@@ -15,15 +15,30 @@
   over the canvas.
 
   Everything below the render is unchanged machinery: the same anchor.js, the
-  same drawer.js, the same content.js, loaded here as ordinary scripts instead
-  of being injected. The one thing that differs is the identity, and adapters.js
-  owns it — the PDF adapter reports the ORIGINAL http(s) url, so every record,
-  every event and every export belongs to the document rather than to this
-  chrome-extension:// address.
+  same drawer.js, the same content.js. The one thing that differs is the
+  identity, and adapters.js owns it — the PDF adapter reports the ORIGINAL
+  http(s) url, so every record, every event and every export belongs to the
+  document rather than to this chrome-extension:// address.
+
+  ── WHY THERE ARE NO <script> TAGS HERE ────────────────────────────────────
+  There used to be five, in manifest order, and that worked for as long as the
+  identity could be read straight off this page's address. A LOCAL pdf's cannot:
+  a file path is not an identity (move the file and every comment is stranded),
+  so it is the SHA-256 of the file's bytes — which is not known until the bytes
+  have been fetched and hashed, and content.js decides the page identity ONCE,
+  at parse time, with no second chance.
+
+  So viewer.js is the only script this page loads, and it injects the rest
+  itself, after the identity exists and is published. One boot path for both
+  kinds of source; the annotator cannot start before the answer it depends on.
+  (adapters.js is loaded first and asked, because it holds the extension's only
+  rule for "which document is a viewer address showing" and a second copy of
+  that rule is how the record and the render come to disagree.)
 
   ?src=<encoded url>  built in JavaScript (the toolbar fallback, the tests)
   #raw=<url>          written verbatim by the declarativeNetRequest redirect,
                       which cannot percent-encode anything
+  Both spellings carry either an http(s) url or a file:/// one.
 -->
 <link rel="stylesheet" href="../vendor/pdfjs/web/pdf_viewer.css">
 <link rel="stylesheet" href="viewer.css">
@@ -54,12 +69,6 @@
 
 <main id="doc" class="doc"></main>
 
-<!-- The annotator itself, in manifest order. Classic scripts: this is our own
-     page, so they are included rather than injected, and content.js cannot
-     tell the difference. -->
-<script src="../vendor/katex/katex.min.js"></script>
-<script src="../anchor.js"></script>
-<script src="../adapters.js"></script>
-<script src="../drawer.js"></script>
-<script src="../content.js"></script>
+<!-- The only script this page loads. It resolves the identity first and then
+     injects the annotator's chain itself (see the note at the top). -->
 <script type="module" src="viewer.js"></script>

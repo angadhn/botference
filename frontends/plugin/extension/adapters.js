@@ -17,6 +17,12 @@
 //     identityHref,                 // WHICH PAGE this is, when the address bar
 //                                   //   is not it (the PDF viewer). '' ⇒ the
 //                                   //   ordinary rule (canonical, else location)
+//     site,                         // where it files, when the identity has no
+//                                   //   hostname worth the name (a local PDF is
+//                                   //   'local pdf', never 'sha256'). '' ⇒ the
+//                                   //   identity's hostname, as always
+//     fileName,                     // the file on disk this came out of, if any
+//                                   //   — recorded for the reader, never a path
 //     title(),                      // '' ⇒ fall back to the generic headline
 //     articleText(),                // Promise<string>; '' ⇒ generic extraction
 //     snapshotHtml(),               // '' ⇒ content.js clones the article itself
@@ -589,6 +595,95 @@
     const s = String(u == null ? '' : u).trim();
     return /^https?:\/\/[^\s]/i.test(s) ? s : null;
   };
+  // A local PDF is a source too. `file:` is a document the viewer can render
+  // exactly as it renders a web one — what differs is the IDENTITY, and that is
+  // the next block's job, not this one's.
+  const isFileUrl = u => /^file:\/\/\S/i.test(String(u == null ? '' : u).trim());
+  const pdfSrcOk = u => {
+    const s = String(u == null ? '' : u).trim();
+    return (httpOnly(s) || (isFileUrl(s) ? s : null));
+  };
+
+  // ---- the identity of a LOCAL pdf ----------------------------------------
+  //
+  // A web PDF's identity is its url, and that is the whole of it. A file on
+  // this disk has no such thing: `file:///Users/me/Downloads/paper.pdf` is a
+  // location, not a name — move it to a shelf, rename it after reading it, sync
+  // it to another Mac under a different home directory, and every comment made
+  // on it is filed against an address that no longer exists.
+  //
+  // So a local PDF is identified by WHAT IT IS rather than where it is: the
+  // SHA-256 of its bytes, written as a url-shaped pseudo-scheme
+  //
+  //     bfp-pdf://sha256/<64 lowercase hex>
+  //
+  // …which every layer already handles, because it is a url. normUrl leaves it
+  // byte-identical (no query, no hash, no trailing slash), pageKey is the sha1
+  // of that, and store/server/export treat identity as a string and always did.
+  // `bfp:` set the precedent (store.LIBRARY_URL); this is the same trick with a
+  // scheme of its own so the two can never be confused.
+  //
+  // What it buys, and what it costs, both stated plainly:
+  //   · the same bytes anywhere on any disk are the same page — move it, rename
+  //     it, keep two copies;
+  //   · EDIT the file (annotate it in Preview, re-download a v2) and the bytes
+  //     change, so it is a new page. The old one keeps its comments under the
+  //     old hash;
+  //   · the same paper read from the web and from disk are two pages, because
+  //     one is identified by a url and the other by its bytes.
+  // The FILE ITSELF is never read by the companion, never uploaded and never
+  // stored: the snapshot a phone reads is the text extract, exactly as it is
+  // for a web PDF.
+  const PDF_HASH_SCHEME = 'bfp-pdf://sha256/';
+  const PDF_HASH_RE = /^bfp-pdf:\/\/sha256\/[0-9a-f]{64}$/;
+  const isPdfHashUrl = u => PDF_HASH_RE.test(String(u == null ? '' : u).trim());
+  // the site a local PDF files under: 'sha256' is what siteOf() would say about
+  // the pseudo-url's hostname, and that is a number, not a place
+  const LOCAL_PDF_SITE = 'local pdf';
+
+  // Bytes → lowercase hex. crypto.subtle.digest hands back an ArrayBuffer and
+  // there is no hex in the platform, so it is written here — pure, and tested
+  // against known vectors, because a hex formatter that drops a leading zero
+  // produces a DIFFERENT identity for one file in sixteen.
+  function bytesToHex(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    let out = '';
+    for (let i = 0; i < b.length; i++) out += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+    return out;
+  }
+  const pdfHashUrl = hex => {
+    const h = String(hex == null ? '' : hex).trim().toLowerCase();
+    return /^[0-9a-f]{64}$/.test(h) ? PDF_HASH_SCHEME + h : '';
+  };
+
+  // WHICH PAGE this viewer is showing, given the source it was opened on and
+  // whatever identity the viewer published (`window.__BFP_PDF_IDENT`, computed
+  // from the bytes before any of the annotator was loaded — see pdf/viewer.js).
+  //
+  //   http(s) source            → the url, unchanged, exactly as it always was
+  //   file: source + a hash     → the pseudo-url
+  //   file: source, no hash     → '' — the bytes could not be read, so there is
+  //                               NO identity, and the honest thing is to file
+  //                               nothing rather than file it under a path or
+  //                               under the extension's own address.
+  function pdfIdentity(src, published) {
+    const web = httpOnly(src);
+    if (web) return web;                       // a url identifies itself
+    if (isFileUrl(src) && isPdfHashUrl(published)) return String(published).trim();
+    return '';
+  }
+
+  // The name of the file on disk, for a local PDF — the one thing about its
+  // location worth keeping, because "which of my PDFs is this" is a question
+  // the hash cannot answer. Extension included: it is a file name, not a title.
+  function pdfFileName(url) {
+    if (!isFileUrl(url)) return '';
+    let u;
+    try { u = new URL(String(url)); } catch { return ''; }
+    let last = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+    try { last = decodeURIComponent(last); } catch { /* keep it as it came */ }
+    return last.replace(/\s+/g, ' ').trim();
+  }
 
   // A url that a plain .pdf link is behind. Extension-only knowledge: the
   // interception rule keys off exactly this shape, and the toolbar fallback
@@ -616,7 +711,7 @@
     try { u = new URL(String(href == null ? '' : href)); } catch { return null; }
     if (!new RegExp('(?:^|/)' + PDF_VIEWER_PATH.replace('.', '\\.') + '$').test(u.pathname)) return null;
     const hash = u.hash ? u.hash.slice(1) : '';
-    if (hash.indexOf('raw=') === 0) return httpOnly(hash.slice(4));
+    if (hash.indexOf('raw=') === 0) return pdfSrcOk(hash.slice(4));
     const q = u.search ? u.search.slice(1) : '';
     const at = q.indexOf('src=');
     if (at === -1) return null;
@@ -624,7 +719,7 @@
     const raw = q.slice(at + 4);
     let dec = raw;
     try { dec = decodeURIComponent(raw); } catch { dec = raw; }
-    return httpOnly(dec);
+    return pdfSrcOk(dec);
   }
 
   // The name of the file, for a PDF that carries no /Title of its own —
@@ -731,6 +826,15 @@
         (() => (typeof document !== 'undefined' ? document.title : ''));
       const dom = (env && env.doc) || null;
       const pages = () => pdfPagesFromDom(dom);
+      // The identity was decided BEFORE any of this was loaded: pdf/viewer.js
+      // hashes a local file's bytes and publishes the answer, then injects the
+      // annotator. This adapter only ever READS that decision — one place makes
+      // it, one place reports it (see pdfIdentity).
+      const published = (env && env.identity) ||
+        (typeof window !== 'undefined' ? window.__BFP_PDF_IDENT : '') || '';
+      const ident = pdfIdentity(src, published);
+      const local = isPdfHashUrl(ident);
+      const fileName = pdfFileName(src);
 
       const ad = {
         name: 'pdf',
@@ -738,8 +842,18 @@
         // says nothing about it (see `identityHref` below), so the adapter is
         // the only honest source for the record's kind
         kind: 'pdf',
-        // the whole point: the record is the PDF's, not the viewer's
-        identityHref: src,
+        // the whole point: the record is the DOCUMENT's, not the viewer's —
+        // the original url for a web PDF, the hash of the bytes for a local one
+        identityHref: ident,
+        // …and the site is the identity's, which for a hash is not a place at
+        // all: siteOf() would read the pseudo-url's hostname and file the page
+        // under "sha256". '' means "use the hostname", exactly as before.
+        site: local ? LOCAL_PDF_SITE : '',
+        // the one thing about a local file's LOCATION worth keeping: what it is
+        // called. It rides POST /page and comes out in the Obsidian note, so a
+        // reader can find the file again; the path never leaves this machine.
+        fileName: local ? fileName : '',
+        local,
         src,
         // the text layer is real text nodes, so everything the extension does
         // to an article works here unchanged
@@ -844,6 +958,9 @@
     looksPdfUrl, pdfViewerUrl, pdfViewerSrc, pdfNameFromUrl, pdfLayerLines,
     pdfPagesFromDom, pdfContextText, pdfSnapshotHtml, pdfPageOfNode,
     pdfPageLabel, PDF_VIEWER_PATH, PDF_PAGE_ATTR,
+    // local PDFs: the identity is the bytes, not the path
+    isFileUrl, isPdfHashUrl, bytesToHex, pdfHashUrl, pdfIdentity, pdfFileName,
+    PDF_HASH_SCHEME, LOCAL_PDF_SITE,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAdapters = api;

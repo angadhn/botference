@@ -445,7 +445,7 @@ losing a comment. (Google Docs is the deliberate exception: a site
 adapter reads the doc's text and margin comments with your own session
 — Page chat only, since Docs paints to a canvas.)
 
-**Web PDFs are pages too.** A PDF on the web normally opens in the
+**PDFs are pages too.** A PDF on the web normally opens in the
 browser's own viewer, which no extension can reach into, so Discuss
 brings its own (Mozilla PDF.js, vendored — no CDN, nothing fetched):
 navigate to an address ending in `.pdf` and it opens in Discuss
@@ -458,9 +458,27 @@ without `.pdf` in its address is not intercepted; click the toolbar
 button on it and it opens in Discuss anyway. A scan says so in one
 quiet line and offers no highlighting, because there is no OCR here.
 Turn the whole thing off (or back on) on the extension's options page.
-Local `file://` PDFs are deliberately unsupported: a path on your disk
-is not a stable identity for a record, and the extension asks for no
-file access.
+
+**And the PDFs on your own disk.** Open a `file://` PDF and it opens in
+Discuss too, with everything above. It needs one switch, once, which no
+extension is allowed to set for you: **brave://extensions → Botference
+Discuss → Details → "Allow access to file URLs"**. The options page says
+so if it is off, and so does the viewer.
+
+A file on your disk is filed by *what it is* rather than *where it is*:
+Discuss identifies it by a hash of its contents. So move it, rename it
+after reading it, keep a second copy on another Mac — same page, same
+comments, every time. Edit the file and it honestly becomes a new page:
+different contents, different document; the old one keeps its comments
+under the old name. And the same paper read from the web and from your
+disk are two pages, because one is identified by its address and the
+other by its bytes. The Obsidian note names the file it came from, since
+a hash tells you nothing.
+
+The file itself never leaves your machine — nothing is uploaded, copied
+or stored anywhere. What your phone reads is the text, exactly as for
+any PDF. Discuss annotates nothing else on your disk: a local page that
+is not a PDF is left completely alone.
 
 **Message formatting.** Every message renders markdown — yours and the
 bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX

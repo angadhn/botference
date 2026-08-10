@@ -207,6 +207,10 @@ export function inferKind(url) {
   const u = String(url || '');
   if (/^https?:\/\/docs\.google\.com\/(?:u\/\d+\/)?document\//i.test(u)) return 'gdocs';
   if (/\.pdf$/i.test(u.split('#')[0].split('?')[0])) return 'pdf';
+  // a local PDF, identified by the hash of its bytes rather than by a path
+  // (the extension's `bfp-pdf://sha256/<hex>`) — the adapter always says so on
+  // a visit, and this is what answers for a record read without one
+  if (/^bfp-pdf:\/\//i.test(u)) return 'pdf';
   return 'article';
 }
 export const kindOf = page => cleanKind(page && page.kind) || inferKind(page && page.url);
@@ -405,8 +409,21 @@ export function snapshotInfo(key) {
 
 export const hasSnapshot = key => !!snapshotInfo(key);
 
-export function blankPage({ url, title, site, kind }) {
+// The file a PDF on somebody's disk came out of. Only the NAME: a local PDF is
+// identified by the hash of its bytes precisely so that its location does not
+// matter, and a path would be both wrong tomorrow and nobody else's business.
+// It exists because "which of my PDFs is this" is a question a 64-character
+// hash cannot answer, and the Obsidian note is where it gets asked.
+const FILE_NAME_MAX = 200;
+export const cleanFileName = n => String(n == null ? '' : n)
+  .replace(/[\u0000-\u001f]/g, ' ')
+  // a NAME, never a path: anything shaped like one keeps only its last part
+  .split(/[\\/]/).pop()
+  .replace(/\s+/g, ' ').trim().slice(0, FILE_NAME_MAX).trim();
+
+export function blankPage({ url, title, site, kind, file_name }) {
   const ts = nowIso();
+  const file = cleanFileName(file_name);
   return {
     version: 1,
     url: normUrl(url),
@@ -415,6 +432,7 @@ export function blankPage({ url, title, site, kind }) {
     // what kind of document this is, as the adapter reported it — inferred
     // from the url where nothing said
     kind: cleanKind(kind) || inferKind(url),
+    ...(file ? { file_name: file } : {}),
     created_at: ts, updated_at: ts,
     session_id: null,
     threads: [],
@@ -422,14 +440,18 @@ export function blankPage({ url, title, site, kind }) {
   };
 }
 
-// POST /page: create the shell or refresh title/site/kind. Never touches
-// threads, page_chat, session_id, the reader's own title or their tags — a
-// re-visit must not disturb the conversation, or undo a rename.
-export function upsertPage({ url, title, site, kind }) {
-  const page = readPage(url) || blankPage({ url, title, site, kind });
+// POST /page: create the shell or refresh title/site/kind/file_name. Never
+// touches threads, page_chat, session_id, the reader's own title or their tags
+// — a re-visit must not disturb the conversation, or undo a rename.
+export function upsertPage({ url, title, site, kind, file_name }) {
+  const page = readPage(url) || blankPage({ url, title, site, kind, file_name });
   if (title) page.title = String(title).trim();
   if (site) page.site = String(site);
   if (!page.site) page.site = siteOf(url);
+  // the same bytes opened from a second copy of the file: the same page, and
+  // the name it was last opened under is the useful one
+  const file = cleanFileName(file_name);
+  if (file) page.file_name = file;
   // the adapter is the authority and says so on every visit; an older
   // extension sends nothing and leaves whatever was inferred in place
   const k = cleanKind(kind);

@@ -36,6 +36,14 @@
   const PDF_REGEX = '^https?://[^#]*\\.[pP][dD][fF](?:$|\\?[^#]*$)';
   const looksPdfUrl = u => /^https?:\/\/[^?#]*\.pdf(?:[?#]|$)/i.test(String(u || ''));
 
+  // A PDF on this disk. Deliberately a SEPARATE question from looksPdfUrl,
+  // because the two are reached by different machinery: declarativeNetRequest
+  // cannot redirect a file: navigation at all (it is not a network request), so
+  // nothing about the redirect rule applies here. Local PDFs reach the viewer
+  // by the toolbar button and by the tabs.onUpdated belt, and both ask this.
+  const looksLocalPdfUrl = u => /^file:\/\/\/[^?#]*\.pdf$/i.test(String(u || ''));
+  const looksAnyPdfUrl = u => looksPdfUrl(u) || looksLocalPdfUrl(u);
+
   const reEscape = s => String(s).replace(/[.^$|()[\]{}*+?\\]/g, '\\$&');
 
   const viewerUrlFor = (base, u) =>
@@ -112,7 +120,8 @@
 
   const api = {
     PDF_RULE_ID, PDF_BYPASS_ID, PDF_BYPASS_MS, PDF_VIEWER_PATH, PDF_REGEX,
-    looksPdfUrl, reEscape, viewerUrlFor, redirectRule, allowRule,
+    looksPdfUrl, looksLocalPdfUrl, looksAnyPdfUrl,
+    reEscape, viewerUrlFor, redirectRule, allowRule,
     sameRule, pdfRulePlan, bypassExpired, tabPageUrl,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

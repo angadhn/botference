@@ -66,6 +66,13 @@
     ?pdf=scan        …and the same PDF with nothing in its text layer: a scan.
                      Nothing to select, no article text, and the reader is told
                      so rather than left dragging (screenshot state).
+    ?pdf=local       …and the same viewer opened on a PDF from this MACHINE:
+                     the source is a file:// url, so the identity cannot be an
+                     address at all — pdf/viewer.js hashes the file's bytes and
+                     publishes `window.__BFP_PDF_IDENT` (stubbed here) BEFORE
+                     the annotator is loaded, exactly as the real boot does, and
+                     the record is filed under `bfp-pdf://sha256/<hex>`.
+                     `&selftest=1` runs the local-PDF assertions.
     ?badexport=1     (with ?gdocs=1) the export answers 200 with a Google
                      account chooser instead of the document — the failure
                      state, with its warning in Page chat (screenshot state)
@@ -379,13 +386,30 @@ if (GDOCS) {
 //     DOM and the extension, not Mozilla's renderer.
 // ───────────────────────────────────────────────────────────────────────────
 const PDF_MODE = Q.get('pdf');
-const PDFV = PDF_MODE === '1' || PDF_MODE === 'scan';
+const PDF_LOCAL = PDF_MODE === 'local';
+const PDFV = PDF_MODE === '1' || PDF_MODE === 'scan' || PDF_LOCAL;
 const PDF_SCAN = PDF_MODE === 'scan';
-const PDF_SRC = 'https://arxiv.org/pdf/2608.09112v3.pdf?download=1&sig=abc';
+// ?pdf=local — a PDF on this machine. The source is a path, which is exactly
+// what CANNOT be an identity: move the file or rename it after reading and
+// every comment is stranded. So pdf/viewer.js reads the bytes, hashes them and
+// publishes the answer BEFORE loading a line of the annotator, and content.js
+// (which decides the page identity once, at parse time) reads it from there.
+// The digest is stubbed here — hashing is crypto.subtle's job and is tested
+// on real bytes in pdf.test.mjs; what this exercises is the CONTRACT, which is
+// that the global exists before the chain does.
+const PDF_FILE = 'file:///Users/angadh/Papers/read/2608.09112v3.pdf';
+const PDF_IDENT_LOCAL = 'bfp-pdf://sha256/' +
+  '9f2c1a70b3e84d5c6a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071';
+const PDF_SRC = PDF_LOCAL ? PDF_FILE : 'https://arxiv.org/pdf/2608.09112v3.pdf?download=1&sig=abc';
 // the shape the redirect really produces: the extension's id, and the url
 // written VERBATIM after #raw= because declarativeNetRequest cannot encode
+// (a local one is put there by the toolbar, which has no redirect to obey)
 const PDF_HREF = 'chrome-extension://bfpharnessidbfpharnessidbfpharne/pdf/viewer.html#raw=' + PDF_SRC;
 const PDF_TITLE = 'The Quiet Machine: control without possession';
+// what a local file with no /Title of its own is called: its file name, minus
+// the extension (the extension itself travels separately, as `file_name`)
+const PDF_FILE_TITLE = '2608.09112v3';
+const PDF_FILE_NAME = '2608.09112v3.pdf';
 // what the pages say, line by line, exactly as PDF.js hands them over: a line
 // is several runs (a font change mid-sentence is a new span) and the line break
 // is a <br>, not a space
@@ -400,10 +424,17 @@ const PDF_PAGES = [
 
 if (PDFV) {
   window.__BFP_HREF = PDF_HREF;
+  // IDENTITY BEFORE THE CHAIN. This line is the whole contract: it runs before
+  // adapters.js and content.js are loaded (they are <script> tags at the foot
+  // of this file), exactly as pdf/viewer.js publishes it before injecting them.
+  // A local PDF has no identity until this exists.
+  if (PDF_LOCAL) window.__BFP_PDF_IDENT = PDF_IDENT_LOCAL;
   // the viewer resolves the document's own /Title and puts it in the tab title;
   // the adapter reads it back from there, which is why this is the only place
-  // the title is stated
-  document.title = PDF_TITLE;
+  // the title is stated. The local file is the OTHER case on purpose: a PDF
+  // with no /Title of its own, whose name is therefore its file's.
+  document.title = PDF_LOCAL ? PDF_FILE_TITLE : PDF_TITLE;
+  if (PDF_LOCAL) window.__BFP_PDF_TITLE = PDF_FILE_TITLE;
 
   const art = document.querySelector('article');
   art.className = 'pdfdoc';
@@ -479,8 +510,9 @@ if (CANON) {
 // The PDF's identity is the PDF's url — never the chrome-extension:// address
 // the reader is actually standing on. normUrl leaves this one alone (no hash,
 // no campaign params, no trailing slash), so it is also what the record is
-// filed under.
-const PDF_URL = PDF_SRC;
+// filed under. A LOCAL PDF's identity is not an address at all: it is the hash
+// of the file's bytes, which is what makes moving and renaming the file safe.
+const PDF_URL = PDF_LOCAL ? PDF_IDENT_LOCAL : PDF_SRC;
 const PAGE_URL = GDOCS ? DOC_URL : PDFV ? PDF_URL : CANON ? CANON_PARENT
   : 'https://example.com/sport/the-quiet-machine';
 const now = () => new Date().toISOString();
@@ -549,8 +581,12 @@ if (GDOCS) {
 // quoting across a line break, which is where PDF text always breaks.
 if (PDFV) {
   RECORD.url = PDF_URL;
-  RECORD.title = '2608.09112v3';
-  RECORD.site = 'arxiv.org';
+  RECORD.title = PDF_FILE_TITLE;
+  // …and a local one files under a place rather than a hostname: the "host" of
+  // bfp-pdf://sha256/… is the word sha256, which is about the algorithm and
+  // not about the document
+  RECORD.site = PDF_LOCAL ? 'local pdf' : 'arxiv.org';
+  if (PDF_LOCAL) RECORD.file_name = PDF_FILE_NAME;
   RECORD.page_chat = [];
   RECORD.threads = [
     { id: 't-1754600000-p1a2',
@@ -781,6 +817,7 @@ const threadUrls = [];      // the url every /thread was filed against
 const threadPages = [];     // …and the page number it carried (undefined on an article)
 const pageTitles = [];      // every title POST /page was given, in order
 const pageSites = [];       // …and the site beside it (the PDF's host, not the extension's id)
+const pageFiles = [];       // …and the file it came out of, for a PDF on this disk
 const replyUrls = [];       // …and every /reply
 const helloUrls = [];       // every {t:'hello'} url — the page identity, as announced
 const routeUrls = [];       // …and the page_url every background message routes by
@@ -1035,7 +1072,9 @@ function companion(method, path, body) {
   }
   if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
   if (method === 'POST' && route === '/page') {
-    if (body && body.title) { pageTitles.push(body.title); pageSites.push(body.site); }
+    if (body && body.title) {
+      pageTitles.push(body.title); pageSites.push(body.site); pageFiles.push(body.file_name);
+    }
     if (body && body.title) RECORD.title = body.title;
     if (body && body.site) RECORD.site = body.site;
     return { ok: true, status: 200, data: RECORD };
@@ -4101,6 +4140,14 @@ async function selftestPdf() {
   check('the record is filed under the PDF host, not the extension id', pageSites[0] === 'arxiv.org');
   check('a PDF keeps its query string — normUrl only drops campaign params',
     window.__bfp.url.includes('download=1&sig=abc'));
+  // The identity is decided ONCE, at parse time, from what the viewer had
+  // already published. A url identifies itself, so nothing published later can
+  // move a web PDF — and the same line proves the decision is not re-read.
+  window.__BFP_PDF_IDENT = 'bfp-pdf://sha256/' + 'f'.repeat(64);
+  await window.__bfp.refresh();
+  check('a hash published after the annotator loaded cannot move a web PDF',
+    window.__bfp.url === PDF_URL && window.__bfp.identHref === PDF_SRC);
+  delete window.__BFP_PDF_IDENT;
 
   // ---- the document's own name beats the file name ----
   check('the headline is the document’s title', window.__bfp.headline() === PDF_TITLE);
@@ -4229,6 +4276,100 @@ async function selftestPdf() {
   console.log(out.join('\n'));
 }
 
+// ?pdf=local&selftest=1 — the same viewer, opened on a file from this Mac.
+//
+// Everything the web-PDF selftest asserts is true here too and is not repeated;
+// what is asserted here is the one thing that differs, which is also the one
+// thing that could quietly ruin the feature: WHAT THE PAGE IS.
+//
+// A path is not an identity. If the record were filed under
+// `file:///Users/…/Downloads/paper.pdf`, then reading the paper, renaming it to
+// something you would recognise in a year and filing it in a folder — the
+// entirely normal life of a PDF — would strand every comment on it. So the
+// identity is the SHA-256 of the file's bytes, computed by pdf/viewer.js and
+// published BEFORE the annotator is loaded, because content.js decides which
+// page it is on once, at parse time, and never asks again.
+async function selftestPdfLocal() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const A = window.BFPAnchor;
+
+  // ---- identity: the bytes, not the path, and not the viewer ----
+  check('the page is the file’s contents, not its location', window.__bfp.url === PDF_IDENT_LOCAL);
+  check('…which is the hash the viewer published before loading any of this',
+    window.__bfp.identHref === window.__BFP_PDF_IDENT);
+  check('…in the shape everything downstream can carry: a url',
+    /^bfp-pdf:\/\/sha256\/[0-9a-f]{64}$/.test(window.__bfp.url));
+  check('…and normUrl leaves it exactly as it is',
+    window.__bfp.normUrl(window.__bfp.url) === window.__bfp.url);
+  check('the adapter is the one that said so', (window.__bfp.site || {}).name === 'pdf');
+  check('nothing anywhere is filed under the file’s path',
+    !helloUrls.concat(routeUrls, threadUrls).some(u => String(u).startsWith('file:')) &&
+    !apiCalls.some(c => decodeURIComponent(c.path || '').includes('file:///')));
+  check('…nor under the extension’s own address',
+    !helloUrls.concat(routeUrls, threadUrls).some(u => String(u).includes('chrome-extension')));
+  check('hello announced the hash', helloUrls.length > 0 && helloUrls.every(u => u === PDF_IDENT_LOCAL));
+  check('every background message routes by it too',
+    routeUrls.length > 0 && routeUrls.every(u => u === PDF_IDENT_LOCAL));
+
+  // ---- the record: a place, a name, a file ----
+  check('the record files under a place, not the digest algorithm',
+    pageSites.length > 0 && pageSites.every(s => s === 'local pdf'));
+  check('…never under “sha256”, which is what a hostname would have said',
+    !pageSites.some(s => String(s).includes('sha256')));
+  check('it is a pdf like any other', (window.__bfp.site || {}).kind === 'pdf');
+  check('the file it came out of travels with it',
+    pageFiles.length > 0 && pageFiles.every(f => f === PDF_FILE_NAME));
+  check('…which is a name and never a path', !pageFiles.some(f => String(f).includes('/')));
+  check('a PDF with no /Title of its own is called after its file',
+    window.__bfp.headline() === PDF_FILE_TITLE);
+
+  // ---- the annotator itself, unchanged by any of it ----
+  check('3 threads restored', q('.pane[data-pane="comments"] .card').length === 3);
+  const marks = [...document.querySelectorAll('mark.bfp-hl')];
+  check('highlights are painted inside the text layer',
+    marks.length >= 2 && marks.every(m => !!m.closest('.textLayer')));
+  const text = await window.__bfp.articleText();
+  check('the bots are given the file’s text, page by page', /^\[page 1\]/.test(text));
+
+  const before = threadUrls.length;
+  const ta = await pdfSelect(2, 'sentence that survives a season', 'This is the page-2 claim.');
+  check('selecting in a local PDF opens the composer', !!ta);
+  S.querySelector('.card.pending .send').click();
+  await until(() => threadUrls.length > before);
+  check('a new comment is filed under the hash as well', threadUrls[before] === PDF_IDENT_LOCAL);
+  check('…carrying the page it came off', threadPages[before] === 2);
+  const snap = await until(() => snapshots[0]);
+  check('the phone is sent the TEXT, which is all it ever gets for a PDF',
+    !!snap && snap.includes('<h2>Page 2</h2>'));
+  check('…and never the file itself', !!snap && !/%PDF|base64/i.test(snap));
+
+  // ---- and the decision is not revisited ----
+  // The identity is read once, at parse time. Publishing a different hash now —
+  // which is what a second document being opened into this tab would look like
+  // — must change nothing, because a real navigation reloads the content script
+  // and that is the only moment the question should be asked again.
+  window.__BFP_PDF_IDENT = 'bfp-pdf://sha256/' + 'e'.repeat(64);
+  const posted = pageTitles.length;
+  await window.__bfp.refresh();
+  check('a hash published after the annotator loaded changes nothing',
+    window.__bfp.url === PDF_IDENT_LOCAL);
+  check('…and nothing is posted against it',
+    !apiCalls.slice(posted).some(c => String(c.body && c.body.url || '').includes('e'.repeat(64))));
+  window.__BFP_PDF_IDENT = PDF_IDENT_LOCAL;
+
+  const bad = out.filter(l => l[0] === '✗');
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (pdf-local) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 document.getElementById('h-open').onclick = () => window.__bfp.activate().then(d => d.open('comments'));
 document.getElementById('h-chat').onclick = () => window.__bfp.activate().then(d => d.open('chat'));
 // on a page with no anchored threads to speak of (?gdocs=1), the stream plays
@@ -4248,7 +4389,7 @@ window.__bfp.activate(false).then(() => {
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     if (Q.get('selftest') === '1') {
-      setTimeout(GDOCS ? selftestGdocs : PDFV ? selftestPdf : selftest, 250);
+      setTimeout(GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf : selftest, 250);
       return;
     }
     // the scan, without waiting for a mention: asking content.js for the

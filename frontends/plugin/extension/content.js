@@ -46,6 +46,10 @@
 //                            and the record must be the PDF's own url, so the
 //                            adapter says so and IDENT_HREF obeys it — ahead of
 //                            <link rel=canonical> and ahead of location.
+//   site / fileName          where it FILES, when the identity has no hostname
+//                            worth having (a local PDF is identified by the
+//                            hash of its bytes, so it files under 'local pdf'
+//                            and records the name of the file it came from).
 //   snapshotHtml()           the phone-readable copy, where cloning the article
 //                            is not how you get one (a PDF's prose is PDF.js's
 //                            text layer).
@@ -95,6 +99,30 @@
   const MENTION = /@(claude|codex|all)\b/i;
   const PAGE_TARGET = '__page__';
 
+  // ── NOTHING IS ANNOTATED AT A PATH ─────────────────────────────────────────
+  // Granting this extension "Allow access to file URLs" — which local PDFs ask
+  // for — also makes `<all_urls>` match `file:` documents, and this script would
+  // then run on them. It must not.
+  //
+  // A path is not an identity: `file:///Users/me/Downloads/paper.pdf` says where
+  // something is this morning, and a record filed under it is stranded the
+  // moment the file is moved or renamed. That is the whole reason a local PDF is
+  // identified by the SHA-256 of its bytes instead, computed in the extension's
+  // own viewer (pdf/viewer.js), which is a chrome-extension:// page and reaches
+  // this line with the hash already decided.
+  //
+  // It is also load-bearing for how a local PDF gets INTO that viewer. Chrome's
+  // built-in PDF viewer is an iframe inside an otherwise empty top-level
+  // document whose address is the file: url — a document this script happily
+  // runs in. If it answers the toolbar's `{t:'toggle'}` there, the background's
+  // "no content script answered, so this must be the browser's own PDF viewer"
+  // fallback never fires, and clicking the button files the empty shell under
+  // the path instead of opening the document. Both halves are fixed by not
+  // being there. (`__BFP_HREF` is test/harness.html naming its own address, in
+  // an isolated world the page cannot reach — the same escape it already uses
+  // to pretend to be a site it is not.)
+  if (/^file:/i.test(location.href) && typeof window.__BFP_HREF !== 'string') return;
+
   // ---- the site adapter (see the header) ----------------------------------
   const SITE = (Adapters && Adapters.pick(HREF)) || null;
   const CAPS = Object.assign({ highlights: true, textFallback: true, reportOrphans: true },
@@ -139,12 +167,26 @@
   // becomes two records. `identityHref` is how an adapter says so.
   const IDENT_HREF = (SITE && SITE.identityHref) || CANONICAL_HREF || HREF;
   const URL_NOW = normUrl(IDENT_HREF);
+  // …and NOTHING is ever filed under the extension's own address. That is not a
+  // page: it moves with the extension id, it is nobody's link, and a record
+  // under it would be found again by nobody. It can only happen where an
+  // adapter failed to establish an identity — a local PDF whose bytes could not
+  // be read (pdf/viewer.js refuses to load this script at all in that case) —
+  // and the honest response to "I do not know what document this is" is to do
+  // nothing whatsoever.
+  if (/^(?:chrome|moz)-extension:/i.test(IDENT_HREF)) return;
   // …and the site is the identity's site, never the viewer's: the drawer
-  // remembers its last tab per hostname, and the record files under one.
-  const HOSTNAME = (() => {
+  // remembers its last tab per hostname, and the record files under one. An
+  // adapter may name it outright, which is what a local PDF needs: its identity
+  // is `bfp-pdf://sha256/…` and the hostname of that is the word "sha256".
+  const HOSTNAME = (SITE && SITE.site) || (() => {
     try { return new URL(IDENT_HREF).hostname.replace(/^www\./, ''); }
     catch { return location.hostname.replace(/^www\./, ''); }
   })();
+  // The file a local PDF came out of, if it came out of one. Recorded so the
+  // Obsidian note can name it — the hash identifies the document, but only the
+  // file name tells a reader which of their PDFs it was. The PATH is never sent.
+  const FILE_NAME = (SITE && SITE.fileName) || '';
 
   let active = false;
   let PAGE = null;        // the /page record
@@ -734,7 +776,7 @@
     const title = headline();
     if (title && title !== lastPostedTitle) {
       lastPostedTitle = title;
-      await api('POST', '/page', { url: URL_NOW, title, site: HOSTNAME, kind: PAGE_KIND });
+      await api('POST', '/page', { url: URL_NOW, title, site: HOSTNAME, kind: PAGE_KIND, file_name: FILE_NAME });
       return loadPage();
     }
     return PAGE;
@@ -750,7 +792,7 @@
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
       // upsert the page shell so the server knows this page's real headline
       lastPostedTitle = headline();
-      api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND });
+      api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND, file_name: FILE_NAME });
       // `connected` here is the SOCKET, which a freshly woken worker has not
       // opened yet — so it may confirm, never deny (see connHttp/connSocket)
       bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) connSocket(!!r.connected); });
@@ -1409,7 +1451,19 @@
       sendResponse({ ok: true });
       return;
     }
-    sendResponse({ ok: false, error: 'unknown' });
+    // A message this page does not understand is answered by SAYING NOTHING,
+    // and that is a correction rather than a shrug.
+    //
+    // On an ordinary web page this script only ever hears tabs.sendMessage, so
+    // an "unknown" reply cost nothing. But the PDF viewer is an EXTENSION PAGE,
+    // and chrome.runtime.sendMessage from one extension page is delivered to
+    // every OTHER extension context — including this same script running in a
+    // second viewer tab. Chrome gives the caller whichever listener answers
+    // first, so a viewer tab left open would answer its neighbour's `hello`
+    // with `{ok:false, error:'unknown'}` before the service worker could reply,
+    // and that neighbour would then sit dormant on a page it has annotations
+    // for. Not answering leaves the channel to the worker, which is whose
+    // question it was.
   }
 
   // ---- boot ---------------------------------------------------------------------

@@ -2,6 +2,39 @@
 
 ## 2026-08-10
 
+- **Discuss: the PDFs on your own disk are pages now too.** Open a
+  `file://` PDF and it opens in Discuss, with the same highlights,
+  comments, `@claude`, page numbers, Obsidian export and phone reading
+  that a PDF on the web has had. It needs one switch, once, which no
+  extension is permitted to set for you: brave://extensions → Botference
+  Discuss → Details → "Allow access to file URLs". The settings page tells
+  you whether it is on, and if you land in the viewer without it, the
+  viewer tells you the same thing rather than showing you a blank page.
+
+  The reason this took a while is worth saying, because it is the whole
+  design: a path is not an identity. A PDF filed under
+  `/Users/you/Downloads/paper.pdf` loses every comment the moment you
+  rename it to something you would recognise in a year and file it in a
+  folder — which is what people do with papers. So Discuss identifies a
+  local PDF by *what it is* rather than *where it is*: a hash of its
+  contents. Move it, rename it, keep a copy on a second Mac, and it is the
+  same page with the same conversation. Edit the file and it becomes a new
+  page, honestly — different contents, different document — and the old one
+  keeps its comments under the old name. The same paper read from the web
+  and from your disk are two pages, for the same reason. The note in your
+  vault names the file it came out of, since a hash tells you nothing.
+
+  Your file never leaves the machine: nothing is uploaded, copied or
+  stored. What your phone reads is the text, exactly as for any other PDF.
+  And Discuss annotates nothing else on your disk — a local page that is
+  not a PDF is left completely alone.
+
+- **Discuss: a second PDF tab no longer silences the first.** Two PDFs open
+  at once, and one of them could come up with its comments missing until
+  reloaded: the viewer is one of the extension's own pages, and a message
+  meant for the background could be answered by the OTHER tab first, with
+  a shrug. A tab now says nothing about messages that are not its business.
+
 - **Discuss: a PDF opens in Discuss every time now, not most times.** If you
   had ever used a PDF's "original" link to look at it in the browser's own
   viewer, that document quietly stopped opening in Discuss — for good, while

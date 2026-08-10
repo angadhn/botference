@@ -42,6 +42,24 @@
     return { cls: 'ok', text: bits.join(' · ') };
   }
 
+  // ---- local PDFs: the one toggle that is not ours -----------------------
+  // "Allow access to file URLs" is Chrome's own per-extension switch and no
+  // extension can set it, ask for it in a prompt, or even see it change. What
+  // it CAN do is say plainly that it is off and exactly where the switch is —
+  // one sentence, the same one the viewer shows, because a reader who meets
+  // this twice should meet the same words both times.
+  const FILE_ACCESS_HELP =
+    'Local PDFs need “Allow access to file URLs” — brave://extensions → ' +
+    'Botference Discuss → Details → toggle it on.';
+  function fileAccessLine(allowed) {
+    if (allowed === true) {
+      return { cls: 'on', text: 'On — a PDF on your disk opens in Discuss, ' +
+        'and stays the same page if you move or rename it.' };
+    }
+    if (allowed === false) return { cls: 'off', text: FILE_ACCESS_HELP };
+    return { cls: '', text: 'This browser cannot say whether file access is on. ' + FILE_ACCESS_HELP };
+  }
+
   // The line under the buttons after a save: what was actually stored, which
   // is not always what was typed (normalizeBase rewrites, sanitizeHandle trims).
   function describeSaved(cfg) {
@@ -54,7 +72,7 @@
     return 'saved → ' + base + ' · ' + how;
   }
 
-  const api = { healthVerdict, describeSaved };
+  const api = { healthVerdict, describeSaved, fileAccessLine, FILE_ACCESS_HELP };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPOptions = api;
 
@@ -106,6 +124,29 @@
     el('pdf').checked = cfg.pdf !== false;
   }
 
+  // Asked here on every visit, and the answer written down for the service
+  // worker — which cannot ask (chrome.extension does not exist in a worker)
+  // and needs to know whether reopening a local PDF in our viewer could work.
+  function paintFileAccess() {
+    const line = allowed => {
+      const v = fileAccessLine(allowed);
+      const s = el('filehint');
+      if (!s) return;
+      s.className = 'hint ' + v.cls;
+      s.textContent = v.text;
+      if (allowed != null) {
+        try { chrome.storage.local.set({ 'bfp:file-access': !!allowed }); } catch { /* a hint, not a state */ }
+      }
+    };
+    try {
+      if (chrome && chrome.extension && chrome.extension.isAllowedFileSchemeAccess) {
+        chrome.extension.isAllowedFileSchemeAccess(a => line(!!a));
+        return;
+      }
+    } catch { /* fall through */ }
+    line(null);
+  }
+
   // No Save button on this one: a checkbox that needs confirming is a checkbox
   // people leave wrong. The worker is watching storage and installs (or
   // withdraws) the redirect rule the moment this lands.
@@ -115,7 +156,7 @@
     const s = el('pdfstatus');
     s.className = 'ok';
     s.textContent = on
-      ? 'on — .pdf links now open in Discuss'
+      ? 'on — PDFs now open in Discuss'
       : 'off — PDFs go to the browser’s own viewer';
   });
 
@@ -267,6 +308,7 @@
   });
 
   load();
+  paintFileAccess();
   // the hint is read only once the key status is on screen: loadKeys clears the
   // status line when it succeeds, and would wipe the pointer with it
   loadKeys().then(focusRequestedKey);

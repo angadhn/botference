@@ -2628,6 +2628,74 @@ async function main() {
         'both edits reach every open list');
       es.close();
     });
+
+    // A PDF on the reader's own disk is identified by the SHA-256 of its bytes
+    // (`bfp-pdf://sha256/<hex>`, adapters.js) rather than by a path, so that
+    // moving or renaming the file keeps the comments. To this server that is
+    // simply a url — which is a claim worth proving rather than assuming, since
+    // "identity is a string" is exactly the sort of thing that turns out to
+    // have an `https?` regex hiding behind it. One round trip, every route the
+    // extension uses.
+    await test('a local PDF is a page like any other, filed under its bytes', async () => {
+      const LOCAL = 'bfp-pdf://sha256/' + 'c'.repeat(64);
+      const up = await POST(o.base, '/page', {
+        url: LOCAL, title: 'The Quiet Machine', site: 'local pdf', kind: 'pdf',
+        file_name: 'The Quiet Machine.pdf',
+      });
+      assert.equal(up.status, 200);
+      assert.equal(up.json.url, LOCAL, 'normUrl leaves the pseudo-url byte-identical');
+      assert.equal(up.json.site, 'local pdf', 'and not "sha256", which is what a hostname would say');
+      assert.equal(up.json.file_name, 'The Quiet Machine.pdf');
+      assert.equal(up.json.kind, 'pdf');
+
+      const t = await POST(o.base, '/thread', {
+        url: LOCAL, quote: 'control without possession', prefix: '', suffix: '',
+        page: 3, msg: { text: 'the thesis, in five words' },
+      });
+      assert.equal(t.status, 200);
+      assert.equal(t.json.thread.page, 3);
+      const snap = await POST(o.base, '/snapshot', {
+        url: LOCAL, html: '<section><h2>Page 3</h2><p>control without possession</p></section>',
+      });
+      assert.equal(snap.json.stored, true, 'the phone reads the text, never the file');
+      assert.equal((await POST(o.base, '/rename-page', { url: LOCAL, title: 'Quiet' })).json.title, 'Quiet');
+      assert.deepEqual((await POST(o.base, '/tag-page', { url: LOCAL, tags: ['control'] })).json.tags, ['control']);
+
+      const row = (await idx())[key(LOCAL)];
+      assert.equal(row.kind, 'pdf');
+      assert.equal(row.title, 'Quiet', 'the rename is what every list draws');
+      assert.deepEqual(row.tags, ['control']);
+
+      // …and the reading room serves it: a heading that is not a link, because
+      // the identity is not an address anybody could follow
+      const p = await GET(o.base, `/p/${key(LOCAL)}`);
+      assert.equal(p.status, 200);
+      assert.ok(p.body.includes('<h1>Quiet</h1>'), 'no dead <a> around the name');
+      assert.equal((await GET(o.base, `/a/${key(LOCAL)}`)).status, 200);
+      const pages = await GET(o.base, '/pages');
+      assert.ok(pages.body.includes('on your Mac'), 'the list says where it is, not 64 hex characters');
+      assert.ok(!pages.body.includes('bfp-pdf://'), 'and never shows the hash');
+
+      // the note: filed under the identity (which is what a re-export matches
+      // on) and naming the file, which is the only part a person can use
+      const ex = await POST(o.base, '/export', { url: LOCAL });
+      assert.equal(ex.status, 200);
+      const note = fs.readFileSync(ex.json.path, 'utf8');
+      assert.ok(note.includes(`url: ${LOCAL}`), note);
+      assert.ok(note.includes('file: The Quiet Machine.pdf'), note);
+      assert.ok(note.includes('# Quiet'), note);
+      assert.ok(note.includes('> — p. 3'), note);
+
+      // the same file, opened again from somewhere else on the disk under
+      // another name: the same page, the same comments, and the new name
+      const again = await POST(o.base, '/page', {
+        url: LOCAL, title: 'The Quiet Machine', site: 'local pdf', kind: 'pdf',
+        file_name: 'quiet-machine-final.pdf',
+      });
+      assert.equal(again.json.threads.length, 1, 'the comment made before the move is still there');
+      assert.equal(again.json.custom_title, 'Quiet', 'and the rename survived it');
+      assert.equal(again.json.file_name, 'quiet-machine-final.pdf', 'under whatever it is called now');
+    });
     o.proc.kill();
 
     // --- and both are the OWNER's ----------------------------------------
