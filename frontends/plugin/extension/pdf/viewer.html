@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF — Botference Discuss</title>
+<!--
+  viewer.html — the extension's own PDF reader, and the whole reason a web PDF
+  can be annotated at all.
+
+  Chrome hands a PDF to its OWN built-in viewer, which is a different
+  extension's document: no content script of ours will ever run there, so there
+  is nothing to select, nothing to wrap in a <mark> and nothing to anchor to.
+  This page replaces it (background.js redirects the navigation; see the
+  interception block there) and renders the same file with Mozilla PDF.js —
+  crucially INCLUDING its text layer, which is real, selectable text nodes laid
+  over the canvas.
+
+  Everything below the render is unchanged machinery: the same anchor.js, the
+  same drawer.js, the same content.js, loaded here as ordinary scripts instead
+  of being injected. The one thing that differs is the identity, and adapters.js
+  owns it — the PDF adapter reports the ORIGINAL http(s) url, so every record,
+  every event and every export belongs to the document rather than to this
+  chrome-extension:// address.
+
+  ?src=<encoded url>  built in JavaScript (the toolbar fallback, the tests)
+  #raw=<url>          written verbatim by the declarativeNetRequest redirect,
+                      which cannot percent-encode anything
+-->
+<link rel="stylesheet" href="../vendor/pdfjs/web/pdf_viewer.css">
+<link rel="stylesheet" href="viewer.css">
+
+<!-- `bfp-ui` is not decoration: anchor.js skips elements carrying it, so the
+     viewer's own chrome can never enter the text index, be highlighted, or end
+     up in the snapshot a phone reads. -->
+<header class="bar bfp-ui" id="bar">
+  <span class="mark" aria-hidden="true">
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+         stroke-width="1.6" stroke-linecap="round">
+      <path d="M1 8c2.4-4 4.8-4 7.2 0S13.6 12 15 8"></path>
+      <path d="M1 11.5c2.4-4 4.8-4 7.2 0"></path>
+    </svg>
+  </span>
+  <span class="title" id="doc-title">Loading…</span>
+  <span class="meta" id="doc-meta"></span>
+  <span class="spacer"></span>
+  <button type="button" id="zoom-out" title="Zoom out">−</button>
+  <button type="button" id="zoom-fit" title="Fit the width of the window">Fit</button>
+  <button type="button" id="zoom-in" title="Zoom in">+</button>
+  <a id="original" href="#" title="Open this PDF in the browser's own viewer">original</a>
+</header>
+
+<!-- one quiet line, never a dialog: a scan, a file that would not parse, a
+     src that was not a PDF url at all -->
+<p class="notice bfp-ui" id="notice" hidden></p>
+
+<main id="doc" class="doc"></main>
+
+<!-- The annotator itself, in manifest order. Classic scripts: this is our own
+     page, so they are included rather than injected, and content.js cannot
+     tell the difference. -->
+<script src="../vendor/katex/katex.min.js"></script>
+<script src="../anchor.js"></script>
+<script src="../adapters.js"></script>
+<script src="../drawer.js"></script>
+<script src="../content.js"></script>
+<script type="module" src="viewer.js"></script>

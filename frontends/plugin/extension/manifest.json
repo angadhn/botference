@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Botference Discuss",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Discuss any page with Claude and Codex: highlight, comment, @-mention the bots, export to Obsidian. Needs the companion: run 'botference discuss'.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs", "declarativeNetRequest"],
   "host_permissions": [
-    "http://127.0.0.1:4189/*",
-    "https://docs.google.com/*",
-    "https://*.googleusercontent.com/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -16,6 +15,9 @@
   "options_ui": {
     "page": "options.html",
     "open_in_tab": false
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "content_scripts": [
     {
@@ -42,6 +44,7 @@
     {
       "resources": [
         "drawer.css",
+        "pdf/viewer.html",
         "vendor/katex/katex.min.css",
         "vendor/katex/katex-fonts.css",
         "vendor/katex/fonts/*"

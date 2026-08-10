@@ -21,6 +21,12 @@ export function sanitizeTitle(title) {
 
 const blockquote = q => String(q || '').split('\n')
   .map(l => (l.trim() ? `> ${l}` : '>')).join('\n');
+// Where the passage came from, when the document has somewhere to come from.
+// A quote out of a PDF without its page number is a quote you cannot check, so
+// it rides inside the blockquote as its attribution line — the shape Obsidian
+// (and everyone else) already renders as one. Articles have no pages and get
+// nothing, which is why this is a suffix rather than a second renderer.
+const attribution = t => (t && Number(t.page) > 0 ? `\n> — p. ${Number(t.page)}` : '');
 const authored = msgs => msgs.map(m => `**${m.author}:** ${m.text}`).join('\n');
 // tool-activity summaries are process noise in a note: the drawer keeps them
 // (collapsed), the vault does not
@@ -60,7 +66,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all') {
     `# ${page.title || page.url}`,
   ];
   for (const t of page.threads || []) {
-    parts.push(blockquote(t.quote));
+    parts.push(blockquote(t.quote) + attribution(t));
     const msgs = keptMsgs(t.msgs, only);
     if (!msgs.length) continue;
     // a lone comment of your own reads as prose under its quote; anything

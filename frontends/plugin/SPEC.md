@@ -743,6 +743,112 @@ Contract deltas agreed during live testing — authoritative over the sections a
   stamped BEFORE the request, so a dead network costs one skipped day rather
   than a retry loop, and a failed send never surfaces.
 
+- **Web PDFs** (`extension/pdf/`, `extension/vendor/pdfjs/`, the `pdf` adapter).
+  A PDF on the open web is handed to the browser's OWN viewer, which is another
+  extension's document: no content script runs there, `scripting` cannot reach
+  it, and there is no DOM to select, wrap or anchor in. So the extension becomes
+  the viewer. **http/https only — `file://` is refused deliberately** and no
+  file-URL permission is requested: a path on one disk is not an identity a
+  record can be filed under.
+  · **Interception.** A dynamic `declarativeNetRequest` redirect rule, installed
+    at every worker start (dynamic, not static, because the target carries the
+    extension id): main-frame requests matching
+    `^https?://[^#]*\.[pP][dD][fF](?:$|\?[^#]*$)` are redirected to
+    `pdf/viewer.html#raw=<the whole matched url>`. MV3 has no blocking
+    webRequest, so **nothing can read Content-Type before deciding** — the rule
+    is url-shaped and that is the honest limit. `#raw=` rather than `?src=`
+    because DNR substitutes the match VERBATIM and cannot percent-encode, so a
+    PDF url with `&` in its query would be cut in half; adapters.js reads both
+    spellings (`?src=` stays for the urls we build ourselves).
+    **Known misses, all of them:** a PDF whose url has no `.pdf` (a
+    `/download?id=…`, a Content-Disposition attachment, a viewer shell); a PDF
+    reached by POST; `blob:`/`data:`; a `.pdf` url that is actually HTML (the
+    viewer says so and offers the way back); and a `.pdf` navigation that would
+    have DOWNLOADED now opens in the viewer instead (a Save-link-as download is
+    not a main-frame navigation and is unaffected). The toolbar is the fallback
+    for every one of them: an action click on an http(s) tab whose content
+    script does not answer opens that url in the viewer, which is exactly the
+    built-in-PDF-viewer case. `pdf/viewer.html` is therefore web-accessible, the
+    permission `declarativeNetRequest` is required, and host permissions widen
+    to `http://*/*` + `https://*/*` — an extension page must be able to FETCH
+    the PDF (with `withCredentials`, for a paper behind a library login). The
+    switch is `bfp:pdf` in extension storage (absent = on), on the options page;
+    the worker installs or withdraws the rule when it changes. "Open it in the
+    browser instead" asks the worker for a one-shot higher-priority `allow` rule
+    scoped to that url, withdrawn after a minute — otherwise the escape hatch
+    would be caught by the rule it is escaping.
+  · **The viewer** (`pdf/viewer.html` + `viewer.js` + `viewer.css`) renders with
+    PDF.js **including its text layer** — absolutely-positioned transparent
+    spans over the canvas, which are ordinary text nodes, which is the entire
+    reason anchor.js, drawer.js and content.js need no changes. It includes the
+    same script chain the manifest injects, as plain `<script>` tags. Canvases
+    are painted lazily (IntersectionObserver); **text layers are built for every
+    page regardless**, in order, yielding between pages — an anchor on page 40
+    must be findable whether or not page 40 has been looked at. One number,
+    `scale`, is both the viewport scale and the `--scale-factor` the vendored
+    `.textLayer` rules read; zooming moves it and calls `TextLayer.update()`,
+    which relayouts in place and therefore never destroys a painted highlight.
+    The viewer tells the annotator to re-anchor (`window.__bfp.refresh()`,
+    debounced) as each page lands, and re-posts `/page` only when the title
+    actually changes (PDF `/Title` replacing the file name).
+  · **Identity — the point.** The address bar says
+    `chrome-extension://<id>/pdf/viewer.html…` and that is NOT the document. An
+    adapter may now declare `identityHref`, which outranks `<link rel=canonical>`
+    and `location` in content.js's `IDENT_HREF`; the `pdf` adapter reports the
+    original http(s) url. `HOSTNAME` is derived from `IDENT_HREF` too (the site
+    in the record, the drawer's per-site tab memory). Two latent bugs went with
+    it: the port ping and the `whereami` answer sent `HREF`, so a canonical
+    splinter registered the wrong routing key — both now send `IDENT_HREF`.
+  · **Anchors gain an optional `page`** (1-based). It is stored beside
+    `quote/prefix/suffix` and is **never consulted by `locate()`** — re-anchoring
+    is the same whitespace-tolerant text search it has always been. Absent on
+    every article thread and on every thread saved before this existed, and
+    absent payloads behave exactly as before. `POST /thread` accepts `page`
+    (number or numeric string; anything else is dropped), `store.addThread`
+    stores it only when > 0, the Obsidian export writes it as the blockquote's
+    attribution line (`> — p. 12`), and `/p/<key>` + the phone reader show the
+    same words. content.js captures it at selection time from
+    `SITE.pageOf(node)`; reader.js reads it back off the snapshot's `Page N`
+    heading, so a highlight made on a phone carries one too.
+  · **Text, once.** The adapter reads the text layer back out of the DOM rather
+    than calling `getTextContent()` a second time, so the article text, the
+    snapshot and the anchors all derive from ONE string. A line is a `<br>`
+    (PDF.js emits one per end-of-line) and a run is a `<span>`; lines are
+    whitespace-folded and empty ones dropped. Article text is `[page N]`-marked
+    blocks, capped at the adapter's `TEXT_LIMIT`. The snapshot is
+    `<section><h2>Page N</h2><p>line<br>line</p></section>` per page — text
+    only, which is the honest fidelity for a PDF on a phone (no figures, no
+    columns, no typesetting), and exactly what `sanitize.mjs` keeps. Because
+    both sides are built from the same lines under the same page markers, a
+    quote captured in the viewer re-locates in the snapshot and vice versa
+    (tested three ways: pure, in the harness, and against real PDF.js).
+    Hyphenation is left alone: a line ending `struc-` reads `struc- ture` in the
+    quote, identically on both sides, which keeps the anchor exact.
+  · **Two more adapter capabilities**, both defaulting to the old behaviour:
+    `textFallback:false` (an empty `articleText()` is FINAL — a scanned PDF has
+    text nodes, so highlights stay on, but scraping the DOM would hand the bots
+    the viewer's own chrome) and `reportOrphans:false` (an anchor this page
+    cannot find is badged locally and never POSTed to `/orphan` — a PDF renders
+    page by page, so "not found" usually means "not yet"). A scan is announced
+    once in the viewer and once at the composer (`SITE.contextNote`), and there
+    is no OCR.
+  · **Vendored** at `extension/vendor/pdfjs/`, pinned to **6.2.108**, the
+    **legacy** build (transpiled, so `minimum_chrome_version: 116` stays true):
+    `build/pdf.min.mjs`, `build/pdf.worker.min.mjs`, `web/pdf_viewer.css`,
+    `standard_fonts/`, `cmaps/`, `iccs/`, `wasm/` (no quickjs — PDF scripting is
+    off, `isEvalSupported:false`). `content_security_policy.extension_pages`
+    gains `'wasm-unsafe-eval'` for the three decoders. See
+    `vendor/pdfjs/VERSION` for provenance and the upgrade steps.
+  · **Testing.** `test/pdf.test.mjs` (pure: identity, extraction, the snapshot,
+    the anchor round trip on strings, the record); harness `?pdf=1&selftest=1`
+    (a synthetic text layer in a real browser, driving the whole loop) and
+    `?pdf=scan` (the screenshot state); `test/pdf-render.test.mjs`, which runs
+    REAL PDF.js on `test/fixtures/two-pages.pdf` over the DevTools protocol.
+    The last one cannot use `--virtual-time-budget --dump-dom` like the harness
+    does: PDF.js parses in a **worker**, whose clock virtual time does not
+    advance, so the document promise never resolves and the page dumps empty.
+    A real clock, a real wait. It skips itself where no Chromium exists.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

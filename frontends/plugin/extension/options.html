@@ -71,7 +71,10 @@
     color: var(--muted); vertical-align: middle; margin-left: 6px;
   }
   .badge.set { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent) }
-  #keystatus { font-size: 12px; color: var(--muted) }
+  label.check { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px }
+  label.check input { width: 16px; height: 16px; accent-color: var(--accent) }
+  #pdfstatus, #keystatus { font-size: 12px; color: var(--muted) }
+  #pdfstatus.ok { color: var(--good) }
   #keystatus.ok { color: var(--good) }
   #keystatus.err { color: var(--bad) }
   button {
@@ -136,6 +139,28 @@
       machine the companion runs on, never over a tunnel. Each agent's billing switch lives in
       the drawer's ⚙ menu; with a key saved it starts on <em>API key</em>, and without one it
       cannot leave <em>subscription</em>.</p>
+  </div>
+
+  <h2 class="sub">Web PDFs</h2>
+  <p class="lede tight">A PDF on the web opens in the browser's own viewer, which no extension can
+    reach into — so Discuss brings its own, and web PDFs become pages you can highlight, comment
+    on and export like any other.</p>
+
+  <div class="card">
+    <div class="field">
+      <label class="check" for="pdf">
+        <input id="pdf" type="checkbox" checked>
+        Open web PDFs in Discuss
+      </label>
+      <p class="hint">Applies to addresses ending in <code>.pdf</code>. Anything else — a
+        <code>/download?id=…</code> link, a PDF served without one — is left alone; click the
+        toolbar button on it and it opens here too. Local <code>file://</code> PDFs are
+        deliberately not supported: a path on your disk is not a stable identity for a record.
+        Turn this off and PDFs go back to the browser's viewer.</p>
+    </div>
+    <div class="row">
+      <span id="pdfstatus" role="status"></span>
+    </div>
   </div>
 
   <h2 class="sub">Remote companion <span class="opt">— optional</span></h2>

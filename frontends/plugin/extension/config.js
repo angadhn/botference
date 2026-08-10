@@ -25,7 +25,16 @@
   'use strict';
 
   const DEFAULT_BASE = 'http://127.0.0.1:4189';
-  const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle' };
+  // bfp:pdf is the one setting here that is not about the wire: whether a web
+  // PDF is opened in Discuss's own viewer (so it can be annotated) or left to
+  // the browser's. Stored the same way as the rest because it is read in the
+  // same two places — the worker, which installs the redirect rule, and the
+  // options page, which is where it is turned off.
+  const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle',
+                 pdf: 'bfp:pdf' };
+  // absent means on: an extension installed before this existed should still
+  // open PDFs in the viewer, because that is the feature
+  const readBool = (v, dflt) => (v === undefined || v === null ? !!dflt : !!v);
 
   // Control characters are stripped everywhere rather than escaped: these
   // values end up in HTTP headers and in a WS query string, and a stray \r\n
@@ -109,16 +118,17 @@
   // ---- storage (the only chrome.* in this file) ---------------------------
   function readConfig(area) {
     const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
-    const fallback = { base: DEFAULT_BASE, password: '', handle: '' };
+    const fallback = { base: DEFAULT_BASE, password: '', handle: '', pdf: true };
     if (!store) return Promise.resolve(fallback);
     return new Promise(resolve => {
       try {
-        store.get([KEYS.base, KEYS.password, KEYS.handle], r => {
+        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.pdf], r => {
           const got = r || {};
           resolve({
             base: normalizeBase(got[KEYS.base]) || DEFAULT_BASE,
             password: clean(got[KEYS.password]),
             handle: sanitizeHandle(got[KEYS.handle]),
+            pdf: readBool(got[KEYS.pdf], true),
           });
         });
       } catch { resolve(fallback); }
@@ -131,6 +141,7 @@
       [KEYS.base]: normalizeBase(cfg && cfg.base) || DEFAULT_BASE,
       [KEYS.password]: clean(cfg && cfg.password),
       [KEYS.handle]: sanitizeHandle(cfg && cfg.handle),
+      [KEYS.pdf]: readBool(cfg && cfg.pdf, true),
     };
     if (!store) return Promise.resolve(out);
     return new Promise(resolve => {

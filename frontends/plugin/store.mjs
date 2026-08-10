@@ -345,7 +345,23 @@ export function resolveMsg(msgs, { ts, author, kind } = {}) {
   return { msg: hits[0], index: list.indexOf(hits[0]), ambiguous: hits.length > 1 };
 }
 
-export function addThread(page, { quote, prefix, suffix, text, author, index }) {
+// A page number is part of an anchor, and is not part of finding it.
+//
+// It exists because a document with pages has them: "p. 12" is half of what a
+// quote from a PDF MEANS, in the export and in the reading room alike. It is
+// therefore stored beside quote/prefix/suffix and never consulted by locate() —
+// re-anchoring is the same whitespace-tolerant text search it has always been,
+// and a thread saved before this existed (or made on an ordinary article, which
+// has no pages) simply has no `page` field and behaves exactly as before.
+const pageNumber = n => {
+  // a number, or the string a form POST has no other way to send one as —
+  // never an object or an array, which Number() would happily coerce
+  if (typeof n !== 'number' && typeof n !== 'string') return 0;
+  const v = Number(n);
+  return Number.isInteger(v) && v > 0 && v < 1e6 ? v : 0;
+};
+
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
@@ -354,6 +370,8 @@ export function addThread(page, { quote, prefix, suffix, text, author, index }) 
     orphaned: false,
     msgs: [{ author, ts: nowIso(), text: String(text || '') }],
   };
+  const p = pageNumber(page_number);
+  if (p) thread.page = p;
   // the extension knows the page order of its highlights; when it tells us
   // where the new one sits we honor it, otherwise the thread appends
   const at = Number.isInteger(index) && index >= 0 && index <= page.threads.length

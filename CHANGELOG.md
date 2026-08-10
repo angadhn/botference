@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## 2026-08-10
+
+- **Discuss: PDFs on the web are pages now.** Half of what anyone reads
+  seriously is a PDF, and until today Discuss could not see one: the
+  browser hands a PDF to its own viewer, which is another extension's
+  document, closed to every extension including this one. So Discuss
+  brings its own viewer. Open any address ending in `.pdf` and it opens
+  in Discuss instead — real selectable text, highlights, comments,
+  `@claude`, Obsidian export, and the same page readable from your phone,
+  exactly as on an article. The renderer is Mozilla's PDF.js, vendored
+  into the extension: no CDN, no network, nothing fetched at read time.
+  · **A quote carries its page.** Highlight something on page 12 and the
+    note in your vault says so, under the blockquote where an attribution
+    belongs. Older comments have no page and are written exactly as they
+    always were.
+  · **The record belongs to the PDF, not to the viewer.** The address bar
+    shows the extension while you read, but the page is filed under the
+    paper's own URL — so the same PDF opened on another machine, or from
+    a different link, is the same page with the same comments.
+  · **Two honest limits, said out loud.** A PDF whose address does not end
+    in `.pdf` (a `/download?id=…` link) is not opened automatically —
+    click the toolbar button on it and it opens in Discuss anyway. And a
+    scanned PDF is an image of words: one quiet line says so, nothing is
+    highlightable, and the bots are told nothing rather than being handed
+    the viewer's own furniture. There is no OCR.
+  · Local `file://` PDFs are deliberately not supported, and the extension
+    asks for no file access: a path on one disk is not an identity a
+    shared record can be filed under.
+  · The whole thing has an off switch on the extension's options page, and
+    a way back to the browser's own viewer on every PDF.
+
 ## 2026-08-09
 
 - **Discuss: one page, one identity — and the right title on it.** Some

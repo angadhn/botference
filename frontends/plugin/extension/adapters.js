@@ -9,9 +9,18 @@
 // An adapter is the per-site answer to those two questions:
 //
 //   { name,                         // for logs/tests only
-//     capabilities: { highlights }, // false ⇒ no selection pill, no painting
+//     capabilities: { highlights,   // false ⇒ no selection pill, no painting
+//                     textFallback,// false ⇒ '' from articleText() means "no
+//                                   //   text", never "scrape the DOM instead"
+//                     reportOrphans },// false ⇒ a lost anchor is badged here
+//                                   //   and never POSTed to /orphan
+//     identityHref,                 // WHICH PAGE this is, when the address bar
+//                                   //   is not it (the PDF viewer). '' ⇒ the
+//                                   //   ordinary rule (canonical, else location)
 //     title(),                      // '' ⇒ fall back to the generic headline
 //     articleText(),                // Promise<string>; '' ⇒ generic extraction
+//     snapshotHtml(),               // '' ⇒ content.js clones the article itself
+//     pageOf(node),                 // 0 ⇒ this anchor has no page number
 //     docx() }                      // Promise<base64>; optional attachment
 //                                   // ('' = nothing to attach, never an error)
 //
@@ -540,6 +549,217 @@
     },
   };
 
+  // ---- web PDFs -----------------------------------------------------------
+  //
+  // A PDF opened from the web is not a page the extension can annotate: Chrome
+  // hands it to its own built-in viewer, which is another extension's document,
+  // and no content script of ours will ever run there. So the extension brings
+  // its own viewer (pdf/viewer.html + Mozilla PDF.js, vendored) and the
+  // navigation is redirected into it — see background.js for the interception
+  // and SPEC.md for what it can and cannot catch.
+  //
+  // That makes this adapter's FIRST job an identity one. The address bar now
+  // says chrome-extension://<id>/pdf/viewer.html…, and that address is not the
+  // document: it changes with the extension id, it is not what anyone would
+  // share, and two machines reading the same PDF would file it twice. The
+  // identity is, and stays, the ORIGINAL http(s) url — everything downstream
+  // (hello, /page, /thread, /snapshot, the worker's routing table) is given it
+  // by `identityHref`, exactly as gdocs owns its own identity rules.
+  //
+  // Its second job is text. PDF.js paints the page to a canvas and lays a
+  // TEXT LAYER of absolutely-positioned spans over it — real text nodes, which
+  // is what makes selection, <mark> painting and quote anchoring work
+  // unchanged. This adapter reads that layer back out of the DOM (never
+  // getTextContent() a second time) so that the article text, the phone
+  // snapshot and the anchors are all derived from ONE string. A quote captured
+  // here therefore re-locates in the snapshot on a phone, which is the only
+  // reason /a/<pageKey> is worth serving for a PDF at all.
+  const PDF_VIEWER_PATH = 'pdf/viewer.html';
+  const PDF_PAGE_ATTR = 'data-bfp-pdf-page';
+  // the marker text the viewer prints above each page, repeated verbatim in the
+  // snapshot so both sides read the same string
+  const pdfPageLabel = n => 'Page ' + n;
+
+  const httpOnly = u => {
+    const s = String(u == null ? '' : u).trim();
+    return /^https?:\/\/[^\s]/i.test(s) ? s : null;
+  };
+
+  // A url that a plain .pdf link is behind. Extension-only knowledge: the
+  // interception rule keys off exactly this shape, and the toolbar fallback
+  // uses it to decide whether to say "this does not look like a PDF".
+  const PDF_URL = /^https?:\/\/[^?#]*\.pdf(?:[?#]|$)/i;
+  const looksPdfUrl = u => PDF_URL.test(String(u == null ? '' : u).trim());
+
+  // The viewer's own address for a given PDF. Encoded, because this is the one
+  // we build ourselves and can afford to.
+  function pdfViewerUrl(base, src) {
+    return String(base == null ? '' : base) + '?src=' + encodeURIComponent(String(src == null ? '' : src));
+  }
+
+  // …and the inverse: which PDF a viewer address is showing, or null for "this
+  // is not our viewer".
+  //
+  // TWO spellings, and the reason is the redirect. declarativeNetRequest
+  // substitutes the matched url into the target VERBATIM — it cannot
+  // percent-encode — so a PDF url with a `&` in its query would be truncated by
+  // any `?src=` parse. The rule therefore writes `#raw=<url>` where nothing
+  // follows and no decoding is owed. `?src=` stays for the paths that build the
+  // url in JavaScript (the toolbar fallback, the tests), where encoding is free.
+  function pdfViewerSrc(href) {
+    let u;
+    try { u = new URL(String(href == null ? '' : href)); } catch { return null; }
+    if (!new RegExp('(?:^|/)' + PDF_VIEWER_PATH.replace('.', '\\.') + '$').test(u.pathname)) return null;
+    const hash = u.hash ? u.hash.slice(1) : '';
+    if (hash.indexOf('raw=') === 0) return httpOnly(hash.slice(4));
+    const q = u.search ? u.search.slice(1) : '';
+    const at = q.indexOf('src=');
+    if (at === -1) return null;
+    // everything after the FIRST src= is the url, ampersands and all
+    const raw = q.slice(at + 4);
+    let dec = raw;
+    try { dec = decodeURIComponent(raw); } catch { dec = raw; }
+    return httpOnly(dec);
+  }
+
+  // The name of the file, for a PDF that carries no /Title of its own —
+  // 'https://arxiv.org/pdf/2401.01234v2.pdf' → '2401.01234v2'. Never a guess
+  // dressed up as a title: the viewer prefers the document's own metadata and
+  // only falls back to this.
+  function pdfNameFromUrl(url) {
+    let u;
+    try { u = new URL(String(url == null ? '' : url)); } catch { return ''; }
+    let last = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+    try { last = decodeURIComponent(last); } catch { /* keep it as it came */ }
+    return last.replace(/\.pdf$/i, '').replace(/[_+]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // ---- reading the text layer back out ------------------------------------
+  // PDF.js emits one <span> per text run and a <br> at every end of line.
+  // anchor.js reads the same DOM and folds a <br> to '\n', so lines are the
+  // unit both sides agree on: split here, and the snapshot can put the same
+  // lines back with <br> and produce a byte-identical normalized string.
+  function pdfLayerLines(el) {
+    let raw = '';
+    (function walk(node) {
+      for (let n = node.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) { raw += n.data; continue; }
+        if (n.nodeType !== 1) continue;
+        if (n.nodeName.toUpperCase() === 'BR') { raw += '\n'; continue; }
+        walk(n);
+      }
+    })(el);
+    return raw.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  }
+
+  // [{page, lines}] for every page whose text layer exists, in document order.
+  // A page still rendering simply is not here yet — the viewer re-asks as each
+  // one lands.
+  function pdfPagesFromDom(doc) {
+    const d = doc || (typeof document !== 'undefined' ? document : null);
+    if (!d || !d.querySelectorAll) return [];
+    const out = [];
+    const nodes = d.querySelectorAll('[' + PDF_PAGE_ATTR + ']');
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      const n = parseInt(el.getAttribute(PDF_PAGE_ATTR), 10);
+      if (!(n > 0)) continue;
+      const layer = el.querySelector('.textLayer');
+      out.push({ page: n, lines: layer ? pdfLayerLines(layer) : [] });
+    }
+    return out;
+  }
+
+  // What the bots read. Page markers are not decoration: a reply that says
+  // "page 4 contradicts page 2" is only possible if the numbers travelled.
+  function pdfContextText(pages, limit) {
+    const cap = limit || TEXT_LIMIT;
+    const parts = [];
+    let size = 0;
+    for (const p of pages || []) {
+      if (!p || !p.lines || !p.lines.length) continue;
+      const block = '[' + pdfPageLabel(p.page).toLowerCase() + ']\n' + p.lines.join('\n');
+      size += block.length + 2;
+      parts.push(block);
+      if (size > cap) break;
+    }
+    return parts.join('\n\n').slice(0, cap).trimEnd();
+  }
+
+  // What a phone reads at /a/<pageKey>. Text only — a snapshot of a PDF is its
+  // words, not its typesetting — but the words in the order and the line breaks
+  // the viewer showed, under the same page markers, so an anchor made on the
+  // Mac is findable on the phone and vice versa. The sanitizer on the way in
+  // keeps section/h2/p/br and drops everything else, which is exactly this.
+  const escPdf = s => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  function pdfSnapshotHtml(pages) {
+    const parts = [];
+    for (const p of pages || []) {
+      if (!p || !p.lines || !p.lines.length) continue;
+      parts.push('<section><h2>' + escPdf(pdfPageLabel(p.page)) + '</h2><p>' +
+        p.lines.map(escPdf).join('<br>') + '</p></section>');
+    }
+    return parts.join('\n');
+  }
+
+  // Which page a DOM node sits on (1-based), or 0 for "not on a page".
+  function pdfPageOfNode(node) {
+    for (let n = node; n; n = n.parentNode || n.host) {
+      if (n.nodeType === 1 && n.hasAttribute && n.hasAttribute(PDF_PAGE_ATTR)) {
+        const v = parseInt(n.getAttribute(PDF_PAGE_ATTR), 10);
+        return v > 0 ? v : 0;
+      }
+    }
+    return 0;
+  }
+
+  const PDF = {
+    name: 'pdf',
+    match(url) {
+      const src = pdfViewerSrc(url);
+      return src ? { src } : null;
+    },
+    create(hit, env) {
+      const src = (hit && hit.src) || String(hit || '');
+      const docTitle = (env && env.documentTitle) ||
+        (() => (typeof document !== 'undefined' ? document.title : ''));
+      const dom = (env && env.doc) || null;
+      const pages = () => pdfPagesFromDom(dom);
+
+      const ad = {
+        name: 'pdf',
+        // the whole point: the record is the PDF's, not the viewer's
+        identityHref: src,
+        src,
+        // the text layer is real text nodes, so everything the extension does
+        // to an article works here unchanged
+        // …and an orphan here is a local verdict, never a report. A PDF's
+        // pages arrive one at a time (and a scan's never do), so "I cannot
+        // find it" means "not yet" far more often than it means "gone".
+        capabilities: { highlights: true, textFallback: false, reportOrphans: false },
+        lastError: '',
+        // what the reader is told when there is no text to send — the same
+        // sentence the viewer prints over the page itself
+        contextNote: 'this PDF has no selectable text (it looks like a scan), so the bots cannot read it',
+        // the viewer resolves it (document /Title, else the file name) and puts
+        // it in the tab title, which is the one place both this and the browser
+        // agree on
+        title: () => String(docTitle() || '').trim() || pdfNameFromUrl(src),
+        pageOf(node) { try { return pdfPageOfNode(node); } catch { return 0; } },
+        snapshotHtml() { return pdfSnapshotHtml(pages()); },
+        async articleText() {
+          ad.lastError = '';
+          const text = pdfContextText(pages(), TEXT_LIMIT);
+          if (text) return text;
+          ad.lastError = 'this PDF has no selectable text — it is a scan, and there is no OCR here';
+          return '';
+        },
+      };
+      return ad;
+    },
+  };
+
   // ---- page identity ------------------------------------------------------
   // WHICH page a document is, when the address bar and the document disagree.
   //
@@ -586,7 +806,7 @@
 
   // ---- registry -----------------------------------------------------------
 
-  const REGISTRY = [GDOCS];
+  const REGISTRY = [GDOCS, PDF];
 
   function pick(url, env) {
     for (const a of REGISTRY) {
@@ -604,6 +824,11 @@
     gdocsId, gdocsScope, gdocsExportUrl, gdocsExportUrls, accountFromUrls,
     stripDocsSuffix, cleanExport, looksHtml, looksZip, bytesToBase64, b64Size,
     TEXT_LIMIT, AUTHUSER_MAX, EXPORT_URL_MAX, PAGE_CREDENTIALS, DOCX_MAX,
+    // web PDFs (pure; the DOM readers take a document, so jsdom-free tests
+    // hand them a stub)
+    looksPdfUrl, pdfViewerUrl, pdfViewerSrc, pdfNameFromUrl, pdfLayerLines,
+    pdfPagesFromDom, pdfContextText, pdfSnapshotHtml, pdfPageOfNode,
+    pdfPageLabel, PDF_VIEWER_PATH, PDF_PAGE_ATTR,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAdapters = api;

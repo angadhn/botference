@@ -1,0 +1,55 @@
+Mozilla PDF.js — vendored, pinned, offline
+==========================================
+
+version   6.2.108   (2026-07-28)
+source    https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.2.108.tgz
+          (identical content to the GitHub release
+           https://github.com/mozilla/pdf.js/releases/tag/v6.2.108 — the npm
+           tarball is used because it is the only one that ships the MINIFIED
+           builds, which the release zip no longer does)
+licence   Apache-2.0 — see LICENSE (and wasm/LICENSE_* for the three
+          WebAssembly decoders, which carry their own upstream notices)
+
+The **legacy** build is vendored deliberately: it is transpiled for older
+engines, which is what keeps manifest.json's `minimum_chrome_version: 116`
+honest. Nothing here is ever fetched from a CDN — MV3 forbids remote code, and
+an annotator that stops working on a plane is not an annotator.
+
+What is here, and why
+---------------------
+  build/pdf.min.mjs          the API, loaded as an ES module by pdf/viewer.js
+  build/pdf.worker.min.mjs   the parser, run as a module Worker
+  web/pdf_viewer.css         upstream stylesheet; only its `.textLayer` rules
+                             are used, and they are load-bearing — the text
+                             layer's geometry (percentage offsets scaled by
+                             --total-scale-factor) is what makes a selection
+                             land on the right glyphs
+  standard_fonts/            the base-14 substitutes, for PDFs that do not
+                             embed Helvetica/Times/Courier (most of them)
+  cmaps/                     predefined CMaps: CJK text does not extract at all
+                             without these
+  iccs/                      the CGATS ICC profile pdf.js uses for colour
+  wasm/                      jbig2 / openjpeg (JPX) / qcms decoders
+
+What is deliberately NOT here
+-----------------------------
+  web/viewer.*               pdf.js's own full viewer UI. This extension has
+                             its own (pdf/viewer.html), because the drawer and
+                             the anchoring have to own the page.
+  web/images/                only referenced by the annotation-editor CSS,
+                             which this viewer never turns on
+  wasm/quickjs-eval.*        PDF-embedded JavaScript. Scripting is off
+                             (`isEvalSupported: false`); a document must never
+                             be able to run code inside the extension's origin.
+  wasm/*_nowasm_fallback.js  the pure-JS decoders, needed only where wasm is
+                             unavailable. manifest.json grants
+                             'wasm-unsafe-eval' to extension pages, so it is.
+  *.map                      source maps (12 MB, and no debugger here reads
+                             them)
+
+Upgrading
+---------
+Download the tarball for the new version, copy exactly the paths listed above,
+update this file, and re-run:
+    node frontends/plugin/test/pdf.test.mjs
+plus the harness state `test/harness.html?pdf=1&selftest=1`.

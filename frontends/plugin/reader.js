@@ -97,7 +97,10 @@
       var t = threadById(open.id);
       if (!t) { open = null; sheet.classList.remove('open'); return; }
       label = 'comment';
-      html = '<blockquote>' + esc(t.quote) + '</blockquote>'
+      // a quote off a PDF carries its page: the same attribution the export
+      // writes, in the same words
+      html = '<blockquote>' + esc(t.quote)
+        + (t.page > 0 ? '<cite> — p. ' + esc(String(t.page)) + '</cite>' : '') + '</blockquote>'
         + (t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : '')
         + (t.msgs || []).map(msgHtml).join('') + composerHtml('reply…');
     }
@@ -122,7 +125,8 @@
     var req = mode === 'new'
       ? post('/thread', {
         url: D.url, quote: open.anchor.quote, prefix: open.anchor.prefix,
-        suffix: open.anchor.suffix, msg: { text: text },
+        suffix: open.anchor.suffix, page: open.anchor.page || undefined,
+        msg: { text: text },
       })
       : post('/reply', { url: D.url, thread_id: target, text: text });
     req.then(function (r) {
@@ -157,6 +161,17 @@
   }
 
   // ---- selection -> a new highlight --------------------------------------
+  // "Page 12" is a heading in the snapshot of a PDF and nothing at all in the
+  // snapshot of an article, so this answers 0 for every page that has no pages.
+  var PAGE_HEAD = /^page\s+(\d{1,5})$/i;
+  function pageOfNode(node) {
+    var el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+    var sec = el && el.closest ? el.closest('section') : null;
+    var h = sec && sec.querySelector ? sec.querySelector('h2') : null;
+    var m = h && PAGE_HEAD.exec(String(h.textContent || '').trim());
+    return m ? Number(m[1]) : 0;
+  }
+
   function hidePill() { pill.hidden = true; }
   function onSelect() {
     var sel = window.getSelection();
@@ -177,6 +192,11 @@
     hidePill();
     sel.removeAllRanges();
     if (!anchor.quote) return;
+    // A snapshot of a PDF is per-page sections under a "Page N" heading, and
+    // the sanitizer keeps the words while dropping every attribute — so the
+    // heading IS the page number, and reading it back is how a highlight made
+    // on a phone carries the same "p. 12" one made on the Mac does.
+    anchor.page = pageOfNode(sel.getRangeAt(0).startContainer);
     open = { kind: 'new', anchor: anchor };
     render();
   });

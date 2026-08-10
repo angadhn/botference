@@ -36,6 +36,25 @@
 //                            Google Docs' text only exists behind the user's
 //                            session, which the background proxy (companion
 //                            only) and the bots can never reach.
+//   capabilities.textFallback
+//                            false ⇒ '' from articleText() is FINAL. A scanned
+//                            PDF has text nodes (so highlights stay on) and no
+//                            text in them; scraping the DOM instead would send
+//                            the viewer's own chrome to the bots.
+//   identityHref             WHICH PAGE this document is. The PDF viewer's
+//                            address is chrome-extension://…/pdf/viewer.html
+//                            and the record must be the PDF's own url, so the
+//                            adapter says so and IDENT_HREF obeys it — ahead of
+//                            <link rel=canonical> and ahead of location.
+//   snapshotHtml()           the phone-readable copy, where cloning the article
+//                            is not how you get one (a PDF's prose is PDF.js's
+//                            text layer).
+//   pageOf(node)             1-based page number for an anchor made at `node`;
+//                            0 = this document has no pages.
+//   capabilities.reportOrphans
+//                            false ⇒ an anchor this page cannot find is badged
+//                            locally and NOT reported. A PDF renders page by
+//                            page, so "not found" usually means "not yet".
 //
 // No adapter = the default: highlights on, extraction as it always was.
 (function () {
@@ -73,16 +92,13 @@
   // content script's `window` is its own isolated world — the page it runs on
   // cannot reach this, exactly as with __BFP_THEME.)
   const HREF = (typeof window.__BFP_HREF === 'string' && window.__BFP_HREF) || location.href;
-  const HOSTNAME = (() => {
-    try { return new URL(HREF).hostname.replace(/^www\./, ''); }
-    catch { return location.hostname.replace(/^www\./, ''); }
-  })();
   const MENTION = /@(claude|codex|all)\b/i;
   const PAGE_TARGET = '__page__';
 
   // ---- the site adapter (see the header) ----------------------------------
   const SITE = (Adapters && Adapters.pick(HREF)) || null;
-  const CAPS = Object.assign({ highlights: true }, (SITE && SITE.capabilities) || {});
+  const CAPS = Object.assign({ highlights: true, textFallback: true, reportOrphans: true },
+                             (SITE && SITE.capabilities) || {});
 
   // ---- which page this is, decided ONCE ----------------------------------
   // Resolved at load and never revisited, because a document's identity does
@@ -109,8 +125,20 @@
   // Everything the extension sends — hello, /page, /thread, /reply, /snapshot,
   // the routing key on every background message — comes from these two and
   // nothing else.
-  const IDENT_HREF = CANONICAL_HREF || HREF;
+  //
+  // An adapter outranks all of it. The PDF viewer's address is
+  // chrome-extension://<id>/pdf/viewer.html… and that is emphatically not the
+  // document: it moves with the extension id, it is nobody's link, and the
+  // record has to be the PDF's own url or the same paper read on two machines
+  // becomes two records. `identityHref` is how an adapter says so.
+  const IDENT_HREF = (SITE && SITE.identityHref) || CANONICAL_HREF || HREF;
   const URL_NOW = normUrl(IDENT_HREF);
+  // …and the site is the identity's site, never the viewer's: the drawer
+  // remembers its last tab per hostname, and the record files under one.
+  const HOSTNAME = (() => {
+    try { return new URL(IDENT_HREF).hostname.replace(/^www\./, ''); }
+    catch { return location.hostname.replace(/^www\./, ''); }
+  })();
 
   let active = false;
   let PAGE = null;        // the /page record
@@ -289,6 +317,16 @@
     + 'input,select,textarea,link,meta,template,object,embed,nav,footer';
 
   function snapshotHtml() {
+    // An adapter may own the capture too. A PDF has no article element to
+    // clone — its prose lives in PDF.js's text layer, absolutely positioned
+    // span by span — so the PDF adapter hands back the words under the same
+    // page markers the viewer shows, which is what makes an anchor made here
+    // findable on the phone.
+    if (SITE && typeof SITE.snapshotHtml === 'function') {
+      let html = '';
+      try { html = String(SITE.snapshotHtml() || ''); } catch (_) { html = ''; }
+      return html.length > SNAP_MAX ? '' : html;
+    }
     let root;
     try { root = articleRoot(); } catch (_) { return ''; }
     if (!root) return '';
@@ -361,8 +399,12 @@
       }
       console.warn('[botference] ' + (SITE.name || 'adapter') + ' could not read this page: ' +
         (SITE.lastError || 'no text') + ' — ' + (SITE.exportUrl || HREF));
-      if (!CAPS.highlights) {
-        if (drawer) drawer.setWarning(CONTEXT_FAIL_NOTE);
+      // Two ways an adapter can mean "and there is no honest fallback": a page
+      // whose text is not in the DOM at all (Google Docs' canvas), and one
+      // whose text is in the DOM but is not there (a scanned PDF, where the
+      // generic extraction would hand the bots the viewer's own chrome).
+      if (!CAPS.highlights || CAPS.textFallback === false) {
+        if (drawer) drawer.setWarning(SITE.contextNote || CONTEXT_FAIL_NOTE);
         return '';
       }
     }
@@ -486,12 +528,22 @@
       index = freshIndex();
     }
 
-    // tell the server only about anchors whose verdict actually changed
+    // Tell the server only about anchors whose verdict actually changed — and
+    // only where a local verdict is worth anything.
+    //
+    // A PDF arrives page by page: an anchor on page 40 is unfindable until page
+    // 40's text layer lands, and a tab closed halfway through would otherwise
+    // leave the record saying "orphaned" about a passage that is perfectly
+    // there. A scan is the same story told all at once. So a document whose
+    // adapter says `reportOrphans:false` keeps its verdicts LOCAL — the drawer
+    // badges what it cannot show, and the record is left alone.
     for (const t of threads) {
       const was = !!t.orphaned, now = !!nextOrphans[t.id];
       if (was !== now) {
         t.orphaned = now;
-        api('POST', '/orphan', { url: URL_NOW, thread_id: t.id, orphaned: now });
+        if (CAPS.reportOrphans !== false) {
+          api('POST', '/orphan', { url: URL_NOW, thread_id: t.id, orphaned: now });
+        }
       }
     }
     orphans = nextOrphans;
@@ -534,6 +586,28 @@
     return PAGE;
   }
 
+  // The document arrived in pieces, and the pieces are still coming.
+  //
+  // An article is complete at document_idle; a PDF is not. pdf/viewer.js
+  // renders page by page, and each text layer that lands is more text to anchor
+  // to and possibly a better name for the record (the file name gives way to
+  // the document's own /Title). So the viewer calls this, debounced, as it
+  // fills its own DOM in: re-locate everything, and tell the companion the
+  // title only when it actually changed — a POST per page would broadcast a
+  // `page` event per page to every tab.
+  let lastPostedTitle = '';
+  async function refresh() {
+    reanchorAll();
+    if (!active) return null;
+    const title = headline();
+    if (title && title !== lastPostedTitle) {
+      lastPostedTitle = title;
+      await api('POST', '/page', { url: URL_NOW, title, site: HOSTNAME });
+      return loadPage();
+    }
+    return PAGE;
+  }
+
   async function activate(openTab) {
     if (!active) {
       active = true;
@@ -542,7 +616,8 @@
       drawer.mount();
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
       // upsert the page shell so the server knows this page's real headline
-      api('POST', '/page', { url: URL_NOW, title: headline(), site: HOSTNAME });
+      lastPostedTitle = headline();
+      api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME });
       bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) drawer.setConn(!!r.connected); });
       await loadPage();
     }
@@ -627,7 +702,11 @@
   }
   function pingPort() {
     if (!port) return;
-    try { port.postMessage({ t: 'ping', url: HREF }); }
+    // IDENT_HREF, not HREF: this is what re-registers the tab in the worker's
+    // routing table, so it has to be the page's identity or events for it are
+    // delivered to nobody. (Two documents where they differ: a canonical
+    // splinter, and the PDF viewer, whose address is not the PDF.)
+    try { port.postMessage({ t: 'ping', url: IDENT_HREF }); }
     catch { port = null; schedulePort(); }
   }
 
@@ -732,6 +811,10 @@
         // page order is the extension's knowledge, not the server's: tell it
         // where in the stack this thread belongs (companion honours `index`)
         if (pendingSel) body.index = pageOrderIndex(pendingSel.start);
+        // …and which page of the document it came off, where that is a thing
+        // this document has. Absent everywhere else, so nothing about an
+        // article's payload changes.
+        if (pendingSel && pendingSel.page > 0) body.page = pendingSel.page;
         // an empty answer is NOT sent as an empty field: no article_text at
         // all, and the flag stays down so the next mention tries again
         const ctx = await mentionContext(text);
@@ -1026,8 +1109,17 @@
     const a = Anchor.buildAnchor(index.raw, start, end);
     if (!a.quote) return;
 
+    // Where in the document this passage is, when the document has pages. A
+    // PDF's "p. 12" is half of what a quote MEANS, and it is knowable only
+    // here, at the moment of selection, from the DOM the selection was made
+    // in. Everything else about the anchor is unchanged: a page number is an
+    // extra field on the payload, never a second way of finding the text.
+    const page = (SITE && typeof SITE.pageOf === 'function')
+      ? (() => { try { return SITE.pageOf(sel.getRangeAt(0).startContainer) | 0; } catch { return 0; } })()
+      : 0;
+
     Anchor.unpaint('__new__');
-    pendingSel = { ...a, start, end };
+    pendingSel = { ...a, start, end, page };
     Anchor.paintOffsets(index, start, end, '__new__');
     sel.removeAllRanges();
     drawer.hideSel();
@@ -1064,7 +1156,7 @@
     // a worker that has just started asking who is out here: answering is what
     // puts this tab back in its routing table
     if (msg.t === 'whereami') {
-      sendResponse({ ok: true, url: HREF, active });
+      sendResponse({ ok: true, url: IDENT_HREF, active });
       return;
     }
     if (msg.t === 'toggle') {
@@ -1151,7 +1243,8 @@
 
   // exposed for test/harness.html
   window.__bfp = {
-    activate, loadPage, reanchorAll, headline, articleText, normUrl, hashText,
+    activate, loadPage, reanchorAll, refresh, headline, articleText, normUrl, hashText,
+    snapshotHtml,
     site: SITE, caps: CAPS,
     // the page identity this document settled on at load, and whether the
     // document's own canonical link is what decided it

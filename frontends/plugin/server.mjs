@@ -525,7 +525,9 @@ export function handler(req, res) {
       if (dedupe.hit) return ok(res, { thread: dedupe.hit, deduped: true });
       const thread = store.addThread(page, {
         quote: data.quote, prefix: data.prefix, suffix: data.suffix,
-        text, author: me.handle, index: data.index,
+        // documents with pages (a web PDF) say which one the passage came off;
+        // everything else omits it and nothing downstream requires it
+        text, author: me.handle, index: data.index, page_number: data.page,
       });
       dedupe.remember(thread);
       store.savePage(page);

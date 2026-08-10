@@ -55,6 +55,13 @@
 //        → {ok:true, status:200, contentType:'…', text:'…'}
 //        → {ok:true, status:200, contentType:'…', b64:'…'}   (want:'bytes')
 //        → {ok:false, status?:N, error:'…', peek?:'…'}
+//   {t:'pdf-bypass', url}            pdf/viewer.js asking for ONE navigation to
+//                                    this exact PDF to skip the redirect that
+//                                    put the reader in our viewer ("open it in
+//                                    the browser instead"). A dynamic `allow`
+//                                    rule at a higher priority, scoped to that
+//                                    url, withdrawn after a minute.
+//        → {ok:true, bypassed:bool}
 //   {t:'identity'}                    who this browser is to the companion, as
 //                                     the COMPANION sees it (GET /whoami, then
 //                                     /health, then the configured handle).
@@ -153,6 +160,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   configReady = (async () => {
     const before = CONF;
     CONF = await CFG.readConfig();
+    // the PDF switch is not about the wire, so it is applied on its own and
+    // never drags the socket down with it
+    if (before.pdf !== CONF.pdf) applyPdfRules(CONF.pdf !== false);
     if (before.base === CONF.base && before.password === CONF.password &&
         before.handle === CONF.handle) return CONF;
     identityCache = null;
@@ -491,6 +501,125 @@ async function gdocsExport(rawUrl, want) {
   return { ok: true, status: res.status, contentType, text: text.slice(0, GDOCS_TEXT_MAX) };
 }
 
+// ---- web PDFs: getting the navigation into our own viewer ----------------
+//
+// A PDF on the web is handed to Chrome's BUILT-IN viewer, which is another
+// extension's document. Content scripts do not run there, `scripting` cannot
+// reach it, and there is no DOM of ours to select, wrap or anchor in. The only
+// way to annotate a web PDF is to be the viewer, so the navigation is
+// redirected into pdf/viewer.html before it ever gets there.
+//
+// WHY declarativeNetRequest, honestly:
+//   • MV3 has no blocking webRequest, so nothing can look at a response's
+//     Content-Type and decide. DNR decides before the request is sent, from
+//     the URL alone.
+//   • which is the limit, stated plainly: **a PDF whose url does not end in
+//     .pdf is not caught**. Content-Disposition PDFs, /download?id=… endpoints
+//     and viewer shells are all invisible to this rule. The toolbar is the
+//     answer there — clicking the action on a tab whose content script never
+//     answered opens that url in the viewer (see the action handler), and the
+//     viewer says so plainly if it turns out not to be a PDF.
+//   • webNavigation.onCommitted was considered and refused: by the time it
+//     fires the built-in viewer already has the document, and re-navigating
+//     costs a second fetch and a wrong entry in the back stack anyway. If the
+//     redirect is going to happen it should happen first.
+//
+// The substitution is `#raw=<url>` rather than `?src=<encoded url>` because DNR
+// writes the matched text VERBATIM — it has no encoder — and a PDF url with an
+// `&` in its query would be cut in half by any `?src=` parse. Nothing follows
+// the hash, so nothing is ambiguous. (adapters.js reads both spellings.)
+const PDF_RULE_ID = 1;
+const PDF_BYPASS_ID = 2;
+const PDF_BYPASS_MS = 60000;
+const PDF_VIEWER_PATH = 'pdf/viewer.html';
+// RE2 (DNR's engine), so the case-insensitivity is spelled out rather than
+// flagged: a rule that only caught lowercase `.pdf` would be a coin toss.
+const PDF_REGEX = '^https?://[^#]*\\.[pP][dD][fF](?:$|\\?[^#]*$)';
+const looksPdfUrl = u => /^https?:\/\/[^?#]*\.pdf(?:[?#]|$)/i.test(String(u || ''));
+const viewerUrlFor = u =>
+  chrome.runtime.getURL(PDF_VIEWER_PATH) + '?src=' + encodeURIComponent(String(u || ''));
+
+const hasDNR = () => !!(chrome.declarativeNetRequest && chrome.declarativeNetRequest.updateDynamicRules);
+
+function pdfRedirectRule() {
+  return {
+    id: PDF_RULE_ID,
+    priority: 1,
+    action: {
+      type: 'redirect',
+      redirect: { regexSubstitution: chrome.runtime.getURL(PDF_VIEWER_PATH) + '#raw=\\0' },
+    },
+    condition: { regexFilter: PDF_REGEX, resourceTypes: ['main_frame'] },
+  };
+}
+
+// The rule is DYNAMIC, not a static ruleset, for one plain reason: the redirect
+// target contains the extension's own id, which does not exist until the
+// extension is installed. Re-applied on every worker start (dynamic rules
+// persist, so this is an idempotent overwrite) and whenever the setting moves.
+async function applyPdfRules(on) {
+  if (!hasDNR()) return;
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [PDF_RULE_ID],
+      addRules: on ? [pdfRedirectRule()] : [],
+    });
+  } catch (e) {
+    console.warn('[botference] the PDF redirect could not be installed:', (e && e.message) || e);
+  }
+}
+
+// "Open it in the browser instead". Navigating straight back to the PDF would
+// be caught by the very rule that brought the reader here, so a one-shot
+// `allow` is parked in front of it at a higher priority and taken away again a
+// minute later. Scoped to that exact url, and never persisted longer than the
+// click it belongs to.
+let bypassTimer = null;
+const reEscape = s => String(s).replace(/[.^$|()[\]{}*+?\\]/g, '\\$&');
+
+// WHICH PAGE a tab is showing, when the tab is showing our viewer. The address
+// bar says chrome-extension://…/pdf/viewer.html and the page is a PDF, so a
+// "focus the tab already on this page" search that compared raw urls would
+// never find one and would open a second tab on every click in the Pages list.
+// (adapters.js has the canonical parser; this is the same two rules, because a
+// service worker cannot import a content script.)
+function tabPageUrl(raw) {
+  const u = String(raw || '');
+  if (!u.startsWith(chrome.runtime.getURL(PDF_VIEWER_PATH))) return u;
+  const hash = u.indexOf('#raw=');
+  if (hash !== -1) return u.slice(hash + 5);
+  const at = u.indexOf('?src=');
+  if (at !== -1) {
+    try { return decodeURIComponent(u.slice(at + 5).split('#')[0]); } catch { return u; }
+  }
+  return u;
+}
+
+async function pdfBypass(rawUrl) {
+  const url = String(rawUrl || '');
+  if (!/^https?:/i.test(url)) return { ok: false, error: 'pdf-bypass needs an http(s) url' };
+  if (!hasDNR()) return { ok: true, bypassed: false };
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [PDF_BYPASS_ID],
+      addRules: [{
+        id: PDF_BYPASS_ID,
+        priority: 2,
+        action: { type: 'allow' },
+        condition: { regexFilter: '^' + reEscape(url) + '$', resourceTypes: ['main_frame'] },
+      }],
+    });
+  } catch (e) {
+    return { ok: false, error: 'the bypass rule was refused: ' + ((e && e.message) || e) };
+  }
+  if (bypassTimer) clearTimeout(bypassTimer);
+  bypassTimer = setTimeout(() => {
+    bypassTimer = null;
+    chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [PDF_BYPASS_ID] }).catch(() => {});
+  }, PDF_BYPASS_MS);
+  return { ok: true, bypassed: true };
+}
+
 // ---- opening a page from the drawer's pages list -------------------------
 // Tab work can only happen here. Matching is on normUrl, not the raw string,
 // so a link with a tracking query or a trailing slash still finds the tab the
@@ -508,7 +637,7 @@ async function openPage(rawUrl) {
 
   let tabs = [];
   try { tabs = await chrome.tabs.query({}); } catch { tabs = []; }
-  const hit = tabs.find(t => t && t.url && normUrl(t.url) === nu);
+  const hit = tabs.find(t => t && t.url && normUrl(tabPageUrl(t.url)) === nu);
   if (hit) {
     try { await chrome.tabs.update(hit.id, { active: true }); } catch { /* tab died */ }
     if (hit.windowId != null) { try { await chrome.windows.update(hit.windowId, { focused: true }); } catch {} }
@@ -601,6 +730,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case 'identity': return identity();
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
+      case 'pdf-bypass': return pdfBypass(msg.url);
       case 'open-page': return openPage(msg.url);
       case 'open-options': return openOptions(msg.agent);
       default:
@@ -618,10 +748,26 @@ chrome.action.onClicked.addListener(tab => {
     // content script not present (chrome:// page, or injected before install)
     chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ['anchor.js', 'drawer.js', 'content.js'],
-    }).then(() => chrome.tabs.sendMessage(tab.id, { t: 'toggle' })).catch(() => {});
+      files: ['anchor.js', 'adapters.js', 'drawer.js', 'content.js'],
+    }).then(() => chrome.tabs.sendMessage(tab.id, { t: 'toggle' })).catch(() => openInPdfViewer(tab));
   });
 });
+
+// The last resort, and the answer to everything the .pdf rule cannot see.
+//
+// If neither the content script nor an injection could reach an http(s) tab,
+// the overwhelmingly likely reason is that it is showing Chrome's own PDF
+// viewer — that document belongs to another extension and is closed to both.
+// So the click is taken as "annotate this", and the url is opened in ours.
+// A tab that turns out not to be a PDF is not left guessing: the viewer says
+// so and offers the way back.
+function openInPdfViewer(tab) {
+  if (!tab || tab.id == null) return;
+  const url = String(tab.url || '');
+  if (!/^https?:/i.test(url)) return;                 // chrome://, the store, a PDF we cannot fetch
+  if (url.startsWith(chrome.runtime.getURL(''))) return;
+  chrome.tabs.update(tab.id, { url: viewerUrlFor(url) }).catch(() => {});
+}
 
 chrome.tabs.onRemoved.addListener(tabId => { tabUrls.delete(tabId); tabCounts.delete(tabId); });
 chrome.tabs.onUpdated.addListener((tabId, info) => {
@@ -640,6 +786,11 @@ chrome.runtime.onStartup.addListener(() => { ensureSocket(); refreshIndex(true);
 
 ensureSocket();
 refreshIndex(true);
+// Every worker start re-asserts the PDF redirect. Dynamic rules survive a
+// restart, so this is an idempotent overwrite — but the redirect target carries
+// the extension id, and re-writing it is cheaper than reasoning about when it
+// could ever be stale.
+configReady.then(c => applyPdfRules(!c || c.pdf !== false)).catch(() => {});
 // This line runs on EVERY worker start, including the respawn after Chrome
 // killed the last one mid-conversation: it is how the tabs that were already
 // open get their delivery address back.

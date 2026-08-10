@@ -122,7 +122,7 @@ function composer(url, key, threadId, label) {
 
 export function pageView({ page, key, me, notice, snapshot }) {
   const threads = (page.threads || []).map((t, i) => `<section class="card" id="${escHtml(t.id)}">
-<blockquote>${escHtml(t.quote)}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
+<blockquote>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
 ${(t.msgs || []).map(msgHtml).join('\n')}
 ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
 </section>`).join('\n');

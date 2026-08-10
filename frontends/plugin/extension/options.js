@@ -62,10 +62,14 @@
   if (typeof document === 'undefined' || !CFG) return;
 
   const el = id => document.getElementById(id);
+  // Every setting the page holds, always all of them: writeConfig rewrites the
+  // whole block, so a Save that left the PDF checkbox out would quietly turn
+  // the viewer back on for someone who had turned it off.
   const fields = () => ({
     base: el('base').value,
     password: el('password').value,
     handle: el('handle').value,
+    pdf: el('pdf').checked,
   });
   function say(v) {
     const s = el('status');
@@ -99,7 +103,21 @@
     el('base').value = cfg.base;
     el('password').value = cfg.password;
     el('handle').value = cfg.handle;
+    el('pdf').checked = cfg.pdf !== false;
   }
+
+  // No Save button on this one: a checkbox that needs confirming is a checkbox
+  // people leave wrong. The worker is watching storage and installs (or
+  // withdraws) the redirect rule the moment this lands.
+  el('pdf').addEventListener('change', async () => {
+    const on = el('pdf').checked;
+    await CFG.writeConfig(fields());
+    const s = el('pdfstatus');
+    s.className = 'ok';
+    s.textContent = on
+      ? 'on — .pdf links now open in Discuss'
+      : 'off — PDFs go to the browser’s own viewer';
+  });
 
   el('save').addEventListener('click', async () => {
     const cfg = fields();

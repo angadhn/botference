@@ -54,6 +54,18 @@
                      drives BOTH export worlds: an account-chooser page served
                      200 (no article_text, a visible warning, no Docs UI junk)
                      and then the real export.
+    ?pdf=1           pretend to be a web PDF open in the extension's own viewer:
+                     the address is chrome-extension://…/pdf/viewer.html#raw=…,
+                     the body is a PDF.js-shaped text layer (one span per run,
+                     <br> at every line end, a page box per page) and the record
+                     belongs to the PDF's own url. Exercises the whole web-PDF
+                     path — identity, painting inside the text layer, page
+                     numbers on new anchors, the per-page snapshot — without
+                     PDF.js, a network or a real file. `&selftest=1` runs the
+                     PDF assertions instead of the article ones.
+    ?pdf=scan        …and the same PDF with nothing in its text layer: a scan.
+                     Nothing to select, no article text, and the reader is told
+                     so rather than left dragging (screenshot state).
     ?badexport=1     (with ?gdocs=1) the export answers 200 with a Google
                      account chooser instead of the document — the failure
                      state, with its warning in Page chat (screenshot state)
@@ -121,6 +133,21 @@
   .gpage { background: #fff; border: 1px solid var(--pline); border-radius: 2px;
     box-shadow: 0 1px 3px rgba(0,0,0,.14); margin: 0 auto; width: 100%; max-width: 44rem }
   .gpage canvas { display: block; width: 100%; height: auto }
+
+  /* ?pdf=1 — the shape the extension's PDF viewer leaves behind. The geometry
+     is PDF.js's job and is not what this page tests, so the text layer simply
+     FLOWS here (real spans, real <br>s, real text nodes) rather than being
+     absolutely positioned over a canvas. What is under test is the DOM
+     contract: one page box per page, a text layer inside it, and a selection
+     that can be turned into an anchor with a page number on it. */
+  article.pdfdoc { max-width: 736px }
+  .bfp-pdf-label { font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+    color: var(--pmuted); letter-spacing: .04em; margin: 18px 0 4px }
+  .bfp-pdf-page { position: relative; background: #fff; color: #23201b;
+    border: 1px solid var(--pline); box-shadow: 0 1px 3px rgba(0,0,0,.12);
+    padding: 22px 26px }
+  .bfp-pdf-page canvas { display: none }
+  .bfp-pdf-page .textLayer { font: 15px/1.75 "Iowan Old Style", Charter, Georgia, serif }
 </style>
 
 <div class="bar">
@@ -330,6 +357,87 @@ if (GDOCS) {
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// 0c. ?pdf=1 — the web-PDF world
+//     A PDF on the web goes to Chrome's own viewer, which no content script can
+//     reach, so the extension redirects into its own (extension/pdf/viewer.html)
+//     and renders the file with PDF.js. What that leaves behind — and all this
+//     state reproduces — is a DOM: a page box per page carrying a TEXT LAYER of
+//     absolutely-positioned spans, one per text run, with a <br> at every line
+//     end. That is real text, so selection, <mark> painting and anchoring work
+//     unchanged; the only thing that differs is WHICH PAGE this is, and the
+//     adapter answers that with the PDF's own url.
+//
+//     Deliberately no PDF.js here: this page must run from file:// with no
+//     network, and what is being tested is the contract between the viewer's
+//     DOM and the extension, not Mozilla's renderer.
+// ───────────────────────────────────────────────────────────────────────────
+const PDF_MODE = Q.get('pdf');
+const PDFV = PDF_MODE === '1' || PDF_MODE === 'scan';
+const PDF_SCAN = PDF_MODE === 'scan';
+const PDF_SRC = 'https://arxiv.org/pdf/2608.09112v3.pdf?download=1&sig=abc';
+// the shape the redirect really produces: the extension's id, and the url
+// written VERBATIM after #raw= because declarativeNetRequest cannot encode
+const PDF_HREF = 'chrome-extension://bfpharnessidbfpharnessidbfpharne/pdf/viewer.html#raw=' + PDF_SRC;
+const PDF_TITLE = 'The Quiet Machine: control without possession';
+// what the pages say, line by line, exactly as PDF.js hands them over: a line
+// is several runs (a font change mid-sentence is a new span) and the line break
+// is a <br>, not a space
+const PDF_PAGES = [
+  [['Aragon opened the season with a draw. ', 'The mood in the stands was flat, and the'],
+   ['walk back to the tram stop was quieter than it has been in years — not angry,'],
+   ['just unconvinced. Nothing had gone wrong. Nothing had gone right either.']],
+  [['The report called it a ', 'structural', ' failure of oversight, which is the kind of'],
+   ['sentence that survives a season and outlives a manager. Nobody at the club'],
+   ['disputed it. They simply kept doing what they had been doing, one week at a time.']],
+];
+
+if (PDFV) {
+  window.__BFP_HREF = PDF_HREF;
+  // the viewer resolves the document's own /Title and puts it in the tab title;
+  // the adapter reads it back from there, which is why this is the only place
+  // the title is stated
+  document.title = PDF_TITLE;
+
+  const art = document.querySelector('article');
+  art.className = 'pdfdoc';
+  art.innerHTML = '';
+  PDF_PAGES.forEach((lines, i) => {
+    const n = i + 1;
+    const label = document.createElement('div');
+    label.className = 'bfp-pdf-label';
+    label.textContent = 'Page ' + n;
+    const page = document.createElement('div');
+    page.className = 'bfp-pdf-page';
+    page.setAttribute('data-bfp-pdf-page', String(n));
+    const canvas = document.createElement('canvas');
+    canvas.width = 700; canvas.height = 300;
+    const cx = canvas.getContext('2d');
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, 700, 300);
+    const layer = document.createElement('div');
+    layer.className = 'textLayer';
+    if (!PDF_SCAN) {
+      lines.forEach((runs, li) => {
+        for (const run of runs) {
+          const s = document.createElement('span');
+          s.setAttribute('role', 'presentation');
+          s.textContent = run;
+          layer.appendChild(s);
+        }
+        if (li < lines.length - 1) {
+          const b = document.createElement('br');
+          b.setAttribute('role', 'presentation');
+          layer.appendChild(b);
+        }
+      });
+    }
+    page.appendChild(canvas);
+    page.appendChild(layer);
+    art.appendChild(label);
+    art.appendChild(page);
+  });
+}
+
 // any uncaught error is a QA finding: put it where a screenshot will catch it
 window.__bfpErrors = [];
 function fault(kind, detail) {
@@ -362,7 +470,12 @@ if (CANON) {
   link.href = '/test/harness';          // relative, like most real ones
   document.head.appendChild(link);
 }
-const PAGE_URL = GDOCS ? DOC_URL : CANON ? CANON_PARENT
+// The PDF's identity is the PDF's url — never the chrome-extension:// address
+// the reader is actually standing on. normUrl leaves this one alone (no hash,
+// no campaign params, no trailing slash), so it is also what the record is
+// filed under.
+const PDF_URL = PDF_SRC;
+const PAGE_URL = GDOCS ? DOC_URL : PDFV ? PDF_URL : CANON ? CANON_PARENT
   : 'https://example.com/sport/the-quiet-machine';
 const now = () => new Date().toISOString();
 const iso = mins => new Date(Date.now() - mins * 60000).toISOString();
@@ -421,6 +534,34 @@ if (GDOCS) {
       orphaned: false,
       msgs: [{ author: 'angadh', ts: iso(30),
                text: 'Anchored back when this was a web page. Nothing on a canvas can be painted.' }] },
+  ];
+}
+
+// The PDF record: a stale title (the file name, which is what the extension
+// knew before PDF.js read the document's own metadata — the /page upsert has to
+// correct it), and two anchored threads carrying PAGE NUMBERS, one of them
+// quoting across a line break, which is where PDF text always breaks.
+if (PDFV) {
+  RECORD.url = PDF_URL;
+  RECORD.title = '2608.09112v3';
+  RECORD.site = 'arxiv.org';
+  RECORD.page_chat = [];
+  RECORD.threads = [
+    { id: 't-1754600000-p1a2',
+      quote: 'The mood in the stands was flat, and the walk back to the tram stop was quieter than it has been in years',
+      prefix: 'opened the season with a draw.', suffix: '— not angry, just unconvinced.',
+      page: 1, orphaned: false,
+      msgs: [{ author: 'angadh', ts: iso(50),
+               text: 'The line the whole paper hangs on — and it runs across two typeset lines, which is exactly what an anchor has to survive.' }] },
+    { id: 't-1754600100-p2b3',
+      quote: 'called it a structural failure of oversight',
+      prefix: 'The report', suffix: 'which is the kind of',
+      page: 2, orphaned: false,
+      msgs: [{ author: 'angadh', ts: iso(30), text: 'Page 2, and the export should say so.' }] },
+    { id: 't-1754600200-p9c4',
+      quote: 'a sentence that was never in this document at all',
+      prefix: '', suffix: '', page: 7, orphaned: true,
+      msgs: [{ author: 'angadh', ts: iso(20), text: 'What an orphan looks like on a PDF.' }] },
   ];
 }
 
@@ -567,6 +708,9 @@ const exportPosts = [];     // every /export {url, mode} — the header's and th
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 const openOptionsCalls = []; // …and every {t:'open-options'}, with the agent it named
 const threadUrls = [];      // the url every /thread was filed against
+const threadPages = [];     // …and the page number it carried (undefined on an article)
+const pageTitles = [];      // every title POST /page was given, in order
+const pageSites = [];       // …and the site beside it (the PDF's host, not the extension's id)
 const replyUrls = [];       // …and every /reply
 const helloUrls = [];       // every {t:'hello'} url — the page identity, as announced
 const routeUrls = [];       // …and the page_url every background message routes by
@@ -759,6 +903,7 @@ function companion(method, path, body) {
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
   if (method === 'POST' && route === '/page') {
+    if (body && body.title) { pageTitles.push(body.title); pageSites.push(body.site); }
     if (body && body.title) RECORD.title = body.title;
     if (body && body.site) RECORD.site = body.site;
     return { ok: true, status: 200, data: RECORD };
@@ -766,11 +911,15 @@ function companion(method, path, body) {
   if (method === 'POST' && route === '/thread') {
     threadUrls.push(body.url);
     postedMsgs.push(captured(route, body.msg && body.msg.text, body));
+    threadPages.push(body.page);
     const thread = {
       id: 't-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       quote: body.quote, prefix: body.prefix, suffix: body.suffix, orphaned: false,
       msgs: [stampMsg(body.msg.text)],
     };
+    // the companion stores a page number when the document has pages, and
+    // nothing at all when it does not
+    if (body.page > 0) thread.page = body.page;
     RECORD.threads.push(thread);
     RECORD.updated_at = now();
     const mention = MENTION.test(body.msg.text);
@@ -1213,6 +1362,39 @@ function demoSelect(stopAtButton, fill) {
       log('demo: composer open on the new anchor');
     }, 120);
   }, 260);
+}
+
+// The same gesture inside a PDF's text layer: select a phrase that lives in one
+// run on a given page, fire mouseup so the 💬 button floats, click it. `phrase`
+// has to be inside a single span — which is exactly the case a reader hits, and
+// the cross-line case is covered by the restored anchors instead.
+function pdfSelect(page, phrase, fill) {
+  const layer = document.querySelector('[data-bfp-pdf-page="' + page + '"] .textLayer');
+  if (!layer) return log('pdf: no page ' + page);
+  let node = null;
+  (function walk(el) {
+    for (let n = el.firstChild; n && !node; n = n.nextSibling) {
+      if (n.nodeType === 3 && n.data.includes(phrase)) node = n;
+      else if (n.nodeType === 1) walk(n);
+    }
+  })(layer);
+  if (!node) return log('pdf: “' + phrase + '” is not on page ' + page);
+  const from = node.data.indexOf(phrase);
+  const r = document.createRange();
+  r.setStart(node, from);
+  r.setEnd(node, from + phrase.length);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  return new Promise(resolve => setTimeout(() => {
+    const d = window.__bfp.drawer;
+    if (!d) { log('pdf: no drawer'); return resolve(null); }
+    d.shadow.querySelector('.selbtn').click();
+    setTimeout(() => {
+      const ta = d.shadow.querySelector('.card.pending textarea');
+      if (ta && fill) { ta.value = fill; ta.dispatchEvent(new Event('input', { bubbles: true })); }
+      resolve(ta);
+    }, 120);
+  }, 260));
 }
 
 // ?selftest=1 — drives the whole loop in a real browser and writes the tally
@@ -3295,6 +3477,129 @@ async function selftestGdocs() {
   console.log(out.join('\n'));
 }
 
+// ?pdf=1&selftest=1 — the web-PDF world.
+//
+// The question this answers is not "does PDF.js work" (it is Mozilla's, and it
+// is not here); it is whether the extension behaves correctly on the DOM PDF.js
+// leaves behind. Four things have to be true, and each of them is a way the
+// feature could be quietly useless:
+//
+//   · the record belongs to the PDF, not to chrome-extension://<id>/…
+//   · highlights land INSIDE the text layer, including across a line break
+//   · a new anchor carries the page it came off
+//   · the snapshot a phone is served re-anchors the same quotes
+async function selftestPdf() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const A = window.BFPAnchor;
+
+  // ---- identity: the PDF's url, everywhere, and the viewer's nowhere ----
+  check('the page identity is the PDF, not the viewer', window.__bfp.url === PDF_URL);
+  check('…taken from the address the redirect wrote verbatim', window.__bfp.identHref === PDF_SRC);
+  check('…and the adapter is the one that said so', (window.__bfp.site || {}).name === 'pdf');
+  check('hello announced the PDF', helloUrls.length > 0 && helloUrls.every(u => u === PDF_SRC));
+  check('every background message routes by the PDF too',
+    routeUrls.length > 0 && routeUrls.every(u => u === PDF_SRC));
+  check('nothing was ever filed against a chrome-extension address',
+    !apiCalls.some(c => decodeURIComponent(c.path || '').includes('chrome-extension')) &&
+    !threadUrls.some(u => String(u).includes('chrome-extension')));
+  check('the record is filed under the PDF host, not the extension id', pageSites[0] === 'arxiv.org');
+  check('a PDF keeps its query string — normUrl only drops campaign params',
+    window.__bfp.url.includes('download=1&sig=abc'));
+
+  // ---- the document's own name beats the file name ----
+  check('the headline is the document’s title', window.__bfp.headline() === PDF_TITLE);
+  check('…and the companion was told it', pageTitles.includes(PDF_TITLE));
+
+  // ---- restored highlights, inside the text layer ----
+  check('3 threads restored', q('.pane[data-pane="comments"] .card').length === 3);
+  check('the orphan is badged', q('.badge.orphan-badge').length === 1);
+  const marks = [...document.querySelectorAll('mark.bfp-hl')];
+  check('both anchored threads are painted', marks.length >= 2);
+  check('…inside the text layer, which is where the words are',
+    marks.length > 0 && marks.every(m => !!m.closest('.textLayer')));
+  const line1 = marks.filter(m => m.getAttribute('data-bfp') === 't-1754600000-p1a2');
+  check('a quote that runs across a typeset line is painted on both lines',
+    line1.length >= 2);
+  check('…on page 1, where it belongs',
+    line1.length > 0 && line1.every(m => m.closest('[data-bfp-pdf-page]').getAttribute('data-bfp-pdf-page') === '1'));
+  check('nothing is painted on the page the orphan claims',
+    !document.querySelector('[data-bfp-pdf-page="7"]'));
+  // A PDF renders page by page, so "I cannot find it" nearly always means "not
+  // yet". The verdict stays here; the record is never told.
+  check('an unfound anchor is badged locally and never reported', orphanPosts.length === 0);
+
+  // ---- what the bots are given ----
+  const text = await window.__bfp.articleText();
+  check('the bots are given the PDF’s text, page by page', /^\[page 1\]/.test(text));
+  check('…with every page marked', text.includes('[page 2]'));
+  check('…and the prose intact across line breaks',
+    text.includes('walk back to the tram stop was quieter'));
+  check('…and nothing of the viewer’s own furniture in it', !text.includes('harness'));
+
+  // ---- a new anchor carries its page ----
+  const ta = await pdfSelect(2, 'sentence that survives a season', 'This is the page-2 claim.');
+  check('selecting inside the text layer opens the composer', !!ta);
+  check('…and paints a provisional highlight in the text layer',
+    !!document.querySelector('.textLayer mark.bfp-hl[data-bfp="__new__"]'));
+  const before = threadPages.length;
+  S.querySelector('.card.pending .send').click();
+  const saved = await until(() => threadPages.length > before);
+  check('the new thread saved', !!saved);
+  check('…carrying the page it came off', threadPages[before] === 2);
+  check('…and the older article path still sends no page at all',
+    threadPages.slice(0, before).every(p => p === undefined));
+  await until(() => q('.pane[data-pane="comments"] .card').length === 4);
+  check('the drawer has the new card', q('.pane[data-pane="comments"] .card').length === 4);
+
+  // ---- the snapshot, and the anchors surviving the trip to a phone ----
+  const snap = await until(() => snapshots[0]);
+  check('annotating a PDF captures it for the phone', !!snap);
+  check('…as one section per page', !!snap && (snap.match(/<section>/g) || []).length === 2);
+  check('…under the same page markers the viewer shows', !!snap && snap.includes('<h2>Page 2</h2>'));
+  check('…with the lines kept as <br>', !!snap && /walk back<br>|walk back to the tram/.test(snap));
+  check('…and none of PDF.js’s spans, canvases or positioning',
+    !!snap && !/<span|<canvas|style=|textLayer/i.test(snap));
+
+  // the real question: can the phone find the same passages?
+  const holder = document.createElement('div');
+  holder.innerHTML = snap || '';
+  document.body.appendChild(holder);
+  const index = A.buildTextIndex(holder);
+  const found = RECORD.threads
+    .filter(t => !t.orphaned)
+    .map(t => ({ t, r: A.locate(index.raw, t) }));
+  check('every anchor made in the viewer re-locates in the snapshot',
+    found.length >= 3 && found.every(f => f.r.ok));
+  const cross = found.find(f => f.t.id === 't-1754600000-p1a2');
+  check('…including the one that ran across a line break',
+    !!cross && cross.r.ok &&
+    index.raw.slice(cross.r.start, cross.r.end).replace(/\s+/g, ' ').includes('walk back to the tram stop'));
+  holder.remove();
+
+  // ---- a scan says so, and sends nothing ----
+  // Destructive, so it goes last: strip every word out of the text layers and
+  // ask again. A PDF with no text must not fall back to scraping the viewer.
+  for (const layer of document.querySelectorAll('.textLayer')) layer.innerHTML = '';
+  const empty = await window.__bfp.articleText();
+  check('a scan sends the bots nothing rather than the viewer’s chrome', empty === '');
+  await until(() => S.querySelector('.ctxwarn .wtext'));
+  const warn = S.querySelector('.ctxwarn .wtext');
+  check('…and says so where the reader types',
+    !!warn && /no selectable text/i.test(warn.textContent));
+
+  const bad = out.filter(l => l[0] === '✗');
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (pdf) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 document.getElementById('h-open').onclick = () => window.__bfp.activate().then(d => d.open('comments'));
 document.getElementById('h-chat').onclick = () => window.__bfp.activate().then(d => d.open('chat'));
 // on a page with no anchored threads to speak of (?gdocs=1), the stream plays
@@ -3313,7 +3618,13 @@ window.__bfp.activate(false).then(() => {
     if (window.__BFP_THEME) d.setTheme(window.__BFP_THEME);
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
-    if (Q.get('selftest') === '1') { setTimeout(GDOCS ? selftestGdocs : selftest, 250); return; }
+    if (Q.get('selftest') === '1') {
+      setTimeout(GDOCS ? selftestGdocs : PDFV ? selftestPdf : selftest, 250);
+      return;
+    }
+    // the scan, without waiting for a mention: asking content.js for the
+    // first-turn context is what discovers there is none (screenshot state)
+    if (PDF_SCAN) setTimeout(() => window.__bfp.articleText(), 250);
     if (Q.get('selftest') === 'canon') { setTimeout(selftestCanonical, 250); return; }
     // the failure state without waiting for a bot turn: asking content.js for
     // the first-turn context is what discovers the export is a chooser

@@ -445,6 +445,23 @@ losing a comment. (Google Docs is the deliberate exception: a site
 adapter reads the doc's text and margin comments with your own session
 — Page chat only, since Docs paints to a canvas.)
 
+**Web PDFs are pages too.** A PDF on the web normally opens in the
+browser's own viewer, which no extension can reach into, so Discuss
+brings its own (Mozilla PDF.js, vendored — no CDN, nothing fetched):
+navigate to an address ending in `.pdf` and it opens in Discuss
+instead, with real selectable text, highlights, comments, `@claude`,
+Obsidian export and phone reading exactly as on an article. Quotes
+carry their page number — the export writes `> — p. 12` under the
+blockquote — and the record is filed under the PDF's own URL, so the
+same paper read on another machine is the same page. A PDF served
+without `.pdf` in its address is not intercepted; click the toolbar
+button on it and it opens in Discuss anyway. A scan says so in one
+quiet line and offers no highlighting, because there is no OCR here.
+Turn the whole thing off (or back on) on the extension's options page.
+Local `file://` PDFs are deliberately unsupported: a path on your disk
+is not a stable identity for a record, and the extension asks for no
+file access.
+
 **Message formatting.** Every message renders markdown — yours and the
 bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX
 maths renders too: `$…$` inline and `$$…$$` on its own line for display

@@ -1,0 +1,144 @@
+/* viewer.css — the extension's PDF reader.
+ *
+ * The palette is the drawer's (frontends/review/assets/style.css), so opening a
+ * PDF does not look like leaving the product. px only, 12px floor, both themes
+ * via prefers-color-scheme — the house rules.
+ *
+ * The load-bearing part is small and lives at the bottom: `.bfp-pdf-page`
+ * defines the custom properties PDF.js's own `.textLayer` rules read
+ * (--total-scale-factor, --scale-round-*). Get those wrong and the text layer
+ * lands somewhere other than the glyphs, which is a selection bug that looks
+ * like an anchoring bug.
+ */
+:root {
+  color-scheme: light dark;
+  --bg: #faf7f0;
+  --fg: #23201b;
+  --muted: #6f6759;
+  --line: #e6e0d4;
+  --accent: #d97757;
+  --page-bg: #fff;
+  --page-shadow: rgba(35, 32, 27, .18);
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1712;
+    --fg: #ece4d6;
+    --muted: #9a9083;
+    --line: #372f25;
+    --page-bg: #fff;            /* a PDF page is white; dimming it is a lie */
+    --page-shadow: rgba(0, 0, 0, .55);
+  }
+}
+
+* { box-sizing: border-box }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 var(--sans);
+}
+
+/* ---- the bar ------------------------------------------------------------ */
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.bar .mark { display: flex; color: var(--accent) }
+.bar .title {
+  font-weight: 600;
+  font-size: 14px;
+  max-width: 640px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar .meta { color: var(--muted); font-size: 12px }
+.bar .spacer { flex: 1 }
+.bar button,
+.bar a {
+  font: 12px/1.2 var(--sans);
+  padding: 5px 9px;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-decoration: none;
+}
+.bar button:hover,
+.bar a:hover { border-color: var(--accent); color: var(--accent) }
+.bar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent) }
+
+/* ---- the one quiet line ------------------------------------------------- */
+.notice {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+.notice a { color: var(--accent) }
+
+/* ---- the document ------------------------------------------------------- */
+.doc {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 12px 60px;
+}
+
+/* The page marker. It IS part of the text — anchor.js reads it, and the
+ * snapshot repeats it as <h2>Page N</h2> — so that both sides of the phone trip
+ * flatten to the same string. Do not hide it, and do not reword it without
+ * changing adapters.js's pdfPageLabel. */
+.bfp-pdf-label {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  letter-spacing: .04em;
+  margin: 10px 0 3px;
+}
+
+/* The page box. --total-scale-factor and --scale-round-* are PDF.js's, read by
+ * the vendored .textLayer rules; --scale-factor is set on this element by
+ * viewer.js on every (re)layout. */
+.bfp-pdf-page {
+  --user-unit: 1;
+  --total-scale-factor: calc(var(--scale-factor) * var(--user-unit));
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  direction: ltr;
+  position: relative;
+  overflow: visible;
+  background: var(--page-bg);
+  box-shadow: 0 1px 4px var(--page-shadow);
+}
+.bfp-pdf-page > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A highlight is painted INTO the text layer, over the canvas — the same
+ * <mark class="bfp-hl"> anchor.js paints on an article, whose inline styles win
+ * on their own. The one thing this has to undo is the text layer's
+ * `color: transparent`, which a mark would otherwise inherit into invisibility
+ * — except that is exactly what we want: the words are the canvas's, the mark
+ * is only the wash over them. So: nothing to add, and this comment exists so
+ * the next person does not add it. */
