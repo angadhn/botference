@@ -107,9 +107,14 @@ form.meta-edit button { padding:.3rem .8rem; font-size:.8rem }
   border-radius:8px; background:#fff; cursor:zoom-in }
 `;
 
+// One line every view here carries: the same braid the extension wears in the
+// toolbar, so a tab of /pages is recognisable beside a tab of anything else —
+// and so nothing asks for /favicon.ico and gets a 404 in the log.
+export const FAVICON_LINK = '<link rel="icon" type="image/png" href="/favicon.ico">';
+
 const shell = (title, body) => `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(title)}</title><style>${STYLE}</style></head><body>
+<title>${escHtml(title)}</title>${FAVICON_LINK}<style>${STYLE}</style></head><body>
 <main>${body}</main></body></html>`;
 
 const whoBadge = me => `<span class="who">${escHtml(me.handle || 'guest')}${me.owner ? ' · owner' : ''}`
@@ -307,7 +312,7 @@ companion will keep a copy — after that this page works from anywhere.</p>
 
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(displayTitle(page))}</title>
+<title>${escHtml(displayTitle(page))}</title>${FAVICON_LINK}
 <style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style></head><body>
 ${head}${body}
 <button id="bfp-pill" hidden>comment</button>

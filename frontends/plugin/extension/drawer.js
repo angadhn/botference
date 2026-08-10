@@ -3153,18 +3153,18 @@
         b.textContent = result ? '▷ Run again' : '▷ Run';
         bar.appendChild(b);
       }
-      if (result && !running) {
+      // which interpreter answered, and nothing else: how long it took belongs
+      // to the status line under the block, where it is read WITH the result
+      if (result && !running && result.python) {
         const meta = mk('span', 'runmeta');
-        const secs = Math.max(0, Number(result.ms) || 0) / 1000;
-        meta.textContent = (result.python ? 'python ' + result.python + ' · ' : '')
-          + (secs < 10 ? secs.toFixed(1) : Math.round(secs)) + 's';
+        meta.textContent = 'python ' + result.python;
         bar.appendChild(meta);
       }
       return bar;
     }
 
     // Exit status is shown ONLY when there is something wrong with it: a clean
-    // run says what it printed and nothing else.
+    // run says what it printed, and says it ran.
     const RUN_BAD = {
       error: r => 'exit ' + r.exit,
       timeout: () => 'timed out',
@@ -3172,15 +3172,33 @@
       failed: () => 'python could not start',
     };
 
+    // ms while a run is a fraction of a second (which most of them are), and
+    // seconds once it is worth counting them
+    function runDur(ms) {
+      const n = Math.max(0, Number(ms) || 0);
+      if (n < 1000) return Math.round(n) + ' ms';
+      const s = n / 1000;
+      return (s < 10 ? s.toFixed(1) : String(Math.round(s))) + ' s';
+    }
+
     function runResult(key, r) {
       const out = mk('div', 'runout');
+      const stdoutText = String(r.stdout == null ? '' : r.stdout);
+      const stderrText = String(r.stderr == null ? '' : r.stderr);
+      const figs = Array.isArray(r.figures) ? r.figures : [];
+      // THE INVARIANT: a run that has happened never looks like a run that has
+      // not. `doubling_time = log(2)/0.61` exits 0 in 79ms and prints nothing,
+      // and for a while that rendered as absolutely nothing — a button you had
+      // pressed and a page that had not moved, indistinguishable from a dead
+      // control. So every completed run says so in one quiet line, and a run
+      // that printed nothing says THAT out loud too.
+      const silent = !stdoutText.trim() && !stderrText.trim() && !figs.length;
       const bad = RUN_BAD[r.status];
-      if (bad) {
-        const s = mk('div', 'runstat bad');
-        s.textContent = bad(r);
-        out.appendChild(s);
-      }
-      const stdout = String(r.stdout == null ? '' : r.stdout);
+      const line = mk('div', 'runstat ' + (bad ? 'bad' : 'ok'));
+      line.textContent = (bad ? bad(r) : '✓ ran') + ' · ' + runDur(r.ms)
+        + (!bad && silent ? ' · no output' : '');
+      out.appendChild(line);
+      const stdout = stdoutText;
       if (stdout.trim()) {
         // one trailing newline is how printing works, not a 43rd line
         const lines = stdout.replace(/\n$/, '').split('\n');
@@ -3197,13 +3215,13 @@
         pre.textContent = open ? stdout : lines.slice(0, STDOUT_FOLD).join('\n');
         out.appendChild(pre);
       }
-      const stderr = String(r.stderr == null ? '' : r.stderr);
+      const stderr = stderrText;
       if (stderr.trim()) {
         const pre = mk('pre', 'runstderr');
         pre.textContent = stderr;
         out.appendChild(pre);
       }
-      const figures = Array.isArray(r.figures) ? r.figures : [];
+      const figures = figs;
       if (figures.length) {
         const wrap = mk('div', 'runfigs');
         figures.forEach((name, n) => {

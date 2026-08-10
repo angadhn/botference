@@ -990,13 +990,27 @@ Contract deltas agreed during live testing — authoritative over the sections a
   · **Drawer.** The button is a 12px outlined control under the block, in the
     tools row's register rather than the composer's, titled exactly "Runs this
     code on this Mac as you". While a run is going the bar shows the drawer's
-    own `◐` spinner and a `✕ stop`. Results render under the block: an exit line
-    ONLY when the status is not ok, stdout in a mono block folded behind
-    "Show all N lines" past 30 lines (the `.showmore` idiom), stderr in the
-    same red the destructive confirms use, and figures as inline thumbnails that
-    wrap (two-up past one). Clicking a thumbnail opens a lightbox over the whole
-    viewport (the shadow host already covers it) — Esc or a click on the scrim
-    closes it, one layer at a time, ahead of the drawer's own Esc.
+    own `◐` spinner and a `✕ stop`. Results render under the block: stdout in a
+    mono block folded behind "Show all N lines" past 30 lines (the `.showmore`
+    idiom), stderr in the same red the destructive confirms use, and figures as
+    inline thumbnails that wrap (two-up past one). Clicking a thumbnail opens a
+    lightbox over the whole viewport (the shadow host already covers it) — Esc
+    or a click on the scrim closes it, one layer at a time, ahead of the
+    drawer's own Esc.
+  · **A COMPLETED RUN IS ALWAYS VISIBLY DIFFERENT FROM NO RUN.** Every result
+    opens with one quiet 12px line (`.runstat`), and the exit status is the
+    only part of it that changes register. A clean run reads `✓ ran · 79 ms` in
+    the muted colour; a run that printed nothing at all — `doubling_time =
+    log(2)/0.61` exits 0 in 79ms and prints nothing, which is a completely
+    ordinary thing for a snippet to do — reads `✓ ran · 79 ms · no output`, and
+    says it because otherwise it would say NOTHING and be indistinguishable
+    from a button that is broken. A failure keeps its louder red line and gains
+    the same timing (`exit 1 · 214 ms`, `timed out · 30 s`). The duration lives
+    here rather than in the bar beside the button, so it is read WITH the
+    result; the bar keeps only which interpreter answered (`python 3.12.4`).
+    The line is drawn by the same `runResult()` as everything else under it, so
+    a result stored on the message by a PREVIOUS session renders it on refetch
+    with nothing clicked and no client state, exactly as the stdout does.
   · **Phone (`views.mjs`, `reader.js`).** Results — stdout, stderr, figures,
     and a lightbox in the article view — are shown READ-ONLY and **only to the
     owner**; a guest sees the message and no output at all. Deliberate: this is
@@ -1267,6 +1281,61 @@ Contract deltas agreed during live testing — authoritative over the sections a
     harness `?pdf=local&selftest=1` (the identity-before-chain contract with a
     stubbed digest, and that a hash published AFTER the chain changes nothing);
     `test/pdf-render.test.mjs` asserts the same contract in a real Chromium.
+
+- **A content script that outlived its extension** (`content.js`, the context
+  guard). Reloading the extension ORPHANS every content script already running.
+  The JavaScript keeps executing — its closures, its DOM, its timers are all
+  intact — but the `chrome.*` bridge it was injected with is gone, and every
+  call through it now throws `Extension context invalidated`. Those throws are
+  UNCAUGHT (they come out of `getURL` and out of message callbacks), so a tab
+  left open across a reload fills its console with red on a page whose reader is
+  simply reading; the one people hit is `ensureMathFonts`, because it is on the
+  activate path and `chrome.runtime.getURL` on a dead context throws rather than
+  answering.
+  · **There is nothing to repair from.** A content script cannot re-inject
+    itself; only a reload of the TAB puts a live one back. So the whole
+    behaviour is: notice once, say so once, go quiet — one `console.info`,
+    `Discuss was updated — reload this tab to reconnect.`, and then the port
+    retry and the liveness interval are cleared so the one line stays one line.
+    No banner: the drawer's own "offline" state is a claim about the companion,
+    which is a different fact and is very possibly still true.
+  · **The rule is a factory, not a flag.** `makeContextGuard(probe, say, stop)`
+    has nothing of chrome in it — `probe()` answers whether the extension is
+    still ours (`chrome.runtime.id`, read inside a try: an orphan still has a
+    `chrome.runtime`, what it has lost is the id), `say` is where the line goes,
+    `stop` is what should stop running. `run(fn, fallback)` is the only entry
+    point, and it **rethrows anything that is not a context invalidation** — a
+    blanket catch here would bury ordinary bugs, which is a worse console than
+    the one being fixed. Every chrome-touching entry point goes through it:
+    `extUrl` (hence `ensureMathFonts`, `cssUrl`, `katexCssUrl`), `bg()` before
+    and inside the `sendMessage` callback, `connectPort`/`pingPort`,
+    `consumeAutoOpen`, and the `onMessage` listener registration.
+  · **Testing, honestly.** A real invalidation needs a real extension reload,
+    which no harness can stage — nothing below asserts that Chrome's own throw
+    is caught in the wild. What IS tested, and is where the logic lives, is the
+    factory: harness `?selftest=1` builds its own guards over a fake probe and
+    asserts the fallback, the once-only line, the stop, the second call being
+    silent, the probe-noticed case with no throw at all, both spellings Chrome
+    has used, an unrelated failure NOT being mistaken for one, and a `TypeError`
+    coming straight back out. The page's own guard is left alone (tripping it
+    would take the rest of the selftest with it) and asserted never to have
+    fired.
+
+- **The tab icon** (`GET /favicon.ico`, `views.FAVICON_LINK`). The hosted views
+  wear the same braid the extension wears in the toolbar: `extension/icons/
+  icon128.png`, served byte-for-byte from `/favicon.ico` and `/favicon.png`
+  (a png under the `.ico` name, which every browser since IE has accepted, and
+  which saves carrying a second copy of the same picture). `/pages`, `/p/<key>`,
+  `/a/<key>` and the sign-in gate all carry the `<link rel="icon">`; `/a/`'s
+  strict CSP already allows it under `img-src 'self'`.
+  · **Ahead of the gate, on purpose.** Browsers ask for `/favicon.ico` whether
+    or not a page linked one, so a gated icon is a 401 in the network log of
+    every view AND a blank tab on the sign-in page itself. An extension's own
+    logo is not a secret, and the route reads exactly ONE fixed path — there is
+    no name to smuggle past the gate through it. `test/companion.test.mjs`
+    asserts the bytes, the content-type, the cache header, the link in the
+    views and in the gate, that it answers unauthenticated over a tunnel Host,
+    and that `/index`, `/pages` and `/assets/*` are still 401 beside it.
 
 ## Out of scope for v1 (do not build)
 

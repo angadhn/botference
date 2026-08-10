@@ -785,6 +785,9 @@ function runResultFor(code) {
     return { ...base, status: 'error', exit: 1,
       stderr: 'Traceback (most recent call last):\n  File "snippet.py", line 1\nRuntimeError: boom\n' };
   }
+  // the silent success, copied from life: exit 0, 79ms, nothing printed. This
+  // is the run that used to render as literally nothing at all.
+  if (/doubling_time/.test(code)) return { ...base, ms: 79 };
   if (/plot|savefig/.test(code)) return { ...base, stdout: 'drew the chart\n', figures: ['figure-01.png', 'figure-02.png'] };
   if (/seasons/.test(code)) return { ...base, stdout: RUN_LONG };
   return { ...base, stdout: 'mean xGA: 1.42\n' };
@@ -877,6 +880,11 @@ if (Q.get('run')) {
       + '```python\nimport matplotlib.pyplot as plt\n'
       + 'plt.plot(seasons, xga)\nplt.show()\n```\n\nRun it again after the next fixture.',
     runs: { 0: runResultFor('plot') } });
+  // …one that computed something and printed nothing, because a silent success
+  // has to look like a success and not like a button nobody pressed…
+  RECORD.page_chat.push({ author: 'codex', ts: iso(7.5),
+    text: 'Doubling time, from the fitted rate:\n\n```python\ndoubling_time = log(2)/0.61\n```',
+    runs: { 0: runResultFor('doubling_time') } });
   // …and one that fell over, because stderr has a look of its own
   RECORD.page_chat.push({ author: 'angadh', ts: iso(7),
     text: 'And the one that failed:\n\n```python\nxga = table["xGA"]\nraise RuntimeError("boom")\n```',
@@ -2886,6 +2894,14 @@ async function selftest() {
     text: 'And this one talks a lot:\n\n```python\nfor s in seasons: print(s)\n```' });
   RECORD.page_chat.push({ author: 'claude', ts: iso(2.3),
     text: 'And this one draws:\n\n```python\nplt.plot(seasons); plt.show()\n```' });
+  // exit 0, 79ms, nothing printed — the run that has to be visible anyway
+  RECORD.page_chat.push({ author: 'codex', ts: iso(2.4),
+    text: 'And this one says nothing:\n\n```python\ndoubling_time = log(2)/0.61\n```' });
+  // …and the same run as it comes back from the companion on a LATER visit:
+  // stored on the message, rendered with nothing clicked
+  RECORD.page_chat.push({ author: 'codex', ts: iso(2.5),
+    text: 'A silent one from last time:\n\n```python\ndoubling_time = log(2)/0.61\n```',
+    runs: { 0: runResultFor('doubling_time') } });
   await window.__bfp.loadPage();
   const rowSaying = re => [...S.querySelectorAll('.pane[data-pane="chat"] .reply')]
     .find(x => re.test(x.textContent)) || null;
@@ -2933,6 +2949,52 @@ async function selftest() {
   const again = runBtnIn(codeRow());
   check('…while the button now offers the same block again',
     !!again && /Run again/.test(again.textContent));
+  // THE INVARIANT: a completed run is always visibly different from no run.
+  // A run that printed something proves itself by the output, and still says
+  // it ran, once, quietly — the receipt is not conditional on the result.
+  const okLineOf = row => row && row.querySelector('.runbox .runstat.ok');
+  check('…and says it ran, in a line of its own',
+    !!okLineOf(codeRow()) && /^✓ ran · /.test(okLineOf(codeRow()).textContent));
+  check('…with how long it took, in ms while it is a fraction of a second',
+    /✓ ran · 214 ms/.test(okLineOf(codeRow()).textContent));
+  check('…and NOT “no output”, because there is output right underneath it',
+    !/no output/.test(okLineOf(codeRow()).textContent));
+  check('…which is still there, unchanged',
+    /mean xGA: 1\.42/.test(codeRow().querySelector('pre.runstdout').textContent));
+  check('…and the line is at the drawer’s 12px floor, like every other aside',
+    parseFloat(getComputedStyle(okLineOf(codeRow())).fontSize) === 12);
+
+  // The one that sent us here. `doubling_time = log(2)/0.61` exits 0 in 79ms
+  // and prints NOTHING: for a while the drawer rendered nothing back, which is
+  // exactly what a dead button looks like.
+  const silentRow = () => rowSaying(/this one says nothing/i);
+  const silentBefore = runPosts.length;
+  clickRun(silentRow());
+  check('a run that printed nothing still says it ran',
+    !!await until(() => {
+      const s = okLineOf(silentRow());
+      return s && /✓ ran/.test(s.textContent) ? s : null;
+    }));
+  check('…saying so out loud: no output, and how long it took',
+    /✓ ran · 79 ms · no output/.test(okLineOf(silentRow()).textContent));
+  check('…with no empty output block pretending to hold something',
+    !silentRow().querySelector('.runbox pre.runstdout') &&
+    !silentRow().querySelector('.runbox pre.runstderr'));
+  check('…and nothing red about it: exit 0 is not a failure',
+    !silentRow().querySelector('.runbox .runstat.bad'));
+  check('…and it really did run', runPosts.length === silentBefore + 1);
+
+  // …and the same result on a LATER visit, where nothing was clicked at all:
+  // the receipt rides on the message, so a refetch renders it like any other
+  // stored output.
+  const storedRow = () => rowSaying(/a silent one from last time/i);
+  const storedBefore = runPosts.length;
+  check('a silent run stored from a previous session renders the same line',
+    !!okLineOf(storedRow()) &&
+    /✓ ran · 79 ms · no output/.test(okLineOf(storedRow()).textContent));
+  check('…with nothing having been run to get it there', runPosts.length === storedBefore);
+  check('…and its button offering the block again, as a run that happened',
+    /Run again/.test((runBtnIn(storedRow()) || {}).textContent || ''));
 
   const boomRow = () => rowSaying(/This one fails/);
   clickRun(boomRow());
@@ -2990,6 +3052,65 @@ async function selftest() {
   check('…and the earlier result is still there to read',
     /mean xGA: 1\.42/.test(codeRow().querySelector('.runbox').textContent));
   runEnabled = true;
+
+  // ---- the extension was reloaded under this tab -------------------------
+  // A real invalidation needs a real extension reload, which this page cannot
+  // stage: there is no extension here at all. What IS testable is the rule
+  // itself, which content.js keeps as a factory over three injected things
+  // (probe / say / stop) precisely so it can be driven with none of chrome
+  // present. Tripping the page's OWN guard would take the rest of the
+  // selftest down with it, so every case below builds its own.
+  const G = window.__bfp.contextGuard;
+  const saidLines = [];
+  const stopped = [];
+  let extant = true;
+  const guard = G.make(() => extant, m => saidLines.push(m), () => stopped.push(1));
+
+  check('while the extension is ours the guard is not in the way',
+    guard.run(() => 'the real answer', 'fallback') === 'the real answer' &&
+    saidLines.length === 0 && stopped.length === 0 && guard.gone === false);
+
+  const INVALID = () => { throw new Error('Extension context invalidated.'); };
+  check('a call that throws “Extension context invalidated” answers the fallback instead',
+    guard.run(INVALID, 'fallback') === 'fallback');
+  check('…saying it once, in the words a reader could act on',
+    saidLines.length === 1 && saidLines[0] === 'Discuss was updated — reload this tab to reconnect.');
+  check('…and stopping everything that would go on asking', stopped.length === 1);
+  check('…and the guard remembers', guard.gone === true);
+  check('a second call after that is silent — one line, not one per call',
+    guard.run(INVALID, 'again') === 'again' && saidLines.length === 1 && stopped.length === 1);
+
+  // the other half of the idiom: the runtime is already gone before the call,
+  // so there is nothing to throw and the probe is what notices
+  const said2 = [];
+  let extant2 = true;
+  const guard2 = G.make(() => extant2, m => said2.push(m), null);
+  extant2 = false;
+  check('a runtime that is simply gone is noticed without a throw',
+    guard2.run(() => 'never', 'fallback') === 'fallback' && said2.length === 1);
+  check('…and it too says it exactly once',
+    guard2.run(() => 'never', 'fallback') === 'fallback' && said2.length === 1);
+
+  // The line that must never become a blanket catch: a genuine bug inside a
+  // chrome call has to keep reaching the console.
+  const said3 = [];
+  const guard3 = G.make(() => true, m => said3.push(m), null);
+  let rethrown = null;
+  try { guard3.run(() => { throw new TypeError('x is not a function'); }, 'fallback'); }
+  catch (e) { rethrown = e; }
+  check('any OTHER error is rethrown untouched — this is not a blanket catch',
+    rethrown instanceof TypeError && /x is not a function/.test(rethrown.message));
+  check('…and no reload note was invented for it',
+    said3.length === 0 && guard3.gone === false);
+
+  check('both spellings Chrome has used are recognised',
+    G.isContextGone(new Error('Extension context invalidated.')) === true &&
+    G.isContextGone(new Error('Extension context was invalidated, reload the page.')) === true);
+  check('…and an ordinary failure is not mistaken for one',
+    G.isContextGone(new Error('Could not establish connection.')) === false &&
+    G.isContextGone(null) === false);
+  check('and this page’s own guard has never tripped: the extension is right here',
+    G.lost === false);
 
   // ---- per-mention context refresh --------------------------------------
   // The page can change under a live session — that is the whole point of a

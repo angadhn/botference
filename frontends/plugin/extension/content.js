@@ -262,18 +262,108 @@
   const CONTEXT_FAIL_NOTE =
     'couldn’t read the document text — the bots won’t see the page contents (reload the tab to retry)';
 
+  // ---- the extension was reloaded out from under this tab -----------------
+  //
+  // Reloading the extension ORPHANS every content script already running. The
+  // JavaScript keeps executing perfectly — its closures, its DOM, its timers —
+  // but the chrome.* bridge it was injected with is gone, and every call
+  // through it now throws "Extension context invalidated". Those throws are
+  // uncaught (they come out of callbacks and out of getURL), so a tab left
+  // open across a reload fills its console with red on a page whose reader is
+  // simply reading. That is what this section exists to stop.
+  //
+  // There is nothing to repair from here: a content script cannot re-inject
+  // itself, and only a reload of the tab puts a live one back. So the only
+  // honest behaviour is to notice ONCE, say so ONCE, and go quiet.
+  const RELOAD_NOTE = 'Discuss was updated — reload this tab to reconnect.';
+  // Chrome's own wording, in the two spellings it has used.
+  const isContextGone = e =>
+    /extension context (?:was )?invalidated/i.test(String((e && e.message) || e || ''));
+
+  // The whole rule as a factory with nothing of chrome in it, so it can be
+  // driven by a test that has no extension to invalidate:
+  //   probe()    — is the extension still ours?
+  //   say(text)  — where the one line goes
+  //   stop()     — whatever should stop running once it is not
+  // `run(fn, fallback)` is the only entry point. It answers `fallback` when the
+  // context is gone (before the call, or during it) and RETHROWS anything that
+  // is not a context invalidation — a blanket catch here would quietly bury
+  // ordinary bugs, which is a worse console than the one being fixed.
+  function makeContextGuard(probe, say, stop) {
+    let gone = false;
+    function lose() {
+      if (gone) return;                   // once, and only once
+      gone = true;
+      // at info: this is news about the extension, not a fault in the page,
+      // and the reader is not being asked to do anything urgent
+      try { say(RELOAD_NOTE); } catch (_) { /* nowhere to say it */ }
+      try { if (stop) stop(); } catch (_) { /* already falling over */ }
+    }
+    return {
+      run(fn, fallback) {
+        if (gone || !probe()) { lose(); return fallback; }
+        try { return fn(); }
+        catch (e) {
+          if (!isContextGone(e)) throw e;
+          lose();
+          return fallback;
+        }
+      },
+      // for the places that already have their own broad catch (a port that
+      // fails mid-respawn is not this) and only want the verdict
+      saw(e) { if (isContextGone(e)) lose(); return gone; },
+      lose,
+      get gone() { return gone; },
+    };
+  }
+
+  // The idiom. An orphaned script still HAS a chrome.runtime object; what it no
+  // longer has is an id — reading it answers undefined, or throws, and both
+  // answers mean the same thing.
+  function extensionAlive() {
+    try { return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id); }
+    catch (_) { return false; }
+  }
+  const GUARD = makeContextGuard(
+    extensionAlive,
+    m => { try { console.info('[botference] ' + m); } catch (_) { /* no console */ } },
+    // everything that would go on asking a runtime that is not there stops,
+    // so the one line stays one line
+    () => {
+      if (waitTimer) clearInterval(waitTimer);
+      if (portTimer) clearTimeout(portTimer);
+      waitTimer = null;
+      portTimer = null;
+      port = null;
+    });
+  const alive = (fn, fallback) => GUARD.run(fn, fallback);
+  // chrome.runtime.getURL that cannot throw. '' means "no extension any more",
+  // and every caller has something sensible to do with that.
+  const extUrl = p => alive(
+    () => (chrome.runtime.getURL ? chrome.runtime.getURL(p) : ''), '');
+
   // ---- background API proxy ----------------------------------------------
   function bg(msg) {
     return new Promise(resolve => {
+      if (GUARD.gone || !extensionAlive()) {
+        GUARD.lose();
+        return resolve({ ok: false, error: RELOAD_NOTE });
+      }
       try {
         // page_url rides on everything: the worker's routing table is memory
         // only, and this is what puts this tab back in it after a respawn
         chrome.runtime.sendMessage({ ...msg, page_url: IDENT_HREF }, r => {
-          const err = chrome.runtime && chrome.runtime.lastError;
-          if (err) return resolve({ ok: false, error: err.message });
+          // the callback runs later, and "later" is long enough for the
+          // extension to have been reloaded underneath it
+          const err = alive(() => chrome.runtime.lastError, null);
+          if (err) {
+            GUARD.saw(err);
+            return resolve({ ok: false, error: err.message });
+          }
           resolve(r || { ok: false, error: 'no response from background' });
         });
       } catch (e) {
+        GUARD.saw(e);
         resolve({ ok: false, error: String((e && e.message) || e) });
       }
     });
@@ -855,9 +945,15 @@
   }
 
   function connectPort() {
-    if (port || !(chrome.runtime && chrome.runtime.connect)) return;
-    try { port = chrome.runtime.connect({ name: PORT_NAME }); } catch { port = null; }
-    if (!port) { schedulePort(); return; }
+    if (port || GUARD.gone) return;
+    if (!extensionAlive()) { GUARD.lose(); return; }
+    if (!chrome.runtime.connect) return;
+    // a connect can fail for reasons that are none of our business (a worker
+    // mid-respawn), which is why this catch stays broad — but a reloaded
+    // extension is not one of them, and it is the one worth naming
+    try { port = chrome.runtime.connect({ name: PORT_NAME }); }
+    catch (e) { GUARD.saw(e); port = null; }
+    if (!port) { if (!GUARD.gone) schedulePort(); return; }
     port.onMessage.addListener(msg => {
       lastEventAt = Date.now();
       if (msg && msg.t === 'pong') return;
@@ -874,7 +970,7 @@
     pingPort();
   }
   function schedulePort() {
-    if (portTimer) return;
+    if (portTimer || GUARD.gone) return;
     portTimer = setTimeout(() => { portTimer = null; connectPort(); }, PORT_RETRY_MS);
   }
   function pingPort() {
@@ -884,7 +980,7 @@
     // delivered to nobody. (Two documents where they differ: a canonical
     // splinter, and the PDF viewer, whose address is not the PDF.)
     try { port.postMessage({ t: 'ping', url: IDENT_HREF }); }
-    catch { port = null; schedulePort(); }
+    catch (e) { GUARD.saw(e); port = null; schedulePort(); }
   }
 
   // The tab was put away and brought back: whatever happened meanwhile, it
@@ -949,14 +1045,19 @@
   // This is the page's DOM, which is why it lives here rather than in
   // drawer.js. A chrome-extension: <link> is exempt from the page's CSP as
   // long as the file is web-accessible, the same way drawer.css already is.
+  //
+  // This is also the first thing an orphaned content script tends to reach:
+  // it is on the activate path, and getURL on a dead context THROWS rather
+  // than answering. Hence extUrl — no href, no link, no uncaught error.
   const FONTS_ID = 'bfp-katex-fonts';
   function ensureMathFonts() {
-    if (!(chrome.runtime && chrome.runtime.getURL)) return;
     if (document.getElementById(FONTS_ID)) return;
+    const href = extUrl('vendor/katex/katex-fonts.css');
+    if (!href) return;
     const link = document.createElement('link');
     link.id = FONTS_ID;
     link.rel = 'stylesheet';
-    link.href = chrome.runtime.getURL('vendor/katex/katex-fonts.css');
+    link.href = href;
     (document.head || document.documentElement).appendChild(link);
   }
 
@@ -976,10 +1077,9 @@
       currentUrl: URL_NOW,
       normUrl,
       theme: window.__BFP_THEME || null,
-      cssUrl: (chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL('drawer.css') : 'drawer.css',
+      cssUrl: extUrl('drawer.css') || 'drawer.css',
       // the rest of KaTeX's stylesheet, inside the shadow root (see above)
-      katexCssUrl: (chrome.runtime && chrome.runtime.getURL)
-        ? chrome.runtime.getURL('vendor/katex/katex.min.css') : 'vendor/katex/katex.min.css',
+      katexCssUrl: extUrl('vendor/katex/katex.min.css') || 'vendor/katex/katex.min.css',
 
       onSelect: () => commitSelection(),
 
@@ -1388,7 +1488,8 @@
   }, true);
 
   // ---- background messages -----------------------------------------------------
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => handleWorkerMsg(msg, sendResponse));
+  alive(() => chrome.runtime.onMessage.addListener(
+    (msg, sender, sendResponse) => handleWorkerMsg(msg, sendResponse)), null);
 
   // The same handling whichever pipe carried it — tabs.sendMessage or the port.
   function handleWorkerMsg(msg, sendResponse) {
@@ -1473,6 +1574,7 @@
   // between here and open() cannot leave the flag armed forever) and open.
   const AUTOOPEN_KEY = 'bfp-autoopen:' + URL_NOW;
   function consumeAutoOpen() {
+    if (!extensionAlive()) { GUARD.lose(); return; }
     try {
       chrome.storage.local.get(AUTOOPEN_KEY, r => {
         if (!r || r[AUTOOPEN_KEY] == null) return;
@@ -1517,6 +1619,12 @@
     // the page identity this document settled on at load, and whether the
     // document's own canonical link is what decided it
     url: URL_NOW, identHref: IDENT_HREF, canonical: CANONICAL_HREF,
+    // the extension-reload guard. The FACTORY, not this page's instance: a
+    // test drives its own over a fake chrome, because tripping the real one
+    // would take the rest of the page down with it — which is exactly what it
+    // is for.
+    contextGuard: { make: makeContextGuard, isContextGone, note: RELOAD_NOTE,
+                    get lost() { return GUARD.gone; } },
     // the liveness machinery, observable so the harness can drive a dead
     // worker and assert that the page converges anyway
     liveness: { resync, connectPort, watchSend, get log() { return resyncLog.slice(); },

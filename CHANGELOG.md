@@ -2,6 +2,31 @@
 
 ## 2026-08-10
 
+- **Discuss: a code block that ran and printed nothing now says so.**
+  `doubling_time = log(2)/0.61` is a perfectly ordinary line of Python. It
+  exits cleanly, in about 79 milliseconds, and it prints absolutely
+  nothing — and until now the drawer answered it with absolutely nothing
+  too, which is exactly what a broken button looks like. Every finished run
+  now leaves one quiet line under the block: `✓ ran · 79 ms · no output`
+  when there was nothing to show, `✓ ran · 214 ms` above the output when
+  there was, and the red `exit 1 · 214 ms` when it fell over. The rule is
+  simply that a run that happened never again looks like a run that did
+  not. Results you ran in an earlier session get the same line when the
+  page is opened again.
+
+- **Discuss: reloading the extension no longer fills open tabs with red.**
+  Reloading Discuss orphans the copy of it already running in every tab
+  you had open: it keeps going, but everything it tries to ask the
+  extension now fails, and those failures were landing in the console as
+  uncaught errors on pages you were only reading. Such a tab now says one
+  line, once — "Discuss was updated — reload this tab to reconnect." — and
+  goes quiet. Reloading the tab brings it back, as it always did.
+
+- **Discuss: the reading pages have a favicon.** `/pages`, a page's
+  comments, an article and the sign-in screen all wear the braid in the
+  browser tab, so a Discuss tab is findable in a row of twenty. It is also
+  the end of a small stream of `/favicon.ico` 404s in the log.
+
 - **Discuss: the PDFs on your own disk are pages now too.** Open a
   `file://` PDF and it opens in Discuss, with the same highlights,
   comments, `@claude`, page numbers, Obsidian export and phone reading

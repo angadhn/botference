@@ -245,6 +245,7 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
     return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Botference Discuss</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
 <style>
 :root { --bg:#faf7f0; --fg:#2a2419; --muted:#8a7f6d; --card:#fff; --line:#e7dfd1;
   --accent:#d97757; --accent-hover:#c05f3f }

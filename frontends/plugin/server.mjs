@@ -45,6 +45,10 @@ const ASSETS = {
   'anchor.js': path.join(PLUGIN, 'extension', 'anchor.js'),
   'reader.js': path.join(PLUGIN, 'reader.js'),
 };
+// The braid, which is already the extension's toolbar icon: the hosted views
+// wear the same mark as the drawer they are the other half of. 128px because a
+// favicon is asked for once and then cached, and a bookmark bar wants it sharp.
+const FAVICON = path.join(PLUGIN, 'extension', 'icons', 'icon128.png');
 const PORT = Number(process.env.PORT || 4189);
 const NO_AGENTS = process.argv.includes('--no-agents');
 const HOSTED = process.argv.includes('--hosted');
@@ -458,6 +462,22 @@ export function handler(req, res) {
   }
   if (HOSTED && url === '/signout') {
     return res.writeHead(303, { 'set-cookie': hosted.signOutCookies(), location: '/pages' }).end();
+  }
+  // The tab icon, AHEAD of the gate on purpose. Browsers ask for /favicon.ico
+  // whether or not a page linked one, and a gated one is a 401 in the network
+  // log of every view plus a broken icon on the sign-in page itself. An
+  // extension's own logo is not a secret, and this route reads exactly one
+  // fixed file — there is no name to smuggle past the gate through it.
+  if (req.method === 'GET' && (url === '/favicon.ico' || url === '/favicon.png')) {
+    return fs.readFile(FAVICON, (err, buf) => {
+      if (err) return fail(res, 404, 'not found');
+      // png at /favicon.ico is what every browser since IE has accepted, and
+      // it saves carrying a second copy of the same picture
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'public, max-age=86400',
+      }).end(buf);
+    });
   }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
 

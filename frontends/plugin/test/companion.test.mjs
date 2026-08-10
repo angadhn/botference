@@ -101,6 +101,20 @@ function request(base, method, urlPath, body, headers = {}, raw = null) {
   });
 }
 const GET = (b, p, h) => request(b, 'GET', p, undefined, h);
+// the same GET, but keeping the BYTES: a favicon is a png, and a png read as
+// utf-8 is a different file
+function getBytes(base, urlPath, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(base + urlPath, { headers }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks),
+      }));
+    });
+    req.on('error', reject);
+  });
+}
 const POST = (b, p, body, h) => request(b, 'POST', p, body || {}, h);
 const FORM = (b, p, fields, h) =>
   request(b, 'POST', p, undefined, h, new URLSearchParams(fields).toString());
@@ -257,6 +271,28 @@ async function main() {
       keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
       bridge: 'stopped',
     });
+  });
+
+  // --- the tab icon -----------------------------------------------------
+  // Browsers ask for /favicon.ico whether or not anything linked it, so the
+  // only two possible states are "serves the braid" and "404 in every log".
+  await test('/favicon.ico serves the extension’s own icon', async () => {
+    const r = await getBytes(base, '/favicon.ico');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['content-type'], 'image/png');
+    const onDisk = fs.readFileSync(path.join(PLUGIN_DIR, 'extension', 'icons', 'icon128.png'));
+    assert.ok(r.buf.equals(onDisk), 'the bytes are the icon file, unaltered');
+    assert.equal(r.buf.subarray(0, 8).toString('latin1'), '\x89PNG\r\n\x1a\n', 'and they are a png');
+    assert.match(String(r.headers['cache-control'] || ''), /max-age=\d+/, 'asked for once, then cached');
+    // /favicon.png is the same picture under the name a <link> would use
+    const png = await getBytes(base, '/favicon.png');
+    assert.equal(png.status, 200);
+    assert.ok(png.buf.equals(onDisk));
+  });
+
+  await test('every hosted view links it, so no tab is left blank', async () => {
+    const pages = await GET(base, '/pages', { accept: 'text/html' });
+    assert.match(pages.body, /<link rel="icon" type="image\/png" href="\/favicon\.ico">/);
   });
 
   await test('ws /ws upgrades and sends hello', async () => {
@@ -1682,6 +1718,33 @@ async function main() {
       assert.match(r.body, /prefers-color-scheme: dark/);
       const p = await GET(hb, `/p/${key}`, { ...REMOTE, accept: 'text/html' });
       assert.equal(p.status, 401, 'a page link is gated too');
+      assert.match(r.body, /<link rel="icon" type="image\/png" href="\/favicon\.ico">/,
+        'and the gate itself wears the icon it is about to let you in to');
+    });
+
+    // The one route deliberately in front of the gate. A gated favicon is a
+    // 401 in the network log of every view and a broken icon on the sign-in
+    // page — and an extension's own logo is not a secret.
+    await test('the favicon is reachable before signing in, and nothing else is', async () => {
+      const ico = await getBytes(hb, '/favicon.ico', REMOTE);
+      assert.equal(ico.status, 200, 'a browser that has not signed in still gets the icon');
+      assert.equal(ico.headers['content-type'], 'image/png');
+      assert.ok(ico.buf.equals(fs.readFileSync(path.join(PLUGIN_DIR, 'extension', 'icons', 'icon128.png'))));
+      // it is one fixed file, not a reader: there is no name to smuggle
+      // through it and no other file it can be talked into
+      for (const p of ['/favicon.ico/../../server.mjs', '/favicon.ico?name=../config.json',
+                       '/favicon.icon', '/favicon', '/favicon.ico/x']) {
+        const r = await GET(hb, p, { ...REMOTE, accept: 'text/html' });
+        assert.ok(r.status === 401 || r.status === 404 || r.status === 200,
+          `${p}: must not be a way in`);
+        if (r.status === 200) {
+          assert.equal(r.headers['content-type'], 'image/png', `${p}: only ever the icon`);
+        }
+      }
+      // and the gate is exactly where it was for everything else
+      assert.equal((await GET(hb, '/index', REMOTE)).status, 401);
+      assert.equal((await GET(hb, '/pages', { ...REMOTE, accept: 'text/html' })).status, 401);
+      assert.equal((await GET(hb, '/assets/reader.js', REMOTE)).status, 401);
     });
 
     let adaCookie = '';

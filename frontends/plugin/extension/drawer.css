@@ -662,6 +662,10 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .runout { margin-top: 5px }
 .runstat { font: 12px/1.5 var(--sans); color: var(--muted); margin: 3px 0 }
 .runstat.bad { color: var(--bad) }
+/* the receipt every completed run leaves, printing or not — quiet enough to
+   ignore while reading the output, present enough that a silent success can
+   never be mistaken for a button that did nothing */
+.runstat.ok { color: var(--muted) }
 .runstdout, .runstderr {
   margin: 4px 0; padding: 7px 9px; border-radius: 7px;
   font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
