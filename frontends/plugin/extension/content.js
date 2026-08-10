@@ -157,6 +157,17 @@
   let LIBRARY = null;
   const LIBRARY_URL = 'bfp://library';
   const isLibraryUrl = u => String(u || '') === LIBRARY_URL;
+  // the drawer's own name for the library conversation (its state maps are
+  // keyed by target, and '__page__' already means the page you are standing on)
+  const LIBRARY_TARGET = '__library__';
+  // A message's address for /run and /run-cancel: which record it is in, which
+  // thread, and — because a timestamp is an address and not an identity — who
+  // wrote it (store.resolveMsg does the rest).
+  const runAddr = (target, ts, author) => ({
+    url: target === LIBRARY_TARGET ? LIBRARY_URL : URL_NOW,
+    thread_id: target === LIBRARY_TARGET ? PAGE_TARGET : target,
+    ts, author,
+  });
   function pushLibraryMsg(msg) {
     if (!LIBRARY) LIBRARY = { url: LIBRARY_URL, title: 'Library', site: '', threads: [], page_chat: [] };
     if (!LIBRARY.page_chat) LIBRARY.page_chat = [];
@@ -257,6 +268,23 @@
       return AUTHOR;
     }).catch(() => AUTHOR);
     return identity;
+  }
+
+  // ---- may a code block be run here? --------------------------------------
+  // Asked once, of the companion, because only the companion knows both halves:
+  // whether the feature is switched on in config.json and whether this browser
+  // is the OWNER (a guest is refused, and never sees the button in the first
+  // place). Anything other than a plain yes leaves it off — an older companion
+  // has no /run, and a 403 is an answer.
+  let runAsked = null;
+  function runReady() {
+    if (runAsked) return runAsked;
+    runAsked = api('GET', '/run').then(r => {
+      const on = !!(r && r.ok && r.data && r.data.enabled);
+      if (drawer) drawer.setCanRun(on);
+      return on;
+    }).catch(() => false);
+    return runAsked;
   }
 
   // ---- article extraction (SPEC) ------------------------------------------
@@ -629,6 +657,7 @@
       whoami();
       drawer = makeDrawer();
       drawer.mount();
+      runReady();
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
       // upsert the page shell so the server knows this page's real headline
       lastPostedTitle = headline();
@@ -914,6 +943,32 @@
         return { ok: true, text: r.data && typeof r.data.text === 'string' ? r.data.text : null };
       },
 
+      // ---- running a ```python block ------------------------------------
+      // The drawer names a conversation and a message; the address on the wire
+      // is a url plus a thread, and the library's url is not this page's. No
+      // code is ever sent: the companion runs what it already has stored, which
+      // is the only version anybody has read.
+      onRun: async (target, ts, author, block) => {
+        const r = await api('POST', '/run', { ...runAddr(target, ts, author), block_index: block });
+        if (!r.ok) return failure(r);
+        return { ok: true, run: r.data && r.data.run, stored: !!(r.data && r.data.stored) };
+      },
+      onRunCancel: async (target, ts, author, block) => {
+        const r = await api('POST', '/run-cancel', { ...runAddr(target, ts, author), block_index: block });
+        if (!r.ok) return failure(r);
+        return { ok: true, cancelled: !!(r.data && r.data.cancelled) };
+      },
+      // A figure is served under the same owner-only gate as the run, so it
+      // cannot be an <img src> in somebody else's page: the bytes come back
+      // through the background worker as a data: url.
+      onRunFigure: async (target, runId, name) => {
+        const url = target === LIBRARY_TARGET ? LIBRARY_URL : URL_NOW;
+        const r = await api('GET', '/run-figure?url=' + encodeURIComponent(url)
+          + '&run=' + encodeURIComponent(runId) + '&name=' + encodeURIComponent(name) + '&as=json');
+        if (!r.ok) return failure(r);
+        return { ok: true, data_url: r.data && r.data.data_url };
+      },
+
       onEdit: async (threadId, ts, text) => {
         const r = await api('POST', '/edit', { url: URL_NOW, thread_id: threadId, ts, text });
         if (!r.ok) return failure(r);
@@ -1179,7 +1234,9 @@
 
   // Esc closes the drawer wherever the focus is
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && drawer && drawer.isOpen()) { drawer.close(); }
+    // one layer at a time: an open lightbox (a figure from a code-block run)
+    // takes the Esc before the drawer does
+    if (e.key === 'Escape' && drawer && drawer.isOpen() && !drawer.escape()) { drawer.close(); }
   }, true);
 
   // ---- background messages -----------------------------------------------------

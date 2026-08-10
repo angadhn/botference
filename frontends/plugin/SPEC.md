@@ -41,6 +41,7 @@ frontends/plugin/
   chat.mjs                 ← bridge adapter, adapted from frontends/review/chat.mjs (companion agent)
   store.mjs                ← page/thread persistence    (companion agent)
   export.mjs               ← Obsidian export            (companion agent)
+  run.mjs                  ← running a python code block (companion agent)
   bridge-system-prompt.md  ← bot role file              (companion agent)
   test/
     companion.test.mjs     ← endpoint tests w/ mock bridge (companion agent)
@@ -122,6 +123,10 @@ All bodies JSON. All error responses `{ok:false, error:"…"}` with 4xx/5xx.
 | POST | `/orphan` | `{url, thread_id, orphaned:bool}` | extension reports anchor status |
 | POST | `/export` | `{url, mode?}` (`mode`: `all` (default) \| `comments`) | writes Obsidian note → `{ok, path, mode}` |
 | POST | `/interrupt` | `{url}` | forwards interrupt to bridge if that page's turn is running |
+| GET | `/run` | — | owner: `{ok, enabled, timeout_ms, python}` (may a block be run here) |
+| POST | `/run` | `{url, thread_id?, ts, author?, kind?, block_index}` | owner: runs THAT stored block → `{ok, run, block_index, stored}` |
+| POST | `/run-cancel` | same address | owner: kills that run → `{ok, cancelled}` |
+| GET | `/run-figure?key=\|url=&run=&name=[&as=json]` | — | owner: one figure from a run |
 | GET | `/test-page` | — | serves `test/fixtures/article.html` |
 
 On `/thread` and `/reply`, the server scans `msg.text` with `/@(claude|codex|all)\b/i`.
@@ -913,6 +918,100 @@ Contract deltas agreed during live testing — authoritative over the sections a
     does: PDF.js parses in a **worker**, whose clock virtual time does not
     advance, so the document promise never resolves and the page dumps empty.
     A real clock, a real wait. It skips itself where no Chromium exists.
+
+- **Running a code block** (`run.mjs`, `POST /run`). Any fenced ```` ```python ````
+  (or `py`/`python3`) block in ANY message — a person's or a bot's, in a comment
+  thread, the page chat or the library — carries a quiet **Run** button in the
+  drawer. Pressing it runs that snippet on this Mac with the reader's own
+  privileges. There is no sandbox and nothing claims one; see "Safety framing"
+  below, which is the whole of the story and is not to be embellished.
+  · **The code that runs is the code that is STORED.** A request carries an
+    ADDRESS, never a snippet: `{url, thread_id?, ts, author?, kind?,
+    block_index}` — the same `store.resolveMsg` triple every other
+    message-addressing endpoint uses — plus the block's 0-based ordinal. The
+    companion re-parses that message's own text and takes the block out of it.
+    Both sides number EVERY fenced block, python or not (drawer.js's
+    `renderMarkdown` counts fences into `data-block`, `run.mjs codeBlocks` does
+    the same on the server), so the ordinal cannot drift over a language tag;
+    the language decides only whether a block may run (400 otherwise).
+  · **One directory per run.** `.botference/plugin/runs/<pageKey>/<runId>/` is
+    created fresh, holds `snippet.py` + a generated `sitecustomize.py`, and is
+    the child's cwd. `python3` is spawned detached (its own process group), with
+    stdin closed, a built environment (`PATH`, `HOME`, `LANG`, `TMPDIR`,
+    `MPLBACKEND=Agg`, `PYTHONPATH=<run dir>`, `BFP_RUN_DIR`, unbuffered, no
+    bytecode) and a 30s timeout (`PLUGIN_RUN_TIMEOUT_MS` for tests) that SIGTERMs
+    then SIGKILLs the group. stdout and stderr are captured and cut at 64KB each
+    with `…truncated (N bytes of output in all)`.
+  · **Figures.** The generated `sitecustomize.py` wraps `matplotlib.pyplot.show`
+    (found by watching imports) so it saves every open figure as
+    `figure-NN.png` instead of trying to open a window, and saves whatever is
+    still open at exit — so a snippet that never calls `show()` still produces
+    its plots. Anything the snippet writes itself is picked up too: after the
+    child exits, every `*.png`/`*.svg` in the run directory (≤8MB, ≤12 of them,
+    name order) is the result's `figures`. matplotlib is NOT a dependency of
+    anything here; without it a block simply prints.
+  · **Message shape, extended compatibly.** A result rides on the message it
+    came from, keyed by block ordinal:
+    `msg.runs = { "<block_index>": {run_id, status, exit, signal, stdout,
+    stderr, stdout_truncated, stderr_truncated, figures:[name], ms, python,
+    ran_at} }`. `kind` stays `"msg"` — this is a FIELD, not a new kind of
+    message — and every message written before this has no `runs` and behaves
+    exactly as it always did. `status` is `ok | error | timeout | cancelled |
+    failed`. Re-running a block REPLACES that entry and deletes the old run
+    directory; deleting the message, the thread or the page deletes the
+    directories of everything that went (`store.runIdsOf` / `deleteRuns`, and
+    `deletePage` takes `runs/<pageKey>` whole); `/edit` drops a message's
+    results, because a result under changed code is a claim about a message
+    that no longer exists.
+  · **Auth — owner only, end to end.** `GET /run` (is this on? `{enabled,
+    timeout_ms, python}`), `POST /run`, `POST /run-cancel` (kills the process
+    group; the timeout remains the backstop) and `GET /run-figure` are all
+    behind `hosted.isOwner`, so localhost-direct and an authenticated remote
+    OWNER may run code and a guest is refused with 403 — through a cookie, a
+    bearer token, or any request wearing `PROXY_HEADERS`. The drawer asks
+    `GET /run` once and only draws the button if the answer is yes, so a guest
+    never sees it either. Figures are `GET /run-figure?key=<pageKey>|url=<enc>
+    &run=<runId>&name=<basename>` (`&as=json` → `{mime, data_url}`), each
+    argument validated into a shape that cannot leave the run directory. They
+    are NEVER web-accessible or unauthenticated; the drawer fetches them through
+    the background worker (which carries the credentials) and paints a data:
+    url, because it lives inside somebody else's page. A page whose own CSP
+    forbids `data:` images shows a one-line caption instead of the plot — the
+    run is unaffected.
+  · **Drawer.** The button is a 12px outlined control under the block, in the
+    tools row's register rather than the composer's, titled exactly "Runs this
+    code on this Mac as you". While a run is going the bar shows the drawer's
+    own `◐` spinner and a `✕ stop`. Results render under the block: an exit line
+    ONLY when the status is not ok, stdout in a mono block folded behind
+    "Show all N lines" past 30 lines (the `.showmore` idiom), stderr in the
+    same red the destructive confirms use, and figures as inline thumbnails that
+    wrap (two-up past one). Clicking a thumbnail opens a lightbox over the whole
+    viewport (the shadow host already covers it) — Esc or a click on the scrim
+    closes it, one layer at a time, ahead of the drawer's own Esc.
+  · **Phone (`views.mjs`, `reader.js`).** Results — stdout, stderr, figures,
+    and a lightbox in the article view — are shown READ-ONLY and **only to the
+    owner**; a guest sees the message and no output at all. Deliberate: this is
+    output from a program on somebody's own machine, and owner-only end to end
+    is both simpler and safer than a per-run judgement. Nothing can be STARTED
+    from a phone — the button lives beside the machine it runs on. `/a/<key>`'s
+    CSP gains `img-src 'self'` for `/run-figure`.
+  · **Export.** In "everything" mode a block's latest result is written under
+    its fence: stdout (and stderr, labelled) as fenced `text` blocks, an
+    `**exit N**` line when it failed, and figures COPIED into
+    `<vault>/<export_folder>/attachments/<pageKey>-<n>.png` with ordinary
+    `![figure n](…)` links, so Obsidian renders them and the note survives the
+    workspace. A re-export replaces the copies (every `<pageKey>-*` is cleared
+    first), exactly as it replaces the note. "Comments only" is unchanged: a
+    result rides with its message, and bot messages and mention-bearing ones
+    are already dropped.
+  · **Safety framing, and no more than this.** Code — including code a bot
+    wrote — runs with the reader's user privileges. The README says so plainly:
+    treat it like pasting into your terminal, and prompt-injection through page
+    content is a real vector. Nothing runs on its own: a block runs when the
+    button is pressed and never otherwise. One line switches the whole feature
+    off: `"run_python": false` in config.json (default true, absent = true)
+    removes the button (`GET /run` answers `enabled:false`) and makes `POST
+    /run` a 409.
 
 ## Out of scope for v1 (do not build)
 

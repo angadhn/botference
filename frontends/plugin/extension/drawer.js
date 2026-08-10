@@ -50,6 +50,18 @@
 //                                        → {ok, text}   (POST /tick) — `text`
 //                                        is the message's authoritative new
 //                                        body and replaces the optimistic tick
+//   onRun(target, ts, author, block)    a ```python block's Run button was
+//                                        pressed; `block` is its 0-based
+//                                        ordinal among the fenced blocks of
+//                                        that message → {ok, run:{…}} (POST
+//                                        /run). Nothing executable is sent —
+//                                        the companion takes the code out of
+//                                        the message it already holds.
+//   onRunCancel(target, ts, author, block) stop that run  (POST /run-cancel)
+//   onRunFigure(target, run_id, name)   → {ok, data_url}  (GET /run-figure) —
+//                                        a figure is owner-only, so its bytes
+//                                        come through the background worker
+//                                        rather than as an <img src>
 //   onExport(mode)                      → {ok, path} to show in the footbar
 //                                         mode: 'all' | 'comments'
 //   onPages()                           → {ok, index:{pageKey:{url,title,threads,
@@ -452,6 +464,11 @@
   // of the checkbox WITHIN ITS MESSAGE, counted in document order. Reset per
   // renderMarkdown() call, which is once per message.
   let taskSeq = 0;
+  // …and the same idea for fenced code blocks, which is how a Run button says
+  // WHICH block it is about. EVERY fence is counted, python or not: the
+  // companion counts the same way (run.mjs codeBlocks), so the ordinal cannot
+  // drift between the two over a language tag.
+  let codeSeq = 0;
 
   function renderMarkdown(src) {
     const frag = document.createDocumentFragment();
@@ -460,6 +477,7 @@
     const held = protectMath(String(src == null ? '' : src).replace(/\r\n?/g, '\n'));
     const lines = held.text.split('\n');
     taskSeq = 0;
+    codeSeq = 0;
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
@@ -482,6 +500,7 @@
         while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
         i++;                                     // the closing fence, if there is one
         const pre = mk('pre', 'md-code');
+        pre.setAttribute('data-block', String(codeSeq++));
         if (fence[2]) pre.setAttribute('data-lang', fence[2]);
         const code = mk('code');
         code.textContent = buf.join('\n');
@@ -800,6 +819,17 @@
       pending: null,       // {quote, prefix, suffix} while composing a new thread
       confirm: null,       // threadId whose "delete thread?" confirm is showing
       toolsOpen: {},       // tool-activity disclosure key -> expanded
+      // ---- running a ```python block (setCanRun / onRun) ----------------
+      // The button exists only where the companion says it does: owner, and
+      // not switched off in config.json. Guests never see it and would be
+      // refused if they did.
+      canRun: false,
+      runState: {},        // "target|ts|block" -> 'running'
+      runErr: {},          // …-> a refusal to show under that block
+      runOpen: {},         // …-> the reader opened a long stdout
+      figs: {},            // "runId|name" -> data: url (fetched through the worker)
+      figLoading: {},      // …-> a fetch is in flight
+      light: null,         // the open lightbox's src, or null
       // target -> true once the reader has opened a long thread's hidden
       // middle. In memory for the session only: a collapse is a reading
       // convenience, not a decision worth persisting.
@@ -899,6 +929,7 @@
         selbtn: shadow.querySelector('.selbtn'),
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
+        light: shadow.querySelector('.lightbox'),
         grip: shadow.querySelector('.grip'),
       };
       // the Comments tab is left on screen — the drawer must read the same on
@@ -943,7 +974,8 @@
   <div class="pane" data-pane="chat" hidden></div>
   <div class="pane pages" data-pane="pages" hidden></div>
   <div class="footbar"></div>
-</aside>`;
+</aside>
+<div class="lightbox" role="dialog" aria-label="figure" aria-modal="true" hidden></div>`;
     }
 
     // ---- tab memory (per hostname) --------------------------------------
@@ -1637,6 +1669,7 @@
       // other panes had just minted. Filling everything is idempotent — a slot
       // already filled is simply no longer in the map.
       fillMarkdown(D.shadow);
+      decorateRuns(D.shadow);
     }
 
     // /index is a map keyed by pageKey; the list is ours to order — newest
@@ -1676,6 +1709,10 @@
       // events; the list it sits above is not touched
       if (D.view === 'pages') renderLibrary();
       fillMarkdown(D.shadow);
+      // …and then the code blocks get their Run buttons and their results,
+      // which need the markdown to exist first and the record to say what the
+      // last run of each block printed
+      decorateRuns(D.shadow);
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
       if (D.el.pages) D.el.pages.scrollTop = pTop;
@@ -2419,6 +2456,12 @@
       });
 
       D.shadow.addEventListener('click', e => {
+        // a figure from a code-block run: the thumbnail is a link to the size
+        // the plot was actually drawn at
+        const fig = e.target.closest && e.target.closest('img.runfig');
+        if (fig && fig.getAttribute('src')) { openLight(fig.getAttribute('src'), fig.alt); return; }
+        if (D.el.light && !D.el.light.hidden && e.target.closest &&
+            e.target.closest('.lightbox')) { closeLight(); return; }
         const btn = e.target.closest && e.target.closest('[data-act]');
         // any click that is not the @-menu (a row of it included, once it has
         // been handled below) dismisses it — clicking away is a decision too
@@ -2467,6 +2510,13 @@
         if (act === 'send-discard') { discardSend(target, btn.dataset.out); return; }
         if (act === 'cancel-new') { cancelNew(); return; }
         if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
+        if (act === 'run') { doRun(btn); return; }
+        if (act === 'run-stop') { doRunStop(btn); return; }
+        if (act === 'run-more') {
+          const a = runAddr(btn);
+          if (a) { D.runOpen[a.key] = true; render(); }
+          return;
+        }
         // one way only: a thread the reader has opened stays open for the
         // session. Re-folding it under them while they read is not a feature.
         // both directions are the reader's own decision about this thread, and
@@ -2535,7 +2585,8 @@
           e.stopPropagation();
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
-          if (D.exportOpen) closeExportPick();
+          if (D.light) closeLight();
+          else if (D.exportOpen) closeExportPick();
           else if (D.modelsOpen) closeModels();
           else close();
           return;
@@ -2782,15 +2833,267 @@
     // beside it) breaks the tie; otherwise the editor would open on somebody
     // else's sentence and the checklist would tick in the wrong message.
     function findMsg(target, ts, author) {
-      if (!D.page) return null;
-      const list = target === PAGE_TARGET
-        ? (D.page.page_chat || [])
-        : (((D.page.threads || []).find(t => t.id === target) || {}).msgs || []);
+      // msgListFor knows about the library as well as this page's threads —
+      // a code block in the library chat is addressed exactly like any other
+      const list = msgListFor(target) || [];
       const hits = list.filter(m => m && m.ts === ts);
       if (hits.length < 2) return hits[0] || null;
       const same = a => String(a || '').toLowerCase() === String(author || '').toLowerCase();
       const named = author == null ? hits : hits.filter(m => same(m.author));
       return named.find(m => m.kind !== 'tools') || named[0] || hits[0] || null;
+    }
+
+    // ---- running a code block ---------------------------------------------
+    // A fenced ```python block in ANY message — the reader's own or a bot's —
+    // gets a quiet Run button, and pressing it runs that code on this Mac with
+    // this user's privileges. There is no sandbox and the tooltip says so.
+    //
+    // Nothing executable travels: the click sends an ADDRESS (thread, ts,
+    // author, block ordinal) and the companion takes the code out of the stored
+    // message itself. The result comes back and is written onto the record, so
+    // it survives a refetch, a re-render and a second tab without any state
+    // here — the same trick the checklists use.
+    const RUN_TIP = 'Runs this code on this Mac as you';
+    const isPy = lang => /^(py|python|python3)$/i.test(String(lang || '').trim());
+    const STDOUT_FOLD = 30;      // lines of stdout before it folds away
+    const runKeyOf = (target, ts, i) => target + '|' + ts + '|' + i;
+
+    // A block's Run button, its spinner while it runs, and whatever the last
+    // run of it printed — built as DOM (never an HTML string), like the
+    // markdown around it.
+    function decorateRuns(scope) {
+      if (!scope) return;
+      scope.querySelectorAll('.ctext.md').forEach(el => {
+        const pres = el.querySelectorAll('pre.md-code[data-block]');
+        if (!pres.length) return;
+        // An unsent message has no timestamp, so it has no address — and a
+        // block cannot be run before the companion has the message it is in.
+        const reply = el.closest('.reply[data-ts]');
+        const card = el.closest('.card[data-thread]');
+        if (!reply || !card) return;
+        const target = card.getAttribute('data-thread');
+        const ts = reply.getAttribute('data-ts');
+        const author = reply.getAttribute('data-author');
+        const msg = findMsg(target, ts, author);
+        const runs = (msg && msg.runs) || {};
+        pres.forEach(pre => {
+          if (pre.nextSibling && pre.nextSibling.classList &&
+              pre.nextSibling.classList.contains('runbox')) return;   // already drawn
+          const i = pre.getAttribute('data-block');
+          const runnable = D.canRun && isPy(pre.getAttribute('data-lang'));
+          const result = runs[i];
+          const key = runKeyOf(target, ts, i);
+          if (!runnable && !result && !D.runErr[key]) return;
+          const box = mk('div', 'runbox');
+          box.setAttribute('data-block', i);
+          box.appendChild(runBar(key, runnable, result));
+          if (D.runErr[key]) {
+            const e = mk('div', 'runstat bad');
+            e.textContent = D.runErr[key];
+            box.appendChild(e);
+          }
+          if (result) box.appendChild(runResult(key, result));
+          pre.parentNode.insertBefore(box, pre.nextSibling);
+        });
+      });
+      loadFigures(scope);
+    }
+
+    function runBar(key, runnable, result) {
+      const bar = mk('div', 'runbar');
+      const running = D.runState[key] === 'running';
+      if (running) {
+        const s = mk('span', 'runwait');
+        s.appendChild(mk('span', 'spin')).textContent = '◐';
+        s.appendChild(document.createTextNode('running…'));
+        bar.appendChild(s);
+        // cancelling is one kill on the child's process group, so it is cheap
+        // and it is offered; the timeout stays the backstop underneath it
+        const stop = mk('button', 'runbtn stop');
+        stop.type = 'button';
+        stop.setAttribute('data-act', 'run-stop');
+        stop.title = 'Stop this run';
+        stop.textContent = '✕ stop';
+        bar.appendChild(stop);
+      } else if (runnable) {
+        const b = mk('button', 'runbtn');
+        b.type = 'button';
+        b.setAttribute('data-act', 'run');
+        b.title = RUN_TIP;
+        b.textContent = result ? '▷ Run again' : '▷ Run';
+        bar.appendChild(b);
+      }
+      if (result && !running) {
+        const meta = mk('span', 'runmeta');
+        const secs = Math.max(0, Number(result.ms) || 0) / 1000;
+        meta.textContent = (result.python ? 'python ' + result.python + ' · ' : '')
+          + (secs < 10 ? secs.toFixed(1) : Math.round(secs)) + 's';
+        bar.appendChild(meta);
+      }
+      return bar;
+    }
+
+    // Exit status is shown ONLY when there is something wrong with it: a clean
+    // run says what it printed and nothing else.
+    const RUN_BAD = {
+      error: r => 'exit ' + r.exit,
+      timeout: () => 'timed out',
+      cancelled: () => 'stopped',
+      failed: () => 'python could not start',
+    };
+
+    function runResult(key, r) {
+      const out = mk('div', 'runout');
+      const bad = RUN_BAD[r.status];
+      if (bad) {
+        const s = mk('div', 'runstat bad');
+        s.textContent = bad(r);
+        out.appendChild(s);
+      }
+      const stdout = String(r.stdout == null ? '' : r.stdout);
+      if (stdout.trim()) {
+        // one trailing newline is how printing works, not a 43rd line
+        const lines = stdout.replace(/\n$/, '').split('\n');
+        const open = !!D.runOpen[key] || lines.length <= STDOUT_FOLD;
+        if (!open) {
+          const more = mk('button', 'showmore');
+          more.type = 'button';
+          more.setAttribute('data-act', 'run-more');
+          more.setAttribute('aria-expanded', 'false');
+          more.textContent = 'Show all ' + lines.length + ' lines';
+          out.appendChild(more);
+        }
+        const pre = mk('pre', 'runstdout');
+        pre.textContent = open ? stdout : lines.slice(0, STDOUT_FOLD).join('\n');
+        out.appendChild(pre);
+      }
+      const stderr = String(r.stderr == null ? '' : r.stderr);
+      if (stderr.trim()) {
+        const pre = mk('pre', 'runstderr');
+        pre.textContent = stderr;
+        out.appendChild(pre);
+      }
+      const figures = Array.isArray(r.figures) ? r.figures : [];
+      if (figures.length) {
+        const wrap = mk('div', 'runfigs');
+        figures.forEach((name, n) => {
+          const img = mk('img', 'runfig');
+          img.alt = 'figure ' + (n + 1);
+          img.title = 'Click to enlarge';
+          img.setAttribute('data-run', r.run_id || '');
+          img.setAttribute('data-fig', name);
+          wrap.appendChild(img);
+        });
+        out.appendChild(wrap);
+      }
+      return out;
+    }
+
+    // A figure is a file on the companion behind an owner-only route, so it
+    // cannot simply be an <img src>: the bytes come back through the extension's
+    // background worker (which has the credentials) as a data: url, cached here
+    // so a re-render never refetches. A page whose own CSP forbids data: images
+    // shows the caption instead of the plot — the run is unaffected.
+    function loadFigures(scope) {
+      scope.querySelectorAll('img.runfig[data-fig]').forEach(img => {
+        const run = img.getAttribute('data-run');
+        const name = img.getAttribute('data-fig');
+        const k = run + '|' + name;
+        img.addEventListener('error', () => {
+          if (!img.getAttribute('src')) return;
+          const note = mk('div', 'runstat');
+          note.textContent = img.alt + ' — this page will not display it';
+          if (img.parentNode) img.parentNode.replaceChild(note, img);
+        });
+        if (D.figs[k]) { img.src = D.figs[k]; return; }
+        if (D.figLoading[k]) return;
+        D.figLoading[k] = true;
+        Promise.resolve(cb('onRunFigure')(targetOfEl(img), run, name))
+          .then(r => {
+            delete D.figLoading[k];
+            if (!r || r.ok === false || !r.data_url) return;
+            D.figs[k] = r.data_url;
+            if (!D.mounted) return;
+            D.shadow.querySelectorAll('img.runfig[data-fig="' + cssq(name) + '"][data-run="' + cssq(run) + '"]')
+              .forEach(el => { el.src = r.data_url; });
+          })
+          .catch(() => { delete D.figLoading[k]; });
+      });
+    }
+    // The library's messages belong to another url entirely; everything else
+    // belongs to the page we are standing on. content.js turns the target into
+    // the real address — the drawer only says which conversation it is.
+    const targetOfEl = el => {
+      const card = el.closest && el.closest('.card[data-thread]');
+      return card ? card.getAttribute('data-thread') : PAGE_TARGET;
+    };
+
+    // Where a block's address comes from at click time: the ancestors, exactly
+    // as a tick's does. Nothing about a run is held in a data attribute that
+    // the record could not answer for.
+    function runAddr(el) {
+      const box = el.closest('.runbox[data-block]');
+      const reply = el.closest('.reply[data-ts]');
+      const card = el.closest('.card[data-thread]');
+      if (!box || !reply || !card) return null;
+      const index = Number(box.getAttribute('data-block'));
+      if (!isFinite(index)) return null;
+      const target = card.getAttribute('data-thread');
+      const ts = reply.getAttribute('data-ts');
+      return { target, ts, author: reply.getAttribute('data-author'), index,
+               key: runKeyOf(target, ts, index) };
+    }
+
+    async function doRun(btn) {
+      const a = runAddr(btn);
+      if (!a) return;
+      if (D.runState[a.key] === 'running') return;
+      D.runState[a.key] = 'running';
+      delete D.runErr[a.key];
+      render();
+      let r;
+      try { r = await cb('onRun')(a.target, a.ts, a.author, a.index); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      delete D.runState[a.key];
+      if (!r || r.ok === false) D.runErr[a.key] = (r && r.error) || 'could not run that block';
+      else if (r.run) {
+        const msg = findMsg(a.target, a.ts, a.author);
+        if (msg) {
+          if (!msg.runs) msg.runs = {};
+          msg.runs[String(a.index)] = r.run;
+        }
+      }
+      render();
+    }
+
+    async function doRunStop(btn) {
+      const a = runAddr(btn);
+      if (!a) return;
+      try { await cb('onRunCancel')(a.target, a.ts, a.author, a.index); }
+      catch { /* the run answers for itself either way */ }
+    }
+
+    // ---- the lightbox -------------------------------------------------------
+    // A plot drawn to the width of a 420px drawer is a picture of a plot. One
+    // click fills the window with it; Esc, or a click anywhere on the scrim,
+    // puts it back.
+    function openLight(src, alt) {
+      if (!D.mounted || !D.el.light || !src) return;
+      D.light = src;
+      D.el.light.innerHTML = '';
+      const img = mk('img');
+      img.src = src;
+      img.alt = alt || 'figure';
+      D.el.light.appendChild(img);
+      D.el.light.hidden = false;
+      D.el.light.classList.add('on');
+    }
+    function closeLight() {
+      D.light = null;
+      if (!D.mounted || !D.el.light) return;
+      D.el.light.classList.remove('on');
+      D.el.light.hidden = true;
+      D.el.light.innerHTML = '';
     }
 
     async function doTick(box) {
@@ -3317,6 +3620,14 @@
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
+      // Whether a ```python block may be run from here: the companion's answer
+      // to GET /run (owner, and not switched off). False until it has said so,
+      // and false for ever for a guest — the button is not drawn at all.
+      // (a METHOD named canRun would clobber the flag itself — see `opened`)
+      setCanRun: on => { D.canRun = !!on; render(); return D; },
+      // One Esc, one layer. content.js's document-level handler asks this
+      // first, so a lightbox closes instead of the whole drawer.
+      escape: () => { if (!D.light) return false; closeLight(); return true; },
       // the library's record, handed in the way setPage hands the page's
       setLibrary: page => { D.library.page = page || null; if (D.view === 'pages') renderLibrary(); },
       refreshLibrary: () => { if (D.view === 'pages') loadLibrary(); },

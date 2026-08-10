@@ -506,6 +506,45 @@ an ordinary conversation in every other respect — mention `@claude`,
 `@codex` or `@all`, export it to Obsidian as a "Library" note, clear it
 and start again — and it is on your phone at `/pages` too.
 
+### Running the code in a message
+
+A conversation about a page full of numbers turns into code very
+quickly — "plot that", "check the arithmetic", "what does the
+distribution look like". So any fenced ```` ```python ```` block in any
+message, yours or a bot's, carries a quiet **Run** button. Press it and
+the snippet runs, and what it printed appears under the block: stdout in
+a mono block, stderr marked as stderr, an exit line only when something
+went wrong, and any **matplotlib figures as inline thumbnails** — click
+one and it fills the window, because a plot at the width of a 420px
+column is a picture of a plot. `plt.show()` needs no changing: the
+backend is headless and every open figure is saved for you.
+
+The result is stored on the message itself, so it is still there after a
+refetch, a reload, or in another tab, and it goes into the Obsidian note
+under the code fence when you export — with the figures copied into
+`<vault>/<export folder>/attachments/` as ordinary markdown images.
+Running a block again replaces its last result; deleting the message,
+the thread or the page deletes everything those runs left on disk. Runs
+are killed after 30 seconds (there is a stop button meanwhile) and each
+stream is cut at 64KB with a marker saying so.
+
+**What this is, exactly.** The code runs on this Mac, as you, with your
+files, your keys on disk and your network — there is no sandbox and
+nothing here pretends otherwise; the button's own tooltip says *"Runs
+this code on this Mac as you"*. Treat a block written by a bot the way
+you would treat pasting a stranger's script into your terminal, because
+that is the same act: the page you are annotating is untrusted text, and
+it can try to talk the bots into writing something worth running.
+Nothing runs on its own — a block only ever runs when you press the
+button — and the code that runs is the code *stored in the message you
+can see*, never anything a request carried. It is owner-only end to end:
+on a shared companion a guest never sees the button, `/run` refuses
+them, and the figures are behind the same gate.
+
+If you would rather not have it at all, set `"run_python": false` in
+`.botference/plugin/config.json` — the button disappears and the
+endpoint refuses.
+
 ### On your phone: reading and annotating, not just reading
 
 Once the companion has a public address (below), Discuss is a

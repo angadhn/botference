@@ -16,6 +16,7 @@ export const ROOT = process.env.BOTFERENCE_PROJECT_ROOT || REPO;
 export const DIR = path.join(ROOT, '.botference', 'plugin');
 const PAGES = path.join(DIR, 'pages');
 const SNAPS = path.join(DIR, 'snapshots');
+const RUNS = path.join(DIR, 'runs');
 const INDEX_FILE = path.join(DIR, 'index.json');
 const CONFIG_FILE = path.join(DIR, 'config.json');
 
@@ -44,6 +45,11 @@ export const DEFAULT_CONFIG = {
   // how long the bots' replies should run; the envelope carries the matching
   // instruction on every turn
   verbosity: 'short',
+  // Whether a ```python block in a message may be RUN, here, as this user
+  // (run.mjs). One line to switch the whole thing off: no Run button, and
+  // POST /run refuses. Default on, and absent in an older config, which
+  // therefore reads as on.
+  run_python: true,
   // Which model and how hard it thinks, per agent — the reader's standing
   // PREFERENCE, not a report of the live bridge. The bridge is a lazily-spawned
   // child that dies whenever it likes, so a setting that only ever lived inside
@@ -227,11 +233,58 @@ export function savePage(page) {
   return page;
 }
 
-// The page is gone: its record, its snapshot and its index row go together,
-// or the pages list keeps offering a row that opens onto nothing.
+// --- code-block runs -----------------------------------------------------
+// The output of running a ```python block lives in the message that holds the
+// block (msg.runs, keyed by the block's ordinal) and its files live in a
+// directory of their own. The record points at the directory by run_id, so the
+// two are deleted together: replacing a run, deleting the message, deleting the
+// thread and deleting the page all come through here.
+const safeKey = k => String(k || '').replace(/[^0-9a-f]/gi, '').slice(0, 40);
+export const runsDir = key => path.join(RUNS, safeKey(key));
+export function runDir(key, runId) {
+  if (!/^r-[0-9a-z]{1,16}-[0-9a-f]{6}$/.test(String(runId || ''))) return '';
+  return path.join(runsDir(key), String(runId));
+}
+export function deleteRunDir(key, runId) {
+  const dir = runDir(key, runId);
+  if (!dir) return false;
+  try { fs.rmSync(dir, { recursive: true, force: true }); return true; } catch { return false; }
+}
+// every run_id a list of messages is holding onto — what has to be deleted
+// when those messages go
+export function runIdsOf(msgs) {
+  const ids = [];
+  for (const m of (Array.isArray(msgs) ? msgs : [])) {
+    for (const r of Object.values((m && m.runs) || {})) if (r && r.run_id) ids.push(r.run_id);
+  }
+  return ids;
+}
+export const deleteRuns = (key, ids) => { for (const id of ids || []) deleteRunDir(key, id); };
+
+// A result is written onto the message it belongs to, addressed by block
+// ordinal, and REPLACES whatever that block held before (the old directory is
+// the caller's to delete). `kind` stays "msg": this is a field, not a new kind
+// of message, and a client that has never heard of it sees the message it
+// always saw.
+export function setRun(msg, blockIndex, result) {
+  if (!msg) return null;
+  if (!msg.runs || typeof msg.runs !== 'object') msg.runs = {};
+  msg.runs[String(blockIndex)] = result;
+  return result;
+}
+export function clearRuns(msg) {
+  const ids = msg && msg.runs ? Object.values(msg.runs).map(r => r && r.run_id).filter(Boolean) : [];
+  if (msg) delete msg.runs;
+  return ids;
+}
+
+// The page is gone: its record, its snapshot, every run it holds and its index
+// row go together, or the pages list keeps offering a row that opens onto
+// nothing.
 export function deletePage(url) {
   try { fs.unlinkSync(pageFile(url)); } catch { }
   try { fs.unlinkSync(snapshotFile(pageKey(url))); } catch { }
+  try { fs.rmSync(runsDir(pageKey(url)), { recursive: true, force: true }); } catch { }
   const idx = readIndex();
   delete idx[pageKey(url)];
   writeJson(INDEX_FILE, idx);

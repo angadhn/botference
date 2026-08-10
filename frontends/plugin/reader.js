@@ -56,6 +56,36 @@
   }
 
   // ---- the sheet ---------------------------------------------------------
+  // What a ```python block printed when the owner ran it, on the Mac. Read-only
+  // here: a phone shows results, it never starts them (the Run button lives in
+  // the drawer, next to the machine it would run on). Owner-only end to end —
+  // a guest sees the message and no output at all, because the output came off
+  // somebody's own computer.
+  function figSrc(run, name) {
+    return '/run-figure?key=' + encodeURIComponent(D.key)
+      + '&run=' + encodeURIComponent(run) + '&name=' + encodeURIComponent(name);
+  }
+  function runsHtml(m) {
+    if (!D.me || !D.me.owner || !m.runs) return '';
+    var html = '';
+    Object.keys(m.runs).sort(function (a, b) { return Number(a) - Number(b); }).forEach(function (i) {
+      var r = m.runs[i] || {};
+      var bad = r.status && r.status !== 'ok';
+      var figs = (r.figures || []).map(function (name, n) {
+        return '<img src="' + esc(figSrc(r.run_id, name)) + '" alt="figure ' + (n + 1)
+          + '" loading="lazy" data-fig="' + esc(figSrc(r.run_id, name)) + '">';
+      }).join('');
+      html += '<div class="runs"><p class="rhead">block ' + (Number(i) + 1) + ' · ran'
+        + (r.python ? ' on python ' + esc(r.python) : '')
+        + (bad ? ' · <span class="bad">' + esc(r.status === 'error' ? 'exit ' + r.exit : r.status) + '</span>' : '')
+        + '</p>'
+        + (String(r.stdout || '').trim() ? '<pre>' + esc(r.stdout) + '</pre>' : '')
+        + (String(r.stderr || '').trim() ? '<pre class="rerr">' + esc(r.stderr) + '</pre>' : '')
+        + (figs ? '<div class="figs">' + figs + '</div>' : '')
+        + '</div>';
+    });
+    return html;
+  }
   function msgHtml(m) {
     if (m.kind === 'tools') {
       return '<details class="tools"><summary>' + esc(m.author) + ' explored</summary><pre>'
@@ -63,7 +93,32 @@
     }
     var cls = AGENTS[m.author] ? ' ' + m.author : '';
     return '<div class="msg' + cls + '"><div class="by"><b>' + esc(m.author) + '</b></div>'
-      + '<pre>' + esc(m.text) + '</pre></div>';
+      + '<pre>' + esc(m.text) + '</pre>' + runsHtml(m) + '</div>';
+  }
+
+  // the lightbox: a plot at thumbnail size is a picture of a plot, not a plot
+  var light = document.getElementById('bfp-light');
+  function openLight(src) {
+    if (!light) return;
+    light.innerHTML = '<img src="' + esc(src) + '" alt="figure">';
+    light.classList.add('open');
+  }
+  function closeLight() {
+    if (!light) return;
+    light.classList.remove('open');
+    light.innerHTML = '';
+  }
+  if (light) {
+    light.addEventListener('click', closeLight);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && light.classList.contains('open')) closeLight();
+    });
+    document.addEventListener('click', function (e) {
+      var img = e.target && e.target.closest && e.target.closest('img[data-fig]');
+      if (!img) return;
+      e.preventDefault();
+      openLight(img.getAttribute('data-fig'));
+    });
   }
   function threadById(id) {
     var list = D.threads || [];

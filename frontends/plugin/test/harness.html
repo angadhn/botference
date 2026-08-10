@@ -71,6 +71,12 @@
                      state, with its warning in Page chat (screenshot state)
     ?checklist=1     seed the page chat with a bot checklist (screenshot state
                      for the interactive checkboxes)
+    ?run=1           seed the page chat with a bot reply carrying a runnable
+                     ```python block, already run: the Run button, the output
+                     and two figure thumbnails (screenshot state)
+    ?run=figure      …and the lightbox held open on the first of them
+    ?norun=1         the companion with run_python switched off, or a guest:
+                     no Run button anywhere
     ?sending=1       a message sent and still in flight: the optimistic pending
                      card, dimmed, spinning, composer already empty. The POST
                      never lands, so the state holds for a screenshot.
@@ -686,6 +692,68 @@ const deletePagePosts = []; // …and every /delete-page body
 let tickFail = false;       // the selftest flips this to exercise the revert
 let refuseDelete = false;   // …and this for the 409 refusal path
 
+// ---- running a python code block ---------------------------------------
+// The real companion runs the code it has STORED — a request carries an
+// address, never a snippet — so the fake one behaves the same way: it re-parses
+// the message the address names, refuses anything that is not python, and
+// answers with a canned result chosen by what the block says. The selftest
+// asserts on exactly that: a body carrying code of its own changes nothing.
+let runEnabled = Q.get('norun') !== '1';
+let runLatency = 0;          // ms POST /run takes to answer (the spinner state)
+const runPosts = [];         // every /run body, code smuggling included
+const runCancels = [];       // …and every /run-cancel
+// a real png of a plausible line chart (260×150), so the drawer has something
+// to actually decode, scale and open in the lightbox
+const TINY_PNG = 'data:image/png;base64,'
+  + 'iVBORw0KGgoAAAANSUhEUgAAAQQAAACWCAIAAAC3s2GhAAADbklEQVR42u3dPW7cMBCA0b1ljpKzpswBUsVdCrsNnHhXpPgz'
+  + 'M3zA13qtledBsACSj9+/fg7s/c+blLQHDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwS'
+  + 'DBIMEgwwCAYYBAMMggEGwQCDYIBBMMAgGGAQDDAIBhgEAwwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwSDBIMEgwS'
+  + 'DBIMEgwSDBIMEgwSDBIMEgwwCAYYBAMMggEGwQCDYIBB8/vx/dvzYNDpBtaogEGZDExVAYOyMhhOAgblZjCQBAzK9P/xVA8w'
+  + 'aD+DCB8Ig3ZKiPbhMGiDhJjeYFBuBgN/IwwqIuH+74VBKyYyxQXAoGoSuh8RMKighL7rgUGzJi+dTxhUWUKTBxhUXMJ1DzCo'
+  + 'voSLlwqDTpHw8oJh0EESnl82DDpLwpOL349h1+pvHSvhq6+wB0OQBeAaMkllSC/FEG0BuE6W8O93WYQh5gJwHS7h0zdagSHs'
+  + 'AnCR8Pf3movh5kDzQMLKbzcLQ4oF4Drq9dGe9QxZFoDLY2EuhkQLwEXCRAyLB5QHEiJiyLgAXCSMx5B0AbhIGIwh7wJwwTAS'
+  + 'Q+oF4CJhGIaYk8cDCasxfBq4UOsZeCBhHYb/Sgi1uIcHElZg+EpCwJVuPMAwEcMTCTGXffJAwhQMzyWEXQPNAwmDMbyUEHlD'
+  + 'AB5ImIUh4+4YPJAwBsMVCfG3iuEBhrsYLkpIsW8SDyT0Y7guIcsmYjyQ0IOhSUKiHfV4IKENw5XXR3m3lzzcAwn9GErutXqs'
+  + 'Bw/GNgwdEjJuPHzmWJDQgKFPQtJduE/zQEIDhm4JebekP8cDCQ0Y7khIfT7DCR5IaMDQ8fqo0mEltT2Q0I/hzJN7qnrw+qgN'
+  + 'w30JNY6xqjc3JLRhGCKhzJluxaaHhAYMoyRUOuCwjAcSOjE47bOYBxLaMAx8LNQ7+rbM6a4GvQ3D2O24y3T/dfP2y/ZHvNjD'
+  + '/arnISngEBjchUrjRQIMq4cs5n0j4RYGt6CGhxRWYeCBBBh4IAGGAz3sGkESYPCICAQSBu2cSAxgSONh3nR6IMDAw2p1MGj8'
+  + 'sN6f13mfLBg2eOgbXAxgqEzi5Sjf/HHBkJJER24sDDxgAAMVGMCABAYweA/r/sAgbe0DGIIuiLrQrx0AAAAASUVORK5CYII=';
+const RUN_LONG_LINES = 42;   // past the drawer's 30-line fold
+const RUN_LONG = Array.from({ length: RUN_LONG_LINES },
+  (_, i) => 'season ' + (2026 - i) + ': xGA ' + (40 + i)).join('\n') + '\n';
+// the same line-anchored fence rule run.mjs and drawer.js both use
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/;
+function fenceBlocks(text) {
+  const lines = String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const open = FENCE_RE.exec(lines[i]);
+    if (!open) continue;
+    const close = open[1][0] === '`' ? /^\s{0,3}```/ : /^\s{0,3}~~~/;
+    const buf = [];
+    i++;
+    while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
+    out.push({ lang: open[2] || '', code: buf.join('\n') });
+  }
+  return out;
+}
+let runSeq = 0;
+// what running THIS code prints — the fake interpreter, and the only thing in
+// here that is not a faithful copy of the companion's own behaviour
+function runResultFor(code) {
+  const id = 'r-fake' + (++runSeq) + '-aaaaaa';
+  const base = { run_id: id, status: 'ok', exit: 0, signal: null, stdout: '', stderr: '',
+    stdout_truncated: false, stderr_truncated: false, figures: [], ms: 214,
+    python: '3.12.4', ran_at: now() };
+  if (/boom/.test(code)) {
+    return { ...base, status: 'error', exit: 1,
+      stderr: 'Traceback (most recent call last):\n  File "snippet.py", line 1\nRuntimeError: boom\n' };
+  }
+  if (/plot|savefig/.test(code)) return { ...base, stdout: 'drew the chart\n', figures: ['figure-01.png', 'figure-02.png'] };
+  if (/seasons/.test(code)) return { ...base, stdout: RUN_LONG };
+  return { ...base, stdout: 'mean xGA: 1.42\n' };
+}
+
 // ---- round 5: the companion is no longer necessarily local, single-user or
 //      fast. Four worlds the selftest drives, all of them flags rather than
 //      query params so one run can visit every one of them. ---------------
@@ -695,7 +763,7 @@ let guestRefuse = false;    // a guest whose @mentions the owner has not allowed
 let ownerOnly = false;      // every owner-only endpoint answers 403
 let IDENTITY = 'angadh';    // who {t:'identity'} says this browser is
 const GUEST_REASON = 'the owner hasn’t granted you bot access';
-const OWNER_ROUTES = /^\/(export|delete-page|model|effort|verbosity|relay|interrupt)$/;
+const OWNER_ROUTES = /^\/(export|delete-page|model|effort|verbosity|relay|interrupt|run|run-cancel|run-figure)$/;
 const dedupePosts = [];     // every message the companion answered deduped:true to
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
@@ -752,6 +820,22 @@ function indexMap() {
 // with its tool activity stored out of order behind it
 // ?checklist=1 — a checklist already on screen at load, one item done, so the
 // ticked/unticked treatment is screenshotable without driving a turn
+// ?run=1 — a bot reply with a runnable python block that has already been run:
+// the button, the output and the figures, all on screen at load
+// (?run=figure seeds the same thing and then opens the lightbox on it)
+if (Q.get('run')) {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(9), text: '@claude plot xGA by season for me' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(8),
+    text: 'Here it is — the trend is the flat middle, not the ends:\n\n'
+      + '```python\nimport matplotlib.pyplot as plt\n'
+      + 'plt.plot(seasons, xga)\nplt.show()\n```\n\nRun it again after the next fixture.',
+    runs: { 0: runResultFor('plot') } });
+  // …and one that fell over, because stderr has a look of its own
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(7),
+    text: 'And the one that failed:\n\n```python\nxga = table["xGA"]\nraise RuntimeError("boom")\n```',
+    runs: { 0: runResultFor('boom') } });
+}
+
 if (Q.get('checklist') === '1') {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(7), text: '@claude give me a checklist for the desk' });
   RECORD.page_chat.push({ author: 'claude', ts: iso(6), text: CHECKLIST_DONE });
@@ -1040,6 +1124,45 @@ function companion(method, path, body) {
     log('key-mode ' + body.agent + ' → ' + body.mode);
     return { ok: true, status: 200, data: { ok: true, applies: KEYMODE_APPLIES } };
   }
+  // GET /run — may a block be run here at all? (owner, and switched on)
+  if (method === 'GET' && route === '/run') {
+    return { ok: true, status: 200,
+             data: { ok: true, enabled: runEnabled, timeout_ms: 30000, python: 'python3' } };
+  }
+  // POST /run {url, thread_id, ts, author?, block_index} — the address of a
+  // block, never the block itself. Anything else in the body is ignored, and
+  // the selftest proves it by sending some.
+  if (method === 'POST' && route === '/run') {
+    runPosts.push({ thread_id: body.thread_id, ts: body.ts, block_index: body.block_index,
+                    code: body.code, author: body.author });
+    if (!runEnabled) {
+      return { ok: false, status: 409,
+               error: 'running code is switched off on this companion (run_python in config.json)' };
+    }
+    const m = msgIn(body.thread_id, body.ts);
+    if (!m) return { ok: false, status: 404, error: 'no such message' };
+    const b = fenceBlocks(m.text)[body.block_index];
+    if (!b) return { ok: false, status: 400, error: 'no code block #' + body.block_index + ' in that message' };
+    if (!/^(py|python|python3)$/i.test(b.lang)) {
+      return { ok: false, status: 400, error: 'code block #' + body.block_index + ' is not python' };
+    }
+    const result = runResultFor(b.code);
+    m.runs = m.runs || {};
+    m.runs[String(body.block_index)] = result;      // the result lives on the message
+    RECORD.updated_at = now();
+    log('ran block #' + body.block_index + ' → ' + result.status);
+    return { ok: true, status: 200,
+             data: { ok: true, run: result, block_index: body.block_index, stored: true } };
+  }
+  if (method === 'POST' && route === '/run-cancel') {
+    runCancels.push({ thread_id: body.thread_id, ts: body.ts, block_index: body.block_index });
+    return { ok: true, status: 200, data: { ok: true, cancelled: true } };
+  }
+  // a figure is owner-only, so it comes back through the worker as a data: url
+  // rather than as an <img src> the page could fetch for itself
+  if (method === 'GET' && route === '/run-figure') {
+    return { ok: true, status: 200, data: { ok: true, mime: 'image/png', data_url: TINY_PNG } };
+  }
   if (method === 'POST' && route === '/tick') {
     tickPosts.push({ thread_id: body.thread_id, ts: body.ts, index: body.index, checked: body.checked });
     if (tickFail) return { ok: false, status: 500, error: 'simulated tick failure' };
@@ -1313,9 +1436,12 @@ window.chrome = {
       // as slow as the round-4 send really became (re-extract + a .docx fetch
       // before the POST even starts). That latency is the whole reason the send
       // has to be optimistic: this is where a second click used to land.
-      const slow = slowPost && msg && msg.t === 'api' && msg.method === 'POST' &&
-        /^\/(reply|thread)\b/.test(String(msg.path || ''));
-      setTimeout(() => cb && cb(reply), slow ? slowPost : 15);
+      const post = msg && msg.t === 'api' && msg.method === 'POST';
+      const slow = (post && slowPost && /^\/(reply|thread)\b/.test(String(msg.path || ''))) ? slowPost
+        // …and a run takes as long as a run takes, which is the whole reason
+        // the block gets a spinner and a stop button while it does
+        : (post && runLatency && String(msg.path || '') === '/run') ? runLatency : 0;
+      setTimeout(() => cb && cb(reply), slow || 15);
     },
     onMessage: { addListener: fn => contentListeners.push(fn) },
     // the long-lived port content.js keeps open. Connecting STARTS a worker —
@@ -2651,6 +2777,128 @@ async function selftest() {
   check('…while the raw brackets never reach the label',
     !/\[[ xX]\]/.test(mineRow().querySelector('.ctext').textContent));
 
+  // ---- running a python code block ---------------------------------------
+  // The button is quiet, it is owner-only, and what it sends is an ADDRESS: the
+  // code that runs is the code the companion already has. Everything below is
+  // about those three facts plus the reading of the result — the spinner, the
+  // fold, the thumbnails and the lightbox.
+  check('the drawer asked the companion whether code may be run here at all',
+    apiCalls.some(c => c.method === 'GET' && c.path === '/run'));
+
+  const CODE_MSG = 'Two blocks, and only one of them is python:\n\n'
+    + '```js\nconsole.log("never me")\n```\n\n```python\nprint(mean)\n```\n\nthat is the sum.';
+  RECORD.page_chat.push({ author: 'claude', ts: iso(2), text: CODE_MSG });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(2.1),
+    text: 'This one fails:\n\n```python\nraise RuntimeError("boom")\n```' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(2.2),
+    text: 'And this one talks a lot:\n\n```python\nfor s in seasons: print(s)\n```' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(2.3),
+    text: 'And this one draws:\n\n```python\nplt.plot(seasons); plt.show()\n```' });
+  await window.__bfp.loadPage();
+  const rowSaying = re => [...S.querySelectorAll('.pane[data-pane="chat"] .reply')]
+    .find(x => re.test(x.textContent)) || null;
+  const codeRow = () => rowSaying(/that is the sum/);
+  const runBoxes = () => { const r = codeRow(); return r ? [...r.querySelectorAll('.runbox')] : []; };
+  const runBtnIn = row => row && row.querySelector('.runbox [data-act="run"]');
+  // never let a missing button end the run: a null here is a FAILED check, not
+  // an exception that takes the other three hundred with it
+  const clickIn = (row, sel) => { const b = row && row.querySelector(sel); if (b) b.click(); return !!b; };
+  const clickRun = row => clickIn(row, '.runbox [data-act="run"]');
+
+  check('a python block gets a Run button', !!runBtnIn(codeRow()));
+  check('…exactly one, on the python block and not the javascript one above it',
+    runBoxes().length === 1 && runBoxes()[0].getAttribute('data-block') === '1');
+  check('…and it says what it does, in those words',
+    runBtnIn(codeRow()).title === 'Runs this code on this Mac as you');
+  d.setCanRun(false);
+  check('a companion that says no (a guest, or the opt-out) draws no button at all',
+    runBoxes().length === 0);
+  d.setCanRun(true);
+  check('…and it comes back when it is allowed again', !!runBtnIn(codeRow()));
+
+  runLatency = 900;
+  const runsBefore = runPosts.length;
+  clickRun(codeRow());
+  check('while it runs the block wears the drawer’s own spinner',
+    !!await until(() => codeRow().querySelector('.runbox .runwait .spin')));
+  check('…with a way to stop it', !!codeRow().querySelector('.runbox [data-act="run-stop"]'));
+  check('…and what was sent is an address, never the code',
+    runPosts.length === runsBefore + 1 &&
+    runPosts[runPosts.length - 1].block_index === 1 &&
+    runPosts[runPosts.length - 1].thread_id === '__page__' &&
+    runPosts[runPosts.length - 1].code === undefined);
+  runLatency = 0;
+  // the companion has answered: the spinner goes and the button comes back
+  check('…and when the companion answers, the wait is over',
+    !!await until(() => (codeRow().querySelector('.runbox [data-act="run"]') &&
+      !codeRow().querySelector('.runbox [data-act="run-stop"]')) ? true : null));
+  const outOf = row => row && row.querySelector('.runbox .runout');
+  check('the result renders under the block it came from',
+    !!await until(() => /mean xGA: 1\.42/.test((outOf(codeRow()) || {}).textContent || '')));
+  check('…in a mono block of its own', !!codeRow().querySelector('.runbox pre.runstdout'));
+  check('…and a clean run says nothing at all about its exit status',
+    !/exit/i.test(outOf(codeRow()).textContent));
+  const again = runBtnIn(codeRow());
+  check('…while the button now offers the same block again',
+    !!again && /Run again/.test(again.textContent));
+
+  const boomRow = () => rowSaying(/This one fails/);
+  clickRun(boomRow());
+  check('a non-zero exit is said out loud',
+    !!await until(() => /exit 1/.test((outOf(boomRow()) || {}).textContent || '')));
+  check('…and stderr is styled as itself, not as output',
+    !!boomRow().querySelector('.runbox pre.runstderr') &&
+    /RuntimeError: boom/.test(boomRow().querySelector('.runbox pre.runstderr').textContent));
+
+  const longRow = () => rowSaying(/talks a lot/);
+  clickRun(longRow());
+  check('a long stdout folds behind one line, like everything else that is long',
+    !!await until(() => {
+      const b = longRow().querySelector('.runbox [data-act="run-more"]');
+      return b && /Show all 42 lines/.test(b.textContent) ? b : null;
+    }));
+  check('…showing the head of it meanwhile, not nothing',
+    ((longRow().querySelector('.runbox pre.runstdout') || {}).textContent || '').split('\n').length === 30);
+  clickIn(longRow(), '.runbox [data-act="run-more"]');
+  check('…and opening it gives the whole thing', !!await until(() => {
+    const pre = longRow().querySelector('.runbox pre.runstdout');
+    return pre && pre.textContent.split('\n').length > 40 &&
+      !longRow().querySelector('.runbox [data-act="run-more"]') ? pre : null;
+  }));
+
+  const plotRow = () => rowSaying(/this one draws/i);
+  clickRun(plotRow());
+  check('figures come back as inline thumbnails, side by side',
+    !!await until(() => plotRow().querySelectorAll('.runbox img.runfig').length === 2 ? true : null));
+  check('…fetched through the worker, because a figure is owner-only',
+    apiCalls.some(c => c.method === 'GET' && /^\/run-figure\?/.test(c.path)));
+  const thumb = () => plotRow().querySelector('.runbox img.runfig');
+  check('…and painted from what it answered', !!await until(() =>
+    /^data:image\/png;base64,/.test((thumb() && thumb().getAttribute('src')) || '') ? true : null));
+  const lightbox = () => S.querySelector('.lightbox');
+  const thumbSrc = thumb() && thumb().getAttribute('src');
+  if (thumb()) thumb().click();
+  check('clicking a figure opens it full size in a lightbox',
+    !lightbox().hidden && !!lightbox().querySelector('img') &&
+    lightbox().querySelector('img').getAttribute('src') === thumbSrc);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check('…and Esc closes the figure and NOT the drawer under it',
+    lightbox().hidden && d.isOpen());
+  if (thumb()) thumb().click();
+  lightbox().click();
+  check('…as does a click on the scrim', lightbox().hidden);
+
+  runEnabled = false;
+  clickRun(codeRow());
+  check('a companion that refuses says so under the block it was about',
+    !!await until(() => {
+      const bad = codeRow().querySelector('.runbox .runstat.bad');
+      return bad && /switched off/.test(bad.textContent) ? bad : null;
+    }));
+  check('…and the earlier result is still there to read',
+    /mean xGA: 1\.42/.test(codeRow().querySelector('.runbox').textContent));
+  runEnabled = true;
+
   // ---- per-mention context refresh --------------------------------------
   // The page can change under a live session — that is the whole point of a
   // document. Every mention re-reads it; only a DIFFERENT page travels, and it
@@ -3755,6 +4003,18 @@ window.__bfp.activate(false).then(() => {
     // the failure state without waiting for a bot turn: asking content.js for
     // the first-turn context is what discovers the export is a chooser
     if (GDOCS && Q.get('badexport') === '1') setTimeout(() => window.__bfp.articleText(), 250);
+    // ?run=figure — the lightbox, held open on the first figure a run produced:
+    // a plot at column width is a picture of a plot, and this is the state that
+    // has to be looked at rather than asserted
+    if (Q.get('run') === 'figure') {
+      setTimeout(() => {
+        d.open('chat');
+        const img = d.shadow.querySelector('.pane[data-pane="chat"] img.runfig');
+        if (!img) return log('run=figure: no thumbnail yet');
+        img.click();
+        log('run=figure: the lightbox, open (screenshot state)');
+      }, 400);
+    }
     // the optimistic send, frozen: a POST that never answers (?sending=1) or one
     // that fails (?sending=fail). `see` has no wait knob, so the state has to be
     // the one the page settles in.

@@ -14,7 +14,7 @@ import http from 'node:http';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -2179,6 +2179,276 @@ async function main() {
     });
 
     k.proc.kill();
+  }
+
+  // --- running a ```python block ------------------------------------------
+  // The whole feature is "this runs on your Mac as you", so the tests are
+  // mostly about the things that must NOT happen: code arriving on the wire,
+  // a guest reaching it, output growing without bound, a run that will not
+  // stop, and files surviving the message that owned them.
+  {
+    const havePython = (() => {
+      try {
+        const r = spawnSync('python3', ['-c', 'pass'], { stdio: 'ignore' });
+        return !r.error && r.status === 0;
+      } catch { return false; }
+    })();
+    if (!havePython) {
+      console.log('\n  ####  SKIPPING every /run test: no python3 on PATH  ####');
+      console.log('  ####  install python3 (or put it on PATH) and run this file again  ####\n');
+    }
+    // matplotlib is not a dependency of this repo and the figure path does not
+    // need one: a snippet that writes its own png exercises the harvest just as
+    // well. Where matplotlib IS installed, the plt.show() wrapper is checked too.
+    const haveMpl = havePython && (() => {
+      try {
+        const r = spawnSync('python3', ['-c', 'import matplotlib'], { stdio: 'ignore' });
+        return !r.error && r.status === 0;
+      } catch { return false; }
+    })();
+    const runTest = (name, fn) => (havePython ? test(name, fn) : Promise.resolve());
+
+    const runRoot = tmpRoot('run');
+    const runPlugin = path.join(runRoot, '.botference', 'plugin');
+    // a short timeout, so "a runaway loop is killed" costs two seconds
+    const r0 = await startServer({ root: runRoot, args: ['--no-agents'], env: { PLUGIN_RUN_TIMEOUT_MS: '2000' } });
+    const rb = r0.base;
+    const RKEY = crypto.createHash('sha1').update(PAGE1).digest('hex');
+    const runDirOf = id => path.join(runPlugin, 'runs', RKEY, id);
+    // a message with the block in it, and the address that names it back
+    async function seed(text) {
+      const t = (await POST(rb, '/thread', {
+        url: PAGE1, quote: `q-${Math.random()}`, prefix: '', suffix: '', msg: { text },
+      })).json.thread;
+      return { thread_id: t.id, ts: t.msgs[0].ts, url: PAGE1 };
+    }
+    const py = code => '```python\n' + code + '\n```';
+    const readMsg = async at => {
+      const page = (await GET(rb, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      const thread = page.threads.find(t => t.id === at.thread_id);
+      return thread.msgs.find(m => m.ts === at.ts);
+    };
+
+    await POST(rb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+
+    await test('the companion says whether a block may be run at all', async () => {
+      const r = await GET(rb, '/run');
+      assert.equal(r.status, 200);
+      assert.equal(r.json.enabled, true);
+      assert.equal(r.json.timeout_ms, 2000);
+    });
+
+    await runTest('a python block runs and what it printed lands on the message', async () => {
+      const at = await seed('Try this:\n\n' + py('print("hello from the block")'));
+      const r = await POST(rb, '/run', { ...at, block_index: 0 });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.run.status, 'ok');
+      assert.equal(r.json.run.exit, 0);
+      assert.equal(r.json.run.stdout, 'hello from the block\n');
+      assert.match(r.json.run.python, /^3\./, 'the interpreter that actually ran it');
+      const msg = await readMsg(at);
+      assert.equal(msg.kind, undefined, 'still an ordinary message');
+      assert.equal(msg.runs['0'].stdout, 'hello from the block\n', 'and the result survives a refetch');
+      assert.ok(fs.existsSync(runDirOf(msg.runs['0'].run_id)), 'with a directory of its own');
+    });
+
+    await runTest('stderr and a non-zero exit come back as themselves', async () => {
+      const at = await seed(py('import sys\nsys.stderr.write("that went wrong\\n")\nsys.exit(3)'));
+      const r = await POST(rb, '/run', { ...at, block_index: 0 });
+      assert.equal(r.json.run.status, 'error');
+      assert.equal(r.json.run.exit, 3);
+      assert.match(r.json.run.stderr, /that went wrong/);
+    });
+
+    await runTest('the block that runs is the one the index names — and the code is the STORED code', async () => {
+      const at = await seed([
+        'first, some javascript:', '```js', 'console.log("never")', '```',
+        'then two python blocks:', py('print("block one")'), py('print("block two")'),
+      ].join('\n'));
+      const second = await POST(rb, '/run', { ...at, block_index: 2 });
+      assert.equal(second.json.run.stdout, 'block two\n');
+      assert.equal(second.json.block_index, 2);
+      // a request that carries code of its own is a request that carries
+      // nothing: the companion reads the message, never the body
+      const smuggled = await POST(rb, '/run', {
+        ...at, block_index: 1,
+        code: 'import os; os.system("echo pwned")', text: 'print("pwned")', snippet: 'print("pwned")',
+      });
+      assert.equal(smuggled.json.run.stdout, 'block one\n');
+      assert.ok(!/pwned/.test(smuggled.json.run.stdout + smuggled.json.run.stderr));
+      // the javascript block is numbered like everything else, and refused
+      const js = await POST(rb, '/run', { ...at, block_index: 0 });
+      assert.equal(js.status, 400);
+      assert.match(js.json.error, /not python/);
+      const missing = await POST(rb, '/run', { ...at, block_index: 9 });
+      assert.equal(missing.status, 400);
+      assert.match(missing.json.error, /no code block #9/);
+    });
+
+    await runTest('a figure is captured, stored beside the run, and served only through the gate', async () => {
+      // a 1×1 png the snippet writes itself — the harvest is what is under
+      // test, not matplotlib (which this repo does not depend on)
+      const at = await seed(py([
+        'import base64',
+        'png = base64.b64decode(b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")',
+        'open("plot.png", "wb").write(png)',
+        'print("drew one")',
+      ].join('\n')));
+      const r = await POST(rb, '/run', { ...at, block_index: 0 });
+      assert.deepEqual(r.json.run.figures, ['plot.png']);
+      const id = r.json.run.run_id;
+      assert.ok(fs.existsSync(path.join(runDirOf(id), 'plot.png')));
+
+      const raw = await GET(rb, `/run-figure?key=${RKEY}&run=${id}&name=plot.png`);
+      assert.equal(raw.status, 200);
+      assert.equal(raw.headers['content-type'], 'image/png');
+      const json = await GET(rb, `/run-figure?url=${encodeURIComponent(PAGE1)}&run=${id}&name=plot.png&as=json`);
+      assert.match(json.json.data_url, /^data:image\/png;base64,iVBOR/, 'the extension gets a data: url');
+      // the address is validated into a shape that cannot leave the directory
+      for (const bad of ['../../../etc/passwd', 'plot.png/../../x', 'snippet.py']) {
+        const r2 = await GET(rb, `/run-figure?key=${RKEY}&run=${id}&name=${encodeURIComponent(bad)}`);
+        assert.equal(r2.status, 400, bad);
+      }
+      assert.equal((await GET(rb, `/run-figure?key=${RKEY}&run=r-zzzz-aaaaaa&name=plot.png`)).status, 404);
+    });
+
+    if (haveMpl) {
+      await runTest('plt.show() saves the figure instead of trying to open a window', async () => {
+        const at = await seed(py([
+          'import matplotlib.pyplot as plt',
+          'plt.plot([1, 2, 3], [2, 1, 3])',
+          'plt.show()',
+        ].join('\n')));
+        const r = await POST(rb, '/run', { ...at, block_index: 0 });
+        assert.equal(r.json.run.status, 'ok');
+        assert.ok(r.json.run.figures.length >= 1, 'a figure came out of a show()');
+      });
+    }
+
+    await runTest('a re-run REPLACES the result and the directory under it', async () => {
+      const at = await seed(py('import random\nprint(random.random())'));
+      const first = (await POST(rb, '/run', { ...at, block_index: 0 })).json.run;
+      const second = (await POST(rb, '/run', { ...at, block_index: 0 })).json.run;
+      assert.notEqual(first.run_id, second.run_id);
+      assert.equal(fs.existsSync(runDirOf(first.run_id)), false, 'the old run is gone from disk');
+      assert.ok(fs.existsSync(runDirOf(second.run_id)));
+      const msg = await readMsg(at);
+      assert.equal(Object.keys(msg.runs).length, 1, 'one result per block, always');
+      assert.equal(msg.runs['0'].run_id, second.run_id);
+    });
+
+    await runTest('a run that will not stop is stopped, and says so', async () => {
+      const at = await seed(py('import time\nprint("started", flush=True)\nwhile True:\n    time.sleep(0.05)'));
+      const t0 = Date.now();
+      const r = await POST(rb, '/run', { ...at, block_index: 0 });
+      assert.equal(r.json.run.status, 'timeout');
+      assert.ok(Date.now() - t0 < 15000, 'and it was the timeout that ended it, not patience');
+      assert.match(r.json.run.stdout, /started/, 'what it printed first is kept');
+      assert.match(r.json.run.stderr, /stopped after 2s/);
+    });
+
+    await runTest('output is cut at 64KB, and the note says it was', async () => {
+      const at = await seed(py('import sys\nsys.stdout.write("x" * 200000)\nsys.stderr.write("y" * 200000)'));
+      const r = await POST(rb, '/run', { ...at, block_index: 0 });
+      assert.equal(r.json.run.stdout_truncated, true);
+      assert.equal(r.json.run.stderr_truncated, true);
+      assert.ok(r.json.run.stdout.length < 70000, `kept ${r.json.run.stdout.length} bytes`);
+      assert.match(r.json.run.stdout, /…truncated \(200000 bytes of output in all\)$/);
+    });
+
+    await runTest('nothing a run left behind survives the message it belonged to', async () => {
+      const at = await seed(py('print("keep me for a moment")'));
+      const id = (await POST(rb, '/run', { ...at, block_index: 0 })).json.run.run_id;
+      assert.ok(fs.existsSync(runDirOf(id)));
+      await POST(rb, '/delete', { url: PAGE1, thread_id: at.thread_id, ts: at.ts });
+      assert.equal(fs.existsSync(runDirOf(id)), false, 'deleting the message deletes its run');
+
+      const at2 = await seed(py('print("and this one for the page")'));
+      const id2 = (await POST(rb, '/run', { ...at2, block_index: 0 })).json.run.run_id;
+      await POST(rb, '/delete', { url: PAGE1, thread_id: at2.thread_id });
+      assert.equal(fs.existsSync(runDirOf(id2)), false, 'and deleting the thread deletes its messages\' runs');
+
+      const at3 = await seed(py('print("and this one for the whole page")'));
+      const id3 = (await POST(rb, '/run', { ...at3, block_index: 0 })).json.run.run_id;
+      await POST(rb, '/delete-page', { url: PAGE1 });
+      assert.equal(fs.existsSync(path.join(runPlugin, 'runs', RKEY)), false,
+        'and deleting the page takes the whole lot');
+      assert.equal(fs.existsSync(runDirOf(id3)), false);
+      await POST(rb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+    });
+
+    await runTest('editing a message drops the results of code it no longer contains', async () => {
+      const at = await seed(py('print("before the edit")'));
+      const id = (await POST(rb, '/run', { ...at, block_index: 0 })).json.run.run_id;
+      await POST(rb, '/edit', { url: PAGE1, thread_id: at.thread_id, ts: at.ts, text: py('print("after")') });
+      const msg = await readMsg(at);
+      assert.equal(msg.runs, undefined, 'a stale result under changed code is a lie');
+      assert.equal(fs.existsSync(runDirOf(id)), false);
+    });
+
+    r0.proc.kill();
+
+    // --- the opt-out ------------------------------------------------------
+    await test('run_python:false takes the whole feature away', async () => {
+      const offRoot = tmpRoot('run-off');
+      const offDir = path.join(offRoot, '.botference', 'plugin');
+      fs.mkdirSync(offDir, { recursive: true });
+      fs.writeFileSync(path.join(offDir, 'config.json'),
+        JSON.stringify({ author: 'angadh', run_python: false }, null, 2));
+      const off = await startServer({ root: offRoot, args: ['--no-agents'] });
+      const cfg = await GET(off.base, '/run');
+      assert.equal(cfg.json.enabled, false, 'so the drawer never draws the button');
+      await POST(off.base, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+      const t = (await POST(off.base, '/thread', {
+        url: PAGE1, quote: 'q', prefix: '', suffix: '', msg: { text: '```python\nprint(1)\n```' },
+      })).json.thread;
+      const r = await POST(off.base, '/run',
+        { url: PAGE1, thread_id: t.id, ts: t.msgs[0].ts, block_index: 0 });
+      assert.equal(r.status, 409);
+      assert.match(r.json.error, /switched off/);
+      assert.equal(fs.existsSync(path.join(offDir, 'runs')), false, 'and nothing ran');
+      off.proc.kill();
+    });
+
+    // --- who may run anything at all --------------------------------------
+    await test('running code is the owner\'s, and only ever the owner\'s', async () => {
+      const hRoot = tmpRoot('run-hosted');
+      const h = await startServer({
+        root: hRoot, args: ['--hosted', '--no-agents'],
+        env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' },
+      });
+      const R = { host: 'discuss.botference.com' };
+      await POST(h.base, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+      const t = (await POST(h.base, '/thread', {
+        url: PAGE1, quote: 'q', prefix: '', suffix: '', msg: { text: '```python\nprint(1)\n```' },
+      })).json.thread;
+      const body = { url: PAGE1, thread_id: t.id, ts: t.msgs[0].ts, block_index: 0 };
+      const jar = cookieJar(await FORM(h.base, '/auth', { handle: 'ada', password: 'guest-pw', next: '/pages' }, R));
+      const asGuest = [
+        ['a signed-in guest', { ...R, cookie: jar }],
+        ['a guest on the shared password', { ...R, authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' }],
+        // the tunnel's own hop arrives from 127.0.0.1: Host and the proxy
+        // headers are what separate it from the extension on this machine
+        ['a request forwarded to the loopback port', { host: 'localhost', 'cf-connecting-ip': '203.0.113.9', cookie: jar }],
+        ['…and one wearing only X-Forwarded-For', { host: '127.0.0.1', 'x-forwarded-for': '203.0.113.9', cookie: jar }],
+      ];
+      for (const [who, headers] of asGuest) {
+        assert.equal((await POST(h.base, '/run', body, headers)).status, 403, who);
+        assert.equal((await POST(h.base, '/run-cancel', body, headers)).status, 403, who);
+        assert.equal((await GET(h.base, '/run', headers)).status, 403, `${who}: not even to ask`);
+        assert.equal((await GET(h.base,
+          `/run-figure?key=${crypto.createHash('sha1').update(PAGE1).digest('hex')}&run=r-aaaa-bbbbbb&name=plot.png`,
+          headers)).status, 403, `${who}: and never a figure`);
+      }
+      assert.equal(fs.existsSync(path.join(hRoot, '.botference', 'plugin', 'runs')), false,
+        'nothing a guest asked for ever started');
+      // the owner, remotely, IS the owner: they authenticated as themselves
+      const owner = { ...R, authorization: `Bearer ${'owner-pw'}` };
+      assert.equal((await GET(h.base, '/run', owner)).status, 200,
+        'the owner password works from anywhere — it is the owner');
+      assert.equal((await GET(h.base, '/run')).status, 200, 'and localhost is the owner as ever');
+      h.proc.kill();
+    });
   }
 
   // --- the article, readable (and markable) from a phone ------------------

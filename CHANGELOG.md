@@ -2,6 +2,38 @@
 
 ## 2026-08-10
 
+- **Discuss: run the code in a message.** Any fenced ```` ```python ````
+  block — one you pasted, one a bot wrote — now carries a quiet **Run**
+  button. Press it and the snippet runs on this Mac, in a fresh
+  directory of its own, with what it printed appearing under the block:
+  stdout in a mono block, stderr marked as stderr, an exit line only
+  when something went wrong, and **matplotlib figures as inline
+  thumbnails** — click one and it fills the window so a plot is
+  something you can actually read. Results are stored on the message, so
+  they survive a refetch, a reload and a second tab, and they go into
+  the Obsidian note under the code fence, with the figures copied into
+  `<vault>/<folder>/attachments/` as ordinary markdown images. Running
+  again replaces the last result; deleting the message (or the thread,
+  or the page) deletes everything it left on disk.
+  · **No sandbox, and no claim of one.** The button's tooltip says
+    "Runs this code on this Mac as you", because that is exactly what it
+    does: your user, your files, your network. Treat a bot-written block
+    the way you would treat pasting a stranger's script into your
+    terminal — a page you are annotating can try to talk the bots into
+    writing one. `"run_python": false` in `.botference/plugin/config.json`
+    removes the button and refuses the endpoint.
+  · **Yours alone.** It is owner-only end to end: a guest on a shared
+    companion never sees the button, `/run` refuses them, and the
+    figures are served through the same gate. On your phone the results
+    are readable (owner only, thumbnails and lightbox included) but
+    nothing can be started there — the button lives beside the machine
+    it runs on.
+  · Runs stop themselves after 30 seconds, output is cut at 64KB per
+    stream with an honest marker, and there is a stop button while one
+    is going.
+
+## 2026-08-10
+
 - **Discuss: ask about everything you have read.** Until now every
   conversation was about one page. The pages list now opens with a
   library — one conversation about the whole archive. Ask it what you

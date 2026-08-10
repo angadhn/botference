@@ -71,6 +71,21 @@ ul.pages li { border-bottom:1px solid var(--line); padding:.7rem 0 }
    whole page sideways */
 ul.pages a, ul.pages .meta { overflow-wrap:anywhere }
 ul.pages .meta { color:var(--muted); font-size:.76rem }
+/* what a python code block printed when the owner ran it. Read-only here — the
+   phone shows results, it never starts them — and owner-only end to end,
+   because this is output from a program on somebody's Mac. */
+.runs { margin:.5rem 0 .2rem }
+.runs .rhead { font-size:.72rem; color:var(--muted); text-transform:uppercase;
+  letter-spacing:.06em; margin:0 0 .3rem }
+.runs .rhead .bad { color:var(--accent) }
+.runs pre { margin:0 0 .4rem; padding:.5rem .6rem; border-radius:8px;
+  background:var(--quote); border:1px solid var(--line);
+  font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap; overflow-wrap:anywhere; max-height:22rem; overflow:auto }
+.runs pre.rerr { color:var(--accent); background:transparent }
+.figs { display:flex; flex-wrap:wrap; gap:.4rem }
+.figs img { max-width:min(14rem,100%); height:auto; border:1px solid var(--line);
+  border-radius:8px; background:#fff; cursor:zoom-in }
 `;
 
 const shell = (title, body) => `<!doctype html><html><head><meta charset="utf-8">
@@ -98,7 +113,34 @@ const liveScript = url => `<script>
 })();
 </script>`;
 
-function msgHtml(m) {
+// A code block's results, read-only. `ctx` is {key, owner}: without an owner
+// nothing is drawn at all — a run's output is whatever a program printed on the
+// owner's own machine, and that is not a thing to hand to the room. Figures are
+// served by /run-figure under the same owner-only gate, and are links as well
+// as pictures so a tap gets the readable size with no script on this page.
+export function runsHtml(m, ctx) {
+  if (!ctx || !ctx.owner || !m || !m.runs || typeof m.runs !== 'object') return '';
+  const out = [];
+  for (const i of Object.keys(m.runs).sort((a, b) => Number(a) - Number(b))) {
+    const r = m.runs[i] || {};
+    const bad = r.status && r.status !== 'ok';
+    const figs = (r.figures || []).map((name, n) => {
+      const src = `/run-figure?key=${encodeURIComponent(ctx.key)}&run=${encodeURIComponent(r.run_id)}`
+        + `&name=${encodeURIComponent(name)}`;
+      return `<a href="${src}"><img src="${src}" alt="figure ${n + 1}" loading="lazy"></a>`;
+    }).join('');
+    out.push(`<div class="runs">`
+      + `<p class="rhead">block ${escHtml(String(Number(i) + 1))} · ran${r.python ? ` on python ${escHtml(r.python)}` : ''}`
+      + `${bad ? ` · <span class="bad">${escHtml(r.status === 'error' ? `exit ${r.exit}` : r.status)}</span>` : ''}</p>`
+      + (String(r.stdout || '').trim() ? `<pre>${escHtml(r.stdout)}</pre>` : '')
+      + (String(r.stderr || '').trim() ? `<pre class="rerr">${escHtml(r.stderr)}</pre>` : '')
+      + (figs ? `<div class="figs">${figs}</div>` : '')
+      + `</div>`);
+  }
+  return out.join('');
+}
+
+function msgHtml(m, ctx) {
   const author = String(m.author || '');
   const cls = AGENTS.has(author) ? ` ${author}` : '';
   if (m.kind === 'tools') {
@@ -106,7 +148,7 @@ function msgHtml(m) {
       + `<pre>${escHtml(m.text)}</pre></details>`;
   }
   return `<div class="msg${cls}"><div class="by"><b>${escHtml(author)}</b> · ${escHtml(shortTime(m.ts))}</div>`
-    + `<pre>${escHtml(m.text)}</pre></div>`;
+    + `<pre>${escHtml(m.text)}</pre>${runsHtml(m, ctx)}</div>`;
 }
 
 // One composer shape for both kinds of thread. Plain form POST to the JSON
@@ -126,12 +168,13 @@ function composer(url, key, threadId, label, back) {
 }
 
 export function pageView({ page, key, me, notice, snapshot }) {
+  const ctx = { key, owner: !!(me && me.owner) };
   const threads = (page.threads || []).map((t, i) => `<section class="card" id="${escHtml(t.id)}">
 <blockquote>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
-${(t.msgs || []).map(msgHtml).join('\n')}
+${(t.msgs || []).map(m => msgHtml(m, ctx)).join('\n')}
 ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
 </section>`).join('\n');
-  const chat = (page.page_chat || []).map(msgHtml).join('\n');
+  const chat = (page.page_chat || []).map(m => msgHtml(m, ctx)).join('\n');
   return shell(page.title || page.url, `
 <header>${whoBadge(me)}
 <h1><a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(page.title || page.url)}</a></h1>
@@ -190,6 +233,12 @@ article h1,article h2,article h3 { line-height:1.25 }
 .x { background:none; border:none; color:var(--muted); font-size:1.2rem; cursor:pointer; padding:0 .2rem }
 .none { padding:2.5rem 1.1rem; text-align:center; color:var(--muted) }
 .none p { max-width:26rem; margin:0 auto .6rem }
+/* a plot is unreadable at thumbnail size on a phone: tapping one fills the
+   screen with it, and anything (tap, Esc, back) closes it again */
+#bfp-light { position:fixed; inset:0; z-index:40; display:none; align-items:center;
+  justify-content:center; padding:1rem; background:rgba(0,0,0,.82) }
+#bfp-light.open { display:flex }
+#bfp-light img { max-width:100%; max-height:100%; background:#fff; border-radius:6px }
 `;
 
 const jsonScript = (id, data, nonce) =>
@@ -219,6 +268,7 @@ companion will keep a copy — after that this page works from anywhere.</p>
 <style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style></head><body>
 ${head}${body}
 <button id="bfp-pill" hidden>comment</button>
+<div id="bfp-light" role="dialog" aria-label="figure"></div>
 <div id="bfp-sheet" aria-live="polite"><div class="head"><span class="h"></span>
 <button class="x" id="bfp-close" aria-label="close">×</button></div>
 <div class="body"></div></div>
@@ -247,7 +297,8 @@ export function pagesView({ index, me, snapshots, library, libraryKey }) {
   // the same conversation the drawer shows above its own list, with the phone's
   // form-post composer instead of the optimistic one — reading it needs no
   // rights beyond seeing this page, and asking follows the ordinary grant rules
-  const chat = (library && (library.page_chat || []).map(msgHtml).join('\n')) || '';
+  const libCtx = { key: libraryKey || '', owner: !!(me && me.owner) };
+  const chat = (library && (library.page_chat || []).map(m => msgHtml(m, libCtx)).join('\n')) || '';
   const lib = `<h2>library</h2>
 <section class="card">
 ${chat || '<p class="empty">Nothing asked about the archive yet.</p>'}

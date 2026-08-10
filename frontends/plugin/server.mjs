@@ -33,6 +33,7 @@ import { exportPage, exportMode } from './export.mjs';
 import { createHosted, CORS_HEADERS, isLocalDirect } from './hosted.mjs';
 import { pageView, pagesView, articleView } from './views.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
+import * as run from './run.mjs';
 import * as keys from './keys.mjs';
 import * as beacon from './beacon.mjs';
 
@@ -323,6 +324,120 @@ function authorOf(req, res) {
   return me;
 }
 
+// --- running a python block ------------------------------------------------
+// The code that runs is the code that is STORED: a request names a message and
+// a block ordinal, and the companion takes the block out of that message's own
+// text. Nothing executable ever arrives on the wire.
+const RUN_OFF = 'running code is switched off on this companion (run_python in config.json)';
+const runEnabled = () => store.readConfig().run_python !== false;
+const runKey = (page, target, ts, i) => `${store.pageKey(page.url)}|${target}|${ts}|${i}`;
+
+// the message a /run or /run-cancel body is pointing at, or a refusal already
+// written to the response
+function addressedMsg(res, data) {
+  const page = pageOf(res, data);
+  if (!page) return null;
+  const target = data.thread_id || store.PAGE_CHAT;
+  const msgs = store.msgsOf(page, target);
+  if (!msgs) { fail(res, 404, 'unknown thread'); return null; }
+  const found = store.resolveMsg(msgs, pick(data));
+  if (!found) { fail(res, 404, 'unknown message'); return null; }
+  return { page, target, found };
+}
+
+function startRun(req, res) {
+  return readBody(req, res, async data => {
+    if (!runEnabled()) return fail(res, 409, RUN_OFF);
+    const at = addressedMsg(res, data);
+    if (!at) return;
+    const { page, target, found } = at;
+    const index = Number(data.block_index);
+    const picked = run.blockAt(found.msg.text, index);
+    if (picked.error) return fail(res, 400, picked.error);
+    const key = store.pageKey(page.url);
+    const cancelKey = runKey(page, target, found.msg.ts, index);
+    if (run.isRunning(cancelKey)) return fail(res, 409, 'that block is already running');
+    // a re-run REPLACES: the previous run's directory (figures and all) goes
+    // before the new one is made, so a block never accumulates output
+    const prev = (found.msg.runs || {})[String(index)];
+    if (prev && prev.run_id) store.deleteRunDir(key, prev.run_id);
+
+    const runId = run.newRunId();
+    let result;
+    // runPython answers rather than throws (a missing python3 is a result), so
+    // anything caught here is the filesystem — and a request that dies silently
+    // leaves the drawer spinning for ever
+    try {
+      result = await run.runPython({
+        dir: store.runDir(key, runId), code: picked.block.code, runId, key: cancelKey,
+      });
+    } catch (e) {
+      store.deleteRunDir(key, runId);
+      return fail(res, 500, `could not run that block: ${(e && e.message) || e}`);
+    }
+    // The record may have moved while python was running — the message could
+    // have been edited, deleted, or answered into. Re-resolve against what is
+    // on disk NOW and store the result there; if the message is gone, so is the
+    // reason to keep its output.
+    const fresh = store.readPage(page.url);
+    const msgs = fresh && store.msgsOf(fresh, target);
+    const again = msgs && store.resolveMsg(msgs, pick(data));
+    if (!again) {
+      store.deleteRunDir(key, runId);
+      return ok(res, { run: { ...result, figures: [] }, block_index: index, stored: false });
+    }
+    store.setRun(again.msg, index, result);
+    store.savePage(fresh);
+    broadcast({ type: 'page', url: fresh.url });
+    ok(res, { run: result, block_index: index, stored: true,
+      ...(found.ambiguous ? { ambiguous: true } : {}) });
+  });
+}
+
+// Stopping a run is killing its process group — the snippet and anything it
+// started. The timeout is still the backstop; this is the reader saying so
+// sooner. A run that had already finished answers honestly rather than 404ing:
+// "there was nothing to stop" is a true and unalarming thing to say.
+function cancelRun(req, res) {
+  return readBody(req, res, data => {
+    const at = addressedMsg(res, data);
+    if (!at) return;
+    const index = Number(data.block_index);
+    if (!Number.isInteger(index) || index < 0) return fail(res, 400, 'block_index required');
+    const key = runKey(at.page, at.target, at.found.msg.ts, index);
+    ok(res, { cancelled: run.cancelRun(key) });
+  });
+}
+
+// A figure is a file inside one run's directory and is served from there, under
+// the same owner-only gate as the run that made it — never a web-accessible
+// path and never unauthenticated. `key`, `run` and `name` are each validated
+// into a shape that cannot leave the directory (40 hex, the run-id form, a bare
+// png/svg basename), which is why this can be a path join at all.
+// `as=json` answers with a data: URL instead of bytes: the drawer lives inside
+// somebody else's page, and fetching through the extension's background worker
+// is the only way it gets the owner's credentials onto the request.
+function runFigure(req, res) {
+  const q = new URLSearchParams(String(req.url || '').split('?')[1] || '');
+  // `key` is what the server-rendered views already hold; `url` is what the
+  // extension holds (a content script has no sha1 to hand). Same address.
+  const key = q.get('url') ? store.pageKey(q.get('url')) : (q.get('key') || '');
+  const id = q.get('run') || '';
+  const name = q.get('name') || '';
+  if (!/^[0-9a-f]{40}$/.test(key) || !run.isRunId(id) || !run.isFigureName(name)) {
+    return fail(res, 400, 'bad figure address');
+  }
+  const file = path.join(store.runDir(key, id), name);
+  fs.readFile(file, (err, buf) => {
+    if (err) return fail(res, 404, 'no such figure');
+    const mime = /\.svg$/i.test(name) ? 'image/svg+xml' : 'image/png';
+    if (q.get('as') === 'json') {
+      return ok(res, { mime, name, data_url: `data:${mime};base64,${buf.toString('base64')}` });
+    }
+    res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-store' }).end(buf);
+  });
+}
+
 export function handler(req, res) {
   const url = req.url.split('?')[0];
   // CORS, hosted only: the remote extension is cross-origin against a public
@@ -425,6 +540,27 @@ export function handler(req, res) {
     }
     return fail(res, 404, 'not found');
   }
+  // --- running a code block ----------------------------------------------
+  // A ```python block in any message can be RUN, here, with the reader's own
+  // privileges (run.mjs says everything else about that). All three routes are
+  // OWNER-only: on a hosted companion the button never renders for a guest and
+  // the endpoint refuses them, because this is not "code execution in a shared
+  // workspace" — it is the owner's terminal, reached through their own drawer.
+  if (url === '/run' || url === '/run-cancel' || url === '/run-figure') {
+    if (notOwner(req, res)) return;
+    // what the drawer asks before it draws anything: whether the button exists
+    // at all on this companion, and how long a run may take
+    if (req.method === 'GET' && url === '/run') {
+      return ok(res, {
+        enabled: runEnabled(), timeout_ms: run.timeoutMs(), python: run.pythonBin(),
+      });
+    }
+    if (req.method === 'GET' && url === '/run-figure') return runFigure(req, res);
+    if (req.method === 'POST' && url === '/run') return startRun(req, res);
+    if (req.method === 'POST' && url === '/run-cancel') return cancelRun(req, res);
+    return fail(res, 404, 'not found');
+  }
+
   if (req.method === 'GET' && url === '/index') {
     return res.writeHead(200, JSON_HEAD).end(JSON.stringify(store.readIndex()));
   }
@@ -496,7 +632,9 @@ export function handler(req, res) {
         "default-src 'none'",
         `script-src 'nonce-${nonce}'`,
         `style-src 'nonce-${nonce}'`,
-        "img-src https: data:",
+        // 'self' is the companion's own /run-figure — a plot made by a code
+        // block, served from this origin under the same owner-only gate
+        "img-src 'self' https: data:",
         "connect-src 'self'",
         "form-action 'self'",
         "base-uri 'none'",
@@ -594,6 +732,10 @@ export function handler(req, res) {
       // only rewrite what you wrote
       if (msg.author !== me.handle) return fail(res, 403, 'not your message');
       msg.text = String(data.text || '');
+      // The code has moved, so what it once printed is a claim about a message
+      // that no longer exists. Results (and their directories) go with the
+      // edit rather than hanging under a block they were never run from.
+      store.deleteRuns(store.pageKey(page.url), store.clearRuns(msg));
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { msg, ...(found.ambiguous ? { ambiguous: true } : {}) });
@@ -644,11 +786,17 @@ export function handler(req, res) {
         if (found && found.msg.author !== me.handle) return fail(res, 403, 'not your message');
       }
       let gone = false; // the whole thread went, not just a message
+      // whatever is about to be deleted may be holding run output on disk;
+      // collect the ids while the messages are still here to ask
+      const pkey = store.pageKey(page.url);
       if (!data.ts) {
-        if (target === store.PAGE_CHAT) page.page_chat = [];
-        else {
+        if (target === store.PAGE_CHAT) {
+          store.deleteRuns(pkey, store.runIdsOf(page.page_chat));
+          page.page_chat = [];
+        } else {
           const i = page.threads.findIndex(t => t.id === target);
           if (i < 0) return fail(res, 404, 'unknown thread');
+          store.deleteRuns(pkey, store.runIdsOf(page.threads[i].msgs));
           page.threads.splice(i, 1);
           gone = true;
         }
@@ -656,6 +804,7 @@ export function handler(req, res) {
         const msgs = store.msgsOf(page, target);
         if (!msgs) return fail(res, 404, 'unknown thread');
         if (!found) return fail(res, 404, 'unknown message');
+        store.deleteRuns(pkey, store.runIdsOf([found.msg]));
         msgs.splice(found.index, 1);
         // deleting the last message of a thread deletes the thread: an empty
         // one is a highlight on the page that opens onto nothing
