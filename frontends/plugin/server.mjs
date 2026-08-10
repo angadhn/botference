@@ -466,11 +466,15 @@ export function handler(req, res) {
     if (url === '/') return res.writeHead(302, { location: '/pages' }).end();
     const index = store.readIndex();
     const snapshots = new Set(Object.keys(index).filter(k => store.hasSnapshot(k)));
+    // the same two filters the drawer's list has, as the query string: the
+    // reading room has no client state, so a filtered archive is a LINK
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
     // the library rides at the top of this view rather than as a row in it —
     // one conversation about the whole list underneath
     const html = pagesView({ index, me: hosted.identity(req), snapshots,
       library: store.readPage(store.LIBRARY_URL),
-      libraryKey: store.pageKey(store.LIBRARY_URL) });
+      libraryKey: store.pageKey(store.LIBRARY_URL),
+      kind: q.get('kind') || '', tag: q.get('tag') || '' });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
   if (req.method === 'GET' && url.startsWith('/p/')) {
@@ -845,6 +849,40 @@ export function handler(req, res) {
       store.deletePage(page.url);
       broadcast({ type: 'page', url: page.url });
       ok(res, { session_deleted });
+    });
+  }
+  // --- what the reader calls it, and what they filed it under ------------
+  // Two small edits to a record's metadata, both the OWNER's: a page's name is
+  // what everyone else reads, and its tags are how the archive is searched, so
+  // neither is a guest's to change. Both accept a form POST as well as JSON —
+  // the reading room edits them from a phone.
+  if (req.method === 'POST' && url === '/rename-page') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      // the library is one conversation with a name of its own, and the
+      // choreography renames the chat after it: it is not a row to relabel
+      if (store.isLibrary(page.url)) return fail(res, 400, 'the library is not a page you can rename');
+      // an empty title is the way back to the page's own name, never an error
+      const saved = store.renamePage(page.url, data.title);
+      broadcast({ type: 'page', url: saved.url });
+      if (data._form) return seeOther(res, backTo(data, saved));
+      ok(res, { title: store.displayTitle(saved), custom_title: saved.custom_title || null });
+    });
+  }
+  if (req.method === 'POST' && url === '/tag-page') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      if (store.isLibrary(page.url)) return fail(res, 400, 'the library is not a page you can tag');
+      // a form sends one comma-separated field; the drawer sends an array.
+      // store.normalizeTags takes either and is the only place tags are shaped
+      const saved = store.tagPage(page.url, data.tags);
+      broadcast({ type: 'page', url: saved.url });
+      if (data._form) return seeOther(res, backTo(data, saved));
+      ok(res, { tags: store.tagsOf(saved) });
     });
   }
   if (req.method === 'POST' && url === '/orphan') {

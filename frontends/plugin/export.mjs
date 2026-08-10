@@ -5,7 +5,7 @@ import path from 'node:path';
 // the routing rules, reused rather than re-guessed: what counts as a mention
 // and who counts as a bot are decided in exactly one place
 import { hasMention, isBotAuthor } from './chat.mjs';
-import { isLibrary, pageKey, runDir } from './store.mjs';
+import { isLibrary, pageKey, runDir, displayTitle, tagsOf } from './store.mjs';
 // the same block parser the runner and the drawer use: a result is written
 // under the fence it came out of, found by line number rather than re-guessed
 import { codeBlocks } from './run.mjs';
@@ -124,6 +124,34 @@ export function keptMsgs(msgs, mode) {
 // relative to the note (or null: no copy was made, and the note says how many
 // figures there were instead of pretending to show them). exportPage passes the
 // copier; a caller that only wants the text passes nothing.
+// ---- the tags line --------------------------------------------------------
+// `botference-discuss` is what marks a note as one of ours and is always
+// first, always present, never doubled. The reader's own tags follow it, in
+// the order they were written, because the point of putting them in the
+// frontmatter is that Obsidian then groups and searches them natively.
+//
+// A YAML flow sequence is not free-form text: a tag is written with its spaces
+// turned into dashes (which is Obsidian's own tag spelling — a tag with a
+// space in it is two tags to it), and quoted if anything left in it would
+// break the brackets.
+export const NOTE_TAG = 'botference-discuss';
+const yamlTag = t => {
+  const s = String(t).trim().replace(/\s+/g, '-');
+  return /^[\w/&+.-]+$/.test(s) ? s : `"${s.replace(/["\\]/g, '\\$&')}"`;
+};
+export function tagsLine(page) {
+  const out = [NOTE_TAG];
+  const seen = new Set([NOTE_TAG.toLowerCase()]);
+  for (const t of tagsOf(page)) {
+    const v = yamlTag(t);
+    const k = v.toLowerCase();
+    if (!v || seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return `tags: [${out.join(', ')}]`;
+}
+
 export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = null) {
   const author = (cfg && cfg.author) || 'angadh';
   const only = exportMode(mode);
@@ -132,9 +160,11 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
       `url: ${page.url}`,
       `site: ${page.site || ''}`,
       `saved: ${now.toISOString().slice(0, 10)}`,
-      'tags: [botference-discuss]',
+      tagsLine(page),
       '---'].join('\n'),
-    `# ${page.title || page.url}`,
+    // the reader's own name for the page if they gave it one — the same title
+    // the file is named after
+    `# ${displayTitle(page)}`,
   ];
   for (const t of page.threads || []) {
     parts.push(blockquote(t.quote) + attribution(t));
@@ -156,6 +186,27 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
 
 // <vault>/<folder>/<title>.md — unless a note of that name already belongs to
 // a DIFFERENT url, in which case this page gets " (2)", " (3)", …
+// The url is what identifies a note; its NAME is only a name. So before
+// writing, ask which files in this folder already claim this url — normally
+// exactly one, and normally the one we are about to write.
+const noteUrl = file => {
+  let head = '';
+  try { head = fs.readFileSync(file, 'utf8').slice(0, 400); } catch { return ''; }
+  const m = /^url:\s*(.*)$/m.exec(head);
+  return m ? m[1].trim() : '';
+};
+export function notesForUrl(dir, url) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  for (const name of names) {
+    if (!name.endsWith('.md')) continue;
+    const file = path.join(dir, name);
+    if (noteUrl(file) === url) out.push(file);
+  }
+  return out;
+}
+
 function targetFile(dir, title, url) {
   const base = sanitizeTitle(title);
   for (let n = 1; n < 100; n++) {
@@ -199,12 +250,22 @@ function attacher(dir, page) {
 // One note per page whichever mode wrote it: re-exporting is a REPLACEMENT,
 // so a reader who decides they wanted the conversation after all exports
 // again and gets it, rather than collecting variants of the same page.
+// …and a RENAME is still one note, which is the whole reason this looks at the
+// folder rather than only at the name it is about to use: the note that holds
+// this url was named after the old title, and the new one is a different file
+// entirely. So the note is written under its new name and the old file — found
+// by its url, whatever it was called and whichever " (2)" variant it was — is
+// removed. Renaming a page must not leave two copies of it in the vault.
 export function exportPage(page, cfg, now = new Date(), mode = 'all') {
   const dir = path.join(cfg.vault_path, cfg.export_folder);
   fs.mkdirSync(dir, { recursive: true });
-  const file = targetFile(dir, page.title || page.url, page.url);
+  const held = notesForUrl(dir, page.url);
+  const file = targetFile(dir, displayTitle(page), page.url);
   const tmp = `${file}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, renderNote(page, cfg, now, mode, attacher(dir, page)));
   fs.renameSync(tmp, file);
+  for (const old of held) {
+    if (old !== file) { try { fs.rmSync(old, { force: true }); } catch { /* leave it */ } }
+  }
   return file;
 }

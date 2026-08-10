@@ -190,7 +190,80 @@ export function saveAgents(patch) {
   return saveConfig({ agents: normalizeAgents(next) }).agents;
 }
 
-export const readIndex = () => readJson(INDEX_FILE, {});
+// --- what kind of document a record is -----------------------------------
+// An article, a PDF or a Google Doc. The ADAPTER declares it (content.js sends
+// `kind` with every POST /page), because the adapter is the only thing that
+// actually knows — a PDF opened in the extension's own viewer is a `pdf`
+// whatever its url looks like.
+//
+// For every record written before this existed there is no adapter to ask, so
+// the url answers as best it can: a `.pdf` path is a PDF, a docs.google.com
+// document url is a Doc, and everything else is an article — which is the
+// honest default rather than a guess, and is corrected the next time the page
+// is actually visited (upsertPage stores what the adapter says).
+export const PAGE_KINDS = ['article', 'pdf', 'gdocs'];
+export const cleanKind = k => (PAGE_KINDS.includes(String(k || '')) ? String(k) : '');
+export function inferKind(url) {
+  const u = String(url || '');
+  if (/^https?:\/\/docs\.google\.com\/(?:u\/\d+\/)?document\//i.test(u)) return 'gdocs';
+  if (/\.pdf$/i.test(u.split('#')[0].split('?')[0])) return 'pdf';
+  return 'article';
+}
+export const kindOf = page => cleanKind(page && page.kind) || inferKind(page && page.url);
+
+// --- the name the reader gave it -----------------------------------------
+// `title` is what the page called itself; `custom_title` is what the reader
+// decided to call it, and it wins EVERYWHERE a title is shown or written (the
+// rows, the phone, the Obsidian note's H1 and its file name). A revisit still
+// refreshes `title` underneath — the scraped name is not wrong, it is just not
+// the one being used.
+const TITLE_MAX = 200;
+export const cleanTitle = t => String(t == null ? '' : t)
+  .replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX).trim();
+export const displayTitle = page =>
+  (page && (page.custom_title || page.title || page.url)) || '';
+
+// --- tags -----------------------------------------------------------------
+// Short free-form strings the reader puts on a page by hand, so an archive can
+// be searched the way a person actually remembers things. Normalised once,
+// here, on the way in: trimmed, whitespace collapsed, a leading # dropped
+// (Obsidian's spelling, not ours), deduped case-insensitively keeping the
+// casing of the first one written, and capped in both count and length so a
+// page record can never become a tag dump.
+export const TAGS_MAX = 12;
+export const TAG_MAX = 40;
+export function normalizeTags(raw) {
+  const list = Array.isArray(raw) ? raw
+    : (typeof raw === 'string' ? raw.split(',') : []);
+  const out = [];
+  const seen = new Set();
+  for (const t of list) {
+    if (typeof t !== 'string' && typeof t !== 'number') continue;
+    const s = String(t).replace(/[\u0000-\u001f]/g, ' ').replace(/^#+/, '')
+      .replace(/\s+/g, ' ').trim().slice(0, TAG_MAX).trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+    if (out.length >= TAGS_MAX) break;
+  }
+  return out;
+}
+export const tagsOf = page => (Array.isArray(page && page.tags) ? page.tags : []);
+
+// The index is what every list is drawn from, and it is derived state: rows
+// written before kinds existed get theirs inferred on the way out, in memory,
+// so the filter is right immediately and nothing is rewritten just because
+// somebody opened a list. The next save persists it.
+export function readIndex() {
+  const idx = readJson(INDEX_FILE, {});
+  for (const key of Object.keys(idx)) {
+    const row = idx[key];
+    if (row && typeof row === 'object' && !cleanKind(row.kind)) row.kind = inferKind(row.url);
+  }
+  return idx;
+}
 
 // Reading heals: a thread whose last message was deleted is a highlight that
 // opens onto nothing. Records damaged before deletes pruned at the source are
@@ -198,6 +271,10 @@ export const readIndex = () => readJson(INDEX_FILE, {});
 export function readPage(url) {
   const page = readJson(pageFile(url), null);
   if (!page) return null;
+  // a record written before kinds existed answers for itself, in memory: the
+  // next save persists it, and a revisit replaces the inference with what the
+  // adapter actually says
+  if (!cleanKind(page.kind)) page.kind = inferKind(page.url);
   const kept = (page.threads || []).filter(t => (t.msgs || []).length);
   if (kept.length !== (page.threads || []).length) {
     page.threads = kept;
@@ -221,12 +298,21 @@ export function savePage(page) {
   page.updated_at = nowIso();
   writeJson(pageFile(page.url), page);
   const idx = readIndex();
+  const tags = tagsOf(page);
   idx[pageKey(page.url)] = {
-    url: page.url, title: page.title,
+    url: page.url,
+    // the NAME of the page, which is the reader's if they gave it one: every
+    // list is drawn from the index alone, so the rename has to be here
+    title: displayTitle(page),
     threads: (page.threads || []).length,
     // the pages list badges the ones the bots have a chat about, and only the
     // index is loaded to draw it
     has_session: !!page.session_id,
+    // article | pdf | gdocs — what the lists filter by
+    kind: kindOf(page),
+    // omitted rather than empty: most pages have none, and the index is read
+    // on every list draw
+    ...(tags.length ? { tags } : {}),
     updated_at: page.updated_at,
   };
   writeJson(INDEX_FILE, idx);
@@ -319,13 +405,16 @@ export function snapshotInfo(key) {
 
 export const hasSnapshot = key => !!snapshotInfo(key);
 
-export function blankPage({ url, title, site }) {
+export function blankPage({ url, title, site, kind }) {
   const ts = nowIso();
   return {
     version: 1,
     url: normUrl(url),
     title: String(title || url || '').trim() || normUrl(url),
     site: site || siteOf(url),
+    // what kind of document this is, as the adapter reported it — inferred
+    // from the url where nothing said
+    kind: cleanKind(kind) || inferKind(url),
     created_at: ts, updated_at: ts,
     session_id: null,
     threads: [],
@@ -333,14 +422,59 @@ export function blankPage({ url, title, site }) {
   };
 }
 
-// POST /page: create the shell or refresh title/site. Never touches threads,
-// page_chat or session_id — a re-visit must not disturb the conversation.
-export function upsertPage({ url, title, site }) {
-  const page = readPage(url) || blankPage({ url, title, site });
+// POST /page: create the shell or refresh title/site/kind. Never touches
+// threads, page_chat, session_id, the reader's own title or their tags — a
+// re-visit must not disturb the conversation, or undo a rename.
+export function upsertPage({ url, title, site, kind }) {
+  const page = readPage(url) || blankPage({ url, title, site, kind });
   if (title) page.title = String(title).trim();
   if (site) page.site = String(site);
   if (!page.site) page.site = siteOf(url);
+  // the adapter is the authority and says so on every visit; an older
+  // extension sends nothing and leaves whatever was inferred in place
+  const k = cleanKind(kind);
+  if (k) page.kind = k;
+  else if (!cleanKind(page.kind)) page.kind = inferKind(page.url);
   return savePage(page);
+}
+
+// --- rename, and tag ------------------------------------------------------
+// Both are the OWNER's edits to a record's metadata (the routes enforce that),
+// and both are the whole of what they do: nothing about the conversation, the
+// session or the snapshot moves.
+//
+// An empty title is not an error — it is the way back: the reader's name is
+// dropped and the page goes back to calling itself whatever it calls itself.
+export function renamePage(url, title) {
+  const page = readPage(url);
+  if (!page) return null;
+  const want = cleanTitle(title);
+  page.custom_title = want || null;
+  // the session the bots hold for this page is now named something else; the
+  // next turn on it renames the chat too (chat.mjs planSteps), and nothing is
+  // woken for it here
+  return savePage(page);
+}
+
+export function tagPage(url, tags) {
+  const page = readPage(url);
+  if (!page) return null;
+  page.tags = normalizeTags(tags);
+  return savePage(page);
+}
+
+// Every tag in use anywhere, for a picker to complete against. Read off the
+// index (one file), never by opening every page record.
+export function allTags(idx) {
+  const index = idx || readIndex();
+  const seen = new Map();
+  for (const row of Object.values(index || {})) {
+    for (const t of (Array.isArray(row && row.tags) ? row.tags : [])) {
+      const k = String(t).toLowerCase();
+      if (!seen.has(k)) seen.set(k, String(t));
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
 // Two pages sharing one botference session is proof of the sid-inheritance

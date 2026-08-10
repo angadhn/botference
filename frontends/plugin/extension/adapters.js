@@ -423,6 +423,11 @@
 
       const ad = {
         name: 'gdocs',
+        // what sort of document a record made here IS — the companion stores it
+        // and the pages list filters by it. The adapter is the only thing that
+        // knows for certain, which is why it says so rather than being guessed
+        // from the url afterwards.
+        kind: 'gdocs',
         id,
         scope,
         // what the page url itself says — the first url tried, and the one
@@ -729,6 +734,10 @@
 
       const ad = {
         name: 'pdf',
+        // …and this one is a PDF wherever it came from: the viewer's own url
+        // says nothing about it (see `identityHref` below), so the adapter is
+        // the only honest source for the record's kind
+        kind: 'pdf',
         // the whole point: the record is the PDF's, not the viewer's
         identityHref: src,
         src,

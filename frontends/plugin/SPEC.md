@@ -82,8 +82,12 @@ across the extension/server boundary (extension can't import server files).
 ```jsonc
 { "version": 1,
   "url": "https://…", "title": "Article headline", "site": "skysports.com",
+  "kind": "article",                      // article|pdf|gdocs — the adapter's word
+  "custom_title": null,                   // the reader's own name for it, if any
+  "tags": [],                             // the reader's own filing
   "created_at": "ISO", "updated_at": "ISO",
   "session_id": null,                     // botference sid once bots joined
+  "session_title": "…",                   // what that chat is currently called
   "threads": [                            // anchored comment threads, page order maintained on insert
     { "id": "t-<ts>-<rand4>",
       "quote": "exact selected text",
@@ -94,8 +98,10 @@ across the extension/server boundary (extension can't import server files).
   "page_chat": [ { "author": "…", "ts": "ISO", "text": "…" } ] }
 ```
 
-- `<ROOT>/.botference/plugin/index.json`: `{ "<pageKey>": {"url","title","threads":N,"updated_at"} }`
-  (for the extension's "which pages have annotations" check).
+- `<ROOT>/.botference/plugin/index.json`:
+  `{ "<pageKey>": {"url","title","threads":N,"has_session","kind","tags?","updated_at"} }`
+  (for the extension's "which pages have annotations" check). `title` here is the
+  DISPLAY title — every list is drawn from this file alone.
 - `<ROOT>/.botference/plugin/config.json`, created on first run with defaults:
 
 ```jsonc
@@ -122,6 +128,8 @@ All bodies JSON. All error responses `{ok:false, error:"…"}` with 4xx/5xx.
 | POST | `/delete` | `{url, thread_id, ts?}` | ts absent → whole thread; present → one msg |
 | POST | `/orphan` | `{url, thread_id, orphaned:bool}` | extension reports anchor status |
 | POST | `/export` | `{url, mode?}` (`mode`: `all` (default) \| `comments`) | writes Obsidian note → `{ok, path, mode}` |
+| POST | `/rename-page` | `{url, title}` | owner: the reader's own name for a page (`''` clears it) → `{ok, title, custom_title}` |
+| POST | `/tag-page` | `{url, tags:[…]}` | owner: normalised, stored, indexed → `{ok, tags}` |
 | POST | `/interrupt` | `{url}` | forwards interrupt to bridge if that page's turn is running |
 | GET | `/run` | — | owner: `{ok, enabled, timeout_ms, python}` (may a block be run here) |
 | POST | `/run` | `{url, thread_id?, ts, author?, kind?, block_index}` | owner: runs THAT stored block → `{ok, run, block_index, stored}` |
@@ -1012,6 +1020,73 @@ Contract deltas agreed during live testing — authoritative over the sections a
     off: `"run_python": false` in config.json (default true, absent = true)
     removes the button (`GET /run` answers `enabled:false`) and makes `POST
     /run` a 409.
+
+- **Organising the archive** (`store.mjs`, `POST /rename-page`, `POST /tag-page`).
+  A list of two hundred pages is only useful if it can be narrowed, and a page's
+  own name is often not the name it deserves. Three fields on the page record,
+  and nothing else moves.
+  · **`kind`** — `article | pdf | gdocs`. The ADAPTER declares it (`SITE.kind`,
+    sent with every `POST /page`), because the adapter is the only thing that
+    actually knows: a PDF's record wears the PDF's url, not the viewer's, and no
+    url rule could tell a Doc from an article reliably. For every record written
+    before this existed there is no adapter to ask, so `inferKind(url)` answers
+    from the url alone — a `.pdf` path, a `docs.google.com/document/` url, and
+    otherwise `article`, which is the honest default. The backfill is **in
+    memory, on the way out** (`readPage`, `readIndex`): no migration, no rewrite
+    of records nobody has opened, and the next save persists it. A revisit
+    replaces the inference with the adapter's word.
+  · **`custom_title`** — the reader's own name for the page, `null` when they
+    have not given one. `displayTitle(page) = custom_title || title || url` and
+    it wins EVERYWHERE: the drawer's rows, the index (whose `title` is the
+    display title, since every list is drawn from the index alone), `/pages` and
+    `/p/<key>`, the Obsidian note's `# H1` **and its file name**, and the
+    botference session behind the page. `POST /rename-page {url, title}`, owner
+    only; an empty title is not an error but the way back — the page calls itself
+    whatever it calls itself again. `POST /page` still refreshes the scraped
+    `title` underneath, and can never undo a rename.
+  · **The rename reaches the council chat lazily.** Renaming spends no turn and
+    never wakes the bridge. `page.session_title` records what the chat was last
+    called (stamped at `captureNewSid`); `planSteps` compares it with the title
+    it is about to use and, when they differ, inserts one `/rename <title>`
+    **after** the `/resume` (so the session being renamed is certainly this
+    page's) and before the user turn, then writes the new `session_title` back.
+    An absent `session_title` — every record written before this — reads as the
+    page's own name, so an untouched page never renames.
+  · **`tags`** — an array of short free-form strings, the reader's own filing.
+    `POST /tag-page {url, tags:[…] | "a, b"}`, owner only, and
+    `store.normalizeTags` is the single shaper: trim, collapse whitespace, drop a
+    leading `#` (Obsidian's spelling, not ours), dedupe case-insensitively
+    keeping the casing of the first one written, ≤40 chars each, ≤12 in all.
+    Stored on the record and mirrored into the index row (omitted entirely when
+    empty — the index is read on every list draw). The library is neither
+    renameable nor taggable (400): it is one conversation with a name of its own.
+  · **Export.** The note's H1 and its file NAME are the display title, so a
+    rename moves the note — and `exportPage` therefore looks the folder up by
+    URL first (`notesForUrl`, reading each note's `url:` frontmatter), writes the
+    new file, and **deletes the file that held this url under its old name**,
+    numbered variants included. One page, one note, whatever it has been called.
+    Tags merge into the frontmatter beside `botference-discuss`, which is always
+    first and never doubled; spaces become dashes and anything that would break
+    the flow sequence is quoted (`tags: [botference-discuss, fluids, "a,b"]`).
+    The library envelope names `tags`/`custom_title` in the record shape it
+    describes, so a question about a topic can honour them.
+  · **UI.** Drawer: a quiet chip row above the pages list — All · Articles ·
+    PDFs · Docs, drawn only for the kinds present (plus whichever is selected,
+    so a filter can never strand you), with counts — and a rail of every tag in
+    use beside it; both filters combine, the head reads "N of M" while one is
+    on, and the pair is remembered in extension storage (`bfp:pageFilter`, the
+    same idiom as the tab, the width and the export mode). Each row carries its
+    tags as chips (click to filter, in the rows and in the rail alike) and, for
+    the owner only, `✎` and `#`: one inline box each, Enter saves, Esc closes the
+    editor and not the drawer, and the tag box completes the token under the
+    caret against every tag already in use (the @-menu's shape over a different
+    vocabulary). Ownership is the companion's answer, not a guess:
+    `GET /whoami` → background `{t:'identity'}.is_owner` → `drawer.setOwner()`,
+    false until it says otherwise. Phone: `/pages?kind=&tag=` — the same two
+    rails as ordinary links, because the reading room has no client state and a
+    filtered archive should be a link worth sending; tags show on every row and
+    tap to filter; `/p/<key>` carries the owner-only rename and tags forms as
+    plain form posts (both routes accept form encoding and redirect back).
 
 ## Out of scope for v1 (do not build)
 

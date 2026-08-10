@@ -230,6 +230,67 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
     /\*1 figure\*/.test(fs.readFileSync(gone, 'utf8')), fs.readFileSync(gone, 'utf8'));
 }
 
+// ---- 6. the reader's own name for a page, and their own tags ---------------
+// A rename is not a second note: the note is named after the page's CURRENT
+// name, and the file it used to live under goes with the rename. The tags ride
+// in the frontmatter beside botference-discuss, which is what lets Obsidian
+// group and search an archive natively.
+{
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-vault2-'));
+  const cfg = { author: 'angadh', vault_path: vault, export_folder: 'Web Clippings' };
+  const dir = path.join(vault, 'Web Clippings');
+  const URL = 'https://arxiv.example/papers/2601.01234v2.pdf';
+  const paper = extra => ({
+    url: URL, site: 'arxiv.example', title: '2601.01234v2.pdf', kind: 'pdf',
+    threads: [{ quote: 'the flow is unstable above Re 4000',
+      msgs: [{ author: 'angadh', ts: '1', text: 'The whole result.' }] }],
+    page_chat: [], ...extra,
+  });
+
+  const first = exportPage(paper(), cfg);
+  eq('an unrenamed page is named after itself, as it always was',
+    path.basename(first), '2601.01234v2.pdf.md');
+
+  const second = exportPage(paper({ custom_title: 'Kolmogorov flows' }), cfg);
+  eq('a renamed page is written under the name the reader gave it',
+    path.basename(second), 'Kolmogorov flows.md');
+  ok('…and the old note is GONE, not left as a second copy of the same page',
+    !fs.existsSync(first), fs.readdirSync(dir).join(', '));
+  eq('…so the folder holds exactly one note for that url', fs.readdirSync(dir).filter(n => n.endsWith('.md')), ['Kolmogorov flows.md']);
+  const note = fs.readFileSync(second, 'utf8');
+  ok('the H1 is the reader\'s name too', note.includes('\n# Kolmogorov flows\n'), note);
+  ok('…and the url in the frontmatter is unchanged, which is what identifies it',
+    note.includes(`url: ${URL}`), note);
+  ok('…and the reading underneath survived the move',
+    note.includes('the flow is unstable above Re 4000'), note);
+
+  // a note that ended up as a " (2)" variant is still found by its url
+  fs.writeFileSync(path.join(dir, 'Kolmogorov flows.md'),
+    `---\nurl: https://elsewhere.test/other\nsite: x\nsaved: 2026-08-08\ntags: [botference-discuss]\n---\n\n# Someone else\n`);
+  const bumped = exportPage(paper({ custom_title: 'Kolmogorov flows' }), cfg);
+  eq('a name another page already holds gets a numbered variant, as before',
+    path.basename(bumped), 'Kolmogorov flows (2).md');
+  const renamedAgain = exportPage(paper({ custom_title: 'Turbulent pipe flow' }), cfg);
+  ok('…and renaming again clears THAT variant rather than leaving it behind',
+    !fs.existsSync(bumped) && fs.existsSync(renamedAgain), fs.readdirSync(dir).join(', '));
+  ok('…while the other page\'s note is untouched',
+    fs.existsSync(path.join(dir, 'Kolmogorov flows.md')), fs.readdirSync(dir).join(', '));
+
+  // ---- tags in the frontmatter --------------------------------------------
+  const tagged = t => renderNote(paper({ tags: t }), CFG, NOW, 'all');
+  const line = s => (/^tags: .*$/m.exec(s) || [''])[0];
+  eq('no tags is the line it has always been', line(tagged([])), 'tags: [botference-discuss]');
+  eq('…and the reader\'s tags follow it, in the order they wrote them',
+    line(tagged(['fluids', 'to read'])), 'tags: [botference-discuss, fluids, to-read]');
+  eq('a tag of ours by another name is never written twice',
+    line(tagged(['botference-discuss', 'Botference-Discuss', 'fluids'])),
+    'tags: [botference-discuss, fluids]');
+  eq('a tag that would break the brackets is quoted, not dropped',
+    line(tagged(['a,b', 'plain'])), 'tags: [botference-discuss, "a,b", plain]');
+  ok('comments-only carries the same tags — they are the page\'s, not the conversation\'s',
+    line(renderNote(paper({ tags: ['fluids'] }), CFG, NOW, 'comments')) === 'tags: [botference-discuss, fluids]');
+}
+
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }
 process.exit(fail);

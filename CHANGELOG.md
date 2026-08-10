@@ -2,6 +2,28 @@
 
 ## 2026-08-10
 
+- **Discuss: an archive you can actually find things in.** The pages list
+  gained the three things a growing library needs. **Filter by what a page
+  is** — quiet chips above the list, All · Articles · PDFs · Docs, drawn
+  only for the kinds you have; the kind comes from the site adapter (a PDF
+  is a PDF whatever url its viewer wears) and everything annotated before
+  today is filled in from its url, with no migration. **Rename a page** —
+  the `✎` on any row, because `2601.01234v2.pdf` is not what that paper is
+  called; the name you give it wins in the list, on your phone, in the
+  Obsidian note's title *and its file name*, and on the botference chat
+  behind the page, which is renamed on that page's next message rather
+  than by waking the agents for it. Re-exporting after a rename **replaces**
+  the old note instead of leaving a second copy of the same page in the
+  vault. **Tag a page** — `#`, type, complete against tags you have already
+  used; a tag chip filters the list (combinable with the kind, both
+  remembered per browser), and your tags go into the note's frontmatter
+  beside `botference-discuss`, so Obsidian's own search and graph pick them
+  up. The phone gets the same filters as plain links (`/pages?kind=&tag=`),
+  the same tags on every row, and — for the owner — rename and tag boxes on
+  a page's own view. Renaming and tagging are owner-only end to end: a
+  guest on a shared companion sees the list and its filters and no editing
+  at all.
+
 - **Discuss: run the code in a message.** Any fenced ```` ```python ````
   block — one you pasted, one a bot wrote — now carries a quiet **Run**
   button. Press it and the snippet runs on this Mac, in a fresh

@@ -763,7 +763,7 @@ let guestRefuse = false;    // a guest whose @mentions the owner has not allowed
 let ownerOnly = false;      // every owner-only endpoint answers 403
 let IDENTITY = 'angadh';    // who {t:'identity'} says this browser is
 const GUEST_REASON = 'the owner hasn’t granted you bot access';
-const OWNER_ROUTES = /^\/(export|delete-page|model|effort|verbosity|relay|interrupt|run|run-cancel|run-figure)$/;
+const OWNER_ROUTES = /^\/(export|delete-page|rename-page|tag-page|model|effort|verbosity|relay|interrupt|run|run-cancel|run-figure)$/;
 const dedupePosts = [];     // every message the companion answered deduped:true to
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
@@ -773,6 +773,8 @@ const KEYMODE_APPLIES = 'now';
 const snapshots = [];       // every /snapshot body, for the phone-reading checks
 const orphanPosts = [];     // every /orphan body
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
+const renamePosts = [];     // every /rename-page {url, title}
+const tagPosts = [];        // every /tag-page {url, tags}
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 const openOptionsCalls = []; // …and every {t:'open-options'}, with the agent it named
 const threadUrls = [];      // the url every /thread was filed against
@@ -790,18 +792,24 @@ const routeUrls = [];       // …and the page_url every background message rout
 // `has_session` = the companion holds a botference session for that page, i.e.
 // there are bots in it. Two of these have one and two do not, so the drawer's
 // badge has something to be wrong about.
+// `kind` is what sort of document each one is (the companion stores what the
+// adapter declared, and infers it from the url for anything annotated before
+// kinds existed) and `tags` is what the reader filed it under: one of each
+// here, so the filters have something to be wrong about.
 const OTHER_PAGES = {
   'fakekey0000000000000000000000000000000b': {
     url: 'https://www.longreads.example/2026/tunnel-vision',
-    title: 'Tunnel Vision', threads: 1, has_session: true, updated_at: iso(120) },
+    title: 'Tunnel Vision', threads: 1, has_session: true, kind: 'article',
+    tags: ['rail'], updated_at: iso(120) },
   'fakekey0000000000000000000000000000000c': {
     url: 'https://example.org/finance/the-long-quarter',
     title: 'The Long Quarter: how a bank talked itself into a very expensive silence',
-    threads: 5, has_session: false, updated_at: iso(140) },
+    threads: 5, has_session: false, kind: 'pdf', tags: ['Finance', 'rail'],
+    updated_at: iso(140) },
   'fakekey0000000000000000000000000000000d': {
     url: 'https://news.example.net/politics/the-committee-that-never-met',
     title: 'The committee that never met', threads: 2, has_session: true,
-    updated_at: iso(3 * 24 * 60) },
+    kind: 'gdocs', updated_at: iso(3 * 24 * 60) },
 };
 let indexEmpty = false;     // selftest flips this to exercise the empty state
 let pageDeleted = false;    // …and this is set when THIS page is deleted
@@ -810,8 +818,10 @@ function indexMap() {
   const out = Object.assign({}, OTHER_PAGES);
   if (!pageDeleted) {
     out['fakekey0000000000000000000000000000000a'] = {
-      url: PAGE_URL, title: RECORD.title, threads: RECORD.threads.length,
-      has_session: !!RECORD.session_id, updated_at: RECORD.updated_at };
+      url: PAGE_URL, title: RECORD.custom_title || RECORD.title, threads: RECORD.threads.length,
+      has_session: !!RECORD.session_id, kind: PDFV ? 'pdf' : GDOCS ? 'gdocs' : 'article',
+      ...(RECORD.tags && RECORD.tags.length ? { tags: RECORD.tags } : {}),
+      updated_at: RECORD.updated_at };
   }
   return out;
 }
@@ -1081,6 +1091,33 @@ function companion(method, path, body) {
     if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(body.thread_id, body.text, body.url), 350); }
     return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined,
                                             ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
+  }
+  // POST /rename-page {url, title} — the reader's own name for a page, which
+  // wins over the scraped one everywhere. '' takes it back off. Owner-only on
+  // the real companion, which is what OWNER_ROUTES above stands in for.
+  if (method === 'POST' && route === '/rename-page') {
+    renamePosts.push({ url: body.url, title: body.title });
+    const title = String(body.title || '').replace(/\s+/g, ' ').trim();
+    const row = Object.values(OTHER_PAGES).find(p => p.url === body.url);
+    if (row) { row.custom_title = title || ''; row.title = title || row.own_title || row.title; }
+    else { RECORD.custom_title = title || null; }
+    return { ok: true, status: 200, data: { ok: true, title: title || (row ? row.title : RECORD.title) } };
+  }
+  // POST /tag-page {url, tags:[…]} — normalised by the companion (trim,
+  // collapse, dedupe case-insensitively, capped), which is why the answer is
+  // what the drawer paints rather than what it sent.
+  if (method === 'POST' && route === '/tag-page') {
+    tagPosts.push({ url: body.url, tags: body.tags });
+    const seen = new Set(), tags = [];
+    for (const t of (body.tags || [])) {
+      const v = String(t).replace(/^#+/, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (!v || seen.has(v.toLowerCase())) continue;
+      seen.add(v.toLowerCase()); tags.push(v);
+      if (tags.length >= 12) break;
+    }
+    const row = Object.values(OTHER_PAGES).find(p => p.url === body.url);
+    if (row) row.tags = tags; else RECORD.tags = tags;
+    return { ok: true, status: 200, data: { ok: true, tags } };
   }
   if (method === 'POST' && route === '/edit') {
     const list = body.thread_id === '__page__'
@@ -1404,6 +1441,9 @@ window.chrome = {
           // whatever /health calls the owner; a hosted one = the handle from
           // the options page.
           case 'identity': return { ok: true, handle: IDENTITY,
+            // …and whether this browser may do the owner's things here, which
+            // is what decides if the pages list offers to rename and tag
+            is_owner: !ownerOnly,
             base: 'http://127.0.0.1:4189', remote: false, auth: false };
           case 'badge': badges.push(msg.count); return { ok: true };
           // stands in for background.js's openPage(): there are no tabs here,
@@ -3415,6 +3455,138 @@ async function selftest() {
     check('…leaving the fold control in its place', !!foldOf(chatCard()));
   }
   d.open('comments');
+
+  // ---- organising the archive: kinds, tags and names ---------------------
+  // The list is the archive's index, so it has to answer "where are my PDFs"
+  // and "what did I file under rail" in one click, and let the reader rename
+  // the things whose own names are useless (a PDF called 2601.01234v2.pdf).
+  S.querySelector('[data-act="pages"]').click();
+  await until(() => (prows().length ? prows() : null));
+  const rowAt = u => [...prows()].find(r => r.dataset.url === u);
+  const kchips = () => [...S.querySelectorAll('.pane[data-pane="pages"] .fkinds .fchip')];
+  const chipFor = label => kchips().find(c => c.textContent.trim().startsWith(label));
+  const railTags = () => [...S.querySelectorAll('.pane[data-pane="pages"] .ftags > .tchip')];
+  const railTag = t => railTags().find(c => c.textContent.trim() === t);
+  const headText = () => S.querySelector('.pane[data-pane="pages"] .list-head').textContent;
+  const QUARTER_URL = 'https://example.org/finance/the-long-quarter';
+  const COMMITTEE = 'https://news.example.net/politics/the-committee-that-never-met';
+  // however many pages this run has accumulated by now — the archive is not a
+  // fixture at this point in the selftest, so nothing below counts to a literal
+  const N = prows().length;
+  const rowTag = (u, t) => [...rowAt(u).querySelectorAll('.ptags .tchip')]
+    .find(c => c.textContent.trim() === t);
+
+  check('the list says what kind each page is',
+    !!rowAt(QUARTER_URL) && rowAt(QUARTER_URL).querySelector('.pkind').textContent === 'PDF' &&
+    rowAt(COMMITTEE).querySelector('.pkind').textContent === 'Doc' &&
+    rowAt(TUNNEL).querySelector('.pkind').textContent === 'article');
+  check('…and offers a chip for every kind it actually holds',
+    kchips().map(c => c.textContent.replace(/\d+$/, '').trim()).join(' · ') === 'All · Articles · PDFs · Docs');
+  check('…each carrying its own count',
+    !!chipFor('All') && chipFor('All').textContent.trim() === 'All' + N &&
+    chipFor('PDFs').textContent.trim() === 'PDFs1');
+  check('…with everything selected to begin with',
+    chipFor('All').classList.contains('on') && !chipFor('PDFs').classList.contains('on'));
+
+  chipFor('PDFs').click();
+  check('choosing a kind filters the list in place',
+    !!await until(() => (prows().length === 1 && rowAt(QUARTER_URL)) ? true : null));
+  check('…and the head says how much of the archive is on screen',
+    headText().includes('1 of ' + N));
+  check('…and the chip it was told about is the lit one',
+    chipFor('PDFs').classList.contains('on') && !chipFor('All').classList.contains('on'));
+  check('…and the choice is remembered for next time, like the tab and the width',
+    store['bfp:pageFilter'] && store['bfp:pageFilter'].kind === 'pdf');
+
+  // a tag is the other filter, and the two combine
+  check('the tags in use are a rail of their own',
+    railTags().map(c => c.textContent.trim()).join(' · ') === 'Finance · rail');
+  railTag('rail').click();
+  check('a tag narrows what the kind left standing',
+    !!await until(() => (prows().length === 1 && rowAt(QUARTER_URL)
+      && headText().includes('1 of ' + N)) ? true : null));
+  chipFor('Articles').click();
+  check('…and the two really are combined, not each other’s replacement',
+    !!await until(() => (prows().length === 1 && rowAt(TUNNEL)) ? true : null));
+  railTag('Finance').click();
+  check('a combination nothing matches says so as a filter, not as an empty archive',
+    !!await until(() => (!prows().length &&
+      /nothing here under this filter/.test(S.querySelector('.pane[data-pane="pages"] .pages-list .empty').textContent))
+      ? true : null));
+  S.querySelector('.pane[data-pane="pages"] [data-act="filter-clear"]').click();
+  check('…with one way back to everything',
+    !!await until(() => (prows().length === N && chipFor('All').classList.contains('on')) ? true : null));
+
+  // the chips on a row are the same control as the rail
+  rowTag(QUARTER_URL, 'rail').click();
+  check('a row’s own tag chip filters by that tag',
+    !!await until(() => (prows().length === 2 && rowAt(QUARTER_URL) && rowAt(TUNNEL)
+      && !rowAt(COMMITTEE)) ? true : null));
+  check('…lighting the same tag in the rail above', !!railTag('rail') && railTag('rail').classList.contains('on'));
+  railTag('rail').click();
+  check('…and clicking the lit one turns it off again',
+    !!await until(() => prows().length === N ? true : null));
+
+  // ---- renaming a page ---------------------------------------------------
+  const renamesBefore = renamePosts.length;
+  rowAt(QUARTER_URL).querySelector('[data-act="page-rename"]').click();
+  const renameBox = await until(() => rowAt(QUARTER_URL).querySelector('.pedit.rename .pinput'));
+  check('a row offers to rename the page', !!renameBox);
+  check('…starting from the name it is shown under',
+    renameBox.value === 'The Long Quarter: how a bank talked itself into a very expensive silence');
+  check('…and says how to take a name back off', /empty = the page/.test(rowAt(QUARTER_URL).textContent));
+  renameBox.value = 'The Long Quarter';
+  renameBox.dispatchEvent(new Event('input', { bubbles: true }));
+  renameBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+  check('Enter saves it, against that page',
+    !!await until(() => (renamePosts.length === renamesBefore + 1 &&
+      renamePosts[renamesBefore].url === QUARTER_URL &&
+      renamePosts[renamesBefore].title === 'The Long Quarter') ? true : null));
+  check('…and the row is renamed on the spot',
+    !!await until(() => (rowAt(QUARTER_URL) &&
+      rowAt(QUARTER_URL).querySelector('.ptitle').textContent === 'The Long Quarter') ? true : null));
+  check('…and the editor closed behind it', !rowAt(QUARTER_URL).querySelector('.pedit'));
+  rowAt(TUNNEL).querySelector('[data-act="page-rename"]').click();
+  await until(() => rowAt(TUNNEL).querySelector('.pedit .pinput'));
+  rowAt(TUNNEL).querySelector('[data-act="rename-no"]').click();
+  check('cancelling changes nothing',
+    !rowAt(TUNNEL).querySelector('.pedit') && renamePosts.length === renamesBefore + 1);
+
+  // ---- tagging a page ----------------------------------------------------
+  const tagsBefore = tagPosts.length;
+  rowAt(TUNNEL).querySelector('[data-act="page-tag"]').click();
+  const tagBox = await until(() => rowAt(TUNNEL).querySelector('.pedit.tags .pinput'));
+  check('a row offers to tag the page', !!tagBox);
+  check('…starting from the tags it already carries', tagBox.value === 'rail');
+  tagBox.value = 'rail, Fin';
+  tagBox.setSelectionRange(tagBox.value.length, tagBox.value.length);
+  tagBox.dispatchEvent(new Event('input', { bubbles: true }));
+  const tagOpts = () => [...rowAt(TUNNEL).querySelectorAll('.tagmenu .tagopt')];
+  check('typing completes against the tags already in use anywhere',
+    !!await until(() => (tagOpts().length === 1 && tagOpts()[0].textContent === 'Finance') ? true : null));
+  tagBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+  check('…and Enter takes the suggestion rather than saving half a word',
+    /Finance/.test(tagBox.value) && tagPosts.length === tagsBefore);
+  rowAt(TUNNEL).querySelector('[data-act="tag-save"]').click();
+  check('saving sends the whole list, as a list',
+    !!await until(() => (tagPosts.length === tagsBefore + 1 &&
+      tagPosts[tagsBefore].url === TUNNEL &&
+      tagPosts[tagsBefore].tags.join('|') === 'rail|Finance') ? true : null));
+  check('…and the row wears them as chips',
+    !!await until(() => {
+      const cs = rowAt(TUNNEL) && [...rowAt(TUNNEL).querySelectorAll('.ptags .tchip')];
+      return cs && cs.map(c => c.textContent.trim()).join('|') === 'rail|Finance' ? true : null;
+    }));
+
+  // ---- a guest sees none of it -------------------------------------------
+  d.setOwner(false);
+  check('a guest is offered no rename and no tag anywhere in the list',
+    !S.querySelector('.pane[data-pane="pages"] [data-act="page-rename"]') &&
+    !S.querySelector('.pane[data-pane="pages"] [data-act="page-tag"]'));
+  check('…while the list itself, and its filters, are still theirs to use',
+    prows().length === N && kchips().length === 4 && railTags().length === 2);
+  d.setOwner(true);
+  check('…and the owner gets them back', !!rowAt(TUNNEL).querySelector('[data-act="page-rename"]'));
 
   // ---- the pages library: which ones have bots in them, and deleting ------
   S.querySelector('[data-act="pages"]').click();

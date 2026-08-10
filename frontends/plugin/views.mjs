@@ -12,7 +12,7 @@
 import { escHtml } from './hosted.mjs';
 // the library's reserved identity and the page-chat target, from the one place
 // that defines them rather than as literals repeated down here
-import { LIBRARY_URL, PAGE_CHAT } from './store.mjs';
+import { LIBRARY_URL, PAGE_CHAT, PAGE_KINDS, inferKind, tagsOf, displayTitle } from './store.mjs';
 
 const AGENTS = new Set(['claude', 'codex']);
 const shortTime = ts => {
@@ -71,6 +71,25 @@ ul.pages li { border-bottom:1px solid var(--line); padding:.7rem 0 }
    whole page sideways */
 ul.pages a, ul.pages .meta { overflow-wrap:anywhere }
 ul.pages .meta { color:var(--muted); font-size:.76rem }
+/* The same two filters the drawer's list has, as plain links: a kind rail and a
+   tag rail above the pages. No script, no state — the query string IS the
+   filter, so a filtered view is a link somebody can keep. */
+.rail { display:flex; flex-wrap:wrap; gap:.35rem; margin:0 0 .9rem }
+.rail a { display:inline-block; padding:.2rem .6rem; border:1px solid var(--line);
+  border-radius:999px; font-size:.78rem; color:var(--muted) }
+.rail a:hover { border-color:var(--accent); color:var(--fg); text-decoration:none }
+.rail a.on { color:var(--accent); border-color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 12%, transparent) }
+.rail.tags a::before { content:"#"; opacity:.55 }
+ul.pages .tags { margin-top:.25rem }
+ul.pages .tags a { font-size:.72rem; color:var(--muted); border-bottom:1px dotted var(--line) }
+ul.pages .tags a::before { content:"#"; opacity:.55 }
+/* the owner's own edits to a record: its name, and what it is filed under */
+form.meta-edit { display:flex; flex-wrap:wrap; gap:.4rem; margin:.6rem 0 0 }
+form.meta-edit input { flex:1 1 12rem; min-width:0; padding:.35rem .55rem; font:inherit;
+  font-size:.85rem; color:var(--fg); background:var(--bg);
+  border:1px solid var(--line); border-radius:8px }
+form.meta-edit button { padding:.3rem .8rem; font-size:.8rem }
 /* what a python code block printed when the owner ran it. Read-only here — the
    phone shows results, it never starts them — and owner-only end to end,
    because this is output from a program on somebody's Mac. */
@@ -167,6 +186,21 @@ function composer(url, key, threadId, label, back) {
 </form>`;
 }
 
+// Naming a page and filing it, from a phone. Owner-only — these are the same
+// owner-only routes the drawer posts to — and form posts, like every other
+// write in the reading room, so the whole view still needs no script.
+function metaEdit(page, key) {
+  const back = `/p/${escHtml(key)}`;
+  const field = (action, name, value, label, hint) => `<form class="meta-edit" method="POST" action="${action}">
+<input type="hidden" name="url" value="${escHtml(page.url)}">
+<input type="hidden" name="redirect" value="${back}">
+<input type="text" name="${name}" value="${escHtml(value)}" aria-label="${escHtml(label)}" placeholder="${escHtml(hint)}">
+<button>${escHtml(label)}</button>
+</form>`;
+  return field('/rename-page', 'title', page.custom_title || '', 'rename', 'the page’s own name')
+    + field('/tag-page', 'tags', tagsOf(page).join(', '), 'tags', 'comma, separated, tags');
+}
+
 export function pageView({ page, key, me, notice, snapshot }) {
   const ctx = { key, owner: !!(me && me.owner) };
   const threads = (page.threads || []).map((t, i) => `<section class="card" id="${escHtml(t.id)}">
@@ -175,10 +209,14 @@ ${(t.msgs || []).map(m => msgHtml(m, ctx)).join('\n')}
 ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
 </section>`).join('\n');
   const chat = (page.page_chat || []).map(m => msgHtml(m, ctx)).join('\n');
-  return shell(page.title || page.url, `
+  const name = displayTitle(page);
+  const tags = tagsOf(page);
+  return shell(name, `
 <header>${whoBadge(me)}
-<h1><a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(page.title || page.url)}</a></h1>
+<h1><a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(name)}</a></h1>
 <p class="sub">${escHtml(page.site || '')} · <a href="/pages">all annotated pages</a>${snapshot ? ` · <a href="/a/${escHtml(key)}">read the article ›</a>` : ''}</p>
+${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${encodeURIComponent(t)}">${escHtml(t)}</a>`).join('')}</div>` : ''}
+${me && me.owner ? metaEdit(page, key) : ''}
 </header>
 ${notice ? `<div class="notice">${escHtml(notice)}</div>` : ''}
 <h2>comments${(page.threads || []).length ? '' : ' — none yet'}</h2>
@@ -248,7 +286,7 @@ const jsonScript = (id, data, nonce) =>
 export function articleView({ page, key, me, snapshot, info, nonce }) {
   const n = escHtml(nonce);
   const head = `<div class="bar"><a href="/pages">‹ pages</a>
-<span class="t">${escHtml(page.title || page.url)}</span>
+<span class="t">${escHtml(displayTitle(page))}</span>
 <button class="pill" id="bfp-chat">chat</button>
 ${me.owner ? '<button class="pill" id="bfp-export">export</button>' : ''}
 <a href="/p/${escHtml(key)}">list</a></div>`;
@@ -264,7 +302,7 @@ companion will keep a copy — after that this page works from anywhere.</p>
 
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(page.title || page.url)}</title>
+<title>${escHtml(displayTitle(page))}</title>
 <style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style></head><body>
 ${head}${body}
 <button id="bfp-pill" hidden>comment</button>
@@ -282,17 +320,58 @@ ${snapshot ? `<script src="/assets/anchor.js" nonce="${n}"></script>
 </body></html>`;
 }
 
-export function pagesView({ index, me, snapshots, library, libraryKey }) {
+// The reading room's filters are the query string, and nothing else: ?kind=pdf,
+// ?tag=quantum, or both. That keeps this page scriptless (a filter survives
+// with JavaScript off), makes a filtered archive a link worth sending, and
+// matches the drawer's chips one for one.
+const KIND_LABEL = { article: 'Articles', pdf: 'PDFs', gdocs: 'Docs' };
+export const rowKind = row =>
+  (PAGE_KINDS.includes(String(row && row.kind)) ? row.kind : inferKind(row && row.url));
+const rowTags = row => (Array.isArray(row && row.tags) ? row.tags : []);
+const filterHref = (kind, tag) => {
+  const q = new URLSearchParams();
+  if (kind) q.set('kind', kind);
+  if (tag) q.set('tag', tag);
+  const s = q.toString();
+  return '/pages' + (s ? `?${s}` : '');
+};
+const railLink = (href, label, on) =>
+  `<a href="${escHtml(href)}"${on ? ' class="on" aria-current="true"' : ''}>${escHtml(label)}</a>`;
+
+export function pagesView({ index, me, snapshots, library, libraryKey, kind = '', tag = '' }) {
   const has = k => !!(snapshots && snapshots.has && snapshots.has(k));
+  const wantKind = PAGE_KINDS.includes(String(kind)) ? String(kind) : '';
+  const wantTag = String(tag || '').trim();
   // The library is a conversation, not a page you can visit — it is the thread
   // at the top of this view, so it never appears as a row in the list below it.
-  const rows = Object.entries(index || {})
+  const all = Object.entries(index || {})
     .filter(([, row]) => row && row.url !== LIBRARY_URL)
-    .sort((a, b) => String(b[1].updated_at || '').localeCompare(String(a[1].updated_at || '')))
+    .sort((a, b) => String(b[1].updated_at || '').localeCompare(String(a[1].updated_at || '')));
+  const kept = all.filter(([, row]) =>
+    (!wantKind || rowKind(row) === wantKind)
+    && (!wantTag || rowTags(row).some(t => t.toLowerCase() === wantTag.toLowerCase())));
+  const counts = new Map();
+  for (const [, row] of all) counts.set(rowKind(row), (counts.get(rowKind(row)) || 0) + 1);
+  const kinds = PAGE_KINDS.filter(k => counts.has(k) || wantKind === k);
+  const kindRail = kinds.length > 1
+    ? `<div class="rail">${railLink(filterHref('', wantTag), `All (${all.length})`, !wantKind)}`
+      + kinds.map(k => railLink(filterHref(k, wantTag), `${KIND_LABEL[k]} (${counts.get(k) || 0})`, wantKind === k)).join('')
+      + `</div>` : '';
+  const tagNames = new Map();
+  for (const [, row] of all) {
+    for (const t of rowTags(row)) if (!tagNames.has(t.toLowerCase())) tagNames.set(t.toLowerCase(), t);
+  }
+  const tagRail = tagNames.size
+    ? `<div class="rail tags">${[...tagNames.values()].sort((a, b) => a.localeCompare(b))
+      .map(t => railLink(filterHref(wantKind, t.toLowerCase() === wantTag.toLowerCase() ? '' : t),
+        t, t.toLowerCase() === wantTag.toLowerCase())).join('')}</div>` : '';
+  const rows = kept
     // A row whose article we hold opens the article itself; one we do not
     // still opens its conversation, which is all there has ever been.
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
-<div class="meta">${escHtml(row.url)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div></li>`)
+<div class="meta">${escHtml(row.url)} · ${escHtml(KIND_LABEL[rowKind(row)].replace(/s$/, '').toLowerCase())} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
+  rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
+}</li>`)
     .join('\n');
   // the same conversation the drawer shows above its own list, with the phone's
   // form-post composer instead of the optimistic one — reading it needs no
@@ -310,7 +389,11 @@ ${composer(LIBRARY_URL, libraryKey || '', PAGE_CHAT, 'ask about everything you�
 <p class="sub">everything highlighted and discussed in this workspace</p>
 </header>
 ${lib}
-<h2>pages</h2>
-${rows ? `<ul class="pages">${rows}</ul>` : '<p class="empty">No pages have been annotated yet.</p>'}
+<h2>pages${wantKind || wantTag ? ` — ${kept.length} of ${all.length}` : ''}</h2>
+${kindRail}${tagRail}
+${rows ? `<ul class="pages">${rows}</ul>`
+    : (all.length
+      ? `<p class="empty">Nothing here under this filter — <a href="/pages">show everything</a>.</p>`
+      : '<p class="empty">No pages have been annotated yet.</p>')}
 ${liveScript(LIBRARY_URL)}`);
 }

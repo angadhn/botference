@@ -99,6 +99,12 @@
   const SITE = (Adapters && Adapters.pick(HREF)) || null;
   const CAPS = Object.assign({ highlights: true, textFallback: true, reportOrphans: true },
                              (SITE && SITE.capabilities) || {});
+  // What sort of document this is — the adapter's word, because it is the only
+  // thing that knows (a PDF is a PDF whatever url the viewer wears). No
+  // adapter means an ordinary web article, which is the honest default and the
+  // overwhelmingly common case. It rides every POST /page, and the companion
+  // stores it on the record so the pages list can be filtered by it.
+  const PAGE_KIND = (SITE && SITE.kind) || 'article';
 
   // ---- which page this is, decided ONCE ----------------------------------
   // Resolved at load and never revisited, because a document's identity does
@@ -264,7 +270,14 @@
     identity = bg({ t: 'identity' }).then(r => {
       const h = (r && r.ok && r.handle) ? String(r.handle).trim() : '';
       if (h) AUTHOR = h;
-      if (drawer) drawer.setAuthor(AUTHOR);
+      if (drawer) {
+        drawer.setAuthor(AUTHOR);
+        // …and whether this browser is the OWNER here, which is what decides
+        // if the pages list offers to rename and tag. The companion is the
+        // authority (GET /whoami, behind the background's cache); anything
+        // less than a plain yes leaves the controls out.
+        drawer.setOwner(!!(r && r.ok && r.is_owner));
+      }
       return AUTHOR;
     }).catch(() => AUTHOR);
     return identity;
@@ -645,7 +658,7 @@
     const title = headline();
     if (title && title !== lastPostedTitle) {
       lastPostedTitle = title;
-      await api('POST', '/page', { url: URL_NOW, title, site: HOSTNAME });
+      await api('POST', '/page', { url: URL_NOW, title, site: HOSTNAME, kind: PAGE_KIND });
       return loadPage();
     }
     return PAGE;
@@ -661,7 +674,7 @@
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
       // upsert the page shell so the server knows this page's real headline
       lastPostedTitle = headline();
-      api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME });
+      api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND });
       bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) drawer.setConn(!!r.connected); });
       await loadPage();
     }
@@ -1008,6 +1021,21 @@
       // opening another page is a tab operation, so only the background can do
       // it — it also arms the one-shot auto-open flag that page will consume
       onOpenPage: url => bg({ t: 'open-page', url }),
+
+      // ---- naming and filing a page --------------------------------------
+      // Both are owner-only on the companion, and the drawer only draws the
+      // controls for an owner — this is the same refusal arriving as ordinary
+      // text if anything gets past both.
+      onRenamePage: async (url, title) => {
+        const r = await api('POST', '/rename-page', { url, title });
+        if (!r.ok) return failure(r);
+        return { ok: true, title: (r.data && r.data.title) || title };
+      },
+      onTagPage: async (url, tags) => {
+        const r = await api('POST', '/tag-page', { url, tags });
+        if (!r.ok) return failure(r);
+        return { ok: true, tags: (r.data && r.data.tags) || [] };
+      },
 
       // ---- the library --------------------------------------------------
       // One conversation about the whole archive, on a reserved url no tab can

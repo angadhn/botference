@@ -14,7 +14,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
-  readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE } from './store.mjs';
+  readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle } from './store.mjs';
 import { applyEnv as applyKeyEnv } from './keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -90,12 +90,14 @@ The reader is asking about their whole archive, not about one page.
 The archive is on this machine, at ${dir} :
 
   pages/*.json — one file per annotated page:
-    {url, title, site, updated_at, threads:[{quote, msgs:[{author, ts, text}]}],
-     page_chat:[{author, ts, text}]}
+    {url, title, custom_title, kind, tags, site, updated_at,
+     threads:[{quote, msgs:[{author, ts, text}]}], page_chat:[{author, ts, text}]}
     where \`quote\` is the passage the reader highlighted and the msgs beneath it
     are their comment on it and any replies; \`page_chat\` is their conversation
     about the page as a whole. An author of "claude" or "codex" is one of you;
-    anything else is a person.
+    anything else is a person. \`tags\` are labels the reader put on the page
+    themselves and \`custom_title\` is their own name for it, so both are worth
+    honouring when the question is about a topic.
   snapshots/<key>.html — the reading text of a page, where one was captured.
     Not every page has one, and nothing here depends on them.
 
@@ -560,8 +562,10 @@ export function createChat({ onEvent }) {
     // about it — /new, /rename, sid capture, /resume — is a page's choreography
     // exactly, because it IS a page record
     const isLib = isLibrary(job.url);
+    // the reader's own name for the page wins here as it wins everywhere: the
+    // botference chat behind a page is called what the page is called
     const title = isLib ? LIBRARY_TITLE
-      : (page.title || job.title || job.url || '').replace(/\s+/g, ' ').trim().slice(0, SESSION_TITLE_MAX);
+      : (displayTitle(page) || job.title || job.url || '').replace(/\s+/g, ' ').trim().slice(0, SESSION_TITLE_MAX);
     const steps = [];
     if (!bootstrapped) {
       // tolerate "already exists" — the create is idempotent from our side
@@ -576,6 +580,16 @@ export function createChat({ onEvent }) {
       steps.push({ text: `/rename ${title}` });
     } else if (activeSid !== sid) {
       steps.push({ text: `/resume ${sid}`, after: () => confirmResume(job, sid) });
+    }
+    // A rename follows the page LAZILY: renaming a page never wakes the bridge
+    // or spends a turn of its own, but the next time this page has something to
+    // say the chat behind it is renamed first — after the /resume, so the
+    // session being renamed is certainly this page's. `session_title` is what
+    // the chat was last called; absent (every record written before this) it
+    // reads as the page's own name, so an untouched page never renames.
+    const namedAs = page.session_title || page.title || '';
+    if (sid && title && namedAs !== title) {
+      steps.push({ text: `/rename ${title}`, after: () => rememberSessionTitle(job.url, title) });
     }
     steps.push({
       text: envelope({ url: job.url, title, target: job.target, text: job.text,
@@ -592,7 +606,7 @@ export function createChat({ onEvent }) {
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that
       // it has an entry — this is the first moment its sid can be trusted
-      ...(sid ? {} : { after: () => captureNewSid(job, sidBefore) }),
+      ...(sid ? {} : { after: () => captureNewSid(job, sidBefore, title) }),
     });
     return steps;
   }
@@ -623,7 +637,7 @@ export function createChat({ onEvent }) {
   // differs from the one active when /new was sent, and never one another
   // page already owns; on failure leave session_id null (the next comment
   // starts a fresh chat) rather than binding to a foreign session.
-  async function captureNewSid(job, sidBefore) {
+  async function captureNewSid(job, sidBefore, title) {
     const sid = await waitForSid(s => s && s !== sidBefore);
     const page = sid ? readPage(job.url) : null;
     const owner = sid && pageWithSession(sid, job.url);
@@ -634,10 +648,24 @@ export function createChat({ onEvent }) {
           : "couldn't create a session for this page — its next comment starts a fresh chat" });
       return;
     }
-    if (page.session_id === sid) return;
+    if (page.session_id === sid && page.session_title === title) return;
     page.session_id = sid;
+    // what the chat was actually called, so a later rename can tell whether
+    // the session still answers to the page's name (see planSteps)
+    if (title) page.session_title = title;
     savePage(page);
     emit({ type: 'page', url: page.url });
+  }
+
+  // The chat has just been renamed, so the record says what it is now called.
+  // Written straight after the /rename step completes: if the bridge died in
+  // between, nothing is recorded and the next turn renames it again — which is
+  // the harmless direction to fail in.
+  function rememberSessionTitle(url, title) {
+    const page = readPage(url);
+    if (!page || page.session_title === title) return;
+    page.session_title = title;
+    savePage(page);
   }
 
   // A /resume that quietly landed somewhere else would post the user's comment

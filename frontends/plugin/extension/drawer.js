@@ -65,7 +65,16 @@
 //   onExport(mode)                      → {ok, path} to show in the footbar
 //                                         mode: 'all' | 'comments'
 //   onPages()                           → {ok, index:{pageKey:{url,title,threads,
-//                                         has_session,updated_at}}}   (GET /index)
+//                                         has_session,kind,tags,updated_at}}}
+//                                         (GET /index) — `kind` is what sort of
+//                                         document it is (article|pdf|gdocs) and
+//                                         `tags` what the reader filed it under;
+//                                         both are what the list filters by
+//   onRenamePage(url, title)            → {ok, title}   (POST /rename-page) —
+//                                         owner only; '' puts the page's own
+//                                         name back
+//   onTagPage(url, tags)                → {ok, tags}     (POST /tag-page) —
+//                                         owner only; the companion normalises
 //   onOpenPage(url)                     → {ok}  open/focus a tab at that page
 //   onLibrary()                         → {ok, page|null}   the library record
 //                                         (GET /page on the reserved url).
@@ -141,6 +150,19 @@
   const TAB_KEY = 'bfp:lastTab';
   const WIDTH_KEY = 'bfp:width';
   const EXPORT_KEY = 'bfp:exportMode';
+  // which slice of the archive the pages list is showing — the same
+  // one-key-in-extension-storage idiom as the tab, the width and the export
+  // mode. A reader who filters to their PDFs is usually still after their PDFs
+  // the next time they open the list.
+  const FILTER_KEY = 'bfp:pageFilter';
+  // The kinds of document a record can be, in the order the chips are drawn.
+  // The companion decides a page's kind (its adapter declares it); the drawer
+  // only names them.
+  const KINDS = [['article', 'Articles'], ['pdf', 'PDFs'], ['gdocs', 'Docs']];
+  const KIND_NAME = { article: 'article', pdf: 'PDF', gdocs: 'Doc' };
+  const kindOfRow = p => (KIND_NAME[p && p.kind] ? p.kind : 'article');
+  const tagsOfRow = p => (Array.isArray(p && p.tags) ? p.tags : []);
+  const TAGS_MAX = 12, TAG_MAX = 40;
   const W_DEFAULT = 420, W_MIN = 320, W_MAX = 720;
 
   // The drawer pushes the page aside rather than covering it, so the width has
@@ -843,8 +865,16 @@
       // annotated page, which takes over the whole body and hides the tab bar
       view: 'threads',
       // `confirm` = the url whose inline "delete page + its chat?" is showing;
-      // `rowErr` = a refusal from the companion, shown under the row it is about
-      pages: { list: null, loading: false, err: '', confirm: null, rowErr: null },
+      // `rowErr` = a refusal from the companion, shown under the row it is about;
+      // `kind`/`tag` = the filter the list is under ('' = everything), which is
+      // remembered per browser; `renaming`/`tagging` = the url whose inline
+      // editor is open (owner only — a guest never sees the affordance)
+      pages: { list: null, loading: false, err: '', confirm: null, rowErr: null,
+               kind: '', tag: '', renaming: null, tagging: null, pick: 0 },
+      // whether this browser is the OWNER of this companion, as the companion
+      // itself says (GET /whoami, through the background). Renaming and tagging
+      // are the owner's; a guest is refused and never sees the controls.
+      owner: false,
       // the library conversation, which lives under the pages list: `page` is
       // the companion's record for the reserved url (null = nothing said in it
       // yet, which is a state and not an error)
@@ -946,6 +976,7 @@
       restoreTab();
       restoreWidth();
       restoreExportMode();
+      restoreFilter();
       return D;
     }
 
@@ -1057,6 +1088,27 @@
     }
     function rememberExportMode() {
       try { chrome.storage.local.set({ [EXPORT_KEY]: D.exportMode }); } catch { /* ignore */ }
+    }
+
+    // ---- which slice of the archive, remembered -------------------------
+    // Same idiom again, one key: {kind, tag}. Restored before the list is ever
+    // drawn, so the view opens where it was left rather than opening on
+    // everything and jumping.
+    function restoreFilter() {
+      try {
+        chrome.storage.local.get(FILTER_KEY, r => {
+          const f = (r && r[FILTER_KEY]) || null;
+          if (!f || typeof f !== 'object') return;
+          D.pages.kind = KIND_NAME[f.kind] ? f.kind : '';
+          D.pages.tag = typeof f.tag === 'string' ? f.tag.slice(0, TAG_MAX) : '';
+          if (D.view === 'pages') renderPages();
+        });
+      } catch { /* no storage (harness fallback) — everything, as it was */ }
+    }
+    function rememberFilter() {
+      try {
+        chrome.storage.local.set({ [FILTER_KEY]: { kind: D.pages.kind, tag: D.pages.tag } });
+      } catch { /* ignore */ }
     }
 
     // Drag from the left edge. Width is measured off the viewport's right edge
@@ -1578,6 +1630,97 @@
     const EXPORT_ROW_TIP = () => 'Export this page to Obsidian (' +
       (D.exportMode === 'comments' ? 'comments only' : 'everything') + ')';
 
+    // ---- the archive, sliced ---------------------------------------------
+    // Two filters over one list, and they combine: a KIND (what sort of
+    // document it is, which the companion knows because the adapter declared
+    // it) and a TAG (what the reader filed it under). Neither is a search box:
+    // both are chips, because the whole point is to answer "where are my
+    // papers" in one click.
+    const matchesFilter = p =>
+      (!D.pages.kind || kindOfRow(p) === D.pages.kind) &&
+      (!D.pages.tag || tagsOfRow(p).some(t => t.toLowerCase() === D.pages.tag.toLowerCase()));
+    const shownPages = () => (D.pages.list || []).filter(matchesFilter);
+
+    // A chip is drawn for a kind the archive actually contains — plus, always,
+    // whichever one is selected, so a filter can never strand the reader with
+    // no way back out of it.
+    function kindChips(list) {
+      const counts = new Map();
+      for (const p of list) {
+        const k = kindOfRow(p);
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+      const kinds = KINDS.filter(([k]) => counts.has(k) || D.pages.kind === k);
+      if (kinds.length < 2) return '';   // one kind is not a choice
+      const chip = (kind, label, n) =>
+        `<button class="fchip${D.pages.kind === kind ? ' on' : ''}" type="button"
+           data-act="filter-kind" data-kind="${esc(kind)}"
+           ${D.pages.kind === kind ? 'aria-pressed="true"' : 'aria-pressed="false"'}
+           >${esc(label)}${n == null ? '' : `<span class="fn">${n}</span>`}</button>`;
+      return `<div class="fkinds" role="group" aria-label="Filter by kind">`
+        + chip('', 'All', list.length)
+        + kinds.map(([k, label]) => chip(k, label, counts.get(k) || 0)).join('')
+        + `</div>`;
+    }
+
+    // The tags in use across the whole archive, so the rail is stable as the
+    // list filters underneath it — a tag that vanished the moment you clicked
+    // it would be a rail you could only use once.
+    function tagRail(all) {
+      const tags = knownTags(all);
+      if (!tags.length) return '';
+      return `<div class="ftags" role="group" aria-label="Filter by tag">`
+        + tags.map(t => `<button class="tchip${D.pages.tag.toLowerCase() === t.toLowerCase() ? ' on' : ''}"
+             type="button" data-act="filter-tag" data-tag="${esc(t)}"
+             title="Only pages tagged ${esc(t)}">${esc(t)}</button>`).join('')
+        + `</div>`;
+    }
+
+    // every tag anywhere in the list, first-casing wins, alphabetical
+    function knownTags(list) {
+      const seen = new Map();
+      for (const p of (list || [])) {
+        for (const t of tagsOfRow(p)) {
+          const k = String(t).toLowerCase();
+          if (!seen.has(k)) seen.set(k, String(t));
+        }
+      }
+      return [...seen.values()].sort((a, b) => a.localeCompare(b));
+    }
+
+    // ---- a row's own tags, and the two owner-only editors ----------------
+    const tagChipsHtml = p => {
+      const tags = tagsOfRow(p);
+      if (!tags.length) return '';
+      return `<span class="ptags">` + tags.map(t =>
+        `<button class="tchip row${D.pages.tag.toLowerCase() === t.toLowerCase() ? ' on' : ''}"
+           type="button" data-act="filter-tag" data-tag="${esc(t)}"
+           title="Only pages tagged ${esc(t)}">${esc(t)}</button>`).join('') + `</span>`;
+    };
+
+    // The rename box carries the name the row is CURRENTLY shown under —
+    // emptying it is how a reader takes their own name back off and lets the
+    // page call itself whatever it calls itself again.
+    const renameHtml = p => `<div class="pedit rename">
+        <input class="pinput" type="text" value="${esc(p.title || '')}" aria-label="Name for this page"
+          maxlength="200" data-act="rename-input" data-url="${esc(p.url)}">
+        <button class="rebtn" data-act="rename-save" data-url="${esc(p.url)}" type="button">save</button>
+        <button class="rebtn" data-act="rename-no" type="button">cancel</button>
+        <span class="phint">empty = the page’s own name</span>
+      </div>`;
+
+    // One box holding the whole list, comma-separated: adding and removing are
+    // the same edit, and the menu underneath completes the tag being typed
+    // against every tag already in use.
+    const tagEditHtml = p => `<div class="pedit tags">
+        <input class="pinput" type="text" value="${esc(tagsOfRow(p).join(', '))}"
+          aria-label="Tags for this page" maxlength="520" autocomplete="off"
+          data-act="tag-input" data-url="${esc(p.url)}">
+        <button class="rebtn" data-act="tag-save" data-url="${esc(p.url)}" type="button">save</button>
+        <button class="rebtn" data-act="tag-no" type="button">cancel</button>
+        <div class="tagmenu" hidden></div>
+      </div>`;
+
     function pageRowHtml(p) {
       const n = p.threads | 0;
       const cur = isCurrentUrl(p.url);
@@ -1590,43 +1733,77 @@
       const confirming = D.pages.confirm != null && sameUrl(D.pages.confirm, p.url);
       const err = D.pages.rowErr && sameUrl(D.pages.rowErr.url, p.url)
         ? `<div class="prow-err">${esc(D.pages.rowErr.text)}</div>` : '';
+      // Naming a page and filing it are the OWNER's: a guest reading a shared
+      // companion never sees either control, and the companion would refuse
+      // them anyway.
+      const mine = !!D.owner;
+      const editing = D.pages.renaming != null && sameUrl(D.pages.renaming, p.url);
+      const filing = D.pages.tagging != null && sameUrl(D.pages.tagging, p.url);
       const acts = confirming
         ? `<span class="pconfirm">delete page + its chat?
              <button class="rebtn yes" data-act="page-del-yes" data-url="${esc(p.url)}" type="button">yes</button>
              <button class="rebtn" data-act="page-del-no" type="button">no</button></span>`
-        : `<button class="rebtn pexport" data-act="page-export" data-url="${esc(p.url)}" type="button"
+        : `${mine ? `<button class="rebtn pren" data-act="page-rename" data-url="${esc(p.url)}" type="button"
+             title="Rename this page" aria-label="Rename this page">✎</button>
+           <button class="rebtn ptag" data-act="page-tag" data-url="${esc(p.url)}" type="button"
+             title="Tag this page" aria-label="Tag this page">#</button>` : ''}
+           <button class="rebtn pexport" data-act="page-export" data-url="${esc(p.url)}" type="button"
              title="${esc(EXPORT_ROW_TIP())}" aria-label="${esc(EXPORT_ROW_TIP())}">${OBSIDIAN_SVG}</button>
            <button class="rebtn pdel" data-act="page-del" data-url="${esc(p.url)}" type="button"
              title="Delete this page and its chat" aria-label="Delete this page and its chat">✕</button>`;
-      return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}">
+      const edit = mine && editing ? renameHtml(p) : (mine && filing ? tagEditHtml(p) : '');
+      return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}" data-kind="${esc(kindOfRow(p))}">
         <button class="prow-main" data-act="page-open" data-url="${esc(p.url)}" type="button"
           title="${esc(cur ? 'back to this page’s comments' : p.url)}">
           <span class="ptitle">${esc(p.title || p.url)}</span>
-          <span class="pmeta"><span class="psite">${esc(hostOf(p.url))}</span> · <span class="pcount">${n} thread${n === 1 ? '' : 's'}</span> · <span class="pwhen">${esc(relTime(p.updated_at))}</span>${cur ? '<span class="pcur"> · this page</span>' : ''}${chat}</span>
+          <span class="pmeta"><span class="psite">${esc(hostOf(p.url))}</span> · <span class="pkind">${esc(KIND_NAME[kindOfRow(p)])}</span> · <span class="pcount">${n} thread${n === 1 ? '' : 's'}</span> · <span class="pwhen">${esc(relTime(p.updated_at))}</span>${cur ? '<span class="pcur"> · this page</span>' : ''}${chat}</span>
         </button>
-        ${acts}${err}
+        ${acts}${tagChipsHtml(p)}${edit}${err}
       </div>`;
     }
 
     function renderPages() {
       if (!D.mounted || !D.el.pages) return;
       const list = D.pages.list;
+      const shown = list ? shownPages() : [];
+      const filtered = !!(D.pages.kind || D.pages.tag);
       let body;
       if (!list && D.pages.loading) body = `<div class="empty">loading…</div>`;
       else if (D.pages.err && !(list && list.length)) {
         body = `<div class="empty"><b>Could not load your pages</b>${esc(D.pages.err)}</div>`;
       } else if (!list || !list.length) {
         body = `<div class="empty">nothing annotated yet — highlight some text to start</div>`;
+      } else if (!shown.length) {
+        // a filter that matches nothing says so as a filter, not as an empty
+        // archive — and offers the way out in the same line
+        body = `<div class="empty">nothing here under this filter —
+          <button class="fclear" data-act="filter-clear" type="button">show everything</button></div>`;
       } else {
-        body = list.map(pageRowHtml).join('');
+        body = shown.map(pageRowHtml).join('');
       }
+      const filters = list && list.length
+        ? `<div class="pfilter">${kindChips(list)}${tagRail(list)}</div>` : '';
       D.el.pages.innerHTML = `<div class="pages-head">
           <button class="backbtn" data-act="pages-back" type="button" title="Back to this page">← Back</button>
           <span class="pages-title">Library</span>
         </div><div class="libpane"></div>
         <div class="pages-list"><div class="list-head">All annotated pages${
-          list && list.length ? ' · ' + list.length : ''}</div>${body}</div>`;
+          list && list.length ? ' · ' + (filtered ? `${shown.length} of ${list.length}` : list.length) : ''
+        }</div>${filters}${body}</div>`;
       renderLibrary();
+      // an editor that was open before the repaint gets its caret back, or
+      // typing a tag would be interrupted by every live refresh of the list
+      focusRowEditor();
+    }
+
+    // The inline rename/tag box, after a repaint: focus restored, caret at the
+    // end, and the completion menu redrawn from what is in the box.
+    function focusRowEditor() {
+      const el = D.el.pages && D.el.pages.querySelector('.pedit .pinput');
+      if (!el || (D.shadow.activeElement && D.shadow.activeElement === el)) return;
+      el.focus();
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignore */ }
+      if (el.dataset.act === 'tag-input') paintTagMenu(el);
     }
 
     // ---- the library ----------------------------------------------------
@@ -2495,6 +2672,15 @@
         if (act === 'lib-clear-yes') { doLibraryClear(); return; }
         if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
         if (act === 'page-export') { doExportPage(btn.dataset.url); return; }
+        if (act === 'filter-kind') { setKindFilter(btn.dataset.kind || ''); return; }
+        if (act === 'filter-tag') { toggleTagFilter(btn.dataset.tag || ''); return; }
+        if (act === 'filter-clear') { setFilter('', ''); return; }
+        if (act === 'page-rename') { openRowEditor('renaming', btn.dataset.url); return; }
+        if (act === 'page-tag') { openRowEditor('tagging', btn.dataset.url); return; }
+        if (act === 'rename-no' || act === 'tag-no') { closeRowEditors(); return; }
+        if (act === 'rename-save') { saveRename(btn.dataset.url); return; }
+        if (act === 'tag-save') { saveTags(btn.dataset.url); return; }
+        if (act === 'tag-pick') { completeTag(btn.dataset.tag); return; }
         if (act === 'page-del') { D.pages.confirm = btn.dataset.url; D.pages.rowErr = null; renderPages(); return; }
         if (act === 'page-del-no') { D.pages.confirm = null; renderPages(); return; }
         if (act === 'page-del-yes') { doDeletePage(btn.dataset.url); return; }
@@ -2547,6 +2733,8 @@
       D.shadow.addEventListener('input', e => {
         const ta = e.target;
         if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) syncMention(ta);
+        // …and the tag menu follows the box it belongs to, the same way
+        if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
       });
       D.shadow.addEventListener('keyup', e => {
         if (!/^(Arrow|Home|End|PageUp|PageDown)/.test(e.key || '')) return;
@@ -2581,10 +2769,48 @@
             return;
           }
         }
+        // A row's rename / tag box: Enter saves, Esc closes the editor and not
+        // the drawer, and while the completion menu is up it owns the arrows,
+        // Tab and Enter — exactly as the @-menu does in a composer.
+        const pedit = e.target && e.target.dataset && /^(rename|tag)-input$/.test(e.target.dataset.act || '')
+          ? e.target : null;
+        if (pedit) {
+          const tagging = pedit.dataset.act === 'tag-input';
+          const items = tagging ? tagMatches(pedit) : [];
+          const menuOpen = tagging && items.length
+            && !(pedit.parentNode.querySelector('.tagmenu') || {}).hidden;
+          if (menuOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            e.preventDefault();
+            const step = e.key === 'ArrowDown' ? 1 : items.length - 1;
+            D.pages.pick = (D.pages.pick + step) % items.length;
+            paintTagMenu(pedit);
+            return;
+          }
+          if (menuOpen && e.key === 'Tab') { e.preventDefault(); completeTag(items[D.pages.pick]); return; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const { word } = tagging ? tagToken(pedit) : { word: '' };
+            // Enter completes the highlighted suggestion when one is being
+            // typed at, and otherwise saves — a menu row is never the whole
+            // point of pressing Enter in a box you have finished filling in
+            if (menuOpen && word) completeTag(items[D.pages.pick]);
+            else if (tagging) saveTags(pedit.dataset.url);
+            else saveRename(pedit.dataset.url);
+            return;
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (menuOpen) { const m = pedit.parentNode.querySelector('.tagmenu'); m.hidden = true; m.innerHTML = ''; }
+            else closeRowEditors();
+            return;
+          }
+        }
         if (e.key === 'Escape') {
           e.stopPropagation();
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
+          if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
           if (D.light) closeLight();
           else if (D.exportOpen) closeExportPick();
           else if (D.modelsOpen) closeModels();
@@ -3251,6 +3477,120 @@
       if (r && r.ok === false) { D.foot = r.error || 'could not open that page'; D.footErr = true; paintFoot(); }
     }
 
+    // ---- filtering, renaming, tagging -------------------------------------
+    // All three are edits to the LIST, not to any conversation, so they repaint
+    // the pages pane and nothing else.
+    function setFilter(kind, tag) {
+      D.pages.kind = KIND_NAME[kind] ? kind : '';
+      D.pages.tag = String(tag || '').slice(0, TAG_MAX);
+      closeRowEditors(true);
+      rememberFilter();
+      renderPages();
+    }
+    const setKindFilter = kind => setFilter(kind === D.pages.kind ? '' : kind, D.pages.tag);
+    // clicking the tag you are already filtered to is how you stop filtering by
+    // it — the chip is a toggle, in the rail and in a row alike
+    const toggleTagFilter = tag =>
+      setFilter(D.pages.kind, tag.toLowerCase() === D.pages.tag.toLowerCase() ? '' : tag);
+
+    function openRowEditor(which, url) {
+      if (!D.owner || !url) return;
+      D.pages.renaming = which === 'renaming' ? url : null;
+      D.pages.tagging = which === 'tagging' ? url : null;
+      D.pages.pick = 0;
+      D.pages.rowErr = null;
+      renderPages();
+    }
+    function closeRowEditors(quiet) {
+      const had = D.pages.renaming || D.pages.tagging;
+      D.pages.renaming = null;
+      D.pages.tagging = null;
+      D.pages.pick = 0;
+      if (had && !quiet) renderPages();
+    }
+    const rowInput = () => D.el.pages && D.el.pages.querySelector('.pedit .pinput');
+    // the list is refreshed from the companion on every `page` event, so a row
+    // that was just renamed is corrected here immediately rather than waiting
+    const patchRow = (url, patch) => {
+      for (const p of D.pages.list || []) if (sameUrl(p.url, url)) Object.assign(p, patch);
+    };
+
+    async function saveRename(url) {
+      const el = rowInput();
+      if (!el || !url) return;
+      const title = el.value.trim();
+      closeRowEditors(true);
+      const r = await cb('onRenamePage')(url, title);
+      if (!r || r.ok === false) {
+        D.pages.rowErr = { url, text: (r && r.error) || 'could not rename that page' };
+      // the companion answers with the name the row is now shown under —
+      // which, when the reader emptied the box, is the page's own name and not
+      // the empty string they typed
+      } else if (r.title) patchRow(url, { title: r.title });
+      renderPages();
+      loadPages(true);
+    }
+
+    async function saveTags(url) {
+      const el = rowInput();
+      if (!el || !url) return;
+      const tags = el.value.split(',').map(s => s.trim()).filter(Boolean).slice(0, TAGS_MAX);
+      closeRowEditors(true);
+      const r = await cb('onTagPage')(url, tags);
+      if (!r || r.ok === false) {
+        D.pages.rowErr = { url, text: (r && r.error) || 'could not tag that page' };
+      } else patchRow(url, { tags: (r && r.tags) || tags });
+      renderPages();
+      loadPages(true);
+    }
+
+    // ---- completing a tag --------------------------------------------------
+    // The token under the caret is what is completed, against every tag already
+    // in use anywhere in the archive — the same shape as the @-menu, over a
+    // different vocabulary. Nothing is invented: a tag you have never used is
+    // simply typed out, and the menu closes when nothing matches.
+    function tagToken(el) {
+      const value = String(el.value || '');
+      const caret = typeof el.selectionStart === 'number' ? el.selectionStart : value.length;
+      const start = value.lastIndexOf(',', caret - 1) + 1;
+      let end = value.indexOf(',', caret);
+      if (end < 0) end = value.length;
+      return { start, end, word: value.slice(start, end).trim() };
+    }
+    function tagMatches(el) {
+      const { word } = tagToken(el);
+      const chosen = new Set(el.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+      const w = word.toLowerCase();
+      return knownTags(D.pages.list)
+        .filter(t => !chosen.has(t.toLowerCase()) || t.toLowerCase() === w)
+        .filter(t => !w || t.toLowerCase().startsWith(w))
+        .slice(0, 8);
+    }
+    function paintTagMenu(el) {
+      const menu = el && el.parentNode && el.parentNode.querySelector('.tagmenu');
+      if (!menu) return;
+      const items = tagMatches(el);
+      if (!items.length) { menu.hidden = true; menu.innerHTML = ''; return; }
+      if (D.pages.pick >= items.length) D.pages.pick = 0;
+      menu.innerHTML = items.map((t, i) =>
+        `<button class="tagopt${i === D.pages.pick ? ' on' : ''}" type="button"
+           data-act="tag-pick" data-tag="${esc(t)}">${esc(t)}</button>`).join('');
+      menu.hidden = false;
+    }
+    function completeTag(tag) {
+      const el = rowInput();
+      if (!el || !tag) return;
+      const { start, end } = tagToken(el);
+      const before = el.value.slice(0, start).replace(/\s*$/, '');
+      const rest = el.value.slice(end).replace(/^\s*,?\s*/, '');
+      el.value = (before ? before + (before.endsWith(',') ? ' ' : ', ') : '') + tag + (rest ? ', ' + rest : ', ');
+      const caret = el.value.length - (rest ? rest.length + 2 : 0);
+      el.focus();
+      try { el.setSelectionRange(caret, caret); } catch { /* ignore */ }
+      D.pages.pick = 0;
+      paintTagMenu(el);
+    }
+
     function showPages() {
       mount();
       D.view = 'pages';
@@ -3414,6 +3754,19 @@
       if (m === D.exportMode) return D;
       D.exportMode = m;
       if (D.exportOpen) paintExportPick();
+      if (D.view === 'pages') renderPages();
+      return D;
+    }
+    // Whether this browser is the OWNER of this companion — the companion's own
+    // answer (GET /whoami), asked once by content.js. It gates the archive's
+    // editing affordances: renaming a page and tagging it are the owner's, and
+    // a guest never sees either control (nor could they use it — the routes are
+    // owner-only). False until the answer arrives, which is the safe direction.
+    function setOwner(on) {
+      const v = !!on;
+      if (v === D.owner) return D;
+      D.owner = v;
+      if (!v) closeRowEditors(true);
       if (D.view === 'pages') renderPages();
       return D;
     }
@@ -3616,7 +3969,7 @@
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
-      setExportMode,
+      setExportMode, setOwner,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,

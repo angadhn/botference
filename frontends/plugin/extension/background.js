@@ -67,8 +67,11 @@
 //                                     /health, then the configured handle).
 //                                     Drives the drawer's "is this MY message"
 //                                     test and the composer's author colour.
-//        → {ok:true, handle:'…'|'', owner:'…', hosted:bool,
+//        → {ok:true, handle:'…'|'', owner:'…', is_owner:bool, hosted:bool,
 //           base:'…', remote:bool, auth:bool}
+//                                     `is_owner` is the standing, not the name:
+//                                     it gates the pages list's rename and tag
+//                                     controls (both owner-only routes)
 //   {t:'badge', count:N}              set this tab's badge (N=0 clears it)
 //        → {ok:true}
 //   {t:'reconnect'}                   user-visible "retry" affordance
@@ -301,20 +304,31 @@ async function identity() {
       identityCache.handle_conf === CONF.handle) return identityCache.value;
   const pick = d => CFG.sanitizeHandle(d.handle || d.owner || d.author || '');
   let handle = '', hosted = false, owner = '';
+  // …and whether this browser is the owner AS A FACT rather than as a name:
+  // /whoami answers `owner` as a boolean, which the line above turns into a
+  // label. The two things are different questions and the drawer asks the
+  // second one (may I rename and tag pages here).
+  let isOwner = null;
   let r = await api('GET', '/whoami');
   if (r.ok && r.data && r.data.ok !== false) {
     hosted = !!r.data.hosted;
     owner = String(r.data.owner || '');
+    isOwner = r.data.owner === true || r.data.owner === 'true';
     handle = pick(r.data);
   } else {
     r = await api('GET', '/health');
     const d = (r.ok && r.data) || {};
     hosted = !!d.hosted;
     owner = String(d.owner || '');
+    if (d.owner !== undefined) isOwner = d.owner === true || d.owner === 'true';
     handle = pick(d);
   }
   if (!handle) handle = CFG.sanitizeHandle(CONF.handle);
-  const value = { ok: true, handle, owner, hosted, base: CONF.base,
+  // An older companion says nothing about ownership at all. A local companion
+  // has no guests — the port is the boundary — so it is the owner's; a remote
+  // one is only the owner's once it says so.
+  if (isOwner === null) isOwner = !CFG.isLocal(CONF.base) ? false : true;
+  const value = { ok: true, handle, owner, is_owner: isOwner, hosted, base: CONF.base,
                   remote: !CFG.isLocal(CONF.base), auth: !!CONF.password };
   identityCache = { base: CONF.base, handle_conf: CONF.handle, value };
   return value;

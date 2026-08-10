@@ -506,6 +506,20 @@ an ordinary conversation in every other respect — mention `@claude`,
 `@codex` or `@all`, export it to Obsidian as a "Library" note, clear it
 and start again — and it is on your phone at `/pages` too.
 
+**Keeping the list usable.** The archive grows, so the list underneath
+that conversation filters: quiet chips for what a page IS — All ·
+Articles · PDFs · Docs, drawn only for the kinds you actually have —
+and a rail of your own **tags** beside them, both combinable and both
+remembered per browser. Every row can be **renamed** (a paper called
+`2601.01234v2.pdf` becomes *Kolmogorov flows* everywhere: the list, your
+phone, the Obsidian note's title and file name, and the council chat
+behind it, renamed on that page's next message) and **tagged** (click
+`#`, type, complete against tags you have used before; a tag chip
+filters the list, and the tags ride into the note's frontmatter beside
+`botference-discuss`, which is what makes Obsidian's own search find
+them). Renaming and tagging are the owner's: a guest on a shared
+companion sees the list and its filters, and no editing at all.
+
 ### Running the code in a message
 
 A conversation about a page full of numbers turns into code very

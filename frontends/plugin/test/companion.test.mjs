@@ -367,8 +367,13 @@ async function main() {
     assert.ok(chat('stream-done').length, 'a stream-done event');
     assert.ok(since().some(e => e.type === 'bridge' && e.state === 'running'), 'bridge state event');
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
-    assert.deepEqual(Object.keys(page), ['version', 'url', 'title', 'site', 'created_at',
-      'updated_at', 'session_id', 'threads', 'page_chat'], 'article_text is never persisted');
+    // `kind` is what sort of document it is (the adapter's word, inferred from
+    // the url where nothing said) and `session_title` is what the botference
+    // chat behind it is currently called — both belong on the record. The
+    // article text does not, and this list is how that stays true.
+    assert.deepEqual(Object.keys(page), ['version', 'url', 'title', 'site', 'kind', 'created_at',
+      'updated_at', 'session_id', 'threads', 'page_chat', 'session_title'],
+    'article_text is never persisted');
     const msgs = page.threads[0].msgs;
     assert.equal(msgs.length, 4);
     assert.equal(msgs[3].author, 'claude');
@@ -464,6 +469,51 @@ async function main() {
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
     // the /resume replayed a `restored` room entry — it must not be persisted
     assert.deepEqual(page.page_chat.map(m => m.author), ['angadh', 'angadh', 'claude']);
+  });
+
+  // --- a rename follows the page into its chat, lazily -------------------
+  // Renaming a page never wakes the bridge and never spends a turn of its own;
+  // the NEXT thing that page has to say renames the botference chat behind it
+  // first, and only once.
+  await test('renaming a page renames its chat on the next turn, and only then', async () => {
+    const url = 'https://ledger.test/2026/night-mail';
+    await POST(base, '/page', { url, title: 'Night Mail', site: 'ledger.test' });
+    let before = stream.events.length;
+    await POST(base, '/thread', {
+      url, quote: 'the mail still moves', prefix: '', suffix: '',
+      msg: { text: '@claude does it?' },
+    });
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'first turn');
+    const born = await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+      return p.session_id ? p : null;
+    }, 'sid capture');
+    assert.equal(born.session_title, 'Night Mail', 'the record remembers what the chat was called');
+
+    const sentBefore = inputs(logFile).length;
+    const renamed = await POST(base, '/rename-page', { url, title: 'Night Mail (1936)' });
+    assert.equal(renamed.status, 200);
+    assert.equal(renamed.json.title, 'Night Mail (1936)');
+    assert.deepEqual(inputs(logFile).slice(sentBefore), [], 'renaming spends no turn of its own');
+
+    before = stream.events.length;
+    await POST(base, '/reply', { url, thread_id: '__page__', text: '@claude and the sorting van?' });
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'second turn');
+    const sent = inputs(logFile).slice(sentBefore);
+    const rename = sent.indexOf('/rename Night Mail (1936)');
+    assert.ok(rename >= 0, `the chat is renamed: ${JSON.stringify(sent)}`);
+    const resume = sent.findIndex(t => t.startsWith('/resume '));
+    if (resume >= 0) assert.ok(resume < rename, 'after the resume — the session renamed is this page\'s');
+    assert.ok(sent.findIndex(t => t.startsWith('@claude ')) > rename, 'and before the turn itself');
+    const after = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.equal(after.session_title, 'Night Mail (1936)');
+
+    const sentAgain = inputs(logFile).length;
+    before = stream.events.length;
+    await POST(base, '/reply', { url, thread_id: '__page__', text: '@claude one more' });
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'third turn');
+    assert.equal(inputs(logFile).slice(sentAgain).filter(t => t.startsWith('/rename ')).length, 0,
+      'a name that has not moved is never renamed again');
   });
 
   await test('POST /interrupt reaches the bridge for the running page only', async () => {
@@ -1707,6 +1757,8 @@ async function main() {
       const calls = [
         ['/export', { url: PAGE1 }],
         ['/delete-page', { url: PAGE1 }],
+        ['/rename-page', { url: PAGE1, title: 'ada was here' }],
+        ['/tag-page', { url: PAGE1, tags: ['ada'] }],
         ['/model', { agent: 'claude', model: 'claude-opus-5' }],
         ['/effort', { agent: 'claude', level: 'high' }],
         ['/verbosity', { level: 'long' }],
@@ -2447,6 +2499,178 @@ async function main() {
       assert.equal((await GET(h.base, '/run', owner)).status, 200,
         'the owner password works from anywhere — it is the owner');
       assert.equal((await GET(h.base, '/run')).status, 200, 'and localhost is the owner as ever');
+      h.proc.kill();
+    });
+  }
+
+  // --- organising the archive: kinds, names and tags ---------------------
+  // Three small things about a RECORD rather than about a conversation: what
+  // sort of document it is (so a list can be filtered), what the reader calls
+  // it, and what they filed it under.
+  {
+    const oRoot = tmpRoot('organise');
+    const oDir = path.join(oRoot, '.botference', 'plugin');
+    fs.mkdirSync(oDir, { recursive: true });
+    fs.writeFileSync(path.join(oDir, 'config.json'),
+      JSON.stringify({ vault_path: vault, export_folder: 'Web Clippings', author: 'angadh' }, null, 2));
+    const o = await startServer({ root: oRoot, args: ['--no-agents'] });
+    const ART = 'https://ledger.test/2026/the-quiet-line';
+    const PDF = 'https://arxiv.example/papers/2601.01234v2.pdf';
+    const DOC = 'https://docs.google.com/document/d/1a2b3c4d5e6f7g8h/edit';
+    const idx = async () => (await GET(o.base, '/index')).json;
+    const rec = async u => (await GET(o.base, `/page?url=${encodeURIComponent(u)}`)).json;
+    const key = u => crypto.createHash('sha1').update(u).digest('hex');
+
+    await test('a page record knows what kind of document it is', async () => {
+      // the adapter says so, on every visit — that is the authoritative answer
+      await POST(o.base, '/page', { url: PDF, title: '2601.01234v2.pdf', site: 'arxiv.example', kind: 'pdf' });
+      await POST(o.base, '/page', { url: DOC, title: 'Draft — chapter 3', site: 'docs.google.com', kind: 'gdocs' });
+      await POST(o.base, '/page', { url: ART, title: 'The Quiet Line', site: 'ledger.test', kind: 'article' });
+      assert.equal((await rec(PDF)).kind, 'pdf');
+      assert.equal((await rec(DOC)).kind, 'gdocs');
+      assert.equal((await rec(ART)).kind, 'article');
+      const map = await idx();
+      assert.deepEqual([map[key(PDF)].kind, map[key(DOC)].kind, map[key(ART)].kind],
+        ['pdf', 'gdocs', 'article'], 'and the index carries it, which is what the lists read');
+      // nonsense from a hand-edited client never becomes a kind
+      await POST(o.base, '/page', { url: ART, title: 'The Quiet Line', kind: 'spreadsheet' });
+      assert.equal((await rec(ART)).kind, 'article');
+    });
+
+    await test('a record written before kinds existed answers from its url', async () => {
+      // exactly what is on disk for every page annotated before this shipped:
+      // no `kind` on the record, and no `kind` on its index row
+      const OLD_PDF = 'https://papers.example/old/2019-report.pdf';
+      const OLD_DOC = 'https://docs.google.com/document/d/zzzzzzzzzz/edit';
+      const OLD_ART = 'https://ledger.test/2019/an-old-piece';
+      const map = {};
+      for (const [u, title] of [[OLD_PDF, '2019-report.pdf'], [OLD_DOC, 'An old doc'], [OLD_ART, 'An old piece']]) {
+        const k = key(u);
+        fs.writeFileSync(path.join(oDir, 'pages', `${k}.json`), JSON.stringify({
+          version: 1, url: u, title, site: 'x', created_at: '2019-01-01T00:00:00.000Z',
+          updated_at: '2019-01-01T00:00:00.000Z', session_id: null, threads: [], page_chat: [],
+        }));
+        map[k] = { url: u, title, threads: 0, has_session: false, updated_at: '2019-01-01T00:00:00.000Z' };
+      }
+      const live = await idx();
+      fs.writeFileSync(path.join(oDir, 'index.json'), JSON.stringify({ ...live, ...map }));
+      assert.equal((await rec(OLD_PDF)).kind, 'pdf', 'a .pdf url is a PDF');
+      assert.equal((await rec(OLD_DOC)).kind, 'gdocs', 'a Google Docs url is a Doc');
+      assert.equal((await rec(OLD_ART)).kind, 'article', 'and everything else is honestly an article');
+      const after = await idx();
+      assert.deepEqual([after[key(OLD_PDF)].kind, after[key(OLD_DOC)].kind, after[key(OLD_ART)].kind],
+        ['pdf', 'gdocs', 'article'], 'the index backfills on the way out, without a migration');
+    });
+
+    await test('POST /rename-page names a page, everywhere, and gives the name back', async () => {
+      const r = await POST(o.base, '/rename-page', { url: PDF, title: '  Kolmogorov   flows  ' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.title, 'Kolmogorov flows', 'trimmed and collapsed');
+      const page = await rec(PDF);
+      assert.equal(page.custom_title, 'Kolmogorov flows');
+      assert.equal(page.title, '2601.01234v2.pdf', 'the page\'s own name is kept underneath');
+      assert.equal((await idx())[key(PDF)].title, 'Kolmogorov flows', 'the index is what every list draws');
+      // a revisit refreshes the scraped title and must never undo the rename
+      await POST(o.base, '/page', { url: PDF, title: '2601.01234v2.pdf', kind: 'pdf' });
+      assert.equal((await rec(PDF)).custom_title, 'Kolmogorov flows');
+      // …and emptying it is the way back
+      const back = await POST(o.base, '/rename-page', { url: PDF, title: '   ' });
+      assert.equal(back.json.title, '2601.01234v2.pdf');
+      assert.equal((await rec(PDF)).custom_title, null);
+      await POST(o.base, '/rename-page', { url: PDF, title: 'Kolmogorov flows' });
+      const gone = await POST(o.base, '/rename-page', { url: 'https://nowhere.test/x', title: 'x' });
+      assert.equal(gone.status, 404);
+    });
+
+    await test('POST /tag-page normalises what it stores', async () => {
+      const r = await POST(o.base, '/tag-page', {
+        url: PDF,
+        tags: ['  fluids ', '#turbulence', 'Fluids', 'FLUIDS', '', '   ', 'read  later',
+          'x'.repeat(60), 1, null, {}, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'],
+      });
+      assert.equal(r.status, 200);
+      const tags = r.json.tags;
+      assert.equal(tags[0], 'fluids', 'trimmed');
+      assert.equal(tags[1], 'turbulence', 'a leading # is Obsidian\'s spelling, not ours');
+      assert.equal(tags.filter(t => t.toLowerCase() === 'fluids').length, 1, 'deduped case-insensitively');
+      assert.equal(tags[2], 'read later', 'internal whitespace collapsed');
+      assert.ok(tags.every(t => t.length <= 40), 'each one capped');
+      assert.ok(tags.length <= 12, 'and the list capped');
+      assert.deepEqual((await rec(PDF)).tags, tags);
+      assert.deepEqual((await idx())[key(PDF)].tags, tags, 'the index carries them, for the filter');
+      // a page with none carries no tags key in the index at all
+      assert.equal((await idx())[key(ART)].tags, undefined);
+      // …and clearing them is sending none
+      await POST(o.base, '/tag-page', { url: PDF, tags: [] });
+      assert.deepEqual((await rec(PDF)).tags, []);
+      assert.equal((await idx())[key(PDF)].tags, undefined);
+      await POST(o.base, '/tag-page', { url: PDF, tags: ['fluids', 'turbulence'] });
+      // the reading room sends one comma-separated field, and means the same thing
+      const formed = await POST(o.base, '/tag-page', { url: DOC, tags: 'chapter 3, drafts , drafts' });
+      assert.deepEqual(formed.json.tags, ['chapter 3', 'drafts']);
+    });
+
+    await test('the library is not a page to be renamed or tagged', async () => {
+      await POST(o.base, '/reply', { url: 'bfp://library', thread_id: '__page__', text: 'what have I read?' });
+      for (const route of ['/rename-page', '/tag-page']) {
+        const r = await POST(o.base, route, { url: 'bfp://library', title: 'Archive', tags: ['x'] });
+        assert.equal(r.status, 400, route);
+      }
+    });
+
+    await test('a page event is broadcast for a rename and for a tag', async () => {
+      const es = openEvents(o.base);
+      await waitFor(() => es.events.some(e => e.type === 'hello'), 'sse hello');
+      const before = es.events.length;
+      await POST(o.base, '/rename-page', { url: ART, title: 'The Quiet Line, revisited' });
+      await POST(o.base, '/tag-page', { url: ART, tags: ['rail'] });
+      await waitFor(() => es.events.slice(before).filter(e => e.type === 'page' && e.url === ART).length === 2,
+        'both edits reach every open list');
+      es.close();
+    });
+    o.proc.kill();
+
+    // --- and both are the OWNER's ----------------------------------------
+    await test('renaming and tagging are owner-only, through every guest shape', async () => {
+      const hRoot = tmpRoot('organise-hosted');
+      const h = await startServer({
+        root: hRoot, args: ['--hosted', '--no-agents'],
+        env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' },
+      });
+      const R = { host: 'discuss.botference.com' };
+      await POST(h.base, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test', kind: 'article' });
+      const jar = cookieJar(await FORM(h.base, '/auth', { handle: 'ada', password: 'guest-pw', next: '/pages' }, R));
+      const asGuest = [
+        ['a signed-in guest', { ...R, cookie: jar }],
+        ['a guest on the shared password', { ...R, authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' }],
+        // the tunnel's hop arrives from 127.0.0.1 like the extension's: Host
+        // and the Cloudflare headers are the whole of the difference
+        ['a request forwarded to the loopback port', { host: 'localhost', 'cf-connecting-ip': '203.0.113.9', cookie: jar }],
+        ['…and one wearing only X-Forwarded-For', { host: '127.0.0.1', 'x-forwarded-for': '203.0.113.9', cookie: jar }],
+      ];
+      for (const [who, headers] of asGuest) {
+        const ren = await POST(h.base, '/rename-page', { url: PAGE1, title: 'ada was here' }, headers);
+        assert.equal(ren.status, 403, who);
+        assert.deepEqual(ren.json, { ok: false, error: 'owner only — ask the owner to do that' }, who);
+        const tag = await POST(h.base, '/tag-page', { url: PAGE1, tags: ['ada'] }, headers);
+        assert.equal(tag.status, 403, who);
+      }
+      const still = (await GET(h.base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+      assert.equal(still.custom_title, undefined, 'nothing a guest asked for was stored');
+      assert.equal(still.tags, undefined);
+      // the owner, remotely, is the owner
+      const owner = { ...R, authorization: 'Bearer owner-pw' };
+      assert.equal((await POST(h.base, '/rename-page', { url: PAGE1, title: 'Renamed remotely' }, owner)).status, 200);
+      assert.equal((await POST(h.base, '/tag-page', { url: PAGE1, tags: ['rail'] }, owner)).status, 200);
+      assert.equal((await POST(h.base, '/rename-page', { url: PAGE1, title: 'Renamed locally' })).status, 200,
+        'and localhost is the owner as ever');
+      // the reading room's own filters read the same rows
+      const pages = await GET(h.base, '/pages?kind=article&tag=rail', { ...R, cookie: jar });
+      assert.equal(pages.status, 200);
+      assert.ok(pages.body.includes('Renamed locally'), 'the reader\'s name is the one the phone shows');
+      const none = await GET(h.base, '/pages?kind=pdf', { ...R, cookie: jar });
+      assert.ok(/Nothing here under this filter/.test(none.body), 'a filter that matches nothing says so');
+      assert.ok(!/Renamed locally/.test(none.body), 'and shows nothing');
       h.proc.kill();
     });
   }
