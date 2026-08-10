@@ -303,6 +303,21 @@ export function pageWithSession(sid, exceptUrl) {
   return null;
 }
 
+// ---- the library --------------------------------------------------------
+// One conversation about EVERYTHING the reader has annotated, as opposed to
+// one page. It is not a special kind of record: it is an ordinary page record
+// under a reserved identity, so the index, the event stream, /reply, export
+// and delete-page all work on it without knowing it exists.
+//
+// `bfp:` is a scheme no browser will ever hand a content script, so this can
+// never collide with a page somebody actually reads — and normUrl leaves it
+// byte-identical (no hash, no query, no trailing slash to strip), which is why
+// it is a constant and not a change to normUrl. The extension carries the same
+// literal, duplicated exactly as normUrl is and for the same reason.
+export const LIBRARY_URL = 'bfp://library';
+export const LIBRARY_TITLE = 'Library';
+export const isLibrary = u => String(u || '') === LIBRARY_URL || normUrl(u) === LIBRARY_URL;
+
 export const PAGE_CHAT = '__page__';
 export const findThread = (page, id) => (page.threads || []).find(t => t.id === id) || null;
 // both comment threads and the page chat are "a list of msgs" to every caller

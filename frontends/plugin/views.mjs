@@ -10,6 +10,9 @@
 // Palette matches frontends/review/assets/style.css so the two frontends look
 // like one product, dark and light both.
 import { escHtml } from './hosted.mjs';
+// the library's reserved identity and the page-chat target, from the one place
+// that defines them rather than as literals repeated down here
+import { LIBRARY_URL, PAGE_CHAT } from './store.mjs';
 
 const AGENTS = new Set(['claude', 'codex']);
 const shortTime = ts => {
@@ -109,11 +112,13 @@ function msgHtml(m) {
 // One composer shape for both kinds of thread. Plain form POST to the JSON
 // endpoints (they accept form encoding and answer with a redirect back here),
 // so the reading room works with scripting switched off entirely.
-function composer(url, key, threadId, label) {
+// `back` is where the 303 lands afterwards — the page's own view unless the
+// caller says otherwise (the library has no page view to return to).
+function composer(url, key, threadId, label, back) {
   return `<form class="composer" method="POST" action="/reply">
 <input type="hidden" name="url" value="${escHtml(url)}">
 <input type="hidden" name="thread_id" value="${escHtml(threadId)}">
-<input type="hidden" name="redirect" value="/p/${escHtml(key)}">
+<input type="hidden" name="redirect" value="${escHtml(back || `/p/${key}`)}">
 <textarea name="text" placeholder="${escHtml(label)}" aria-label="${escHtml(label)}"></textarea>
 <div class="row"><button>send</button>
 <p class="hint">@claude, @codex or @all to bring in the bots</p></div>
@@ -227,19 +232,34 @@ ${snapshot ? `<script src="/assets/anchor.js" nonce="${n}"></script>
 </body></html>`;
 }
 
-export function pagesView({ index, me, snapshots }) {
+export function pagesView({ index, me, snapshots, library, libraryKey }) {
   const has = k => !!(snapshots && snapshots.has && snapshots.has(k));
+  // The library is a conversation, not a page you can visit — it is the thread
+  // at the top of this view, so it never appears as a row in the list below it.
   const rows = Object.entries(index || {})
+    .filter(([, row]) => row && row.url !== LIBRARY_URL)
     .sort((a, b) => String(b[1].updated_at || '').localeCompare(String(a[1].updated_at || '')))
     // A row whose article we hold opens the article itself; one we do not
     // still opens its conversation, which is all there has ever been.
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
 <div class="meta">${escHtml(row.url)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div></li>`)
     .join('\n');
+  // the same conversation the drawer shows above its own list, with the phone's
+  // form-post composer instead of the optimistic one — reading it needs no
+  // rights beyond seeing this page, and asking follows the ordinary grant rules
+  const chat = (library && (library.page_chat || []).map(msgHtml).join('\n')) || '';
+  const lib = `<h2>library</h2>
+<section class="card">
+${chat || '<p class="empty">Nothing asked about the archive yet.</p>'}
+${composer(LIBRARY_URL, libraryKey || '', PAGE_CHAT, 'ask about everything you’ve read…', '/pages')}
+</section>`;
   return shell('Botference Discuss', `
 <header>${whoBadge(me)}
 <h1>Botference Discuss</h1>
 <p class="sub">everything highlighted and discussed in this workspace</p>
 </header>
-${rows ? `<ul class="pages">${rows}</ul>` : '<p class="empty">No pages have been annotated yet.</p>'}`);
+${lib}
+<h2>pages</h2>
+${rows ? `<ul class="pages">${rows}</ul>` : '<p class="empty">No pages have been annotated yet.</p>'}
+${liveScript(LIBRARY_URL)}`);
 }

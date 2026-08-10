@@ -151,6 +151,21 @@
   // separate facts decide whether to send it, and neither implies the other:
   let sentArticleText = false;   // this tab has already put it on the wire
   let pageHasSession = false;    // the record already carries a session_id
+  // The library record — the same relationship to the drawer that PAGE has,
+  // for a page nobody is standing on. Null until the Pages view asks for it (or
+  // until the first message brings it into being).
+  let LIBRARY = null;
+  const LIBRARY_URL = 'bfp://library';
+  const isLibraryUrl = u => String(u || '') === LIBRARY_URL;
+  function pushLibraryMsg(msg) {
+    if (!LIBRARY) LIBRARY = { url: LIBRARY_URL, title: 'Library', site: '', threads: [], page_chat: [] };
+    if (!LIBRARY.page_chat) LIBRARY.page_chat = [];
+    // idempotent: a {deduped:true} answer echoes the message already stored
+    if (!LIBRARY.page_chat.some(m => m.ts === msg.ts && m.author === msg.author)) {
+      LIBRARY.page_chat.push(msg);
+    }
+    if (drawer) drawer.setLibrary(LIBRARY);
+  }
   const needContext = () => !sentArticleText && !pageHasSession;
   // …and once a session DOES exist, the page can still change under it — a
   // live Google Doc changes between two questions about it. Every
@@ -938,6 +953,27 @@
       // opening another page is a tab operation, so only the background can do
       // it — it also arms the one-shot auto-open flag that page will consume
       onOpenPage: url => bg({ t: 'open-page', url }),
+
+      // ---- the library --------------------------------------------------
+      // One conversation about the whole archive, on a reserved url no tab can
+      // ever be showing (store.mjs owns the definition). It is an ordinary page
+      // chat to every endpoint here — the url is simply not this one.
+      onLibrary: async () => {
+        const r = await api('GET', '/page?url=' + encodeURIComponent(LIBRARY_URL));
+        if (!r.ok) return failure(r);
+        const d = r.data;
+        LIBRARY = (d && d.url) ? d : null;
+        return { ok: true, page: LIBRARY };
+      },
+      onLibraryReply: async text => {
+        const r = await api('POST', '/reply',
+          { url: LIBRARY_URL, thread_id: PAGE_TARGET, text });
+        if (!r.ok) return failure(r);
+        const d = r.data || {};
+        if (d.msg) pushLibraryMsg(d.msg);
+        return { ok: true, queued: d.queued, position: d.position,
+                 wait: d.wait, reason: d.reason, deduped: d.deduped };
+      },
       onExportPage: async (url, mode) => {
         const r = await api('POST', '/export', { url, mode });
         if (!r.ok) return failure(r);
@@ -1187,7 +1223,11 @@
       // the record is asked what really happened
       try {
         if (ev.type === 'page') {
-          if (active) loadPage();
+          // the library's record changed (somebody asked it something from
+          // another tab, or the phone): re-read that, not this page
+          if (isLibraryUrl(ev.url)) {
+            if (drawer) drawer.refreshLibrary();
+          } else if (active) loadPage();
           // the pages list is a live view of /index; a no-op unless it is up
           if (drawer) drawer.refreshPages();
         } else if (drawer) {

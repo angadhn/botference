@@ -55,6 +55,13 @@
 //   onPages()                           → {ok, index:{pageKey:{url,title,threads,
 //                                         has_session,updated_at}}}   (GET /index)
 //   onOpenPage(url)                     → {ok}  open/focus a tab at that page
+//   onLibrary()                         → {ok, page|null}   the library record
+//                                         (GET /page on the reserved url).
+//                                         page:null = nothing said in it yet
+//   onLibraryReply(text)                → same answers as onReply — it IS a
+//                                         reply, on a page nobody is standing
+//                                         on, so the url travels instead of
+//                                         being assumed
 //   onExportPage(url, mode)             → {ok, path}   (POST /export {url, mode})
 //   onDeletePage(url)                   → {ok, session_deleted, current}
 //                                         (POST /delete-page) — `current` says
@@ -110,6 +117,15 @@
 
   const HINT = '@claude, @codex or @all to bring in the bots';
   const PAGE_TARGET = '__page__';
+  // The library — one conversation about everything the reader has annotated,
+  // as opposed to one page. On the wire it is an ordinary page chat on a page
+  // nobody visits (`bfp://library`, the companion's store.mjs owns the
+  // definition; this is the same literal, duplicated as normUrl is). In HERE it
+  // needs a target of its own, because every map is keyed by target and
+  // '__page__' already means the page you are standing on.
+  const LIBRARY_URL = 'bfp://library';
+  const LIBRARY_TARGET = '__library__';
+  const isLibraryUrl = u => String(u || '') === LIBRARY_URL;
   const TAB_KEY = 'bfp:lastTab';
   const WIDTH_KEY = 'bfp:width';
   const EXPORT_KEY = 'bfp:exportMode';
@@ -799,6 +815,10 @@
       // `confirm` = the url whose inline "delete page + its chat?" is showing;
       // `rowErr` = a refusal from the companion, shown under the row it is about
       pages: { list: null, loading: false, err: '', confirm: null, rowErr: null },
+      // the library conversation, which lives under the pages list: `page` is
+      // the companion's record for the reserved url (null = nothing said in it
+      // yet, which is a state and not an error)
+      library: { page: null, loading: false, err: '', confirm: false, note: '' },
       connected: false,
       connKnown: false,    // false until the background has told us either way
       bridge: '',
@@ -1347,11 +1367,23 @@
 
     const outboxFor = t => D.outbox[t] || [];
     const inFlight = t => outboxFor(t).some(e => e.state === 'sending');
-    function realMsgs(target) {
-      if (!D.page) return [];
-      if (target === PAGE_TARGET) return D.page.page_chat || [];
+    // Where the settled messages of ANY conversation live: the page chat, one
+    // comment thread, or the library. Everything in here is keyed by target and
+    // three different places used to fork on `target === PAGE_TARGET`; this is
+    // that fork, once. `create` is for the one caller that appends.
+    function msgListFor(target, create) {
+      if (target === LIBRARY_TARGET) {
+        const lib = D.library.page;
+        if (!lib) return null;
+        return lib.page_chat || (create ? (lib.page_chat = []) : null);
+      }
+      if (!D.page) return null;
+      if (target === PAGE_TARGET) return D.page.page_chat || (create ? (D.page.page_chat = []) : null);
       const t = (D.page.threads || []).find(x => x.id === target);
-      return (t && t.msgs) || [];
+      return (t && t.msgs) || null;
+    }
+    function realMsgs(target) {
+      return msgListFor(target) || [];
     }
     // How many human messages with exactly this text the record already holds.
     // The pending copy is hidden as soon as that count passes the number it was
@@ -1558,8 +1590,53 @@
       }
       D.el.pages.innerHTML = `<div class="pages-head">
           <button class="backbtn" data-act="pages-back" type="button" title="Back to this page">← Back</button>
-          <span class="pages-title">All annotated pages</span>
-        </div>${body}`;
+          <span class="pages-title">Library</span>
+        </div><div class="libpane"></div>
+        <div class="pages-list"><div class="list-head">All annotated pages${
+          list && list.length ? ' · ' + list.length : ''}</div>${body}</div>`;
+      renderLibrary();
+    }
+
+    // ---- the library ----------------------------------------------------
+    // One conversation about everything in the list below it. Rendered from the
+    // same four helpers the page chat uses (msgsHtml · outboxHtml · streamsHtml
+    // · statusHtml) and the same composer, so markdown, maths, tool rows,
+    // folding, wait states, optimistic sends and the @-menu all arrive here
+    // already working — the only thing that is ours is the copy and the target.
+    //
+    // It repaints on its own, without the pages list: an answer arriving must
+    // not rebuild the rows underneath it (and take their scroll position with
+    // them) every time a token lands.
+    function renderLibrary() {
+      const el = D.el.pages && D.el.pages.querySelector('.libpane');
+      if (!el) return;
+      const T = LIBRARY_TARGET;
+      const msgs = (D.library.page && D.library.page.page_chat) || [];
+      const body = msgsHtml(T, msgs) + outboxHtml(T) + streamsHtml(T);
+      const has = !!(D.library.page && (msgs.length || (D.outbox[T] || []).length));
+      const note = D.library.note
+        ? `<div class="lib-note${D.library.err ? ' err' : ''}">${esc(D.library.note)}</div>` : '';
+      const acts = has
+        ? `<button class="libact" data-act="lib-export" type="button" title="Write this conversation to Obsidian">Export</button>`
+          + (D.library.confirm
+            ? `<span class="libconfirm">clear it?<button class="libact danger" data-act="lib-clear-yes" type="button">yes</button>`
+              + `<button class="libact" data-act="lib-clear-no" type="button">no</button></span>`
+            : `<button class="libact" data-act="lib-clear" type="button" title="Forget this conversation and start again">Clear</button>`)
+        : '';
+      el.innerHTML = `<div class="lib-head">
+          <span class="lib-sub">one conversation about everything below</span>${acts}</div>
+        <div class="card libchat" data-thread="${T}" style="--author:${authorColor(D.author || opts.author || 'you')}">
+          ${body ? `<div class="thread">${body}</div>`
+            : `<div class="empty"><b>Ask about everything you've read</b>The bots read your saved pages, quotes and comments to answer — mention one to begin.</div>`}
+          ${note}
+          ${statusHtml(T)}
+          ${composerHtml(T, 'Ask about everything you’ve read…')}
+        </div>`;
+      // The whole shadow root, not just this pane: fillMarkdown empties the
+      // slot map as it goes, so filling a subtree would strand every slot the
+      // other panes had just minted. Filling everything is idempotent — a slot
+      // already filled is simply no longer in the map.
+      fillMarkdown(D.shadow);
     }
 
     // /index is a map keyed by pageKey; the list is ours to order — newest
@@ -1592,11 +1669,16 @@
       if (!D.mounted) return;
       harvestDrafts();
       const cTop = D.el.comments.scrollTop, chTop = D.el.chat.scrollTop;
+      const pTop = D.el.pages ? D.el.pages.scrollTop : 0;
       renderComments();
       renderChat();
+      // the library is a conversation like the others and moves with the same
+      // events; the list it sits above is not touched
+      if (D.view === 'pages') renderLibrary();
       fillMarkdown(D.shadow);
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
+      if (D.el.pages) D.el.pages.scrollTop = pTop;
       restoreMention();
       paintFoot();
     }
@@ -2364,6 +2446,10 @@
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
+        if (act === 'lib-export') { doLibraryExport(); return; }
+        if (act === 'lib-clear') { D.library.confirm = true; D.library.note = ''; renderLibrary(); return; }
+        if (act === 'lib-clear-no') { D.library.confirm = false; renderLibrary(); return; }
+        if (act === 'lib-clear-yes') { doLibraryClear(); return; }
         if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
         if (act === 'page-export') { doExportPage(btn.dataset.url); return; }
         if (act === 'page-del') { D.pages.confirm = btn.dataset.url; D.pages.rowErr = null; renderPages(); return; }
@@ -2579,7 +2665,11 @@
       try {
         res = target === '__new__'
           ? await cb('onSave')({ ...D.pending, text: entry.text })
-          : await cb('onReply')(target, entry.text);
+          // the library is a page chat on a page nobody is standing on, so the
+          // send says WHICH page rather than letting content.js assume this one
+          : target === LIBRARY_TARGET
+            ? await cb('onLibraryReply')(entry.text)
+            : await cb('onReply')(target, entry.text);
       } catch (e) {
         res = { ok: false, error: String((e && e.message) || e) };
       }
@@ -2864,7 +2954,63 @@
       paintView();
       if (!D.pages.list) renderPages();
       loadPages(!!D.pages.list);
+      loadLibrary();
       return D;
+    }
+
+    // The library record, fetched like any page's. `{page:null}` is not an
+    // error — it is a library nobody has said anything into yet, and the
+    // companion creates it on the first message rather than before.
+    async function loadLibrary() {
+      if (D.library.loading) return;
+      D.library.loading = true;
+      const r = await cb('onLibrary')();
+      D.library.loading = false;
+      if (r && r.ok !== false) {
+        D.library.page = (r.page && r.page.url) ? r.page : null;
+        D.library.err = '';
+      } else {
+        D.library.err = (r && r.error) || 'could not reach the companion';
+        D.library.note = D.library.err;
+      }
+      if (D.view === 'pages') renderLibrary();
+    }
+
+    async function doLibraryExport() {
+      D.library.note = 'writing the note…';
+      D.library.err = false;
+      renderLibrary();
+      const r = await cb('onExportPage')(LIBRARY_URL, 'all');
+      D.library.err = !(r && r.ok !== false);
+      D.library.note = D.library.err
+        ? ((r && r.error) || 'export failed')
+        : 'exported → ' + ((r && r.path) || 'your vault');
+      renderLibrary();
+    }
+
+    // Clearing the library IS deleting its page — record, session and all — so
+    // it goes through the same confirm and the same endpoint every page row
+    // uses. What comes back is an empty library, not a missing one.
+    async function doLibraryClear() {
+      D.library.confirm = false;
+      D.library.note = 'clearing…';
+      D.library.err = false;
+      renderLibrary();
+      const r = await cb('onDeletePage')(LIBRARY_URL);
+      if (!r || r.ok === false) {
+        D.library.err = true;
+        D.library.note = (r && r.error) || 'could not clear the library';
+        renderLibrary();
+        return;
+      }
+      D.library.page = null;
+      D.library.note = '';
+      D.library.err = false;
+      delete D.outbox[LIBRARY_TARGET];
+      delete D.notes[LIBRARY_TARGET];
+      delete D.running[LIBRARY_TARGET];
+      delete D.expanded[LIBRARY_TARGET];
+      renderLibrary();
     }
     function showThreads() { mount(); D.view = 'threads'; paintTabs(); return D; }
     // live: `page` events land here while the list is up, and nowhere else
@@ -2931,10 +3077,7 @@
     // have: if the bots have answered since the wait was written, the wait is
     // over, whatever we did or did not hear.
     function botsIn(target) {
-      const list = target === PAGE_TARGET
-        ? ((D.page && D.page.page_chat) || [])
-        : ((((D.page && D.page.threads) || []).find(t => t.id === target) || {}).msgs || []);
-      return list.filter(m => m && isBot(m.author)).length;
+      return realMsgs(target).filter(m => m && isBot(m.author)).length;
     }
     function clearAnsweredWaits() {
       let changed = false;
@@ -3055,7 +3198,10 @@
         return;
       }
       if (ev.type !== 'chat') return;
-      const target = ev.target || PAGE_TARGET;
+      // A library event is a page chat on the reserved url; give it its own
+      // target here and everything downstream — chips, streams, folding,
+      // outbox reconciliation — works on it without knowing what it is.
+      const target = isLibraryUrl(ev.url) ? LIBRARY_TARGET : (ev.target || PAGE_TARGET);
       D.heard[target] = Date.now();   // this turn is demonstrably still being reported
       switch (ev.kind) {
         case 'turn-start':
@@ -3158,10 +3304,8 @@
     // Optimistic local append so the thread moves the instant the event lands;
     // content.js still refetches /page on `page` events for the truth.
     function appendMsg(target, msg) {
-      if (!msg || !D.page) return;
-      const list = target === PAGE_TARGET
-        ? (D.page.page_chat || (D.page.page_chat = []))
-        : ((D.page.threads || []).find(t => t.id === target) || {}).msgs;
+      if (!msg) return;
+      const list = msgListFor(target, true);
       if (!list) return;
       if (list.some(m => m.ts === msg.ts && m.author === msg.author)) return;
       list.push(msg);
@@ -3173,6 +3317,10 @@
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
+      // the library's record, handed in the way setPage hands the page's
+      setLibrary: page => { D.library.page = page || null; if (D.view === 'pages') renderLibrary(); },
+      refreshLibrary: () => { if (D.view === 'pages') loadLibrary(); },
+      libraryTarget: () => LIBRARY_TARGET,
       isOpen: () => D.opened,
       isPagesOpen: () => D.view === 'pages',
       // Is anything on this page waiting on the bots? content.js polls the

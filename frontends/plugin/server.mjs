@@ -291,9 +291,18 @@ const queryUrl = reqUrl => {
 // legitimately create it
 function pageOf(res, data) {
   if (!data.url) { fail(res, 400, 'url required'); return null; }
-  const page = store.readPage(data.url);
+  const page = store.readPage(data.url) || ensureLibrary(data.url);
   if (!page) { fail(res, 404, 'unknown page'); return null; }
   return page;
+}
+
+// The library has no page to visit and nothing to POST /page it into being, so
+// it is created by the first message written into it — exactly when a real
+// page's session is created, and for the same reason: an empty record nobody
+// has spoken into is not worth keeping.
+function ensureLibrary(url) {
+  if (!store.isLibrary(url)) return null;
+  return store.upsertPage({ url: store.LIBRARY_URL, title: store.LIBRARY_TITLE, site: '' });
 }
 
 // Hosted-mode gatekeepers. In local mode every one of these is a no-op: the
@@ -342,7 +351,11 @@ export function handler(req, res) {
     if (url === '/') return res.writeHead(302, { location: '/pages' }).end();
     const index = store.readIndex();
     const snapshots = new Set(Object.keys(index).filter(k => store.hasSnapshot(k)));
-    const html = pagesView({ index, me: hosted.identity(req), snapshots });
+    // the library rides at the top of this view rather than as a row in it —
+    // one conversation about the whole list underneath
+    const html = pagesView({ index, me: hosted.identity(req), snapshots,
+      library: store.readPage(store.LIBRARY_URL),
+      libraryKey: store.pageKey(store.LIBRARY_URL) });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
   if (req.method === 'GET' && url.startsWith('/p/')) {
@@ -708,7 +721,10 @@ export function handler(req, res) {
       // without the conversation (see export.mjs). Anything unrecognised —
       // including an older extension that sends nothing — means everything,
       // which is what /export has always done.
-      const mode = exportMode(data.mode);
+      // …except in the library, where the conversation is the whole note:
+      // "comments only" would write an empty file, so it is not on offer there
+      // (the drawer does not show the chooser for it either).
+      const mode = store.isLibrary(page.url) ? 'all' : exportMode(data.mode);
       try { ok(res, { path: exportPage(page, store.readConfig(), new Date(), mode), mode }); }
       catch (e) { fail(res, 500, `export failed: ${e.message}`); }
     });

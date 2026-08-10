@@ -838,13 +838,17 @@ function msgIn(threadId, ts) {
 
 // Play a full turn: turn-start → stream deltas → stream-done → reply → turn-end,
 // then a `page` invalidation, exactly as the companion would.
-function playTurn(target, text) {
+// `url` is the page the turn belongs to — this page unless it is the library's,
+// which is a conversation on a page nobody is standing on.
+function playTurn(target, text, url) {
+  const on = url || PAGE_URL;
+  const rec = on === LIBRARY_URL ? libraryRecord() : RECORD;
   const streamId = 's-' + Math.random().toString(36).slice(2, 8);
   const model = /@codex/i.test(text || '') ? 'codex' : 'claude';
   const body = /checklist/i.test(text || '')
     ? CANNED_CHECKLIST
     : (model === 'codex' ? CANNED_MD : CANNED_REPLY);
-  const ev = e => toContent({ t: 'ws', ev: Object.assign({ url: PAGE_URL, target }, e) });
+  const ev = e => toContent({ t: 'ws', ev: Object.assign({ url: on, target }, e) });
 
   log('turn running (' + model + ')');
   // round 2: turn-start names the agents that are actually about to work
@@ -856,18 +860,18 @@ function playTurn(target, text) {
       clearInterval(tick);
       ev({ type: 'chat', kind: 'stream-done', model, stream_id: streamId });
       const list = target === '__page__'
-        ? RECORD.page_chat
-        : (RECORD.threads.find(t => t.id === target) || { msgs: [] }).msgs;
+        ? rec.page_chat
+        : (rec.threads.find(t => t.id === target) || { msgs: [] }).msgs;
       const post = m => { list.push(m); ev({ type: 'chat', kind: 'reply', msg: m }); };
       // codex is the tool user here: one summary before the answer, one after —
       // the out-of-order case the drawer has to hoist and merge
       if (model === 'codex') post({ author: model, ts: now(), kind: 'tools', text: TOOLS_A });
       const msg = { author: model, ts: now(), text: body };
-      RECORD.updated_at = now();
+      rec.updated_at = now();
       post(msg);
       if (model === 'codex') post({ author: model, ts: now(), kind: 'tools', text: TOOLS_B });
       ev({ type: 'chat', kind: 'turn-end' });
-      toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+      toContent({ t: 'ws', ev: { type: 'page', url: on } });
       queueDepth = Math.max(0, queueDepth - 1);
       log('turn done (' + model + ')');
       return;
@@ -890,6 +894,26 @@ function freezeTurn(target) {
 // running, so the onboarding notice and the header state are screenshotable.
 const OFFLINE = Q.get('offline') === '1';
 
+// ---- the library ---------------------------------------------------------
+// One conversation about the whole archive, under the reserved identity the
+// companion's store.mjs defines. Modelled here exactly as the companion models
+// it: an ordinary page record that does not exist until somebody speaks.
+const LIBRARY_URL = 'bfp://library';
+let LIBRARY = null;
+const libraryReplies = [];   // every /reply the drawer filed against it
+function libraryRecord() {
+  if (!LIBRARY) {
+    LIBRARY = { version: 1, url: LIBRARY_URL, title: 'Library', site: '',
+      created_at: now(), updated_at: now(), session_id: null, threads: [], page_chat: [] };
+  }
+  return LIBRARY;
+}
+const askedUrl = path => {
+  const q = String(path).split('?')[1] || '';
+  const m = /(?:^|&)url=([^&]*)/.exec(q);
+  try { return m ? decodeURIComponent(m[1]) : ''; } catch { return ''; }
+};
+
 function companion(method, path, body) {
   if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
   const route = String(path).split('?')[0];
@@ -901,6 +925,11 @@ function companion(method, path, body) {
     return { ok: false, status: 403, error: 'owner only' };
   }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
+  // the library is an ordinary page record on a reserved url — the companion
+  // creates it on the first message and answers {page:null} until then
+  if (method === 'GET' && route === '/page' && askedUrl(path) === LIBRARY_URL) {
+    return { ok: true, status: 200, data: LIBRARY || { ok: true, page: null } };
+  }
   if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
   if (method === 'POST' && route === '/page') {
     if (body && body.title) { pageTitles.push(body.title); pageSites.push(body.site); }
@@ -938,9 +967,14 @@ function companion(method, path, body) {
     // "#fail" in a message is the harness's way of making a save go wrong, so
     // the composer's keep-the-text-on-failure path is testable
     if (/#fail\b/.test(body.text || '')) return { ok: false, status: 500, error: 'simulated failure' };
+    // the library is a page chat on a page nobody is standing on: same route,
+    // same shapes, a different record
+    const lib = body.url === LIBRARY_URL;
+    if (lib) libraryReplies.push(body.text);
+    const rec = lib ? libraryRecord() : RECORD;
     const list = body.thread_id === '__page__'
-      ? RECORD.page_chat
-      : (RECORD.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
+      ? rec.page_chat
+      : (rec.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
     // The companion recognises a message it already holds (a resend whose first
     // answer was lost, a double-submit) and appends NOTHING: it echoes the
     // message that is already there and says so. The extension must treat that
@@ -953,14 +987,14 @@ function companion(method, path, body) {
     }
     const msg = stampMsg(body.text);
     list.push(msg);
-    RECORD.updated_at = now();
+    rec.updated_at = now();
     const mention = MENTION.test(body.text);
     // saved, but this sender does not get to summon the bots
     if (mention && guestRefuse) {
       return { ok: true, status: 200, data: { ok: true, msg, queued: false, reason: GUEST_REASON } };
     }
     const queued = mention;
-    if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(body.thread_id, body.text), 350); }
+    if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(body.thread_id, body.text, body.url), 350); }
     return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined,
                                             ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
   }
@@ -1058,7 +1092,11 @@ function companion(method, path, body) {
       return { ok: false, status: 409, error: 'another page owns that chat — delete that one instead' };
     }
     const url = String((body && body.url) || '');
-    if (url === PAGE_URL) {
+    // clearing the library is deleting its page: the record goes, and asking
+    // again simply starts a new one
+    if (url === LIBRARY_URL) {
+      LIBRARY = null;
+    } else if (url === PAGE_URL) {
       RECORD.threads = [];
       RECORD.page_chat = [];
       RECORD.session_id = null;
@@ -1125,7 +1163,7 @@ function companion(method, path, body) {
     const mode = (body && body.mode) === 'comments' ? 'comments' : 'all';
     exportPosts.push({ url, mode });
     const entry = Object.values(indexMap()).find(p => p.url === url);
-    const name = (entry && entry.title) || RECORD.title;
+    const name = url === LIBRARY_URL ? 'Library' : ((entry && entry.title) || RECORD.title);
     log('exported: ' + name + ' (' + mode + ')');
     return { ok: true, status: 200,
              data: { ok: true, mode, path: '/Users/angadh/Vault/Web Clippings/' + name + '.md' } };
@@ -2395,7 +2433,8 @@ async function selftest() {
   indexEmpty = true;
   toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
   check('an empty library says how to start one', !!await until(() => {
-    const e = pane().querySelector('.empty');
+    // scoped to the list: the library's own empty state sits above it now
+    const e = pane().querySelector('.pages-list .empty');
     return !prows().length && e && /nothing annotated yet — highlight some text to start/.test(e.textContent);
   }));
   indexEmpty = false;
@@ -2404,6 +2443,93 @@ async function selftest() {
   check('← Back returns to this page’s comments',
     !d.isPagesOpen() && !S.querySelector('.pane[data-pane="comments"]').hidden &&
     pane().hidden && !S.querySelector('.tabs').hidden);
+
+  // ---- the library: one conversation about everything in that list --------
+  // It is a page chat on a page nobody is standing on, so the whole idiom is
+  // supposed to arrive here for free — markdown, tool rows, folding, the
+  // @-menu, the wait line, optimistic sends. These checks are about that.
+  S.querySelector('[data-act="pages"]').click();
+  await until(() => pane().querySelector('.libpane .composer'));
+  const libTa = () => pane().querySelector('.libchat .composer textarea');
+  const libSend = () => pane().querySelector('.libchat .composer .send');
+  const libReplies = () => [...pane().querySelectorAll('.libchat .reply')];
+  const libChip = () => pane().querySelector('.libchat .status-chip');
+
+  check('the pages view carries a composer for the whole archive', !!libTa() && !!libSend());
+  check('…which says what it is for',
+    libTa().placeholder === 'Ask about everything you’ve read…');
+  check('…under a view that is now named for it, above the list',
+    /Library/.test(pane().querySelector('.pages-title').textContent) &&
+    /All annotated pages/.test(pane().querySelector('.list-head').textContent) &&
+    pane().querySelector('.libpane').compareDocumentPosition(pane().querySelector('.pages-list'))
+      === Node.DOCUMENT_POSITION_FOLLOWING);
+  check('…with the same invitation as every other composer here',
+    /@claude, @codex or @all/.test(pane().querySelector('.libchat .hint').textContent));
+  check('an empty library says so rather than looking broken',
+    /Ask about everything you.{0,3}ve read/.test(pane().querySelector('.libchat .empty').textContent));
+
+  // the @-menu, in this composer, on this target
+  libTa().focus();
+  libTa().value = 'so, @c';
+  libTa().setSelectionRange(libTa().value.length, libTa().value.length);
+  libTa().dispatchEvent(new Event('input', { bubbles: true }));
+  const libMenu = await until(() => {
+    const m = pane().querySelector('.libchat .mentions');
+    return m && !m.hidden ? m : null;
+  });
+  check('the @-menu opens in the library composer too', !!libMenu);
+  check('…offering the same roster', !!libMenu && libMenu.querySelectorAll('.mrow').length >= 2);
+  libMenu.querySelector('.mrow[data-handle="claude"]').click();
+  check('…and completing a handle writes it into THIS box',
+    /@claude\s?$/.test(libTa().value));
+
+  const libBefore = libraryReplies.length;
+  libTa().value = '@claude what have I been reading about, across everything?';
+  libTa().dispatchEvent(new Event('input', { bubbles: true }));
+  libSend().click();
+  check('sending files it against the library, not against this page',
+    !!await until(() => libraryReplies.length > libBefore || null) &&
+    libraryReplies[libBefore] === '@claude what have I been reading about, across everything?' &&
+    replyUrls.at(-1) === 'bfp://library');
+  check('…optimistically, like every other composer', !!libReplies().length);
+  check('…and the composer empties', libTa().value === '');
+  check('the wait line belongs to the library, not to the page chat',
+    !!await until(() => libChip() || null) &&
+    !S.querySelector('.pane[data-pane="chat"] .status-chip'));
+  const libBot = await until(() => libReplies().find(
+    r => r.classList.contains('bot') && !r.classList.contains('streaming')), 25000);
+  check('the answer lands in the library conversation', !!libBot);
+  check('…rendered as markdown, like a page chat reply',
+    !!libBot && !!libBot.querySelector('.ctext.md'));
+  await until(() => !libChip(), 25000);
+  check('…and the wait line clears when the turn ends', !libChip());
+  check('the page chat was never touched by any of it',
+    !S.querySelector('.pane[data-pane="chat"] .reply.bot .ctext.md')
+    || !RECORD.page_chat.some(m => /across everything/.test(m.text)));
+
+  // export + clear, the two things you can do to a conversation
+  const xBefore = exportPosts.length;
+  pane().querySelector('[data-act="lib-export"]').click();
+  check('the library exports to Obsidian like a page',
+    !!await until(() => exportPosts.length > xBefore || null) &&
+    exportPosts.at(-1).url === 'bfp://library');
+  check('…in everything-mode, with no chooser: there is no reading to separate out',
+    exportPosts.at(-1).mode === 'all' && !S.querySelector('.popover.exportpick:not([hidden])'));
+  check('…and says where the note went', !!await until(() => {
+    const n = pane().querySelector('.lib-note');
+    return n && /exported →/.test(n.textContent);
+  }));
+
+  pane().querySelector('[data-act="lib-clear"]').click();
+  check('clearing asks first, like deleting any page',
+    !!pane().querySelector('[data-act="lib-clear-yes"]'));
+  pane().querySelector('[data-act="lib-clear-no"]').click();
+  check('…and takes no for an answer', !pane().querySelector('[data-act="lib-clear-yes"]'));
+  pane().querySelector('[data-act="lib-clear"]').click();
+  pane().querySelector('[data-act="lib-clear-yes"]').click();
+  check('clearing it empties the conversation and leaves the library there',
+    !!await until(() => (!libReplies().length && !!libTa()) || null) &&
+    deletePagePosts.at(-1).url === 'bfp://library');
 
   S.querySelector('[data-act="pages"]').click();
   const curRow = await until(() => pane().querySelector('.prow.current .prow-main'));
@@ -3693,7 +3819,17 @@ window.__bfp.activate(false).then(() => {
     }, 500);
     // the export chooser, open (screenshot state)
     if (Q.get('export') === '1') setTimeout(() => d.shadow.querySelector('[data-act="export"]').click(), 200);
-    if (Q.get('pages') === '1') setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
+    if (Q.get('pages')) setTimeout(() => d.shadow.querySelector('[data-act="pages"]').click(), 200);
+    // ?pages=chat — the library with something in it, for a screenshot: the
+    // empty state is the easy one to get right and the wrong one to judge by
+    if (Q.get('pages') === 'chat') setTimeout(() => {
+      const ta = d.shadow.querySelector('.libchat .composer textarea');
+      if (!ta) return log('library: no composer');
+      ta.value = '@claude what have I been reading about, across everything?';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      d.shadow.querySelector('.libchat .composer .send').click();
+      log('library: one conversation about the whole archive (screenshot state)');
+    }, 450);
     const demo = Q.get('demo');
     if (demo === 'select') setTimeout(() => demoSelect(true), 250);
     else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);

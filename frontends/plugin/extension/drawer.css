@@ -370,6 +370,29 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .pages-title { font: 700 12px/1.4 var(--sans); text-transform: uppercase;
   letter-spacing: .05em; color: var(--muted) }
 
+/* The library: one conversation about everything in the list below it. Sits
+   above the rows because it is the point of the view, not an appendix to it,
+   and its card is the page chat's card — same idiom, same everything. */
+.libpane { margin: 6px 0 4px }
+.lib-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px }
+.lib-sub { flex: 1; font: 12px/1.4 var(--sans); color: var(--muted) }
+/* the archive the conversation above is about */
+.list-head { font: 700 11px/1.4 var(--sans); text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); padding: 9px 0 5px }
+.libact {
+  flex: none; background: transparent; color: var(--muted); border: 0;
+  font: 12px/1.2 var(--sans); padding: 3px 5px; min-height: 0; cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.libact:hover { color: var(--accent) }
+.libact.danger:hover { color: var(--bad) }
+.libconfirm { display: inline-flex; align-items: baseline; gap: 4px;
+  font: 12px/1.4 var(--sans); color: var(--muted) }
+.lib-note { margin: 6px 2px 0; font: 12px/1.4 var(--sans); color: var(--muted) }
+.lib-note.err { color: var(--bad) }
+/* the archive it is about, under a rule of its own */
+.pages-list { margin-top: 10px; border-top: 1px solid var(--card-line) }
+
 .prow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px;
   border-bottom: 1px solid var(--card-line) }
 .prow:last-child { border-bottom: 0 }

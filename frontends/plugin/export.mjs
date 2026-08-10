@@ -5,6 +5,7 @@ import path from 'node:path';
 // the routing rules, reused rather than re-guessed: what counts as a mention
 // and who counts as a bot are decided in exactly one place
 import { hasMention, isBotAuthor } from './chat.mjs';
+import { isLibrary } from './store.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -77,7 +78,9 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all') {
   // the page chat is a conversation with the bots from end to end, so
   // "comments only" has nothing to take from it
   const chat = only === 'comments' ? [] : readable(page.page_chat);
-  if (chat.length) parts.push('## Page chat', authored(chat));
+  // the library has no page under it: its conversation is not "the page chat",
+  // it is the whole note
+  if (chat.length) parts.push(isLibrary(page.url) ? '## Library chat' : '## Page chat', authored(chat));
   return parts.join('\n\n') + '\n';
 }
 

@@ -1284,6 +1284,98 @@ async function main() {
     assert.equal(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).verbosity, 'short', 'a refusal changes nothing');
   });
 
+  // --- the library: one conversation about the whole archive ---------------
+  // Not a new kind of thing: a page record under a reserved url, so /reply,
+  // the event stream, the index, export and delete-page all work on it as they
+  // work on anything else. What is its own is the turn it sends.
+  const LIB = 'bfp://library';
+  await test('the library is created by the first thing said in it, with a session of its own', async () => {
+    assert.deepEqual((await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json, { ok: true, page: null },
+      'nothing exists until somebody asks something');
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/reply',
+      { url: LIB, thread_id: '__page__', text: '@claude what have I been reading about, across everything?' });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.queued, true);
+
+    const sent = await waitFor(() => {
+      const all = inputs(logFile).slice(from);
+      return all.some(t => t.includes('across everything')) ? all : null;
+    }, 'the library turn');
+    assert.ok(sent.includes('/new'), 'the library gets a chat of its own');
+    assert.ok(sent.includes('/rename Library'), '…named Library, not after a url');
+
+    const turn = sent.find(t => t.includes('across everything'));
+    assert.ok(turn.startsWith('@claude '), 'routing is the ordinary routing');
+    assert.ok(turn.includes('[the library: everything the reader has annotated]'));
+    assert.ok(turn.includes(path.join(root, '.botference', 'plugin')),
+      'the archive is named absolutely — the CLIs run with a different cwd');
+    assert.ok(turn.includes('pages/*.json') && turn.includes('snapshots/<key>.html'),
+      'both halves of the archive');
+    assert.ok(/threads:\[\{quote, msgs:\[\{author, ts, text\}\]\}\]/.test(turn),
+      'and the shape of what is inside them');
+    assert.ok(/Never write, create or edit a file here/.test(turn), 'reads only, said in the turn itself');
+    assert.ok(!turn.includes('[web page:'), 'no page context, because there is no page');
+    assert.ok(turn.endsWith('Reply like a human in a chat: 2-3 crisp sentences, no essay structure, no filler.'),
+      "the reader's length instruction still has the last word");
+
+    const page = await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json;
+      return p && p.session_id && (p.page_chat || []).length > 1 ? p : null;
+    }, 'the library session and its answer');
+    assert.equal(page.title, 'Library');
+    assert.deepEqual(page.page_chat.map(m => m.author), ['angadh', 'claude'],
+      'the question is the reader\'s, the answer is the bot\'s');
+    const pagesDir = path.join(root, '.botference', 'plugin', 'pages');
+    const owners = fs.readdirSync(pagesDir)
+      .map(f => JSON.parse(fs.readFileSync(path.join(pagesDir, f), 'utf8')))
+      .filter(p => p.session_id === page.session_id);
+    assert.equal(owners.length, 1, 'and no other page inherited that session');
+    // it is an ordinary record on disk and in the index
+    assert.ok(fs.existsSync(path.join(root, '.botference', 'plugin', 'pages',
+      `${crypto.createHash('sha1').update(LIB).digest('hex')}.json`)));
+    const row = (await GET(base, '/index')).json[crypto.createHash('sha1').update(LIB).digest('hex')];
+    assert.equal(row.title, 'Library');
+    assert.equal(row.has_session, true);
+  });
+
+  await test('a second question resumes the library rather than starting a new chat', async () => {
+    const from = inputs(logFile).length;
+    await POST(base, '/reply', { url: LIB, thread_id: '__page__', text: '@claude and what did I disagree with?' });
+    const sent = await waitFor(() => {
+      const all = inputs(logFile).slice(from);
+      return all.some(t => t.includes('disagree with')) ? all : null;
+    }, 'the second library turn');
+    assert.equal(sent.filter(t => t === '/new').length, 0, 'no second chat for the same conversation');
+    const turn = sent.find(t => t.includes('disagree with'));
+    assert.ok(turn.includes('Earlier in this conversation:'), 'the first exchange rides along');
+    assert.ok(turn.includes('what have I been reading about'), '…verbatim');
+  });
+
+  await test('the library exports as a note of its own', async () => {
+    const r = await POST(base, '/export', { url: LIB, mode: 'comments' });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.mode, 'all',
+      'there is no reading to separate the conversation from, so "comments only" is not on offer');
+    const note = fs.readFileSync(r.json.path, 'utf8');
+    assert.match(note, /^# Library$/m);
+    assert.match(note, /^## Library chat$/m, 'not "page chat" — there is no page');
+    assert.match(note, /url: bfp:\/\/library/);
+    assert.match(note, /across everything/);
+  });
+
+  await test('clearing the library is deleting its page, and asking again starts a fresh one', async () => {
+    const r = await POST(base, '/delete-page', { url: LIB, delete_session: true });
+    assert.equal(r.json.ok, true);
+    assert.equal(r.json.session_deleted, true);
+    assert.deepEqual((await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json, { ok: true, page: null });
+    await POST(base, '/reply', { url: LIB, thread_id: '__page__', text: 'starting over, no bots' });
+    const back = (await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json;
+    assert.equal(back.title, 'Library');
+    assert.deepEqual(back.page_chat.map(m => m.text), ['starting over, no bots']);
+    assert.equal(back.session_id, null, 'a cleared library is a new conversation, not the old one');
+  });
+
   // --- forgetting a page --------------------------------------------------
   await test('the index says which pages have a bot chat', async () => {
     const idx = (await GET(base, '/index')).json;
@@ -1672,6 +1764,26 @@ async function main() {
       assert.equal(page.page_chat.at(-1).author, 'ada');
       assert.equal(fs.existsSync(hostLog), false, 'the bridge was never spawned for a guest with no grant');
       es.close();
+    });
+
+    await test('a guest may ask the library, but the bots still need a grant', async () => {
+      const LIBU = 'bfp://library';
+      const r = await POST(hb, '/reply',
+        { url: LIBU, thread_id: '__page__', text: '@claude what is in this archive?' }, ADA);
+      assert.equal(r.status, 200, 'the question is kept — the library is readable and writable like any page');
+      assert.equal(r.json.queued, false);
+      assert.equal(r.json.reason, "the owner hasn't granted you bot access",
+        'the library is not a way around the grant rules');
+      assert.equal(fs.existsSync(hostLog), false, 'and no bridge was spawned for it');
+      const lib = (await GET(hb, `/page?url=${encodeURIComponent(LIBU)}`)).json;
+      assert.equal(lib.title, 'Library');
+      assert.equal(lib.page_chat.at(-1).author, 'ada', 'the guest owns what they wrote');
+      // and the reading room shows it to them
+      const view = await GET(hb, '/pages', ADA);
+      assert.ok(view.body.includes('what is in this archive?'), 'the thread is on the phone view');
+      assert.ok(view.body.includes('value="bfp://library"'), '…with a composer of its own');
+      assert.ok(!/<li><a href="\/[ap]\/[0-9a-f]{40}">Library</.test(view.body),
+        'and never as a row in the list — it is not a page you can visit');
     });
 
     await test('a grant written while the server runs takes effect on the next mention', async () => {

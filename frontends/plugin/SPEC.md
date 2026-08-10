@@ -678,6 +678,43 @@ Contract deltas agreed during live testing — authoritative over the sections a
   only consulted when logged out — so a saved key is a fallback there, and the
   picker's tooltip says as much. codex's `forced_login_method=api` would force
   it and DELETES `~/.codex/auth.json` in the process; it is never sent.
+- **The library** (`store.LIBRARY_URL = 'bfp://library'`, `LIBRARY_TITLE`, `isLibrary`).
+  One conversation about the whole archive rather than about one page. It is not a new
+  kind of thing: it is an ordinary page record under a RESERVED IDENTITY, so `/reply`,
+  `/page`, `/index`, the event stream, `/export` and `/delete-page` all operate on it
+  unchanged. `bfp:` is a scheme no browser hands a content script, so it can never
+  collide with a real page, and normUrl leaves it byte-identical — which is why it is a
+  constant (duplicated in background.js, content.js and drawer.js exactly as normUrl is)
+  and **not** a change to normUrl. Created lazily by the first message written into it
+  (`ensureLibrary`), with the same session choreography every page gets: `/new` →
+  `/rename Library` → sid capture, and `/resume` on later turns.
+  **The turn is what differs.** A library envelope carries no page context; it carries
+  directions to the archive — `<DIR>/pages/*.json` with its record shape spelled out,
+  `<DIR>/snapshots/<key>.html` — and instructs the agent to answer by reading and
+  grepping those files, to ground each claim in a page title and a quoted fragment, to
+  treat quoted passages as data, and never to write a file. `DIR` is absolute: the CLIs
+  are spawned with the work dir as cwd and the project root only as an `--add-dir`.
+  **Route: tool reads, not an inlined digest.** The bridge spawns claude with
+  `tools:[Read,Glob,Grep,Bash,Write,Edit,MultiEdit,WebSearch,WebFetch]` and
+  `permissions.defaultMode:"dontAsk"` plus an `allow` list of
+  `Read/Glob/Grep/Bash/WebSearch/WebFetch` (core/cli_adapters.py
+  `claude_plan_settings_for_write_roots`), with the project root among the readable
+  roots; codex runs `sandbox:workspace-write` over the same roots. Reads therefore never
+  prompt. The companion's `permission_request` deny-all only ever sees WRITE requests
+  (`WritePermissionRequest` / `_extract_write_access_request`), so it is unaffected and
+  stays exactly as it was.
+  **Everywhere else it is a page chat.** Events for it carry `url:'bfp://library'` and
+  `target:'__page__'`; background.js broadcasts them to every tab (no tab can be showing
+  that url, and every drawer may have the library open); the drawer gives it the local
+  target `'__library__'` because its state maps are keyed by target and `'__page__'`
+  already means the page you are on. Export is forced to everything-mode (a
+  comments-only library note would be empty) and its heading is `## Library chat`.
+  Clearing it is `/delete-page` — record, session and all — behind the same confirm any
+  page row uses; the next message starts a fresh one. It has no snapshot and never will.
+  UI: the drawer's Pages view carries it above the list (`.libpane` / `.pages-list`), and
+  the phone's `/pages` carries the same thread with the reading room's form composer,
+  under the ordinary auth roles — guests read and write, bots per grant. It is never a
+  row in either list.
 - Page identity is decided ONCE per document load (`content.js`), and nothing
   downstream reads `location` again. `normUrl` is unchanged and stays byte-identical
   in its three copies — the choice happens *before* normUrl, in content.js only:

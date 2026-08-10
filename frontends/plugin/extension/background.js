@@ -174,6 +174,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   })();
 });
 
+// The library's reserved identity — the companion's store.mjs owns the
+// definition; this is the same literal, duplicated exactly as normUrl is.
+// normUrl leaves it byte-identical, so comparing either way is the same test.
+const LIBRARY_URL = 'bfp://library';
+const isLibraryUrl = u => String(u || '') === LIBRARY_URL;
+
 // ---- normUrl (duplicated in content.js and in the companion's store.mjs;
 // the three must agree exactly — SPEC.md defines it) ----------------------
 const STRIP_PARAM = /^(utm_[^=]*|fbclid|gclid)$/i;
@@ -397,8 +403,13 @@ function forceReconnect() {
 
 // Events carrying a url go only to the tabs showing that page; everything
 // else (bridge state, hello) goes everywhere.
+//
+// The library is the exception that proves the rule: it carries a url, but it
+// is a conversation about the whole archive and belongs to no tab — every
+// drawer can have it open, so it goes to all of them. (`bfp://library` is a
+// scheme no tab can ever be showing, so the match loop would find nobody.)
 function routeEvent(ev) {
-  if (ev.url) {
+  if (ev.url && !isLibraryUrl(ev.url)) {
     const nu = normUrl(ev.url);
     for (const [tabId, tabUrl] of tabUrls) {
       if (tabUrl === nu) send(tabId, { t: 'ws', ev });

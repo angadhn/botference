@@ -489,6 +489,23 @@ tunnel from its options page (URL, password, display name). Owner-only
 stays owner-only: export, page deletion, model/effort/verbosity, relay,
 interrupt.
 
+### The library: asking about everything you have read
+
+Every page you annotate is one conversation. The **library** is the other
+kind: one conversation about all of them at once. Open the pages list in
+the drawer (the stacked-pages button) and it sits above the list, with a
+composer that says *Ask about everything you've read* — "what have I been
+sceptical about lately?", "did anything I read contradict the piece on
+night trains?", "pull together everything I highlighted about pricing".
+The bots answer by **reading your archive off disk** — the page records
+in `.botference/plugin/pages/*.json`, your quotes, your comments, their
+own earlier replies — so they cite the page and the passage each claim
+comes from rather than guessing from memory. They can only read: writing
+files is refused here exactly as it is everywhere else in Discuss. It is
+an ordinary conversation in every other respect — mention `@claude`,
+`@codex` or `@all`, export it to Obsidian as a "Library" note, clear it
+and start again — and it is on your phone at `/pages` too.
+
 ### On your phone: reading and annotating, not just reading
 
 Once the companion has a public address (below), Discuss is a

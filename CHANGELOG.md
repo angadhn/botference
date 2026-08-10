@@ -2,6 +2,20 @@
 
 ## 2026-08-10
 
+- **Discuss: ask about everything you have read.** Until now every
+  conversation was about one page. The pages list now opens with a
+  library — one conversation about the whole archive. Ask it what you
+  have been reading about, what you disagreed with, whether two pieces
+  contradict each other; the bots answer by actually reading your saved
+  pages, quotes and comments off disk and citing which page and which
+  passage each claim came from, rather than reconstructing it from
+  memory. They read only: writing files is refused here as everywhere
+  else. It behaves like any other conversation — mentions, markdown,
+  maths, tool rows, export to Obsidian as a "Library" note, clear it and
+  start over — and it is on your phone at `/pages` as well.
+
+## 2026-08-10
+
 - **Discuss: PDFs on the web are pages now.** Half of what anyone reads
   seriously is a PDF, and until today Discuss could not see one: the
   browser hands a PDF to its own viewer, which is another extension's
