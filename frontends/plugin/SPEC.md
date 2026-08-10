@@ -768,7 +768,14 @@ Contract deltas agreed during live testing — authoritative over the sections a
     not a main-frame navigation and is unaffected). The toolbar is the fallback
     for every one of them: an action click on an http(s) tab whose content
     script does not answer opens that url in the viewer, which is exactly the
-    built-in-PDF-viewer case. `pdf/viewer.html` is therefore web-accessible, the
+    built-in-PDF-viewer case.
+    One more limit, and it is first-install-only: dynamic rules PERSIST and are
+    enforced with the worker asleep, so from the second browser start onward the
+    redirect is live before anything can navigate — but the very first
+    navigation after an install or an unpacked reload can beat
+    `updateDynamicRules` and reach the built-in viewer. Reloading the tab is the
+    whole of the fix; the toolbar button also opens it.
+    `pdf/viewer.html` is therefore web-accessible, the
     permission `declarativeNetRequest` is required, and host permissions widen
     to `http://*/*` + `https://*/*` — an extension page must be able to FETCH
     the PDF (with `withCredentials`, for a paper behind a library login). The
@@ -777,6 +784,27 @@ Contract deltas agreed during live testing — authoritative over the sections a
     browser instead" asks the worker for a one-shot higher-priority `allow` rule
     scoped to that url, withdrawn after a minute — otherwise the escape hatch
     would be caught by the rule it is escaping.
+  · **One viewport per page per layout** — the invariant, learned the hard way.
+    PDF.js positions text-layer spans as PERCENTAGES of `viewport.rawDims`,
+    which is the page's **unscaled** viewBox (612×792pt for Letter), and the
+    vendored stylesheet sizes the layer as
+    `--total-scale-factor × rawDims.pageWidth`. So `--scale-factor` is not "a
+    zoom level": it is exactly `viewport.width / viewport.rawDims.pageWidth`,
+    and `viewer.js` derives it from the very viewport object the page box, the
+    canvas and the TextLayer were all built from (`--user-unit` is pinned to 1
+    in viewer.css and folded into that ratio, so a UserUnit PDF needs no second
+    knob). **The first release got this wrong**: the page box was sized from a
+    viewport built at `PixelsPerInch.PDF_TO_CSS_UNITS × scale` while
+    `--scale-factor` was handed the bare `scale`, so the text layer laid itself
+    out inside a box 3/4 the width of the page it covered — text still
+    selectable, every selection rectangle in the wrong place, bars in the
+    margins and pooled blocks in the whitespace. The canvas was drawn at a third
+    convention and CSS-stretched to fit, which is why the page still LOOKED
+    right. `scale` now means "the argument to getViewport" everywhere, in
+    points, and the CSS-units constant appears only in the zoom limits.
+    `test/pdf-render.test.mjs` measures the invariant against the fixture's own
+    PDF coordinates (margin 72pt, size 14pt) at fit, zoomed and refit;
+    reintroducing the old two lines turns 9 of its assertions red.
   · **The viewer** (`pdf/viewer.html` + `viewer.js` + `viewer.css`) renders with
     PDF.js **including its text layer** — absolutely-positioned transparent
     spans over the canvas, which are ordinary text nodes, which is the entire
@@ -784,10 +812,10 @@ Contract deltas agreed during live testing — authoritative over the sections a
     same script chain the manifest injects, as plain `<script>` tags. Canvases
     are painted lazily (IntersectionObserver); **text layers are built for every
     page regardless**, in order, yielding between pages — an anchor on page 40
-    must be findable whether or not page 40 has been looked at. One number,
-    `scale`, is both the viewport scale and the `--scale-factor` the vendored
-    `.textLayer` rules read; zooming moves it and calls `TextLayer.update()`,
-    which relayouts in place and therefore never destroys a painted highlight.
+    must be findable whether or not page 40 has been looked at — and it is also
+    why a highlight survives scrolling away and back: nothing is ever torn down.
+    Zooming calls `TextLayer.update()`, which relayouts the existing spans in
+    place, so a painted `<mark>` survives that too.
     The viewer tells the annotator to re-anchor (`window.__bfp.refresh()`,
     debounced) as each page lands, and re-posts `/page` only when the title
     actually changes (PDF `/Title` replacing the file name).

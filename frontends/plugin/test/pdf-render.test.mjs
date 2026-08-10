@@ -201,6 +201,61 @@ if (state && state.ready) {
     };
   })()`);
 
+  // ---- geometry: the text layer must sit ON the glyphs --------------------
+  //
+  // This is the shipped bug this file now guards. PDF.js positions text-layer
+  // spans as PERCENTAGES of the page's UNSCALED viewBox and sizes the layer, in
+  // CSS, as `--scale-factor × rawDims.pageWidth`. Size the page box from a
+  // viewport that has PixelsPerInch.PDF_TO_CSS_UNITS already folded in, hand
+  // `--scale-factor` the bare scale, and the layer lays itself out inside a box
+  // three-quarters the width of the page it covers: text is still selectable,
+  // and every selection rectangle lands somewhere the words are not.
+  //
+  // Nothing about that is visible to a DOM-shape assertion, which is why it
+  // shipped. So the numbers are checked instead, against the fixture's own PDF
+  // coordinates: its text begins at x=72pt in a 612pt-wide page, at 14pt.
+  const geom = await evaluate(`(async () => {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    function measure(tag) {
+      const box = document.querySelector('.bfp-pdf-page');
+      const layer = box.querySelector('.textLayer');
+      const span = layer.querySelector('span');
+      const b = box.getBoundingClientRect(), l = layer.getBoundingClientRect(), s = span.getBoundingClientRect();
+      const k = b.width / 612;                       // CSS px per PDF point
+      return { tag,
+        scaleFactor: +getComputedStyle(box).getPropertyValue('--scale-factor'),
+        expectFactor: b.width / 612,
+        dW: l.width - b.width, dH: l.height - b.height,
+        dLeft: l.left - b.left, dTop: l.top - b.top,
+        leftErr: (s.left - b.left) - 72 * k,         // the fixture's own margin
+        heightErr: s.height - 14 * k,                // …and its own font size
+        boxW: Math.round(b.width) };
+    }
+    const out = [measure('fit')];
+    document.getElementById('zoom-in').click();
+    document.getElementById('zoom-in').click();
+    await sleep(1200);
+    out.push(measure('zoomed'));
+    document.getElementById('zoom-fit').click();
+    await sleep(1200);
+    out.push(measure('refit'));
+    return out;
+  })()`);
+
+  for (const m of geom || []) {
+    ok('[' + m.tag + '] --scale-factor is the page box over the UNSCALED page width',
+      Math.abs(m.scaleFactor - m.expectFactor) < 0.002,
+      JSON.stringify(m));
+    ok('[' + m.tag + '] the text layer is exactly the page box',
+      Math.abs(m.dW) <= 1 && Math.abs(m.dH) <= 1 && Math.abs(m.dLeft) <= 1 && Math.abs(m.dTop) <= 1,
+      JSON.stringify(m));
+    ok('[' + m.tag + '] a span sits where the PDF says its glyphs are',
+      Math.abs(m.leftErr) <= 2 && Math.abs(m.heightErr) <= 2, JSON.stringify(m));
+  }
+  ok('zooming actually changed the scale (so the checks above meant something)',
+    (geom || []).length === 3 && geom[1].boxW > geom[0].boxW + 20 && geom[2].boxW === geom[0].boxW,
+    JSON.stringify((geom || []).map(g => g.boxW)));
+
   eq('a quote across a typeset line break is one line of prose',
     trip && trip.quote, 'walk back to the tram stop was quieter than it has been');
   ok('…is painted on every line it covers', trip && trip.marks >= 2, JSON.stringify(trip));

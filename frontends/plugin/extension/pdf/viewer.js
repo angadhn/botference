@@ -99,33 +99,78 @@ function tellAnnotator() {
 }
 
 // ---- render ----------------------------------------------------------------
-const MIN_SCALE = 0.25;
-const MAX_SCALE = 5;
+//
+// ── ONE VIEWPORT PER PAGE PER LAYOUT ───────────────────────────────────────
+// This is the invariant the whole thing rests on, and getting it wrong is not
+// a subtle bug: the text layer detaches from the glyphs and every selection
+// rectangle lands somewhere the words are not.
+//
+// PDF.js positions text-layer spans as PERCENTAGES of `viewport.rawDims`, which
+// is the page's UNSCALED viewBox (612×792 for US Letter, in points), and sizes
+// the layer itself — in CSS, inside the vendored stylesheet — as
+// `--total-scale-factor × rawDims.pageWidth`. So the number handed to
+// `--scale-factor` is not "a zoom level"; it is precisely
+//
+//     viewport.width / viewport.rawDims.pageWidth
+//
+// (`--user-unit` is pinned to 1 in viewer.css and folded into that ratio, so a
+// PDF declaring a UserUnit is handled without a second knob to forget.)
+//
+// The original bug here was one line of convention drift: the page box was
+// sized from a viewport built at `PixelsPerInch.PDF_TO_CSS_UNITS × scale`
+// (which is 1.333× the point size) while `--scale-factor` was given the bare
+// `scale`. The text layer therefore laid itself out inside a box three-quarters
+// the width of the page it was covering — spans too far left, too far up, too
+// small, with the leftovers pooling in the margins. The canvas was drawn at the
+// third convention again and stretched by CSS to fit, which is why the page
+// still LOOKED right and only the selection gave it away.
+//
+// The cure is structural rather than a corrected constant: `scale` now always
+// means "the scale argument to getViewport", every consumer takes its numbers
+// from the SAME viewport object, and `--scale-factor` is derived from that
+// object instead of being asserted alongside it.
+// `scale` is in POINTS, so the familiar percentages are expressed against
+// PixelsPerInch.PDF_TO_CSS_UNITS — the 96/72 that makes "100%" mean "the size a
+// browser would call it". Stated once, here, rather than smuggled into the
+// geometry.
+const CSS_UNITS = PixelsPerInch.PDF_TO_CSS_UNITS;
+const MIN_SCALE = 0.25 * CSS_UNITS;
+const MAX_SCALE = 6 * CSS_UNITS;
 const PAGE_GUTTER = 48;             // px of breathing room either side, at fit
 // …and a page is never wider than this at "Fit", however wide the window is.
 // A PDF page blown up to 2000px is not more readable, it is just larger, and
 // the drawer needs somewhere to be.
 const MAX_FIT_WIDTH = 1000;
-const pages = [];                   // {n, div, canvas, layerDiv, page, base, layer, task}
+const pages = [];                   // {n, div, canvas, layerDiv, page, base, viewport, layer, task}
 let scale = 1;
 let fitWidth = true;
 let pdfDoc = null;
 
 const dpr = () => Math.min(window.devicePixelRatio || 1, 3);
 
+// What the vendored .textLayer rules must be told, read off the very viewport
+// the page was laid out with. Never computed a second way.
+const totalScaleFactor = vp => vp.width / vp.rawDims.pageWidth;
+
 function fitScale(base) {
   const avail = Math.max(240, Math.min(docEl.clientWidth - PAGE_GUTTER, MAX_FIT_WIDTH));
   return Math.max(MIN_SCALE, Math.min(MAX_SCALE, avail / base.width));
 }
 
+// The page box IS the viewport, in CSS pixels: same width, same height, same
+// scale factor announced to the stylesheet. The canvas and the text layer are
+// both hung on this and nothing else.
 function sizePage(p) {
-  const w = Math.floor(p.base.width * scale);
-  const h = Math.floor(p.base.height * scale);
-  p.div.style.setProperty('--scale-factor', String(scale));
+  const vp = p.page.getViewport({ scale });
+  p.viewport = vp;
+  const w = Math.floor(vp.width);
+  const h = Math.floor(vp.height);
+  p.div.style.setProperty('--scale-factor', String(totalScaleFactor(vp)));
   p.div.style.width = w + 'px';
   p.div.style.height = h + 'px';
   p.canvas.style.width = w + 'px';
   p.canvas.style.height = h + 'px';
+  return vp;
 }
 
 // The canvas is the expensive half and is drawn only for pages that are
@@ -176,10 +221,12 @@ function relayout() {
   if (!pages.length) return;
   if (fitWidth) scale = fitScale(pages[0].base);
   for (const p of pages) {
-    sizePage(p);
+    const vp = sizePage(p);
     p.drawnAt = -1;
+    // the SAME viewport the box was just sized from — a text layer relayed out
+    // against a freshly built one is how the two drift apart again
     if (p.layer) {
-      try { p.layer.update({ viewport: p.page.getViewport({ scale }) }); }
+      try { p.layer.update({ viewport: vp }); }
       catch (e) { console.warn('[botference] text layer did not rescale:', e); }
     }
   }
@@ -219,7 +266,12 @@ if ('ResizeObserver' in window) new ResizeObserver(refit).observe(docEl);
 // One page: the label (repeated verbatim in the snapshot, so the phone reads
 // the same string), the canvas, and the text layer over it.
 function makePage(n, page) {
-  const base = page.getViewport({ scale: PixelsPerInch.PDF_TO_CSS_UNITS });
+  // The reference size, at scale 1 — points, plus whatever UserUnit the
+  // document declares. Everything else is this times `scale`, and NOTHING here
+  // pre-multiplies by PixelsPerInch: that constant belongs in the default zoom
+  // (below), not in the geometry, which is exactly the confusion that used to
+  // put the text layer three-quarters of the way across the page.
+  const base = page.getViewport({ scale: 1 });
   const label = document.createElement('div');
   label.className = 'bfp-pdf-label';
   label.textContent = Adapters ? Adapters.pdfPageLabel(n) : 'Page ' + n;
@@ -235,7 +287,7 @@ function makePage(n, page) {
   div.append(canvas, layerDiv);
   docEl.append(label, div);
 
-  const p = { n, div, canvas, layerDiv, page, base, layer: null, task: null, drawnAt: -1 };
+  const p = { n, div, canvas, layerDiv, page, base, viewport: null, layer: null, task: null, drawnAt: -1 };
   pages.push(p);
   if (pages.length === 1 && fitWidth) scale = fitScale(base);
   sizePage(p);
@@ -248,10 +300,14 @@ async function buildTextLayer(p) {
   let source;
   try { source = await p.page.getTextContent(); }
   catch (e) { console.warn('[botference] page ' + p.n + ' has no text content:', e); return; }
+  // The scale may have moved while the text content was in flight (a resize, a
+  // zoom), so the box is re-sized here and the layer is built from THAT
+  // viewport — the one the page is actually wearing, never a stale copy.
+  const vp = sizePage(p);
   const layer = new TextLayer({
     textContentSource: source,
     container: p.layerDiv,
-    viewport: p.page.getViewport({ scale }),
+    viewport: vp,
   });
   p.layer = layer;
   try { await layer.render(); } catch (e) { console.warn('[botference] text layer failed on page ' + p.n + ':', e); }

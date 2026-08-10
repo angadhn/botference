@@ -31,6 +31,19 @@
   · The whole thing has an off switch on the extension's options page, and
     a way back to the browser's own viewer on every PDF.
 
+- **Discuss: PDF selections land on the words again.** The first cut of the
+  viewer put the invisible text layer three-quarters of the way across the
+  page it was covering, so a PDF read fine and selected wrong: highlight
+  bars spilled into the margins, doubled over each other, and pooled into
+  solid blocks in the white space between paragraphs. The cause was a unit
+  mix-up of mine — the page was measured in CSS pixels while the text layer
+  was told to lay itself out in PDF points, a difference of exactly one
+  third — and it hid behind a page that still looked correct, because the
+  drawing was stretched to fit the box it was given. Every part of a page is
+  now measured once, from one object, and the test suite measures the result
+  against the document's own coordinates at three zoom levels, so this
+  particular mistake cannot be made twice.
+
 ## 2026-08-09
 
 - **Discuss: one page, one identity — and the right title on it.** Some
