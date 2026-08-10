@@ -619,15 +619,88 @@
     return i;
   }
 
+  // ---- is the companion there? ---------------------------------------------
+  //
+  // Two different facts used to be one flag, and the cheaper one kept winning.
+  // "The companion answered" is an HTTP fact. "The live stream is up" is a
+  // WebSocket fact, and a worker that has just been woken has not opened its
+  // socket yet — so `hello` answers `connected:false` while every request is
+  // working perfectly. That answer could land AFTER a successful GET /page and
+  // overwrite it, which is how a healthy companion drew the full
+  // "Companion offline" banner: a permanent verdict from a transient probe.
+  // It showed up mostly on PDFs because opening one is a fresh extension page,
+  // which is a fresh worker wake far more often than a tab on an article is.
+  //
+  // So: only HTTP may say "offline", and only after it has been given a couple
+  // of quick second chances; the socket may only ever say "yes". The drawer
+  // already has the soft state for the in-between — `connKnown:false` renders
+  // "connecting…" rather than a banner — and this keeps it there.
+  const CONN_GRACE = 2;                     // failures tolerated before the verdict
+  const CONN_RETRY_MS = [700, 2000];        // …each one chased up, quickly
+  let connFails = 0;
+  let connRetries = 0;
+
+  function connHttp(ok) {
+    if (ok) {
+      connFails = 0;
+      connRetries = 0;
+      if (drawer) drawer.setConn(true);
+      return;
+    }
+    connFails++;
+    if (connFails > CONN_GRACE) {
+      // genuinely unreachable, and now it is worth saying so
+      if (drawer) drawer.setConn(false);
+      return;
+    }
+    // still in grace: say nothing, and go and look again rather than waiting
+    // for the reader to press something
+    const wait = CONN_RETRY_MS[Math.min(connRetries, CONN_RETRY_MS.length - 1)];
+    connRetries++;
+    setTimeout(() => { if (active) loadPage(); }, wait);
+  }
+
+  // A socket coming up is proof the companion is there; a socket being down is
+  // not proof of anything at all, so it never sets the banner.
+  function connSocket(up) {
+    if (up) { connFails = 0; connRetries = 0; if (drawer) drawer.setConn(true); }
+  }
+
+  // ---- what this page is CALLED --------------------------------------------
+  // `title` is what the page called itself; `custom_title` is what the reader
+  // renamed it to, and the reader wins — the companion's own displayTitle()
+  // rule, applied on this side so that every surface the extension draws (the
+  // drawer's header, the viewer's top bar, the tab) agrees with the archive.
+  // The scraped title keeps travelling underneath on POST /page, which is why
+  // a rename can never be undone by a revisit.
+  const displayTitle = rec =>
+    (rec && (rec.custom_title || rec.title || rec.url)) || '';
+  const titleWatchers = [];
+  let lastAnnouncedTitle = null;
+  function announceTitle() {
+    const t = PAGE ? displayTitle(PAGE) : '';
+    if (t === lastAnnouncedTitle) return;
+    lastAnnouncedTitle = t;
+    for (const cb of titleWatchers) { try { cb(t); } catch (_) { /* a watcher is not the page */ } }
+  }
+
   // ---- page load / refresh --------------------------------------------------
   async function loadPage() {
     const r = await api('GET', '/page?url=' + encodeURIComponent(URL_NOW));
     // reaching the companion at all is the connection signal the user cares
-    // about; the WS `conn` broadcasts refine it from there
-    if (drawer) drawer.setConn(!!r.ok);
+    // about; the WS `conn` broadcasts only ever confirm it (see connHttp)
+    connHttp(!!r.ok);
     if (!r.ok) return null;
     const rec = (r.data && r.data.page !== undefined) ? r.data.page : r.data;
-    PAGE = rec && rec.url ? rec : { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
+    const base = rec && rec.url
+      ? rec
+      : { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
+    // The drawer draws whatever it is handed, so it is handed the name the
+    // reader chose — but on a COPY. Overwriting `title` on the record itself
+    // would destroy the page's own name in place, and clearing a rename has to
+    // be able to fall back to it. (The arrays are shared deliberately: the rest
+    // of this file appends to PAGE.threads and means the record.)
+    PAGE = Object.assign({}, base, { own_title: base.title, title: displayTitle(base) });
     PAGE.threads = PAGE.threads || [];
     PAGE.page_chat = PAGE.page_chat || [];
     // The escape hatch for a burned turn: suppression follows the RECORD, not
@@ -638,6 +711,9 @@
     pageHasSession = !!PAGE.session_id;
     reanchorAll();
     if (drawer) drawer.setPage(PAGE);
+    // a rename arrives as a `page` event, which lands here — so this is also
+    // where everything else that shows a name finds out about it
+    announceTitle();
     bg({ t: 'badge', count: PAGE.threads.length });
     return PAGE;
   }
@@ -675,7 +751,9 @@
       // upsert the page shell so the server knows this page's real headline
       lastPostedTitle = headline();
       api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND });
-      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) drawer.setConn(!!r.connected); });
+      // `connected` here is the SOCKET, which a freshly woken worker has not
+      // opened yet — so it may confirm, never deny (see connHttp/connSocket)
+      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) connSocket(!!r.connected); });
       await loadPage();
     }
     if (openTab !== false) drawer.open();
@@ -1294,7 +1372,9 @@
       return;
     }
     if (msg.t === 'conn') {
-      if (drawer) drawer.setConn(!!msg.connected);
+      // the socket opening is proof; the socket dropping is not — the
+      // companion is very often still answering, and the reconnect is ours
+      connSocket(!!msg.connected);
       // a socket that has just come back cannot say what it missed while it
       // was down, so the record is asked instead of assumed
       if (msg.connected && msg.resumed) resync('socket-resumed');
@@ -1359,7 +1439,7 @@
       if (r.known) {
         // an annotated page: wake up and restore the highlights, but do not
         // barge in — the drawer stays shut until asked for
-        activate(false).then(d => d && d.setConn(!!r.connected));
+        activate(false).then(() => connSocket(!!r.connected));
       }
     });
   }
@@ -1369,7 +1449,16 @@
   // exposed for test/harness.html
   window.__bfp = {
     activate, loadPage, reanchorAll, refresh, headline, articleText, normUrl, hashText,
-    snapshotHtml,
+    snapshotHtml, displayTitle,
+    // What this page is CALLED, and a subscription to it changing. pdf/viewer.js
+    // draws its own top bar and has no other way to hear about a rename, which
+    // arrives as an ordinary `page` event and lands in loadPage().
+    onTitle(cb) {
+      if (typeof cb !== 'function') return;
+      titleWatchers.push(cb);
+      if (PAGE) { try { cb(displayTitle(PAGE)); } catch (_) { /* not the page's problem */ } }
+    },
+    get title() { return PAGE ? displayTitle(PAGE) : ''; },
     site: SITE, caps: CAPS,
     // the page identity this document settled on at load, and whether the
     // document's own canonical link is what decided it

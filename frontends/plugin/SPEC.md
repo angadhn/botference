@@ -1088,6 +1088,75 @@ Contract deltas agreed during live testing — authoritative over the sections a
     tap to filter; `/p/<key>` carries the owner-only rename and tags forms as
     plain form posts (both routes accept form encoding and redirect back).
 
+- **Three live-reported PDF/drawer bugs, and what each of them actually was**
+  (`extension/pdfrules.js` is new: the decisions, pure and node-tested).
+  · **"PDFs don't open consistently."** NOT the worker-restart window the
+    theory suggested — that was tested directly (22 navigations with the service
+    worker stopped immediately before each: 22 in the viewer; the single atomic
+    `updateDynamicRules` shows no enforcement gap, and dynamic rules are
+    enforced with no worker at all). The cause was **"open it in the browser
+    instead"**. It installs a higher-priority `allow` rule for that exact url —
+    a DYNAMIC rule, which persists on disk and is enforced with the worker dead
+    — and removed it with a `setTimeout` **inside the MV3 worker**, which Chrome
+    retires whenever it likes (this one holds a 30-second alarm, so it is
+    retired and respawned constantly). Any teardown inside that minute stranded
+    the rule permanently, and that one document then opened in the browser's own
+    viewer for ever while every other PDF worked. The deadline is now WRITTEN
+    DOWN (`bfp:pdf-bypass` in session storage, `{url, until}`) and swept from
+    three directions — every worker start, every keepalive alarm, and the moment
+    the navigation it existed for commits. The timer remains only as a fast
+    path. `bypassExpired()` treats anything unreadable as expired, deliberately:
+    a bypass that ends early costs one redirect the reader can repeat, one that
+    ends late costs them a document that never opens in Discuss.
+  · **The rule is now asserted only when wrong.** `applyPdfRules` reads
+    `getDynamicRules()` first and `pdfRulePlan()` (pure) answers "nothing to do"
+    when the store already holds the right rule — which, after the first
+    install, is always. A worker wakes for every hello and every event; rewriting
+    a rule on each of those was churn, and the write is the only moment the rule
+    could be absent, so the window is closed by not opening it. A rule left by a
+    PREVIOUS extension id, or with the wrong filter or resource types, is still
+    rewritten.
+  · **The belt.** A url-shaped rule has honest ways past it (the first
+    navigation after an install, a PDF with no `.pdf` in its address, a bypass
+    just spent). Rather than enumerate them, the OUTCOME is watched:
+    `chrome.tabs.onUpdated` sees a tab land on a main-frame `.pdf` that is not
+    our viewer — which means the browser's own took it — and reopens it in ours.
+    Once per tab per url, off when `bfp:pdf` is off, and skipped (and the rule
+    cleared) when it is the bypass the reader just asked for. `tabs.onUpdated`
+    and not `webNavigation` deliberately: the `tabs` permission is already held,
+    and asking for "read your browsing history" to reopen a file the reader
+    just requested would be a poor trade. Verified with the redirect rule
+    REMOVED entirely: the PDF still lands in the viewer.
+  · **"Renaming its chat doesn't change the name in the header."** The viewer
+    drew its bar once, from the PDF's metadata, and nothing ever told it
+    otherwise. Two names are now kept apart: `window.__BFP_PDF_TITLE` is what
+    the DOCUMENT calls itself (the adapter reports it, `POST /page` keeps it
+    fresh underneath, and it is what a cleared rename falls back to), while
+    `document.title` and the top bar show what the READER calls it. content.js
+    applies the companion's own `displayTitle` rule (`custom_title || title ||
+    url`) to every record it hands on, and publishes `window.__bfp.onTitle(cb)`
+    — a subscription the viewer holds. A rename broadcasts `page`, which
+    content.js already refetches on, so the bar, the tab and the drawer all
+    change live, from any surface, with nothing reloaded. The adapter no longer
+    reads `document.title` first, so a rename can never be written back as the
+    page's own name. content.js also stopped MUTATING the record it was handed
+    (it hands the drawer a copy carrying `own_title`), which is what made
+    clearing a rename lose the document's name.
+  · **"Companion offline" while the companion was up.** Two different facts
+    shared one flag: "the companion answered" is an HTTP fact, "the live socket
+    is open" is a WebSocket one — and a freshly woken worker answers
+    `hello` with `connected:false` while every request works perfectly. That
+    answer could also land AFTER a successful `GET /page` and overwrite it, so a
+    healthy companion drew the full onboarding banner: a permanent verdict from
+    a transient probe. It showed up mostly on PDFs because opening one is a
+    fresh extension page, which is a fresh worker wake far more often than a tab
+    on an article. Now only HTTP may say "offline", and only after `CONN_GRACE`
+    (2) failures, each chased up by an automatic recheck at 700ms and 2s; the
+    socket may only ever confirm. The drawer's existing soft state
+    (`connKnown:false` → "connecting…") covers the gap, and a `conn` event
+    clears the banner and refetches with nothing clicked. Shared layer, so
+    articles get it too.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

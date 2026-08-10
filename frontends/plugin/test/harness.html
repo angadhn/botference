@@ -987,6 +987,13 @@ function freezeTurn(target) {
 // ?offline=1 — every call fails the way it does when the companion isn't
 // running, so the onboarding notice and the header state are screenshotable.
 const OFFLINE = Q.get('offline') === '1';
+// …and the FLAKY case, which is not the same thing at all: a companion that is
+// perfectly healthy behind a worker that has only just woken up. The first call
+// or two fail (or answer `connected:false`, the socket not being open yet) and
+// then everything works. That must never draw the "Companion offline" banner —
+// a permanent verdict from a transient probe — and the selftest drives it here.
+let failCalls = 0;          // how many more companion calls should fail
+const flaky = n => { failCalls = n; };
 
 // ---- the library ---------------------------------------------------------
 // One conversation about the whole archive, under the reserved identity the
@@ -1010,6 +1017,8 @@ const askedUrl = path => {
 
 function companion(method, path, body) {
   if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
+  // the transient failure of a cold worker, spent one call at a time
+  if (failCalls > 0) { failCalls--; return { ok: false, error: 'companion unreachable (Failed to fetch)' }; }
   const route = String(path).split('?')[0];
   // A hosted companion has an owner and it has guests. Everything that changes
   // the companion itself (the export, the page library, the agent controls) is
@@ -1101,6 +1110,10 @@ function companion(method, path, body) {
     const row = Object.values(OTHER_PAGES).find(p => p.url === body.url);
     if (row) { row.custom_title = title || ''; row.title = title || row.own_title || row.title; }
     else { RECORD.custom_title = title || null; }
+    // the companion broadcasts a `page` invalidation for a rename exactly as it
+    // does for a new message — which is how every open surface (the drawer's
+    // header, the PDF viewer's top bar) hears about it without being told
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: body.url } }), 20);
     return { ok: true, status: 200, data: { ok: true, title: title || (row ? row.title : RECORD.title) } };
   }
   // POST /tag-page {url, tags:[…]} — normalised by the companion (trim,
@@ -3646,6 +3659,40 @@ async function selftest() {
     /@claude, @codex or @all to bring in the bots/.test(
       S.querySelector('.pane[data-pane="chat"] .composer .hint').textContent));
 
+  // ---- a cold worker is not an offline companion -------------------------
+  // The banner in question tells the reader to go and start a server that is
+  // already running, which is worse than saying nothing. It used to appear
+  // because two different facts shared one flag: "the companion answered" (an
+  // HTTP fact) and "the live socket is open" (a WebSocket fact, and false for
+  // the first moment of every worker wake — which is why this showed up mostly
+  // on PDFs, where opening a document IS a fresh extension page).
+  const banner = () => S.querySelector('.notice [data-act="retry"]');
+  const connText = () => (S.querySelector('.conn') || {}).textContent || '';
+
+  check('the drawer starts out connected', !banner());
+  // 1. the socket says it is not open. That is not evidence of anything.
+  toContent({ t: 'conn', connected: false });
+  await sleep(120);
+  check('a socket that is not open does not accuse the companion of being down', !banner());
+  // 2. one failed request, then health: still not a verdict
+  flaky(1);
+  await window.__bfp.loadPage();
+  await sleep(120);
+  check('a single failed probe does not draw the offline banner', !banner());
+  check('…and the header does not say offline either', !/offline/i.test(connText()));
+  // 3. a companion that really is gone: the grace runs out and it says so
+  flaky(50);
+  await window.__bfp.loadPage();
+  const said = await until(() => banner(), 8000);
+  check('a companion that really is unreachable still says so', !!said);
+  check('…in the header too', /offline/i.test(connText()));
+  // 4. …and it heals itself the moment the pipe is back, with nothing clicked
+  failCalls = 0;
+  toContent({ t: 'conn', connected: true, resumed: true });
+  const healed = await until(() => !banner(), 8000);
+  check('the banner clears itself when the companion comes back', !!healed);
+  check('…without anybody pressing Retry', /connected/i.test(connText()));
+
   const bad = out.filter(l => l[0] === '✗');
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
@@ -4124,6 +4171,42 @@ async function selftestPdf() {
     !!cross && cross.r.ok &&
     index.raw.slice(cross.r.start, cross.r.end).replace(/\s+/g, ' ').includes('walk back to the tram stop'));
   holder.remove();
+
+  // ---- renaming the page renames the header, live ------------------------
+  // The viewer draws its own top bar from `window.__bfp.onTitle`, and a rename
+  // arrives as an ordinary `page` event. What is asserted here is that whole
+  // chain minus the bar itself: the record's display title, the subscription
+  // firing, and — the part that used to be wrong — the DOCUMENT's own name
+  // surviving underneath, so the rename can be taken back.
+  const heard = [];
+  window.__bfp.onTitle(t => heard.push(t));
+  check('a watcher is told the current name immediately', heard[0] === PDF_TITLE);
+  check('…which is the document’s own name until somebody renames it',
+    window.__bfp.title === PDF_TITLE);
+
+  const RENAMED = 'Aragon, four years';
+  await companion('POST', '/rename-page', { url: PDF_URL, title: RENAMED });
+  // waited on the SUBSCRIPTION, not on the record: the fake companion hands
+  // back the very object content.js holds, so reading the record back would
+  // pass without the event ever having been delivered
+  await until(() => heard[heard.length - 1] === RENAMED);
+  check('renaming the page changes what the page is called', window.__bfp.title === RENAMED);
+  check('…and the viewer’s bar hears about it without being asked',
+    heard[heard.length - 1] === RENAMED);
+  check('…while the document’s own name is still what the adapter reports',
+    window.__bfp.headline() === PDF_TITLE);
+
+  // the scraped title keeps travelling underneath: a revisit must never be able
+  // to undo a rename, and the companion is the one that guarantees it
+  const titlesBefore = pageTitles.length;
+  await window.__bfp.refresh();
+  check('a refresh does not post the reader’s name as the page’s own',
+    pageTitles.slice(titlesBefore).every(t => t !== RENAMED));
+
+  await companion('POST', '/rename-page', { url: PDF_URL, title: '' });
+  await until(() => heard[heard.length - 1] === PDF_TITLE);
+  check('clearing the rename falls back to the document’s own name',
+    window.__bfp.title === PDF_TITLE);
 
   // ---- a scan says so, and sends nothing ----
   // Destructive, so it goes last: strip every word out of the text layers and

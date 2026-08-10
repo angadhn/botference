@@ -751,10 +751,16 @@
         // what the reader is told when there is no text to send — the same
         // sentence the viewer prints over the page itself
         contextNote: 'this PDF has no selectable text (it looks like a scan), so the bots cannot read it',
-        // the viewer resolves it (document /Title, else the file name) and puts
-        // it in the tab title, which is the one place both this and the browser
-        // agree on
-        title: () => String(docTitle() || '').trim() || pdfNameFromUrl(src),
+        // The DOCUMENT's own name — its /Title, else the file name — which the
+        // viewer publishes on `window.__BFP_PDF_TITLE`. Deliberately not
+        // document.title: once a page can be RENAMED, the tab shows the
+        // reader's name for it, and this must keep reporting the scraped one or
+        // a rename would be written back as the page's own name and could never
+        // be cleared. (document.title is still the fallback, which is what the
+        // harness and any future viewer-less caller use.)
+        title: () => String(
+          (typeof window !== 'undefined' && window.__BFP_PDF_TITLE) || docTitle() || ''
+        ).trim() || pdfNameFromUrl(src),
         pageOf(node) { try { return pdfPageOfNode(node); } catch { return 0; } },
         snapshotHtml() { return pdfSnapshotHtml(pages()); },
         async articleText() {

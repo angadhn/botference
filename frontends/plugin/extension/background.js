@@ -132,8 +132,10 @@
 
 // config.js is a plain classic script (window/self-global, no imports) exactly
 // so this worker and the options page can share it verbatim.
-importScripts('config.js');
+importScripts('config.js', 'pdfrules.js');
 const CFG = self.BFPConfig;
+// the web-PDF decisions, pure and node-tested (test/pdfrules.test.mjs)
+const PR = self.BFPPdfRules;
 const KEEPALIVE = 'bfp-keepalive';
 
 // ---- where the companion is, and who we are to it ------------------------
@@ -553,54 +555,108 @@ async function gdocsExport(rawUrl, want) {
 // writes the matched text VERBATIM — it has no encoder — and a PDF url with an
 // `&` in its query would be cut in half by any `?src=` parse. Nothing follows
 // the hash, so nothing is ambiguous. (adapters.js reads both spellings.)
-const PDF_RULE_ID = 1;
-const PDF_BYPASS_ID = 2;
-const PDF_BYPASS_MS = 60000;
-const PDF_VIEWER_PATH = 'pdf/viewer.html';
-// RE2 (DNR's engine), so the case-insensitivity is spelled out rather than
-// flagged: a rule that only caught lowercase `.pdf` would be a coin toss.
-const PDF_REGEX = '^https?://[^#]*\\.[pP][dD][fF](?:$|\\?[^#]*$)';
-const looksPdfUrl = u => /^https?:\/\/[^?#]*\.pdf(?:[?#]|$)/i.test(String(u || ''));
-const viewerUrlFor = u =>
-  chrome.runtime.getURL(PDF_VIEWER_PATH) + '?src=' + encodeURIComponent(String(u || ''));
+const PDF_RULE_ID = PR.PDF_RULE_ID;
+const PDF_BYPASS_ID = PR.PDF_BYPASS_ID;
+const PDF_BYPASS_MS = PR.PDF_BYPASS_MS;
+const PDF_VIEWER_PATH = PR.PDF_VIEWER_PATH;
+const looksPdfUrl = PR.looksPdfUrl;
+const viewerBase = () => chrome.runtime.getURL(PDF_VIEWER_PATH);
+const viewerUrlFor = u => PR.viewerUrlFor(viewerBase(), u);
 
 const hasDNR = () => !!(chrome.declarativeNetRequest && chrome.declarativeNetRequest.updateDynamicRules);
 
-function pdfRedirectRule() {
-  return {
-    id: PDF_RULE_ID,
-    priority: 1,
-    action: {
-      type: 'redirect',
-      redirect: { regexSubstitution: chrome.runtime.getURL(PDF_VIEWER_PATH) + '#raw=\\0' },
-    },
-    condition: { regexFilter: PDF_REGEX, resourceTypes: ['main_frame'] },
-  };
-}
+const pdfRedirectRule = () => PR.redirectRule(viewerBase());
 
 // The rule is DYNAMIC, not a static ruleset, for one plain reason: the redirect
 // target contains the extension's own id, which does not exist until the
-// extension is installed. Re-applied on every worker start (dynamic rules
-// persist, so this is an idempotent overwrite) and whenever the setting moves.
+// extension is installed. Dynamic rules PERSIST and are enforced with the
+// worker asleep, so after the first install this should never need writing
+// again — and now it does not: the store is READ first and left alone when it
+// already says the right thing. A worker wakes for every hello and every event,
+// and rewriting a rule on each of those is churn at best; the write is also the
+// only moment the rule could conceivably be absent, so the cheapest way to
+// close that window is to stop opening it.
 async function applyPdfRules(on) {
-  if (!hasDNR()) return;
+  if (!hasDNR()) return null;
+  const want = pdfRedirectRule();
+  let existing = [];
+  try { existing = await chrome.declarativeNetRequest.getDynamicRules(); } catch { existing = []; }
+  const plan = PR.pdfRulePlan(existing, on, want);
+  if (!plan) return null;                            // the common case, every wake
   try {
     await chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: [PDF_RULE_ID],
-      addRules: on ? [pdfRedirectRule()] : [],
+      removeRuleIds: plan.remove,
+      addRules: plan.add,
     });
   } catch (e) {
     console.warn('[botference] the PDF redirect could not be installed:', (e && e.message) || e);
   }
+  return plan;
 }
 
 // "Open it in the browser instead". Navigating straight back to the PDF would
 // be caught by the very rule that brought the reader here, so a one-shot
 // `allow` is parked in front of it at a higher priority and taken away again a
-// minute later. Scoped to that exact url, and never persisted longer than the
-// click it belongs to.
+// minute later. Scoped to that exact url.
+//
+// ── A DEADLINE MAY NOT LIVE IN A setTimeout ────────────────────────────────
+// That was the whole of the "PDFs don't open consistently" bug. The allow rule
+// is a DYNAMIC rule: it persists, on disk, and is enforced with no worker
+// running at all. Its removal, though, was a `setTimeout` inside the MV3
+// worker — and this worker is retired and respawned constantly (it holds a
+// 30-second alarm). Whenever Chrome reclaimed it inside that minute the timer
+// went with it and the allow rule stayed. For ever. That one document then
+// opened in the browser's own viewer every time, while every other PDF worked
+// — which is exactly what "sometimes it doesn't open in Discuss" looks like
+// from the outside.
+//
+// So the deadline is WRITTEN DOWN, and swept from three directions: at every
+// worker start, on every keepalive alarm (twice a minute, whoever is running),
+// and the moment the navigation it was created for actually commits. The timer
+// remains as the fast path and is no longer the mechanism.
 let bypassTimer = null;
-const reEscape = s => String(s).replace(/[.^$|()[\]{}*+?\\]/g, '\\$&');
+const reEscape = PR.reEscape;
+
+const BYPASS_KEY = 'bfp:pdf-bypass';
+// session storage is the right shape (gone when the browser goes, never on
+// disk), with local as the fallback for a Chrome too old to have it
+const sessionArea = () =>
+  (chrome.storage && chrome.storage.session) || (chrome.storage && chrome.storage.local) || null;
+
+async function readBypass() {
+  const area = sessionArea();
+  if (!area) return null;
+  try {
+    const got = await area.get(BYPASS_KEY);
+    const v = got && got[BYPASS_KEY];
+    return v && v.url ? v : null;
+  } catch { return null; }
+}
+async function writeBypass(v) {
+  const area = sessionArea();
+  if (!area) return;
+  try { v ? await area.set({ [BYPASS_KEY]: v }) : await area.remove(BYPASS_KEY); }
+  catch { /* the sweep still runs */ }
+}
+
+// Take the allow rule down and forget it. Safe at any time, including when
+// there is nothing to take down.
+async function clearBypass() {
+  if (bypassTimer) { clearTimeout(bypassTimer); bypassTimer = null; }
+  await writeBypass(null);
+  if (!hasDNR()) return;
+  try { await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [PDF_BYPASS_ID] }); }
+  catch { /* it will be swept again shortly */ }
+}
+
+async function sweepBypass() {
+  if (!hasDNR()) return;
+  const v = await readBypass();
+  if (!PR.bypassExpired(v, Date.now())) return;      // still within its minute
+  let rules = [];
+  try { rules = await chrome.declarativeNetRequest.getDynamicRules(); } catch { rules = []; }
+  if (v || rules.some(r => r && r.id === PDF_BYPASS_ID)) await clearBypass();
+}
 
 // WHICH PAGE a tab is showing, when the tab is showing our viewer. The address
 // bar says chrome-extension://…/pdf/viewer.html and the page is a PDF, so a
@@ -608,17 +664,7 @@ const reEscape = s => String(s).replace(/[.^$|()[\]{}*+?\\]/g, '\\$&');
 // never find one and would open a second tab on every click in the Pages list.
 // (adapters.js has the canonical parser; this is the same two rules, because a
 // service worker cannot import a content script.)
-function tabPageUrl(raw) {
-  const u = String(raw || '');
-  if (!u.startsWith(chrome.runtime.getURL(PDF_VIEWER_PATH))) return u;
-  const hash = u.indexOf('#raw=');
-  if (hash !== -1) return u.slice(hash + 5);
-  const at = u.indexOf('?src=');
-  if (at !== -1) {
-    try { return decodeURIComponent(u.slice(at + 5).split('#')[0]); } catch { return u; }
-  }
-  return u;
-}
+const tabPageUrl = raw => PR.tabPageUrl(raw, viewerBase());
 
 async function pdfBypass(rawUrl) {
   const url = String(rawUrl || '');
@@ -627,22 +673,55 @@ async function pdfBypass(rawUrl) {
   try {
     await chrome.declarativeNetRequest.updateDynamicRules({
       removeRuleIds: [PDF_BYPASS_ID],
-      addRules: [{
-        id: PDF_BYPASS_ID,
-        priority: 2,
-        action: { type: 'allow' },
-        condition: { regexFilter: '^' + reEscape(url) + '$', resourceTypes: ['main_frame'] },
-      }],
+      addRules: [PR.allowRule(url)],
     });
   } catch (e) {
     return { ok: false, error: 'the bypass rule was refused: ' + ((e && e.message) || e) };
   }
+  await writeBypass({ url, until: Date.now() + PDF_BYPASS_MS });
   if (bypassTimer) clearTimeout(bypassTimer);
-  bypassTimer = setTimeout(() => {
-    bypassTimer = null;
-    chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [PDF_BYPASS_ID] }).catch(() => {});
-  }, PDF_BYPASS_MS);
+  bypassTimer = setTimeout(() => { bypassTimer = null; sweepBypass(); }, PDF_BYPASS_MS);
   return { ok: true, bypassed: true };
+}
+
+// ---- the belt: a PDF that got past the rule anyway -----------------------
+//
+// The redirect is a url-shaped rule and there are honest ways past it — the
+// first navigation after an install (the rule is written by a worker that is
+// still starting), a url with no `.pdf` in it, a bypass that has just been
+// used. Rather than enumerate them, watch for the OUTCOME: a tab sitting on a
+// main-frame `.pdf` that is not our viewer is a PDF that went to the browser's
+// own, and the browser's own is a document no extension can reach into.
+//
+// `tabs.onUpdated` rather than `webNavigation` deliberately: the `tabs`
+// permission is already held, and asking for "read your browsing history" to
+// re-open a file the reader just asked for would be a poor trade.
+//
+// Once per tab per url, so a reopen that fails (or a reader who deliberately
+// went back) is never fought with a second time.
+const reopened = new Map();     // tabId -> the url we already reopened there
+
+function rememberReopen(tabId, url) {
+  if (reopened.get(tabId) === url) return false;
+  reopened.set(tabId, url);
+  return true;
+}
+
+async function maybeReopenPdf(tabId, url) {
+  if (tabId == null || !looksPdfUrl(url)) return false;
+  await configReady;
+  if (CONF.pdf === false) return false;                 // the reader turned it off
+  const b = await readBypass();
+  if (b && b.url === url && !PR.bypassExpired(b, Date.now())) {
+    // this is the "open it in the browser instead" they just asked for, and it
+    // has now happened — the allow rule has done its one job
+    await clearBypass();
+    reopened.set(tabId, url);
+    return false;
+  }
+  if (!rememberReopen(tabId, url)) return false;
+  try { await chrome.tabs.update(tabId, { url: viewerUrlFor(url) }); return true; }
+  catch { return false; }
 }
 
 // ---- opening a page from the drawer's pages list -------------------------
@@ -794,15 +873,26 @@ function openInPdfViewer(tab) {
   chrome.tabs.update(tab.id, { url: viewerUrlFor(url) }).catch(() => {});
 }
 
-chrome.tabs.onRemoved.addListener(tabId => { tabUrls.delete(tabId); tabCounts.delete(tabId); });
-chrome.tabs.onUpdated.addListener((tabId, info) => {
+chrome.tabs.onRemoved.addListener(tabId => {
+  tabUrls.delete(tabId); tabCounts.delete(tabId); reopened.delete(tabId);
+});
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status === 'loading') { tabUrls.delete(tabId); tabCounts.delete(tabId); }
+  // a tab that has just LANDED somewhere new is allowed to be reopened again
+  if (info.url && reopened.get(tabId) !== info.url) reopened.delete(tabId);
+  // …and a tab that landed on a PDF the redirect did not catch is one we can
+  // still rescue (see maybeReopenPdf)
+  const here = info.url || (tab && tab.url) || '';
+  if (here && looksPdfUrl(here)) maybeReopenPdf(tabId, here);
 });
 
 chrome.alarms.create(KEEPALIVE, { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(a => {
   if (a.name !== KEEPALIVE) return;
   ensureSocket();
+  // twice a minute, whatever else happens: no allow rule outlives its deadline
+  // by more than one tick, whoever's worker wrote it
+  sweepBypass();
   if (wsState === 'open') refreshIndex(true);
 });
 
@@ -811,11 +901,12 @@ chrome.runtime.onStartup.addListener(() => { ensureSocket(); refreshIndex(true);
 
 ensureSocket();
 refreshIndex(true);
-// Every worker start re-asserts the PDF redirect. Dynamic rules survive a
-// restart, so this is an idempotent overwrite — but the redirect target carries
-// the extension id, and re-writing it is cheaper than reasoning about when it
-// could ever be stale.
+// Every worker start CHECKS the PDF redirect and writes only if it is wrong
+// (applyPdfRules reads the store first), and sweeps any allow rule whose
+// deadline passed while nobody was running — the two halves of "a PDF opens in
+// Discuss every time, not most times".
 configReady.then(c => applyPdfRules(!c || c.pdf !== false)).catch(() => {});
+sweepBypass().catch(() => {});
 // This line runs on EVERY worker start, including the respawn after Chrome
 // killed the last one mid-conversation: it is how the tabs that were already
 // open get their delivery address back.

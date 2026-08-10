@@ -74,17 +74,49 @@ if (!SRC) {
 }
 
 // ---- the title -------------------------------------------------------------
-// content.js reads document.title through the adapter, so this IS the record's
-// headline. The file name is the honest placeholder until the document's own
-// metadata arrives; refresh() then re-posts /page with the real one.
 const fileName = (SRC && Adapters) ? Adapters.pdfNameFromUrl(SRC) : '';
-function setTitle(t) {
-  const name = String(t || '').trim() || fileName || 'PDF';
+
+// TWO names, and keeping them apart is the whole of the rename fix.
+//
+//   ownName      what the DOCUMENT calls itself — its /Title, else the file
+//                name. This is the "scraped" title: the adapter reports it,
+//                POST /page keeps it fresh underneath, and it is what a page
+//                falls back to when a rename is cleared. It is published on
+//                `window.__BFP_PDF_TITLE` rather than in document.title,
+//                because document.title now belongs to the reader.
+//   shownName    what the READER calls it — custom_title when they have
+//                renamed the page, otherwise ownName. It is what the top bar
+//                and the tab say, and it arrives (and re-arrives) from
+//                content.js, which hears every rename as a `page` event.
+let ownName = '';
+let shownName = '';
+
+function paintTitle() {
+  const name = shownName || ownName || fileName || 'PDF';
   document.title = name;
   $('doc-title').textContent = name;
   $('doc-title').title = SRC || '';
 }
-setTitle('');
+function setOwnTitle(t) {
+  ownName = String(t || '').trim() || fileName || 'PDF';
+  window.__BFP_PDF_TITLE = ownName;
+  paintTitle();
+}
+setOwnTitle('');
+
+// The reader's name for this page, live. A rename made anywhere — this drawer,
+// another tab, the reading room on a phone — broadcasts a `page` event, which
+// content.js turns into a fresh record and hands on here.
+function watchTitle() {
+  try {
+    if (window.__bfp && window.__bfp.onTitle) {
+      window.__bfp.onTitle(t => { shownName = String(t || '').trim(); paintTitle(); });
+      return;
+    }
+  } catch (_) { /* fall through and try again */ }
+  setTimeout(watchTitle, 300);
+}
+watchTitle();
 
 // The annotator boots from the same DOM this module is still filling in, so it
 // is told whenever there is more of it. Debounced: forty pages landing in a
@@ -351,8 +383,8 @@ async function run() {
 
   try {
     const meta = await pdfDoc.getMetadata();
-    setTitle((meta && meta.info && meta.info.Title) || '');
-  } catch { setTitle(''); }
+    setOwnTitle((meta && meta.info && meta.info.Title) || '');
+  } catch { setOwnTitle(''); }
   $('doc-meta').textContent = pdfDoc.numPages + (pdfDoc.numPages === 1 ? ' page' : ' pages');
   tellAnnotator();
 

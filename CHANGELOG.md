@@ -2,6 +2,38 @@
 
 ## 2026-08-10
 
+- **Discuss: a PDF opens in Discuss every time now, not most times.** If you
+  had ever used a PDF's "original" link to look at it in the browser's own
+  viewer, that document quietly stopped opening in Discuss — for good, while
+  every other PDF carried on working. The one-shot exception that link creates
+  was supposed to last a minute, but the timer that removed it lived inside
+  the extension's background worker, and the browser shuts that worker down
+  whenever it feels like it. The exception outlived its minute by however long
+  the document survived. It is now written down with an expiry and swept from
+  three directions, so it cannot outlast the click it belongs to. On top of
+  that there is now a safety net: any PDF that reaches the browser's own
+  viewer for any reason at all — including the first one you open straight
+  after installing or reloading the extension — is noticed and reopened in
+  Discuss, once, quietly. (Turning web PDFs off on the settings page still
+  turns all of it off.)
+
+- **Discuss: renaming a PDF renames it everywhere, while you watch.** Renaming
+  a page left the PDF viewer's own title bar showing the document's old name
+  until the tab was reloaded. The bar, the browser tab and the drawer now all
+  follow the name you chose, live, whether you renamed it here, in another tab
+  or from your phone — and clearing the rename puts the document's own name
+  back, which it could not reliably do before.
+
+- **Discuss: no more "Companion offline" while the companion is running.** The
+  drawer sometimes opened with the full "start your local server" walkthrough
+  over a companion that was up and answering — most often on PDFs. It was
+  reading one number for two different things: whether the companion replied,
+  and whether the live update socket had finished connecting. A socket that
+  has not connected yet now means nothing at all, a single failed request is
+  retried twice before anything is said, and if the banner does appear it
+  takes itself down the moment the connection is back, without you pressing
+  Retry.
+
 - **Discuss: an archive you can actually find things in.** The pages list
   gained the three things a growing library needs. **Filter by what a page
   is** — quiet chips above the list, All · Articles · PDFs · Docs, drawn
