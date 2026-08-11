@@ -922,6 +922,82 @@ async function main() {
     assert.ok(!JSON.stringify(page).includes('REWRITTEN'), 'page text is never persisted');
   });
 
+  // --- the snapshot names the whole document ------------------------------
+  // The inline slice is orientation, not the document: where a page's snapshot
+  // is on disk, the envelope names its ABSOLUTE path and the bot reads the
+  // file — the library's route, which works because reads are pre-allowed and
+  // the companion's deny-all permission gate only ever sees writes. On a
+  // 15-page PDF the inline slice is pages 1-2; the file is the whole paper.
+  await test('a snapshot-backed page names the snapshot file, caps the slice, and says the page', async () => {
+    const url = 'https://arxiv.test/abs/2608.01234';
+    await POST(base, '/page', { url, title: 'Fifteen Pages of Proof', site: 'arxiv.test' });
+    // a PDF-shaped snapshot: one <section> per page, as the viewer posts them
+    const sections = Array.from({ length: 15 }, (_, i) =>
+      `<section><h2>Page ${i + 1}</h2><p>page ${i + 1} body: ${'lemma '.repeat(40)}</p></section>`).join('');
+    const snap = await POST(base, '/snapshot', { url, html: sections });
+    assert.equal(snap.json.stored, true);
+    const key = crypto.createHash('sha1').update(url).digest('hex');
+    const snapFile = path.join(root, '.botference', 'plugin', 'snapshots', `${key}.html`);
+    assert.ok(fs.existsSync(snapFile), 'the snapshot really is on disk');
+
+    // ~4000 chars of page-marked text: under the old 6000 cap, over the 2500
+    // the envelope keeps once the file carries the rest
+    const longText = Array.from({ length: 15 }, (_, i) =>
+      `[page ${i + 1}] page ${i + 1} body: ${'lemma '.repeat(40)}`).join('\n');
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/thread', {
+      url, quote: 'page 14 body', prefix: '', suffix: '', page: 14,
+      msg: { text: '@claude is the induction on page 14 sound?' }, article_text: longText,
+    });
+    assert.equal(r.json.queued, true);
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(turn.includes(`The full text of this page is on this machine, at ${snapFile}`),
+      'the snapshot is named by absolute path');
+    assert.ok(turn.includes('one <section> per page, each headed "Page N"'),
+      'and the file\'s shape is described');
+    assert.ok(turn.includes('[page 1]'), 'the inline slice still opens the document');
+    assert.ok(!turn.includes('[page 15]'), 'but it is a slice — the FILE is the document');
+    assert.ok(turn.includes('This comment is on page 14 of the document.'),
+      'the turn says which page the comment sits on');
+    assert.ok(turn.includes(`[web page: "Fifteen Pages of Proof" · ${url}]`),
+      'the first-turn header is unchanged');
+  });
+
+  await test('the snapshot path rides every turn, not just the first', async () => {
+    const url = 'https://arxiv.test/abs/2608.01234';
+    const key = crypto.createHash('sha1').update(url).digest('hex');
+    const snapFile = path.join(root, '.botference', 'plugin', 'snapshots', `${key}.html`);
+    // wait out the sid capture so the next turn is a /resume, i.e. not first
+    await waitFor(async () => (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.session_id,
+      'sid capture on the snapshot page');
+    const from = inputs(logFile).length;
+    await POST(base, '/reply', { url, thread_id: '__page__', text: '@claude and the conclusion?' });
+    const later = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the later turn');
+    assert.ok(later.includes(snapFile),
+      'the path is repeated — a turn is all a resumed session is guaranteed to carry');
+    assert.ok(!later.includes('[web page:'), 'without re-sending the first-turn context');
+    assert.ok(!later.includes('This comment is on page'), 'page chat sits on no page');
+  });
+
+  await test('no snapshot on disk: the inline envelope, uncut, and never an error', async () => {
+    const url = 'https://ledger.test/2026/no-snapshot';
+    await POST(base, '/page', { url, title: 'No Snapshot', site: 'ledger.test' });
+    // over the snapshot slice (2500), under ARTICLE_MAX (6000): all of it rides
+    const inline = `${ARTICLE} ${'margin note. '.repeat(300)}THE-VERY-END`;
+    assert.ok(inline.length > 2500 && inline.length < 6000, 'the fixture sits between the two caps');
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/thread', {
+      url, quote: 'plain passage', prefix: '', suffix: '', page: 3,
+      msg: { text: '@claude a plain question' }, article_text: inline,
+    });
+    assert.equal(r.json.queued, true);
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(turn.includes('THE-VERY-END'), 'the whole inline text rides, to the old cap');
+    assert.ok(!turn.includes('full text of this page is on this machine'), 'no snapshot, no path line');
+    assert.ok(turn.includes('This comment is on page 3 of the document.'),
+      'the locality line needs no snapshot — the thread knows its page');
+  });
+
   // --- .docx comments ----------------------------------------------------
   await test('a .docx rides a mention and its comments reach the envelope', async () => {
     const url = 'https://docs.google.test/document/d/abc/edit';

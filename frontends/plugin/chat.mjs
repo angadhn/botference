@@ -14,7 +14,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
-  readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle } from './store.mjs';
+  readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle,
+  pageKey, snapshotFile, hasSnapshot } from './store.mjs';
 import { applyEnv as applyKeyEnv } from './keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -23,6 +24,11 @@ const PROJECT_TITLE = 'Plugin pages';
 const PROJECT_ID = 'plugin-pages';
 const SESSION_TITLE_MAX = 80;
 const ARTICLE_MAX = 6000;
+// The inline slice when the FULL text sits on disk beside it: enough to orient
+// (title, abstract, the opening) and no more — the envelope names the snapshot
+// file and the bot reads the rest itself. Without a snapshot the slice is all
+// there is, so the old ARTICLE_MAX cap stands untouched.
+const SNAPSHOT_INLINE = 2500;
 const HISTORY_MAX = 20;
 const DOCX_COMMENTS_MAX = 50;
 const DOCX_DIGEST_MAX = 4000;
@@ -116,9 +122,14 @@ companion refuses file-writing outright.`;
 // the text moved under them — a live Google Doc being edited between comments
 // is the case that forced it. Both are transient; neither is ever persisted.
 // `library` replaces all of that with directions to the archive: it is the one
-// turn that is about no page at all.
+// turn that is about no page at all. `snapshotPath` is a third register: where
+// the page's full text exists on disk, EVERY turn names it (unlike the inline
+// context, which is first-turn/changed-only — a path is two lines, and a turn
+// is the only thing a resumed session is guaranteed to be carrying: a
+// /resume's replayed history is uneven and a bridge restart drops it whole).
 export function envelope({ url, title, target, text, quote, history,
-  articleText, articleChanged, first, docxDigest, verbosity, asker, library }) {
+  articleText, articleChanged, first, docxDigest, verbosity, asker, library,
+  snapshotPath, pageNumber }) {
   if (library) {
     const prior = history && history.length
       ? `Earlier in this conversation:\n${historyLines(history)}\n\n` : '';
@@ -127,11 +138,25 @@ export function envelope({ url, title, target, text, quote, history,
       + `${libraryPrompt(library)}\n---\n`
       + `${who} asked:\n${prior}${text}\n\nReply in this turn.\n${verbosityLine(verbosity)}`;
   }
-  const article = String(articleText || '').slice(0, ARTICLE_MAX);
+  const article = String(articleText || '').slice(0, snapshotPath ? SNAPSHOT_INLINE : ARTICLE_MAX);
+  // Where the extension snapshotted the page, the turn names the FILE rather
+  // than trusting a slice that had to stop at a few thousand characters — on a
+  // 15-page paper that slice is pages 1-2, and the comment is rarely there.
+  // The library set the pattern: an absolute path and "read it", which works
+  // because reads are pre-allowed (the bridge spawns claude with
+  // permissions.defaultMode "dontAsk" plus a Read/Glob/Grep allow list, codex
+  // with workspace-read sandboxing over the same roots; the companion's
+  // deny-all permission gate only ever sees WRITE requests).
+  const snap = snapshotPath
+    ? `The full text of this page is on this machine, at ${snapshotPath} — `
+      + 'sanitized HTML; a PDF has one <section> per page, each headed "Page N". '
+      + 'READ that file to answer anything about parts of the document not shown here.\n'
+    : '';
   const ctx = first
-    ? `[web page: "${title}" · ${url}]\n${article}\n---\n`
+    ? `[web page: "${title}" · ${url}]\n${article}\n${snap}---\n`
     : (article && articleChanged
-      ? `[the page content has been updated since earlier in this chat]\n${article}\n---\n` : '');
+      ? `[the page content has been updated since earlier in this chat]\n${article}\n${snap}---\n`
+      : (snap ? `${snap}---\n` : ''));
   const prior = history && history.length
     ? `Earlier in this thread:\n${historyLines(history)}\n\n` : '';
   // one length instruction per turn, never two: the reader's verbosity setting
@@ -143,9 +168,15 @@ export function envelope({ url, title, target, text, quote, history,
   // (the highlight may be someone else's, so only the WRITING is attributed)
   const who = asker ? String(asker) : 'The user';
   const wrote = asker ? `and ${asker} wrote:` : 'and wrote:';
+  // a comment on a paged document (a PDF) knows which page its highlight sits
+  // on — the thread stores it — and saying so turns "read the file" into
+  // "read the right part of it". Absent on page chat and unpaged threads.
+  const where = pageNumber > 0
+    ? `This comment is on page ${pageNumber} of the document.\n\n` : '';
   const body = target === PAGE_CHAT
     ? `${who} asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
     : `The user highlighted this passage:\n> ${String(quote || '').replace(/\n/g, '\n> ')}\n\n`
+      + where
       + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
@@ -591,6 +622,12 @@ export function createChat({ onEvent }) {
     if (sid && title && namedAs !== title) {
       steps.push({ text: `/rename ${title}`, after: () => rememberSessionTitle(job.url, title) });
     }
+    // the whole document, where the extension has snapshotted it — checked
+    // when the job reaches the front of the queue (like every other fact
+    // here), so a snapshot that landed while this turn waited still counts,
+    // and a page without one simply keeps the envelope it always had
+    const snapKey = isLib ? '' : pageKey(job.url);
+    const snapshotPath = snapKey && hasSnapshot(snapKey) ? snapshotFile(snapKey) : '';
     steps.push({
       text: envelope({ url: job.url, title, target: job.target, text: job.text,
         quote: job.quote, history: job.history, first: !sid,
@@ -599,6 +636,7 @@ export function createChat({ onEvent }) {
         articleText: job.articleText || articleByUrl.get(job.url) || '',
         articleChanged: !!(job.articleChanged && job.articleText),
         docxDigest: job.docxDigest, asker: job.asker,
+        snapshotPath, pageNumber: job.pageNumber || 0,
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
         library: isLib ? DIR : '',

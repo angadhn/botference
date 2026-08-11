@@ -1337,6 +1337,41 @@ Contract deltas agreed during live testing — authoritative over the sections a
     views and in the gate, that it answers unauthenticated over a tunnel Host,
     and that `/index`, `/pages` and `/assets/*` are still 401 beside it.
 
+- **The chat reads the snapshot** (`chat.mjs` envelope, `server.mjs` summon).
+  The bots used to see a page through two caps in series — the adapter's
+  `TEXT_LIMIT` (12k, walked from page 1) and the envelope's `ARTICLE_MAX` (6k)
+  — which on a 15-page PDF is pages 1–2, whatever page the comment sat on,
+  while the FULL text already sat on disk as the page's snapshot. So where
+  `.botference/plugin/snapshots/<pageKey>.html` exists (checked with
+  `store.hasSnapshot` at the moment the turn is planned, `planSteps` — a
+  snapshot that lands while the turn queues counts, and one deleted meanwhile
+  is simply not named), the envelope names that file's ABSOLUTE path and
+  instructs the bot to READ it for anything beyond the inline text, stating
+  the file's shape (sanitized HTML; a PDF has one `<section>` per page, each
+  headed "Page N"). The route is the library's, copied deliberately: reads are
+  pre-allowed (claude runs `permissions.defaultMode:"dontAsk"` with a
+  Read/Glob/Grep allow list, codex a workspace sandbox over the same roots;
+  the companion's deny-all permission gate only ever sees WRITE requests), so
+  a named path costs no prompt and no new permission surface.
+  · The inline slice stays, for orientation, but drops to `SNAPSHOT_INLINE`
+    (2500 chars) on snapshot-backed turns. Without a snapshot the envelope is
+    byte-for-byte what it always was — `ARTICLE_MAX`, the first-turn /
+    `article_changed` rules unchanged — and a missing file is never an error.
+  · The path line rides EVERY turn on a snapshot-backed page, not only the
+    first. The envelope is rebuilt per turn anyway, the line costs two of
+    them, and a turn is the only thing a resumed session is guaranteed to be
+    carrying: a `/resume`'s replayed history is uneven and a bridge restart
+    drops it entirely. (First-turn-only was the alternative and was rejected
+    for exactly that.)
+  · Page locality rides beside it: an anchored thread on a paged document
+    already stores its `page` (the web-PDFs amendment — nothing new travels
+    from the extension), so `summon` hands `thread.page` to the turn and the
+    envelope adds "This comment is on page N of the document." under the
+    quote. Page chat and unpaged threads say nothing; replies inherit the
+    thread's page, which is the page the conversation is anchored to.
+  · Articles benefit identically — same code path, no PDF special-casing
+    beyond the sentence describing the section-per-page shape.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

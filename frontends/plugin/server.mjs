@@ -189,12 +189,16 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: refused });
     return { queued: false, reason: refused };
   }
+  const thread = target === store.PAGE_CHAT ? null : store.findThread(page, target);
   const { position, wait } = chat.submit({
     url: page.url, target, text, title: page.title,
     // on a shared page the bots are answering a room, not one reader: name
     // whoever is asking, unless it is the owner (whose annotator never did)
     asker: me.owner ? '' : me.handle,
-    quote: target === store.PAGE_CHAT ? '' : (store.findThread(page, target) || {}).quote,
+    quote: thread ? thread.quote : '',
+    // a comment on a paged document (a PDF) already knows its page — the
+    // thread stores it — so the envelope can say where the reader is standing
+    pageNumber: (thread && thread.page) || 0,
     history: priorMsgs(page, target),
     ...extras,
   });
