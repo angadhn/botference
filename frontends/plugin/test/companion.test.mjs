@@ -998,6 +998,32 @@ async function main() {
       'the locality line needs no snapshot — the thread knows its page');
   });
 
+  // --- lazy persistence meets the envelope --------------------------------
+  // Under "No record until the reader acts" the extension holds every write
+  // until the first act, then lands them in one fixed order — record,
+  // snapshot, message — so the turn that first act summons is planned against
+  // a page whose full text is already on disk. This is that wire sequence,
+  // replayed, ending in the assertion the ordering exists FOR.
+  await test('the first-ever message: record and snapshot land first, and the turn reads the file', async () => {
+    const url = 'https://ledger.test/2026/first-act';
+    const k = crypto.createHash('sha1').update(url).digest('hex');
+    assert.ok(!fs.existsSync(path.join(root, '.botference', 'plugin', 'pages', `${k}.json`)),
+      'no record exists before the act');
+    await POST(base, '/page', { url, title: 'First Act', site: 'ledger.test' });
+    const snap = await POST(base, '/snapshot', { url, html: '<p>the whole reading, kept for the bots</p>' });
+    assert.equal(snap.json.stored, true, 'the snapshot lands before the message');
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/thread', {
+      url, quote: 'the whole reading', prefix: '', suffix: '',
+      msg: { text: '@claude the first-ever message on this page' },
+    });
+    assert.equal(r.json.queued, true);
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    const snapFile = path.join(root, '.botference', 'plugin', 'snapshots', `${k}.html`);
+    assert.ok(turn.includes(snapFile),
+      'the very first turn on the page already names the snapshot by absolute path');
+  });
+
   // --- .docx comments ----------------------------------------------------
   await test('a .docx rides a mention and its comments reach the envelope', async () => {
     const url = 'https://docs.google.test/document/d/abc/edit';
@@ -2834,6 +2860,89 @@ async function main() {
       assert.equal(again.json.threads.length, 1, 'the comment made before the move is still there');
       assert.equal(again.json.custom_title, 'Quiet', 'and the rename survived it');
       assert.equal(again.json.file_name, 'quiet-machine-final.pdf', 'under whatever it is called now');
+    });
+
+    // The Adobe incident, end to end over HTTP. A record filed under the
+    // file's BYTES, then the file re-saved by Acrobat: the new bytes match
+    // nothing the companion ever saw — but the WORDS still do, and the
+    // companion recomputes their hash from the snapshot it kept. The first
+    // ask under the text identity migrates the record, chat and all.
+    await test('an old byte-hash record is adopted onto the text identity, chat intact', async () => {
+      const OLDPDF = 'bfp-pdf://sha256/' + 'd'.repeat(64);
+      await POST(o.base, '/page', {
+        url: OLDPDF, title: 'Boundary Layers', site: 'local pdf', kind: 'pdf',
+        file_name: 'boundary.pdf',
+      });
+      const t = await POST(o.base, '/thread', {
+        url: OLDPDF, quote: 'the log law', prefix: '', suffix: '', msg: { text: 'check this' },
+      });
+      await POST(o.base, '/reply', { url: OLDPDF, thread_id: t.json.thread.id, text: 'second thought' });
+      await POST(o.base, '/tag-page', { url: OLDPDF, tags: ['fluids'] });
+      await POST(o.base, '/snapshot', {
+        url: OLDPDF,
+        html: '<section><h2>Page 1</h2><p>the log law of the wall<br>holds in the overlap region</p></section>',
+      });
+      // what the viewer hashes: the same lines, normalized — page labels are
+      // the viewer's chrome and are not part of the words
+      const norm = 'the log law of the wall holds in the overlap region';
+      const TEXTURL = 'bfp-pdf://text/' + crypto.createHash('sha256').update(norm).digest('hex');
+      const adopted = await rec(TEXTURL);          // GET /page — the first ask migrates
+      assert.equal(adopted.url, TEXTURL, 'the record answers under the text identity');
+      assert.equal(adopted.threads[0].msgs.length, 2, 'the chat came whole');
+      assert.deepEqual(adopted.tags, ['fluids'], 'tags too');
+      assert.equal(adopted.file_name, 'boundary.pdf');
+      assert.deepEqual(adopted.prior_urls, [OLDPDF], 'and it remembers what it used to be called');
+      const map = await idx();
+      assert.ok(map[key(TEXTURL)], 'the index row moved');
+      assert.equal(map[key(OLDPDF)], undefined, 'and the old row went with it');
+      assert.equal((await rec(OLDPDF)).page, null, 'nothing files under the dead bytes any more');
+      // the snapshot moved with the record: the phone still reads the paper
+      const a = await GET(o.base, `/a/${key(TEXTURL)}`);
+      assert.equal(a.status, 200);
+      assert.ok(a.body.includes('log law of the wall'), 'served under the new key');
+      // asking again is a plain read, not a second migration
+      assert.equal((await rec(TEXTURL)).url, TEXTURL);
+      // …and a text hash nothing matches adopts nothing and creates nothing
+      const stranger = 'bfp-pdf://text/' + crypto.createHash('sha256').update('entirely other words').digest('hex');
+      assert.equal((await rec(stranger)).page, null, 'a revised document is a fresh page, not a graft');
+    });
+
+    // A rename that costs the vault a duplicate is a rename not worth having —
+    // the same rule for an identity migration: the note the byte-hash identity
+    // wrote is REPLACED, found through prior_urls, never " (2)"-ed.
+    await test('the Obsidian note follows an adoption instead of duplicating', async () => {
+      const OLD2 = 'bfp-pdf://sha256/' + 'e'.repeat(64);
+      await POST(o.base, '/page', { url: OLD2, title: 'Vortex Shedding', site: 'local pdf', kind: 'pdf' });
+      await POST(o.base, '/thread', {
+        url: OLD2, quote: 'Strouhal', prefix: '', suffix: '', msg: { text: 'a note' },
+      });
+      await POST(o.base, '/snapshot', {
+        url: OLD2, html: '<section><h2>Page 1</h2><p>the Strouhal number stays near 0.2</p></section>',
+      });
+      const first = await POST(o.base, '/export', { url: OLD2 });
+      assert.equal(first.status, 200);
+      const T2 = 'bfp-pdf://text/' +
+        crypto.createHash('sha256').update('the Strouhal number stays near 0.2').digest('hex');
+      assert.equal((await rec(T2)).url, T2, 'adopted');
+      const second = await POST(o.base, '/export', { url: T2 });
+      assert.equal(second.json.path, first.json.path, 'one page, one note, whatever it was keyed by');
+      const note = fs.readFileSync(second.json.path, 'utf8');
+      assert.ok(note.includes(`url: ${T2}`), 'the frontmatter carries the current identity');
+      assert.ok(!fs.existsSync(first.json.path.replace(/\.md$/, ' (2).md')), 'no variant was minted');
+    });
+
+    // Lazy persistence, the companion's half: reads never create. The
+    // extension no longer POSTs /page on a visit, so the only thing left that
+    // could quietly file a browsing history is a read path that writes — and
+    // there isn't one.
+    await test('a page nobody acted on has no record, no row, and 404s by key', async () => {
+      const GHOST = 'https://search.example/results?q=vortex';
+      const gk = key(GHOST);
+      assert.equal((await rec(GHOST)).page, null, 'GET /page answers null…');
+      assert.equal(fs.existsSync(path.join(oDir, 'pages', `${gk}.json`)), false, '…and creates nothing');
+      assert.equal((await idx())[gk], undefined, 'no index row either');
+      assert.equal((await GET(o.base, `/p/${gk}`)).status, 404, 'the conversation view says unknown');
+      assert.equal((await GET(o.base, `/a/${gk}`)).status, 404, 'so does the article view');
     });
     o.proc.kill();
 

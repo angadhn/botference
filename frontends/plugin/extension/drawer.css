@@ -28,6 +28,9 @@
   --claude: #d97757; --you: #34d399; --codex: #4a86c8; --bad: #b3403a;
   --shadow: 0 4px 14px rgba(0, 0, 0, .22);
   --author-l: 0.52;
+  /* tag chips: the hue is the tag's own (--th, from its name); the theme owns
+     saturation/lightness so every hue clears contrast on both schemes */
+  --tag-fg-l: 30%; --tag-bg-l: 93%; --tag-line-l: 72%;
   color-scheme: light;
   position: fixed; inset: 0;
   z-index: 2147483647;
@@ -41,7 +44,8 @@
     --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
-    --author-l: 0.72; color-scheme: dark;
+    --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
+    color-scheme: dark;
   }
 }
 /* explicit override wins in BOTH directions (harness ?dark=1, future toggle) */
@@ -51,12 +55,14 @@
   --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
-  --author-l: 0.72; color-scheme: dark;
+  --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
+  color-scheme: dark;
 }
 :host([data-theme="light"]) {
   --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
-  --author-l: 0.52; color-scheme: light;
+  --author-l: 0.52; --tag-fg-l: 30%; --tag-bg-l: 93%; --tag-line-l: 72%;
+  color-scheme: light;
 }
 
 *, *::before, *::after { box-sizing: border-box }
@@ -412,6 +418,25 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .fchip .fn { font-size: 12px; opacity: .6 }
 .tchip::before { content: "#"; opacity: .55 }
+/* A tag's color is its name (drawer.js tagHue → --th on the chip): same tag,
+   same color, on every surface. The theme's --tag-*-l lightnesses keep every
+   hue readable on both schemes; selection is said with a full-strength border
+   rather than a different color, so "on" never changes what tag this is. */
+.tchip {
+  color: hsl(var(--th, 24) 45% var(--tag-fg-l));
+  border-color: hsl(var(--th, 24) 40% var(--tag-line-l));
+  background: hsl(var(--th, 24) 55% var(--tag-bg-l));
+}
+.tchip:hover {
+  color: hsl(var(--th, 24) 45% var(--tag-fg-l));
+  border-color: hsl(var(--th, 24) 45% var(--tag-fg-l));
+}
+.tchip.on {
+  color: hsl(var(--th, 24) 45% var(--tag-fg-l));
+  border-color: hsl(var(--th, 24) 50% var(--tag-fg-l));
+  background: hsl(var(--th, 24) 60% var(--tag-bg-l));
+  box-shadow: inset 0 0 0 1px hsl(var(--th, 24) 50% var(--tag-fg-l));
+}
 /* a row's own tags: the same chip, smaller, on the row's second line */
 .ptags { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px }
 .tchip.row { padding: 1px 7px; min-height: 20px; font-size: 12px }
@@ -429,18 +454,29 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .pedit .rebtn { opacity: 1; text-decoration: underline }
 .phint { flex: 1 0 100%; font: 12px/1.4 var(--sans); color: var(--muted) }
-/* the tag completions: the @-menu's shape, over the tags already in use */
+/* The tag completions: the @-menu's keyboard manners, but the options ARE
+   tags, so they render as the chips clicking them applies — wrapping, each in
+   its own color. With the token empty this is the whole in-use palette:
+   pick-from-existing, no memory required. */
 .tagmenu {
   position: absolute; left: 8px; right: 8px; top: 100%; z-index: 4;
-  display: flex; flex-direction: column; max-height: 168px; overflow: auto;
+  display: flex; flex-wrap: wrap; gap: 4px; max-height: 168px; overflow: auto;
   background: var(--card); border: 1px solid var(--card-line); border-radius: 10px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, .22); padding: 3px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .22); padding: 6px;
 }
-.tagopt { text-align: left; background: none; border: 0; border-radius: 7px;
-  font: 13px/1.3 var(--sans); color: var(--fg); padding: 5px 8px; min-height: 26px;
-  cursor: pointer }
-.tagopt:hover, .tagopt.on { background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent) }
+.tagopt {
+  display: inline-flex; align-items: center; gap: 4px; text-align: left;
+  border: 1px solid hsl(var(--th, 24) 40% var(--tag-line-l)); border-radius: 999px;
+  background: hsl(var(--th, 24) 55% var(--tag-bg-l));
+  color: hsl(var(--th, 24) 45% var(--tag-fg-l));
+  font: 12px/1.2 var(--sans); padding: 2px 8px; min-height: 22px;
+  cursor: pointer;
+}
+.tagopt::before { content: "#"; opacity: .55 }
+.tagopt:hover, .tagopt.on {
+  border-color: hsl(var(--th, 24) 50% var(--tag-fg-l));
+  box-shadow: inset 0 0 0 1px hsl(var(--th, 24) 50% var(--tag-fg-l));
+}
 
 .prow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px;
   border-bottom: 1px solid var(--card-line) }

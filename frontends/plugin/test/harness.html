@@ -68,11 +68,17 @@
                      so rather than left dragging (screenshot state).
     ?pdf=local       …and the same viewer opened on a PDF from this MACHINE:
                      the source is a file:// url, so the identity cannot be an
-                     address at all — pdf/viewer.js hashes the file's bytes and
-                     publishes `window.__BFP_PDF_IDENT` (stubbed here) BEFORE
-                     the annotator is loaded, exactly as the real boot does, and
-                     the record is filed under `bfp-pdf://sha256/<hex>`.
+                     address at all — pdf/viewer.js hashes the document's
+                     extracted TEXT (bytes only for a scan) and publishes
+                     `window.__BFP_PDF_IDENT` (stubbed here) BEFORE the
+                     annotator is loaded, exactly as the real boot does, and
+                     the record is filed under `bfp-pdf://text/<hex>`.
                      `&selftest=1` runs the local-PDF assertions.
+    ?fresh=1         a page the companion has NEVER heard of: GET /page answers
+                     page:null until something is posted. With `&selftest=1`
+                     this runs the lazy-persistence assertions — a visit (even
+                     activation) writes nothing; the first act posts record,
+                     snapshot, message, in that order.
     ?badexport=1     (with ?gdocs=1) the export answers 200 with a Google
                      account chooser instead of the document — the failure
                      state, with its warning in Page chat (screenshot state)
@@ -391,14 +397,16 @@ const PDFV = PDF_MODE === '1' || PDF_MODE === 'scan' || PDF_LOCAL;
 const PDF_SCAN = PDF_MODE === 'scan';
 // ?pdf=local — a PDF on this machine. The source is a path, which is exactly
 // what CANNOT be an identity: move the file or rename it after reading and
-// every comment is stranded. So pdf/viewer.js reads the bytes, hashes them and
-// publishes the answer BEFORE loading a line of the annotator, and content.js
-// (which decides the page identity once, at parse time) reads it from there.
-// The digest is stubbed here — hashing is crypto.subtle's job and is tested
-// on real bytes in pdf.test.mjs; what this exercises is the CONTRACT, which is
+// every comment is stranded. And its bytes cannot be one either — Adobe
+// rewrites them on every save — so pdf/viewer.js hashes the document's
+// extracted TEXT (`bfp-pdf://text/<hex>`; bytes only for a scan) and publishes
+// the answer BEFORE loading a line of the annotator, and content.js (which
+// decides the page identity once, at parse time) reads it from there. The
+// digest is stubbed here — hashing is crypto.subtle's job and is tested on
+// real text in pdf.test.mjs; what this exercises is the CONTRACT, which is
 // that the global exists before the chain does.
 const PDF_FILE = 'file:///Users/angadh/Papers/read/2608.09112v3.pdf';
-const PDF_IDENT_LOCAL = 'bfp-pdf://sha256/' +
+const PDF_IDENT_LOCAL = 'bfp-pdf://text/' +
   '9f2c1a70b3e84d5c6a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071';
 const PDF_SRC = PDF_LOCAL ? PDF_FILE : 'https://arxiv.org/pdf/2608.09112v3.pdf?download=1&sig=abc';
 // the shape the redirect really produces: the extension's id, and the url
@@ -511,12 +519,21 @@ if (CANON) {
 // the reader is actually standing on. normUrl leaves this one alone (no hash,
 // no campaign params, no trailing slash), so it is also what the record is
 // filed under. A LOCAL PDF's identity is not an address at all: it is the hash
-// of the file's bytes, which is what makes moving and renaming the file safe.
+// of the document's text (bytes for a scan), which is what makes moving,
+// renaming and even re-saving the file in Adobe safe.
 const PDF_URL = PDF_LOCAL ? PDF_IDENT_LOCAL : PDF_SRC;
 const PAGE_URL = GDOCS ? DOC_URL : PDFV ? PDF_URL : CANON ? CANON_PARENT
   : 'https://example.com/sport/the-quiet-machine';
 const now = () => new Date().toISOString();
 const iso = mins => new Date(Date.now() - mins * 60000).toISOString();
+
+// ?fresh=1 — a page the companion has never heard of. GET /page answers
+// page:null (and hello answers known:false) until something POSTs /page,
+// which is exactly the world every ordinary page now boots into: under lazy
+// persistence a visit writes NOTHING, and the record exists only once the
+// reader acts. `freshKnown` is the mock's one bit of memory about it.
+const FRESH = Q.get('fresh') === '1';
+let freshKnown = !FRESH;
 
 const RECORD = {
   version: 1,
@@ -555,6 +572,8 @@ const RECORD = {
     { author: 'claude', ts: iso(11), text: 'The team is deliberately unspectacular: it trades possession and early tempo for control late in games, and the results have improved every year while the underlying numbers stayed flat.' },
   ],
 };
+// a fresh page has no history: the record the first act creates starts empty
+if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }
 
 // The Docs record: a stale title the /page upsert has to correct (proving the
 // adapter's headline travelled), an empty page chat so the first @mention is
@@ -1078,8 +1097,14 @@ function companion(method, path, body) {
   if (method === 'GET' && route === '/page' && askedUrl(path) === LIBRARY_URL) {
     return { ok: true, status: 200, data: LIBRARY || { ok: true, page: null } };
   }
-  if (method === 'GET' && route === '/page') return { ok: true, status: 200, data: RECORD };
+  // a page nobody has acted on has no record — and a GET never creates one
+  if (method === 'GET' && route === '/page') {
+    return freshKnown
+      ? { ok: true, status: 200, data: RECORD }
+      : { ok: true, status: 200, data: { ok: true, page: null } };
+  }
   if (method === 'POST' && route === '/page') {
+    freshKnown = true;                 // the upsert is what brings it into being
     if (body && body.title) {
       pageTitles.push(body.title); pageSites.push(body.site); pageFiles.push(body.file_name);
     }
@@ -1462,9 +1487,11 @@ window.chrome = {
         switch (msg && msg.t) {
           case 'hello':
             helloUrls.push(msg.url);
-            return OFFLINE
-            ? { ok: true, known: false, threads: 0, connected: false, index: {} }
-            : { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {} };
+            if (OFFLINE) return { ok: true, known: false, threads: 0, connected: false, index: {} };
+            // a page with no record is not "known": it stays dormant on a
+            // revisit exactly as a never-annotated page always has
+            if (!freshKnown) return { ok: true, known: false, threads: 0, connected: true, index: {} };
+            return { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {} };
           case 'get-index': return companion('GET', '/index');
           case 'api':
             // the proxy only ever talks to the companion; a site adapter that
@@ -3730,7 +3757,13 @@ async function selftest() {
   rowAt(TUNNEL).querySelector('[data-act="page-tag"]').click();
   const tagBox = await until(() => rowAt(TUNNEL).querySelector('.pedit.tags .pinput'));
   check('a row offers to tag the page', !!tagBox);
-  check('…starting from the tags it already carries', tagBox.value === 'rail');
+  check('…starting from the tags it already carries, ready for the next one',
+    tagBox.value === 'rail, ');
+  const tagOptsNow = () => [...rowAt(TUNNEL).querySelectorAll('.tagmenu .tagopt')];
+  check('…and the box opens onto the rest of the archive’s tags — pick, don’t remember',
+    !!await until(() => (tagOptsNow().length === 1 && tagOptsNow()[0].textContent === 'Finance') ? true : null));
+  check('…offered as a chip wearing its own color',
+    tagOptsNow()[0].getAttribute('style') === '--th:' + window.BFPDrawer.tagHue('Finance'));
   tagBox.value = 'rail, Fin';
   tagBox.setSelectionRange(tagBox.value.length, tagBox.value.length);
   tagBox.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3750,6 +3783,30 @@ async function selftest() {
       const cs = rowAt(TUNNEL) && [...rowAt(TUNNEL).querySelectorAll('.ptags .tchip')];
       return cs && cs.map(c => c.textContent.trim()).join('|') === 'rail|Finance' ? true : null;
     }));
+  // ---- a tag's color is its name ----------------------------------------
+  // No picker, no persistence: tagHue(name) → --th on every chip, and the
+  // SAME tag wears the SAME color in the rail, on the rows and in the menu.
+  check('a tag chip is colored by its name',
+    !!railTag('rail') && railTag('rail').getAttribute('style') === '--th:' + window.BFPDrawer.tagHue('rail'));
+  check('…the same color everywhere it appears',
+    !!rowTag(TUNNEL, 'rail') &&
+    rowTag(TUNNEL, 'rail').getAttribute('style') === railTag('rail').getAttribute('style'));
+  check('…case never changes it (tags dedupe case-insensitively)',
+    window.BFPDrawer.tagHue('Rail') === window.BFPDrawer.tagHue('rail'));
+  // …and picking from the menu APPLIES the tag: open an untagged row's box —
+  // it seeds empty, so the menu is the whole in-use palette — and click a chip
+  // instead of typing
+  const QROW = () => rowAt(COMMITTEE);
+  QROW().querySelector('[data-act="page-tag"]').click();
+  await until(() => QROW().querySelector('.pedit.tags .pinput'));
+  const qOpts = () => [...QROW().querySelectorAll('.tagmenu .tagopt')];
+  const qRail = await until(() => qOpts().find(o => o.textContent === 'rail'));
+  check('an untagged row’s box opens onto the whole in-use palette', !!qRail && qOpts().length >= 2);
+  if (qRail) qRail.click();
+  check('…and clicking a chip writes that tag into the box',
+    !!await until(() => (/(^|, )rail, /.test((QROW().querySelector('.pedit.tags .pinput') || {}).value || '') ? true : null)));
+  QROW().querySelector('[data-act="tag-no"]').click();
+  check('…without saving anything by itself', tagPosts.length === tagsBefore + 1);
 
   // ---- a guest sees none of it -------------------------------------------
   d.setOwner(false);
@@ -4417,15 +4474,29 @@ async function selftestPdfLocal() {
   const q = sel => S.querySelectorAll(sel);
   const A = window.BFPAnchor;
 
-  // ---- identity: the bytes, not the path, and not the viewer ----
-  check('the page is the file’s contents, not its location', window.__bfp.url === PDF_IDENT_LOCAL);
+  // ---- identity: the words, not the path, not the bytes, not the viewer ----
+  check('the page is the document’s words, not its location', window.__bfp.url === PDF_IDENT_LOCAL);
   check('…which is the hash the viewer published before loading any of this',
     window.__bfp.identHref === window.__BFP_PDF_IDENT);
   check('…in the shape everything downstream can carry: a url',
-    /^bfp-pdf:\/\/sha256\/[0-9a-f]{64}$/.test(window.__bfp.url));
+    /^bfp-pdf:\/\/text\/[0-9a-f]{64}$/.test(window.__bfp.url));
   check('…and normUrl leaves it exactly as it is',
     window.__bfp.normUrl(window.__bfp.url) === window.__bfp.url);
   check('the adapter is the one that said so', (window.__bfp.site || {}).name === 'pdf');
+  // both spellings are legal local-PDF identities: the text hash is the
+  // durable one, the byte hash is what a SCAN keeps — pure calls, no state
+  check('a published byte hash (a scan) is still believed',
+    window.BFPAdapters.pdfIdentity(PDF_FILE, 'bfp-pdf://sha256/' + 'a'.repeat(64)) ===
+      'bfp-pdf://sha256/' + 'a'.repeat(64));
+  check('…and a published text hash is too',
+    window.BFPAdapters.pdfIdentity(PDF_FILE, PDF_IDENT_LOCAL) === PDF_IDENT_LOCAL);
+  check('…while junk published is no identity at all',
+    window.BFPAdapters.pdfIdentity(PDF_FILE, 'https://evil.test/') === '');
+  // the normalization the real viewer hashes: the same lines the snapshot and
+  // the anchors use, single-spaced — deterministic, page boundaries invisible
+  check('the normalized text is the layer’s own lines, single-spaced',
+    window.BFPAdapters.pdfNormalizedText(window.BFPAdapters.pdfPagesFromDom(document))
+      .indexOf('Aragon opened the season with a draw.') === 0);
   check('nothing anywhere is filed under the file’s path',
     !helloUrls.concat(routeUrls, threadUrls).some(u => String(u).startsWith('file:')) &&
     !apiCalls.some(c => decodeURIComponent(c.path || '').includes('file:///')));
@@ -4491,6 +4562,83 @@ async function selftestPdfLocal() {
   console.log(out.join('\n'));
 }
 
+// ?fresh=1&selftest=1 — lazy persistence, the client's half.
+//
+// Nothing is written to disk for a page until the reader ACTS. So a visit —
+// which here includes full activation and an open drawer, the strongest form
+// of "just looking" — must put NOTHING on the wire that writes: no POST /page,
+// no snapshot. The first act then lands its writes in one fixed order (record,
+// snapshot, message), so the turn a mention summons is planned against a page
+// whose full text is already on disk.
+async function selftestFresh() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const posts = route => apiCalls.filter(c => c.method === 'POST' && c.path.split('?')[0] === route).length;
+
+  // ---- the visit: activated, drawer open, and NOTHING written -------------
+  check('a fresh page knows it has no record', window.__bfp.registered === false);
+  check('activation posted no record', posts('/page') === 0 && pageTitles.length === 0);
+  check('…and no snapshot', posts('/snapshot') === 0 && snapshots.length === 0);
+  check('…and nothing else that writes',
+    posts('/thread') === 0 && posts('/reply') === 0 && posts('/orphan') === 0);
+  check('the drawer still opened normally', d.isOpen());
+  check('…titled from the page itself, not a record',
+    (S.querySelector('.title') || {}).textContent === 'The Quiet Machine');
+  check('…with an empty comments pane, not an error',
+    q('.pane[data-pane="comments"] .card').length === 0);
+
+  // selecting text is not an act either — the pill and composer may appear,
+  // but cancelling out of them leaves the companion never having heard of us
+  demoSelect(false);
+  const pending = await until(() => S.querySelector('.card.pending textarea'));
+  check('the composer opens on a never-registered page', !!pending);
+  S.querySelector('.card.pending .cancel').click();
+  await sleep(30);
+  check('…and abandoning it wrote nothing', posts('/page') === 0 && posts('/thread') === 0);
+
+  // ---- the first act: a page-chat mention ---------------------------------
+  d.open('chat');
+  const ta = S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  ta.value = '@claude what is this page about?';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  await until(() => posts('/reply') === 1);
+  check('the first act reached the companion', posts('/reply') === 1);
+  const seq = apiCalls.filter(c => c.method === 'POST').map(c => c.path.split('?')[0]);
+  check('…preceded by the record', seq.indexOf('/page') !== -1 && seq.indexOf('/page') < seq.indexOf('/reply'));
+  check('…and by the snapshot, in between',
+    seq.indexOf('/snapshot') !== -1 &&
+    seq.indexOf('/page') < seq.indexOf('/snapshot') && seq.indexOf('/snapshot') < seq.indexOf('/reply'));
+  check('the record carries the page’s real title', pageTitles.length === 1 && pageTitles[0] === 'The Quiet Machine');
+  check('the snapshot carries the prose', !!snapshots[0] && /tram stop/.test(snapshots[0]));
+  check('the page now knows it is registered', window.__bfp.registered === true);
+  check('the mention still summons the bots',
+    !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.bot'), 8000));
+
+  // ---- the second act: already registered, no re-registration -------------
+  demoSelect(false);
+  const ta2 = await until(() => S.querySelector('.card.pending textarea'));
+  ta2.value = 'a plain note on a fresh page';
+  ta2.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.card.pending .send').click();
+  await until(() => posts('/thread') === 1);
+  check('a second act does not post the record again', posts('/page') === 1);
+  check('…nor a second snapshot for unchanged prose', posts('/snapshot') === 1);
+  check('…and the thread landed normally',
+    !!await until(() => q('.pane[data-pane="comments"] .card').length === 1));
+
+  const bad = out.filter(l => l[0] === '✗');
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (fresh) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 document.getElementById('h-open').onclick = () => window.__bfp.activate().then(d => d.open('comments'));
 document.getElementById('h-chat').onclick = () => window.__bfp.activate().then(d => d.open('chat'));
 // on a page with no anchored threads to speak of (?gdocs=1), the stream plays
@@ -4510,7 +4658,8 @@ window.__bfp.activate(false).then(() => {
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     if (Q.get('selftest') === '1') {
-      setTimeout(GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf : selftest, 250);
+      setTimeout(GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
+        : FRESH ? selftestFresh : selftest, 250);
       return;
     }
     // the scan, without waiting for a mention: asking content.js for the

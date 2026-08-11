@@ -163,6 +163,23 @@
   const kindOfRow = p => (KIND_NAME[p && p.kind] ? p.kind : 'article');
   const tagsOfRow = p => (Array.isArray(p && p.tags) ? p.tags : []);
   const TAGS_MAX = 12, TAG_MAX = 40;
+
+  // A tag's color IS its name: FNV-1a over the lowercased name → a hue,
+  // 0..359. No picker, no persistence, and the same tag wears the same color
+  // on every surface — the saturation and lightness are the theme's
+  // (drawer.css --tag-*-l), so the hue is the only thing computed here.
+  // Duplicated in views.mjs for the phone (the extension/server boundary,
+  // exactly as normUrl is duplicated): the two must agree or one tag is two
+  // colors. Case-insensitive because normalizeTags dedupes case-insensitively.
+  function tagHue(name) {
+    const s = String(name == null ? '' : name).trim().toLowerCase();
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h % 360;
+  }
   const W_DEFAULT = 420, W_MIN = 320, W_MAX = 720;
 
   // The drawer pushes the page aside rather than covering it, so the width has
@@ -1610,9 +1627,9 @@
     // with the ← Back button, because it is about OTHER pages while the tabs
     // are about this one.
     function hostOf(u) {
-      // A local PDF is filed under the hash of its bytes (bfp-pdf://sha256/…),
-      // which has a "hostname" of `sha256` — a word about the algorithm, not
-      // about where the document came from. Say where it came from.
+      // A local PDF is filed under a content hash (bfp-pdf://text/… for its
+      // words, bfp-pdf://sha256/… for a scan's bytes), whose "hostname" names
+      // an algorithm, not a place. Say where it came from.
       if (/^bfp-pdf:/i.test(String(u || ''))) return 'local pdf';
       try { return new URL(String(u)).hostname.replace(/^www\./, ''); } catch { return ''; }
     }
@@ -1675,7 +1692,7 @@
       if (!tags.length) return '';
       return `<div class="ftags" role="group" aria-label="Filter by tag">`
         + tags.map(t => `<button class="tchip${D.pages.tag.toLowerCase() === t.toLowerCase() ? ' on' : ''}"
-             type="button" data-act="filter-tag" data-tag="${esc(t)}"
+             type="button" data-act="filter-tag" data-tag="${esc(t)}" style="--th:${tagHue(t)}"
              title="Only pages tagged ${esc(t)}">${esc(t)}</button>`).join('')
         + `</div>`;
     }
@@ -1698,7 +1715,7 @@
       if (!tags.length) return '';
       return `<span class="ptags">` + tags.map(t =>
         `<button class="tchip row${D.pages.tag.toLowerCase() === t.toLowerCase() ? ' on' : ''}"
-           type="button" data-act="filter-tag" data-tag="${esc(t)}"
+           type="button" data-act="filter-tag" data-tag="${esc(t)}" style="--th:${tagHue(t)}"
            title="Only pages tagged ${esc(t)}">${esc(t)}</button>`).join('') + `</span>`;
     };
 
@@ -1716,8 +1733,13 @@
     // One box holding the whole list, comma-separated: adding and removing are
     // the same edit, and the menu underneath completes the tag being typed
     // against every tag already in use.
+    // The value is seeded with a trailing ", " when the row already has tags,
+    // so the token under the caret opens EMPTY — and an empty token is what
+    // makes the menu below offer every tag in use (pick-from-existing) instead
+    // of only completions of the last tag. saveTags splits on commas and drops
+    // empties, so the seed costs nothing on the way back.
     const tagEditHtml = p => `<div class="pedit tags">
-        <input class="pinput" type="text" value="${esc(tagsOfRow(p).join(', '))}"
+        <input class="pinput" type="text" value="${esc(tagsOfRow(p).join(', ') + (tagsOfRow(p).length ? ', ' : ''))}"
           aria-label="Tags for this page" maxlength="520" autocomplete="off"
           data-act="tag-input" data-url="${esc(p.url)}">
         <button class="rebtn" data-act="tag-save" data-url="${esc(p.url)}" type="button">save</button>
@@ -2740,6 +2762,15 @@
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
       });
+      // Clicking back into the tag box reopens the menu without a keystroke:
+      // with the token under the caret empty it offers EVERY tag in use, as
+      // colored chips — pick-from-existing, so reusing a tag never depends on
+      // remembering it. (The render path already does this via focusRowEditor;
+      // this covers a focus the reader gives back by hand, e.g. after Esc.)
+      D.shadow.addEventListener('focusin', e => {
+        const el = e.target;
+        if (el && el.dataset && el.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(el); }
+      });
       D.shadow.addEventListener('keyup', e => {
         if (!/^(Arrow|Home|End|PageUp|PageDown)/.test(e.key || '')) return;
         const ta = e.target;
@@ -3594,9 +3625,12 @@
       const items = tagMatches(el);
       if (!items.length) { menu.hidden = true; menu.innerHTML = ''; return; }
       if (D.pages.pick >= items.length) D.pages.pick = 0;
+      // the options are the tags themselves, so they wear their colors —
+      // chips, not menu rows: with an empty token this IS the pick-from-
+      // existing palette, and it should look like what clicking it applies
       menu.innerHTML = items.map((t, i) =>
         `<button class="tagopt${i === D.pages.pick ? ' on' : ''}" type="button"
-           data-act="tag-pick" data-tag="${esc(t)}">${esc(t)}</button>`).join('');
+           data-act="tag-pick" data-tag="${esc(t)}" style="--th:${tagHue(t)}">${esc(t)}</button>`).join('');
       menu.hidden = false;
     }
     function completeTag(tag) {
@@ -4030,6 +4064,7 @@
     msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
     COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
+    tagHue,                                                 // test/tags.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

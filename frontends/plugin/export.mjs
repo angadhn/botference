@@ -159,9 +159,10 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     ['---',
       `url: ${page.url}`,
       `site: ${page.site || ''}`,
-      // A PDF read off this disk has no url worth reading: its identity is the
-      // hash of its bytes (`bfp-pdf://sha256/…`), which is exactly what makes
-      // it survive being moved and renamed — and exactly what tells a person
+      // A PDF read off this disk has no url worth reading: its identity is a
+      // content hash (`bfp-pdf://text/…` of its words; `bfp-pdf://sha256/…`
+      // of a scan's bytes), which is exactly what makes it survive being
+      // moved, renamed and re-saved — and exactly what tells a person
       // nothing. So the file it was opened from is named beside it. Written
       // only when there is one, so every note ever exported before this is
       // byte-for-byte what it was.
@@ -214,14 +215,19 @@ export function notesForUrl(dir, url) {
   return out;
 }
 
-function targetFile(dir, title, url) {
+// `urls` is every identity this page has ever had: the current one first,
+// then prior_urls (a local PDF adopted from its byte-hash identity). A note
+// claiming ANY of them is this page's note — matching only the current url
+// would mint a " (2)" beside the note the old identity wrote.
+function targetFile(dir, title, urls) {
+  const list = Array.isArray(urls) ? urls : [urls];
   const base = sanitizeTitle(title);
   for (let n = 1; n < 100; n++) {
     const file = path.join(dir, n === 1 ? `${base}.md` : `${base} (${n}).md`);
     let existing = '';
     try { existing = fs.readFileSync(file, 'utf8'); } catch { return file; }
     const m = /^url:\s*(.*)$/m.exec(existing.slice(0, 400));
-    if (m && m[1].trim() === url) return file;
+    if (m && list.includes(m[1].trim())) return file;
   }
   return path.join(dir, `${base} (100).md`);
 }
@@ -266,8 +272,11 @@ function attacher(dir, page) {
 export function exportPage(page, cfg, now = new Date(), mode = 'all') {
   const dir = path.join(cfg.vault_path, cfg.export_folder);
   fs.mkdirSync(dir, { recursive: true });
-  const held = notesForUrl(dir, page.url);
-  const file = targetFile(dir, displayTitle(page), page.url);
+  // every identity this page has answered to: a local PDF adopted onto its
+  // text identity replaces the note its byte-hash identity wrote
+  const urls = [page.url, ...(Array.isArray(page.prior_urls) ? page.prior_urls : [])];
+  const held = urls.flatMap(u => notesForUrl(dir, u));
+  const file = targetFile(dir, displayTitle(page), urls);
   const tmp = `${file}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, renderNote(page, cfg, now, mode, attacher(dir, page)));
   fs.renameSync(tmp, file);

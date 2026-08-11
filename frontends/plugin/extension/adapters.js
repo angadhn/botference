@@ -637,6 +637,44 @@
   const PDF_HASH_SCHEME = 'bfp-pdf://sha256/';
   const PDF_HASH_RE = /^bfp-pdf:\/\/sha256\/[0-9a-f]{64}$/;
   const isPdfHashUrl = u => PDF_HASH_RE.test(String(u == null ? '' : u).trim());
+
+  // ---- …and the DURABLE identity: the document's words ---------------------
+  //
+  // The byte hash met Adobe Acrobat and lost: Acrobat rewrites the file on
+  // every save, so one sticky-note annotation re-keyed the page and orphaned
+  // its chat. What the reader means by "this paper" is its TEXT — annotations,
+  // form fills and metadata edits leave the page text alone — so the durable
+  // identity is the SHA-256 of the extracted text, normalized:
+  //
+  //     bfp-pdf://text/<64 lowercase hex>
+  //
+  // A scan has no text to hash and keeps the byte-hash identity above. A
+  // document whose text actually changed is a NEW page with a fresh chat —
+  // deliberately, and with no fuzzy matching. Both spellings are legal
+  // local-PDF identities everywhere (isPdfIdentUrl).
+  const PDF_TEXT_SCHEME = 'bfp-pdf://text/';
+  const PDF_TEXT_RE = /^bfp-pdf:\/\/text\/[0-9a-f]{64}$/;
+  const isPdfTextUrl = u => PDF_TEXT_RE.test(String(u == null ? '' : u).trim());
+  const isPdfIdentUrl = u => isPdfHashUrl(u) || isPdfTextUrl(u);
+  const pdfTextUrl = hex => {
+    const h = String(hex == null ? '' : hex).trim().toLowerCase();
+    return /^[0-9a-f]{64}$/.test(h) ? PDF_TEXT_SCHEME + h : '';
+  };
+
+  // The one string the durable identity is a digest of. Built from the SAME
+  // lines the snapshot and the anchors are built from (pdfLayerLines: folded,
+  // trimmed, empties dropped), which is what lets the companion recompute this
+  // hash from a stored snapshot and adopt an old byte-hash record. Page
+  // boundaries are deliberately not part of it — the words are the identity,
+  // not the pagination — and the final collapse makes the join order the only
+  // thing that could vary, which the DOM walk fixes.
+  function pdfNormalizedText(pages) {
+    const parts = [];
+    for (const p of pages || []) {
+      for (const l of (p && p.lines) || []) parts.push(l);
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  }
   // the site a local PDF files under: 'sha256' is what siteOf() would say about
   // the pseudo-url's hostname, and that is a number, not a place
   const LOCAL_PDF_SITE = 'local pdf';
@@ -661,7 +699,9 @@
   // from the bytes before any of the annotator was loaded — see pdf/viewer.js).
   //
   //   http(s) source            → the url, unchanged, exactly as it always was
-  //   file: source + a hash     → the pseudo-url
+  //   file: source + a hash     → the pseudo-url (bfp-pdf://text/… for a
+  //                               document with words, bfp-pdf://sha256/… for
+  //                               a scan — the viewer decided which)
   //   file: source, no hash     → '' — the bytes could not be read, so there is
   //                               NO identity, and the honest thing is to file
   //                               nothing rather than file it under a path or
@@ -669,7 +709,7 @@
   function pdfIdentity(src, published) {
     const web = httpOnly(src);
     if (web) return web;                       // a url identifies itself
-    if (isFileUrl(src) && isPdfHashUrl(published)) return String(published).trim();
+    if (isFileUrl(src) && isPdfIdentUrl(published)) return String(published).trim();
     return '';
   }
 
@@ -833,7 +873,7 @@
       const published = (env && env.identity) ||
         (typeof window !== 'undefined' ? window.__BFP_PDF_IDENT : '') || '';
       const ident = pdfIdentity(src, published);
-      const local = isPdfHashUrl(ident);
+      const local = isPdfIdentUrl(ident);
       const fileName = pdfFileName(src);
 
       const ad = {
@@ -958,9 +998,11 @@
     looksPdfUrl, pdfViewerUrl, pdfViewerSrc, pdfNameFromUrl, pdfLayerLines,
     pdfPagesFromDom, pdfContextText, pdfSnapshotHtml, pdfPageOfNode,
     pdfPageLabel, PDF_VIEWER_PATH, PDF_PAGE_ATTR,
-    // local PDFs: the identity is the bytes, not the path
-    isFileUrl, isPdfHashUrl, bytesToHex, pdfHashUrl, pdfIdentity, pdfFileName,
-    PDF_HASH_SCHEME, LOCAL_PDF_SITE,
+    // local PDFs: the durable identity is the words; the byte hash is the
+    // scan fallback and the fast-path cache key
+    isFileUrl, isPdfHashUrl, isPdfTextUrl, isPdfIdentUrl, bytesToHex,
+    pdfHashUrl, pdfTextUrl, pdfNormalizedText, pdfIdentity, pdfFileName,
+    PDF_HASH_SCHEME, PDF_TEXT_SCHEME, LOCAL_PDF_SITE,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAdapters = api;

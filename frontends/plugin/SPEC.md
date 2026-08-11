@@ -1372,6 +1372,140 @@ Contract deltas agreed during live testing — authoritative over the sections a
   · Articles benefit identically — same code path, no PDF special-casing
     beyond the sentence describing the section-per-page shape.
 
+- **Local PDFs, round two: the identity is the WORDS, not the bytes**
+  (`extension/adapters.js`, `extension/pdf/viewer.js`, `store.mjs`, `export.mjs`).
+  The byte-hash identity above survived moves and renames and then met Adobe
+  Acrobat, which rewrites the file's bytes on every save: one sticky-note
+  comment and the page re-keyed, the chat "lost", three times in one day. The
+  bytes were never what the reader meant by "this paper". Its TEXT is.
+  · **The durable identity is a new scheme variant:**
+
+        bfp-pdf://text/<64 lowercase hex>
+
+    — the SHA-256 of the document's extracted text, normalized: the text-layer
+    lines the extension already derives everything from (whitespace-folded,
+    trimmed, empties dropped — `pdfLayerLines`), all pages, joined with single
+    spaces, whitespace collapsed once more, trimmed (`pdfNormalizedText`,
+    adapters.js — pure, node-tested). Annotating, form-filling, re-saving,
+    renaming, re-downloading the same document leaves the page text alone →
+    same identity, the chat follows the paper. A genuinely revised document
+    (its text changed) is a NEW page with a fresh chat, deliberately: no fuzzy
+    matching, ever. normUrl leaves the new scheme byte-identical exactly as it
+    leaves `bfp-pdf://sha256/…`, and normUrl itself is untouched.
+    **Why a new scheme and not sha256-as-label with aliases:** the text url is
+    a pure function of the file, so the viewer can decide the identity locally,
+    before the chain, with the companion offline — an alias table would have
+    made identity a server round trip and a downed companion a split identity.
+    Records are kept safe by making adoption (below) the companion's one
+    careful move rather than smearing aliasing through every endpoint.
+  · **Scans keep the byte hash.** A PDF with no text layer has no text to
+    hash; it stays `bfp-pdf://sha256/<bytes>` with exactly the old semantics
+    (an edit re-keys it — the honest answer when the words cannot be read).
+    Both spellings are legal local-PDF identities everywhere
+    (`isPdfIdentUrl`); a parse failure (password refused, corrupt file) also
+    falls back to the byte hash, uncached.
+  · **The byte hash stays as the fast path.** `bfp:pdf-ids` in
+    `chrome.storage.local` maps byte-hash → identity (capped at 400, oldest
+    dropped). A cache hit skips extraction entirely, so reopening an untouched
+    file boots exactly as fast as before. Extension storage and not the
+    companion, deliberately: the map caches a DETERMINISTIC function, so losing
+    it (reinstall, another machine) costs one re-extraction and can never
+    re-key a page — and the fast path keeps working with the companion down.
+  · **Boot order** (viewer.js) keeps identity-before-chain: on a cache hit the
+    boot is byte-for-byte yesterday's (publish → inject → render). On a miss
+    the document is RENDERED FIRST — the annotator is not injected, so nothing
+    can register under a provisional identity — and the identity is computed
+    from the same DOM lines the snapshot and the anchors use, then published,
+    then the annotator injected. First open (and the open after each Adobe
+    save) pays one full text-layer pass before the drawer exists; every other
+    open is a cache hit. Web PDFs are untouched: a url identifies itself.
+  · **Adoption: existing byte-hash records migrate, once, automatically.**
+    The companion cannot rehash bytes it never kept — but it kept the
+    SNAPSHOT, which is built from the very lines the text hash is a digest of.
+    `store.readPage()` on a `bfp-pdf://text/…` url with no record asks every
+    `bfp-pdf://sha256/…` record with a snapshot (newest first) whether its
+    snapshot's normalized text (`snapshotPdfText` — h2 page labels dropped,
+    tags to separators, entities unescaped, whitespace collapsed; hashes
+    memoized by snapshot mtime) matches; the first match is MIGRATED to the
+    text url: record rewritten (atomic write), snapshot and runs directory
+    renamed to the new pageKey, index row moved, old page file removed last,
+    threads/session/tags/rename/created_at all intact, and the old identity
+    kept on `prior_urls`. This is why the reader's live record survives even
+    though the file's current bytes match nothing: the words still do. An old
+    record WITHOUT a snapshot cannot be matched and is left alone (its rows
+    stay listed; nothing is deleted). Two old records with the same text: the
+    most recently updated one is adopted, the others are never merged — merges
+    are the reader's call. And because the index still holds the OLD row until
+    adoption runs, `hello` would answer known:false on the first open —
+    content.js therefore probes `GET /page` once for a dormant
+    `bfp-pdf://text/…` page (the read is what adopts; page:null creates
+    nothing and dormant stands), so the migrated paper's highlights restore on
+    the very first open with nothing clicked.
+  · **Export follows the migration.** `exportPage`/`targetFile` match a note
+    by the page's url OR any `prior_urls` entry, so the note written under the
+    byte-hash identity is replaced, not duplicated with a " (2)". The
+    frontmatter `url:` is the current (text) identity.
+  · This block supersedes the byte-hash amendment's sentence "a MODIFIED file
+    is a different document": modified BYTES with the same text are the same
+    page now; modified TEXT is a new one. Everything else there stands.
+
+- **No record until the reader acts** (`extension/content.js`). Visiting a
+  page used to file it: activation (a toolbar click, or merely selecting text)
+  POSTed `/page`, the companion wrote `pages/<key>.json` and an index row, and
+  the library filled with search results, checkout pages and feeds — browsing
+  history persisted to disk. Wrong UX, wrong privacy posture. Now nothing is
+  written anywhere until the reader ACTS on the page.
+  · **Registration is simply not sent.** The extension keeps a `registered`
+    flag: true only once `GET /page` has answered with a real record. An
+    unregistered page never POSTs `/page` (activation and the viewer's title
+    refresh both hold their fire); the drawer still opens instantly and works
+    normally off the locally-built record, exactly as it always did when
+    `/page` answered `page:null`. Client-side and not a companion holding
+    transient shells, deliberately: the companion needs no new state, no
+    restart-loses-the-shell edge, and a page that was never spoken about never
+    crosses the wire at all.
+  · **The acts that earn the record**, each of which first awaits
+    `ensureRegistered()` (one `POST /page` with the real title/site/kind/
+    file_name): saving a comment thread, sending a page-chat reply, and
+    exporting the page. Rename and tag presuppose an index row and therefore a
+    record, so they cannot reach an unregistered page by construction; the
+    library keeps its own lazy creation (`ensureLibrary`) and a library
+    message registers nothing about the page it was typed on. Deleting the
+    page you are on drops the flag again, so a deleted page does not
+    resurrect itself on the next visit — which the old on-activation upsert
+    quietly did.
+  · **The snapshot defers with the record, and lands BEFORE the first turn.**
+    On the first-ever action the client awaits, in order: `POST /page`,
+    `POST /snapshot`, and only then the `/thread` or `/reply` that may summon
+    the bots — so by the time the companion queues (let alone plans) the turn,
+    the record and the snapshot are both on disk and `planSteps`'
+    `hasSnapshot` check finds the full text ("The chat reads the snapshot" is
+    strictly better off than before, when the snapshot raced the first turn).
+    A failed snapshot never blocks the message (a guest's 403, an oversized
+    page); later snapshots keep the existing changed-prose cadence.
+  · Existing junk rows are NOT deleted — the owner sweeps those. `/index`,
+    `/pages`, `/p/<key>`, `/a/<key>` need no changes: a never-persisted page
+    is simply unknown (404 by key), and every list draws from the index, which
+    only ever hears about pages that earned themselves.
+
+- **A tag's color is its name** (`drawer.js tagHue`, duplicated byte-for-byte
+  in `views.mjs` exactly as normUrl is — test/tags.test.mjs holds the copies
+  together). FNV-1a over the lowercased, trimmed name → a hue 0..359; the
+  THEME owns saturation and lightness (`--tag-fg-l/--tag-bg-l/--tag-line-l`,
+  light 30/93/72, dark 80/20/36 — the same four constants in drawer.css and
+  the phone's stylesheet), and every one of the 360 hues clears WCAG AA 4.5:1
+  under them, asserted for all 360 in both themes. Same tag = same color on
+  every surface: the drawer's row chips, the tag rail, the completion menu,
+  and the phone's `/pages` + `/p/<key>` rails. No picker, no persistence, no
+  export change (frontmatter tags stay plain — Obsidian has its own ideas
+  about color). Selection ("on") is a full-strength border on the same hue,
+  never a different color. And picking beats remembering: the tag editor's
+  completion menu now renders its candidates as those same colored chips, the
+  input opens with an EMPTY token (the row's existing tags are seeded with a
+  trailing ", "), and an empty token offers every tag in use — so focusing
+  the box shows the whole in-use palette, click or Tab/Enter to apply, the
+  @-menu's keyboard manners throughout.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,

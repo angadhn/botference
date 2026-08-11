@@ -762,9 +762,10 @@ const AUTOOPEN = 'bfp-autoopen:';
 
 async function openPage(rawUrl) {
   const target = String(rawUrl || '');
-  // A local PDF is identified by its BYTES (bfp-pdf://sha256/…), which is what
-  // makes it survive being moved and renamed — and is also why the browser
-  // cannot be asked to go there. Say so, rather than failing without a word.
+  // A local PDF is identified by its CONTENT (bfp-pdf://text/… for its words,
+  // bfp-pdf://sha256/… for a scan), which is what makes it survive being
+  // moved, renamed and re-saved — and is also why the browser cannot be asked
+  // to go there. Say so, rather than failing without a word.
   if (/^bfp-pdf:/i.test(target)) {
     return { ok: false, error: 'this is a PDF on your disk — open the file itself and Discuss will find it' };
   }

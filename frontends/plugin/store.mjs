@@ -269,11 +269,103 @@ export function readIndex() {
   return idx;
 }
 
+// ---- the durable identity of a local PDF: its words -----------------------
+// `bfp-pdf://text/<sha256 of the extracted, normalized text>` — the identity
+// that survives Adobe Acrobat rewriting the file's bytes on every save. The
+// extension computes it (adapters.pdfNormalizedText over the text-layer
+// lines); the companion can RECOMPUTE it from a stored snapshot, because the
+// snapshot was built from exactly those lines — which is what lets a record
+// filed under the old byte-hash identity be adopted even though the file's
+// current bytes match nothing the companion ever saw.
+export const PDF_TEXT_SCHEME = 'bfp-pdf://text/';
+const PDF_TEXT_RE = /^bfp-pdf:\/\/text\/[0-9a-f]{64}$/;
+export const isPdfTextUrl = u => PDF_TEXT_RE.test(String(u == null ? '' : u).trim());
+const PDF_BYTES_RE = /^bfp-pdf:\/\/sha256\/[0-9a-f]{64}$/;
+
+// A PDF snapshot is `<section><h2>Page N</h2><p>line<br>line</p></section>`
+// per page (sanitize.mjs keeps exactly that). Back to the normalized string
+// the extension hashed: the h2 page labels are the viewer's chrome and go;
+// every other tag is a separator; the three entities our own writers produce
+// are unescaped (lt/gt first, amp last, so `&amp;lt;` comes back as the
+// literal `&lt;` the document contained); whitespace collapses once, exactly
+// as pdfNormalizedText collapses it.
+export function snapshotPdfText(html) {
+  return String(html || '')
+    .replace(/<h2[^>]*>[\s\S]*?<\/h2>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim();
+}
+export const pdfTextHashOf = text =>
+  crypto.createHash('sha256').update(String(text), 'utf8').digest('hex');
+
+// hash of one page's snapshot, memoized by mtime: an adoption scan may ask the
+// same few snapshots on every miss, and rehashing them each time is waste
+const snapHashMemo = new Map();
+function snapshotTextHash(key) {
+  let st;
+  try { st = fs.statSync(snapshotFile(key)); } catch { return ''; }
+  const hit = snapHashMemo.get(key);
+  if (hit && hit.mtimeMs === st.mtimeMs) return hit.hash;
+  let hash = '';
+  try { hash = pdfTextHashOf(snapshotPdfText(fs.readFileSync(snapshotFile(key), 'utf8'))); }
+  catch { return ''; }
+  snapHashMemo.set(key, { mtimeMs: st.mtimeMs, hash });
+  return hash;
+}
+
+// A text-identity url with no record: does an old byte-hash record hold the
+// same words? Newest first, because the reader's live paper is the one they
+// keep touching; the first match is migrated, the rest are never merged (a
+// merge is the reader's call, and this must never lose anybody's data). An old
+// record WITHOUT a snapshot cannot be matched and is left exactly alone.
+function adoptPdfTextRecord(url) {
+  const nu = normUrl(url);
+  if (!isPdfTextUrl(nu)) return null;
+  const want = nu.slice(PDF_TEXT_SCHEME.length);
+  const rows = Object.entries(readIndex())
+    .filter(([, r]) => r && PDF_BYTES_RE.test(String(r.url || '')))
+    .sort((a, b) => String(b[1].updated_at || '').localeCompare(String(a[1].updated_at || '')));
+  for (const [key, row] of rows) {
+    if (snapshotTextHash(key) !== want) continue;
+    return migratePage(row.url, nu);
+  }
+  return null;
+}
+
+// One record moves to a new identity, whole: snapshot and runs first (content
+// a half-moved record could still point at), the record and its index row
+// next, the old page file and row last — so a crash mid-way leaves at worst a
+// duplicate row, never a lost thread. The old identity is kept on
+// `prior_urls`, which is what lets the Obsidian export REPLACE the note it
+// wrote under the old name instead of minting a " (2)".
+function migratePage(fromUrl, toUrl) {
+  const page = readJson(pageFile(fromUrl), null);
+  if (!page) return null;
+  const oldKey = pageKey(fromUrl);
+  const prior = Array.isArray(page.prior_urls) ? page.prior_urls : [];
+  page.url = normUrl(toUrl);
+  page.prior_urls = [...new Set([...prior, normUrl(fromUrl)])];
+  try { fs.renameSync(snapshotFile(oldKey), snapshotFile(pageKey(page.url))); } catch { /* no snapshot */ }
+  try { fs.renameSync(runsDir(oldKey), runsDir(pageKey(page.url))); } catch { /* no runs */ }
+  savePage(page);
+  try { fs.unlinkSync(pageFile(fromUrl)); } catch { /* already gone */ }
+  const idx = readIndex();
+  delete idx[oldKey];
+  writeJson(INDEX_FILE, idx);
+  return readPage(page.url);
+}
+
 // Reading heals: a thread whose last message was deleted is a highlight that
 // opens onto nothing. Records damaged before deletes pruned at the source are
 // repaired (and re-indexed) the first time anything touches them.
+// Reading also ADOPTS: a text-identity local PDF whose record still lives
+// under its old byte-hash identity is migrated the first time anything asks
+// for it — one-time, automatic, and inside readPage so every caller (the
+// endpoints, planSteps, the views, upsertPage) gets it without knowing.
 export function readPage(url) {
-  const page = readJson(pageFile(url), null);
+  let page = readJson(pageFile(url), null);
+  if (!page && isPdfTextUrl(url)) page = adoptPdfTextRecord(url);
   if (!page) return null;
   // a record written before kinds existed answers for itself, in memory: the
   // next save persists it, and a revisit replaces the inference with what the

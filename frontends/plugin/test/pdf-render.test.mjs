@@ -22,12 +22,20 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');            // frontends/plugin
 const FIXTURE = 'test/fixtures/two-pages.pdf';
+// store.mjs resolves its workspace at import time; a throwaway keeps even an
+// accidental write out of the developer's live .botference
+process.env.BOTFERENCE_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-render-'));
+const A = createRequire(import.meta.url)(path.join(ROOT, 'extension', 'adapters.js'));
+const { sanitizeArticle } = await import(path.join(ROOT, 'sanitize.mjs'));
+const storeMod = await import(path.join(ROOT, 'store.mjs'));
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -181,6 +189,21 @@ if (state && state.ready) {
     JSON.stringify(state.pages[1].lines));
   ok('a PDF line is one line, not one span per word', state.pages[0].lines.length === 4,
     JSON.stringify(state.pages[0].lines));
+
+  // ---- the durable-identity pipeline, over a REAL text layer ---------------
+  // The local-PDF identity is sha256(pdfNormalizedText(pages)), and adoption
+  // recomputes that same hash from the stored snapshot. Run both halves over
+  // the lines real PDF.js produced: one character of drift between them and
+  // no old record would ever adopt.
+  const norm = A.pdfNormalizedText(state.pages);
+  ok('a real text layer normalizes to a non-empty string',
+    norm.includes('walk back to the tram stop') && !/\s\s/.test(norm));
+  const { html: snapHtml } = sanitizeArticle(A.pdfSnapshotHtml(state.pages));
+  eq('snapshot → sanitize → snapshotPdfText reproduces the normalized text, on real lines',
+    storeMod.snapshotPdfText(snapHtml), norm);
+  eq('…so the identity the viewer would mint matches the hash adoption computes',
+    A.pdfTextUrl(crypto.createHash('sha256').update(norm, 'utf8').digest('hex')),
+    'bfp-pdf://text/' + storeMod.pdfTextHashOf(storeMod.snapshotPdfText(snapHtml)));
 
   // The whole feature in one expression: capture an anchor across a typeset
   // line break in the REAL text layer, paint it, ask which page it is on, and

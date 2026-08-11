@@ -178,7 +178,8 @@
   // …and the site is the identity's site, never the viewer's: the drawer
   // remembers its last tab per hostname, and the record files under one. An
   // adapter may name it outright, which is what a local PDF needs: its identity
-  // is `bfp-pdf://sha256/…` and the hostname of that is the word "sha256".
+  // is `bfp-pdf://text/…` (or `…sha256/…` for a scan) and the hostname of
+  // either is the name of an algorithm, not a place.
   const HOSTNAME = (SITE && SITE.site) || (() => {
     try { return new URL(IDENT_HREF).hostname.replace(/^www\./, ''); }
     catch { return location.hostname.replace(/^www\./, ''); }
@@ -190,6 +191,12 @@
 
   let active = false;
   let PAGE = null;        // the /page record
+  // Does the companion hold a record for this page? Nothing is POSTed anywhere
+  // until it does, and it only comes to hold one when the reader ACTS — a
+  // saved comment, a page-chat message, an export. Visiting, activating, even
+  // selecting text writes NOTHING: the library must be an archive of reading,
+  // not a browsing history. True only once GET /page answered with a record.
+  let registered = false;
   let orphans = {};       // threadId -> bool
   let locs = {};          // threadId -> {start,end}
   let pendingSel = null;  // {quote,prefix,suffix,start,end} awaiting the 💬 click
@@ -546,19 +553,25 @@
 
   // Sent on the same cadence the article TEXT is: once when this page first
   // gets an annotation, and thereafter only when the prose actually changed.
+  // Awaitable, because the FIRST send on a page waits for it (the record and
+  // the snapshot must both be on disk before the message that may summon the
+  // bots — planSteps reads hasSnapshot when the turn is planned); every later
+  // call is fire-and-forget, and a failure only rearms the hash. A snapshot
+  // failing never blocks a message: the promise always resolves.
   let lastSnapHash = null;
-  function maybeSnapshot() {
+  function snapshotNow() {
     let html = '';
-    try { html = snapshotHtml(); } catch (_) { return; }
-    if (!html) return;
+    try { html = snapshotHtml(); } catch (_) { return Promise.resolve(); }
+    if (!html) return Promise.resolve();
     const h = hashText(html);
-    if (h === lastSnapHash) return;
+    if (h === lastSnapHash) return Promise.resolve();
     lastSnapHash = h;
-    // fire and forget: a snapshot is never worth delaying a comment for
-    api('POST', '/snapshot', { url: URL_NOW, html })
+    return api('POST', '/snapshot', { url: URL_NOW, html })
       .then((r) => { if (!r || !r.ok) lastSnapHash = null; })
       .catch(() => { lastSnapHash = null; });
   }
+  // fire and forget: a snapshot is never worth delaying a comment for
+  function maybeSnapshot() { snapshotNow(); }
 
   // First-turn context. An adapter gets first refusal — it may have to fetch
   // the real document from its own origin — and anything it cannot produce
@@ -824,6 +837,10 @@
     connHttp(!!r.ok);
     if (!r.ok) return null;
     const rec = (r.data && r.data.page !== undefined) ? r.data.page : r.data;
+    // a real record on the companion is the ONLY thing that marks this page
+    // registered — page:null means it has never been acted on, and nothing
+    // may be POSTed for it until it is
+    registered = !!(rec && rec.url);
     const base = rec && rec.url
       ? rec
       : { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
@@ -860,13 +877,31 @@
   // title only when it actually changed — a POST per page would broadcast a
   // `page` event per page to every tab.
   let lastPostedTitle = '';
+  // The one /page upsert, shared by every path allowed to send it: the refresh
+  // of a record that already exists, and the act that brings one into being.
+  function postPage() {
+    lastPostedTitle = headline();
+    return api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND, file_name: FILE_NAME });
+  }
+  // The record-earning gate. Every action that writes about this page — a
+  // thread, a reply, an export — awaits this first, so the record exists (with
+  // its real title, site, kind and file name) before the action lands. On an
+  // already-registered page it is free.
+  async function ensureRegistered() {
+    if (registered) return { ok: true };
+    const r = await postPage();
+    if (r && r.ok) registered = true;
+    return r || { ok: false, error: 'the companion did not answer' };
+  }
   async function refresh() {
     reanchorAll();
     if (!active) return null;
+    // an unregistered page posts NOTHING — the title travels with the act that
+    // eventually earns the record (postPage reads headline() fresh)
+    if (!registered) return PAGE;
     const title = headline();
     if (title && title !== lastPostedTitle) {
-      lastPostedTitle = title;
-      await api('POST', '/page', { url: URL_NOW, title, site: HOSTNAME, kind: PAGE_KIND, file_name: FILE_NAME });
+      await postPage();
       return loadPage();
     }
     return PAGE;
@@ -880,13 +915,17 @@
       drawer.mount();
       runReady();
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
-      // upsert the page shell so the server knows this page's real headline
-      lastPostedTitle = headline();
-      api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND, file_name: FILE_NAME });
       // `connected` here is the SOCKET, which a freshly woken worker has not
       // opened yet — so it may confirm, never deny (see connHttp/connSocket)
       bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) connSocket(!!r.connected); });
       await loadPage();
+      // a page that already earned its record gets the scraped title, kind and
+      // file name refreshed on every visit, exactly as before; a page that
+      // never did gets NOTHING posted — activation is not an act. The reload
+      // behind the upsert is what lands the corrected title in the header
+      // (the adapter's headline beating a stale scraped one) without waiting
+      // on the broadcast.
+      if (registered) postPage().then(r => { if (r && r.ok) loadPage(); });
     }
     if (openTab !== false) drawer.open();
     return drawer;
@@ -1084,6 +1123,13 @@
       onSelect: () => commitSelection(),
 
       onSave: async ({ quote, prefix, suffix, text }) => {
+        // The act that earns the record. Order matters on the first one:
+        // record, then snapshot, then the message — so a mention's turn is
+        // planned against a page whose full text is already on disk.
+        const wasNew = !registered;
+        const reg = await ensureRegistered();
+        if (!reg.ok) return failure(reg);
+        if (wasNew) await snapshotNow();
         const body = { url: URL_NOW, quote, prefix, suffix, msg: { text } };
         // page order is the extension's knowledge, not the server's: tell it
         // where in the stack this thread belongs (companion honours `index`)
@@ -1140,6 +1186,12 @@
       // existing one: the `ts` check below is what keeps it from being appended
       // a second time.
       onReply: async (threadId, text) => {
+        // the first-ever message on a page can be a page-chat question: the
+        // same record-then-snapshot-then-message order as onSave
+        const wasNew = !registered;
+        const reg = await ensureRegistered();
+        if (!reg.ok) return failure(reg);
+        if (wasNew) await snapshotNow();
         const body = { url: URL_NOW, thread_id: threadId, text };
         const ctx = await mentionContext(text);
         applyContext(body, ctx);
@@ -1223,6 +1275,10 @@
       // (highlights and their own notes, no bot conversation) or 'all'. An
       // absent mode is 'all', which is what /export has always written.
       onExport: async mode => {
+        // asking for a note in the vault is an act too: a record on disk is
+        // what backs the note, so exporting earns one
+        const reg = await ensureRegistered();
+        if (!reg.ok) return failure(reg);
         const r = await api('POST', '/export', { url: URL_NOW, mode });
         if (!r.ok) return failure(r);
         return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode };
@@ -1307,6 +1363,11 @@
           pageHasSession = false;
           sentArticleText = false;
           lastContextHash = null;
+          // …and so is the record itself: a deleted page must not resurrect
+          // on the next visit, only on the next ACT (and its snapshot went
+          // with the record, so the next act sends a fresh one)
+          registered = false;
+          lastSnapHash = null;
           if (drawer) { drawer.setPage(PAGE); drawer.setOrphans({}); }
           bg({ t: 'badge', count: 0 });
         }
@@ -1596,6 +1657,20 @@
         // an annotated page: wake up and restore the highlights, but do not
         // barge in — the drawer stays shut until asked for
         activate(false).then(() => connSocket(!!r.connected));
+        return;
+      }
+      // A text-identified local PDF whose record still sits under its old
+      // byte-hash identity is not in the index yet, so `known` says no — but
+      // one GET /page is exactly what ADOPTS it (the companion migrates on
+      // read). Ask once rather than sit dormant on a paper that has a chat;
+      // for a never-annotated PDF the answer is page:null, a read creates
+      // nothing, and dormant is right.
+      if (/^bfp-pdf:\/\/text\//.test(URL_NOW)) {
+        api('GET', '/page?url=' + encodeURIComponent(URL_NOW)).then(pr => {
+          const rec = pr && pr.ok
+            ? (pr.data && pr.data.page !== undefined ? pr.data.page : pr.data) : null;
+          if (rec && rec.url) activate(false).then(() => connSocket(!!r.connected));
+        });
       }
     });
   }
@@ -1636,6 +1711,9 @@
     // can assert the escape hatch instead of trusting it
     get sentContext() { return sentArticleText; },
     get sessionKnown() { return pageHasSession; },
+    // does the companion hold a record for this page yet? — the lazy-persistence
+    // rule, observable so the harness can assert a visit wrote nothing
+    get registered() { return registered; },
     get drawer() { return drawer; },
     get page() { return PAGE; },
   };

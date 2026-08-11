@@ -39,9 +39,15 @@ import nodeCrypto from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
+// Anything below that touches disk gets a throwaway workspace: store.mjs
+// resolves BOTFERENCE_PROJECT_ROOT at import time, and the repo's own
+// .botference is the developer's LIVE data. Set before the imports, not after.
+const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-pdftest-'));
+process.env.BOTFERENCE_PROJECT_ROOT = TMP_ROOT;
 const A = require(path.join(here, '..', 'extension', 'adapters.js'));
 const Anchor = require(path.join(here, '..', 'extension', 'anchor.js'));
-const { renderNote } = await import(path.join(here, '..', 'export.mjs'));
+const { renderNote, exportPage } = await import(path.join(here, '..', 'export.mjs'));
+const { sanitizeArticle } = await import(path.join(here, '..', 'sanitize.mjs'));
 const store = await import(path.join(here, '..', 'store.mjs'));
 
 let pass = 0, fail = 0;
@@ -246,6 +252,114 @@ const docOf = (...pages) => ({ querySelectorAll: () => pages });
 
   const stranded = A.pick(EXT + '#raw=file:///Users/a/x.pdf', { identity: '', documentTitle: () => '' });
   eq('a local PDF whose bytes were never hashed is filed nowhere', stranded.identityHref, '');
+}
+
+// ---- 1c. the DURABLE identity: the words -------------------------------------
+//
+// The byte hash met Adobe Acrobat and lost: Acrobat rewrites the file on every
+// save, so one sticky-note annotation re-keyed the page and orphaned its chat.
+// The durable identity is the SHA-256 of the extracted, normalized TEXT —
+// `bfp-pdf://text/<hex>` — and everything about it that must be exact is
+// asserted here: the url shape, the normalization's determinism, that page
+// boundaries and byte differences are invisible to it, and that a changed
+// text is honestly a different identity.
+{
+  const EXT = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/pdf/viewer.html';
+  const hexOf = s => nodeCrypto.createHash('sha256').update(s, 'utf8').digest('hex');
+  const abc = hexOf('abc');
+  const TIDENT = 'bfp-pdf://text/' + abc;
+
+  eq('the text pseudo-url is the scheme plus the digest', A.pdfTextUrl(abc), TIDENT);
+  eq('…uppercase hex is folded, because a url is not two urls',
+    A.pdfTextUrl(abc.toUpperCase()), TIDENT);
+  eq('a digest of the wrong length is not an identity', A.pdfTextUrl('abc'), '');
+  eq('…nor is nothing', A.pdfTextUrl(''), '');
+  ok('the result is recognised as a text identity', A.isPdfTextUrl(TIDENT));
+  ok('…and as a local-PDF identity in general', A.isPdfIdentUrl(TIDENT));
+  ok('…as the byte-hash spelling still is', A.isPdfIdentUrl('bfp-pdf://sha256/' + 'a'.repeat(64)));
+  ok('…while the library is neither', !A.isPdfIdentUrl('bfp://library'));
+  ok('…and the two spellings never mistake each other',
+    !A.isPdfHashUrl(TIDENT) && !A.isPdfTextUrl('bfp-pdf://sha256/' + 'a'.repeat(64)));
+
+  // normUrl / pageKey / kind, same guarantees the byte hash earned
+  eq('normUrl leaves the text url byte-identical', store.normUrl(TIDENT), TIDENT);
+  eq('…idempotently', store.normUrl(store.normUrl(TIDENT)), TIDENT);
+  ok('the page key is an ordinary one', /^[0-9a-f]{40}$/.test(store.pageKey(TIDENT)));
+  eq('a text-identity record is a pdf to a record that never met the adapter',
+    store.inferKind(TIDENT), 'pdf');
+
+  // the normalization — the whole identity is a digest of this one string
+  const pages = [
+    { page: 1, lines: ['the log law of the wall', 'holds in the overlap region'] },
+    { page: 2, lines: ['and the wake departs from it'] },
+  ];
+  eq('normalized text is the lines, all pages, single-spaced',
+    A.pdfNormalizedText(pages),
+    'the log law of the wall holds in the overlap region and the wake departs from it');
+  eq('page boundaries are not part of the words — the same lines paged differently hash the same',
+    A.pdfNormalizedText([{ page: 1, lines: pages[0].lines.concat(pages[1].lines) }]),
+    A.pdfNormalizedText(pages));
+  eq('a scan (no lines) normalizes to nothing, which is what routes it to the byte hash',
+    A.pdfNormalizedText([{ page: 1, lines: [] }]), '');
+  eq('…as does no document at all', A.pdfNormalizedText([]), '');
+  // determinism through the DOM: the messy layer and the clean one agree,
+  // because pdfLayerLines already folded whitespace and dropped empties
+  const messyLayer = el('div', [span('  the   log law '), span('of the wall'), br(), span('   '), br(),
+    span('holds in the overlap region ')], { class: 'textLayer' });
+  eq('whitespace never reaches the hash',
+    A.pdfNormalizedText([{ page: 1, lines: A.pdfLayerLines(messyLayer) }]),
+    'the log law of the wall holds in the overlap region');
+
+  // same words, different bytes → same identity; different words → different
+  const identOfLines = lines => A.pdfTextUrl(hexOf(A.pdfNormalizedText([{ page: 1, lines }])));
+  eq('the same text under different bytes is the same page — the Adobe fix itself',
+    identOfLines(['the log law of the wall']), identOfLines(['the  log   law of the wall  '.trim().replace(/\s+/g, ' ')]));
+  ok('a genuinely revised document is a different page, with no fuzzy matching',
+    identOfLines(['the log law of the wall']) !== identOfLines(['the log law of the wall, revised']));
+
+  // which identity the adapter believes
+  eq('a local source with a published TEXT identity is that identity',
+    A.pdfIdentity('file:///Users/a/x.pdf', TIDENT), TIDENT);
+  eq('…and a published byte identity (a scan) still works',
+    A.pdfIdentity('file:///Users/a/x.pdf', 'bfp-pdf://sha256/' + 'a'.repeat(64)),
+    'bfp-pdf://sha256/' + 'a'.repeat(64));
+  eq('a web source still ignores anything published',
+    A.pdfIdentity('https://x.test/a.pdf', TIDENT), 'https://x.test/a.pdf');
+  const localText = A.pick(EXT + '#raw=file:///Users/a/Reading/quiet.pdf',
+    { identity: TIDENT, documentTitle: () => '' });
+  eq('the adapter files a text-identified PDF as local', localText.identityHref, TIDENT);
+  eq('…under the same place', localText.site, 'local pdf');
+  eq('…with its file name', localText.fileName, 'quiet.pdf');
+}
+
+// ---- 1d. the companion can recompute the hash from the snapshot --------------
+//
+// Adoption's whole mechanism: the snapshot was built from the very lines the
+// text hash is a digest of, so store.snapshotPdfText(sanitized snapshot) must
+// reproduce pdfNormalizedText(pages) EXACTLY — through escPdf's escaping AND
+// through sanitize.mjs, which re-escapes text on the way in. One character of
+// drift and no old record ever adopts.
+{
+  const nasty = [
+    { page: 1, lines: ['AT&T <sued> the "board"', 'a literal &lt;br&gt; in the prose'] },
+    { page: 2, lines: ['plain words', 'x < y > z & w'] },
+  ];
+  for (const pages of [
+    [{ page: 1, lines: ['the log law of the wall', 'holds in the overlap region'] }],
+    nasty,
+  ]) {
+    const norm = A.pdfNormalizedText(pages);
+    const { html } = sanitizeArticle(A.pdfSnapshotHtml(pages));
+    eq('snapshot → sanitize → snapshotPdfText round-trips the normalized text',
+      store.snapshotPdfText(html), norm);
+    eq('…so the hashes agree, which is what adoption stands on',
+      store.pdfTextHashOf(store.snapshotPdfText(html)),
+      nodeCrypto.createHash('sha256').update(norm, 'utf8').digest('hex'));
+  }
+  eq('the page labels are the viewer\'s chrome, not the document\'s words',
+    store.snapshotPdfText('<section><h2>Page 7</h2><p>only these words</p></section>'),
+    'only these words');
+  eq('an empty snapshot normalizes to nothing', store.snapshotPdfText(''), '');
 }
 
 // ---- 2. extraction ----------------------------------------------------------
@@ -474,6 +588,111 @@ function rawOfViewer(pages) {
     store.cleanFileName('/Users/me/Papers/quiet\nmachine.pdf'), 'quiet machine.pdf');
   eq('…and an absent one stays absent', store.cleanFileName(undefined), '');
 }
+
+// ---- 6. adoption: the old byte-hash record survives the Adobe save -----------
+//
+// The record that must be protected is the one whose file has ALREADY been
+// re-saved: its byte hash matches nothing on disk any more, so adoption cannot
+// go through the bytes at all. It goes through the snapshot — the companion
+// recomputes the text hash from the copy it kept — and the record is migrated
+// whole: threads, session, rename, tags, file name, snapshot, index row.
+// Everything here writes into TMP_ROOT (a throwaway workspace), never the repo.
+{
+  const textHashOf = s => nodeCrypto.createHash('sha256').update(s, 'utf8').digest('hex');
+  const pages = [{ page: 1, lines: ['control without possession', 'is the whole argument'] }];
+  const norm = A.pdfNormalizedText(pages);
+  const snapHtml = sanitizeArticle(A.pdfSnapshotHtml(pages)).html;
+
+  const OLD = 'bfp-pdf://sha256/' + '1'.repeat(64);
+  const TEXT = 'bfp-pdf://text/' + textHashOf(norm);
+
+  const page = store.upsertPage({
+    url: OLD, title: 'The Quiet Machine', site: 'local pdf', kind: 'pdf',
+    file_name: 'quiet.pdf',
+  });
+  store.addThread(page, { quote: 'control without possession', text: 'the thesis', author: 'angadh', page_number: 1 });
+  page.session_id = 's-adopt-1';
+  page.custom_title = 'Quiet';
+  page.tags = ['control'];
+  store.savePage(page);
+  store.saveSnapshot(OLD, snapHtml);
+
+  // the note written under the OLD identity, so the export can be shown to
+  // follow the migration rather than duplicate
+  const vault = path.join(TMP_ROOT, 'vault');
+  const cfg = { vault_path: vault, export_folder: 'Clips', author: 'angadh' };
+  const oldNote = exportPage(store.readPage(OLD), cfg, new Date('2026-08-10T00:00:00Z'));
+  ok('the pre-migration note is filed under the byte identity',
+    fs.readFileSync(oldNote, 'utf8').includes(`url: ${OLD}`));
+
+  // the first read under the text identity migrates
+  const adopted = store.readPage(TEXT);
+  ok('the record was adopted at all', !!adopted, JSON.stringify(store.readIndex()));
+  eq('…onto the text identity', adopted && adopted.url, TEXT);
+  eq('…with the chat intact', adopted && adopted.threads[0].msgs[0].text, 'the thesis');
+  eq('…the session', adopted && adopted.session_id, 's-adopt-1');
+  eq('…the rename', adopted && adopted.custom_title, 'Quiet');
+  eq('…the tags', adopted && adopted.tags, ['control']);
+  eq('…the file name', adopted && adopted.file_name, 'quiet.pdf');
+  eq('…and the identity it used to answer to', adopted && adopted.prior_urls, [OLD]);
+  eq('the old record is gone, not doubled', store.readPage(OLD), null);
+  ok('the index row moved with it',
+    !!store.readIndex()[store.pageKey(TEXT)] && !store.readIndex()[store.pageKey(OLD)]);
+  ok('the snapshot moved to the new key',
+    store.hasSnapshot(store.pageKey(TEXT)) && !store.hasSnapshot(store.pageKey(OLD)));
+  ok('reading again is a plain read', store.readPage(TEXT).url === TEXT);
+
+  // the export follows: same note replaced, no " (2)" beside it
+  const newNote = exportPage(store.readPage(TEXT), cfg, new Date('2026-08-11T00:00:00Z'));
+  eq('the migrated page replaces the note the old identity wrote', newNote, oldNote);
+  ok('…now carrying the current identity', fs.readFileSync(newNote, 'utf8').includes(`url: ${TEXT}`));
+  ok('…and no variant was minted',
+    !fs.existsSync(oldNote.replace(/\.md$/, ' (2).md')));
+
+  // what adoption refuses, each refusal load-bearing:
+  eq('a text hash nothing matches adopts nothing',
+    store.readPage('bfp-pdf://text/' + textHashOf('entirely other words')), null);
+  // a WEB page whose snapshot happens to hold the same words is not a local
+  // PDF and is never adopted
+  const web = store.upsertPage({ url: 'https://x.test/quiet', title: 'Quiet on the web', kind: 'article' });
+  store.saveSnapshot(web.url, snapHtml);
+  eq('…and only bfp-pdf://sha256 records are candidates',
+    store.readPage(TEXT).url, TEXT); // still the migrated one; but ask a FRESH hash:
+  const pages2 = [{ page: 1, lines: ['words only the web page holds'] }];
+  store.saveSnapshot(web.url, sanitizeArticle(A.pdfSnapshotHtml(pages2)).html);
+  eq('a web record with matching words is left entirely alone',
+    store.readPage('bfp-pdf://text/' + textHashOf(A.pdfNormalizedText(pages2))), null);
+
+  // an old record WITHOUT a snapshot cannot be matched and is left alone
+  const BARE = 'bfp-pdf://sha256/' + '2'.repeat(64);
+  store.upsertPage({ url: BARE, title: 'Never snapshotted', site: 'local pdf', kind: 'pdf' });
+  eq('no snapshot, no match, no migration',
+    store.readPage('bfp-pdf://text/' + textHashOf('never snapshotted words')), null);
+  ok('…and the bare record is untouched', !!store.readPage(BARE));
+
+  // two old records holding the same words: the most recently updated wins,
+  // the other is never merged (a merge is the reader's call, never ours)
+  const pages3 = [{ page: 1, lines: ['the same paper, twice on disk'] }];
+  const snap3 = sanitizeArticle(A.pdfSnapshotHtml(pages3)).html;
+  const T3 = 'bfp-pdf://text/' + textHashOf(A.pdfNormalizedText(pages3));
+  const OLDER = 'bfp-pdf://sha256/' + '3'.repeat(64);
+  const NEWER = 'bfp-pdf://sha256/' + '4'.repeat(64);
+  const pOlder = store.upsertPage({ url: OLDER, title: 'Twice, older', site: 'local pdf', kind: 'pdf' });
+  store.saveSnapshot(OLDER, snap3);
+  // updated_at is stamped by savePage; make the ordering unambiguous by hand
+  pOlder.updated_at = '2026-01-01T00:00:00.000Z';
+  const idx1 = store.readIndex();
+  idx1[store.pageKey(OLDER)].updated_at = pOlder.updated_at;
+  fs.writeFileSync(path.join(TMP_ROOT, '.botference', 'plugin', 'index.json'), JSON.stringify(idx1, null, 2));
+  store.upsertPage({ url: NEWER, title: 'Twice, newer', site: 'local pdf', kind: 'pdf' });
+  store.saveSnapshot(NEWER, snap3);
+  const winner = store.readPage(T3);
+  eq('the most recently touched twin is the one adopted', winner && winner.title, 'Twice, newer');
+  ok('…and the other keeps its record and its snapshot, unmerged',
+    !!store.readIndex()[store.pageKey(OLDER)] && store.hasSnapshot(store.pageKey(OLDER)));
+}
+
+fs.rmSync(TMP_ROOT, { recursive: true, force: true });
 
 // ---- report -----------------------------------------------------------------
 if (fail) {

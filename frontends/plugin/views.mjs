@@ -15,6 +15,22 @@ import { escHtml } from './hosted.mjs';
 import { LIBRARY_URL, PAGE_CHAT, PAGE_KINDS, inferKind, tagsOf, displayTitle } from './store.mjs';
 
 const AGENTS = new Set(['claude', 'codex']);
+
+// A tag's color IS its name: FNV-1a over the lowercased name → a hue, 0..359.
+// Duplicated from extension/drawer.js tagHue (the extension/server boundary,
+// exactly as normUrl is duplicated): the two copies must agree byte for byte
+// or the phone paints a tag one color and the drawer another —
+// test/tags.test.mjs holds them together.
+export function tagHue(name) {
+  const s = String(name == null ? '' : name).trim().toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % 360;
+}
+
 const shortTime = ts => {
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 16).replace('T', ' ') + 'Z';
@@ -23,10 +39,14 @@ const shortTime = ts => {
 const STYLE = `
 :root { --bg:#faf7f0; --fg:#2a2419; --muted:#8a7f6d; --card:#fff; --line:#e7dfd1;
   --accent:#d97757; --accent-hover:#c05f3f; --claude:#d97757; --codex:#4a86c8;
-  --quote:#f3ede1 }
+  --quote:#f3ede1;
+  /* tag chips: the hue is the tag's own (--th, from tagHue below); the theme
+     owns saturation/lightness so every hue clears contrast on both schemes */
+  --tag-fg-l:30%; --tag-bg-l:93%; --tag-line-l:72% }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#1a1712; --fg:#e8dfd1; --muted:#9c917e; --card:#241f18;
-    --line:rgba(217,119,87,.24); --accent-hover:#e8896d; --quote:#1f1b15 }
+    --line:rgba(217,119,87,.24); --accent-hover:#e8896d; --quote:#1f1b15;
+    --tag-fg-l:80%; --tag-bg-l:20%; --tag-line-l:36% }
 }
 * { box-sizing:border-box }
 body { margin:0; background:var(--bg); color:var(--fg);
@@ -81,8 +101,20 @@ ul.pages .meta { color:var(--muted); font-size:.76rem }
 .rail a.on { color:var(--accent); border-color:var(--accent);
   background:color-mix(in srgb, var(--accent) 12%, transparent) }
 .rail.tags a::before { content:"#"; opacity:.55 }
+/* a tag's color is its name (tagHue → --th), the same color the drawer gives
+   it; selection is a full-strength border, never a different color */
+.rail.tags a { color:hsl(var(--th,24) 45% var(--tag-fg-l));
+  border-color:hsl(var(--th,24) 40% var(--tag-line-l));
+  background:hsl(var(--th,24) 55% var(--tag-bg-l)) }
+.rail.tags a:hover { color:hsl(var(--th,24) 45% var(--tag-fg-l));
+  border-color:hsl(var(--th,24) 45% var(--tag-fg-l)) }
+.rail.tags a.on { color:hsl(var(--th,24) 45% var(--tag-fg-l));
+  border-color:hsl(var(--th,24) 50% var(--tag-fg-l));
+  background:hsl(var(--th,24) 60% var(--tag-bg-l));
+  box-shadow:inset 0 0 0 1px hsl(var(--th,24) 50% var(--tag-fg-l)) }
 ul.pages .tags { margin-top:.25rem }
-ul.pages .tags a { font-size:.72rem; color:var(--muted); border-bottom:1px dotted var(--line) }
+ul.pages .tags a { font-size:.72rem; color:hsl(var(--th,24) 45% var(--tag-fg-l));
+  border-bottom:1px dotted hsl(var(--th,24) 40% var(--tag-line-l)) }
 ul.pages .tags a::before { content:"#"; opacity:.55 }
 /* the owner's own edits to a record: its name, and what it is filed under */
 form.meta-edit { display:flex; flex-wrap:wrap; gap:.4rem; margin:.6rem 0 0 }
@@ -225,7 +257,7 @@ ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
   ? `<a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(name)}</a>`
   : escHtml(name)}</h1>
 <p class="sub">${escHtml(page.site || '')} · <a href="/pages">all annotated pages</a>${snapshot ? ` · <a href="/a/${escHtml(key)}">read the article ›</a>` : ''}</p>
-${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${encodeURIComponent(t)}">${escHtml(t)}</a>`).join('')}</div>` : ''}
+${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${encodeURIComponent(t)}" style="--th:${tagHue(t)}">${escHtml(t)}</a>`).join('')}</div>` : ''}
 ${me && me.owner ? metaEdit(page, key) : ''}
 </header>
 ${notice ? `<div class="notice">${escHtml(notice)}</div>` : ''}
@@ -351,8 +383,10 @@ const filterHref = (kind, tag) => {
   const s = q.toString();
   return '/pages' + (s ? `?${s}` : '');
 };
-const railLink = (href, label, on) =>
-  `<a href="${escHtml(href)}"${on ? ' class="on" aria-current="true"' : ''}>${escHtml(label)}</a>`;
+// `hue` is only ever set for tag links: a tag wears its own color everywhere
+const railLink = (href, label, on, hue) =>
+  `<a href="${escHtml(href)}"${on ? ' class="on" aria-current="true"' : ''}`
+  + `${hue == null ? '' : ` style="--th:${hue}"`}>${escHtml(label)}</a>`;
 
 export function pagesView({ index, me, snapshots, library, libraryKey, kind = '', tag = '' }) {
   const has = k => !!(snapshots && snapshots.has && snapshots.has(k));
@@ -380,13 +414,13 @@ export function pagesView({ index, me, snapshots, library, libraryKey, kind = ''
   const tagRail = tagNames.size
     ? `<div class="rail tags">${[...tagNames.values()].sort((a, b) => a.localeCompare(b))
       .map(t => railLink(filterHref(wantKind, t.toLowerCase() === wantTag.toLowerCase() ? '' : t),
-        t, t.toLowerCase() === wantTag.toLowerCase())).join('')}</div>` : '';
+        t, t.toLowerCase() === wantTag.toLowerCase(), tagHue(t))).join('')}</div>` : '';
   const rows = kept
     // A row whose article we hold opens the article itself; one we do not
     // still opens its conversation, which is all there has ever been.
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
 <div class="meta">${escHtml(rowAddress(row.url))} · ${escHtml(KIND_LABEL[rowKind(row)].replace(/s$/, '').toLowerCase())} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
-  rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
+  rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}" style="--th:${tagHue(t)}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
 }</li>`)
     .join('\n');
   // the same conversation the drawer shows above its own list, with the phone's
