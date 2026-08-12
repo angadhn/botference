@@ -139,7 +139,9 @@ companion refuses file-writing outright.`;
 export const SUMMARY_SHAPE =
   'Write 3 to 5 sentences of ordinary prose. Say first what the question or the '
   + 'comment was, then what the outcome was — what got answered, decided, or left '
-  + 'standing. No headings, no bullets, no markdown, no preamble: the sentences alone.';
+  + 'standing. No headings, no bullets, no markdown, no preamble: the sentences alone. '
+  + 'Your reply is stored verbatim as the summary, so it must contain nothing else — '
+  + 'no remarks about yourself, your process, or any skill you are following.';
 
 export function summaryPrompt({ title, url, quote, history, pageNumber }) {
   const where = pageNumber > 0 ? ` (page ${pageNumber} of the document)` : '';
