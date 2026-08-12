@@ -130,12 +130,33 @@
   const SKIP_TAGS = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG|CANVAS|IFRAME|OBJECT|EMBED|VIDEO|AUDIO|SELECT|TEXTAREA|INPUT|HEAD|LINK|META)$/;
   const BLOCK_TAGS = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BODY|DD|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H1|H2|H3|H4|H5|H6|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
 
+  // Two tints, one meaning each: yellow is "somebody is still thinking about
+  // this passage", green is "this was dealt with". A resolved highlight is NOT
+  // removed — the mark is the point, months later, on a re-read.
+  //
+  // The green is a desaturated sage, deliberately NOT the braid's mint (#34d399
+  // / --you, the reader's own speech colour in the drawer): a highlight is a
+  // state of a passage, not a speaker, and the two must not read as the same
+  // thing. Both tints are translucent and pale for the same reason the yellow
+  // always was — they land on pages whose own colours we do not control, dark
+  // ones included, and the text under them has to stay readable.
   const HL_BG = 'rgba(250, 210, 80, .45)';
   const HL_BG_FOCUS = 'rgba(250, 190, 60, .6)';
+  const HL_BG_DONE = 'rgba(141, 199, 146, .42)';
+  const HL_BG_DONE_FOCUS = 'rgba(108, 184, 118, .58)';
+  // The state lives on the mark itself, as classes, rather than in a table
+  // beside it: every restyle (focus, resolve, reopen) can then read the mark's
+  // current state off the mark, and a repaint from the record cannot disagree
+  // with what is on screen.
+  const DONE_CLASS = 'bfp-done';
+  const FOCUS_CLASS = 'bfp-focused';
 
   function styleMark(mark, focused) {
     const st = mark.style;
-    st.setProperty('background-color', focused ? HL_BG_FOCUS : HL_BG, 'important');
+    const done = mark.classList && mark.classList.contains(DONE_CLASS);
+    const bg = done ? (focused ? HL_BG_DONE_FOCUS : HL_BG_DONE)
+      : (focused ? HL_BG_FOCUS : HL_BG);
+    st.setProperty('background-color', bg, 'important');
     st.setProperty('color', 'inherit', 'important');
     st.setProperty('border-radius', '2px', 'important');
     st.setProperty('padding', '0', 'important');
@@ -274,7 +295,7 @@
   // Splitting a text node never changes the page's concatenated text, so
   // offsets computed from an earlier index stay valid — but `index` itself is
   // stale afterwards and callers must rebuild it before painting the next one.
-  function paintOffsets(index, start, end, id) {
+  function paintOffsets(index, start, end, id, resolved) {
     const parts = textNodesIn(index, start, end);
     const marks = [];
     for (const p of parts) {
@@ -284,7 +305,7 @@
       if (p.s > 0) n = n.splitText(p.s);
       if (!n.data.trim()) continue; // don't leave empty marks on inter-node whitespace
       const mark = (n.ownerDocument || document).createElement('mark');
-      mark.className = 'bfp-hl';
+      mark.className = resolved ? 'bfp-hl ' + DONE_CLASS : 'bfp-hl';
       mark.setAttribute('data-bfp', String(id));
       styleMark(mark, false);
       n.parentNode.insertBefore(mark, n);
@@ -324,8 +345,28 @@
   }
 
   function setFocus(id, on) {
-    for (const mark of marksFor(id)) styleMark(mark, !!on);
+    for (const mark of marksFor(id)) {
+      mark.classList.toggle(FOCUS_CLASS, !!on);
+      styleMark(mark, !!on);
+    }
   }
+
+  // Yellow ⇄ green in place, without unpainting: resolving a thread must not
+  // disturb the anchor it is painted on, and the reader is watching this
+  // happen while they sweep down the list. Each mark keeps whatever focus it
+  // already had, which is read back off the mark rather than passed in.
+  function markResolved(id, on) {
+    const marks = marksFor(id);
+    for (const mark of marks) {
+      mark.classList.toggle(DONE_CLASS, !!on);
+      styleMark(mark, mark.classList.contains(FOCUS_CLASS));
+    }
+    return marks.length;
+  }
+  const isMarkResolved = id => {
+    const m = marksFor(id)[0];
+    return !!(m && m.classList.contains(DONE_CLASS));
+  };
 
   function scrollTo(id) {
     const m = marksFor(id)[0];
@@ -345,7 +386,8 @@
     // dom
     buildTextIndex, offsetsFromRange, offsetOf, rangeFromOffsets, textNodesIn,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
-    HL_BG, HL_BG_FOCUS,
+    markResolved, isMarkResolved,
+    HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS, DONE_CLASS, FOCUS_CLASS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAnchor = api;

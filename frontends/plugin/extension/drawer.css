@@ -18,6 +18,12 @@
   --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
   --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
   --hl: rgba(240, 195, 120, 0.55); --hl-active: rgba(228, 166, 80, 0.8);
+  /* the RESOLVED highlight, in the drawer's own terms: the same sage green
+     anchor.js paints on the page (HL_BG_DONE), so a filed card and the mark it
+     points at are visibly the same fact. Kept well clear of --you (#0f7f61 /
+     #3ecfa0), the reader's speech colour — a handled annotation and a person
+     talking must not read as one thing. */
+  --done: rgba(141, 199, 146, 0.42); --done-line: rgba(96, 158, 108, 0.85);
   --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -61,6 +67,7 @@
     --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
     --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
     --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+    --done: rgba(120, 180, 130, 0.30); --done-line: rgba(126, 196, 134, 0.75);
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
     --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
@@ -73,6 +80,7 @@
   --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
   --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
   --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
+  --done: rgba(120, 180, 130, 0.30); --done-line: rgba(126, 196, 134, 0.75);
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
   --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
@@ -651,6 +659,71 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 
 .thread { border-top: 1px dotted var(--card-line); padding-top: 6px; margin-top: 2px }
 .card.chatpane .thread { border-top: 0; padding-top: 0 }
+
+/* ── resolving: the ✓ beside the ✕ ──────────────────────────────────────── */
+/* Same size, same opacity, same reveal-on-hover as the delete it sits next to.
+   A resolve is the commonest thing anybody does to a thread, and it still must
+   not shout: the row it lives on is one of forty the reader is scanning. */
+.rebtn.thr-res:hover { color: var(--done-line) }
+.rebtn.thr-reopen:hover { color: var(--accent) }
+.rebtn.thr-res.busy { opacity: .85; color: var(--muted); cursor: default;
+  display: inline-flex; align-items: center; justify-content: center;
+  animation: bfp-spin 1s linear infinite }
+@keyframes bfp-spin { to { transform: rotate(360deg) } }
+@media (prefers-reduced-motion: reduce) { .rebtn.thr-res.busy { animation: none } }
+
+/* ── the resolved archive ───────────────────────────────────────────────── */
+/* One collapsed section at the FOOT of the comments list — not a tab, not a
+   filter, not another place to be. Everything the reader has dealt with on
+   this page, in one line they can ignore. */
+.resolved-sec { margin: 18px 0 8px; border-top: 1px solid var(--card-line); padding-top: 10px }
+.resolved-head {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: none; border: 0; padding: 5px 2px; min-height: 28px;
+  font: 12px/1.4 var(--sans); color: var(--muted); text-align: left;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.resolved-head:hover { color: var(--fg); border-color: transparent }
+.resolved-head .rcaret { font-size: 10px; width: 10px; flex: none }
+.resolved-head .rcount {
+  font-size: 12px; letter-spacing: 0; padding: 1px 7px; border-radius: 999px;
+  background: var(--done); color: var(--fg);
+}
+.resolved-list { margin-top: 8px }
+
+/* A filed card: the passage, then what it settled, with the thread itself
+   folded away underneath. Subdued — it is done — but never unreadable: this
+   section is meant to be read as a digest of decisions, not skimmed past. */
+.card.resolved {
+  border-left-color: var(--done-line);
+  /* a real tint, not a hint: --done already carries alpha, so the mix has to
+     be generous to read as a different kind of card at a glance */
+  background: color-mix(in srgb, var(--done) 45%, var(--card));
+}
+.card.resolved .quote { border-left-color: var(--done-line); opacity: .85 }
+.card.resolved:hover { box-shadow: 0 2px 10px rgba(0, 0, 0, .12) }
+.digest {
+  margin: 2px 0 6px; font: 13px/1.6 var(--sans); color: var(--fg);
+  overflow-wrap: anywhere;
+}
+/* the instant heuristic, before the agents' paragraph replaces it: legible,
+   and visibly not the final word */
+.digest.provisional { color: var(--muted); font-style: italic }
+.drow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+.dtoggle {
+  background: none; border: 0; padding: 2px 0; min-height: 22px;
+  font: 12px/1.4 var(--sans); color: var(--muted); text-align: left;
+}
+.dtoggle:hover { color: var(--accent); border-color: transparent }
+.dmeta { flex: 1 1 auto; min-width: 0; font: 12px/1.4 var(--sans); color: var(--muted);
+  text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.rebtn.dsum { flex: none; font-size: 12px }
+.rebtn.dsum:hover { color: var(--accent) }
+.card.resolved .thread { margin-top: 8px }
+
+/* every comment on the page is filed: the empty state says so rather than
+   telling the reader to go and make one */
+.empty.allclear b { color: var(--done-line) }
 
 .reply {
   position: relative; margin: 6px 0; padding: 7px 10px; border-radius: 8px;

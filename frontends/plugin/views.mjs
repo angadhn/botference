@@ -40,12 +40,16 @@ const STYLE = `
 :root { --bg:#faf7f0; --fg:#2a2419; --muted:#8a7f6d; --card:#fff; --line:#e7dfd1;
   --accent:#d97757; --accent-hover:#c05f3f; --claude:#d97757; --codex:#4a86c8;
   --quote:#f3ede1;
+  /* the resolved tint — anchor.js's HL_BG_DONE, so a green highlight in the
+     article view and a filed card in the comments view are the same fact */
+  --done:rgba(141,199,146,.42); --done-line:rgba(96,158,108,.85);
   /* tag chips: the hue is the tag's own (--th, from tagHue below); the theme
      owns saturation/lightness so every hue clears contrast on both schemes */
   --tag-fg-l:30%; --tag-bg-l:93%; --tag-line-l:72% }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#1a1712; --fg:#e8dfd1; --muted:#9c917e; --card:#241f18;
     --line:rgba(217,119,87,.24); --accent-hover:#e8896d; --quote:#1f1b15;
+    --done:rgba(120,180,130,.30); --done-line:rgba(126,196,134,.75);
     --tag-fg-l:80%; --tag-bg-l:20%; --tag-line-l:36% }
 }
 * { box-sizing:border-box }
@@ -85,6 +89,22 @@ button:hover { background:var(--accent-hover) }
 .notice { background:var(--card); border:1px solid var(--accent); border-radius:8px;
   padding:.6rem .8rem; margin:0 0 1.2rem; font-size:.88rem }
 .empty { color:var(--muted); font-size:.9rem }
+/* resolved threads, on a phone: the same shape as the drawer's — one folded
+   line at the foot of the list, each card carrying what the thread settled and
+   the thread itself underneath. <details> does all of it; this view has no
+   script and does not want one. */
+details.resolved-sec { margin:.4rem 0 0; border-top:1px solid var(--line); padding-top:.7rem }
+details.resolved-sec > summary { cursor:pointer; color:var(--muted); font-size:.8rem;
+  text-transform:uppercase; letter-spacing:.05em; padding:.35rem 0 }
+details.resolved-sec > summary:hover { color:var(--fg) }
+.card.resolved { background:color-mix(in srgb, var(--done) 45%, var(--card));
+  border-color:var(--done-line) }
+.card.resolved blockquote { border-left-color:var(--done-line) }
+.digest { margin:0 0 .7rem; font-size:.9rem; overflow-wrap:anywhere }
+form.resolve { display:inline-block; margin:.6rem 0 0 }
+form.resolve button { background:none; color:var(--muted); border:1px solid var(--line);
+  padding:.25rem .7rem; font-size:.78rem }
+form.resolve button:hover { background:none; color:var(--fg); border-color:var(--done-line) }
 ul.pages { list-style:none; margin:0; padding:0 }
 ul.pages li { border-bottom:1px solid var(--line); padding:.7rem 0 }
 /* article URLs are long and phones are narrow: wrap rather than push the
@@ -238,13 +258,36 @@ function metaEdit(page, key) {
     + field('/tag-page', 'tags', tagsOf(page).join(', '), 'tags', 'comma, separated, tags');
 }
 
+// Resolve / reopen from a phone: one button, one form post, no script — the
+// same /resolve the drawer calls, in the reading room's only dialect.
+const resolveForm = (page, key, t) => `<form class="resolve" method="POST" action="/resolve">
+<input type="hidden" name="url" value="${escHtml(page.url)}">
+<input type="hidden" name="thread_id" value="${escHtml(t.id)}">
+<input type="hidden" name="redirect" value="/p/${escHtml(key)}">
+<input type="hidden" name="resolved" value="${t.resolved ? '' : '1'}">
+<button>${t.resolved ? '↺ reopen' : '✓ resolve'}</button>
+</form>`;
+
+const threadCard = (page, key, ctx, t, i) => `<section class="card${t.resolved ? ' resolved' : ''}" id="${escHtml(t.id)}">
+<blockquote>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
+${t.resolved && t.summary ? `<p class="digest">${escHtml(t.summary)}</p>` : ''}
+${(t.msgs || []).map(m => msgHtml(m, ctx)).join('\n')}
+${resolveForm(page, key, t)}
+${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
+</section>`;
+
 export function pageView({ page, key, me, notice, snapshot }) {
   const ctx = { key, owner: !!(me && me.owner) };
-  const threads = (page.threads || []).map((t, i) => `<section class="card" id="${escHtml(t.id)}">
-<blockquote>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
-${(t.msgs || []).map(m => msgHtml(m, ctx)).join('\n')}
-${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
-</section>`).join('\n');
+  const all = page.threads || [];
+  // the same shape as the drawer: what still wants you, then everything you
+  // have dealt with, folded away under one line. <details> is the whole of the
+  // interaction — this view has no script and is not getting one.
+  const threads = all.map((t, i) => (t.resolved ? '' : threadCard(page, key, ctx, t, i))).join('\n');
+  const doneList = all.map((t, i) => (t.resolved ? threadCard(page, key, ctx, t, i) : '')).join('\n');
+  const doneCount = all.filter(t => t.resolved).length;
+  const resolved = doneCount
+    ? `<details class="resolved-sec"><summary>Resolved (${doneCount})</summary>\n${doneList}\n</details>`
+    : '';
   const chat = (page.page_chat || []).map(m => msgHtml(m, ctx)).join('\n');
   const name = displayTitle(page);
   const tags = tagsOf(page);
@@ -261,8 +304,11 @@ ${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${e
 ${me && me.owner ? metaEdit(page, key) : ''}
 </header>
 ${notice ? `<div class="notice">${escHtml(notice)}</div>` : ''}
-<h2>comments${(page.threads || []).length ? '' : ' — none yet'}</h2>
-${threads || '<p class="empty">Nothing highlighted on this page yet.</p>'}
+<h2>comments${all.length ? '' : ' — none yet'}</h2>
+${threads.trim() || (all.length
+  ? '<p class="empty">Every comment on this page is resolved.</p>'
+  : '<p class="empty">Nothing highlighted on this page yet.</p>')}
+${resolved}
 <h2>page chat</h2>
 <section class="card">
 ${chat || '<p class="empty">No general discussion of this page yet.</p>'}

@@ -93,6 +93,14 @@ across the extension/server boundary (extension can't import server files).
       "quote": "exact selected text",
       "prefix": "≤32 chars before", "suffix": "≤32 chars after",
       "orphaned": false,
+      // RESOLVED — the reader has marked this thread handled. All four fields
+      // are absent on an open thread: reopening DELETES them rather than
+      // writing resolved:false, so a never-resolved thread and a reopened one
+      // are the same record. `summary` is the exception — it survives a reopen.
+      "resolved": true, "resolved_at": "ISO", "resolved_by": "angadh",
+      "summary": "3-5 sentences: what was asked, what came of it",
+      "summary_by": "claude",               // absent ⇒ still the instant placeholder
+      "summary_at": "ISO",
       "msgs": [ { "author": "angadh"|"claude"|"codex", "ts": "ISO", "text": "…" } ] }
   ],
   "page_chat": [ { "author": "…", "ts": "ISO", "text": "…" } ] }
@@ -127,6 +135,8 @@ All bodies JSON. All error responses `{ok:false, error:"…"}` with 4xx/5xx.
 | POST | `/edit` | `{url, thread_id, ts, text}` | edits own (author=config.author) msg |
 | POST | `/delete` | `{url, thread_id, ts?}` | ts absent → whole thread; present → one msg |
 | POST | `/orphan` | `{url, thread_id, orphaned:bool}` | extension reports anchor status |
+| POST | `/resolve` | `{url, thread_id, resolved:bool}` | files a thread / puts it back → `{ok, thread, summarizing?}` |
+| POST | `/summarize` | `{url, thread_id}` | queues the filing turn again → `{ok, summarizing}` (409 with agents off) |
 | POST | `/export` | `{url, mode?}` (`mode`: `all` (default) \| `comments`) | writes Obsidian note → `{ok, path, mode}` |
 | POST | `/rename-page` | `{url, title}` | owner: the reader's own name for a page (`''` clears it) → `{ok, title, custom_title}` |
 | POST | `/tag-page` | `{url, tags:[…]}` | owner: normalised, stored, indexed → `{ok, tags}` |
@@ -1548,7 +1558,45 @@ Contract deltas agreed during live testing — authoritative over the sections a
   same way) and removing or hollowing out a fence would run the wrong code.
   test/envelope.test.mjs holds that line, and the checkbox ordinals with it.
 
+- **A thread can be RESOLVED, and resolving never hides a passage.** A page
+  collects comments faster than anyone works through them, so the reader marks
+  one handled: the card leaves the main list for a single collapsed "Resolved
+  (N)" section at the FOOT of that list (never a tab, never a filter), and the
+  highlight on the page stays exactly where it is and turns from yellow to a
+  desaturated sage green (`anchor.js HL_BG_DONE`, `mark.bfp-hl.bfp-done`,
+  `--done/--done-line` per theme in drawer.css and the phone's stylesheet).
+  Deliberately NOT the braid's mint `--you`: a handled annotation and a person
+  speaking must not read as the same thing. Green marks stay clickable and
+  click through to their own thread — `drawer.focus()` opens the archive and
+  unfolds that card, so the reveal is part of focusing rather than something
+  every caller has to remember.
+  - **It is TRIAGE, so it costs one click.** A quiet ✓ sits beside the ✕ on
+    every thread row — no menu, no dialog, no confirmation anywhere in the
+    path (Reopen is the undo, and it is one click too). The card moves
+    optimistically, the Comments count is the count of OPEN threads so the
+    list visibly shrinks, and a refusal puts card and highlight back.
+  - **New activity is the end of resolved.** `store.appendMsg` clears the
+    flag, so the reader replying, the reading room's composer and a bot's
+    answer off the bridge all reopen a filed thread through one rule.
+  - **A filed card is a digest, not a dimmed thread**: the quote, then 3–5
+    sentences saying what was asked and what came of it, with the full thread
+    folded away underneath and expandable in place. The summary is written
+    twice — `store.threadDigest` puts a deterministic placeholder in the same
+    request as the flag (triage never waits on an agent), and a SILENT summary
+    turn (`job.summary`, `chat.summaryPrompt`) drains behind whatever else the
+    bridge is doing and replaces it. That turn's answer is never appended to
+    the thread — it leaves chat.mjs as a `summary` event and lands in the
+    `summary` FIELD — because a message would reopen the very thread it
+    describes. A reopen cancels nothing: the paragraph lands unused, which is
+    also what makes a re-resolve instant.
+  - Server state throughout (`/resolve`, `/summarize`), so the green survives
+    a reload and reaches the phone and the other machine. The reading room
+    gets the same two states out of `<details>` and a form post; the Obsidian
+    note says *Resolved by …* and carries the paragraph; and the library
+    prompt tells the agents what a resolved thread means so an archive of
+    filed threads is not read back as a pile of open questions.
+
 ## Out of scope for v1 (do not build)
 
-Firefox packaging, hosted/multi-user mode, resolve/archive states in the drawer,
-settings UI, SPA mutation observers, annotation sharing.
+Firefox packaging, hosted/multi-user mode, settings UI, SPA mutation observers,
+annotation sharing.

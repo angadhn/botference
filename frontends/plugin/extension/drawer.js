@@ -44,6 +44,10 @@
 //   onReply(threadId, text)             threadId '__page__' = page chat
 //   onEdit(threadId, ts, text)
 //   onDelete(threadId, ts|null)         null ts = delete the whole thread
+//   onResolve(threadId, resolved)       file a thread / put it back →
+//                                       {ok, thread, summarizing}
+//   onSummarize(threadId)               ask the agents to write a filed
+//                                       thread's paragraph again → {ok}
 //   onTick(threadId, ts, index, checked) a checkbox in a bot's markdown
 //                                        checklist was clicked; index is its
 //                                        0-based ordinal in that message
@@ -1030,6 +1034,15 @@
       // middle. In memory for the session only: a collapse is a reading
       // convenience, not a decision worth persisting.
       expanded: {},
+      // ---- resolved threads ---------------------------------------------
+      // The main list is what still needs the reader; everything they have
+      // marked handled drops into one collapsed section at the bottom. Both
+      // pieces of state are for the session only: which section is open and
+      // which digest cards have been unfolded are reading positions, not
+      // decisions — the decision (resolved / not) lives in the record.
+      resolvedOpen: false,   // the "Resolved (N)" section is expanded
+      resolvedCards: {},     // threadId -> the full thread under its digest is open
+      resolving: {},         // threadId -> a resolve/reopen is in flight
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -1695,6 +1708,26 @@
       }).join('');
     }
 
+    const isResolved = t => !!(t && t.resolved);
+    const quoteHtml = (t, orph) =>
+      `<div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}</div>`;
+
+    // The resolve control. One click, no confirm, no menu, no dialog: the
+    // reader is triaging a page with forty threads on it and the whole value
+    // of this is that the list shrinks as fast as they can click. Reopen IS
+    // the undo, and it is one click too — so there is nothing to confirm.
+    //
+    // Quiet on purpose: a ✓ at the same weight and opacity as the ✕ beside it,
+    // showing on hover like every other per-row control, because a control
+    // that shouted would add its own clutter to the very rows it exists to
+    // clear away.
+    const resolveBtn = t => (D.resolving[t.id]
+      ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
+      : `<button class="rebtn thr-res" data-act="resolve" data-target="${esc(t.id)}" type="button" title="resolve — it files itself below and the highlight turns green" aria-label="resolve this thread">✓</button>`);
+    const reopenBtn = t => (D.resolving[t.id]
+      ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
+      : `<button class="rebtn thr-reopen" data-act="reopen" data-target="${esc(t.id)}" type="button" title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`);
+
     function cardHtml(t) {
       const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
       const author = threadAuthor(t);
@@ -1706,15 +1739,52 @@
         ? `<div class="confirm">delete thread?
              <button class="rebtn yes" data-act="del-thread-yes" data-target="${esc(t.id)}" type="button">yes</button>
              <button class="rebtn" data-act="del-thread-no" type="button">no</button></div>`
-        : `<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
+        : `${resolveBtn(t)}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
       return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${speakerColor(author)}">
         <div class="chead">
-          <div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}</div>
+          ${quoteHtml(t, orph)}
           ${head}
         </div>
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
         ${composerHtml(t.id, 'Reply…')}
+      </div>`;
+    }
+
+    // A FILED thread, and the reason the archive is worth opening: not a
+    // dimmed copy of the thread but a record OF it — the passage, and a
+    // paragraph saying what the comment asked and what came of it. The
+    // Resolved section read top to bottom is then a digest of decisions,
+    // which is the thing a reader actually wants weeks later; the thread
+    // itself is still right there, one click down, in place.
+    //
+    // `summary` is whatever the record holds: the instant heuristic the
+    // companion wrote when the reader clicked resolve, or the agents' three
+    // to five sentences once that job has drained over the top of it. The
+    // card cannot tell and does not need to.
+    function resolvedCardHtml(t) {
+      const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
+      const open = !!D.resolvedCards[t.id];
+      const author = threadAuthor(t);
+      const cls = ['card', 'resolved', open ? 'unfolded' : '', orph ? 'orphaned' : '',
+        D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : ''].filter(Boolean).join(' ');
+      const n = (t.msgs || []).length;
+      const by = t.resolved_by ? ` by ${esc(t.resolved_by)}` : '';
+      const pending = !t.summary_by;   // still the companion's placeholder
+      return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${speakerColor(author)}">
+        <div class="chead">
+          ${quoteHtml(t, orph)}
+          ${reopenBtn(t)}
+        </div>
+        <p class="digest${pending ? ' provisional' : ''}">${esc(t.summary || '')}</p>
+        <div class="drow">
+          <button class="dtoggle" data-act="resolved-card" data-target="${esc(t.id)}" type="button" aria-expanded="${open ? 'true' : 'false'}">${open ? '▾ hide the thread' : `▸ show the thread (${n} message${n === 1 ? '' : 's'})`}</button>
+          <span class="dmeta" title="resolved${by}">${pending ? 'summarizing…' : `filed${by}`}</span>
+          <button class="rebtn dsum" data-act="summarize" data-target="${esc(t.id)}" type="button" title="ask the agents to write this summary again" aria-label="rewrite this summary">↻</button>
+        </div>
+        ${open ? `<div class="thread">${msgsHtml(t.id, t.msgs)}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
+          ${statusHtml(t.id)}
+          ${composerHtml(t.id, 'Reply — replying reopens this thread…')}` : ''}
       </div>`;
     }
 
@@ -1780,16 +1850,36 @@
 
     function renderComments() {
       const threads = (D.page && D.page.threads) || [];
+      const open = threads.filter(t => !isResolved(t));
+      const done = threads.filter(isResolved);
       let html = offlineHtml() + nohlHtml();
       html += D.pending ? pendingHtml() : '';
       // "select any text and hit 💬" is a lie where selection does nothing —
       // the note above has already said what to do instead
       if (!threads.length && !D.pending && CAPS.highlights) {
         html += `<div class="empty"><b>No comments yet</b>Select any text on the page and hit 💬.</div>`;
+      } else if (!open.length && !D.pending && CAPS.highlights) {
+        // every thread on this page is filed — say so, rather than showing the
+        // "no comments yet" line above a section full of them
+        html += `<div class="empty allclear"><b>All clear</b>Every comment on this page is resolved.</div>`;
       }
-      html += threads.map(cardHtml).join('');
+      html += open.map(cardHtml).join('');
+      // ONE collapsed section at the bottom, never a tab: the archive is the
+      // foot of this page's list, not a place to navigate to. Closed by
+      // default, and its cards are not built at all until it is opened — a
+      // page with sixty filed threads must cost nothing to scroll past.
+      if (done.length) {
+        html += `<div class="resolved-sec${D.resolvedOpen ? ' open' : ''}">
+          <button class="resolved-head" data-act="resolved-toggle" type="button" aria-expanded="${D.resolvedOpen ? 'true' : 'false'}">
+            <span class="rcaret" aria-hidden="true">${D.resolvedOpen ? '▾' : '▸'}</span>Resolved <span class="rcount">${done.length}</span>
+          </button>
+          ${D.resolvedOpen ? `<div class="resolved-list">${done.map(resolvedCardHtml).join('')}</div>` : ''}
+        </div>`;
+      }
       D.el.comments.innerHTML = html;
-      D.el.cCount.textContent = String(threads.length);
+      // the tab counts what still wants the reader — the list visibly shrinks
+      // as they sweep down it, which is the whole point of resolving
+      D.el.cCount.textContent = String(open.length);
     }
 
     function renderChat() {
@@ -2923,6 +3013,11 @@
         if (act === 'copy') { doCopy(btn); return; }
         if (act === 'edit') { startEdit(btn); return; }
         if (act === 'del-msg') { doDelete(target, btn.dataset.ts); return; }
+        if (act === 'resolve') { doResolve(target, true); return; }
+        if (act === 'reopen') { doResolve(target, false); return; }
+        if (act === 'resolved-toggle') { D.resolvedOpen = !D.resolvedOpen; render(); return; }
+        if (act === 'resolved-card') { D.resolvedCards[target] = !D.resolvedCards[target]; render(); return; }
+        if (act === 'summarize') { doSummarize(target); return; }
         if (act === 'del-thread') { D.confirm = target; render(); return; }
         if (act === 'del-thread-no') { D.confirm = null; render(); return; }
         if (act === 'del-thread-yes') { D.confirm = null; doDelete(target, null); return; }
@@ -3047,11 +3142,32 @@
       });
     }
 
+    // Focusing a thread must always RESULT IN A CARD ON SCREEN. Clicking a
+    // green highlight on the page is the case that forces it: content.js does
+    // open → focus → scrollIntoView, and a filed thread lives inside a section
+    // that is collapsed by default, so without this the click would open the
+    // drawer onto nothing. So a focus that names a resolved thread opens the
+    // archive and unfolds that card — the reader arrives at the thread itself,
+    // with its Reopen button, exactly as they would on a yellow highlight.
     function focus(id) {
-      if (D.focused === id) return;
+      const revealed = reveal(id);
+      if (D.focused === id) { if (revealed) render(); return; }
       D.focused = id;
-      D.shadow.querySelectorAll('.card').forEach(c => c.classList.toggle('focused', c.dataset.thread === id));
+      if (revealed) render();
+      else D.shadow.querySelectorAll('.card').forEach(c => c.classList.toggle('focused', c.dataset.thread === id));
       cb('onFocus')(id);
+    }
+    // …whatever it takes to make `id` visible. Returns whether anything had to
+    // change, so the caller knows a full render is needed rather than a class
+    // toggle over the cards already drawn.
+    function reveal(id) {
+      const t = id ? threadById(id) : null;
+      if (!t || !t.resolved) return false;
+      let changed = false;
+      if (!D.resolvedOpen) { D.resolvedOpen = true; changed = true; }
+      if (!D.resolvedCards[id]) { D.resolvedCards[id] = true; changed = true; }
+      if (D.tab !== 'comments') { D.tab = 'comments'; paintTabs(); changed = true; }
+      return changed;
     }
 
     function note(target, text, err, transient) {
@@ -3707,6 +3823,88 @@
       const r = await cb('onDelete')(target, ts || null);
       if (r && r.ok === false) note(target, r.error || 'delete failed', true);
       else render();
+    }
+
+    // Resolve / reopen, OPTIMISTICALLY. The record is the authority and the
+    // round trip settles it, but the card moves on the click: a reader sweeping
+    // a long list must never be waiting on a server to know whether their last
+    // click landed, and a list that shrinks a beat late reads as a list that
+    // ignored you.
+    //
+    // The instant digest is written locally too, by the same rule the companion
+    // applies (store.threadDigest), so the card that appears under "Resolved"
+    // is never blank for the frame before the answer comes back.
+    async function doResolve(target, on) {
+      const t = threadById(target);
+      if (!t || D.resolving[target]) return;
+      const was = !!t.resolved;
+      const wasSummary = t.summary;
+      if (on) {
+        t.resolved = true;
+        if (!t.summary) t.summary = localDigest(t);
+        // opening the archive on the first resolve is the one time the reader
+        // is shown where their thread went; after that it stays as they left it
+        D.resolvedCards[target] = false;
+      } else {
+        // reopening is the undo: the card leaves the archive and rejoins the
+        // list it came from, in its page order. `summary` is left where it is —
+        // it is still a true account of what the thread said last time, and
+        // keeping it is what lets a late summary job land harmlessly.
+        delete t.resolved;
+      }
+      D.resolving[target] = true;
+      render();
+      let r;
+      try { r = await cb('onResolve')(target, !!on); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      delete D.resolving[target];
+      if (!r || r.ok === false) {
+        // put it back exactly as it was — including a summary we invented
+        const now = threadById(target);
+        if (now) {
+          if (was) now.resolved = true; else delete now.resolved;
+          if (wasSummary == null) delete now.summary; else now.summary = wasSummary;
+        }
+        note(target, (r && r.error) || (on ? 'could not resolve that thread' : 'could not reopen that thread'), true);
+        return;   // note() renders
+      }
+      // the companion's own copy of the thread wins over our guess at it
+      const fresh = r.thread;
+      const mine = threadById(target);
+      if (fresh && mine) Object.assign(mine, fresh);
+      render();
+    }
+
+    async function doSummarize(target) {
+      let r;
+      try { r = await cb('onSummarize')(target); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (r && r.ok === false) { note(target, r.error || 'could not ask for a summary', true); return; }
+      const t = threadById(target);
+      // back to the provisional look until the job drains — otherwise nothing
+      // at all happens on screen and the click looks lost
+      if (t) delete t.summary_by;
+      render();
+    }
+
+    const threadById = id => ((D.page && D.page.threads) || []).find(t => t.id === id) || null;
+
+    // The drawer's copy of store.threadDigest, for the optimistic card only.
+    // Deliberately the same rule, deliberately not shared code: this runs in a
+    // content script that cannot import the companion's modules, and the
+    // authoritative digest is always the one that comes back in `thread`.
+    function localDigest(t) {
+      const said = ((t && t.msgs) || []).filter(m => m && m.kind !== 'tools');
+      const tally = said.map(m => {
+        const all = String(m.text || '').match(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/gm) || [];
+        return all.length ? { done: all.filter(x => /\[[xX]\]$/.test(x)).length, total: all.length } : null;
+      }).filter(Boolean).pop();
+      const lastBot = [...said].reverse().find(m => isBot(m.author));
+      const src = (lastBot || said[said.length - 1] || {}).text;
+      const s = String(src || '').replace(/```[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim();
+      const m = /^(.{20,220}?[.!?])(\s|$)/.exec(s);
+      const body = (m ? m[1] : s.slice(0, 220)).trim();
+      return [tally ? `Checklist: ${tally.done}/${tally.total} done.` : '', body].filter(Boolean).join(' ') || 'Resolved.';
     }
 
     // One export feedback path, whichever crystal was clicked: the header's

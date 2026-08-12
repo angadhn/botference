@@ -721,5 +721,90 @@ export function appendMsg(page, threadId, { author, text, ts, kind }) {
   const msg = { author, ts: ts || nowIso(), text: String(text || '') };
   if (kind) msg.kind = String(kind); // "tools" — a bot's tool-activity summary
   msgs.push(msg);
+  // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written
+  // into — the reader replying, or a bot's answer landing — is a live thread
+  // again, whatever it was a second ago. This is the ONE place that has to
+  // know it: /reply, the reading room's composer and the bridge's `reply`
+  // event all append here, so none of them carries the rule separately.
+  if (threadId !== PAGE_CHAT) setResolved(findThread(page, threadId), false);
   return msg;
+}
+
+// ---- resolving a thread -------------------------------------------------
+// A page collects comments faster than anybody works through them, so a thread
+// can be marked HANDLED: it leaves the drawer's main list for a collapsed
+// archive at the bottom, and its highlight on the page turns from yellow to
+// green. It is never hidden and never deleted — the passage stays marked,
+// because "we dealt with this" is worth seeing on a re-read months later.
+//
+// State, not history: `resolved` is a plain flag beside `orphaned`, and
+// reopening REMOVES the three fields rather than writing resolved:false, so a
+// record that has never been resolved is byte-identical to one that has been
+// resolved and reopened, and every record written before this reads as open.
+//
+// `summary` deliberately SURVIVES a reopen. It is what the thread settled last
+// time, which is still true; keeping it means a re-resolve shows its digest
+// instantly, and it is what lets a summary job that drains after a reopen land
+// harmlessly instead of needing to be chased down and cancelled.
+export const SUMMARY_MAX = 2000;
+export const isResolved = t => !!(t && t.resolved);
+
+export function setResolved(thread, on, by) {
+  if (!thread) return null;
+  const was = !!thread.resolved;
+  if (on) {
+    thread.resolved = true;
+    thread.resolved_at = nowIso();
+    if (by) thread.resolved_by = sanitizeHandle(by); else delete thread.resolved_by;
+  } else {
+    delete thread.resolved;
+    delete thread.resolved_at;
+    delete thread.resolved_by;
+  }
+  return { thread, changed: was !== !!on };
+}
+
+// What the resolved card says the thread settled. Written twice over: the
+// instant heuristic below the moment the reader clicks resolve, then the
+// agent's own three-to-five sentences when that job drains (server.mjs). One
+// field, so the card renders whatever is there and never has to know which.
+export function setSummary(thread, text, by) {
+  if (!thread) return null;
+  const s = String(text || '').replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX);
+  if (!s) return null;
+  thread.summary = s;
+  thread.summary_at = nowIso();
+  if (by) thread.summary_by = sanitizeHandle(by); else delete thread.summary_by;
+  return thread;
+}
+
+// The placeholder — instant, deterministic, no agent. Resolving must stay a
+// single click that costs nothing, so the card is never empty while the real
+// summary is still in the queue behind whatever else the bots are doing.
+//
+// Preference order is "what would a reader most want to see in one line":
+// the last thing a BOT concluded, else the last thing anyone said. A checklist
+// in the thread is reported as a tally instead — "3/4 done" says more about
+// where a task thread got to than any sentence of it does.
+const boxes = text => {
+  const all = String(text || '').match(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/gm) || [];
+  const done = all.filter(m => /\[[xX]\]$/.test(m)).length;
+  return all.length ? { done, total: all.length } : null;
+};
+const firstSentence = text => {
+  const s = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  const m = /^(.{20,220}?[.!?])(\s|$)/.exec(s);
+  return (m ? m[1] : s.slice(0, 220)).trim();
+};
+export function threadDigest(thread) {
+  const msgs = (thread && thread.msgs) || [];
+  const said = msgs.filter(m => m && m.kind !== 'tools');
+  const tally = said.map(m => boxes(m.text)).filter(Boolean).pop();
+  const lastBot = [...said].reverse().find(m => /^(claude|codex)\b/i.test(String(m.author || '')));
+  const last = said[said.length - 1];
+  const head = tally ? `Checklist: ${tally.done}/${tally.total} done.` : '';
+  const body = firstSentence((lastBot || last || {}).text);
+  const out = [head, body].filter(Boolean).join(' ');
+  return out || 'Resolved.';
 }

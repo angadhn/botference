@@ -855,6 +855,9 @@ const keyModePosts = [];    // every /key-mode body, for the billing-picker chec
 const KEYMODE_APPLIES = 'now';
 const snapshots = [];       // every /snapshot body, for the phone-reading checks
 const orphanPosts = [];     // every /orphan body
+const resolvePosts = [];    // every /resolve {thread_id, resolved}
+const summarizePosts = [];  // …and every /summarize the reader asked for by hand
+let resolveFail = false;    // the selftest flips this to exercise the revert
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const renamePosts = [];     // every /rename-page {url, title}
 const tagPosts = [];        // every /tag-page {url, tags}
@@ -1026,6 +1029,27 @@ function msgIn(threadId, ts) {
     : (RECORD.threads.find(t => t.id === threadId) || { msgs: [] }).msgs;
   return list.find(m => m.ts === ts) || null;
 }
+// store.appendMsg's other half: new activity is the end of resolved. The
+// companion applies this wherever a message lands — the reader replying, the
+// reading room's composer, and a bot's answer arriving off the bridge — so the
+// fake one has to as well, or the drawer would be tested against a companion
+// that is kinder than the real one.
+function reopenOnWrite(rec, threadId) {
+  if (!threadId || threadId === '__page__') return;
+  const t = (rec.threads || []).find(x => x.id === threadId);
+  if (!t) return;
+  delete t.resolved; delete t.resolved_at; delete t.resolved_by;
+}
+// store.threadDigest, as the fake companion: the instant placeholder written
+// the moment a thread is resolved, so triage never waits on an agent.
+function digestOf(t) {
+  const said = (t.msgs || []).filter(m => m && m.kind !== 'tools');
+  const bot = said.slice().reverse().find(m => /^(claude|codex)\b/i.test(String(m.author || '')));
+  const src = (bot || said[said.length - 1] || {}).text || '';
+  const s = String(src).replace(/```[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim();
+  const m = /^(.{20,220}?[.!?])(\s|$)/.exec(s);
+  return (m ? m[1] : s.slice(0, 220)).trim() || 'Resolved.';
+}
 
 // Play a full turn: turn-start → stream deltas → stream-done → reply → turn-end,
 // then a `page` invalidation, exactly as the companion would.
@@ -1053,7 +1077,9 @@ function playTurn(target, text, url) {
       const list = target === '__page__'
         ? rec.page_chat
         : (rec.threads.find(t => t.id === target) || { msgs: [] }).msgs;
-      const post = m => { list.push(m); ev({ type: 'chat', kind: 'reply', msg: m }); };
+      // the companion persists a bot reply through the same appendMsg every
+      // other write goes through — so a bot answering a filed thread reopens it
+      const post = m => { list.push(m); reopenOnWrite(rec, target); ev({ type: 'chat', kind: 'reply', msg: m }); };
       // codex is the tool user here: one summary before the answer, one after —
       // the out-of-order case the drawer has to hoist and merge
       if (model === 'codex') post({ author: model, ts: now(), kind: 'tools', text: TOOLS_A });
@@ -1195,6 +1221,7 @@ function companion(method, path, body) {
     }
     const msg = stampMsg(body.text);
     list.push(msg);
+    reopenOnWrite(rec, body.thread_id);
     rec.updated_at = now();
     const mention = MENTION.test(body.text);
     // saved, but this sender does not get to summon the bots
@@ -1431,6 +1458,47 @@ function companion(method, path, body) {
     if (t) t.orphaned = !!body.orphaned;
     log('orphan reported: ' + body.thread_id + ' → ' + body.orphaned);
     return { ok: true, status: 200, data: { ok: true } };
+  }
+  // Resolving a thread: the companion's own state transition, faithfully —
+  // reopening REMOVES the fields rather than writing resolved:false, and the
+  // instant digest is written in the same request as the flag, so the card is
+  // never blank while the agents' paragraph is still queued behind it.
+  if (method === 'POST' && route === '/resolve') {
+    resolvePosts.push({ thread_id: body.thread_id, resolved: !!body.resolved });
+    if (resolveFail) return { ok: false, status: 500, error: 'simulated resolve failure' };
+    const t = RECORD.threads.find(x => x.id === body.thread_id);
+    if (!t) return { ok: false, status: 404, error: 'unknown thread' };
+    if (body.resolved) {
+      const first = !t.resolved;
+      t.resolved = true;
+      t.resolved_at = now();
+      t.resolved_by = 'angadh';
+      if (first) { t.summary = digestOf(t); delete t.summary_by; }
+      log('resolved: ' + t.id);
+    } else {
+      delete t.resolved; delete t.resolved_at; delete t.resolved_by;
+      log('reopened: ' + t.id);
+    }
+    RECORD.updated_at = now();
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true, thread: t, summarizing: !!body.resolved } };
+  }
+  // …and the agents' paragraph landing over the top of the placeholder, later,
+  // as a `page` event — never as a message in the thread
+  if (method === 'POST' && route === '/summarize') {
+    summarizePosts.push({ thread_id: body.thread_id });
+    const t = RECORD.threads.find(x => x.id === body.thread_id);
+    if (!t) return { ok: false, status: 404, error: 'unknown thread' };
+    setTimeout(() => {
+      t.summary = 'The comment asked whether the sleeper is really the point. '
+        + 'Claude answered that it is, on that route. The outcome was that the '
+        + 'paragraph stands as written.';
+      t.summary_by = 'claude';
+      RECORD.updated_at = now();
+      toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+    }, 60);
+    log('summary queued: ' + t.id);
+    return { ok: true, status: 200, data: { ok: true, summarizing: true } };
   }
   // one note per page: the export is always about the url in the body, which
   // is this page from the header button and another page from a list row
@@ -2665,6 +2733,178 @@ async function selftest() {
     !byAuthor('mira').querySelector('[data-act="edit"]'));
 
   d.open('comments');
+
+  // ---- resolving a thread ------------------------------------------------
+  // The scenario this exists for: a page with more comment threads on it than
+  // anybody can hold in their head, and a reader who wants to sweep down the
+  // list marking things handled. So the bar is TRIAGE — one click per thread,
+  // no dialog, the list visibly shrinking — and the promise is that nothing is
+  // lost: the highlight stays on the page, in green, and the thread is one
+  // click from being live again.
+  const cards = () => q('.pane[data-pane="comments"] > .card:not(.pending)');
+  const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const bgOf = el => getComputedStyle(el).backgroundColor;
+  // resolving is optimistic AND round-tripped, and the fake companion follows
+  // the real one in broadcasting a `page` event after it — so between any two
+  // clicks there may be one render or three. Wait for the control rather than
+  // assuming which render we are standing in.
+  // the archive remembers whether the reader left it open, so a test that
+  // needs it open must ASK for that rather than toggling blind
+  const openArchive = async () => {
+    if (!S.querySelector('.resolved-list')) S.querySelector('[data-act="resolved-toggle"]').click();
+    return !!await until(() => S.querySelector('.resolved-list'));
+  };
+  const shutArchive = async () => {
+    if (S.querySelector('.resolved-list')) S.querySelector('[data-act="resolved-toggle"]').click();
+    return !S.querySelector('.resolved-list');
+  };
+  const hit = async (id, act) => {
+    const b = await until(() => {
+      const c = cardFor(id);
+      return c ? c.querySelector('[data-act="' + act + '"]') : null;
+    });
+    if (b) b.click();
+    return !!b;
+  };
+
+  const openBefore = cards().length;
+  const subject = cards()[1].dataset.thread;   // the thread with a bot in it
+  const yellow = bgOf(markFor(subject));
+
+  check('every thread carries the resolve control, right there in the row',
+    cards().length > 0 && [...cards()].every(c => !!c.querySelector('[data-act="resolve"]')));
+  check('…and it is as quiet as the delete beside it — no dialog, no menu',
+    cards()[0].querySelector('[data-act="resolve"]').classList.contains('rebtn'));
+  check('nothing is filed until somebody files it', !S.querySelector('.resolved-sec'));
+
+  check('the resolve button is there to click', await hit(subject, 'resolve'));
+  check('one click resolves — no confirmation step of any kind',
+    !S.querySelector('.confirm') && !!await until(() => !!S.querySelector('.resolved-sec')));
+  check('the thread leaves the main list', !!await until(() => cards().length === openBefore - 1));
+  check('…and the count shrinks with it, which is what the sweep is FOR',
+    S.querySelector('.tab[data-tab="comments"] .count').textContent === String(openBefore - 1));
+  check('it went to the collapsed archive at the foot of the list, not a tab',
+    S.querySelector('.resolved-sec .rcount').textContent === '1' &&
+    !S.querySelector('.tab[data-tab="resolved"]'));
+  check('…which stays SHUT: sixty filed threads must cost nothing to scroll past',
+    !S.querySelector('.resolved-list'));
+  check('the companion was told, so it survives a reload and reaches every device',
+    resolvePosts.length === 1 && resolvePosts[0].thread_id === subject && resolvePosts[0].resolved === true);
+
+  // the whole point of resolving rather than deleting
+  check('the highlight is STILL ON THE PAGE', !!markFor(subject));
+  check('…and it has gone green', markFor(subject).classList.contains('bfp-done'));
+  // the tint transitions, so the computed colour settles a frame or two later —
+  // what is asserted is that it settles somewhere OTHER than the yellow
+  check('…a green that is genuinely a different colour from the yellow',
+    !!await until(() => {
+      const bg = bgOf(markFor(subject));
+      return bg !== yellow && /^rgba?\(/.test(bg) ? bg : null;
+    }));
+  check('…and only that thread’s: the others are untouched',
+    [...document.querySelectorAll('mark.bfp-hl.bfp-done')]
+      .every(m => m.getAttribute('data-bfp') === subject));
+
+  // ---- the archive is a digest of decisions, not a drawer of hidden threads
+  await openArchive();
+  const filed = await until(() => S.querySelector('.resolved-list .card.resolved'));
+  check('opening the archive builds its cards', !!filed);
+  check('a filed card still shows the passage it is about', /structural failure of oversight/.test(filed.textContent));
+  const digest = filed.querySelector('.digest');
+  check('…and leads with what the thread settled', !!digest && digest.textContent.trim().length > 10);
+  check('the instant placeholder is there the moment it is filed — triage never waits',
+    digest.classList.contains('provisional'));
+  check('…and the full thread is folded away underneath, not gone',
+    !!filed.querySelector('[data-act="resolved-card"]') && !filed.querySelector('.thread'));
+
+  check('the fold control is there', await hit(subject, 'resolved-card'));
+  check('…and unfolds in place, where it was filed',
+    !!await until(() => cardFor(subject).querySelector('.thread')) &&
+    /paraphrase/.test(cardFor(subject).textContent));
+
+  // the agents' three-to-five sentences, landing over the placeholder later
+  check('a filed card offers a rewrite of its summary', await hit(subject, 'summarize'));
+  check('asking for a better summary reaches the companion',
+    !!await until(() => summarizePosts.length === 1));
+  check('…and when it lands it replaces the placeholder, without a reload',
+    !!await until(() => {
+      const g = cardFor(subject).querySelector('.digest');
+      return g && /The outcome was/.test(g.textContent) ? g : null;
+    }));
+  check('…and stops being marked provisional',
+    !cardFor(subject).querySelector('.digest').classList.contains('provisional'));
+  check('nothing about the summary was posted INTO the thread — it is a field, not a message',
+    !/The outcome was/.test(cardFor(subject).querySelector('.thread').textContent));
+
+  // ---- clicking the green highlight opens THAT thread --------------------
+  // A resolved highlight is still a live link into its conversation. The
+  // thread lives inside a section that is collapsed by default, so this is the
+  // path that would silently open the drawer onto nothing.
+  await shutArchive();
+  d.close();
+  check('the archive is shut and the drawer is closed', !d.isOpen() && !S.querySelector('.resolved-list'));
+  markFor(subject).click();
+  check('clicking a green highlight opens the drawer', !!await until(() => d.isOpen()));
+  check('…on the comments pane', !!await until(() =>
+    !S.querySelector('.pane[data-pane="comments"]').hidden));
+  check('…with the archive opened for you', !!await until(() => !!S.querySelector('.resolved-list')));
+  check('…and that very thread unfolded and focused, exactly as a yellow one would be',
+    !!await until(() => {
+      const c = cardFor(subject);
+      return c && c.classList.contains('focused') && c.querySelector('.thread') ? c : null;
+    }));
+  check('…with the way back visible on it', !!cardFor(subject).querySelector('[data-act="reopen"]'));
+
+  // ---- reopen is the undo, and it is one click too ------------------------
+  check('reopen is one click, right on the card', await hit(subject, 'reopen'));
+  check('reopening returns it to the main list',
+    !!await until(() => cards().length === openBefore));
+  check('…and the archive is gone with the last thread in it',
+    !S.querySelector('.resolved-sec'));
+  check('the highlight goes back to yellow',
+    !markFor(subject).classList.contains('bfp-done') &&
+    !!await until(() => bgOf(markFor(subject)) === yellow));
+  check('…and the companion heard about that too',
+    resolvePosts.length === 2 && resolvePosts[1].resolved === false);
+
+  // ---- new activity is the end of resolved -------------------------------
+  await hit(subject, 'resolve');
+  await until(() => !!S.querySelector('.resolved-sec'));
+  await openArchive();
+  if (!cardFor(subject).querySelector('.thread')) await hit(subject, 'resolved-card');
+  const box = await until(() => cardFor(subject) && cardFor(subject).querySelector('.composer textarea'));
+  check('a filed thread can still be replied to', !!box);
+  if (box) {
+    box.value = 'Actually — the desk came back on this.';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    cardFor(subject).querySelector('.composer .send').click();
+  }
+  check('replying to a filed thread REOPENS it: new activity means it is live again',
+    !!await until(() => cards().length === openBefore && !S.querySelector('.resolved-sec')));
+  check('…and the highlight comes back to yellow with it',
+    !!markFor(subject) && !markFor(subject).classList.contains('bfp-done'));
+
+  // …and a BOT's answer does the same, which is the case the reader never sees
+  // coming: a thread filed while a turn was still running
+  await hit(subject, 'resolve');
+  await until(() => !!S.querySelector('.resolved-sec'));
+  playTurn(subject, '@claude one last look?');
+  check('a bot reply landing in a filed thread reopens it too',
+    !!await until(() => !S.querySelector('.resolved-sec') && cards().length === openBefore, 9000));
+
+  // ---- a refusal puts everything back ------------------------------------
+  resolveFail = true;
+  const failing = cards()[1].dataset.thread;
+  await hit(failing, 'resolve');
+  check('a resolve the companion refuses is undone, card and all',
+    !!await until(() => cards().length === openBefore && !S.querySelector('.resolved-sec')));
+  check('…the highlight goes back to yellow with it',
+    !markFor(failing).classList.contains('bfp-done'));
+  check('…and the refusal is said out loud rather than swallowed',
+    /simulated resolve failure/.test(cardFor(failing).textContent));
+  resolveFail = false;
+  d.render();
 
   // ---- edit / delete affordances ----
   const card1 = () => q('.pane[data-pane="comments"] .card')[0];
@@ -4493,6 +4733,35 @@ async function selftestPdf() {
     index.raw.slice(cross.r.start, cross.r.end).replace(/\s+/g, ' ').includes('walk back to the tram stop'));
   holder.remove();
 
+  // ---- resolving works here for free, and the point is WHY --------------
+  // The viewer's whole trick is that PDF.js's text layer is ordinary DOM text,
+  // so anchor.js, drawer.js and content.js run unchanged. Resolving is a good
+  // proof of that: nothing in this feature knows what a PDF is, and the green
+  // mark has to land in the text layer over the canvas all the same.
+  {
+    const id = RECORD.threads.find(t => !t.orphaned).id;
+    const card = () => S.querySelector('.card[data-thread="' + id + '"]');
+    const mark = () => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+    const openBefore = q('.pane[data-pane="comments"] > .card:not(.pending)').length;
+    const btn = card() && card().querySelector('[data-act="resolve"]');
+    check('a PDF comment carries the same resolve control as any other', !!btn);
+    if (btn) btn.click();
+    check('resolving files it here too',
+      !!await until(() => q('.pane[data-pane="comments"] > .card:not(.pending)').length === openBefore - 1));
+    check('…and the green mark lands in PDF.js’s text layer, over the canvas',
+      !!mark() && mark().classList.contains('bfp-done') &&
+      !!mark().closest('.textLayer'));
+    // the card is in the collapsed archive now; focusing it is what opens
+    // that — the same path a click on the green mark takes
+    d.focus(id);
+    const re = await until(() => card() && card().querySelector('[data-act="reopen"]'));
+    check('focusing a filed thread opens the archive onto it, PDF or not', !!re);
+    if (re) re.click();
+    check('…and puts the thread and its yellow back',
+      !!await until(() => q('.pane[data-pane="comments"] > .card:not(.pending)').length === openBefore) &&
+      !!mark() && !mark().classList.contains('bfp-done'));
+  }
+
   // ---- renaming the page renames the header, live ------------------------
   // The viewer draws its own top bar from `window.__bfp.onTitle`, and a rename
   // arrives as an ordinary `page` event. What is asserted here is that whole
@@ -4853,6 +5122,40 @@ window.__bfp.activate(false).then(() => {
       log('library: one conversation about the whole archive (screenshot state)');
     }, 450);
     const demo = Q.get('demo');
+    // ?demo=resolved — a page part-way through a triage sweep: one thread still
+    // wanting the reader, two filed below with what they settled, and the two
+    // highlight colours side by side in the article. The state a screenshot
+    // has to catch, because none of this produces an error when it looks wrong.
+    if (demo === 'resolved') {
+      setTimeout(() => {
+        const [a, , c] = RECORD.threads;
+        for (const t of [a, c]) {
+          t.resolved = true; t.resolved_at = now(); t.resolved_by = 'angadh';
+          t.summary = digestOf(t);
+        }
+        // one of them has had its paragraph written by the agents; the other is
+        // still showing the instant placeholder, so both states are on screen
+        a.summary = 'The comment asked whether this sentence is the one the piece '
+          + 'turns on, and whether it should survive the edit. Claude read the '
+          + 'surrounding paragraphs and agreed that it is: the two paragraphs after '
+          + 'it are a gloss on it and lose their footing without it. The outcome '
+          + 'was that the line stays as written, and the cut comes out of the '
+          + 'paragraph below instead.';
+        a.summary_by = 'claude';
+        RECORD.updated_at = now();
+        toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+        setTimeout(() => {
+          const S = d.shadow;
+          const tog = S.querySelector('[data-act="resolved-toggle"]');
+          if (tog) tog.click();
+          setTimeout(() => {
+            const card = S.querySelector('.card[data-thread="' + a.id + '"] [data-act="resolved-card"]');
+            if (card) card.click();
+            log('two threads filed · one paragraph written, one still provisional');
+          }, 150);
+        }, 350);
+      }, 300);
+    }
     if (demo === 'select') setTimeout(() => demoSelect(true), 250);
     else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);
     // on the chat tab, freeze the page-chat turn instead — that pane's chip is

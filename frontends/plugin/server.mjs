@@ -152,6 +152,8 @@ function onChatEvent(ev) {
   if (ev.type === 'chat' && ev.kind === 'reply') {
     const page = store.readPage(ev.url);
     if (page) {
+      // appendMsg also REOPENS a resolved thread: a bot answering into it is
+      // new activity, and new activity is the end of resolved
       store.appendMsg(page, ev.target, ev.msg);
       store.savePage(page);
     }
@@ -159,7 +161,52 @@ function onChatEvent(ev) {
     broadcast({ type: 'page', url: ev.url });
     return;
   }
+  // A filing job came back (chat.mjs). Its words are the thread's `summary`
+  // and are never appended to it — so this must not go anywhere near
+  // appendMsg, which would reopen the thread it has just described.
+  //
+  // It lands wherever the thread is now. If the reader reopened it while the
+  // job was still in the queue, the field is simply written and left unused —
+  // that is the whole cancellation story, and it means re-resolving later
+  // shows the paragraph instantly instead of queueing a second job.
+  if (ev.type === 'summary') {
+    const page = store.readPage(ev.url);
+    const thread = page && store.findThread(page, ev.target);
+    if (thread && store.setSummary(thread, ev.msg && ev.msg.text, ev.msg && ev.msg.author)) {
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+    }
+    return;
+  }
   broadcast(ev);
+}
+
+// Ask the agents what a thread settled, for the resolved card to carry. Queued
+// like any other turn and answered into the record, never into the thread; a
+// companion with the agents switched off simply keeps the heuristic digest.
+//
+// Whoever last spoke in the thread writes it — they have the context and, on a
+// two-agent thread, arguing about the minutes is not worth a turn. A thread the
+// bots never touched is summarized too (the reader's own comment is a question
+// with an outcome as often as not); claude takes those.
+function summarizeThread(page, thread) {
+  if (NO_AGENTS || !chat || !thread) return false;
+  const bot = [...(thread.msgs || [])].reverse()
+    .find(m => m && m.kind !== 'tools' && /^(claude|codex)\b/i.test(String(m.author || '')));
+  const agent = bot ? String(bot.author).toLowerCase().replace(/[^a-z]/g, '') : 'claude';
+  chat.submit({
+    url: page.url, target: thread.id, title: page.title,
+    // the whole of the routing: `text` is read for its @-mention and by nothing
+    // else, because a summary job builds its own envelope (chat.mjs)
+    text: `@${agent === 'codex' ? 'codex' : 'claude'} `,
+    summary: true,
+    quote: thread.quote,
+    pageNumber: thread.page || 0,
+    // every message, including the last: unlike a reply turn, no message here
+    // is "the one being answered"
+    history: thread.msgs || [],
+  });
+  return true;
 }
 
 // A guest's mention spends the OWNER's agents on the owner's machine, so it is
@@ -919,6 +966,61 @@ export function handler(req, res) {
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { thread });
+    });
+  }
+  // Resolving a thread — the reader saying "handled". Server-side state, like
+  // every other thing about a thread, so it survives a reload and shows up on
+  // the phone and the other machine.
+  //
+  // Not owner-only: on a shared companion the people reading the page are the
+  // people working through its comments, and the act is free to undo (reopen,
+  // or simply reply). It is attributed all the same — `resolved_by` is the one
+  // thing a reopen cannot recover.
+  //
+  // NO CONFIRMATION ANYWHERE IN THIS PATH. Resolving is triage: a dozen clicks
+  // in a few seconds down a page that has accumulated too many threads. One
+  // request, one write, one broadcast, and the answer is the thread itself so
+  // the drawer can reconcile its optimistic redraw without a refetch.
+  if (req.method === 'POST' && url === '/resolve') {
+    return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = store.findThread(page, data.thread_id);
+      if (!thread) return fail(res, 404, 'unknown thread');
+      // a form has no booleans: absent/"" from the reading room's reopen
+      // button means reopen, and only an explicit truthy value resolves
+      const on = data.resolved === undefined ? true
+        : !(data.resolved === false || data.resolved === 'false' || data.resolved === '' || data.resolved === '0');
+      const { changed } = store.setResolved(thread, on, me.handle);
+      // the placeholder goes in the same write as the flag, so the card is
+      // never blank for even one frame; the agents' paragraph replaces it
+      // whenever the job behind it drains
+      let queued = false;
+      if (on && changed) {
+        store.setSummary(thread, store.threadDigest(thread), '');
+        queued = summarizeThread(page, thread);
+      }
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      if (data._form) return seeOther(res, backTo(data, page, on ? '' : thread.id));
+      ok(res, { thread, ...(queued ? { summarizing: true } : {}) });
+    });
+  }
+  // Ask for the paragraph again — the same job /resolve queues, on demand, for
+  // a thread whose summary landed while the bridge was down or which has moved
+  // on since it was filed.
+  if (req.method === 'POST' && url === '/summarize') {
+    return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = store.findThread(page, data.thread_id);
+      if (!thread) return fail(res, 404, 'unknown thread');
+      if (!summarizeThread(page, thread)) return fail(res, 409, 'the agents are off on this companion');
+      ok(res, { summarizing: true });
     });
   }
   // the export writes into the OWNER's Obsidian vault, on the owner's disk:

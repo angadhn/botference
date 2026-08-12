@@ -289,6 +289,24 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
     line(tagged(['a,b', 'plain'])), 'tags: [botference-discuss, "a,b", plain]');
   ok('comments-only carries the same tags — they are the page\'s, not the conversation\'s',
     line(renderNote(paper({ tags: ['fluids'] }), CFG, NOW, 'comments')) === 'tags: [botference-discuss, fluids]');
+
+  // ---- resolved threads in the note ---------------------------------------
+  // The note is what the reader re-reads in a year, and by then "we dealt with
+  // this, and here is how" is most of what a filed thread is worth.
+  const filed = renderNote(paper({
+    threads: [{
+      quote: 'the flow is unstable above Re 4000',
+      resolved: true, resolved_by: 'angadh',
+      summary: 'The comment asked whether the threshold held at higher aspect ratios. It does not.',
+      msgs: [{ author: 'angadh', ts: '1', text: 'The whole result.' }],
+    }],
+  }), CFG, NOW, 'all');
+  ok('a filed thread says so in the note', /\*Resolved by angadh\.\*/.test(filed), filed);
+  ok('…and carries what it settled', filed.includes('It does not.'), filed);
+  ok('…while the passage and the thread are still there — filing hides nothing',
+    filed.includes('the flow is unstable above Re 4000') && filed.includes('The whole result.'), filed);
+  ok('a note with nothing resolved is byte-for-byte what it always was',
+    !/Resolved/.test(renderNote(paper(), CFG, NOW, 'all')));
 }
 
 console.log(`\nexport: ${pass} passed, ${fail} failed`);

@@ -176,6 +176,15 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   ];
   for (const t of page.threads || []) {
     parts.push(blockquote(t.quote) + attribution(t));
+    // A thread the reader filed says so, and says what it settled — the note
+    // is the thing they will re-read in a year, and "we dealt with this, and
+    // here is how" is most of what a resolved thread is worth by then. Plain
+    // italic prose so a note without any resolved threads is byte-identical
+    // to the one this always wrote.
+    if (t.resolved) {
+      parts.push(`*Resolved${t.resolved_by ? ` by ${t.resolved_by}` : ''}.*`
+        + (t.summary ? ` ${t.summary}` : ''));
+    }
     const msgs = keptMsgs(t.msgs, only);
     if (!msgs.length) continue;
     // a lone comment of your own reads as prose under its quote; anything

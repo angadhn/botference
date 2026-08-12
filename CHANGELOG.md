@@ -2,6 +2,25 @@
 
 ## 2026-08-12
 
+- **Discuss: comment threads resolve.** A quiet ✓ on every thread row —
+  one click, no dialog — files the thread into a collapsed
+  `Resolved (N)` digest at the foot of the list, and the Comments count
+  now counts only what's still open, so a crowded page visibly thins as
+  you sweep. The highlight itself stays on the page but turns a muted
+  sage green: still there, marked handled, and clicking it opens exactly
+  that filed thread, unfolded, Reopen in reach. A filed thread renders
+  as a digest card — the quote, then a summary, then the full thread
+  folded inside. The summary starts as an instant snippet and is
+  replaced by 3–5 agent-written sentences (what the question was, what
+  the outcome was) that arrive through the normal queue without ever
+  becoming a message in the thread. Any new message — yours or a
+  bot's — reopens the thread on its own; Reopen is just the impatient
+  version. Resolved state lives on the server, so it holds across
+  devices, the phone reading room gets the same digest and the same
+  buttons, resolved threads leave the context the bots read, and the
+  Obsidian export files them under who resolved them. Works identically
+  on PDFs.
+
 - **Discuss: the council's chat manners came back home.** Claude replies in
   a serif, codex in a grotesque, each in the council's speaker colours in
   both themes; your own turns sit on a green ground with a green right

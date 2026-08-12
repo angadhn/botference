@@ -49,7 +49,10 @@
     (D.threads || []).forEach(function (t) {
       var hit = A.locate(index.raw, t);
       if (!hit.ok) return;                       // orphaned here: still listed
-      A.paintOffsets(index, hit.start, hit.end, t.id);
+      // green for a thread the reader has filed, yellow for one still open —
+      // the same two tints anchor.js paints in the drawer, because this view
+      // paints with the very same code
+      A.paintOffsets(index, hit.start, hit.end, t.id, !!t.resolved);
     });
     // the index is stale the moment we split text nodes to paint into them
     index = A.buildTextIndex(art);
@@ -151,12 +154,15 @@
     } else {
       var t = threadById(open.id);
       if (!t) { open = null; sheet.classList.remove('open'); return; }
-      label = 'comment';
+      label = t.resolved ? 'resolved comment' : 'comment';
       // a quote off a PDF carries its page: the same attribution the export
       // writes, in the same words
       html = '<blockquote>' + esc(t.quote)
         + (t.page > 0 ? '<cite> — p. ' + esc(String(t.page)) + '</cite>' : '') + '</blockquote>'
         + (t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : '')
+        // a filed thread leads with what it settled, exactly as its card does
+        // in the drawer and in the comments view
+        + (t.resolved && t.summary ? '<p class="digest">' + esc(t.summary) + '</p>' : '')
         + (t.msgs || []).map(msgHtml).join('') + composerHtml('reply…');
     }
     if (busy[target]) html += '<div class="chip">' + esc(busy[target]) + '</div>';

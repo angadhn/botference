@@ -720,7 +720,9 @@
     }
     for (const t of threads) {
       if (nextOrphans[t.id]) continue;
-      Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id);
+      // a resolved thread is painted green from the record, so a page reloaded
+      // months later still shows at a glance which passages were dealt with
+      Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id, !!t.resolved);
       index = freshIndex();
     }
     // repaint the provisional highlight if a new comment is being composed
@@ -1204,6 +1206,12 @@
             ? PAGE.page_chat
             : ((PAGE.threads || []).find(t => t.id === threadId) || {}).msgs;
           if (list && !list.some(m => m.ts === msg.ts)) list.push(msg);
+          // writing into a thread REOPENS it (the companion's appendMsg does
+          // this for every write, wherever it came from) — so the highlight
+          // goes back to yellow now, with the message, rather than a round
+          // trip later when the `page` broadcast lands
+          const t = (PAGE.threads || []).find(x => x.id === threadId);
+          if (t && t.resolved) { delete t.resolved; Anchor.markResolved(threadId, false); }
           drawer.setPage(PAGE);
         } else if (r.data && r.data.deduped) {
           // deduped with nothing echoed: the record is the only truth left
@@ -1258,6 +1266,27 @@
         const r = await api('POST', '/edit', { url: URL_NOW, thread_id: threadId, ts, text });
         if (!r.ok) return failure(r);
         await loadPage();
+        return { ok: true };
+      },
+
+      // Resolve / reopen. The highlight is repainted BEFORE the round trip:
+      // the drawer has already moved the card optimistically, and a yellow
+      // highlight sitting under a card that says "resolved" for half a second
+      // is exactly the flicker a reader sweeping down a list would notice. A
+      // refusal puts the colour back.
+      onResolve: async (threadId, resolved) => {
+        Anchor.markResolved(threadId, !!resolved);
+        const r = await api('POST', '/resolve', { url: URL_NOW, thread_id: threadId, resolved: !!resolved });
+        if (!r.ok) { Anchor.markResolved(threadId, !resolved); return failure(r); }
+        await loadPage();
+        return { ok: true, thread: r.data && r.data.thread,
+                 summarizing: !!(r.data && r.data.summarizing) };
+      },
+      // "ask again" for a filed thread's paragraph — queued, never awaited:
+      // the answer arrives as a `page` event whenever the job drains
+      onSummarize: async threadId => {
+        const r = await api('POST', '/summarize', { url: URL_NOW, thread_id: threadId });
+        if (!r.ok) return failure(r);
         return { ok: true };
       },
 
