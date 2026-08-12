@@ -558,8 +558,21 @@
   // bots — planSteps reads hasSnapshot when the turn is planned); every later
   // call is fire-and-forget, and a failure only rearms the hash. A snapshot
   // failing never blocks a message: the promise always resolves.
+  // A capture can race the parser: an annotation sent while the body is still
+  // streaming in files the header + table of contents and calls it the page
+  // (80000hours problem profiles reproduce this — scripts mid-body stall the
+  // parse long enough to comment). Wait, bounded, for the load event before
+  // any capture; on a page that never settles, the 4s timeout lets the send
+  // proceed with what exists and the hash gates re-send when the prose lands.
+  const pageSettled = document.readyState === 'complete'
+    ? Promise.resolve()
+    : new Promise((resolve) => {
+        window.addEventListener('load', resolve, { once: true });
+        setTimeout(resolve, 4000);
+      });
   let lastSnapHash = null;
-  function snapshotNow() {
+  function snapshotNow() { return pageSettled.then(sendSnapshot); }
+  function sendSnapshot() {
     let html = '';
     try { html = snapshotHtml(); } catch (_) { return Promise.resolve(); }
     if (!html) return Promise.resolve();
@@ -609,6 +622,8 @@
         return '';
       }
     }
+    // same parser race as the snapshot: don't read the DOM mid-stream
+    await pageSettled;
     return genericArticleText();
   }
 
