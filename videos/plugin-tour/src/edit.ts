@@ -8,12 +8,16 @@ export type Label = {
   at: number;
   dur: number;
   /**
-   * The x its right edge may not cross, because the drawer is to the right of
-   * it. 1436 (the default) is the drawer's left edge at scale 1.0; a scene
-   * whose camera is pushed into the drawer moves that edge left on screen and
-   * says so here.
+   * WHICH action this label names: one of the marks capture/capture.mjs recorded
+   * during the take (footage/shots.json). The marks a label may use carry the
+   * viewport box of the thing that moved, so the type is placed against a
+   * MEASURED position rather than a typed-in guess. No anchor => bottom-right.
    */
-  right?: number;
+  anchorMark?: string;
+  /** which side of that box the type sits on. Default 'below'. */
+  place?: 'above' | 'below' | 'left' | 'right';
+  /** put it in the bottom-right corner and do not look for an anchor */
+  corner?: boolean;
 };
 
 export type CameraKey = {
@@ -64,9 +68,9 @@ export const totalFrames = edit.scenes.reduce((n, s) => n + s.durationInFrames, 
  * The two rules of the film that a render can check for itself, checked at
  * import so a broken edit fails loudly instead of quietly shipping.
  *   - one label at a time, ever
- *   - 40 seconds, hard
+ *   - 45 seconds, hard
  */
-const CAP_SECONDS = 40;
+const CAP_SECONDS = 45;   // the storyboard's hard cap
 if (totalFrames > CAP_SECONDS * edit.meta.fps) {
   throw new Error(`the edit is ${(totalFrames / edit.meta.fps).toFixed(2)}s — the cap is ${CAP_SECONDS}s`);
 }

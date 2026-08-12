@@ -4,3 +4,8 @@ footage/raw/
 capture/.tmp/
 *.log
 footage/score.wav
+
+# The mirror of angadh.com made by capture/mirror-site.mjs: 23MB of the live
+# site's own images, fonts and stylesheet. It is a build input, not source —
+# `node capture/mirror-site.mjs` re-makes it from the live page.
+capture/site/

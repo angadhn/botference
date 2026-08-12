@@ -89,11 +89,11 @@ const Dissolve: React.FC<{ beat: Beat }> = ({ beat }) => {
  * broken file.
  *
  * So the loop breathes through the page's own paper colour instead. Both ends
- * dip to the paper colour below, which is the article's background and is already most of the
+ * dip to the paper colour below, which is the page's own ground and is already most of the
  * frame, so it lands as a beat rather than as a flash — and because the last
  * frame and the first frame are then the same flat colour, the join is exact.
  */
-const PAGE = '#fdfaf3';   // capture/page.mjs's .sscwrap — the sheet the article is set on
+const PAGE = '#ffffff';   // capture/page.mjs's PAPER — the post paints no background at all
 
 const Seam: React.FC = () => {
   const frame = useCurrentFrame();

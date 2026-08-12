@@ -56,7 +56,9 @@ const SceneView: React.FC<{ scene: Scene }> = ({ scene }) => {
       {scene.kind === 'braid' ? (
         <TitleCard title={scene.title} subtitle={scene.subtitle} at={scene.titleAt} qr={scene.qr} />
       ) : (
-        <Labels labels={scene.labels} />
+        // the labels are outside the Camera so a push-in never drags the type
+        // with it — only the anchor they are placed against moves
+        <Labels scene={scene} width={width} height={height} />
       )}
 
       <Fade inF={scene.fadeIn} outF={scene.fadeOut} length={scene.durationInFrames} />

@@ -60,10 +60,27 @@ export class Recorder {
     await sleep(120);
   }
 
-  /** Name the instant something happened, for shots.json and for cueing captions. */
-  mark(label) {
+  /**
+   * Name the instant something happened, for shots.json and for cueing labels.
+   *
+   * `at` is the optional PLACE it happened — a box or point in viewport pixels.
+   * The v4 labels are not lower thirds; each one is a small flash of type beside
+   * the thing it names, so the edit has to know where that thing was. Measuring
+   * it here, at the moment of the action, is the only way it cannot drift: a
+   * co-ordinate typed into edit.json is a guess that survives a re-shoot.
+   */
+  mark(label, at) {
     const t = (Date.now() - this.wall0) / 1000;
-    this.marks.push({ label, t: Number(t.toFixed(3)) });
+    const m = { label, t: Number(t.toFixed(3)) };
+    if (at) {
+      m.x = Math.round(at.x ?? (at.left + at.right) / 2);
+      m.y = Math.round(at.y ?? (at.top + at.bottom) / 2);
+      if (at.left != null) {
+        m.box = [Math.round(at.left), Math.round(at.top),
+                 Math.round(at.right), Math.round(at.bottom)];
+      }
+    }
+    this.marks.push(m);
     return t;
   }
 
@@ -257,6 +274,40 @@ export async function scrollShadowTo(page, selector, { block = 'center' } = {}) 
     if (el) el.scrollIntoView({ behavior: 'smooth', block });
   }, { sel: selector, block });
   await sleep(900);
+}
+
+/**
+ * Scroll the PAGE the way a reader does: over a fixed span of time, eased, in
+ * one motion.
+ *
+ * `scrollIntoView({behavior:'smooth'})` will not do for this. Chrome picks its
+ * own duration — a few hundred milliseconds however far it has to go — so a
+ * 2,600px journey down the article arrives as a blur and is over before a
+ * viewer has registered that the page moved. The film's second beat is a
+ * person reading their way to a paragraph, and that is a second and a half of
+ * deliberate motion, so the duration is stated and the position is stepped
+ * frame by frame with a cosine ease at both ends.
+ */
+export async function scrollPageOver(page, selector, { ms = 1600, block = 0.34 } = {}) {
+  const target = await page.evaluate(({ sel, block }) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const y = window.scrollY + r.top - window.innerHeight * block;
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return { from: window.scrollY, to: Math.max(0, Math.min(max, y)) };
+  }, { sel: selector, block });
+  if (!target) throw new Error(`no element ${selector} to scroll to`);
+  const t0 = Date.now();
+  for (;;) {
+    const u = Math.min(1, (Date.now() - t0) / ms);
+    const k = 0.5 - Math.cos(Math.PI * u) / 2;          // ease in and out
+    await page.evaluate(y => window.scrollTo(0, y),
+      target.from + (target.to - target.from) * k);
+    if (u >= 1) break;
+    await sleep(16);
+  }
+  return target;
 }
 
 export async function scrollPageTo(page, selector, { block = 'center' } = {}) {

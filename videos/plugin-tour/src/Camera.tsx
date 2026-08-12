@@ -44,6 +44,40 @@ export function cameraAt(keys: CameraKey[] | undefined, frame: number) {
   };
 }
 
+/**
+ * Where a point of the SOURCE ends up ON SCREEN, under this camera, at this
+ * frame.
+ *
+ * The labels are the reason this exists. v4's labels are not lower thirds: each
+ * one is a flash of type beside the thing it names, and the thing it names is at
+ * a position measured during the shoot (footage/shots.json). The camera then
+ * moves that position around, so the label has to be told where the camera has
+ * put it. Inverting the transform in Camera above:
+ *
+ *   screen = size/2 + scale * (source - origin * size)
+ *
+ * with `origin` the same clamped centre the transform uses, so a move that
+ * slides rather than revealing black slides the labels with it.
+ */
+export function project(
+  keys: CameraKey[] | undefined, frame: number,
+  width: number, height: number,
+  px: number, py: number,
+  viewW?: number, viewH?: number,
+) {
+  const { scale, ox, oy } = cameraAt(keys, frame);
+  const s = Math.min(scale, MAX_SCALE);
+  const halfX = Math.min(0.5, (viewW ?? width) / width / (2 * s));
+  const halfY = Math.min(0.5, (viewH ?? height) / height / (2 * s));
+  const cx = Math.min(Math.max(ox, halfX), 1 - halfX);
+  const cy = Math.min(Math.max(oy, halfY), 1 - halfY);
+  return {
+    x: (viewW ?? width) / 2 + s * (px - cx * width),
+    y: (viewH ?? height) / 2 + s * (py - cy * height),
+    scale: s,
+  };
+}
+
 export const Camera: React.FC<{
   keys?: CameraKey[];
   /** the size the source is drawn at */

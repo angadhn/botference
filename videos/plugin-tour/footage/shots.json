@@ -2,7 +2,7 @@
   "fps": 30,
   "width": 1920,
   "height": 1080,
-  "shot": "2026-08-12T13:22:20.765Z",
+  "shot": "2026-08-12T15:00:43.374Z",
   "shots": {
     "braid": {
       "clip": "footage/braid.mp4",
@@ -30,173 +30,218 @@
     },
     "thread": {
       "clip": "footage/thread.mp4",
-      "seconds": 59.371,
-      "frames": 1781,
-      "sourceFrames": 2060,
+      "seconds": 62.611,
+      "frames": 1878,
+      "sourceFrames": 1956,
       "harnessUrl": "test/harness.html?closed=1",
       "marks": [
         {
           "label": "entry",
-          "t": 1.767,
-          "frame": 53
+          "t": 1.566,
+          "frame": 47
+        },
+        {
+          "label": "scrolled",
+          "t": 3.128,
+          "frame": 94
         },
         {
           "label": "drag-start",
-          "t": 2.798,
-          "frame": 84
+          "t": 4.805,
+          "frame": 144
         },
         {
           "label": "selection-made",
-          "t": 4.006,
-          "frame": 120
+          "t": 6.021,
+          "x": 769,
+          "y": 212,
+          "box": [
+            256,
+            188,
+            1282,
+            236
+          ],
+          "frame": 181
         },
         {
           "label": "pill-clicked",
-          "t": 5.366,
-          "frame": 161
+          "t": 7.39,
+          "frame": 222
         },
         {
           "label": "drawer-open",
-          "t": 6.472,
-          "frame": 194
+          "t": 8.51,
+          "frame": 255
         },
         {
           "label": "typing",
-          "t": 7.528,
-          "frame": 226
+          "t": 9.57,
+          "frame": 287
         },
         {
           "label": "sent",
-          "t": 9.83,
-          "frame": 295
+          "t": 12.318,
+          "frame": 370
         },
         {
           "label": "claude-thinking",
-          "t": 9.872,
-          "frame": 296
+          "t": 12.379,
+          "frame": 371
         },
         {
           "label": "claude-streaming",
-          "t": 12.647,
-          "frame": 379
+          "t": 15.145,
+          "frame": 454
         },
         {
           "label": "claude-landed",
-          "t": 15.755,
-          "frame": 473
+          "t": 18.253,
+          "frame": 548
         },
         {
           "label": "typing-2",
-          "t": 19.262,
-          "frame": 578
+          "t": 21.759,
+          "frame": 653
         },
         {
           "label": "sent-2",
-          "t": 21.187,
-          "frame": 636
+          "t": 24.085,
+          "frame": 723
         },
         {
           "label": "codex-thinking",
-          "t": 21.206,
-          "frame": 636
+          "t": 24.101,
+          "frame": 723
         },
         {
           "label": "codex-streaming",
-          "t": 24.05,
-          "frame": 722
+          "t": 26.886,
+          "frame": 807
         },
         {
           "label": "unfolded",
-          "t": 26.809,
-          "frame": 804
+          "t": 30.292,
+          "frame": 909
         },
         {
           "label": "codex-landed",
-          "t": 28.815,
-          "frame": 864
+          "t": 32.3,
+          "frame": 969
         },
         {
           "label": "run-approach",
-          "t": 28.816,
-          "frame": 864
+          "t": 32.305,
+          "x": 1569,
+          "y": 755,
+          "box": [
+            1543,
+            744,
+            1596,
+            767
+          ],
+          "frame": 969
         },
         {
           "label": "run-clicked",
-          "t": 30.335,
-          "frame": 910
+          "t": 33.826,
+          "x": 1569,
+          "y": 755,
+          "box": [
+            1543,
+            744,
+            1596,
+            767
+          ],
+          "frame": 1015
         },
         {
           "label": "runstat",
-          "t": 30.762,
-          "frame": 923
+          "t": 34.259,
+          "frame": 1028
         },
         {
           "label": "figure-in",
-          "t": 31.465,
-          "frame": 944
+          "t": 34.966,
+          "frame": 1049
         },
         {
           "label": "lightbox",
-          "t": 35.727,
-          "frame": 1072
+          "t": 39.244,
+          "frame": 1177
         },
         {
           "label": "lightbox-closed",
-          "t": 39.438,
-          "frame": 1183
+          "t": 42.956,
+          "frame": 1289
         },
         {
           "label": "resolved",
-          "t": 43.25,
-          "frame": 1298
+          "t": 46.779,
+          "x": 1853,
+          "y": 140,
+          "box": [
+            1841,
+            128,
+            1865,
+            152
+          ],
+          "frame": 1403
         },
         {
           "label": "filed",
-          "t": 43.712,
-          "frame": 1311
+          "t": 47.245,
+          "frame": 1417
         },
         {
           "label": "archive-open",
-          "t": 48.383,
-          "frame": 1451
+          "t": 51.93,
+          "frame": 1558
         },
         {
           "label": "summarize",
-          "t": 50.371,
-          "frame": 1511
+          "t": 53.919,
+          "frame": 1618
         },
         {
           "label": "summary-landed",
-          "t": 51.791,
-          "frame": 1554
+          "t": 55.355,
+          "frame": 1661
         },
         {
           "label": "green-visible",
-          "t": 56.769,
-          "frame": 1703
+          "t": 60.011,
+          "x": 577,
+          "y": 567,
+          "box": [
+            115,
+            517,
+            1040,
+            617
+          ],
+          "frame": 1800
         }
       ],
-      "newThread": "t-1786540879656-f9lt",
+      "newThread": "t-1786546522811-la33",
       "filedCount": "2",
       "greenMarks": 2,
-      "quote": "Each competitor gains by defecting, and every one of them ends up worse off than if none of them had"
+      "quote": "For example, one of von Braun’s designs called for a massive 75 metre diameter wheel that generated lunar gravity if spun at 3 rpm and Earth-like gravity at 5 rpm"
     },
     "note": {
       "clip": "footage/note.mp4",
-      "seconds": 7.274,
-      "frames": 218,
-      "sourceFrames": 2,
+      "seconds": 7.895,
+      "frames": 237,
+      "sourceFrames": 216,
       "harnessUrl": "footage/note.html (frontends/plugin/export.mjs renderNote() output, typeset)",
       "marks": [
         {
           "label": "head",
-          "t": 1.027,
-          "frame": 31
+          "t": 0.935,
+          "frame": 28
         },
         {
           "label": "foot",
-          "t": 4.273,
-          "frame": 128
+          "t": 4.389,
+          "frame": 132
         }
       ]
     }

@@ -29,23 +29,28 @@ const OUT = path.join(ROOT, 'out/stills');
 // entry / action / payoff for every scene, as the storyboard asks. `mark` is a
 // label from shots.json; `off` nudges by frames where the interesting frame is
 // a beat after the action (a fade settling, a reply finishing).
+// A 'label' beat is pulled at the middle of a label's own cue, because a label
+// is the one thing in the film whose position is computed at render time from a
+// measured box and a camera — so it is the one thing that has to be LOOKED at
+// rather than trusted. It is added automatically for every labelled scene.
 const BEATS = {
-  hook:          [['entry', null, 6], ['action', null, 34], ['payoff', null, 70]],
-  highlight:     [['entry', null, 4], ['action', 'drag-start', 18], ['payoff', 'selection-made', 14]],
-  compose:       [['entry', 'drawer-open', 6], ['action', 'typing', 22], ['payoff', 'sent', -6]],
-  'dial-claude': [['entry', null, 3], ['action', null, 16], ['payoff', null, 29]],
-  claude:        [['entry', null, 4], ['action', null, 34], ['payoff', null, 70]],
-  handoff:       [['entry', null, 4], ['action', 'typing-2', 22], ['payoff', 'sent-2', 4]],
-  'dial-codex':  [['entry', null, 3], ['action', null, 16], ['payoff', null, 29]],
-  codecell:      [['entry', null, 4], ['action', null, 26], ['payoff', null, 50]],
-  run:           [['entry', null, 4], ['action', 'run-clicked', 8], ['payoff', 'figure-in', 22]],
-  plot:          [['entry', null, 4], ['action', null, 26], ['payoff', null, 52]],
+  hook:          [['entry', null, 6], ['action', null, 34], ['payoff', null, 74]],
+  page:          [['entry', null, 4], ['action', 'scrolled', -30], ['payoff', 'scrolled', -4]],
+  highlight:     [['entry', null, 4], ['action', 'drag-start', 18], ['payoff', 'selection-made', 10]],
+  compose:       [['entry', null, 4], ['action', 'sent', -34], ['payoff', 'sent', -2]],
+  'dial-claude': [['entry', null, 3], ['action', null, 16], ['payoff', null, 27]],
+  claude:        [['entry', null, 4], ['action', null, 30], ['payoff', null, 58]],
+  handoff:       [['entry', null, 4], ['action', 'sent-2', -30], ['payoff', 'sent-2', 0]],
+  'dial-codex':  [['entry', null, 3], ['action', null, 16], ['payoff', null, 27]],
+  codecell:      [['entry', null, 4], ['action', null, 20], ['payoff', null, 34]],
+  run:           [['entry', null, 4], ['action', 'run-clicked', 8], ['payoff', 'figure-in', 14]],
+  plot:          [['entry', null, 4], ['action', null, 22], ['payoff', null, 42]],
   resolve:       [['entry', null, 4], ['action', 'resolved', 6], ['payoff', 'filed', 20]],
-  digest:        [['entry', null, 4], ['action', 'summarize', 10], ['payoff', 'summary-landed', 30]],
-  green:         [['entry', null, 4], ['action', null, 24], ['payoff', null, 50]],
-  'note-head':   [['entry', null, 4], ['action', null, 24], ['payoff', null, 50]],
-  'note-foot':   [['entry', null, 4], ['action', null, 30], ['payoff', null, 58]],
-  close:         [['entry', null, 8], ['action', null, 46], ['payoff', null, 108]],
+  digest:        [['entry', null, 6], ['action', 'summarize', 8], ['payoff', 'summary-landed', 34]],
+  green:         [['entry', null, 4], ['action', null, 22], ['payoff', null, 42]],
+  'note-head':   [['entry', null, 4], ['action', null, 44], ['payoff', null, 86]],
+  'note-foot':   [['entry', null, 4], ['action', null, 44], ['payoff', null, 86]],
+  close:         [['entry', null, 8], ['action', null, 46], ['payoff', null, 120]],
 };
 
 // Which take a scene's marks belong to: the braid and the note are their own
@@ -68,7 +73,12 @@ fs.mkdirSync(OUT, { recursive: true });
 const sheet = [];
 let n = 0;
 for (const scene of edit.scenes) {
-  const beats = BEATS[scene.id] || [['mid', null, Math.round(scene.durationInFrames / 2)]];
+  const beats = (BEATS[scene.id] || [['mid', null, Math.round(scene.durationInFrames / 2)]]).slice();
+  // …plus one frame per label cue, at the middle of the cue
+  for (const [n, cue] of (scene.labels || []).entries()) {
+    beats.push([(scene.labels.length > 1 ? `label${n + 1}` : 'label'), null,
+      Math.round(cue.at + cue.dur / 2)]);
+  }
   const marks = (shots[clipOf(scene.id)] || {}).marks || [];
   for (const [name, mark, off] of beats) {
     let rel;

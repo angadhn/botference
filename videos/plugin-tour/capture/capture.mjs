@@ -23,10 +23,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startServer } from './serve.mjs';
-import { FOCUS_QUOTE } from './page.mjs';
+import { FOCUS_QUOTE, GREEN_QUOTE } from './page.mjs';
 import {
   Recorder, installCursor, raiseCursor, moveTo, clickAt, clickShadow, shadowBox,
-  lightBox, waitShadow, typeShadow, scrollShadowTo, scrollPageTo, sleep, FPS,
+  lightBox, waitShadow, typeShadow, scrollShadowTo, scrollPageTo, scrollPageOver,
+  sleep, FPS,
 } from './rig.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -38,14 +39,11 @@ const plotDataUrl = 'data:image/png;base64,' +
   fs.readFileSync(path.join(HERE, 'fixtures/figure-01.png')).toString('base64');
 
 // The harness ships its own developer toolbar across the top. It is a test
-// instrument, not part of the product, so the camera does not see it. This is
-// styling applied to the page at record time — no fixture is changed by it.
+// instrument, not part of the product, so the camera does not see it. Everything
+// else about the page's appearance is the site's own and is set up in
+// capture/page.mjs; this is only the toolbar.
 const HIDE_HARNESS_CHROME = `
   .bar { display: none !important; }
-  html { scroll-behavior: smooth; }
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
 `;
 
 // 2.6x the v1 rate. The v1 cut spent four seconds watching a sentence be typed;
@@ -102,15 +100,27 @@ const dialUp = page => page.waitForFunction(() => {
 // The take — one thread, from nothing to filed
 // ===========================================================================
 async function thread(page, rec) {
-  const PHRASE_START = 'Each competitor gains';
-  const PHRASE_END = 'if none of them had';
+  const PHRASE_START = 'For example, one of von';
+  const PHRASE_END = 'Earth-like gravity at 5 rpm';
   if (!FOCUS_QUOTE.startsWith(PHRASE_START) || !FOCUS_QUOTE.endsWith(PHRASE_END)) {
     throw new Error('the drag no longer spans FOCUS_QUOTE — capture/page.mjs changed');
   }
 
-  await moveTo(page, 900, 640, 0);
-  await sleep(1600);                                       // entry beat
+  // ---- 0. the page, and the reader getting to the paragraph ---------------
+  // The film opens at the top of the post, on the title and the byline, and
+  // scrolls down to the passage. Nothing in the product happens in this beat and
+  // it is still worth a second and a half: it is the only part of the film that
+  // says WHERE this is happening. A drawer that opens on a paragraph nobody
+  // watched arrive could be a screenshot of anything.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await moveTo(page, 1080, 700, 0);
+  await sleep(1400);
   rec.mark('entry');
+
+  await scrollPageOver(page, 'content h2#the-difficulty-of-building-large-stations',
+    { ms: 1550, block: 0.10 });
+  rec.mark('scrolled');
+  await sleep(650);                                        // the reader arrives
 
   // ---- 1. the drag --------------------------------------------------------
   // where the sentence sits, so the sprite can be dragged across it for real
@@ -152,7 +162,13 @@ async function thread(page, rec) {
   await page.evaluate(() => window.__cam.sel(false));
   await sleep(240);
   await page.evaluate(() => document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })));
-  rec.mark('selection-made');
+  // the mark carries the box the sentence occupies, so the label that names
+  // this action can be placed against it instead of at the top of the screen
+  const selBox = await page.evaluate(() => {
+    const r = getSelection().getRangeAt(0).getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  });
+  rec.mark('selection-made', selBox);
   await waitShadow(page, '.selbtn');
   await sleep(420);
 
@@ -171,8 +187,11 @@ async function thread(page, rec) {
   await clickAt(page, composer.x, composer.y, { travel: 460, hover: 240 });
   await sleep(160);
   rec.mark('typing');
+  // The question is the one this passage actually raises. The post states a
+  // wheel, a diameter and two spin rates; artificial gravity is w^2 r; the
+  // arithmetic is one line and the answer turns out to be interesting.
   await typeShadow(page, '.card.pending textarea',
-    '@claude is this the same trap as arms races?', TYPE);
+    '@claude 3 rpm on a 75 m wheel — is that really lunar gravity?', TYPE);
   await sleep(360);
 
   // The thread ids already on the page. Without this the wait below matches a
@@ -220,7 +239,8 @@ async function thread(page, rec) {
   await clickAt(page, rbox.x, rbox.y, { travel: 520, hover: 240 });
   await sleep(140);
   rec.mark('typing-2');
-  await typeShadow(page, reply, '@codex plot how defection spreads?', TYPE);
+  await typeShadow(page, reply,
+    '@codex plot gravity vs radius at 2, 3 and 5 rpm?', TYPE);
   await sleep(320);
   const send2 = await shadowBox(page, `${card} [data-act="send"]`);
   await clickAt(page, send2.x, send2.y, { travel: 300, hover: 340 });
@@ -257,11 +277,11 @@ async function thread(page, rec) {
 
   // ---- 6. run it ----------------------------------------------------------
   const run = await shadowBox(page, `${card} [data-act="run"]`);
-  rec.mark('run-approach');
+  rec.mark('run-approach', run);
   await clickAt(page, run.x, run.y, { travel: 700, hover: 620 });
   await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
     `${card} [data-act="run"]`);
-  rec.mark('run-clicked');
+  rec.mark('run-clicked', run);
 
   // The status line prints directly under the button the cursor is sitting on,
   // so the hand has to come off it before the result arrives — otherwise the
@@ -301,7 +321,7 @@ async function thread(page, rec) {
   await clickAt(page, tick.x, tick.y, { travel: 640, hover: 560 });
   await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
     `${card} [data-act="resolve"]`);
-  rec.mark('resolved');
+  rec.mark('resolved', tick);
   await moveTo(page, 1180, 960, 420);
   await waitShadow(page, '.resolved-sec');
   const filedCount = await page.evaluate(() =>
@@ -329,21 +349,35 @@ async function thread(page, rec) {
     await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
       `${filedCard} [data-act="summarize"]`);
     rec.mark('summarize');
+    // The hand leaves BEFORE the paragraph arrives, not after. The digest lands
+    // exactly where the button was, so a cursor that waits there is a cursor
+    // sitting on top of the six lines this scene exists to let you read.
+    await moveTo(page, 1215, 985, 480);
     await page.waitForFunction(sel => {
       const p = window.__bfp.drawer.shadow.querySelector(sel + ' .digest');
       return !!(p && p.textContent.length > 240);
     }, filedCard, { timeout: 15000 });
     rec.mark('summary-landed');
-    await moveTo(page, 1200, 980, 480);
-    await sleep(2200);
+    await sleep(2400);
   }
 
   // ---- 9. two green highlights in the page -------------------------------
+  // Both threads live in the same paragraph — the pre-existing one two
+  // sentences above the one the film made — so a single framing holds the pair,
+  // and "green means settled" is shown rather than asserted.
   const green = await page.evaluate(() => document.querySelectorAll('mark.bfp-hl.bfp-done').length);
   await scrollPageTo(page, 'mark.bfp-hl.bfp-done', { block: 'center' });
   await sleep(500);
-  await moveTo(page, 880, 300, 700);
-  rec.mark('green-visible');
+  await moveTo(page, 1108, 1008, 700);            // off the column, off the caption
+  const greenBox = await page.evaluate(() => {
+    const ms = [...document.querySelectorAll('mark.bfp-hl.bfp-done')];
+    const rs = ms.map(m => m.getBoundingClientRect());
+    return {
+      left: Math.min(...rs.map(r => r.left)), top: Math.min(...rs.map(r => r.top)),
+      right: Math.max(...rs.map(r => r.right)), bottom: Math.max(...rs.map(r => r.bottom)),
+    };
+  });
+  rec.mark('green-visible', greenBox);
   await sleep(2600);
 
   return { newThread: focus, filedCount, greenMarks: green, quote: FOCUS_QUOTE };
@@ -353,26 +387,58 @@ async function thread(page, rec) {
 // The exported note — a still life, not an application
 // ===========================================================================
 // capture/note.mjs runs the plugin's own export.mjs over the record this take
-// leaves behind and writes footage/note.html. There is no app window around it
-// on purpose: the v1 cut put the note inside a facsimile of Obsidian, which was
-// the one staged surface in the film and the only thing in it a viewer had to
-// take on trust. The note itself needs no help.
-// The note is 2300px tall and the frame is 1080. A pan down it at that rate is
-// a whoosh nobody can read, so the beat is two held framings with a hard cut
-// between them — the film's own rule, applied to a document: the head (path,
-// frontmatter, title, the quote, "Resolved by angadh" and the exchange
-// starting) and the foot (the code cell, the plot, the attachment path).
+// leaves behind and writes footage/note.html: the exporter's own markdown, set
+// inside a recreation of Obsidian's dark reading view. The frame is the point of
+// the beat — the claim is not "here is a document", it is "this ends up in your
+// vault", and a vault is a place. The v2 cut dropped the frame and the one thing
+// the user missed from v1 was exactly this.
+//
+// The note is taller than the frame. A pan down it is a whoosh nobody can read,
+// so the beat is two held framings with a hard cut between them — the film's own
+// rule, applied to a document: the head (the tab, the tree, the properties, the
+// title, the passage and "Resolved by angadh") and the foot (the code cell and
+// the plot, with the copied figure visible in attachments/ in the sidebar).
+//
+// Each framing DRIFTS rather than freezing. A held still of a document is dead
+// air — ffmpeg's freezedetect says so and a viewer reads it as a stalled video —
+// and the usual fix, a slow camera push, cannot be used here: any scale above
+// 1.0 crops the frame, and the frame is the ribbon and the file tree, which is
+// the half of this beat that is doing the work. So the motion is the note's own
+// scroll, 130px over two and a half seconds. Obsidian scrolls; the window does
+// not move.
+const DRIFT = 130;
+
+async function scrollElOver(page, from, to, ms) {
+  const t0 = Date.now();
+  for (;;) {
+    const u = Math.min(1, (Date.now() - t0) / ms);
+    const k = 0.5 - Math.cos(Math.PI * u) / 2;
+    await page.evaluate(y => document.getElementById('scroller').scrollTo({ top: y, behavior: 'instant' }),
+      from + (to - from) * k);
+    if (u >= 1) break;
+    await sleep(16);
+  }
+}
+
 async function note(page, rec) {
-  const travel = await page.evaluate(() =>
-    document.querySelector('.sheet').scrollHeight - window.innerHeight);
-  await sleep(900);
+  const travel = await page.evaluate(() => {
+    const s = document.getElementById('scroller');
+    return s.scrollHeight - s.clientHeight;
+  });
+  await sleep(800);
   rec.mark('head');
-  await sleep(3000);
-  await page.evaluate(y => document.querySelector('.scroll').scrollTo({ top: y, behavior: 'instant' }), travel);
+  await sleep(500);
+  await scrollElOver(page, 0, DRIFT, 2500);
+  await sleep(200);
+  // the hard cut down the document: the foot is set up one drift above the end
+  await page.evaluate(y => document.getElementById('scroller').scrollTo({ top: y, behavior: 'instant' }),
+    travel - DRIFT);
   await sleep(240);
   rec.mark('foot');
-  await sleep(3000);
-  return { travel };
+  await sleep(500);
+  await scrollElOver(page, travel - DRIFT, travel, 2500);
+  await sleep(500);
+  return { travel, drift: DRIFT };
 }
 
 // ===========================================================================
