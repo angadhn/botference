@@ -1791,7 +1791,7 @@
     function pendingHtml() {
       const p = D.pending;
       const out = outboxHtml('__new__');
-      return `<div class="card pending" data-thread="__new__" style="--author:${MY_COLOR}">
+      return `<div class="card pending${D.focused === '__new__' ? ' focused' : ''}" data-thread="__new__" style="--author:${MY_COLOR}">
         <div class="quote" title="the passage you selected">“${esc(p.quote)}”</div>
         ${out ? `<div class="thread">${out}</div>` : ''}
         ${composerHtml('__new__', 'Comment on this passage…',
@@ -1877,6 +1877,9 @@
         </div>`;
       }
       D.el.comments.innerHTML = html;
+      // the dim rides the PANE, not the cards, so a re-render mid-focus can't
+      // strand a stale dim on rebuilt rows — the class survives innerHTML
+      D.el.comments.classList.toggle('dim-others', !!D.focused);
       // the tab counts what still wants the reader — the list visibly shrinks
       // as they sweep down it, which is the whole point of resolving
       D.el.cCount.textContent = String(open.length);
@@ -2949,6 +2952,13 @@
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
           if (card && card.dataset.thread !== PAGE_TARGET) focus(card.dataset.thread);
+          // blank space in the comments pane un-focuses: the dim lifts and no
+          // card is "the" card until the reader points at one again
+          else if (D.focused && e.target.closest && e.target.closest('.pane[data-pane="comments"]')) {
+            D.focused = null;
+            D.el.comments.classList.remove('dim-others');
+            D.shadow.querySelectorAll('.card.focused').forEach(c => c.classList.remove('focused'));
+          }
           return;
         }
         const act = btn.dataset.act;
@@ -3155,6 +3165,7 @@
       D.focused = id;
       if (revealed) render();
       else D.shadow.querySelectorAll('.card').forEach(c => c.classList.toggle('focused', c.dataset.thread === id));
+      D.el.comments.classList.toggle('dim-others', !!D.focused);
       cb('onFocus')(id);
     }
     // …whatever it takes to make `id` visible. Returns whether anything had to
@@ -3301,7 +3312,11 @@
       // (content.js normalises /thread's {ok, thread} into thread_id; accept
       // the raw {thread:{id}} shape too so neither side can drift silently)
       const newId = (res.thread_id || (res.thread && res.thread.id)) || null;
-      if (target === '__new__') D.pending = null;
+      if (target === '__new__') {
+        D.pending = null;
+        // the spotlight follows the thread the composer just became
+        if (D.focused === '__new__') D.focused = newId;
+      }
       const key = target === '__new__' ? newId : target;
       // The companion took the message but will not summon the bots for this
       // sender (a guest with no bot access, or a companion started
@@ -4231,6 +4246,7 @@
 
     function cancelNew() {
       D.pending = null;
+      if (D.focused === '__new__') D.focused = null;   // spotlight lifts with the card
       delete D.drafts['__new__'];
       delete D.notes['__new__'];
       // a comment that failed to save goes with the card it was written on —
@@ -4244,6 +4260,9 @@
       mount();
       if (!CAPS.highlights) return D;   // nothing can be anchored here
       D.pending = anchor;
+      // the composer arrives already under the spotlight: the box being
+      // filled in is "the" card, everything else recedes until send or cancel
+      D.focused = '__new__';
       D.tab = 'comments';
       paintTabs();
       open('comments');

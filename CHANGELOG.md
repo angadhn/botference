@@ -2,6 +2,14 @@
 
 ## 2026-08-12
 
+- **Discuss: the focused thread gets a spotlight.** Clicking a highlight
+  on the page, or a thread in the drawer, now dims every other card to
+  42% — the reader was deleting neighbours they mistook for the one they
+  meant. Hover restores any dimmed card, blank space in the list lifts
+  the spotlight, and a new comment's composer arrives already under it:
+  send passes the light to the thread it just became, cancel returns
+  the drawer to the standard view.
+
 - **Discuss: comment threads resolve.** A quiet ✓ on every thread row —
   one click, no dialog — files the thread into a collapsed
   `Resolved (N)` digest at the foot of the list, and the Comments count

@@ -621,6 +621,12 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .card:hover { box-shadow: 0 3px 14px rgba(0, 0, 0, .16) }
 .card.focused { box-shadow: 0 6px 24px rgba(0, 0, 0, .26); border-left-width: 4px }
+/* While one thread is focused the rest recede, so "the" card is unmistakable
+   — the reader was deleting neighbours they mistook for it. Hover restores a
+   card so nothing dimmed is ever out of reach; blank-space click lifts it. */
+.pane[data-pane="comments"] .card { transition: opacity .2s ease }
+.pane[data-pane="comments"].dim-others .card:not(.focused) { opacity: .42 }
+.pane[data-pane="comments"].dim-others .card:not(.focused):hover { opacity: 1 }
 .card.working { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent) }
 .card.pending { border-left-style: dashed }
 
