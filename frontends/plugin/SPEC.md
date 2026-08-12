@@ -293,6 +293,11 @@ tags: [web-annotation]
 - `test/anchor.test.mjs`: node script unit-testing anchor.js matching (exact, smart
   quotes, whitespace runs, ambiguity via prefix/suffix, orphan case) — anchor.js must
   therefore keep its matching logic in pure functions that run in node.
+- `test/envelope.test.mjs`: node script over the drawer's pure `splitEnvelopes`
+  and `agentOf`. The load-bearing cases are the ones that must NOT fire: an
+  envelope inside a fenced code block stays put (fence ordinals are the Run
+  button's address) and a footer coming off never takes a checkbox line with
+  it (tick ordinals are the companion's address).
 - `test/harness.html`: standalone page embedding the fixture article + extension
   scripts with a `chrome` shim + scripted fake companion responses, so the full drawer
   UI renders without installing the extension (used for screenshot QA).
@@ -1505,6 +1510,43 @@ Contract deltas agreed during live testing — authoritative over the sections a
   trailing ", "), and an empty token offers every tag in use — so focusing
   the box shows the whole in-use palette, click or Tab/Enter to apply, the
   @-menu's keyboard manners throughout.
+
+- **Who is speaking is a colour AND a typeface** (the council web chat's
+  grammar, ported so the two surfaces read as one product). Claude writes in
+  `--font-claude` (the serif), Codex in `--font-codex` (a grotesque), everyone
+  human in the drawer's own sans; `agentOf()` is the single rule that decides
+  both the class and the colour, so the two can never disagree. Colour alone
+  dies on a greyscale screen and at the speed of a scroll; type alone is too
+  quiet at 14px. **The reader's own turns are `--you`**, not a hash of their
+  handle (`speakerColor`) — green ground, green right edge where every other
+  message wears a left rail, and set in from the left, so "what did I ask?" is
+  findable without reading. Every OTHER handle on a shared companion keeps its
+  deterministic hue. Both themes, and note the two colour triples: `--mark-*`
+  is the braid MARK (the values `icons/make-icons.mjs` rasterises the toolbar
+  icon from — identical in both themes, because a mark that changes colour
+  stops being the same mark), while `--claude/--codex/--you` are the SPEAKERS
+  and are re-picked per theme against their own paper. Fonts are system stacks
+  only: a content script must never load a webfont.
+- **Every message copies out in two flavours** (`doCopy`): the rendered HTML,
+  so a paste into a document keeps the links live, and the raw markdown the
+  author wrote (`data-raw`, set by `fillMarkdown` from the envelope-stripped
+  source), so a paste into a text field is what was typed. `ClipboardItem`
+  first; where it is missing — plenty of host pages are plain http — both
+  flavours still go over through a `copy` event on a textarea of the drawer's
+  own inside the shadow root, so the host page's DOM is never touched. The Run
+  bar and its output never travel; `.acts` and `.runbar` are `user-select:
+  none`, so dragging a selection across a message picks up prose and nothing
+  else.
+- **A leaked room-protocol footer renders as a chip, never as raw JSON**
+  (`splitEnvelopes` → `.envrow`). Free-form mode has every bot end its turn
+  with `{"status","next","writer","summary"}`; the controller strips a
+  well-formed TRAILING one, but a pretty-printed, mid-message or half-streamed
+  one reaches the drawer — and here the prose is PERSISTED, so a leak is
+  permanent. One deliberate exception: an envelope inside a fenced code block
+  is left exactly where it is, because the Run button addresses a block by its
+  ordinal among the fences of the stored text (`run.mjs codeBlocks` counts the
+  same way) and removing or hollowing out a fence would run the wrong code.
+  test/envelope.test.mjs holds that line, and the checkbox ordinals with it.
 
 ## Out of scope for v1 (do not build)
 

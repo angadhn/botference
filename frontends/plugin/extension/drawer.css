@@ -23,9 +23,28 @@
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --serif: "Iowan Old Style", "Source Serif Pro", Charter, Georgia, ui-serif, serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  /* the braid's three strands: claude, you, codex — brand colours, identical
-     in both themes (only the casing behind them follows --bg) */
-  --claude: #d97757; --you: #34d399; --codex: #4a86c8; --bad: #b3403a;
+  /* Two triples, on purpose.
+
+     The braid's three strands are the MARK — the same values the toolbar icon
+     is rasterised from (icons/make-icons.mjs STRANDS) — so they are identical
+     in both themes; only the casing behind them follows --bg. A mark that
+     changes colour with the theme stops being the same mark. */
+  --mark-claude: #d97757; --mark-you: #34d399; --mark-codex: #4a86c8;
+  /* …and the speakers are who is talking IN THE TRANSCRIPT: the council web
+     chat's palette verbatim (frontends/council/assets/style.css), so a page
+     chat here and a room there read as one product. Same three hues as the
+     mark, but each value is picked against ITS OWN theme's paper rather than
+     reused across both — which is why they are set again in every theme block
+     below and the mark's are not. */
+  --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8; --bad: #b3403a;
+  /* Each agent owns a TYPEFACE as well as a colour, the council's pairing:
+     Claude speaks in the serif, Codex in the grotesque, everyone human in the
+     drawer's own sans. Colour alone dies on a greyscale screen and at the
+     speed of a scroll; type alone is too quiet. System stacks only — a content
+     script cannot load a webfont, and must never try. */
+  --font-claude: var(--serif);
+  --font-codex: "Avenir Next", "Segoe UI", Inter, "Helvetica Neue",
+    ui-sans-serif, system-ui, sans-serif;
   --shadow: 0 4px 14px rgba(0, 0, 0, .22);
   --author-l: 0.52;
   /* tag chips: the hue is the tag's own (--th, from its name); the theme owns
@@ -44,6 +63,7 @@
     --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+    --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
     --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
     color-scheme: dark;
   }
@@ -55,12 +75,14 @@
   --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
+  --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
   --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
   color-scheme: dark;
 }
 :host([data-theme="light"]) {
   --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
+  --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8;
   --author-l: 0.52; --tag-fg-l: 30%; --tag-bg-l: 93%; --tag-line-l: 72%;
   color-scheme: light;
 }
@@ -639,6 +661,55 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .reply.bot { background: color-mix(in srgb, var(--author, var(--muted)) 11%, var(--card));
   border-left-color: var(--author, var(--muted)) }
 .reply.streaming { border-left-style: dashed }
+
+/* ── who is speaking, at a glance ──────────────────────────────────────── */
+/* Each agent already owns a colour (the rail, the name, the tint). It owns a
+   TYPEFACE too: Claude in the serif, Codex in the grotesque, every human in
+   the drawer's own sans. The pair is what makes a fast scroll legible —
+   colour dies on a greyscale screen, type alone is too quiet at this size.
+   One variable per reply so the settled message and the streaming <pre> can
+   never disagree about which face the speaker writes in. */
+.reply { --font-body: var(--sans); font-family: var(--font-body) }
+.reply.claude { --font-body: var(--font-claude) }
+.reply.codex { --font-body: var(--font-codex) }
+/* the serif sets smaller at the same px: Claude's turns get the half point
+   back rather than reading as fine print beside Codex's */
+.reply.claude .ctext.md, .reply.claude .stream-text { font-size: 14.5px; line-height: 1.6 }
+
+/* ── your own turn ─────────────────────────────────────────────────────── */
+/* The one block in the column with a filled ground, a border all the way
+   round, and the RIGHT edge where every other message wears a left rail —
+   set in from the left as well, so a fast scroll finds "what did I ask?"
+   without reading a word of it. The green is --you, which is picked per theme,
+   so this reads the same way on paper and in the dark. */
+.reply.mine {
+  margin-left: 26px;
+  background: color-mix(in srgb, var(--you) 13%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--you) 34%, transparent);
+  border-right: 3px solid var(--you);
+  border-radius: 10px 8px 4px 10px;
+}
+/* links in your own message answer to the same green rather than the drawer's
+   orange accent, which on this ground reads as a second speaker */
+.reply.mine .ctext.md a { color: color-mix(in srgb, var(--you) 78%, var(--fg)) }
+.reply.mine .ctext.md a:hover { color: var(--you) }
+
+/* ── the room protocol's footer, when one leaks ────────────────────────── */
+/* Metadata, never prose: a dashed chip under the message rather than a set of
+   raw JSON braces in the middle of an answer. Same grammar as the council's
+   (frontends/council/assets/style.css .env), at the drawer's 12px floor. */
+.envrow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px }
+.env { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px;
+  font: 12px/1.5 var(--sans); color: var(--muted);
+  border: 1px dashed var(--card-line); border-radius: 999px; padding: 1px 9px }
+.env-dot { flex: none; align-self: center; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted) }
+.env-continuing .env-dot { background: var(--accent) }
+.env-converged .env-dot { background: var(--rev-line) }
+.env-blocked .env-dot { background: var(--bad) }
+.env-status { font-weight: 700; text-transform: uppercase; letter-spacing: .05em }
+.env-sum { color: var(--fg); opacity: .8 }
+.env-next, .env-writer { font-style: italic }
 .reply .who {
   display: flex; align-items: baseline; gap: 2px; margin-bottom: 3px;
   font: 700 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
@@ -683,7 +754,11 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    reader does to a message and not a message they send. Everything it produces
    lives in the same column and never widens it. */
 .runbox { margin: -4px 0 8px }
-.runbar { display: flex; align-items: center; gap: 8px; min-height: 22px }
+/* the bar is chrome the drawer drew, not words anybody wrote: a selection
+   dragged across the message must not pick "▶ Run" up on the way past.
+   (The OUTPUT below it stays selectable — that is a result, and worth having.) */
+.runbar { display: flex; align-items: center; gap: 8px; min-height: 22px;
+  -webkit-user-select: none; user-select: none }
 .runbtn {
   flex: none; border: 1px solid var(--card-line); background: none; border-radius: 6px;
   padding: 2px 8px; min-height: 22px; font: 12px/1.4 var(--sans); color: var(--muted);
@@ -776,7 +851,10 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 li.md-task { display: flex; align-items: flex-start; gap: 7px; margin: 3px 0 }
 .md-tick {
   flex: none; width: 14px; height: 14px; margin: 3px 0 0; cursor: pointer;
-  accent-color: var(--accent);
+  /* the tick belongs to whoever wrote the list, like everything else in their
+     message — the drawer's orange accent on a claude list was a coincidence
+     and on a codex one read as a third speaker */
+  accent-color: var(--author, var(--accent));
 }
 .md-tick:disabled { cursor: progress; opacity: .6 }
 .md-tick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
@@ -784,18 +862,28 @@ li.md-task { display: flex; align-items: flex-start; gap: 7px; margin: 3px 0 }
 li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted) }
 .reply .stream-text {
   white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0;
-  font: 14px/1.55 var(--serif); max-height: 260px; overflow-y: auto;
+  font: 14px/1.55 var(--font-body); max-height: 260px; overflow-y: auto;
 }
 .reply .stream-text::after {
   content: '▌'; color: var(--accent); animation: bfp-blink 1s steps(2) infinite;
 }
 /* always present, just quiet: hover-only controls are controls nobody finds */
-.reply .acts { position: absolute; top: 3px; right: 4px; display: flex; gap: 2px }
+/* …and they are CHROME: dragging a selection across a message must not drag
+   the copy glyph into the clipboard with it */
+.reply .acts { position: absolute; top: 3px; right: 4px; display: flex; gap: 2px;
+  -webkit-user-select: none; user-select: none }
 .reply .acts .rebtn { opacity: .35 }
 .reply:hover .acts .rebtn, .reply .acts .rebtn:focus-visible { opacity: 1 }
-.reply .acts .rebtn[data-act="edit"]:hover { color: var(--accent) }
-/* the who-line must not run under the action buttons */
-.reply .who { padding-right: 56px }
+.reply .acts .rebtn[data-act="edit"]:hover,
+.reply .acts .rebtn[data-act="copy"]:hover { color: var(--accent) }
+/* copied: the answer belongs where the click was. A drawer that lives inside
+   somebody else's page has nowhere to put a toast. */
+.reply .acts .rebtn.done { opacity: 1; color: var(--rev-line) }
+.reply .acts .rebtn.done:hover { color: var(--rev-line) }
+/* the who-line must not run under the action buttons — two of them on a bot's
+   reply, three on one of yours */
+.reply .who { padding-right: 58px }
+.reply.mine .who { padding-right: 84px }
 .reply .edited { font: italic 12px var(--sans); color: var(--muted); text-transform: none; letter-spacing: 0 }
 
 /* ── tool activity: a disclosure, not a message ────────────────────────── */

@@ -116,12 +116,19 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   const isBot = a => /^(claude|codex)/i.test(String(a || '').trim());
+  // which bot an author name is, or '' for a person. The class it returns is
+  // what the per-agent type treatment hangs off (drawer.css --font-claude /
+  // --font-codex), so colour and typeface are decided by the same rule.
+  function agentOf(name) {
+    const a = String(name || '').toLowerCase().trim();
+    return a.startsWith('claude') ? 'claude' : a.startsWith('codex') ? 'codex' : '';
+  }
   // per-author identity, same rule as the review UI: bots get theme colors,
   // humans a deterministic muted hue from their handle
   function authorColor(name) {
     const a = String(name || '').toLowerCase().trim();
-    if (a.startsWith('claude')) return 'var(--claude)';
-    if (a.startsWith('codex')) return 'var(--codex)';
+    const bot = agentOf(a);
+    if (bot) return 'var(--' + bot + ')';
     let h = 5381;
     for (let i = 0; i < a.length; i++) h = ((h << 5) + h + a.charCodeAt(i)) >>> 0;
     return 'oklch(var(--author-l, 0.52) 0.09 ' + (h % 360) + ')';
@@ -137,6 +144,13 @@
   }
 
   const HINT = '@claude, @codex or @all to bring in the bots';
+  // ⧉ is the same overlap glyph the council's copy button draws as an SVG.
+  // A glyph and not a word: the drawer's message controls are a 24px row in
+  // the corner of a 420px column, and "copy" would not fit beside ✎ and ✕.
+  const COPY_GLYPH = '⧉';
+  const COPY_TIP = 'copy this message';
+  const COPY_FAIL = 'this browser would not let the drawer copy';
+  const COPY_HOLD = 1400;      // how long the button says so
   const PAGE_TARGET = '__page__';
   // The library — one conversation about everything the reader has annotated,
   // as opposed to one page. On the wire it is an ordinary page chat on a page
@@ -601,6 +615,117 @@
     return frag;
   }
 
+  // ── the room protocol's JSON footer ────────────────────────────────────
+  // Free-form mode tells each bot to end its turn with a JSON footer
+  // {"status","next","writer","summary"} (core/room_prompts.py). The
+  // controller strips a well-formed TRAILING one before the companion ever
+  // sees it, but a bot that pretty-prints it, drops it mid-message, or is
+  // still half-way through writing it leaks raw braces into the prose — and
+  // here the prose is PERSISTED, so a leak is permanent. So lift every
+  // envelope out wherever it sits and render it as a subdued chip.
+  //
+  // One deliberate exception: an envelope inside a fenced code block is left
+  // exactly where it is. The drawer numbers fenced blocks for the Run button
+  // and the companion re-parses the STORED text with the same counter
+  // (run.mjs codeBlocks), so removing a fence — or hollowing one out — would
+  // point every later Run button at the wrong block.
+  const ENV_KEYS = new Set(['status', 'next', 'writer', 'summary']);
+  const isEnvelope = v =>
+    v && typeof v === 'object' && !Array.isArray(v) &&
+    typeof v.status === 'string' &&
+    ('next' in v || 'summary' in v) &&
+    Object.keys(v).every(k => ENV_KEYS.has(k));
+  // a half-written envelope at the very end of a live stream: `{"status": "co`
+  // with no closing brace yet
+  const PARTIAL_ENV = /[ \t]*\{[ \t\r\n]*"(?:status|next|writer|summary)"[ \t]*:[^{}]*$/;
+  // how far past a '{' the "status" key may sit before we stop believing this
+  // is an envelope — also what keeps a message full of JSON from costing a
+  // balanced-brace scan per opening brace on every streamed delta
+  const ENV_LOOKAHEAD = 600;
+
+  // [start, end) of every fenced code block, so nothing above reaches inside
+  // one. An unclosed fence (mid-stream) runs to the end of the text.
+  function fencedRanges(s) {
+    const out = [];
+    let at = 0, open = null;
+    for (const line of s.split('\n')) {
+      const f = FENCE.exec(line);
+      if (!open) { if (f) open = { start: at, ch: f[1][0] }; }
+      else if (new RegExp('^\\s{0,3}' + (open.ch === '`' ? '```' : '~~~')).test(line)) {
+        out.push([open.start, at + line.length]);
+        open = null;
+      }
+      at += line.length + 1;
+    }
+    if (open) out.push([open.start, s.length]);
+    return out;
+  }
+
+  // brace-balanced read of the JSON object starting at s[at] ('{'), honouring
+  // strings and escapes so a "}" inside a summary cannot end it early
+  function readObject(s, at) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = at; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          try { return { value: JSON.parse(s.slice(at, i + 1)), end: i + 1 }; }
+          catch { return null; }
+        }
+      }
+    }
+    return null;              // unterminated (mid-stream, or not JSON at all)
+  }
+
+  // text -> {text, envs}: the prose with every bare envelope lifted out, in
+  // the order they appeared.
+  function splitEnvelopes(raw) {
+    const s = String(raw == null ? '' : raw);
+    const envs = [];
+    if (s.indexOf('"status"') === -1) return { text: s, envs };
+    const fences = fencedRanges(s);
+    const inFence = i => fences.some(([a, b]) => i >= a && i < b);
+    let out = '', i = 0;
+    for (;;) {
+      const j = s.indexOf('{', i);
+      if (j < 0) { out += s.slice(i); break; }
+      if (inFence(j) || !/"status"[ \t]*:/.test(s.slice(j, j + ENV_LOOKAHEAD))) {
+        out += s.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+      const got = readObject(s, j);
+      if (got && isEnvelope(got.value)) {
+        out += s.slice(i, j);
+        envs.push(got.value);
+        i = got.end;
+        continue;
+      }
+      out += s.slice(i, j + 1);
+      i = j + 1;
+    }
+    // …and the one that is still being typed, if the tail is not inside a fence
+    if (!inFence(s.length - 1)) {
+      const cut = out.replace(PARTIAL_ENV, '');
+      if (cut !== out) { out = cut; envs.push(null); }
+    }
+    // an envelope on its own line leaves the line behind it: close the gap so
+    // the prose does not grow a hole where the JSON used to be. Only when
+    // something was actually taken — a message with no footer keeps its own
+    // blank lines exactly as written, fenced code included.
+    if (envs.length) out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+    return { text: envs.length ? out.trim() : out, envs: envs.filter(Boolean) };
+  }
+
   // The renderers below build HTML strings; markdown must not. Each bot reply
   // parks its text in this slot map and gets an empty <div data-md="…">, which
   // render() fills from the DOM side once the string has landed.
@@ -611,12 +736,37 @@
     mdSlots.set(id, text);
     return id;
   }
+  // The footer as one quiet line: a status dot, the status word, whatever the
+  // bot summarised, and who it handed the floor to. DOM nodes and textContent
+  // only, like everything else on the message path.
+  const ENV_NEXT = { '@user': 'back to you', '@claude': 'over to @claude', '@codex': 'over to @codex' };
+  function envRow(envs) {
+    const row = mk('div', 'envrow');
+    for (const env of envs) {
+      const chip = row.appendChild(mk('div', 'env env-' + String(env.status).replace(/\W+/g, '')));
+      chip.appendChild(mk('span', 'env-dot')).setAttribute('aria-hidden', 'true');
+      chip.appendChild(mk('span', 'env-status')).textContent = String(env.status || '');
+      if (env.summary) chip.appendChild(mk('span', 'env-sum')).textContent = String(env.summary);
+      const next = String(env.next || '').toLowerCase();
+      if (next) {
+        chip.appendChild(mk('span', 'env-next')).textContent =
+          ENV_NEXT[next] || ('over to ' + next);
+      }
+      if (env.writer) chip.appendChild(mk('span', 'env-writer')).textContent = 'writer ' + env.writer;
+      chip.setAttribute('title', 'room protocol footer — ' + JSON.stringify(env));
+    }
+    return row;
+  }
   function fillMarkdown(scope) {
     scope.querySelectorAll('.ctext[data-md]').forEach(el => {
       const text = mdSlots.get(el.getAttribute('data-md'));
       if (text == null) return;
+      const split = splitEnvelopes(text);
       el.textContent = '';
-      el.appendChild(renderMarkdown(text));
+      el.appendChild(renderMarkdown(split.text));
+      // what the copy button hands back: what was WRITTEN, not what was drawn
+      el.setAttribute('data-raw', split.text);
+      if (split.envs.length) el.insertAdjacentElement('afterend', envRow(split.envs));
     });
     mdSlots.clear();
   }
@@ -793,6 +943,10 @@
   // painted in the drawer's own background so over/under reads in both themes,
   // and the strand order (codex, you, claude) is what makes the crossing a
   // crossing rather than three lines meeting.
+  //
+  // The strands are --mark-* and NOT the speaker colours: this is the mark on
+  // the toolbar button, rasterised from those exact values, and it must look
+  // the same in both themes even though who-is-speaking does not.
   const BRAID_STRANDS = [
     ['codex', 'M12.07 17.2L11.38 15.67L10.43 14.13L9.27 12.6L8 11.07L6.71 9.53L5.5 8L4.47 6.47L3.7 4.93L3.26 3.4L3.15 1.87L3.39 0.33L3.93 -1.2'],
     ['you', 'M8 17.2L9.24 15.67L10.42 14.13L11.47 12.6L12.3 11.07L12.82 9.53L13 8L12.82 6.47L12.3 4.93L11.47 3.4L10.42 1.87L9.24 0.33L8 -1.2'],
@@ -803,7 +957,7 @@
     'stroke-linecap="round" stroke-linejoin="round">' +
     BRAID_STRANDS.map(([name, d]) =>
       `<path d="${d}" stroke="var(--bg)" stroke-width="3.4"/>` +
-      `<path d="${d}" stroke="var(--${name})" stroke-width="2"/>`).join('') +
+      `<path d="${d}" stroke="var(--mark-${name})" stroke-width="2"/>`).join('') +
     '</svg>';
   const PAGES_SVG = BRAID_SVG;
 
@@ -857,6 +1011,9 @@
       sendLock: {},        // target -> true for the synchronous span of a send
       pending: null,       // {quote, prefix, suffix} while composing a new thread
       confirm: null,       // threadId whose "delete thread?" confirm is showing
+      // {key:"target|ts", ok} for ~1.4s after a message was copied, so the
+      // confirmation survives a render() landing on top of it
+      copied: null,
       toolsOpen: {},       // tool-activity disclosure key -> expanded
       // ---- running a ```python block (setCanRun / onRun) ----------------
       // The button exists only where the companion says it does: owner, and
@@ -1168,8 +1325,18 @@
     function replyHtml(target, r, mine) {
       const bot = isBot(r.author);
       // edit is restricted to the user's own messages (the server refuses the
-      // rest); delete is allowed on anything, so a bad bot answer can be pruned
+      // rest); delete is allowed on anything, so a bad bot answer can be pruned.
+      // Copy is on every message, whoever wrote it — it is the one control
+      // here that takes nothing away.
+      // "copied ✓" is a piece of STATE, not a piece of DOM: a stream landing
+      // in another thread rebuilds this whole pane, and a confirmation that
+      // vanishes half a second after the click is a confirmation nobody sees
+      const ckey = target + '|' + r.ts;
+      const cp = D.copied && D.copied.key === ckey ? D.copied : null;
       const acts = `<div class="acts">` +
+        `<button class="rebtn${cp && cp.ok ? ' done' : ''}" data-act="copy" data-copykey="${esc(ckey)}"` +
+        ` title="${esc(cp ? (cp.ok ? 'copied' : COPY_FAIL) : COPY_TIP)}"` +
+        ` aria-label="copy this message">${cp ? (cp.ok ? '✓' : '✕') : COPY_GLYPH}</button>` +
         (mine ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
         `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button></div>`;
       // EVERY message is markdown now, whoever wrote it — people paste links
@@ -1179,7 +1346,10 @@
       // anchors. What is STORED stays the raw markdown; only the rendering
       // changes, which is why the editor reads msg.text and not this DOM.
       const body = `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`;
-      return `<div class="reply${bot ? ' bot' : ''}${mine ? ' mine' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}" style="--author:${authorColor(r.author)}">
+      // the agent's own class carries its typeface (drawer.css --font-claude /
+      // --font-codex); the colour rides the same rule through speakerColor
+      const who = agentOf(r.author);
+      return `<div class="reply${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}" style="--author:${speakerColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}</div>`;
     }
@@ -1271,9 +1441,14 @@
     function streamsHtml(target) {
       return Object.keys(D.streams).filter(k => D.streams[k].target === target).map(k => {
         const s = D.streams[k];
-        return `<div class="reply bot streaming" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
+        const who = agentOf(s.who);
+        // the room footer is being typed in front of the reader on a live
+        // stream: hold it back here too, or a finished answer visibly grows a
+        // set of JSON braces and then loses them again
+        const text = splitEnvelopes(s.text).text;
+        return `<div class="reply bot streaming${who ? ' ' + who : ''}" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
           <span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">writing…</span></span>
-          <pre class="stream-text">${esc(s.text)}</pre></div>`;
+          <pre class="stream-text">${esc(text)}</pre></div>`;
       }).join('');
     }
 
@@ -1514,7 +1689,7 @@
           : `<div class="sendstate"><span class="spin">◐</span><span class="stext">${esc(SENDING_TEXT)}</span></div>`;
         // rendered exactly like the settled message it is about to become, so
         // nothing reflows or reformats under the reader when it lands
-        return `<div class="reply mine sending${failed ? ' failed' : ''}" data-out="${esc(e.id)}" style="--author:${authorColor(author)}">
+        return `<div class="reply mine sending${failed ? ' failed' : ''}" data-out="${esc(e.id)}" style="--author:${MY_COLOR}">
           <span class="who"><span class="author">${esc(author)}</span><span class="when">now</span></span>
           <div class="ctext md" data-md="${esc(mdSlot(e.text))}"></div>${state}</div>`;
       }).join('');
@@ -1532,7 +1707,7 @@
              <button class="rebtn yes" data-act="del-thread-yes" data-target="${esc(t.id)}" type="button">yes</button>
              <button class="rebtn" data-act="del-thread-no" type="button">no</button></div>`
         : `<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
-      return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${authorColor(author)}">
+      return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${speakerColor(author)}">
         <div class="chead">
           <div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}</div>
           ${head}
@@ -1546,7 +1721,7 @@
     function pendingHtml() {
       const p = D.pending;
       const out = outboxHtml('__new__');
-      return `<div class="card pending" data-thread="__new__" style="--author:${authorColor(D.author || opts.author || 'you')}">
+      return `<div class="card pending" data-thread="__new__" style="--author:${MY_COLOR}">
         <div class="quote" title="the passage you selected">“${esc(p.quote)}”</div>
         ${out ? `<div class="thread">${out}</div>` : ''}
         ${composerHtml('__new__', 'Comment on this passage…',
@@ -1562,6 +1737,13 @@
     // (setAuthor) as soon as the background has answered.
     const sameAuthor = a =>
       String(a || '').toLowerCase() === String(D.author || opts.author || 'angadh').toLowerCase();
+
+    // The reader's own colour is the braid's green, not a hash of their handle
+    // — theirs is the one identity in the transcript somebody is actually
+    // looking for while scrolling, and the one the eye should find without
+    // reading. Every other handle on a shared companion keeps its hue.
+    const MY_COLOR = 'var(--you)';
+    const speakerColor = a => (!isBot(a) && sameAuthor(a)) ? MY_COLOR : authorColor(a);
 
     // The companion is a process the user has to have started. When it is down
     // that is the single most important thing on screen — so it gets the actual
@@ -1613,7 +1795,7 @@
     function renderChat() {
       const msgs = (D.page && D.page.page_chat) || [];
       const body = msgsHtml(PAGE_TARGET, msgs) + outboxHtml(PAGE_TARGET) + streamsHtml(PAGE_TARGET);
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${authorColor(D.author || opts.author || 'you')}">
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         ${body ? `<div class="thread">${body}</div>` : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`}
         ${statusHtml(PAGE_TARGET)}
         ${composerHtml(PAGE_TARGET, 'Ask about this page…')}
@@ -1860,7 +2042,7 @@
         : '';
       el.innerHTML = `<div class="lib-head">
           <span class="lib-sub">one conversation about everything below</span>${acts}</div>
-        <div class="card libchat" data-thread="${T}" style="--author:${authorColor(D.author || opts.author || 'you')}">
+        <div class="card libchat" data-thread="${T}" style="--author:${MY_COLOR}">
           ${body ? `<div class="thread">${body}</div>`
             : `<div class="empty"><b>Ask about everything you've read</b>The bots read your saved pages, quotes and comments to answer — mention one to begin.</div>`}
           ${note}
@@ -2738,6 +2920,7 @@
         if (act === 'interrupt') { doInterrupt(btn); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }
         if (act === 'warn-dismiss') { setWarning(''); return; }
+        if (act === 'copy') { doCopy(btn); return; }
         if (act === 'edit') { startEdit(btn); return; }
         if (act === 'del-msg') { doDelete(target, btn.dataset.ts); return; }
         if (act === 'del-thread') { D.confirm = target; render(); return; }
@@ -3048,6 +3231,109 @@
       render();
       const box = composerBox(target);
       if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    }
+
+    // ── copying a message out ──────────────────────────────────────────────
+    // Two flavours, always: the RENDERED html, so a paste into a document keeps
+    // the links live and the lists lists; and the raw markdown the author
+    // actually wrote, so a paste into a text field is what was typed rather
+    // than a flattened rendering of it. (The council does the same —
+    // frontends/council/assets/app.js copyMessage.)
+    //
+    // The drawer runs inside arbitrary pages, plenty of them plain http, where
+    // navigator.clipboard does not exist at all — so there is a second path
+    // that puts BOTH flavours on the clipboard through a `copy` event on a
+    // textarea of the drawer's own, inside the shadow root. The host page's
+    // DOM is never touched, and neither is its clipboard handling.
+    function copyFlavours(reply) {
+      const ct = reply.querySelector('.ctext.md');
+      if (!ct) return null;
+      // the Run bar and whatever the last run printed are chrome the drawer
+      // drew, not words anybody wrote: they do not travel
+      const clone = ct.cloneNode(true);
+      clone.querySelectorAll('.runbox').forEach(n => n.remove());
+      const raw = ct.getAttribute('data-raw');
+      return { html: clone.innerHTML, text: raw == null ? clone.textContent : raw };
+    }
+    function legacyCopy(html, text) {
+      if (!D.el.panel || typeof document.execCommand !== 'function') return false;
+      const ta = mk('textarea');
+      ta.value = text;
+      ta.setAttribute('style', 'position:fixed;top:-9999px;left:-9999px;opacity:0');
+      ta.addEventListener('copy', e => {
+        if (!e.clipboardData) return;
+        e.preventDefault();
+        e.clipboardData.setData('text/html', html);
+        e.clipboardData.setData('text/plain', text);
+      });
+      const prev = D.shadow.activeElement;
+      D.el.panel.appendChild(ta);
+      let ok = false;
+      try {
+        ta.focus();
+        ta.select();
+        ok = document.execCommand('copy');
+      } catch { ok = false; }
+      ta.remove();
+      // whatever the reader was typing in stays what they were typing in
+      if (prev && typeof prev.focus === 'function') prev.focus();
+      return ok;
+    }
+    let copyTimer = null;
+    // Said on the button itself, in the drawer's own grammar: this UI renders
+    // inside somebody else's page and has nowhere to put a toast.
+    //
+    // Painted on the live node AND remembered in D.copied, because the two
+    // failure modes are opposite ones: a full render() during the window would
+    // throw a DOM-only confirmation away (a stream landing in another thread
+    // rebuilds both panes, and that is exactly when somebody is copying), and
+    // a state-only one would cost a render per click. So: paint now, and let
+    // replyHtml re-emit it if the pane is rebuilt under us.
+    // a quoted attribute-selector value only has to escape " and \
+    const cssEsc = s => String(s == null ? '' : s).replace(/["\\]/g, '\\$&');
+    function paintCopied(btn, ok) {
+      if (!btn) return;
+      btn.textContent = ok == null ? COPY_GLYPH : (ok ? '✓' : '✕');
+      btn.classList.toggle('done', ok === true);
+      btn.title = ok == null ? COPY_TIP : (ok ? 'copied' : COPY_FAIL);
+    }
+    // whichever button is live NOW: the clipboard settles a beat after the
+    // click, and a render() in that beat replaces the node that was pressed
+    const liveCopyBtn = key => (key && D.mounted
+      ? D.shadow.querySelector(`[data-copykey="${cssEsc(key)}"]`) : null);
+    function markCopied(btn, ok) {
+      const key = btn.getAttribute('data-copykey');
+      D.copied = key ? { key, ok: !!ok } : null;
+      paintCopied(liveCopyBtn(key) || btn, !!ok);
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => {
+        D.copied = null;
+        paintCopied(liveCopyBtn(key), null);
+      }, COPY_HOLD);
+    }
+    function doCopy(btn) {
+      const reply = btn.closest('.reply');
+      const f = reply && copyFlavours(reply);
+      if (!f) return;
+      const nav = navigator;
+      const rich = nav.clipboard && typeof nav.clipboard.write === 'function' &&
+        typeof root.ClipboardItem === 'function' && typeof root.Blob === 'function';
+      if (rich) {
+        let item = null;
+        try {
+          item = new root.ClipboardItem({
+            'text/html': new root.Blob([f.html], { type: 'text/html' }),
+            'text/plain': new root.Blob([f.text], { type: 'text/plain' }),
+          });
+        } catch { item = null; }
+        if (item) {
+          nav.clipboard.write([item]).then(
+            () => markCopied(btn, true),
+            () => markCopied(btn, legacyCopy(f.html, f.text)));
+          return;
+        }
+      }
+      markCopied(btn, legacyCopy(f.html, f.text));
     }
 
     function startEdit(btn) {
@@ -4065,6 +4351,7 @@
     COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     tagHue,                                                 // test/tags.test.mjs
+    splitEnvelopes, agentOf,                                // test/envelope.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

@@ -32,8 +32,12 @@
     ?noagents=1      …with the companion started --no-agents ("agents are off")
     ?nostatus=1      …with a companion that reports no `status` at all: the
                      popover must simply omit the gauges
-    ?md=1            replace the page-chat reply with a markdown-heavy one, so
-                     links / bold / code / lists are all on screen
+    ?md=1            a full page chat: your own message, a codex turn and a
+                     claude turn, so links / bold / code / lists / checklists
+                     are on screen AND the three speaker identities (colour +
+                     typeface) can be compared side by side. Claude's turn ends
+                     with a pretty-printed room footer, which must render as a
+                     chip rather than raw JSON.
     ?math=1          a page chat full of TeX — inline, display, maths inside
                      markdown, dollar AMOUNTS that must stay prose, and one
                      broken formula that must survive as its own source
@@ -650,6 +654,27 @@ const CANNED_MD =
   '2. Re-run the comparison\n\n' +
   'Not a link: [nope](javascript:alert) stays plain text.';
 
+// The other agent's voice, for the states that are about CONTRAST: same
+// markdown vocabulary as CANNED_MD, a checklist, and a room-protocol footer
+// the bot pretty-printed instead of putting on one line — the shape the
+// controller's stripper misses and the drawer has to lift out for itself.
+const CANNED_CLAUDE =
+  'The shape of it, in three moves:\n\n' +
+  '- The **first filing** sets the possession claim\n' +
+  '- The second walks it back without saying so\n' +
+  '- Neither of them cites the [underlying table](https://example.org/xg-notes)\n\n' +
+  'Worth checking before you quote it:\n\n' +
+  '- [x] Read both filings end to end\n' +
+  '- [ ] Pull the possession numbers yourself\n' +
+  '- [ ] Ask the desk which one they filed against\n\n' +
+  'My read is that *the second one is the weaker document*, and it is the one ' +
+  'everybody has been quoting.\n\n' +
+  '{\n' +
+  '  "status": "continuing",\n' +
+  '  "next": "@codex",\n' +
+  '  "summary": "shape laid out; sources still needed"\n' +
+  '}';
+
 // A reply carrying every case the maths renderer has to get right at once.
 // The `$5`/`$10` line is the one that matters most: it must come out as prose.
 const CANNED_MATH =
@@ -953,10 +978,18 @@ if (Q.get('long') === '1') {
 }
 
 if (Q.get('md') === '1') {
-  RECORD.page_chat.push({ author: 'angadh', ts: iso(10), text: '@codex link me the sources' });
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(10),
+    text: 'Reading [the second filing](https://example.com/reports/aragon-part-2) now — '
+      + '@codex link me the sources, and **@claude** give me the shape of it.' });
   RECORD.page_chat.push({ author: 'codex', ts: iso(9), kind: 'tools', text: TOOLS_A });
   RECORD.page_chat.push({ author: 'codex', ts: iso(9), text: CANNED_MD });
   RECORD.page_chat.push({ author: 'codex', ts: iso(8), kind: 'tools', text: TOOLS_B });
+  // …and the other agent, because the point of the state is the CONTRAST:
+  // two bots and a person, three colours and three faces on one screen. The
+  // room footer on the end is one a bot pretty-printed, which is exactly the
+  // shape the controller's stripper misses — it must show as a chip, never as
+  // raw braces in the prose.
+  RECORD.page_chat.push({ author: 'claude', ts: iso(7), text: CANNED_CLAUDE });
 }
 
 function stampMsg(text) { return { author: 'angadh', ts: now(), text }; }
@@ -2027,6 +2060,63 @@ async function selftest() {
   check('markdown: the user’s own messages go through it as well',
     !!S.querySelector('.pane[data-pane="chat"] .reply.mine .ctext.md'));
 
+  // ---- who is speaking: a colour AND a typeface ----
+  // Colour alone dies on a greyscale screen and at the speed of a scroll; type
+  // alone is too quiet at 14px. Each agent owns both, and the reader owns the
+  // green — the same three identities the council web chat uses, so the two
+  // surfaces read as one product.
+  const codexReply = md ? md.closest('.reply') : null;
+  const mineReplyEl = S.querySelector('.pane[data-pane="chat"] .reply.mine:not(.sending)');
+  const claudeReply = S.querySelector('.reply.bot.claude');
+  const face = el => el ? getComputedStyle(el.querySelector('.ctext.md')).fontFamily : '';
+  check('a codex turn is marked as one', !!codexReply && codexReply.classList.contains('codex'));
+  check('a claude turn is marked as one', !!claudeReply);
+  check('the two agents do not write in the same face',
+    !!face(codexReply) && !!face(claudeReply) && face(codexReply) !== face(claudeReply));
+  check('claude speaks in the serif', /Iowan|Source Serif|Charter|Georgia|serif/.test(face(claudeReply)));
+  check('neither agent’s face is the drawer’s own sans',
+    !!mineReplyEl && face(mineReplyEl) !== face(claudeReply) && face(mineReplyEl) !== face(codexReply));
+  check('your own turn is the reader’s green, not a hash of the handle',
+    !!mineReplyEl && mineReplyEl.style.getPropertyValue('--author').trim() === 'var(--you)');
+  check('…and carries the right edge every other message wears on the left',
+    !!mineReplyEl && parseFloat(getComputedStyle(mineReplyEl).borderRightWidth) >= 3);
+  check('…on a ground of its own, so a fast scroll finds it',
+    !!mineReplyEl && !!codexReply &&
+    getComputedStyle(mineReplyEl).backgroundColor !== getComputedStyle(codexReply).backgroundColor);
+  check('…set in from the left, on the other side of the column',
+    !!mineReplyEl && parseFloat(getComputedStyle(mineReplyEl).marginLeft) > 0);
+
+  // ---- copy a message out, with its links intact ----
+  // Two flavours: the rendered HTML (a paste into a document keeps the links
+  // live) and the raw markdown (a paste into a text field is what was typed).
+  const copyBtn = el => el && el.querySelector('.acts [data-act="copy"]');
+  check('every message carries a copy control, whoever wrote it',
+    !!copyBtn(codexReply) && !!copyBtn(mineReplyEl) && !!copyBtn(claudeReply));
+  check('the copy control is chrome, not words — a selection never picks it up',
+    !!codexReply && getComputedStyle(codexReply.querySelector('.acts')).userSelect === 'none');
+  check('the rich flavour keeps real anchors, hrefs and all',
+    !!md && /<a [^>]*href="https:\/\/example\.com\/reports\/aragon-part-1"/.test(md.innerHTML));
+  check('the plain flavour is the markdown the bot actually wrote',
+    !!md && md.getAttribute('data-raw') === CANNED_MD);
+  // The confirmation is STATE, not DOM: the clipboard settles a beat after the
+  // click and a stream landing in another thread rebuilds this pane in the
+  // meantime, so a DOM-only ✓ would be thrown away exactly when somebody is
+  // copying. Whichever button is live has to carry it.
+  const copyKey = copyBtn(codexReply).getAttribute('data-copykey');
+  const liveCopy = () => S.querySelector('[data-copykey="' + copyKey + '"]');
+  check('the copy control is addressable across a re-render', !!copyKey && !!liveCopy());
+  // The write itself cannot be driven from here: `execCommand('copy')` needs
+  // user activation and `clipboard.write()` needs a permission, and neither a
+  // scripted .click() nor a virtual clock can produce one. (The round trip —
+  // trusted click in, both flavours out, the ✓ surviving a re-render — is
+  // checked with a real CDP mouse event instead.) What this page pins down is
+  // that pressing it is inert on the message: nothing is consumed, nothing is
+  // rewritten, and the thing it would hand over is still there afterwards.
+  copyBtn(codexReply).click();
+  check('…and pressing it changes nothing about the message it copies',
+    !!md && md.isConnected && md.getAttribute('data-raw') === CANNED_MD &&
+    !!liveCopy() && !!copyBtn(mineReplyEl));
+
   // ---- tool activity: one merged, collapsed, hoisted disclosure ----
   const tools = S.querySelectorAll('.pane[data-pane="chat"] .tools');
   const trow = tools[0];
@@ -2079,9 +2169,15 @@ async function selftest() {
     const o = parseFloat(getComputedStyle(pendingCards()[0]).opacity);
     return o < 1 && o > 0.4;
   })());
-  check('…in its author’s own colour, like any other message',
-    pendingCards()[0].style.getPropertyValue('--author').trim() ===
-      window.BFPDrawer.authorColor('angadh'));
+  // The reader's own colour is --you, not a hash of their handle: theirs is the
+  // one identity in the transcript somebody is looking for while scrolling. A
+  // message in flight has to wear it too, or it changes colour when it lands.
+  check('…in the reader’s own colour, like every other message of theirs', (() => {
+    const settled = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine:not(.sending)')].pop();
+    const mineColor = settled && settled.style.getPropertyValue('--author').trim();
+    return !!mineColor && mineColor === 'var(--you)' &&
+      pendingCards()[0].style.getPropertyValue('--author').trim() === mineColor;
+  })());
   check('…and the status line sits at the drawer’s 12px floor',
     getComputedStyle(pendingCards()[0].querySelector('.sendstate')).fontSize === '12px');
   check('the pending message reconciles into the companion’s own copy',

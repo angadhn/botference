@@ -2,6 +2,17 @@
 
 ## 2026-08-12
 
+- **Discuss: the council's chat manners came back home.** Claude replies in
+  a serif, codex in a grotesque, each in the council's speaker colours in
+  both themes; your own turns sit on a green ground with a green right
+  edge instead of wearing a hashed hue like any other handle. Every
+  settled message has a copy button that puts rich HTML and raw markdown
+  on the clipboard together, and any room-protocol JSON footer that leaks
+  into a reply renders as a quiet chip — unless it lives inside a code
+  fence, which stays untouched so Run buttons keep addressing their
+  blocks. The braid mark keeps its own fixed colours (the toolbar icon is
+  rasterised from them), so it may sit a shade apart from a Claude reply.
+
 - **Council: the chat renders like the plugin now.** Your messages and the
   bots' go through one markdown renderer — links, bold, lists, headings,
   tables — built the plugin's way (DOM nodes, never innerHTML). Links may
