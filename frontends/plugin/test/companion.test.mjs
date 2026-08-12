@@ -433,7 +433,7 @@ async function main() {
       'thread history above the new message');
     assert.ok(turn.includes('and wrote:\n@claude does that hold outside peak season?'));
     assert.ok(turn.endsWith('comment thread.\nReply like a human in a chat: '
-      + '2-3 crisp sentences, no essay structure, no filler.'),
+      + '2-3 crisp sentences, 60 words max, no essay structure, no filler.'),
       'the turn ends with the reader\'s length instruction');
   });
 
@@ -1458,7 +1458,7 @@ async function main() {
     await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude at length please' });
     const long = await waitFor(() => inputs(logFile).slice(from)
       .find(t => t.startsWith('@claude ')), 'the long turn');
-    assert.ok(long.endsWith('Reply conversationally, at most 4-5 sentences.'));
+    assert.ok(long.endsWith('Reply conversationally: at most 4-5 sentences, 120 words max.'));
     assert.ok(!long.includes('crisp sentences'), 'one length instruction, never two');
 
     assert.equal((await POST(base, '/verbosity', { level: 'short' })).json.verbosity, 'short');
@@ -1466,7 +1466,7 @@ async function main() {
     await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude briefly then' });
     const short = await waitFor(() => inputs(logFile).slice(from)
       .find(t => t.startsWith('@claude ')), 'the short turn');
-    assert.ok(short.endsWith('Reply like a human in a chat: 2-3 crisp sentences, no essay structure, no filler.'));
+    assert.ok(short.endsWith('Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler.'));
     const bad = await POST(base, '/verbosity', { level: 'epic' });
     assert.equal(bad.status, 400);
     assert.equal(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).verbosity, 'short', 'a refusal changes nothing');
@@ -1504,7 +1504,7 @@ async function main() {
       'and the shape of what is inside them');
     assert.ok(/Never write, create or edit a file here/.test(turn), 'reads only, said in the turn itself');
     assert.ok(!turn.includes('[web page:'), 'no page context, because there is no page');
-    assert.ok(turn.endsWith('Reply like a human in a chat: 2-3 crisp sentences, no essay structure, no filler.'),
+    assert.ok(turn.endsWith('Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler.'),
       "the reader's length instruction still has the last word");
 
     const page = await waitFor(async () => {

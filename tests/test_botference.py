@@ -728,6 +728,23 @@ class TestAgentsCommand:
             assert "/files/" in prompt
             assert "throwaway tunnels" in prompt
 
+    async def test_initial_prompt_asks_for_task_lists(self, tmp_path):
+        # the chat frontends render `- [ ]` as tickable checkboxes, so a
+        # recommendation written that way lands as a to-do list
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        for model in ("claude", "codex"):
+            prompt = c._build_initial_prompt(model)
+            assert "--- Recommendations ---" in prompt
+            assert "- [ ] " in prompt
+
+    async def test_status_snapshot_reports_effort_per_agent(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c.claude.effort = "xhigh"
+        c.codex.reasoning_effort = "medium"
+        snap = c.status_snapshot()
+        assert snap.claude_effort == "xhigh"
+        assert snap.codex_effort == "medium"
+
 
 @pytest.mark.asyncio
 class TestAllowHost:

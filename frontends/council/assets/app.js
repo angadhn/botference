@@ -119,10 +119,21 @@
       '/effort @codex ': ['minimal', 'low', 'medium', 'high', 'max'],
     },
   };
+  const FALLBACK_EFFORT = {
+    claude: ['low', 'medium', 'high', 'xhigh'],
+    codex: ['minimal', 'low', 'medium', 'high', 'max'],
+  };
   const modelsFor = agent => {
     const scoped = state.ctx.scoped || {};
     const list = scoped[`/model @${agent} `];
     return (Array.isArray(list) && list.length) ? list : FALLBACK_MODELS[agent];
+  };
+  // reasoning effort, the second half of "how hard does this agent think" —
+  // the same list the controller validates against (/effort @<agent> <level>)
+  const effortsFor = agent => {
+    const scoped = state.ctx.scoped || {};
+    const list = scoped[`/effort @${agent} `];
+    return (Array.isArray(list) && list.length) ? list : FALLBACK_EFFORT[agent];
   };
   // which agents a composed message actually addresses (explicit @mentions;
   // @all — or plain text with no tag — reaches both)
@@ -142,6 +153,7 @@
     streams: {},           // key "model:stream_id" -> {el, text}
     ctx: FALLBACK_CTX,
     models: { claude: null, codex: null },     // current model per agent (from status)
+    effort: { claude: null, codex: null },     // current reasoning effort (from status)
     exhausted: { claude: null, codex: null },  // credit-exhaustion reason string or null
     autoRelay: true,                           // auto-relay at 50% context (from status)
     ctxStat: { claude: null, codex: null },    // {pct, tokens, window} per agent (from status)
@@ -228,6 +240,15 @@
       : working ? (state.activity[a] || 'working…') : 'idle';
     const opts = modelsFor(a).map(m =>
       `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    // effort: the level the model thinks at, on the row under the model it
+    // belongs to (same pairing the plugin's agent panel uses). A bridge that
+    // never reports one still offers the levels — the controller validates.
+    const eff = state.effort[a] || '';
+    // the "(default)" row only exists while the bridge has not told us a level
+    // — once it has, every option in the list is a real one you can pick
+    const effOpts = (eff ? '' : '<option value="" selected>(default)</option>') +
+      effortsFor(a).map(l =>
+        `<option value="${esc(l)}"${l === eff ? ' selected' : ''}>${esc(l)}</option>`).join('');
     const rl = state.relay[a];
     const ago = rl && rl.at ? relAgo(rl.at) : null;
     const fresh = ago ? `memory reset ${ago}${rl.tier ? ` · ${rl.tier} handoff` : ''}`
@@ -239,7 +260,10 @@
         <span class="ac-name">${cap(a)}${ex ? '<span class="warn-badge" title="out of credits">⚠</span>' : ''}</span>
         <span class="ac-activity${working ? ' on' : ''}" title="${esc(activity)}">${esc(activity)}</span>
       </div>
-      <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select>
+      <label class="ac-pick"><span>model</span>
+        <select class="ms-select" data-agent="${a}" aria-label="${cap(a)} model">${opts}</select></label>
+      <label class="ac-pick"><span>effort</span>
+        <select class="ms-select ef-select" data-effort="${a}" aria-label="${cap(a)} reasoning effort">${effOpts}</select></label>
       <div class="ac-gauge${level}" role="img"
         aria-label="${cap(a)} context ${pct == null ? 'unknown' : Math.round(pct) + '%'}">
         <div class="ac-fill" style="width:${pct == null ? 0 : pct}%"></div>
@@ -276,8 +300,17 @@
     clearExhausted(agent);
     sendInput(`/model @${agent} ${model}`);
   }
+  // effort rides the same road as the model switch: a plain slash command
+  // through the input path, reconciled by the next status event
+  function switchEffort(agent, level) {
+    if (!agent || !level) return;
+    state.effort[agent] = level;   // optimistic; status is the authority
+    sendInput(`/effort @${agent} ${level}`);
+  }
   if (els.agentCards) {
     els.agentCards.addEventListener('change', e => {
+      const ef = e.target.closest('select[data-effort]');
+      if (ef) { switchEffort(ef.dataset.effort, ef.value); return; }
       const sel = e.target.closest('select.ms-select');
       if (sel) switchModel(sel.dataset.agent, sel.value);
     });
@@ -439,14 +472,343 @@
   }
 
   // ── transcript ──
-  // the JSON room footer drives bot-to-bot routing and is stripped by the
-  // controller before 'room' events; live stream deltas can still carry it
-  // (or a partially streamed fence), so strip it from display here too
-  const FOOTER_FENCED = /```(?:json)?\s*\{[^`]*\}\s*```\s*$/;
-  const FOOTER_RAW = /\{[^{]*"status"[^}]*\}\s*$/;
-  const FOOTER_PARTIAL = /```(?:json)?\s*\{[^`]*$/;
-  const stripFooter = t => String(t)
-    .replace(FOOTER_FENCED, '').replace(FOOTER_RAW, '').replace(FOOTER_PARTIAL, '').trimEnd();
+  // ── room-protocol envelopes ──────────────────────────────────────────────
+  // Free-form mode tells each bot to end its turn with a JSON footer
+  // {"status","next","writer","summary"} (core/room_prompts.py). The
+  // controller strips a well-formed TRAILING one before it emits 'room', but
+  // live stream deltas still carry it, and a bot that pretty-prints it, fences
+  // it, or drops it mid-message slips straight through into the prose. So lift
+  // every envelope out of the text wherever it sits — start, middle or end —
+  // and render it as a subdued status line instead of leaking raw JSON.
+  const ENV_KEYS = new Set(['status', 'next', 'writer', 'summary']);
+  const isEnvelope = v =>
+    v && typeof v === 'object' && !Array.isArray(v) &&
+    typeof v.status === 'string' &&
+    ('next' in v || 'summary' in v) &&
+    Object.keys(v).every(k => ENV_KEYS.has(k));
+  // brace-balanced read of the JSON object starting at s[at] ('{'), honouring
+  // strings and escapes so a "}" inside a summary can't end it early
+  function readObject(s, at) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = at; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          try { return { value: JSON.parse(s.slice(at, i + 1)), end: i + 1 }; }
+          catch { return null; }
+        }
+      }
+    }
+    return null;   // unterminated (mid-stream, or not JSON at all)
+  }
+  // a half-streamed envelope at the very end: "{"status": "cont…" with no
+  // closing brace yet, optionally under a ```json fence that hasn't closed
+  const PARTIAL_ENV = /(?:```(?:json)?[ \t]*\r?\n)?[ \t]*\{[ \t\r\n]*"(?:status|next|writer|summary)"[ \t]*:[^{}]*$/;
+  // how far past a '{' the "status" key may sit before we stop believing this
+  // is an envelope — also what keeps a message full of JSON from costing a
+  // balanced-brace scan per opening brace on every streamed delta
+  const ENV_LOOKAHEAD = 600;
+  // text -> {text, envs}: prose with every envelope lifted out, in order
+  function splitEnvelopes(raw) {
+    const s = String(raw ?? '');
+    const envs = [];
+    let out = '', i = 0;
+    for (;;) {
+      const j = s.indexOf('{', i);
+      if (j < 0) { out += s.slice(i); break; }
+      if (!/"status"[ \t]*:/.test(s.slice(j, j + ENV_LOOKAHEAD))) {
+        out += s.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+      const got = readObject(s, j);
+      if (got && isEnvelope(got.value)) {
+        let start = j, end = got.end;
+        // swallow a ```json fence wrapped tightly around it, and the blank
+        // line the footer sat on, so no orphan fence or gap is left behind
+        const open = /```(?:json)?[ \t]*\r?\n[ \t]*$/.exec(s.slice(0, start));
+        if (open) start = open.index;
+        const close = /^[ \t]*(?:\r?\n[ \t]*)?```[ \t]*/.exec(s.slice(end));
+        if (open && close) end += close[0].length;
+        out += s.slice(i, start);
+        envs.push(got.value);
+        i = end;
+        continue;
+      }
+      out += s.slice(i, j + 1);
+      i = j + 1;
+    }
+    out = out.replace(PARTIAL_ENV, '');
+    // an envelope on its own line leaves a blank line behind it: close the gap
+    // so the prose doesn't grow a hole where the JSON used to be. Only when
+    // something was actually removed — a message with no footer keeps its own
+    // blank lines exactly as written, fenced code included.
+    if (envs.length) out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+    return { text: out.trim(), envs };
+  }
+
+  // ── markdown → DOM ───────────────────────────────────────────────────────
+  // Ported from the plugin drawer's renderer (frontends/plugin/extension/
+  // drawer.js): every node is built with createElement + textContent, so no
+  // HTML string ever carries message content and markup inside a message can
+  // never become markup on the page. Council additions: GFM tables (kept from
+  // the string renderer this replaced) and checkbox state persistence.
+  // Deliberately small: fenced code, `- `/`1. ` lists, `- [ ]` checkboxes,
+  // #-headings, tables, blank-line paragraphs, [text](http…), bare http(s)
+  // urls, **bold**, *italic*, `code`. Anything else stays literal.
+  // http(s), plus root-relative paths ("/files/…") served by this origin —
+  // but not protocol-relative "//host", which is a cross-origin url in disguise
+  const SAFE_URL = /^(https?:\/\/|\/(?!\/))/i;
+  const FENCE = /^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)\s*$/;
+  const BULLET = /^[ \t]*[-*+]\s+(.*)$/;
+  const NUMBER = /^[ \t]*(\d{1,9})[.)]\s+(.*)$/;
+  const TASK = /^\[([ xX])\]\s+(.*)$/;
+  const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+  // one alternation, tried left to right: code spans win over emphasis, so
+  // `**not bold**` in backticks stays literal, and the bare url comes LAST so
+  // a [text](url) link is never autolinked twice
+  const INLINE = /(`+)([\s\S]*?)\1|\[([^\]\n]*)\]\(\s*([^()\s]+)\s*\)|\*\*([\s\S]+?)\*\*|\*([^*\n]+)\*|(https?:\/\/[^\s`<>*]+)/;
+  const URL_TAIL = /[.,;:!?'"\)\]\}]+$/;
+  const mk = (tag, cls) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  };
+  function anchor(href, label) {
+    const a = mk('a');
+    a.setAttribute('href', href);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+    a.textContent = label;
+    return a;
+  }
+  function mdInline(text, out) {
+    let s = String(text == null ? '' : text);
+    for (let guard = 0; guard < 2000; guard++) {
+      const m = INLINE.exec(s);
+      if (!m) break;
+      if (m.index) out.appendChild(document.createTextNode(s.slice(0, m.index)));
+      if (m[2] !== undefined) {
+        const c = mk('code');
+        c.textContent = m[2].replace(/^ (.*) $/, '$1');
+        out.appendChild(c);
+      } else if (m[3] !== undefined) {
+        // anything that is not plain http(s) — javascript:, data:, mailto: —
+        // is never linkified; the source text shows as it was written
+        if (SAFE_URL.test(m[4])) out.appendChild(anchor(m[4], m[3] || m[4]));
+        else out.appendChild(document.createTextNode(m[0]));
+      } else if (m[5] !== undefined) mdInline(m[5], out.appendChild(mk('strong')));
+      else if (m[6] !== undefined) mdInline(m[6], out.appendChild(mk('em')));
+      else if (m[7] !== undefined) {
+        // a pasted url: same rules as a markdown link, minus the sentence
+        // punctuation that trails it ("see https://x.example/a.")
+        let url = m[7], tail = '';
+        const t = URL_TAIL.exec(url);
+        if (t) { tail = t[0]; url = url.slice(0, -tail.length); }
+        if (SAFE_URL.test(url) && url.length > 'https://'.length) out.appendChild(anchor(url, url));
+        else out.appendChild(document.createTextNode(url));
+        if (tail) out.appendChild(document.createTextNode(tail));
+      }
+      s = s.slice(m.index + m[0].length);
+    }
+    if (s) out.appendChild(document.createTextNode(s));
+    return out;
+  }
+  // GFM tables: a header row with |, a delimiter row of ---, then body rows
+  const splitRow = line => {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map(c => c.trim());
+  };
+  const isDelimRow = line =>
+    /^[\s|:-]+$/.test(line) && line.includes('-') && line.includes('|') &&
+    splitRow(line).every(c => /^:?-+:?$/.test(c));
+  const isTableStart = (lines, i) =>
+    lines[i].includes('|') && i + 1 < lines.length && isDelimRow(lines[i + 1]);
+  const isBlockStart = (lines, i) => {
+    const l = lines[i];
+    return FENCE.test(l) || BULLET.test(l) || NUMBER.test(l) || HEADING.test(l) ||
+      !l.trim() || isTableStart(lines, i);
+  };
+  // checkbox ordinal within its message, counted in document order — the key
+  // the tick store persists against. Reset per renderMarkdown() call.
+  let taskSeq = 0;
+  function renderMarkdown(src) {
+    const frag = document.createDocumentFragment();
+    const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+    taskSeq = 0;
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+
+      const fence = FENCE.exec(line);
+      if (fence) {
+        const close = fence[1][0] === '`' ? /^\s{0,3}```/ : /^\s{0,3}~~~/;
+        const buf = [];
+        i++;
+        while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
+        i++;                                   // the closing fence, if there is one
+        const pre = mk('pre');
+        if (fence[2]) pre.setAttribute('data-lang', fence[2]);
+        const code = mk('code');
+        code.textContent = buf.join('\n');
+        pre.appendChild(code);
+        frag.appendChild(pre);
+        continue;
+      }
+
+      const head = HEADING.exec(line);
+      if (head) {
+        const h = mk('div', 'md-h md-h' + head[1].length);
+        mdInline(head[2], h);
+        frag.appendChild(h);
+        i++;
+        continue;
+      }
+
+      if (isTableStart(lines, i)) {
+        const align = splitRow(lines[i + 1]).map(c =>
+          /^:-+:$/.test(c) ? 'center' : /^-+:$/.test(c) ? 'right' : '');
+        const wrap = mk('div', 'tbl-wrap');
+        const table = wrap.appendChild(mk('table'));
+        const row = (parent, tag, cells) => {
+          const tr = parent.appendChild(mk('tr'));
+          cells.forEach((c, k) => {
+            const cell = tr.appendChild(mk(tag));
+            if (align[k]) cell.setAttribute('style', `text-align:${align[k]}`);
+            mdInline(c, cell);
+          });
+        };
+        row(table.appendChild(mk('thead')), 'th', splitRow(line));
+        const tbody = table.appendChild(mk('tbody'));
+        let j = i + 2;
+        while (j < lines.length && lines[j].includes('|') && lines[j].trim()) {
+          row(tbody, 'td', splitRow(lines[j])); j++;
+        }
+        frag.appendChild(wrap);
+        i = j;
+        continue;
+      }
+
+      if (BULLET.test(line) || NUMBER.test(line)) {
+        const ordered = !BULLET.test(line);
+        const list = mk(ordered ? 'ol' : 'ul', 'md-list');
+        if (ordered) {
+          const n = Number(NUMBER.exec(line)[1]);
+          if (n > 1) list.setAttribute('start', String(n));
+        }
+        let tasks = 0;
+        while (i < lines.length) {
+          const m = (ordered ? NUMBER : BULLET).exec(lines[i]);
+          if (!m) break;
+          i++;
+          let txt = ordered ? m[2] : m[1];
+          // lazy continuation: a wrapped item keeps flowing into the same <li>
+          while (i < lines.length && !isBlockStart(lines, i)) txt += ' ' + lines[i++].trim();
+          const task = TASK.exec(txt);
+          const li = list.appendChild(mk('li'));
+          if (!task) { mdInline(txt, li); continue; }
+          tasks++;
+          const box = mk('input', 'md-tick');
+          box.type = 'checkbox';
+          box.checked = task[1] !== ' ';
+          box.setAttribute('data-tick', String(taskSeq++));
+          box.setAttribute('aria-label', task[2]);
+          li.className = 'md-task' + (box.checked ? ' done' : '');
+          li.appendChild(box);
+          mdInline(task[2], li.appendChild(mk('span', 'md-tasktext')));
+        }
+        // a list of checkboxes carries its own markers; the bullets would be
+        // a second, quieter bullet in front of every one of them
+        if (tasks) list.classList.add('md-tasklist');
+        frag.appendChild(list);
+        continue;
+      }
+
+      const buf = [];
+      while (i < lines.length && !isBlockStart(lines, i)) buf.push(lines[i++]);
+      mdInline(buf.join('\n'), frag.appendChild(mk('p', 'md-p')));
+    }
+    return frag;
+  }
+  // string form, for the DOM test harness and anything that still wants HTML
+  function fmt(text) {
+    const d = document.createElement('div');
+    d.appendChild(renderMarkdown(text));
+    return d.innerHTML;
+  }
+
+  // ── checklist state ──────────────────────────────────────────────────────
+  // The council has no server-side per-message store (the plugin's companion
+  // rewrites the brackets in the message text; nothing here can), so a tick
+  // lives in localStorage keyed by a hash of the message it belongs to. That
+  // key is stable across replays, reloads and chat switches — the same text
+  // renders the same ticks — and a message the agent later rewrites simply
+  // hashes differently and starts clean.
+  const TICK_KEY = 'council-ticks';
+  const TICK_MAX = 400;
+  let tickStore = null;
+  function ticks() {
+    if (!tickStore) {
+      try { tickStore = JSON.parse(localStorage.getItem(TICK_KEY)) || {}; } catch { tickStore = {}; }
+    }
+    return tickStore;
+  }
+  function saveTicks() {
+    const st = ticks();
+    const keys = Object.keys(st);
+    if (keys.length > TICK_MAX) {
+      keys.sort((a, b) => (st[a].at || 0) - (st[b].at || 0));
+      for (const k of keys.slice(0, keys.length - TICK_MAX)) delete st[k];
+    }
+    try { localStorage.setItem(TICK_KEY, JSON.stringify(st)); } catch { }
+  }
+  // FNV-1a, base36 — short, stable, and nothing depends on it being secure
+  function hashText(s) {
+    let h = 0x811c9dc5;
+    const t = String(s);
+    for (let i = 0; i < t.length; i++) {
+      h ^= t.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(36);
+  }
+  // the record is the WHOLE tick state of the message, not a delta — an item
+  // the agent already wrote as `- [x]` is checked in the DOM and must stay
+  // checked in the store, or the next render would un-tick it
+  function recordTicks(key, body) {
+    const on = [...body.querySelectorAll('input.md-tick')]
+      .filter(b => b.checked).map(b => Number(b.getAttribute('data-tick')));
+    ticks()[key] = { at: Date.now(), on };
+    saveTicks();
+  }
+  // apply the stored ticks over what the message text says, then remember the
+  // key on the body so a click knows which record it is editing
+  function applyTicks(body, key) {
+    const boxes = body.querySelectorAll('input.md-tick');
+    if (!boxes.length) return;
+    body.setAttribute('data-ticks', key);
+    const rec = ticks()[key];
+    if (!rec) return;
+    const on = new Set(rec.on || []);
+    for (const box of boxes) {
+      const done = on.has(Number(box.getAttribute('data-tick')));
+      box.checked = done;
+      const li = box.parentNode;
+      if (li && li.classList) li.classList.toggle('done', done);
+    }
+  }
 
   // escape + autolink raw prose (no fences, no inline code): URLs become
   // real anchors so nobody has to screenshot a tunnel link off a phone.
@@ -463,72 +825,6 @@
       last = m.index + url.length;
     }
     return out + esc(s.slice(last));
-  }
-  function inlineFmt(raw) {
-    // inline code split on the raw text, prose parts escaped+linkified
-    const parts = String(raw).split(/`([^`\n]+)`/);
-    let html = '';
-    for (let i = 0; i < parts.length; i++) {
-      if (i % 2 === 1) html += `<code>${esc(parts[i])}</code>`;
-      else html += linkedEsc(parts[i]).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-    }
-    return html;
-  }
-  // GFM tables in prose: a header row with |, a delimiter row of ---, then
-  // body rows. Rendered as a real <table> in a horizontally scrollable wrap
-  // (phones); everything else in the prose block flows through inlineFmt
-  // unchanged. Cells are escaped by inlineFmt — nothing raw reaches innerHTML.
-  const splitRow = line => {
-    let s = line.trim();
-    if (s.startsWith('|')) s = s.slice(1);
-    if (s.endsWith('|')) s = s.slice(0, -1);
-    return s.split('|').map(c => c.trim());
-  };
-  const isDelimRow = line =>
-    /^[\s|:-]+$/.test(line) && line.includes('-') && line.includes('|') &&
-    splitRow(line).every(c => /^:?-+:?$/.test(c));
-  function blockFmt(raw) {
-    const lines = String(raw).split('\n');
-    let html = '', buf = [];
-    const flush = () => { if (buf.length) { html += inlineFmt(buf.join('\n')); buf = []; } };
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.includes('|') && i + 1 < lines.length && isDelimRow(lines[i + 1])) {
-        const align = splitRow(lines[i + 1]).map(c =>
-          /^:-+:$/.test(c) ? 'center' : /^-+:$/.test(c) ? 'right' : '');
-        const tr = (tag, cells) => '<tr>' + cells.map((c, k) =>
-          `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${inlineFmt(c)}</${tag}>`
-        ).join('') + '</tr>';
-        const rows = [];
-        let j = i + 2;
-        while (j < lines.length && lines[j].includes('|') && lines[j].trim()) {
-          rows.push(splitRow(lines[j])); j++;
-        }
-        flush();
-        html += `<div class="tbl-wrap"><table><thead>${tr('th', splitRow(line))}</thead>` +
-          `<tbody>${rows.map(r => tr('td', r)).join('')}</tbody></table></div>`;
-        i = j - 1;
-        // the body is pre-wrap: swallow one blank line after the table so the
-        // block break doesn't double up
-        if (i + 1 < lines.length && !lines[i + 1].trim()) i++;
-      } else buf.push(line);
-    }
-    flush();
-    return html;
-  }
-  function fmt(text) {
-    // fences first (on raw text), then block/inline formatting on the prose
-    const parts = String(text).split(/```([\s\S]*?)```/);
-    let html = '';
-    for (let i = 0; i < parts.length; i++) {
-      if (i % 2 === 1) {
-        const body = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
-        html += `<pre><code>${esc(body)}</code></pre>`;
-      } else {
-        html += blockFmt(parts[i]);
-      }
-    }
-    return html;
   }
   // system lines (tunnel share lines included): linkify, and give
   // "password: <token>" a tap-to-copy chip — phones can't select from
@@ -552,13 +848,48 @@
     if (!navigator.clipboard || !navigator.clipboard.writeText) return; // no API: selection still works
     navigator.clipboard.writeText(t).then(() => toast('copied ✓')).catch(() => { });
   }
+  // whole-message copy: rich HTML *and* plain markdown on the clipboard, so a
+  // paste into a doc keeps the links and headings while a paste into a text
+  // field gets the markdown the agent actually wrote. Older browsers (and any
+  // context where ClipboardItem is missing) fall back to the plain text.
+  async function copyMessage(msg) {
+    const text = msg.getAttribute('data-raw') || (msg.querySelector('.body') || msg).textContent || '';
+    const body = msg.querySelector('.body');
+    const nav = navigator;
+    if (body && nav.clipboard && nav.clipboard.write &&
+        typeof window.ClipboardItem === 'function' && typeof window.Blob === 'function') {
+      try {
+        await nav.clipboard.write([new window.ClipboardItem({
+          'text/html': new window.Blob([body.innerHTML], { type: 'text/html' }),
+          'text/plain': new window.Blob([text], { type: 'text/plain' }),
+        })]);
+        toast('copied ✓');
+        return;
+      } catch { /* fall through to plain text */ }
+    }
+    copyText(text);
+  }
   els.chat.addEventListener('click', e => {
+    const copyBtn = e.target.closest('.msg-copy');
+    if (copyBtn) { copyMessage(copyBtn.closest('.msg')); return; }
+    if (e.target.closest('.md-tick, .env-row')) return; // their own controls
     const sel = window.getSelection && window.getSelection();
     if (sel && String(sel).length) return; // user is selecting, not tapping
     const chip = e.target.closest('.copy-chip');
     if (chip) { copyText(chip.dataset.copy); return; }
     const code = e.target.closest('.msg .body code');
     if (code && !code.closest('pre')) copyText(code.textContent);
+  });
+  // checklist ticks: delegated, so a transcript restored from the cache (raw
+  // innerHTML, no listeners) keeps working
+  els.chat.addEventListener('change', e => {
+    const box = e.target.closest('input.md-tick');
+    if (!box) return;
+    const body = box.closest('[data-ticks]');
+    if (!body) return;
+    const li = box.parentNode;
+    if (li && li.classList) li.classList.toggle('done', box.checked);
+    recordTicks(body.getAttribute('data-ticks'), body);
   });
 
   function updateEmpty() {
@@ -607,16 +938,63 @@
       `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`).join('')}</div>`
     : '';
 
+  // ── one paint path for every markdown message (user and agent alike) ──────
+  // The envelope comes out first, the prose becomes real nodes, the stored
+  // ticks go back over the checkboxes, and the raw markdown is parked on the
+  // element so the copy button can hand it back verbatim (it survives the
+  // innerHTML round-trip the chat-switch cache does).
+  const ENV_NEXT = { '@user': 'back to you', '@claude': 'over to @claude', '@codex': 'over to @codex' };
+  function envRow(envs) {
+    const row = mk('div', 'env-row');
+    for (const env of envs) {
+      const chip = row.appendChild(mk('div', 'env env-' + String(env.status).replace(/\W+/g, '')));
+      chip.appendChild(mk('span', 'env-dot')).setAttribute('aria-hidden', 'true');
+      chip.appendChild(mk('span', 'env-status')).textContent = String(env.status || '');
+      if (env.summary) chip.appendChild(mk('span', 'env-sum')).textContent = String(env.summary);
+      const next = String(env.next || '').toLowerCase();
+      if (next) {
+        chip.appendChild(mk('span', 'env-next')).textContent =
+          ENV_NEXT[next] || ('over to ' + next);
+      }
+      if (env.writer) chip.appendChild(mk('span', 'env-writer')).textContent = 'writer ' + env.writer;
+      chip.setAttribute('title', 'room protocol footer — ' + JSON.stringify(env));
+    }
+    return row;
+  }
+  // fill a message element's .body (+ .env-row) from raw agent/user markdown
+  function paint(div, text) {
+    const { text: prose, envs } = splitEnvelopes(text);
+    const body = div.querySelector('.body');
+    body.textContent = '';
+    body.appendChild(renderMarkdown(prose));
+    applyTicks(body, hashText(prose));
+    div.setAttribute('data-raw', prose);
+    const old = div.querySelector('.env-row');
+    if (old) old.remove();
+    if (envs.length) body.insertAdjacentElement('afterend', envRow(envs));
+    return div;
+  }
+  const copyBtnHtml =
+    '<div class="msg-acts"><button class="msg-copy" title="copy this message" ' +
+    'aria-label="copy this message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="9" width="11" height="11" rx="2"/>' +
+    '<path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>' +
+    '<span>copy</span></button></div>';
+
   function addMsg(speaker, text, { streaming = false, attachments = [] } = {}) {
     const wasPinned = pinned();
     const div = document.createElement('div');
     const who = String(speaker || 'system').toLowerCase();
     if (who === 'user') {
       div.className = 'msg user';
-      div.innerHTML = `${attThumbs(attachments)}<div class="body">${fmt(text)}</div>`;
+      div.innerHTML = `${attThumbs(attachments)}<div class="body"></div>${copyBtnHtml}`;
+      paint(div, text);
     } else if (who === 'claude' || who === 'codex') {
       div.className = `msg ${who}${streaming ? ' streaming' : ''}`;
-      div.innerHTML = `<div class="who">${avatarHtml(who)}<span>${who}</span></div><div class="body">${fmt(text)}</div>`;
+      div.innerHTML = `<div class="who">${avatarHtml(who)}<span>${who}</span></div>` +
+        `<div class="body"></div>${copyBtnHtml}`;
+      paint(div, text);
     } else {
       // multi-line system output (/help, /status, resume lists) reads better
       // as a left-aligned block than a centered whisper
@@ -666,7 +1044,7 @@
     }
     const wasPinned = pinned();
     s.text += String(ev.text || '');
-    s.el.querySelector('.body').innerHTML = fmt(stripFooter(s.text));
+    paint(s.el, s.text);
     follow(wasPinned);
   }
   function finalizeStream(ev) {
@@ -675,7 +1053,7 @@
     if (s) {
       const wasPinned = pinned();
       s.el.classList.remove('streaming');
-      s.el.querySelector('.body').innerHTML = fmt(ev.text);
+      paint(s.el, ev.text);
       delete state.streams[key];
       follow(wasPinned);
       return true;
@@ -1423,6 +1801,8 @@
         // bridges omit them and the switcher just shows "—")
         if ('claude_model' in ev) state.models.claude = ev.claude_model || null;
         if ('codex_model' in ev) state.models.codex = ev.codex_model || null;
+        if ('claude_effort' in ev) state.effort.claude = ev.claude_effort || null;
+        if ('codex_effort' in ev) state.effort.codex = ev.codex_effort || null;
         if ('auto_relay' in ev) { state.autoRelay = !!ev.auto_relay; renderAutoRelay(); }
         renderAgentsPanel();
         break;
@@ -1632,8 +2012,9 @@
   window.__council = {
     handle, sendInput, computeCompletions, state, els,
     fmt, sysFmt, switchTo, addFiles, submit, sessionCache,
+    renderMarkdown, splitEnvelopes, hashText, ticks,
     renderModelSwitcher, refreshPresendWarn, presendExhausted,
-    noteAgentTurn, exhaustReason, modelsFor,
+    noteAgentTurn, exhaustReason, modelsFor, effortsFor,
     laneEvent, hashSid, syncHash, routeHash, chatParam,
   };
 })();

@@ -1,5 +1,48 @@
 # CHANGELOG
 
+## 2026-08-12
+
+- **Council: the chat renders like the plugin now.** Your messages and the
+  bots' go through one markdown renderer — links, bold, lists, headings,
+  tables — built the plugin's way (DOM nodes, never innerHTML). Links may
+  be root-relative (`/files/…`), which the council serves itself;
+  `javascript:` and protocol-relative `//host` stay literal. The
+  room-protocol JSON footers (`{"status":"continuing",…}`) no longer print
+  as raw JSON in the prose: they render as a quiet metadata chip — the
+  summary, and who has the floor — wherever in the message they appeared.
+
+- **Council: recommendations are checkboxes.** `- [ ]` task lists render as
+  real tickable checkboxes whose state survives reloads and chat switches,
+  and the room prompt now asks both bots to write user-actionable items
+  that way.
+
+- **Council: agents panel grew effort pickers,** per agent, alongside the
+  model pickers — the status line now reports each bot's effort level too.
+
+- **Council: you can find yourself while scrolling.** New palette in both
+  themes; claude speaks in a serif, codex in a grotesque, each with its own
+  accent rail; your own bubble sits right-aligned on a green ground. Every
+  message has a copy button that puts both rich HTML and plain markdown on
+  the clipboard, and selecting text by hand copies with its links intact.
+
+- **Claude is told to be terse where it actually listens.** Codex's CLI is
+  laconic by nature; Claude Code's harness prompt rewards thorough
+  structured reports, and every botference brevity rule used to arrive as
+  turn text that decays as the transcript grows. The claude adapters now
+  carry a standing room-style contract in the real system prompt
+  (`--append-system-prompt`), the free-form thread injects exactly one
+  length instruction every bot turn (the overage cap when the last reply
+  blew the threshold, a standing terse line otherwise), and the plugin's
+  per-turn length lines gained numeric caps — 60 words for short, 120 for
+  long — because a number holds where an adjective drifts.
+
+- **Site: the braid draws itself.** The three strands trace on from the
+  left like an oscilloscope, staggered so they take turns, spark at the
+  crossings, and fuse into the plan line last; then a phosphor head runs
+  one strand at a time, forever, carrying its colour down the fused line.
+  Pure inline CSS/SVG. `prefers-reduced-motion` gets the original static
+  braid, pixel-identical.
+
 ## 2026-08-10
 
 - **Discuss: a code block that ran and printed nothing now says so.**

@@ -30,6 +30,7 @@ from cli_adapters import (
 )
 from paths import BotferencePaths
 from botference import Botference, WritePermissionRequest, get_completion_context
+from room_prompts import claude_style_contract
 from ui_types import ProjectPanelState, RoomMode, StatusSnapshot
 from render_blocks import parse_render_blocks
 from session_store import append_crash_log
@@ -319,6 +320,8 @@ class InkBridge:
             "codex_window": status.codex_window,
             "claude_model": status.claude_model,
             "codex_model": status.codex_model,
+            "claude_effort": status.claude_effort,
+            "codex_effort": status.codex_effort,
             "observe": status.observe_enabled,
             "auto_relay": status.auto_relay,
             "claude_last_relay_at": status.claude_last_relay_at,
@@ -734,6 +737,7 @@ async def main() -> None:
     claude = claude_cls(
         model=args.anthropic_model,
         effort=args.claude_effort,
+        append_system_prompt=claude_style_contract(),
         tools=[
             "Read",
             "Glob",

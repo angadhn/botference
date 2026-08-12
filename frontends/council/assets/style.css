@@ -1,45 +1,55 @@
 /* botference council — a chat-shaped frontend in the same design language as
    the review pages (warm paper light / warm near-black dark, serif prose,
    sans chrome). Tokens only: every component themes through these. */
+/* Palette: one warm clay family, three speaker identities that never collide
+   — Claude clay, Codex blue, you green — each with a light and a dark value
+   picked for contrast against its own surface rather than reused across both.
+   Type carries the same distinction: Claude speaks in the serif, Codex in the
+   grotesque, so a scroll past a screenful of prose still says who is talking.
+   Every component themes through these tokens; nothing hard-codes a colour. */
 :root {
-  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
-  --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
-  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
-  --user-bubble: #f0e9db;
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1c1710; --muted: #786d5c;
+  --line: rgba(217, 119, 87, 0.22); --accent: #cf6640; --accent-hover: #b04f2e;
+  --card: #fffdf8; --card-line: #e6ddcd; --rail: #f3ecdf;
   --serif: "Iowan Old Style", "Source Serif Pro", Charter, "Apple Garamond",
     "Hoefler Text", Georgia, ui-serif, serif;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --claude: #d97757; --codex: #4a86c8; --bad: #b3403a; --ok: rgba(46, 160, 67, 0.7);
+  /* per-speaker type: kin to the plugin's, one serif voice and one sans */
+  --font-claude: var(--serif);
+  --font-codex: "Avenir Next", "Segoe UI", Inter, "Helvetica Neue",
+    ui-sans-serif, system-ui, sans-serif;
+  --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61;
+  --bad: #b3403a; --ok: rgba(46, 160, 67, 0.75);
   --shadow: 0 4px 14px rgba(0, 0, 0, .1);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
-    --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
-    --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
-    --user-bubble: #2c261d;
-    --ok: rgba(63, 185, 80, 0.7); --shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  :root:not([data-theme="light"]) {
+    --bg: #17140f; --fg: #e9e0d2; --heading: #f7efe0; --muted: #a2977f;
+    --line: rgba(217, 119, 87, 0.2); --accent: #e0805e; --accent-hover: #ee9678;
+    --card: #221d16; --card-line: rgba(226, 190, 160, 0.16); --rail: #1d1913;
+    --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0;
+    --ok: rgba(63, 185, 80, 0.8); --shadow: 0 6px 20px rgba(0, 0, 0, .45);
     color-scheme: dark;
   }
 }
 /* explicit theme (segmented control stamps data-theme on <html>): overrides
    prefers-color-scheme in BOTH directions; absence of data-theme = system */
 :root[data-theme="light"] {
-  --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
-  --line: rgba(217, 119, 87, 0.22); --accent: #d97757; --accent-hover: #c05f3f;
-  --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
-  --user-bubble: #f0e9db;
-  --ok: rgba(46, 160, 67, 0.7); --shadow: 0 4px 14px rgba(0, 0, 0, .1);
+  --bg: #faf7f0; --fg: #2a2419; --heading: #1c1710; --muted: #786d5c;
+  --line: rgba(217, 119, 87, 0.22); --accent: #cf6640; --accent-hover: #b04f2e;
+  --card: #fffdf8; --card-line: #e6ddcd; --rail: #f3ecdf;
+  --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61;
+  --ok: rgba(46, 160, 67, 0.75); --shadow: 0 4px 14px rgba(0, 0, 0, .1);
   color-scheme: light;
 }
 :root[data-theme="dark"] {
-  --bg: #1a1712; --fg: #e8dfd1; --heading: #f5ecdc; --muted: #9c917e;
-  --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
-  --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
-  --user-bubble: #2c261d;
-  --ok: rgba(63, 185, 80, 0.7); --shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  --bg: #17140f; --fg: #e9e0d2; --heading: #f7efe0; --muted: #a2977f;
+  --line: rgba(217, 119, 87, 0.2); --accent: #e0805e; --accent-hover: #ee9678;
+  --card: #221d16; --card-line: rgba(226, 190, 160, 0.16); --rail: #1d1913;
+  --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0;
+  --ok: rgba(63, 185, 80, 0.8); --shadow: 0 6px 20px rgba(0, 0, 0, .45);
   color-scheme: dark;
 }
 
@@ -228,7 +238,28 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
   color: var(--author, var(--muted)) }
 .msg .who .avatar { width: 20px; height: 20px; flex: none }
 .msg .who .avatar svg { width: 60%; height: 60% }
-.msg .body { font: 1.02rem/1.75 var(--serif); overflow-wrap: break-word; white-space: pre-wrap }
+/* Markdown is real nodes now (paragraphs, lists, tables), so the body is not
+   a pre-wrap slab any more — only the paragraphs keep their own line breaks. */
+.msg .body { font: 1.02rem/1.75 var(--serif); overflow-wrap: break-word }
+.msg .body > :first-child { margin-top: 0 }
+.msg .body > :last-child { margin-bottom: 0 }
+.md-p { margin: 0 0 .6rem; white-space: pre-line }
+.md-h { margin: .9rem 0 .3rem; font: 700 .78rem var(--sans); text-transform: uppercase;
+  letter-spacing: .05em; color: var(--heading) }
+.md-h1, .md-h2 { font: 600 1.05rem/1.4 inherit; text-transform: none; letter-spacing: 0 }
+.md-list { margin: .2rem 0 .7rem; padding-left: 1.35rem }
+.md-list li { margin: .15rem 0 }
+.md-list li::marker { color: var(--muted) }
+/* checkbox lists carry their own markers — a bullet in front of every tick
+   would just be a second, quieter bullet */
+.md-tasklist { list-style: none; padding-left: .1rem }
+.md-tasklist li::marker { content: none }
+li.md-task { display: flex; align-items: flex-start; gap: .5rem; margin: .2rem 0 }
+.md-tick { flex: none; width: 16px; height: 16px; margin: .38em 0 0; cursor: pointer;
+  accent-color: var(--author, var(--accent)) }
+.md-tick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.md-tasktext { min-width: 0; overflow-wrap: anywhere }
+li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted) }
 /* tool-run card: visually distinct from prose, collapsed to one line by
    default, expandable to the full step list */
 .msg.tools-msg { padding: 0; background: none; border: 0 }
@@ -255,19 +286,77 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column }
   padding: .3rem .6rem; text-align: left; vertical-align: top }
 .msg .body th { background: var(--rail); color: var(--heading); font-weight: 600;
   white-space: nowrap }
+/* ── who is speaking, at a glance ─────────────────────────────
+   Each agent owns a colour AND a typeface: an accent rail down the left of
+   its turns, its name in that colour, and its own font for the prose. The
+   pairing is what makes a fast scroll legible — colour alone dies on a
+   grayscale screen, type alone is too quiet at thumbnail size. */
+.msg.claude, .msg.codex { border-left: 2px solid color-mix(in srgb, var(--author) 60%, transparent);
+  border-radius: 0 12px 12px 0; padding: .1rem .2rem .1rem .95rem;
+  background: color-mix(in srgb, var(--author) 5%, transparent) }
 .msg.claude { --author: var(--claude) }
 .msg.codex { --author: var(--codex) }
-.msg.user { align-self: flex-end; max-width: 85%; background: var(--user-bubble);
-  border-radius: 16px 16px 4px 16px; padding: .65rem 1rem }
+.msg.claude .body { font-family: var(--font-claude) }
+.msg.codex .body { font-family: var(--font-codex); font-size: .97rem; line-height: 1.72 }
+.msg.tools-msg.claude, .msg.tools-msg.codex { background: none; border-left-width: 2px;
+  border-radius: 0; padding: 0 0 0 .95rem }
+/* your own turn: the one bubble in the column with a filled ground, its own
+   accent, and the right edge — findable in a fast scroll in either theme */
+.msg.user { --author: var(--you); align-self: flex-end; max-width: 85%;
+  background: color-mix(in srgb, var(--you) 12%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--you) 38%, transparent);
+  border-right: 3px solid var(--you);
+  border-radius: 16px 14px 4px 16px; padding: .6rem 1rem .5rem }
 .msg.user .body { font: .95rem/1.65 var(--sans) }
+.msg.user .body a { color: color-mix(in srgb, var(--you) 80%, var(--fg)) }
+
+/* room-protocol footer: metadata, never prose. The JSON the bots are told to
+   emit ({"status","next","summary"}) is lifted out of the message body and
+   shown here as one quiet line instead of leaking raw braces into the text. */
+.env-row { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem }
+.env { display: flex; align-items: baseline; flex-wrap: wrap; gap: .45rem;
+  font: .7rem/1.5 var(--sans); color: var(--muted);
+  border: 1px dashed var(--card-line); border-radius: 999px; padding: .12rem .7rem }
+.env-dot { width: 6px; height: 6px; border-radius: 50%; align-self: center;
+  background: var(--muted) }
+.env-continuing .env-dot { background: var(--accent) }
+.env-converged .env-dot { background: var(--ok) }
+.env-blocked .env-dot { background: var(--bad) }
+.env-status { text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+  font-size: .62rem }
+.env-sum { color: var(--fg); opacity: .8 }
+.env-next, .env-writer { font-style: italic }
+
+/* per-message copy: quiet until you go looking for it (always visible on
+   touch, where there is no hover to reveal it) */
+/* chrome, not message text: dragging a selection across a whole message must
+   not drag the word "copy" into the clipboard with it */
+.msg-acts { display: flex; gap: .3rem; margin-top: .35rem;
+  -webkit-user-select: none; user-select: none;
+  opacity: 0; transition: opacity .15s ease }
+.msg.user .msg-acts { justify-content: flex-end }
+.msg:hover .msg-acts, .msg:focus-within .msg-acts { opacity: 1 }
+@media (hover: none) { .msg-acts { opacity: .5 } }
+.msg-copy { display: inline-flex; align-items: center; gap: .3rem; border: 0;
+  background: none; color: var(--muted); font: .68rem var(--sans);
+  padding: .15rem .35rem; border-radius: 7px; min-height: 26px }
+.msg-copy svg { width: 13px; height: 13px; display: block }
+.msg-copy:hover { color: var(--author, var(--accent));
+  background: color-mix(in srgb, var(--author, var(--accent)) 10%, transparent) }
 .msg.system { align-self: center; max-width: 100%; color: var(--muted);
   font: .78rem/1.6 var(--sans); text-align: center }
 .msg.system .body { font: inherit; white-space: pre-wrap }
 .msg.system.block { text-align: left; background: var(--rail); border: 1px solid var(--card-line);
   border-radius: 10px; padding: .6rem .9rem; width: 100%; align-self: stretch }
 .msg.system.block .body { font: .78rem/1.65 var(--mono) }
-.msg.streaming .body::after { content: '▍'; color: var(--accent);
+/* the caret rides the last rendered block, not the bottom of the whole body —
+   markdown output is block elements now, so ::after on .body would park it on
+   a line of its own under the paragraph it belongs to */
+.msg.streaming .body > :last-child::after { content: '▍'; color: var(--author, var(--accent));
   animation: blink 1.1s steps(1) infinite; margin-left: .05em }
+.msg.streaming .body:empty::after { content: '▍'; color: var(--author, var(--accent));
+  animation: blink 1.1s steps(1) infinite }
+.msg.streaming .msg-acts { visibility: hidden }
 @keyframes blink { 50% { opacity: 0 } }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; scroll-behavior: auto !important }
@@ -427,6 +516,11 @@ main { position: relative }
   background: var(--card); border: 1px solid var(--card-line); border-radius: 7px;
   padding: .3rem .4rem; min-height: 34px }
 .ms-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+/* labelled picker rows in the agent card: model, and the effort it thinks at */
+.ac-pick { display: flex; align-items: center; gap: .5rem }
+.ac-pick > span { flex: none; width: 2.9rem; font: .64rem var(--sans);
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted) }
+.ac-pick .ms-select { flex: 1; min-width: 0 }
 .ms-row.exhausted .ms-mark { opacity: .5 }
 .warn-badge { color: var(--bad); font-size: .8em; line-height: 1 }
 

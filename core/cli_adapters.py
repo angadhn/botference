@@ -769,10 +769,12 @@ class ClaudeAdapter:
                  cwd: str = "",
                  add_dirs: Optional[list[str]] = None,
                  settings: Optional[dict] = None,
-                 stream_callback: Optional[StreamCallback] = None):
+                 stream_callback: Optional[StreamCallback] = None,
+                 append_system_prompt: str = ""):
         self.model = model
         self.tools = tools or ["Read", "Glob", "Grep", "Bash"]
         self.effort = effort
+        self.append_system_prompt = append_system_prompt
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CLAUDE_TIMEOUT",
             "BOTFERENCE_CLI_TIMEOUT",
@@ -812,6 +814,11 @@ class ClaudeAdapter:
         ]
         if self.effort:
             cmd += ["--effort", self.effort]
+        if self.append_system_prompt:
+            # into the real system prompt, where it holds for the whole
+            # session — instructions delivered as turn text decay as the
+            # transcript grows past them
+            cmd += ["--append-system-prompt", self.append_system_prompt]
         for path in self.add_dirs:
             cmd += ["--add-dir", path]
         if self.settings:
@@ -1136,10 +1143,12 @@ class ClaudeInteractiveTmuxAdapter:
                  settings: Optional[dict] = None,
                  stream_callback: Optional[StreamCallback] = None,
                  session_name: str = "",
-                 window_name: str = "claude"):
+                 window_name: str = "claude",
+                 append_system_prompt: str = ""):
         self.model = model
         self.tools = tools or []
         self.effort = effort
+        self.append_system_prompt = append_system_prompt
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CLAUDE_TMUX_TIMEOUT",
             "BOTFERENCE_CLAUDE_TIMEOUT",
@@ -1238,6 +1247,8 @@ class ClaudeInteractiveTmuxAdapter:
             cmd += ["--name", self.session_id]
         if self.effort:
             cmd += ["--effort", self.effort]
+        if self.append_system_prompt:
+            cmd += ["--append-system-prompt", self.append_system_prompt]
         return " ".join(shlex.quote(part) for part in cmd)
 
     def _startup_failure(self, detail: str) -> AdapterResponse:

@@ -32,6 +32,10 @@ class StatusSnapshot:
     codex_window: Optional[int] = None
     claude_model: Optional[str] = None
     codex_model: Optional[str] = None
+    # Reasoning effort per participant, so a frontend can show (and offer)
+    # the level each model is thinking at alongside the model itself.
+    claude_effort: Optional[str] = None
+    codex_effort: Optional[str] = None
     observe_enabled: bool = True
     auto_relay: bool = True
     # Relay provenance: when each model's session was last relayed and which

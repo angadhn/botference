@@ -39,9 +39,11 @@ const DOCX_DIGEST_MAX = 4000;
 export const EFFORT_DEFAULTS = { claude: 'high', codex: null };
 // How long a reply should be, as the reader set it in config.json. One line,
 // at the end of every envelope: the system prompt defers to it.
+// numeric caps, not just "crisp": models hold a hard word count far better
+// than a vibe, and Claude in particular drifts past adjective-only limits
 const VERBOSITY_LINE = {
-  short: 'Reply like a human in a chat: 2-3 crisp sentences, no essay structure, no filler.',
-  long: 'Reply conversationally, at most 4-5 sentences.',
+  short: 'Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler.',
+  long: 'Reply conversationally: at most 4-5 sentences, 120 words max.',
 };
 export const verbosityLine = v => VERBOSITY_LINE[v] || VERBOSITY_LINE.short;
 // how long to wait for the `projects` event that names the live session

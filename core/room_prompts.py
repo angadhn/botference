@@ -179,10 +179,19 @@ def free_form_turn_status(
         f"~{tokens_used} of {token_budget} output tokens used. "
         "When the budget is exhausted the floor returns to the user.]"
     ]
+    # exactly one length instruction per turn: the overage cap when the last
+    # reply blew past the threshold, the standing terse line otherwise —
+    # models drift verbose when the only "keep it terse" lives in the initial
+    # prompt, turns ago
     if nudge_threshold and last_turn_tokens > nudge_threshold:
         lines.append(
             f"[Your last reply was ~{last_turn_tokens} output tokens; "
             f"cap this one at ~{int(nudge_threshold * 0.75)}.]"
+        )
+    else:
+        lines.append(
+            "[Reply tersely: your position, the reason, one open question. "
+            "A few short sentences unless you are drafting a deliverable.]"
         )
     lines.append(
         f"[End your reply with the room footer: {FREE_FORM_FOOTER_SCHEMA}]"
@@ -259,6 +268,45 @@ def deliverables_note() -> str:
         "`/files/<path relative to the workspace root>` — the chat server "
         "serves it at that address on every device, permanently. Never spin "
         "up ad-hoc HTTP servers or throwaway tunnels for a deliverable."
+    )
+
+
+def recommendations_note() -> str:
+    """Ask for actionable recommendations as markdown task lists.
+
+    The chat frontends render `- [ ]` items as real checkboxes the user can
+    tick off, so a recommendation written that way becomes a to-do list
+    instead of a paragraph the reader has to re-read and transcribe.
+    """
+    return (
+        "--- Recommendations ---\n"
+        "When your reply contains things the USER should do or decide — "
+        "actions, fixes, checks, open decisions — write them as a markdown "
+        "task list, one `- [ ] ` item per action, each a single imperative "
+        "line. The chat renders those as tickable checkboxes. Keep "
+        "explanation in the prose around the list, not inside the items, "
+        "and do not use task lists for things you are about to do yourself "
+        "or for plain statements of fact."
+    )
+
+
+def claude_style_contract() -> str:
+    """Standing brevity contract for Claude's REAL system prompt.
+
+    Delivered via `--append-system-prompt`, not turn text: Claude Code's own
+    harness prompt is tuned for solo coding work and rewards thorough,
+    structured reports, and it always outranks instructions that arrive as
+    user-turn text — which also decay as the transcript grows past them.
+    Codex needs no equivalent; its CLI persona is terse by default.
+    """
+    return (
+        "Botference room style: your reply is posted verbatim as chat text, "
+        "read next to another AI's replies. Be terse — lead with the point, "
+        "no preamble, no restating the question, no closing offers to help "
+        "further. When a turn ends with a length instruction, that line is "
+        "the hard cap on this reply and outranks all other style guidance. "
+        "Go long only when the user explicitly asks for depth or you are "
+        "drafting a deliverable they requested."
     )
 
 

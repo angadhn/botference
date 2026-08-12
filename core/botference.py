@@ -60,6 +60,7 @@ from room_prompts import (
     free_form_turn_status,
     reviewer_preamble,
     revision_from_plan_preamble,
+    recommendations_note,
     room_preamble,
     project_skill_context,
     subagents_note,
@@ -1316,6 +1317,8 @@ class Botference:
             codex_window=self._codex_window,
             claude_model=getattr(self.claude, "model", None),
             codex_model=getattr(self.codex, "model", None),
+            claude_effort=getattr(self.claude, "effort", None),
+            codex_effort=getattr(self.codex, "reasoning_effort", None),
             observe_enabled=self.observe,
             auto_relay=self.auto_relay,
             claude_last_relay_at=self._last_relay.get("claude", {}).get("at") or None,
@@ -4494,6 +4497,7 @@ class Botference:
         if agents_note:
             parts.append(agents_note)
         parts.append(deliverables_note())
+        parts.append(recommendations_note())
         skill_context = project_skill_context(
             model,
             [self.paths.project_root, self.paths.botference_home],

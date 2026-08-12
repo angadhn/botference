@@ -974,8 +974,11 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   // user-select:none allowed is the decorative avatar mark), and the
   // transcript explicitly opts into selection for iOS long-press
   const css = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'style.css'), 'utf8');
+  // decorative marks and the per-message button row are the only things
+  // allowed to opt out — everything a speaker actually said stays selectable
   for (const m of css.matchAll(/([^{}]+)\{[^{}]*user-select:\s*none[^{}]*\}/g)) {
-    assert.match(m[1].trim(), /\.avatar/, `only avatars may block selection: ${m[1].trim()}`);
+    assert.match(m[1].trim(), /\.avatar|\.msg-acts/,
+      `only avatars and the message action row may block selection: ${m[1].trim()}`);
   }
   assert.match(css, /#transcript\s*\{[^}]*user-select:\s*text/, 'transcript opts into selection');
   // the attach affordance is phone-real: image picker that lets iOS offer
@@ -1019,6 +1022,187 @@ test('markdown tables render as real tables; cells escaped; bare pipes stay pros
   const cx = [...doc.querySelectorAll('.msg.codex .body')].pop();
   assert.equal(cx.querySelector('table'), null);
   assert.match(cx.textContent, /A \| B/);
+});
+
+test('user messages render markdown too — links, bold and lists, same renderer as the bots',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'user_echo', text:
+    'Another study by Damon Binder derives a similarly ' +
+    '[explosive economic growth rate](https://defensesindepth.bio/2026/growth) from the ' +
+    'same **premises**.\n\n- check the elasticity\n- check the [replication](https://example.org/r)' });
+  const body = doc.querySelector('.msg.user .body');
+  const a = body.querySelector('a');
+  assert.ok(a, 'a markdown link in the human turn becomes a real anchor');
+  assert.equal(a.getAttribute('href'), 'https://defensesindepth.bio/2026/growth');
+  assert.equal(a.textContent, 'explosive economic growth rate');
+  assert.equal(a.getAttribute('target'), '_blank');
+  assert.match(a.getAttribute('rel'), /noopener/);
+  assert.ok(body.querySelector('strong'), '**bold** renders');
+  assert.equal(body.querySelectorAll('.md-list li').length, 2, 'the list is a real list');
+  assert.equal(body.querySelectorAll('.md-list li a').length, 1, 'links inside list items too');
+  assert.doesNotMatch(body.textContent, /\[explosive/, 'no raw markdown left in the text');
+  // …and the same for a bot turn: one renderer, one result
+  C.handle({ type: 'room', speaker: 'claude', text: 'see [the note](https://example.org/n)' });
+  assert.equal(doc.querySelector('.msg.claude .body a').textContent, 'the note');
+  // a javascript: url is never linkified
+  C.handle({ type: 'room', speaker: 'codex', text: 'careful: [x](javascript:alert(1))' });
+  const cx = doc.querySelector('.msg.codex .body');
+  assert.equal(cx.querySelector('a'), null);
+  assert.match(cx.textContent, /\[x\]\(javascript:alert\(1\)\)/);
+  // a root-relative path is a real link (files the council serves itself)…
+  C.handle({ type: 'room', speaker: 'claude', text:
+    '[Open the final timeline](/files/projects/plan-a-timeline.html)' });
+  const msgs = doc.querySelectorAll('.msg.claude .body');
+  const rel = msgs[msgs.length - 1].querySelector('a');
+  assert.ok(rel, 'root-relative markdown link becomes an anchor');
+  assert.equal(rel.getAttribute('href'), '/files/projects/plan-a-timeline.html');
+  assert.equal(rel.textContent, 'Open the final timeline');
+  // …but a protocol-relative "//host" is cross-origin in disguise: literal
+  C.handle({ type: 'room', speaker: 'codex', text: '[x](//evil.example/p)' });
+  const cxs = doc.querySelectorAll('.msg.codex .body');
+  assert.equal(cxs[cxs.length - 1].querySelector('a'), null);
+});
+
+test('room-protocol envelopes never reach the prose — they render as a metadata chip',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  // the reported shape: prose, then the envelope on its own line, then a list
+  C.handle({ type: 'room', speaker: 'claude', text: [
+    'I read the draft end to end.',
+    '',
+    '{"status":"continuing","next":"@codex","writer":"@codex","summary":"Checking the draft\'s few high-impact factual claims"}',
+    '',
+    '- the growth figure traces to [a note](https://example.org/n)',
+    '- the survey is stale',
+  ].join('\n') });
+  const msg = doc.querySelector('.msg.claude');
+  const body = msg.querySelector('.body');
+  assert.doesNotMatch(body.textContent, /"status"|continuing|@codex/, 'no JSON in the prose');
+  assert.match(body.textContent, /I read the draft end to end\./);
+  assert.equal(body.querySelectorAll('.md-list li').length, 2, 'the list after the envelope survives');
+  assert.ok(body.querySelector('.md-list li a'), 'and keeps its links');
+  const env = msg.querySelector('.env-row .env');
+  assert.ok(env, 'the envelope renders as its own chip');
+  assert.match(env.textContent, /continuing/);
+  assert.match(env.textContent, /Checking the draft's few high-impact factual claims/);
+  assert.match(env.textContent, /over to @codex/);
+  assert.ok(!body.contains(env), 'the chip is metadata, outside the message body');
+
+  // pretty-printed, fenced, at the very end: the fence goes with it
+  C.handle({ type: 'room', speaker: 'codex', text: [
+    'Agreed on all four.',
+    '',
+    '```json',
+    '{',
+    '  "status": "converged",',
+    '  "next": "@user",',
+    '  "summary": "both of us agree"',
+    '}',
+    '```',
+  ].join('\n') });
+  const cx = [...doc.querySelectorAll('.msg.codex')].pop();
+  assert.equal(cx.querySelector('.body pre'), null, 'no orphan code block left behind');
+  assert.doesNotMatch(cx.querySelector('.body').textContent, /```|status/);
+  assert.match(cx.querySelector('.env').textContent, /converged/);
+  assert.match(cx.querySelector('.env').textContent, /back to you/);
+
+  // …and at the START of a message, which the old trailing-only strip missed
+  C.handle({ type: 'room', speaker: 'claude', text:
+    '{"status":"blocked","next":"@user","summary":"need a decision"}\nI cannot go further without you.' });
+  const first = [...doc.querySelectorAll('.msg.claude')].pop();
+  assert.equal(first.querySelector('.body').textContent.trim(), 'I cannot go further without you.');
+  assert.match(first.querySelector('.env').className, /env-blocked/);
+
+  // a half-streamed envelope is hidden while it arrives, never shown mid-JSON
+  C.handle({ type: 'stream', kind: 'text_delta', model: 'claude', stream_id: 9, text: 'Done.\n\n{"status":"cont' });
+  const live = doc.querySelector('.msg.claude.streaming .body');
+  assert.equal(live.textContent.trim(), 'Done.');
+  // JSON that is NOT the room footer stays exactly where the bot put it
+  C.handle({ type: 'room', speaker: 'codex', text: 'the API replied {"status":"ok","code":200,"body":null}' });
+  assert.match([...doc.querySelectorAll('.msg.codex .body')].pop().textContent, /"code":200/);
+});
+
+test('task lists are real checkboxes and the ticks survive a re-render',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const RECS = 'Recommended fixes:\n\n- [ ] Replace the growth citation\n- [x] Re-pull the dataset\n- [ ] Fix the deflator';
+  C.handle({ type: 'room', speaker: 'claude', text: RECS });
+  const body = doc.querySelector('.msg.claude .body');
+  const boxes = [...body.querySelectorAll('input.md-tick')];
+  assert.equal(boxes.length, 3, 'three real checkboxes');
+  assert.deepEqual(boxes.map(b => b.checked), [false, true, false], 'source state is honoured');
+  assert.ok(body.querySelector('li.md-task.done'), 'a ticked item reads as done');
+  assert.ok(body.querySelector('ul.md-tasklist'), 'the list drops its bullets for the ticks');
+
+  // ticking the first one persists it
+  boxes[0].checked = true;
+  boxes[0].dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.ok(boxes[0].parentNode.classList.contains('done'), 'the item strikes through immediately');
+  // the record is the whole state of the message, not just the click
+  assert.match(w.localStorage.getItem('council-ticks') || '', /"on":\[0,1\]/);
+
+  // the same message rendered again (a replay, a chat switch back) keeps it
+  C.handle({ type: 'clear_panes' });
+  C.handle({ type: 'room', speaker: 'claude', text: RECS });
+  const again = [...doc.querySelectorAll('.msg.claude .body input.md-tick')];
+  assert.deepEqual(again.map(b => b.checked), [true, true, false], 'the tick came back with the message');
+  // a DIFFERENT list starts clean — the key is the message, not the ordinal
+  C.handle({ type: 'room', speaker: 'codex', text: '- [ ] Something else entirely' });
+  assert.equal(doc.querySelector('.msg.codex input.md-tick').checked, false);
+});
+
+test('every message carries a copy button that puts rich HTML and plain markdown on the clipboard',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const written = [];
+  w.ClipboardItem = class { constructor(items) { this.items = items; } };
+  w.Blob = class { constructor(parts, opts) { this.text = String(parts[0]); this.type = (opts || {}).type; } };
+  Object.defineProperty(w.navigator, 'clipboard', {
+    configurable: true,
+    value: { write: items => { written.push(items[0]); return Promise.resolve(); }, writeText: () => Promise.resolve() },
+  });
+  C.handle({ type: 'room', speaker: 'claude', text:
+    'Try [the note](https://example.org/n).\n\n{"status":"continuing","next":"@user","summary":"done"}' });
+  const msg = doc.querySelector('.msg.claude');
+  const btn = msg.querySelector('.msg-copy');
+  assert.ok(btn, 'agent messages get a copy button');
+  btn.click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(written.length, 1, 'one clipboard write');
+  const item = written[0].items;
+  assert.match(item['text/html'].text, /<a href="https:\/\/example\.org\/n"/, 'HTML flavour keeps the anchor');
+  assert.match(item['text/plain'].text, /\[the note\]\(https:\/\/example\.org\/n\)/, 'plain flavour is the markdown');
+  assert.doesNotMatch(item['text/plain'].text, /"status"/, 'the protocol footer is not part of the message');
+  // the human's own turn is copyable too
+  C.handle({ type: 'user_echo', text: 'my **turn**' });
+  assert.ok(doc.querySelector('.msg.user .msg-copy'), 'so is the user bubble');
+  // no clipboard API at all: the button must not throw
+  delete w.ClipboardItem;
+  doc.querySelector('.msg.user .msg-copy').click();
+  await new Promise(r => setTimeout(r, 5));
+});
+
+test('speakers are tellable apart: a colour AND a typeface each, and the user bubble is its own thing',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async () => {
+  const css = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'style.css'), 'utf8');
+  assert.match(css, /--font-claude:/);
+  assert.match(css, /--font-codex:/);
+  assert.match(css, /\.msg\.claude \.body \{[^}]*font-family:\s*var\(--font-claude\)/);
+  assert.match(css, /\.msg\.codex \.body \{[^}]*font-family:\s*var\(--font-codex\)/);
+  assert.match(css, /\.msg\.user \{[^}]*--author:\s*var\(--you\)/, 'the user bubble has its own accent');
+  // every speaker colour is defined in BOTH themes, so neither mode inherits
+  // a value picked for the other one
+  for (const tok of ['--claude', '--codex', '--you']) {
+    const light = css.match(new RegExp(':root\\[data-theme="light"\\][^}]*' + tok + ':'));
+    const dark = css.match(new RegExp(':root\\[data-theme="dark"\\][^}]*' + tok + ':'));
+    assert.ok(light, `${tok} defined for the light theme`);
+    assert.ok(dark, `${tok} defined for the dark theme`);
+  }
 });
 
 // ------------------------------------------- UI: model switcher + exhaustion
@@ -1075,6 +1259,40 @@ test('agents panel: per-agent model select, rounded gauge, relay provenance, rel
   doc.getElementById('relay-both').click();
   await new Promise(r => setTimeout(r, 5));
   assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/relay @both', attachments: [] } });
+});
+
+test('agents panel: per-agent effort picker, seeded from the scoped levels and the status snapshot',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'completion_context', global: ['/status'], scoped: {
+    '/effort @claude ': ['low', 'medium', 'high', 'xhigh'],
+    '/effort @codex ': ['minimal', 'low', 'medium', 'high', 'max'],
+  } });
+  C.handle({ type: 'status', mode: 'public', lead: 'auto', route: '@all', project: 'p',
+    claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol',
+    claude_effort: 'high', codex_effort: 'medium' });
+  const cards = doc.getElementById('agent-cards');
+  const ce = cards.querySelector('select[data-effort="claude"]');
+  assert.ok(ce, 'claude effort <select> renders');
+  // asserted through the `selected` attribute, not select.value: happy-dom
+  // mis-resolves selectedIndex for a selected option past the second one
+  assert.equal(ce.querySelector('option[selected]').value, 'high',
+    'the level the bridge reports is preselected');
+  assert.deepEqual([...ce.querySelectorAll('option')].map(o => o.value).filter(Boolean),
+    ['low', 'medium', 'high', 'xhigh'], 'exactly the levels the controller accepts');
+  assert.equal(cards.querySelector('select[data-effort="codex"] option[selected]').value, 'medium');
+  // …and picking one sends the plain slash command, like every other control
+  ce.value = 'xhigh';
+  ce.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/effort @claude xhigh', attachments: [] } });
+  // a bridge too old to report effort still offers the levels (fallback list)
+  const { doc: d2, C: C2 } = await mkHarness(t);
+  C2.handle({ type: 'status', mode: 'public', lead: 'auto', route: '@all', project: 'p' });
+  assert.ok(d2.querySelector('select[data-effort="codex"] option[value="max"]'),
+    'fallback effort levels without a completion_context');
 });
 
 test('credit exhaustion flags the agent (avatar + notice), clears on a normal turn, and warns before send',
