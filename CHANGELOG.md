@@ -2,6 +2,14 @@
 
 ## 2026-08-12
 
+- **Site: Discuss shows itself moving.** The plugin screenshot on
+  botference.com is now a silent 12-second loop of the real thing —
+  highlight, comment, both bots, a code cell running into a plot, the
+  resolved highlight turning green — filmed on an actual blog post,
+  with a "watch the 40-second tour" link to the full cut with music.
+  Reduced-motion readers get a poster and a play button instead of an
+  autoplaying loop.
+
 - **Discuss: the focused thread gets a spotlight.** Clicking a highlight
   on the page, or a thread in the drawer, now dims every other card to
   42% — the reader was deleting neighbours they mistook for the one they
