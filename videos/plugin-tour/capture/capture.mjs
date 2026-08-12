@@ -1,0 +1,461 @@
+// The shoot.
+//
+// ONE unbroken pass over the REAL extension drawer running in the harness
+// (which loads extension/drawer.js, content.js, anchor.js and adapters.js off
+// disk — nothing here re-implements any of it), plus one still-life of the
+// exported note. Every click is a real click on a real control; every state on
+// screen is a state the drawer put there.
+//
+// The whole story is one take on purpose. The v3 cut is about a single thread
+// living its whole life — highlighted, asked, answered, handed to the other
+// agent, run, plotted, filed, summarised, greened — and a take per beat would
+// let a viewer suspect the state was reset between them. The cuts are made
+// later, in edit.json, out of this one continuous recording.
+//
+//   node capture/capture.mjs             the thread take (+ note, + braid)
+//   node capture/capture.mjs thread      just the long take
+//
+// Writes footage/<id>.mp4 and footage/shots.json (the action timestamps, so
+// edit.json's label cues and camera moves are aimed at measured instants
+// rather than at guesses).
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+import { startServer } from './serve.mjs';
+import { FOCUS_QUOTE } from './page.mjs';
+import {
+  Recorder, installCursor, raiseCursor, moveTo, clickAt, clickShadow, shadowBox,
+  lightBox, waitShadow, typeShadow, scrollShadowTo, scrollPageTo, sleep, FPS,
+} from './rig.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, '..');
+const FOOTAGE = path.join(ROOT, 'footage');
+const TMP = path.join(HERE, '.tmp');
+
+const plotDataUrl = 'data:image/png;base64,' +
+  fs.readFileSync(path.join(HERE, 'fixtures/figure-01.png')).toString('base64');
+
+// The harness ships its own developer toolbar across the top. It is a test
+// instrument, not part of the product, so the camera does not see it. This is
+// styling applied to the page at record time — no fixture is changed by it.
+const HIDE_HARNESS_CHROME = `
+  .bar { display: none !important; }
+  html { scroll-behavior: smooth; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+`;
+
+// 2.6x the v1 rate. The v1 cut spent four seconds watching a sentence be typed;
+// at 35 seconds there is no such money. Still per-character, still jittered,
+// still the drawer's own input events — only faster.
+const TYPE = { cps: 58, jitter: 0.4 };
+
+async function open(ctx, base, query) {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/test/harness.html?${query}`, { waitUntil: 'load' });
+  await page.addStyleTag({ content: HIDE_HARNESS_CHROME });
+  await page.waitForFunction(() => window.__bfp && window.__bfp.drawer, null, { timeout: 20000 });
+  await sleep(1400);                       // let restored highlights paint
+  await installCursor(page);
+  return page;
+}
+
+const shots = {};
+
+async function take(ctx, base, id, query, body) {
+  const page = await open(ctx, base, query);
+  const rec = new Recorder(page, path.join(TMP, id));
+  await rec.start();
+  const notes = await body(page, rec) || {};
+  await rec.stop();
+  const out = path.join(FOOTAGE, `${id}.mp4`);
+  await rec.encode(out);
+  shots[id] = {
+    clip: `footage/${id}.mp4`,
+    seconds: Number(rec.duration.toFixed(3)),
+    frames: Math.round(rec.duration * FPS),
+    sourceFrames: rec.frames.length,
+    harnessUrl: `test/harness.html?${query}`,
+    marks: rec.marks.map(m => ({ ...m, frame: Math.round(m.t * FPS) })),
+    ...notes,
+  };
+  console.log(`  ${id}: ${rec.duration.toFixed(2)}s (${rec.frames.length} source frames) -> ${out}`);
+  await page.close();
+  writeShots();          // after every take, so a later take failing costs one take
+}
+
+function writeShots() {
+  fs.writeFileSync(path.join(FOOTAGE, 'shots.json'),
+    JSON.stringify({ fps: FPS, width: 1920, height: 1080, shot: new Date().toISOString(), shots }, null, 2));
+}
+
+/** The per-agent working rings the drawer paints while a turn is in flight. */
+const dialUp = page => page.waitForFunction(() => {
+  const s = window.__bfp.drawer.shadow;
+  return !!s.querySelector('.status-chip .avatar-ring.working, .status-chip .spin');
+}, null, { timeout: 20000 });
+
+// ===========================================================================
+// The take — one thread, from nothing to filed
+// ===========================================================================
+async function thread(page, rec) {
+  const PHRASE_START = 'Each competitor gains';
+  const PHRASE_END = 'if none of them had';
+  if (!FOCUS_QUOTE.startsWith(PHRASE_START) || !FOCUS_QUOTE.endsWith(PHRASE_END)) {
+    throw new Error('the drag no longer spans FOCUS_QUOTE — capture/page.mjs changed');
+  }
+
+  await moveTo(page, 900, 640, 0);
+  await sleep(1600);                                       // entry beat
+  rec.mark('entry');
+
+  // ---- 1. the drag --------------------------------------------------------
+  // where the sentence sits, so the sprite can be dragged across it for real
+  const span = await page.evaluate(({ a, b }) => {
+    const p = [...document.querySelectorAll('article p')].find(el => el.textContent.includes(a));
+    const t = [...p.childNodes].find(n => n.nodeType === 3 && n.data.includes(a));
+    const from = t.data.indexOf(a);
+    const to = t.data.indexOf(b) + b.length;
+    const r = document.createRange();
+    r.setStart(t, from); r.setEnd(t, from + 1);
+    const s = r.getBoundingClientRect();
+    r.setStart(t, to - 1); r.setEnd(t, to);
+    const e = r.getBoundingClientRect();
+    window.__drag = { from, to, path: [t] };
+    return { sx: s.left, sy: s.top + s.height * 0.72, ex: e.right, ey: e.top + e.height * 0.72 };
+  }, { a: PHRASE_START, b: PHRASE_END });
+
+  await moveTo(page, span.sx - 6, span.sy, 720);
+  await sleep(260);
+  rec.mark('drag-start');
+
+  // the drag: sprite and Range advance together
+  await page.evaluate(() => window.__cam.sel(true));
+  const STEPS = 22;
+  for (let i = 1; i <= STEPS; i++) {
+    const k = i / STEPS;
+    await page.evaluate(({ k }) => {
+      const { from, to, path } = window.__drag;
+      const t = path[0];
+      const end = Math.round(from + (to - from) * k);
+      const r = document.createRange();
+      r.setStart(t, from); r.setEnd(t, Math.max(from + 1, end));
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      const box = r.getBoundingClientRect();
+      window.__cam.to(box.right, box.bottom - 5, 0);
+    }, { k });
+    await sleep(42);
+  }
+  await page.evaluate(() => window.__cam.sel(false));
+  await sleep(240);
+  await page.evaluate(() => document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })));
+  rec.mark('selection-made');
+  await waitShadow(page, '.selbtn');
+  await sleep(420);
+
+  // ---- 2. the floating pill ----------------------------------------------
+  const pill = await shadowBox(page, '.selbtn');
+  await clickAt(page, pill.x, pill.y, { travel: 380, hover: 340 });
+  await page.evaluate(() => window.__bfp.drawer.shadow.querySelector('.selbtn').click());
+  rec.mark('pill-clicked');
+  await waitShadow(page, '.card.pending textarea');
+  await sleep(1100);                                       // drawer slides in
+  await raiseCursor(page);
+  rec.mark('drawer-open');
+
+  // ---- 3. the question ----------------------------------------------------
+  const composer = await shadowBox(page, '.card.pending textarea');
+  await clickAt(page, composer.x, composer.y, { travel: 460, hover: 240 });
+  await sleep(160);
+  rec.mark('typing');
+  await typeShadow(page, '.card.pending textarea',
+    '@claude is this the same trap as arms races?', TYPE);
+  await sleep(360);
+
+  // The thread ids already on the page. Without this the wait below matches a
+  // reply that was ALREADY in another thread and the take runs on before the
+  // new answer has said a word.
+  const known = await page.evaluate(() =>
+    [...window.__bfp.drawer.shadow.querySelectorAll('.card[data-thread]')]
+      .map(c => c.getAttribute('data-thread')));
+
+  const send = await shadowBox(page, '.card.pending [data-act="send"]');
+  await clickAt(page, send.x, send.y, { travel: 420, hover: 380 });
+  await page.evaluate(() => window.__bfp.drawer.shadow.querySelector('.card.pending [data-act="send"]').click());
+  rec.mark('sent');
+
+  const focus = await page.waitForFunction(seen => {
+    const c = [...window.__bfp.drawer.shadow.querySelectorAll('.card[data-thread]')]
+      .find(x => !seen.includes(x.getAttribute('data-thread')));
+    return c ? c.getAttribute('data-thread') : null;
+  }, known, { timeout: 20000 }).then(h => h.jsonValue());
+  const card = `.card[data-thread="${focus}"]`;
+
+  // ---- 4. claude thinks, then answers ------------------------------------
+  // The dial is waited for BEFORE the hand moves, not after: the working chip
+  // exists for as long as the turn takes to say its first word, and a camera
+  // still travelling when it appears spends the whole of it in transit. This
+  // ordering is what puts a settled shot on the dial rather than a glimpse.
+  await dialUp(page);
+  rec.mark('claude-thinking');
+  await moveTo(page, 1160, 940, 420);
+  await waitShadow(page, `${card} .reply.bot.claude`, { timeout: 25000 });
+  rec.mark('claude-streaming');
+  await sleep(2200);
+  await scrollShadowTo(page, `${card} .reply.bot.claude`, { block: 'end' });
+  rec.mark('claude-landed');
+  await sleep(1500);
+
+  // ---- 5. the reader hands it to the other agent -------------------------
+  // The bots never do this to each other: bridge-system-prompt.md rule 6 forbids
+  // a bot @-tagging its counterpart, and the companion only ever summons on a
+  // message a PERSON posted (server.mjs `summon`). So the router is the reader,
+  // which is also the only version of this that is true.
+  const reply = `${card} .composer textarea`;
+  await scrollShadowTo(page, reply, { block: 'center' });
+  const rbox = await shadowBox(page, reply);
+  await clickAt(page, rbox.x, rbox.y, { travel: 520, hover: 240 });
+  await sleep(140);
+  rec.mark('typing-2');
+  await typeShadow(page, reply, '@codex plot how defection spreads?', TYPE);
+  await sleep(320);
+  const send2 = await shadowBox(page, `${card} [data-act="send"]`);
+  await clickAt(page, send2.x, send2.y, { travel: 300, hover: 340 });
+  await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
+    `${card} [data-act="send"]`);
+  rec.mark('sent-2');
+
+  await dialUp(page);
+  rec.mark('codex-thinking');
+  await moveTo(page, 1160, 950, 420);
+  await waitShadow(page, `${card} .reply.bot.codex`, { timeout: 25000 });
+  rec.mark('codex-streaming');
+  await waitShadow(page, `${card} [data-act="run"]`, { timeout: 25000 });
+  await sleep(700);
+
+  // Four drawn units (person, bot, person, bot) is one past the drawer's fold
+  // threshold, so codex's answer landing folds claude's away behind "Show 1
+  // earlier reply" — in a film whose whole subject is ONE continuous thread,
+  // that line reads as the drawer hiding the beat we just watched. The reader
+  // opens it back up, with the drawer's own control, and it stays open (a
+  // manual fold outranks the rule in both directions, drawer.js FOLD_OPEN).
+  const more = await shadowBox(page, `${card} [data-act="expand"]`);
+  if (more) {
+    await clickAt(page, more.x, more.y, { travel: 420, hover: 320 });
+    await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
+      `${card} [data-act="expand"]`);
+    rec.mark('unfolded');
+    await sleep(600);
+  }
+
+  await scrollShadowTo(page, `${card} [data-act="run"]`, { block: 'center' });
+  await sleep(500);
+  rec.mark('codex-landed');
+
+  // ---- 6. run it ----------------------------------------------------------
+  const run = await shadowBox(page, `${card} [data-act="run"]`);
+  rec.mark('run-approach');
+  await clickAt(page, run.x, run.y, { travel: 700, hover: 620 });
+  await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
+    `${card} [data-act="run"]`);
+  rec.mark('run-clicked');
+
+  // The status line prints directly under the button the cursor is sitting on,
+  // so the hand has to come off it before the result arrives — otherwise the
+  // sprite covers "✓ ran · 214 ms", which is half of what the shot is for.
+  await moveTo(page, run.x - 240, run.y + 260, 380);
+  await waitShadow(page, '.runstat');
+  rec.mark('runstat');
+  await sleep(700);
+  await waitShadow(page, '.runfigs img');
+  rec.mark('figure-in');
+  await sleep(1100);
+  await scrollShadowTo(page, '.runstat', { block: 'center' });
+  await sleep(900);
+
+  // full size, because a thumbnail in a 460px drawer is not a plot anybody reads
+  const thumbSel = '.runfigs img';
+  const thumb = await shadowBox(page, thumbSel);
+  if (thumb) {
+    await clickAt(page, thumb.x, thumb.y, { travel: 620, hover: 520 });
+    await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(), thumbSel);
+    // the lightbox scrim is painted by the drawer host; without re-raising, the
+    // sprite ends up UNDER it and reads as a dimmed smudge
+    await raiseCursor(page);
+    rec.mark('lightbox');
+    await sleep(420);
+    await moveTo(page, 1620, 960, 640);
+    await sleep(2600);
+    await page.keyboard.press('Escape');
+    rec.mark('lightbox-closed');
+    await sleep(1200);
+  }
+
+  // ---- 7. file it ---------------------------------------------------------
+  await scrollShadowTo(page, `${card} [data-act="resolve"]`, { block: 'center' });
+  await sleep(300);
+  const tick = await shadowBox(page, `${card} [data-act="resolve"]`);
+  await clickAt(page, tick.x, tick.y, { travel: 640, hover: 560 });
+  await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
+    `${card} [data-act="resolve"]`);
+  rec.mark('resolved');
+  await moveTo(page, 1180, 960, 420);
+  await waitShadow(page, '.resolved-sec');
+  const filedCount = await page.evaluate(() =>
+    window.__bfp.drawer.shadow.querySelector('.resolved-head .rcount').textContent.trim());
+  rec.mark('filed');
+  await sleep(1100);
+
+  // ---- 8. the archive, and the written summary ---------------------------
+  await scrollShadowTo(page, '.resolved-sec', { block: 'end' });
+  await sleep(320);
+  await clickShadow(page, '[data-act="resolved-toggle"]', { travel: 520, hover: 460 });
+  await waitShadow(page, '.resolved-list');
+  const filedCard = `.resolved-list .card.resolved[data-thread="${focus}"]`;
+  await scrollShadowTo(page, filedCard, { block: 'center' });
+  rec.mark('archive-open');
+  await sleep(900);
+
+  // ask the agents for the written paragraph — it lands over the placeholder.
+  // (The shipped companion queues this by itself on every resolve, server.mjs
+  // summarizeThread; the harness only writes it when asked, so the film presses
+  // the button the drawer offers for exactly that.)
+  const sum = await shadowBox(page, `${filedCard} [data-act="summarize"]`);
+  if (sum) {
+    await clickAt(page, sum.x, sum.y, { travel: 460, hover: 420 });
+    await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
+      `${filedCard} [data-act="summarize"]`);
+    rec.mark('summarize');
+    await page.waitForFunction(sel => {
+      const p = window.__bfp.drawer.shadow.querySelector(sel + ' .digest');
+      return !!(p && p.textContent.length > 240);
+    }, filedCard, { timeout: 15000 });
+    rec.mark('summary-landed');
+    await moveTo(page, 1200, 980, 480);
+    await sleep(2200);
+  }
+
+  // ---- 9. two green highlights in the page -------------------------------
+  const green = await page.evaluate(() => document.querySelectorAll('mark.bfp-hl.bfp-done').length);
+  await scrollPageTo(page, 'mark.bfp-hl.bfp-done', { block: 'center' });
+  await sleep(500);
+  await moveTo(page, 880, 300, 700);
+  rec.mark('green-visible');
+  await sleep(2600);
+
+  return { newThread: focus, filedCount, greenMarks: green, quote: FOCUS_QUOTE };
+}
+
+// ===========================================================================
+// The exported note — a still life, not an application
+// ===========================================================================
+// capture/note.mjs runs the plugin's own export.mjs over the record this take
+// leaves behind and writes footage/note.html. There is no app window around it
+// on purpose: the v1 cut put the note inside a facsimile of Obsidian, which was
+// the one staged surface in the film and the only thing in it a viewer had to
+// take on trust. The note itself needs no help.
+// The note is 2300px tall and the frame is 1080. A pan down it at that rate is
+// a whoosh nobody can read, so the beat is two held framings with a hard cut
+// between them — the film's own rule, applied to a document: the head (path,
+// frontmatter, title, the quote, "Resolved by angadh" and the exchange
+// starting) and the foot (the code cell, the plot, the attachment path).
+async function note(page, rec) {
+  const travel = await page.evaluate(() =>
+    document.querySelector('.sheet').scrollHeight - window.innerHeight);
+  await sleep(900);
+  rec.mark('head');
+  await sleep(3000);
+  await page.evaluate(y => document.querySelector('.scroll').scrollTo({ top: y, behavior: 'instant' }), travel);
+  await sleep(240);
+  rec.mark('foot');
+  await sleep(3000);
+  return { travel };
+}
+
+// ===========================================================================
+async function main() {
+  const only = process.argv.slice(2);
+  const want = id => !only.length || only.includes(id);
+  fs.mkdirSync(FOOTAGE, { recursive: true });
+  fs.mkdirSync(TMP, { recursive: true });
+
+  const { server, base } = await startServer({ plotDataUrl });
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--force-color-profile=srgb', '--font-render-hinting=none',
+           '--disable-lcd-text', '--hide-scrollbars=false'],
+  });
+  const ctx = await browser.newContext({
+    viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1,
+    reducedMotion: 'no-preference',
+  });
+
+  if (fs.existsSync(path.join(FOOTAGE, 'shots.json'))) {
+    Object.assign(shots, JSON.parse(fs.readFileSync(path.join(FOOTAGE, 'shots.json'), 'utf8')).shots || {});
+  }
+
+  console.log('shooting…');
+  if (want('thread')) await take(ctx, base, 'thread', 'closed=1', thread);
+
+  // The braid, filmed off the site's own markup. One 14s clip: the write-in,
+  // the fuse, and enough ambient that the close can enter it late.
+  if (want('braid')) {
+    const bp = await ctx.newPage();
+    await bp.goto(`file://${path.join(FOOTAGE, 'braid.html')}`, { waitUntil: 'load' });
+    const rec = new Recorder(bp, path.join(TMP, 'braid'));
+    await rec.start();
+    // restart every CSS animation so frame 0 of the take is frame 0 of the draw
+    await bp.evaluate(() => {
+      for (const an of document.getAnimations()) { an.cancel(); an.play(); }
+    });
+    rec.mark('draw-start');
+    await sleep(2500); rec.mark('sweeps-done');
+    await sleep(1400); rec.mark('fuse');
+    await sleep(10500);
+    await rec.stop();
+    await rec.encode(path.join(FOOTAGE, 'braid.mp4'));
+    shots.braid = {
+      clip: 'footage/braid.mp4',
+      seconds: Number(rec.duration.toFixed(3)),
+      frames: Math.round(rec.duration * FPS),
+      sourceFrames: rec.frames.length,
+      harnessUrl: 'footage/braid.html (svg + css lifted from site/index.html)',
+      marks: rec.marks.map(m => ({ ...m, frame: Math.round(m.t * FPS) })),
+    };
+    console.log(`  braid: ${rec.duration.toFixed(2)}s (${rec.frames.length} source frames)`);
+    await bp.close();
+    writeShots();
+  }
+
+  if (want('note')) {
+    const np = await ctx.newPage();
+    await np.goto(`file://${path.join(FOOTAGE, 'note.html')}`, { waitUntil: 'load' });
+    await sleep(900);
+    const rec = new Recorder(np, path.join(TMP, 'note'));
+    await rec.start();
+    await note(np, rec);
+    await rec.stop();
+    await rec.encode(path.join(FOOTAGE, 'note.mp4'));
+    shots.note = {
+      clip: 'footage/note.mp4',
+      seconds: Number(rec.duration.toFixed(3)),
+      frames: Math.round(rec.duration * FPS),
+      sourceFrames: rec.frames.length,
+      harnessUrl: 'footage/note.html (frontends/plugin/export.mjs renderNote() output, typeset)',
+      marks: rec.marks.map(m => ({ ...m, frame: Math.round(m.t * FPS) })),
+    };
+    console.log(`  note: ${rec.duration.toFixed(2)}s`);
+    await np.close();
+    writeShots();
+  }
+
+  writeShots();
+  await browser.close();
+  server.close();
+  console.log('done -> footage/shots.json');
+}
+
+main().catch(e => { console.error(e); process.exit(1); });

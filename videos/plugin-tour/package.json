@@ -1,0 +1,38 @@
+{
+  "name": "plugin-tour",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "botference Discuss product tour — the whole edit is text: footage/ + edit.json + src/",
+  "scripts": {
+    "note": "node capture/note.mjs",
+    "braid": "node capture/braid.mjs",
+    "capture": "node capture/qr.mjs && node capture/braid.mjs && node capture/note.mjs && node capture/capture.mjs",
+    "music": "node music/compose.mjs && cp out/score.wav footage/score.wav",
+    "render": "npm run music && remotion render src/index.ts PluginTour out/plugin-tour-raw.mp4 --codec=h264 --crf=17 --concurrency=8 && npm run encode",
+    "encode": "ffmpeg -y -loglevel error -i out/plugin-tour-raw.mp4 -i out/score.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -profile:v high -level 4.1 -pix_fmt yuv420p -crf 22 -preset slow -x264-params keyint=60:min-keyint=60:scenecut=0 -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart -shortest out/plugin-tour.mp4",
+    "loop": "remotion render src/index.ts SiteLoop out/site-loop-raw.mp4 --codec=h264 --crf=16 --concurrency=8 && npm run loop:encode",
+    "loop:encode": "ffmpeg -y -loglevel error -i out/site-loop-raw.mp4 -an -c:v libx264 -profile:v high -pix_fmt yuv420p -crf 27 -preset slow -r 30 -movflags +faststart out/site-loop.mp4 && ffmpeg -y -loglevel error -i out/site-loop-raw.mp4 -an -c:v libvpx-vp9 -crf 41 -b:v 0 -row-mt 1 -deadline good -cpu-used 2 -pix_fmt yuv420p -r 30 out/site-loop.webm && ffmpeg -y -loglevel error -ss 0.50 -i out/site-loop-raw.mp4 -frames:v 1 -q:v 3 out/site-loop-poster.jpg",
+    "stills": "node capture/stills.mjs",
+    "studio": "remotion studio src/index.ts",
+    "qr": "node capture/qr.mjs",
+    "verify:qr": "node capture/verify-qr.mjs",
+    "freeze": "ffmpeg -v info -i out/plugin-tour.mp4 -vf freezedetect=n=-55dB:d=2 -map 0:v:0 -f null - 2>&1 | grep -i freeze || echo 'no dead air over 2s'",
+    "verify": "npm run verify:qr && npm run freeze"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.408",
+    "@remotion/media-utils": "4.0.408",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.408"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.0",
+    "playwright": "1.60.0",
+    "typescript": "5.7.3"
+  }
+}

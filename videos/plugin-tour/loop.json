@@ -1,0 +1,77 @@
+{
+  "$comment": [
+    "The site loop: the same take, cut for a different job. It sits where a static",
+    "screenshot sits on botference.com, so it has to read at a few hundred pixels",
+    "wide with no labels and no sound, and it has to survive being seen forty times",
+    "by someone scrolling past. That means: tight framing on whatever is moving,",
+    "four beats and no more, and a seam that does not slam.",
+    "",
+    "The four beats are the film's argument with the words taken out — a sentence",
+    "being grabbed, an agent visibly thinking, a plot appearing where code was, and",
+    "the marks going green. Every one of them is a window onto footage/thread.mp4.",
+    "",
+    "`fade` is the dissolve INTO each beat. The loop's own join is NOT a dissolve",
+    "back to the head — two different layouts blended together ghost badly, and the",
+    "first render proved it. Both ends dip to the article's own paper colour over",
+    "`seam` frames instead, so the last frame and the first frame are the same flat",
+    "colour and the join is exact. Camera keys are relative to the beat."
+  ],
+  "meta": {
+    "width": 1280,
+    "height": 774,
+    "fps": 30,
+    "id": "SiteLoop",
+    "seam": 12
+  },
+  "beats": [
+    {
+      "id": "highlight",
+      "clip": "footage/thread.mp4",
+      "inFrame": 88,
+      "durationInFrames": 112,
+      "note": "the drag finishing, the pill floating, the drawer arriving. Framed on the sentence rather than on the drawer, because at this size the thing to see is a line of prose changing colour.",
+      "camera": [
+        { "at": 0, "scale": 1.44, "origin": [0.50, 0.66] },
+        { "at": 64, "scale": 1.44, "origin": [0.50, 0.66] },
+        { "at": 112, "scale": 1.3, "origin": [0.58, 0.60], "ease": "ease" }
+      ]
+    },
+    {
+      "id": "thinking",
+      "clip": "footage/thread.mp4",
+      "inFrame": 300,
+      "durationInFrames": 84,
+      "fade": 10,
+      "note": "the working chip — the agent's ring spinning under the question — and the first words of the answer arriving on top of it. Hard on the drawer; nothing else in frame is doing anything.",
+      "camera": [
+        { "at": 0, "scale": 1.5, "origin": [0.86, 0.34] },
+        { "at": 84, "scale": 1.42, "origin": [0.86, 0.40], "ease": "ease" }
+      ]
+    },
+    {
+      "id": "plot",
+      "clip": "footage/thread.mp4",
+      "inFrame": 902,
+      "durationInFrames": 108,
+      "fade": 10,
+      "note": "Run pressed, the status line, then the figure painting in under it. The camera pulls back exactly as the plot lands so the reveal is the content and the frame arriving together.",
+      "camera": [
+        { "at": 0, "scale": 1.5, "origin": [0.86, 0.56] },
+        { "at": 44, "scale": 1.5, "origin": [0.86, 0.58] },
+        { "at": 108, "scale": 1.34, "origin": [0.85, 0.62], "ease": "ease" }
+      ]
+    },
+    {
+      "id": "green",
+      "clip": "footage/thread.mp4",
+      "inFrame": 1702,
+      "durationInFrames": 68,
+      "fade": 10,
+      "note": "both passages, now sage green, in the page. The calmest beat, which is what lets the loop dip out of it without a jolt.",
+      "camera": [
+        { "at": 0, "scale": 1.36, "origin": [0.44, 0.52] },
+        { "at": 68, "scale": 1.42, "origin": [0.44, 0.56], "ease": "ease" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,543 @@
+{
+  "$schema": "the edit, as text",
+  "$comment": [
+    "Every cut, label and camera move in this film lives in this file; src/ only reads it.",
+    "Frame numbers inside a scene are RELATIVE to that scene's first frame. `inFrame` is the",
+    "trim-in against the source clip, `durationInFrames` the length on the timeline. Those two",
+    "numbers ARE the cut. The camera is a keyframe list: scale and origin interpolate together",
+    "between entries, so a move is written as where the camera is at a moment, not as a verb.",
+    "Origins are fractions of the frame.",
+    "",
+    "v3, the 37-second cut. Eleven of the sixteen scenes are windows onto ONE continuous take",
+    "(footage/thread.mp4): the thread is lived once, in front of the camera, and the pace comes",
+    "from throwing away the parts where nothing happens. Cue times were not guessed —",
+    "capture/capture.mjs marks the instant of every real action (footage/shots.json) and every",
+    "`at` and `inFrame` below is one of those marks. Change a duration and music/compose.mjs",
+    "re-derives its arrangement from the same sums.",
+    "",
+    "`right` on a label is the x its right edge may not cross, because the drawer is beyond it.",
+    "1436 is the drawer's left edge at scale 1.0; a scene pushed into the drawer moves that edge",
+    "left on screen and says so."
+  ],
+  "meta": {
+    "title": "botference Discuss — product tour",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "id": "PluginTour"
+  },
+  "scenes": [
+    {
+      "id": "hook",
+      "beat": "hook",
+      "kind": "card",
+      "durationInFrames": 80,
+      "title": "Google-Docs comments on any blog — with agents in the thread.",
+      "titleAt": 4,
+      "fadeIn": 8,
+      "rationale": "Say the thing, then show it. Three seconds of dark card and one sentence, because a viewer who does not know what this is will not work it out from a drawer sliding open. No braid: a logo animation here would spend the only three seconds the film has to make a claim on making an impression instead. Hard cut out — a dissolve would say the card and the product are one picture, and they are a claim and its evidence."
+    },
+    {
+      "id": "highlight",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 74,
+      "durationInFrames": 76,
+      "rationale": "A beat of the page, then the drag. The camera pushes in ON the drag, because the whole proposition is that a sentence in somebody else's blog is a thing you can grab — and at 1.0 a line of 20px serif changing colour is four pixels of event. The label lands with the first character of the selection, not before it.",
+      "labels": [
+        {
+          "text": "Highlight and comment.",
+          "at": 14,
+          "dur": 52
+        }
+      ],
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1,
+          "origin": [
+            0.45,
+            0.5
+          ]
+        },
+        {
+          "at": 8,
+          "scale": 1,
+          "origin": [
+            0.45,
+            0.5
+          ]
+        },
+        {
+          "at": 46,
+          "scale": 1.16,
+          "origin": [
+            0.44,
+            0.57
+          ],
+          "ease": "emphasis"
+        },
+        {
+          "at": 76,
+          "scale": 1.18,
+          "origin": [
+            0.44,
+            0.575
+          ]
+        }
+      ]
+    },
+    {
+      "id": "compose",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 185,
+      "durationInFrames": 112,
+      "rationale": "The drawer arrives and the question is typed. The camera pulls back and swings right across the cut: from here the drawer is the subject and it needs its full height. Type-on is 2.6x the v1 rate — still per-character, still the drawer's own input events, just no longer a thing you watch.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.24,
+          "origin": [
+            0.55,
+            0.58
+          ]
+        },
+        {
+          "at": 34,
+          "scale": 1.1,
+          "origin": [
+            0.7,
+            0.52
+          ],
+          "ease": "ease"
+        },
+        {
+          "at": 100,
+          "scale": 1.16,
+          "origin": [
+            0.74,
+            0.46
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "dial-claude",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 300,
+      "durationInFrames": 34,
+      "rationale": "The working chip: claude's ring spinning under the message, with a stop button beside it. It is the smallest thing in the film and it gets its own shot, tight, because it is the only frame that says a real agent is being waited on rather than a canned answer being revealed. One-and-a-bit seconds — the length of the pause itself.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.48,
+          "origin": [
+            0.82,
+            0.3
+          ]
+        },
+        {
+          "at": 34,
+          "scale": 1.52,
+          "origin": [
+            0.82,
+            0.3
+          ]
+        }
+      ]
+    },
+    {
+      "id": "claude",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 392,
+      "durationInFrames": 76,
+      "rationale": "The answer streaming into the margin. The camera eases back out as the paragraphs arrive so the card is never taller than the frame — the move is the content's, not the camera's.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.36,
+          "origin": [
+            0.8,
+            0.34
+          ]
+        },
+        {
+          "at": 76,
+          "scale": 1.2,
+          "origin": [
+            0.78,
+            0.42
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "handoff",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 585,
+      "durationInFrames": 54,
+      "rationale": "The reader routes the thread to the other agent, in the same box, under the same quote. The label is the beat: two agents, one thread. It is the READER who tags codex and not claude — bridge-system-prompt.md rule 6 forbids a bot @-tagging its counterpart and server.mjs only ever summons on a message a person posted, so a film of a bot doing it would be a film of something the product refuses to do.",
+      "labels": [
+        {
+          "text": "Two agents, one thread.",
+          "at": 4,
+          "dur": 44,
+          "right": 1180
+        }
+      ],
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.24,
+          "origin": [
+            0.78,
+            0.62
+          ]
+        },
+        {
+          "at": 54,
+          "scale": 1.28,
+          "origin": [
+            0.79,
+            0.6
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dial-codex",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 651,
+      "durationInFrames": 34,
+      "rationale": "The same chip, the other agent, the same length. Repeating the shot exactly is the point: the second dial is what tells you the first one was a state and not a flourish.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.48,
+          "origin": [
+            0.82,
+            0.52
+          ]
+        },
+        {
+          "at": 34,
+          "scale": 1.52,
+          "origin": [
+            0.82,
+            0.52
+          ]
+        }
+      ]
+    },
+    {
+      "id": "codecell",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 812,
+      "durationInFrames": 54,
+      "rationale": "Codex's reply, and the thing at the bottom of it: a python block with a Run button under it that nobody has pressed. Framed low on the card so the fold line at the top of the thread stays out of frame — what matters here is the cell, not the history above it.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.26,
+          "origin": [
+            0.8,
+            0.5
+          ]
+        },
+        {
+          "at": 54,
+          "scale": 1.3,
+          "origin": [
+            0.8,
+            0.54
+          ]
+        }
+      ]
+    },
+    {
+      "id": "run",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 888,
+      "durationInFrames": 70,
+      "rationale": "The surprising feature, so it gets the tightest framing in the film, and the push happens BEFORE the click — a viewer has to know where to look while the cursor is still travelling or the Run button reads as an accident. Then a pull back timed to the figure painting. No label sits over the status line: '✓ ran · 214 ms' is small type and it is half the payoff. The plot is real matplotlib output from the snippet on screen.",
+      "labels": [
+        {
+          "text": "Code in threads runs.",
+          "at": 2,
+          "dur": 44,
+          "right": 1120
+        }
+      ],
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.34,
+          "origin": [
+            0.8,
+            0.56
+          ]
+        },
+        {
+          "at": 22,
+          "scale": 1.44,
+          "origin": [
+            0.81,
+            0.6
+          ],
+          "ease": "emphasis"
+        },
+        {
+          "at": 46,
+          "scale": 1.3,
+          "origin": [
+            0.8,
+            0.62
+          ],
+          "ease": "ease"
+        },
+        {
+          "at": 70,
+          "scale": 1.18,
+          "origin": [
+            0.78,
+            0.6
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "plot",
+      "beat": "thread",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 1085,
+      "durationInFrames": 58,
+      "rationale": "Full size, because a thumbnail in a 460px drawer is not a plot anybody reads — and because the code that made it is still on screen beside it, which is the claim the whole scene is making. Two seconds, still, no move: the picture has enough to look at.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.06,
+          "origin": [
+            0.48,
+            0.5
+          ]
+        },
+        {
+          "at": 58,
+          "scale": 1.1,
+          "origin": [
+            0.48,
+            0.5
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "resolve",
+      "beat": "resolve",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 1281,
+      "durationInFrames": 58,
+      "rationale": "One click. The tick, the card leaving the list, and the count under it going 1 → 2. The camera holds absolutely still through it: the motion is the list, and a move would steal it.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.44,
+          "origin": [
+            0.82,
+            0.34
+          ]
+        },
+        {
+          "at": 58,
+          "scale": 1.44,
+          "origin": [
+            0.82,
+            0.4
+          ]
+        }
+      ]
+    },
+    {
+      "id": "digest",
+      "beat": "resolve",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 1467,
+      "durationInFrames": 96,
+      "rationale": "The archive, open, with both filed cards in it — and the paragraph landing over the placeholder while you watch. This is the scene people repeat, so the label carries it and the shot is long enough to read two lines of the summary. Both cards are visible on purpose: one was already there when the film started, so the shape of the archive is established rather than asserted.",
+      "labels": [
+        {
+          "text": "Resolve = written summary.",
+          "at": 16,
+          "dur": 62,
+          "right": 1160
+        }
+      ],
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.3,
+          "origin": [
+            0.8,
+            0.4
+          ]
+        },
+        {
+          "at": 96,
+          "scale": 1.24,
+          "origin": [
+            0.8,
+            0.46
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "green",
+      "beat": "resolve",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 1691,
+      "durationInFrames": 56,
+      "rationale": "Back to the page, and the idea the whole beat sells: the mark stays. Both passages are sage green now — the one that was green before the camera rolled and the one that turned during it — so 'green means settled' is shown by a pair rather than explained by a caption.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.16,
+          "origin": [
+            0.4,
+            0.55
+          ]
+        },
+        {
+          "at": 56,
+          "scale": 1.26,
+          "origin": [
+            0.4,
+            0.58
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "note-head",
+      "beat": "export",
+      "kind": "footage",
+      "clip": "footage/note.mp4",
+      "inFrame": 46,
+      "durationInFrames": 54,
+      "rationale": "The exported note, and nothing else. No Obsidian, no window, no sidebar — the v1 cut drew a facsimile of an application around this and it was the only surface in the film a viewer had to take on trust. What is on screen is frontends/plugin/export.mjs's own renderNote() output: the path it was written to, the frontmatter, the title, the passage as a blockquote, 'Resolved by angadh' and the exchange starting underneath.",
+      "labels": [
+        {
+          "text": "Obsidian export.",
+          "at": 6,
+          "dur": 40
+        }
+      ],
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1,
+          "origin": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "at": 54,
+          "scale": 1.04,
+          "origin": [
+            0.5,
+            0.48
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "note-foot",
+      "beat": "export",
+      "kind": "footage",
+      "clip": "footage/note.mp4",
+      "inFrame": 136,
+      "durationInFrames": 64,
+      "rationale": "A hard cut down the same document rather than a pan: 2300 pixels of note past a 1080 frame is a whoosh nobody can read, and the film's own rule is that cuts carry the pace. The foot is the point anyway — the code cell and the plot are in the vault too, as a copied attachment with a path of its own.",
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.02,
+          "origin": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "at": 64,
+          "scale": 1.06,
+          "origin": [
+            0.5,
+            0.52
+          ],
+          "ease": "ease"
+        }
+      ]
+    },
+    {
+      "id": "close",
+      "beat": "close",
+      "kind": "braid",
+      "clip": "footage/braid.mp4",
+      "inFrame": 150,
+      "durationInFrames": 144,
+      "title": "botference Discuss",
+      "subtitle": "botference.com",
+      "titleAt": 10,
+      "qr": true,
+      "fadeIn": 12,
+      "fadeOut": 26,
+      "camera": [
+        {
+          "at": 0,
+          "scale": 1.06,
+          "origin": [
+            0.5,
+            0.44
+          ]
+        },
+        {
+          "at": 144,
+          "scale": 1,
+          "origin": [
+            0.5,
+            0.46
+          ],
+          "ease": "ease"
+        }
+      ],
+      "rationale": "The braid entered late, where the three strands have already converged and 'the plan' has wiped out to the cursor — the site's own hero, filmed off its own markup rather than re-drawn, so it cannot drift from the real one. The type and the QR land together at frame 10 and hold: a code somebody is meant to scan off a playing video needs to be still, unfaded and large for long enough to acquire, which is 3.5 seconds here against a 2.5-second floor, and it is why the fade to black is 26 frames rather than the 40 the v1 cut used."
+    }
+  ]
+}
