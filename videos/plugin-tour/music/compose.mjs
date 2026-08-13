@@ -7,34 +7,40 @@
  * delay for width. No samples, no audio files, no npm dependencies. The only
  * external tool is ffmpeg, and only at the very end, to normalise loudness.
  *
- * ── The arrangement ────────────────────────────────────────────────────────
- * The score is a bed, not a piece of music that wants your attention: soft
- * electric-piano-ish pads in A-flat major, low-ish, one chord per two bars at
- * 84 BPM, a pulse you feel rather than count, and a tape hiss floor for warmth.
+ * ── The arrangement (v5) ───────────────────────────────────────────────────
+ * The v4 bed — foggy Ab pads at 84 — was the thing several viewers disliked.
+ * The v5 score is warmer and lighter on its feet, in the register of the way
+ * Anthropic scores its launch films: a soft FELT-PIANO figure in F major, a
+ * gentle MARIMBA pattern picking out the chord above it, a felt kick you sense
+ * rather than count, sparse glockenspiel-ish bells on the scene changes, and
+ * the same tape-hiss floor. Playful, never jokey; nothing saturated, nothing
+ * four-on-the-floor, nothing tense.
  *
- *   Progression   I – vi – IV – V   (Ab – Fm – Db – Eb), cycling.
+ *   Progression   I – V – vi – IV   (F – C – Dm – Bb), cycling. The optimist's
+ *   loop, one chord per two bars at 92 BPM, voiced with common tones so the
+ *   changes glide.
  *
  * The shape comes from ../edit.json at runtime — nothing about the timing is
- * hardcoded. Scene boundaries are the cumulative sum of durationInFrames/fps,
- * and every layer change hangs off a boundary index:
+ * hardcoded. Scene boundaries are the cumulative sum of durationInFrames/fps
+ * (grouped by `beat`), and every layer change hangs off a boundary index:
  *
- *   scene 0  (first, "braid" cold open) — pads only, blooming up from true
- *            silence: the first chord has a ~3 s attack and the pad bus rises
- *            from 0 over the first ~60% of the scene. No pulse, no bass.
- *   scene 1  — bass + pulse enter. From here every boundary gets a "lift":
- *            a fresh chord starting exactly on the cut, a brief ~1.16x swell,
+ *   scene 0  (the hook card) — felt piano alone, blooming from silence: the
+ *            first chord is rolled slowly and the key bus rises over the first
+ *            ~60% of the scene. No pulse, no bass, no marimba.
+ *   scene 1  — bass + felt kick enter. From here every boundary gets a "lift":
+ *            a fresh chord rolled exactly on the cut, a brief ~1.14x swell,
  *            and a single quiet bell on the new chord's top note.
- *   scene 2  — octave pad layer added (brighter, an octave above the top
- *            voice) and the muffled tick joins the kick.
- *   scene 3  — no new layer; the lift is harmonic (the 9th colour tone is in,
- *            the voicing changes) so the busiest scene stays still underneath.
- *   n-2      — thin out: octave layer and tick drop away, pulse eases back.
- *   n-1      (last, "braid" close) — pulse gone, harmony resolves V → I and
- *            the master fades to true digital silence across the final 4 s.
+ *   scene 2  — the marimba pattern enters, and the soft tick joins the kick.
+ *   scene 3  — no new layer; the lift is harmonic (the 9th colour tone joins)
+ *            so the busiest stretch stays still underneath.
+ *   n-2      — thin out: marimba and tick drop away, pulse eases back.
+ *   n-1      (the close) — pulse gone, harmony resolves V → I and the master
+ *            fades to true digital silence across the final 4 s.
  *
  * Within a scene, chords fall on that scene's own 2-bar grid (so a chord always
- * lands on the cut); the pulse runs on one global beat grid so it never stutters.
- * Change a durationInFrames in edit.json, re-run, and all of it re-aligns.
+ * lands on the cut); pulse and marimba run on one global beat grid so they never
+ * stutter. Change a durationInFrames in edit.json, re-run, and all of it
+ * re-aligns.
  *
  * ── Usage ──────────────────────────────────────────────────────────────────
  *   node music/compose.mjs              render + two-pass loudnorm to -16 LUFS
@@ -49,19 +55,19 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ───────────────────────────── SIX KNOBS ──────────────────────────────────
-const BPM            = 84;     // tempo. Unhurried. 78–90 all work.
-const KEY_MIDI       = 56;     // tonic = Ab3 (MIDI 56). 55 = G3, 57 = A3, …
+const BPM            = 92;     // tempo. A walking lilt. 88–98 all work.
+const KEY_MIDI       = 53;     // tonic = F3 (MIDI 53). 50 = D3, 55 = G3, …
 const MASTER_GAIN    = 0.42;   // pre-normalisation level. Keeps raw peak ~-6 dBFS.
-const PAD_BRIGHTNESS = 1500;   // pad lowpass cutoff in Hz. Lower = darker/foggier.
-const PULSE_LEVEL    = 0.16;   // kick + tick, relative to the pads. Felt, not counted.
+const KEY_BRIGHTNESS = 2100;   // felt-piano lowpass cutoff in Hz. Lower = foggier.
+const PULSE_LEVEL    = 0.13;   // kick + tick, relative to the keys. Felt, not counted.
 const HISS_LEVEL     = 0.0035; // tape floor, ≈ -49 dBFS. 0 disables it.
 // ──────────────────────────────────────────────────────────────────────────
 
 // Secondary trims — rarely need touching.
-const BELL_LEVEL   = 0.085;  // sparse high bell on chord changes at scene cuts
-const BASS_LEVEL   = 0.30;   // sub-pad root, sine-dominant
-const OCT_LEVEL    = 0.14;   // the octave-up pad layer (scene 2 onward)
-const LIFT         = 1.16;   // size of the swell at each scene boundary
+const BELL_LEVEL   = 0.075;  // sparse high bell on chord changes at scene cuts
+const BASS_LEVEL   = 0.28;   // low root, sine-dominant
+const MAR_LEVEL    = 0.20;   // the marimba pattern (scene 2 onward)
+const LIFT         = 1.14;   // size of the swell at each scene boundary
 const TAIL_FADE    = 4.0;    // seconds of fade at the end, to true silence
 const SR           = 44100;
 
@@ -130,19 +136,20 @@ const BEAT = 60 / BPM;
 const BAR = 4 * BEAT;
 const CHORD_SPAN = 2 * BAR;              // one chord per two bars
 
-// Voicings are offsets in semitones from KEY_MIDI, kept inside Ab3..Bb4 so the
-// bed never gets shrill. Ab3 is a common tone across I, vi and IV, so the
-// changes glide instead of stepping.
+// Voicings are offsets in semitones from KEY_MIDI (F3), kept inside C3..E4 so
+// the keys stay warm. F3 and the third/fifth are common tones across the loop,
+// so the changes glide instead of stepping. Order is I–V–vi–IV: the optimist's
+// progression, resolved home at the end (the last scene plays V → I).
 const PROG = [
-  { name: 'I  Ab',  tones: [0, 4, 7, 12],   colour: 14,  bass: -12 }, // Ab C Eb Ab (+Bb9)
-  { name: 'vi Fm',  tones: [-3, 0, 4, 9],   colour: 12,  bass: -15 }, // F Ab C F
-  { name: 'IV Db',  tones: [-7, 0, 5, 9],   colour: 12,  bass: -7  }, // Db Ab Db F
-  { name: 'V  Eb',  tones: [-5, 2, 7, 11],  colour: 14,  bass: -5  }, // Eb Bb Eb G
+  { name: 'I  F',   tones: [0, 4, 7, 12],   colour: 14,  bass: -12 }, // F A C F  (+G9)
+  { name: 'V  C',   tones: [-5, 2, 7, 11],  colour: 14,  bass: -17 }, // C G C E  (+G)
+  { name: 'vi Dm',  tones: [-3, 0, 4, 9],   colour: 11,  bass: -15 }, // D F A D  (+E9)
+  { name: 'IV Bb',  tones: [-7, 0, 5, 9],   colour: 14,  bass: -19 }, // Bb F Bb D (+G6)
 ];
 
 // ── 3. buses ──────────────────────────────────────────────────────────────
 const bus = (n) => ({ L: new Float32Array(n), R: new Float32Array(n) });
-const pad = bus(N), oct = bus(N), bass = bus(N), pulse = bus(N), bell = bus(N), hiss = bus(N);
+const pad = bus(N), mar = bus(N), bass = bus(N), pulse = bus(N), bell = bus(N), hiss = bus(N);
 
 /**
  * Breakpoint envelope, smoothstep-interpolated, sampled to a full-length array.
@@ -186,7 +193,8 @@ const pulseEnv = makeEnv(nScenes > 2
      [b(last) - 0.10, 0.55], [b(last) + 0.9, 0]]
   : [[0, 0]]);
 
-const octEnv = makeEnv(nScenes > 3
+// the marimba's gate: in at scene 2, out at the thin-out
+const marEnv = makeEnv(nScenes > 3
   ? [[0, 0], [b(2) - 0.20, 0], [b(2) + 2.4, 1], [b(thin) - 0.10, 1], [b(thin) + 1.6, 0]]
   : [[0, 0]]);
 
@@ -200,7 +208,7 @@ const hissEnv = makeEnv([[0, 0], [4.0, 1]]);
  */
 function renderTone(dst, {
   t0, freq, hold, release, gain,
-  attack = 1.0, harmonics = [1, 0.42, 0.20, 0.10, 0.06], cutoff = PAD_BRIGHTNESS,
+  attack = 1.0, harmonics = [1, 0.42, 0.20, 0.10, 0.06], cutoff = KEY_BRIGHTNESS,
   pan = 0, detuneCents = 4, haas = 0.013, haasSide = 1,
   drift = 0.0012, driftHz = 0.13, tine = 0, sustainDrop = 0.22,
 }) {
@@ -296,6 +304,33 @@ function renderTick(dst, t0, gain) {
   }
 }
 
+/**
+ * Marimba pluck: the fundamental with the bar's characteristic ~4x partial and
+ * a whisper of the ~9.2x, each with its own fast decay. Rounded 2.5 ms attack
+ * so it reads as mallet-on-rosewood rather than as a click.
+ */
+function renderPluck(dst, t0, freq, gain, pan = 0) {
+  const start = Math.round(t0 * SR);
+  if (start >= N || gain <= 0) return;
+  const len = Math.min(N - start, Math.ceil(0.9 * SR));
+  const parts = [[1, 1.0, 0.42], [3.97, 0.38, 0.085], [9.2, 0.10, 0.045]];
+  const ph = [0, 0, 0];
+  const gl = Math.cos((pan + 1) * Math.PI / 4) * gain;
+  const gr = Math.sin((pan + 1) * Math.PI / 4) * gain;
+  const dl = Math.round(0.008 * SR);
+  for (let i = 0; i < len; i++) {
+    const t = i / SR;
+    let s = 0;
+    for (let p = 0; p < parts.length; p++) {
+      ph[p] += TAU * freq * parts[p][0] / SR;
+      s += parts[p][1] * Math.sin(ph[p]) * Math.exp(-t / parts[p][2]);
+    }
+    s *= smoothstep(Math.min(1, t / 0.0025));
+    dst.L[start + i] += s * gl;
+    if (start + i + dl < N) dst.R[start + i + dl] += s * gr;
+  }
+}
+
 /** Sparse bell: three slightly inharmonic partials, fast-but-smooth attack. */
 function renderBell(dst, t0, freq, gain, pan = 0) {
   const start = Math.round(t0 * SR);
@@ -321,21 +356,52 @@ function renderBell(dst, t0, freq, gain, pan = 0) {
 
 // ── 5. arrange ────────────────────────────────────────────────────────────
 const log = [];
+const chordSpans = [];                   // every chord actually sounded, for the marimba
 let chordIdx = 0;
+
+/**
+ * One felt-piano chord: the notes ROLLED (a few tens of ms between onsets, the
+ * pianist's spread), soft short attacks, a slow linear decay across the span
+ * and a quiet re-voice a bar later so a five-second chord does not die on the
+ * screen. The cold open's first chord rolls much slower — the bloom from
+ * silence the film opens on.
+ */
+function feltChord(t, dur, tones, { bloom = false, bright = 1, vel = 1 } = {}) {
+  const strikes = dur > BAR + 0.6 ? [[0, 1.0], [BAR, 0.55]] : [[0, 1.0]];
+  for (const [off, sv] of strikes) {
+    tones.forEach((semi, k) => {
+      const roll = bloom ? k * 0.30 : k * 0.032 + rand() * 0.012;
+      renderTone(pad, {
+        t0: t + off + roll,
+        freq: mtof(KEY_MIDI + semi),
+        hold: Math.max(0.6, dur - off - roll),
+        release: 2.4,
+        gain: vel * sv * MASTER_GAIN * (0.30 - k * 0.026),
+        attack: bloom ? 0.9 : 0.020 + k * 0.004,
+        harmonics: [1, 0.52, 0.26, 0.13, 0.06, 0.03],
+        cutoff: KEY_BRIGHTNESS * bright * (1 - k * 0.05),
+        pan: [-0.42, 0.30, -0.2, 0.46, 0.06][k % 5], haasSide: k % 2 ? -1 : 1,
+        detuneCents: 2.5 + (k % 3), tine: k === tones.length - 1 ? 0.10 : 0.03,
+        sustainDrop: 0.55,
+      });
+    });
+  }
+}
 
 for (let i = 0; i < nScenes; i++) {
   const t0 = starts[i], t1 = starts[i] + durs[i];
   const isFirst = i === 0, isLast = i === last;
   const useColour = i >= 2 && !isLast;             // the 9th arrives at scene 3
-  const brightness = PAD_BRIGHTNESS * (i >= 3 && !isLast ? 1.18 : 1.0);
+  const bright = i >= 3 && !isLast ? 1.14 : 1.0;
 
   // The chord plan for this scene. Every scene STARTS on a chord, so every cut
-  // gets a fresh voicing; the last scene resolves V → I.
+  // gets a fresh voicing; the last scene resolves V → I. (PROG is I–V–vi–IV,
+  // so V is PROG[1].)
   const plan = [];
   if (isLast) {
     if (durs[i] >= 5) {
       const split = t0 + durs[i] * 0.42;
-      plan.push({ t: t0, dur: split - t0, ch: PROG[3] });          // V
+      plan.push({ t: t0, dur: split - t0, ch: PROG[1] });          // V
       plan.push({ t: split, dur: t1 - split, ch: PROG[0], final: true }); // I
     } else {
       plan.push({ t: t0, dur: durs[i], ch: PROG[0], final: true });
@@ -349,33 +415,20 @@ for (let i = 0; i < nScenes; i++) {
   for (let c = 0; c < plan.length; c++) {
     const { t, dur, ch, final } = plan[c];
     const atCut = c === 0;
-    const attack = isFirst && c === 0 ? 3.0 : atCut ? 1.5 : 1.0;   // the first chord blooms
     const release = final ? 4.2 : 2.6;
     const hold = Math.max(0.6, dur * 0.98);
-    const vel = (atCut ? 1.0 : 0.92) * MASTER_GAIN;
+    const vel = atCut ? 1.0 : 0.92;
 
     const tones = useColour ? [...ch.tones, ch.colour] : ch.tones;
-    tones.forEach((semi, k) => {
-      renderTone(pad, {
-        t0: t, freq: mtof(KEY_MIDI + semi), hold, release, gain: vel * (0.30 - k * 0.028),
-        attack: attack * (1 + k * 0.12), cutoff: brightness * (1 - k * 0.06),
-        pan: [-0.45, 0.30, -0.22, 0.48, 0.08][k % 5], haasSide: k % 2 ? -1 : 1,
-        detuneCents: 3 + (k % 3), tine: k === 0 ? 0.05 : 0.02,
-      });
-    });
+    feltChord(t, dur, tones, { bloom: isFirst && c === 0, bright, vel });
+    chordSpans.push({ t, dur, ch });
 
     // Low root. Sine-dominant, hard lowpass, dead centre.
     renderTone(bass, {
       t0: t, freq: mtof(KEY_MIDI + ch.bass), hold, release: release * 1.1,
-      gain: vel * BASS_LEVEL, attack: attack * 0.85, harmonics: [1, 0.18, 0.05],
-      cutoff: 320, pan: 0, detuneCents: 1.5, haas: 0.005, sustainDrop: 0.18,
-    });
-
-    // Octave layer — brighter, slower, quieter. Gated by octEnv per scene.
-    renderTone(oct, {
-      t0: t, freq: mtof(KEY_MIDI + Math.max(...ch.tones) + 12), hold, release: release * 1.2,
-      gain: vel * OCT_LEVEL, attack: attack * 1.6, harmonics: [1, 0.22, 0.08],
-      cutoff: 2600, pan: -0.2, haasSide: -1, detuneCents: 6,
+      gain: vel * MASTER_GAIN * BASS_LEVEL, attack: isFirst && c === 0 ? 2.4 : 0.06,
+      harmonics: [1, 0.18, 0.05],
+      cutoff: 300, pan: 0, detuneCents: 1.5, haas: 0.005, sustainDrop: 0.22,
     });
 
     // One quiet bell per scene cut (never on the cold open), plus the final tonic.
@@ -386,6 +439,32 @@ for (let i = 0; i < nScenes; i++) {
   }
   log.push(`  scene ${i} "${scenes[i].id}" ${t0.toFixed(2)}–${t1.toFixed(2)}s  ` +
            `${plan.map((p) => p.ch.name.trim()).join(' → ')}`);
+}
+
+// ── 5b. the marimba pattern ───────────────────────────────────────────────
+// A gentle figure on the eighth-note grid of each sounded chord: six mallet
+// hits per two-bar span, chord tones an octave (and once two octaves) up,
+// syncopated just enough to lilt. marEnv gates where it is audible (scene 2 to
+// the thin-out), so the pattern can be rendered wherever a chord sounds and
+// the envelope decides when the listener meets it. Humanised ±8 ms and ±10%
+// velocity from the seeded PRNG, so every render is still bit-identical.
+const EIGHTH = BEAT / 2;
+const FIGURE = [
+  //[eighth, toneIndex, octave, velocity]
+  [0, 2, 12, 0.9], [3, 1, 12, 0.7], [6, 3, 12, 0.8],
+  [9, 2, 12, 0.62], [12, 0, 24, 0.85], [14, 1, 12, 0.58],
+];
+if (nScenes > 3) {
+  for (const { t, dur, ch } of chordSpans) {
+    for (const [e, ti, oct, v] of FIGURE) {
+      const at = t + e * EIGHTH + (rand() - 0.5) * 0.016;
+      if (at >= t + dur - 0.05 || at < 0) continue;
+      const semi = ch.tones[Math.min(ti, ch.tones.length - 1)] + oct;
+      renderPluck(mar, at, mtof(KEY_MIDI + semi),
+        MASTER_GAIN * MAR_LEVEL * v * (0.9 + rand() * 0.2),
+        e % 3 === 0 ? -0.3 : 0.35);
+    }
+  }
 }
 
 // Pulse on one continuous global beat grid; pulseEnv decides where it is audible.
@@ -429,9 +508,9 @@ const fadeStart = Math.max(0, TOTAL - TAIL_FADE);
 const fadeSpan = Math.max(0.001, TAIL_FADE - 0.5);
 for (let i = 0; i < N; i++) {
   const t = i / SR;
-  let l = pad.L[i] * padEnv[i] + bass.L[i] * bassEnv[i] + oct.L[i] * octEnv[i]
+  let l = pad.L[i] * padEnv[i] + bass.L[i] * bassEnv[i] + mar.L[i] * marEnv[i]
         + pulse.L[i] * pulseEnv[i] + bell.L[i] + hiss.L[i] * hissEnv[i];
-  let r = pad.R[i] * padEnv[i] + bass.R[i] * bassEnv[i] + oct.R[i] * octEnv[i]
+  let r = pad.R[i] * padEnv[i] + bass.R[i] * bassEnv[i] + mar.R[i] * marEnv[i]
         + pulse.R[i] * pulseEnv[i] + bell.R[i] + hiss.R[i] * hissEnv[i];
   // Gentle saturation: rounds off any stray peak instead of clipping it.
   l = Math.tanh(l * 1.05) * 0.95;

@@ -67,7 +67,16 @@ const SNIPPET = fs.readFileSync(path.join(HERE, 'fixtures/snippet.py'), 'utf8').
 // Fixture text either way — the shipped harness carries its own, about a
 // different article. These are this film's, and they obey the shipped system
 // prompt (frontends/plugin/bridge-system-prompt.md): short, on the quote, and
-// no bot ever @-tags the other one.
+// no bot ever summons the other one — rule 6 leaves the routing with the
+// humans, and server.mjs only summons on a message a person posted.
+//
+// What a bot MAY do, and Claude does here, is end its turn with the room
+// protocol's JSON footer {"status","summary","next"}. The shipped drawer lifts
+// that footer out of the prose and renders it as its own quiet chip — status
+// dot, summary, "over to @codex" (drawer.js envRow / ENV_NEXT) — which is the
+// one honest way the UI shows an agent handing the thread to the other agent.
+// The reader still ratifies the handoff by typing the @codex message; the
+// footer proposes, the person routes.
 //
 // The ARITHMETIC in Claude's answer is real and checkable, which is the whole
 // reason this passage was chosen. Artificial gravity is w^2 r; the post's wheel
@@ -87,6 +96,8 @@ const CLAUDE_REPLY = [
   '',
   'Lunar gravity on this wheel wants about 2 rpm — still well inside the comfort '
   + 'range you link to, so the design survives; it is the label that slips.',
+  '',
+  '{"status": "answered", "summary": "3 rpm is Mars, not the Moon", "next": "@codex"}',
 ].join('\n');
 
 const CODEX_REPLY = [
@@ -215,7 +226,7 @@ export function patchHarness(src, { plotDataUrl }) {
     'thinking dial has time to exist');
   out = replaceOnce(out,
     "    ev({ type: 'chat', kind: 'stream', model, stream_id: streamId, text: chunks[i++] });\n  }, 90);",
-    "    ev({ type: 'chat', kind: 'stream', model, stream_id: streamId, text: chunks[i++] });\n  }, 45); };\n  setTimeout(pump, 2400);",
+    "    ev({ type: 'chat', kind: 'stream', model, stream_id: streamId, text: chunks[i++] });\n  }, 85); };\n  setTimeout(pump, 2600);",
     'stream rate');
 
   // (6b) …and the same for the written summary. The shipped mock answers in

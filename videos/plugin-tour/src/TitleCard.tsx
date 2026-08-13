@@ -101,8 +101,11 @@ export const TitleCard: React.FC<{
         style={{
           marginTop: 20,
           fontFamily: brand.mono,
-          fontSize: 26,
-          letterSpacing: '0.13em',
+          // the url is the one line of the close a phone viewer must be able
+          // to read (the QR covers everyone else); 26px was 5.4px at phone
+          // width, 38px is ~8px
+          fontSize: 38,
+          letterSpacing: '0.1em',
           color: brand.accent,
         }}
       >

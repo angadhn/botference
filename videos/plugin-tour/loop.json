@@ -8,7 +8,9 @@
     "",
     "The four beats are the film's argument with the words taken out — a sentence",
     "being grabbed, an agent visibly thinking, a plot appearing where code was, and",
-    "the marks going green. Every one of them is a window onto footage/thread.mp4.",
+    "the marks going green. Every one of them is a window onto footage/thread.mp4,",
+    "which v5 re-shot at 1.5x UI scale (1280x720 CSS, deviceScaleFactor 1.5), so",
+    "the loop's few hundred pixels carry half again as much type as v4's did.",
     "",
     "`fade` is the dissolve INTO each beat. The loop's own join is NOT a dissolve",
     "back to the head — two different layouts blended together ghost badly, and the",
@@ -19,8 +21,9 @@
     "Origins are fractions of the DRAWN source (1376x774 — the 16:9 take, sized to",
     "fill this narrower frame's height), and src/Camera.tsx clamps them to",
     "0.9302/(2s) from the left and right edges and 1/(2s) from the top and bottom.",
-    "Every value below is inside its own scale's range; 'the drawer, right edge",
-    "flush' is 1 - 0.9302/(2s)."
+    "Every value below is inside its own scale's range. The v5 drawer spans source",
+    "columns 0.672..1.0, so the green beat needs 1.44+ flushed left before the",
+    "drawer is fully out of the window."
   ],
   "meta": {
     "width": 1280,
@@ -33,50 +36,50 @@
     {
       "id": "highlight",
       "clip": "footage/thread.mp4",
-      "inFrame": 150,
+      "inFrame": 205,
       "durationInFrames": 100,
-      "note": "the drag finishing and the comment pill floating up. Framed on the sentence, not on the drawer, because at this size the thing to see is a line of prose changing colour — and the sage-green mark already sitting above it. The beat stops just before the drawer arrives: at this crop the drawer would enter as a 40px strip down the right edge, which reads as a rendering fault.",
+      "note": "the drag finishing and the comment pill floating up. Framed on the sentence, not on the drawer, because at this size the thing to see is a line of prose changing colour — and the sage-green mark already sitting above it. The beat stops just before the drawer arrives.",
       "camera": [
-        { "at": 0, "scale": 1.44, "origin": [0.40, 0.35] },
-        { "at": 70, "scale": 1.44, "origin": [0.42, 0.36] },
-        { "at": 100, "scale": 1.32, "origin": [0.42, 0.40], "ease": "ease" }
+        { "at": 0, "scale": 1.44, "origin": [0.4, 0.35] },
+        { "at": 70, "scale": 1.44, "origin": [0.41, 0.34] },
+        { "at": 100, "scale": 1.34, "origin": [0.41, 0.38], "ease": "ease" }
       ]
     },
     {
       "id": "thinking",
       "clip": "footage/thread.mp4",
-      "inFrame": 380,
+      "inFrame": 552,
       "durationInFrames": 80,
       "fade": 10,
-      "note": "the working chip — the agent's ring spinning under the question — and the first words of the answer arriving on top of it. Hard on the drawer; nothing else in frame is doing anything.",
+      "note": "the working chip — claude's ring spinning under the question — and the first words of the answer arriving on top of it. Hard on the drawer; nothing else in frame is doing anything.",
       "camera": [
-        { "at": 0, "scale": 1.50, "origin": [0.69, 0.36] },
-        { "at": 80, "scale": 1.42, "origin": [0.673, 0.42], "ease": "ease" }
+        { "at": 0, "scale": 1.5, "origin": [0.69, 0.42] },
+        { "at": 80, "scale": 1.42, "origin": [0.673, 0.46], "ease": "ease" }
       ]
     },
     {
       "id": "plot",
       "clip": "footage/thread.mp4",
-      "inFrame": 995,
+      "inFrame": 1462,
       "durationInFrames": 100,
       "fade": 10,
       "note": "Run pressed, the status line, then the figure painting in under it. The camera pulls back exactly as the plot lands so the reveal is the content and the frame arriving together.",
       "camera": [
-        { "at": 0, "scale": 1.50, "origin": [0.69, 0.58] },
-        { "at": 44, "scale": 1.50, "origin": [0.69, 0.60] },
-        { "at": 100, "scale": 1.34, "origin": [0.653, 0.62], "ease": "ease" }
+        { "at": 0, "scale": 1.5, "origin": [0.69, 0.55] },
+        { "at": 44, "scale": 1.5, "origin": [0.69, 0.57] },
+        { "at": 100, "scale": 1.34, "origin": [0.653, 0.59], "ease": "ease" }
       ]
     },
     {
       "id": "green",
       "clip": "footage/thread.mp4",
-      "inFrame": 1786,
+      "inFrame": 2382,
       "durationInFrames": 68,
       "fade": 10,
-      "note": "both passages, now sage green, two sentences apart in the same paragraph. The calmest beat, which is what lets the loop dip out of it without a jolt.",
+      "note": "both passages, now sage green, two sentences apart in the same paragraph. The calmest beat, which is what lets the loop dip out of it without a jolt. Flushed left at 1.46+ so the wider v5 drawer is fully out of the window rather than a strip down the edge.",
       "camera": [
-        { "at": 0, "scale": 1.34, "origin": [0.40, 0.52] },
-        { "at": 68, "scale": 1.40, "origin": [0.39, 0.54], "ease": "ease" }
+        { "at": 0, "scale": 1.46, "origin": [0.33, 0.52] },
+        { "at": 68, "scale": 1.52, "origin": [0.32, 0.54], "ease": "ease" }
       ]
     }
   ]

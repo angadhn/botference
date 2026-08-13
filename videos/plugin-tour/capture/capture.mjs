@@ -6,11 +6,21 @@
 // exported note. Every click is a real click on a real control; every state on
 // screen is a state the drawer put there.
 //
-// The whole story is one take on purpose. The v3 cut is about a single thread
+// The whole story is one take on purpose. The film is about a single thread
 // living its whole life — highlighted, asked, answered, handed to the other
 // agent, run, plotted, filed, summarised, greened — and a take per beat would
 // let a viewer suspect the state was reset between them. The cuts are made
 // later, in edit.json, out of this one continuous recording.
+//
+// v5 shoots for PHONES. The note back on the v4 cut was that on a phone the
+// text could not be read, so the take is performed at 1280×720 CSS under
+// deviceScaleFactor 1.5: the frame is still 1920×1080, but every pixel of UI
+// in it is 1.5× the size it was. The cursor is driven in CSS px; the marks are
+// scaled up to frame px on the way into shots.json (rig.mjs coordScale), so
+// the edit's coordinate system does not change. And the take is performed at
+// the FILM's pace this time — typing at reading speed, real holds on every
+// payoff — because v5 is a ~95s film and its calm has to be lived in front of
+// the camera, not simulated by cutting less.
 //
 //   node capture/capture.mjs             the thread take (+ note, + braid)
 //   node capture/capture.mjs thread      just the long take
@@ -46,10 +56,16 @@ const HIDE_HARNESS_CHROME = `
   .bar { display: none !important; }
 `;
 
-// 2.6x the v1 rate. The v1 cut spent four seconds watching a sentence be typed;
-// at 35 seconds there is no such money. Still per-character, still jittered,
-// still the drawer's own input events — only faster.
-const TYPE = { cps: 58, jitter: 0.4 };
+// The shoot's geometry. CSS viewport × deviceScaleFactor = the 1920×1080 frame;
+// DSF is what buys the phone legibility (see the header note).
+const VIEW = { w: 1280, h: 720 };
+const DSF = 1.5;
+
+// ~1.4× the v1 rate — v4's 58cps was the thing viewers called "too fast".
+// A sixty-character question at 30cps is about 2.5 seconds of typing, which is
+// the speed a viewer reads it at. Still per-character, still jittered, still
+// the drawer's own input events.
+const TYPE = { cps: 30, jitter: 0.4 };
 
 async function open(ctx, base, query) {
   const page = await ctx.newPage();
@@ -65,7 +81,7 @@ const shots = {};
 
 async function take(ctx, base, id, query, body) {
   const page = await open(ctx, base, query);
-  const rec = new Recorder(page, path.join(TMP, id));
+  const rec = new Recorder(page, path.join(TMP, id), { coordScale: DSF });
   await rec.start();
   const notes = await body(page, rec) || {};
   await rec.stop();
@@ -113,14 +129,14 @@ async function thread(page, rec) {
   // says WHERE this is happening. A drawer that opens on a paragraph nobody
   // watched arrive could be a screenshot of anything.
   await page.evaluate(() => window.scrollTo(0, 0));
-  await moveTo(page, 1080, 700, 0);
-  await sleep(1400);
+  await moveTo(page, 720, 470, 0);
+  await sleep(1900);
   rec.mark('entry');
 
   await scrollPageOver(page, 'content h2#the-difficulty-of-building-large-stations',
-    { ms: 1550, block: 0.10 });
+    { ms: 2200, block: 0.10 });
   rec.mark('scrolled');
-  await sleep(650);                                        // the reader arrives
+  await sleep(1100);                                       // the reader arrives
 
   // ---- 1. the drag --------------------------------------------------------
   // where the sentence sits, so the sprite can be dragged across it for real
@@ -138,13 +154,15 @@ async function thread(page, rec) {
     return { sx: s.left, sy: s.top + s.height * 0.72, ex: e.right, ey: e.top + e.height * 0.72 };
   }, { a: PHRASE_START, b: PHRASE_END });
 
-  await moveTo(page, span.sx - 6, span.sy, 720);
-  await sleep(260);
+  await moveTo(page, span.sx - 6, span.sy, 900);
+  await sleep(380);
   rec.mark('drag-start');
 
-  // the drag: sprite and Range advance together
+  // the drag: sprite and Range advance together. Slower than v4 — the whole
+  // proposition is that a sentence is a thing you can grab, so the grabbing
+  // gets long enough to watch.
   await page.evaluate(() => window.__cam.sel(true));
-  const STEPS = 22;
+  const STEPS = 26;
   for (let i = 1; i <= STEPS; i++) {
     const k = i / STEPS;
     await page.evaluate(({ k }) => {
@@ -157,10 +175,10 @@ async function thread(page, rec) {
       const box = r.getBoundingClientRect();
       window.__cam.to(box.right, box.bottom - 5, 0);
     }, { k });
-    await sleep(42);
+    await sleep(60);
   }
   await page.evaluate(() => window.__cam.sel(false));
-  await sleep(240);
+  await sleep(340);
   await page.evaluate(() => document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })));
   // the mark carries the box the sentence occupies, so the label that names
   // this action can be placed against it instead of at the top of the screen
@@ -170,29 +188,30 @@ async function thread(page, rec) {
   });
   rec.mark('selection-made', selBox);
   await waitShadow(page, '.selbtn');
-  await sleep(420);
+  await sleep(700);
 
   // ---- 2. the floating pill ----------------------------------------------
   const pill = await shadowBox(page, '.selbtn');
-  await clickAt(page, pill.x, pill.y, { travel: 380, hover: 340 });
+  await clickAt(page, pill.x, pill.y, { travel: 420, hover: 420 });
   await page.evaluate(() => window.__bfp.drawer.shadow.querySelector('.selbtn').click());
   rec.mark('pill-clicked');
   await waitShadow(page, '.card.pending textarea');
-  await sleep(1100);                                       // drawer slides in
+  await sleep(1300);                                       // drawer slides in
   await raiseCursor(page);
   rec.mark('drawer-open');
+  await sleep(500);                       // a beat on the arrived drawer
 
   // ---- 3. the question ----------------------------------------------------
   const composer = await shadowBox(page, '.card.pending textarea');
-  await clickAt(page, composer.x, composer.y, { travel: 460, hover: 240 });
-  await sleep(160);
+  await clickAt(page, composer.x, composer.y, { travel: 520, hover: 300 });
+  await sleep(220);
   rec.mark('typing');
   // The question is the one this passage actually raises. The post states a
   // wheel, a diameter and two spin rates; artificial gravity is w^2 r; the
   // arithmetic is one line and the answer turns out to be interesting.
   await typeShadow(page, '.card.pending textarea',
     '@claude 3 rpm on a 75 m wheel — is that really lunar gravity?', TYPE);
-  await sleep(360);
+  await sleep(600);
 
   // The thread ids already on the page. Without this the wait below matches a
   // reply that was ALREADY in another thread and the take runs on before the
@@ -202,7 +221,7 @@ async function thread(page, rec) {
       .map(c => c.getAttribute('data-thread')));
 
   const send = await shadowBox(page, '.card.pending [data-act="send"]');
-  await clickAt(page, send.x, send.y, { travel: 420, hover: 380 });
+  await clickAt(page, send.x, send.y, { travel: 460, hover: 420 });
   await page.evaluate(() => window.__bfp.drawer.shadow.querySelector('.card.pending [data-act="send"]').click());
   rec.mark('sent');
 
@@ -220,41 +239,54 @@ async function thread(page, rec) {
   // ordering is what puts a settled shot on the dial rather than a glimpse.
   await dialUp(page);
   rec.mark('claude-thinking');
-  await moveTo(page, 1160, 940, 420);
+  await moveTo(page, 773, 627, 420);
   await waitShadow(page, `${card} .reply.bot.claude`, { timeout: 25000 });
   rec.mark('claude-streaming');
-  await sleep(2200);
+  await sleep(2600);
   await scrollShadowTo(page, `${card} .reply.bot.claude`, { block: 'end' });
   rec.mark('claude-landed');
-  await sleep(1500);
+  await sleep(3400);                        // long enough to read the bullets
 
-  // ---- 5. the reader hands it to the other agent -------------------------
-  // The bots never do this to each other: bridge-system-prompt.md rule 6 forbids
-  // a bot @-tagging its counterpart, and the companion only ever summons on a
-  // message a PERSON posted (server.mjs `summon`). So the router is the reader,
-  // which is also the only version of this that is true.
+  // ---- 4b. Claude's own handoff -------------------------------------------
+  // The reply ends with the room-protocol footer {"status","summary","next"}
+  // naming @codex, and the drawer lifts it out of the prose and draws it as
+  // its own chip — "answered · 3 rpm is Mars, not the Moon · over to @codex"
+  // (drawer.js envRow / ENV_NEXT). This is the one way the shipped UI shows a
+  // bot handing a thread to the other bot, and the camera lands on it.
+  await waitShadow(page, `${card} .envrow .env-next`, { timeout: 15000 });
+  await scrollShadowTo(page, `${card} .envrow`, { block: 'center' });
+  const chip = await shadowBox(page, `${card} .envrow .env`);
+  rec.mark('handoff-chip', chip);
+  await sleep(2400);
+
+  // ---- 5. the reader ratifies the handoff ---------------------------------
+  // The summon itself stays with the reader: bridge-system-prompt.md rule 6
+  // forbids a bot @-tagging its counterpart TO SUMMON it, and the companion
+  // only ever summons on a message a PERSON posted (server.mjs `summon`). So
+  // Claude proposed the route in its footer, and the reader is the one who
+  // routes — which is also the only version of this that is true.
   const reply = `${card} .composer textarea`;
   await scrollShadowTo(page, reply, { block: 'center' });
   const rbox = await shadowBox(page, reply);
-  await clickAt(page, rbox.x, rbox.y, { travel: 520, hover: 240 });
-  await sleep(140);
+  await clickAt(page, rbox.x, rbox.y, { travel: 560, hover: 300 });
+  await sleep(200);
   rec.mark('typing-2');
   await typeShadow(page, reply,
     '@codex plot gravity vs radius at 2, 3 and 5 rpm?', TYPE);
-  await sleep(320);
+  await sleep(500);
   const send2 = await shadowBox(page, `${card} [data-act="send"]`);
-  await clickAt(page, send2.x, send2.y, { travel: 300, hover: 340 });
+  await clickAt(page, send2.x, send2.y, { travel: 340, hover: 400 });
   await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
     `${card} [data-act="send"]`);
   rec.mark('sent-2');
 
   await dialUp(page);
   rec.mark('codex-thinking');
-  await moveTo(page, 1160, 950, 420);
+  await moveTo(page, 773, 633, 420);
   await waitShadow(page, `${card} .reply.bot.codex`, { timeout: 25000 });
   rec.mark('codex-streaming');
   await waitShadow(page, `${card} [data-act="run"]`, { timeout: 25000 });
-  await sleep(700);
+  await sleep(1100);
 
   // Four drawn units (person, bot, person, bot) is one past the drawer's fold
   // threshold, so codex's answer landing folds claude's away behind "Show 1
@@ -264,21 +296,21 @@ async function thread(page, rec) {
   // manual fold outranks the rule in both directions, drawer.js FOLD_OPEN).
   const more = await shadowBox(page, `${card} [data-act="expand"]`);
   if (more) {
-    await clickAt(page, more.x, more.y, { travel: 420, hover: 320 });
+    await clickAt(page, more.x, more.y, { travel: 420, hover: 360 });
     await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
       `${card} [data-act="expand"]`);
     rec.mark('unfolded');
-    await sleep(600);
+    await sleep(800);
   }
 
   await scrollShadowTo(page, `${card} [data-act="run"]`, { block: 'center' });
-  await sleep(500);
+  await sleep(900);
   rec.mark('codex-landed');
 
   // ---- 6. run it ----------------------------------------------------------
   const run = await shadowBox(page, `${card} [data-act="run"]`);
   rec.mark('run-approach', run);
-  await clickAt(page, run.x, run.y, { travel: 700, hover: 620 });
+  await clickAt(page, run.x, run.y, { travel: 800, hover: 700 });
   await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
     `${card} [data-act="run"]`);
   rec.mark('run-clicked', run);
@@ -286,15 +318,15 @@ async function thread(page, rec) {
   // The status line prints directly under the button the cursor is sitting on,
   // so the hand has to come off it before the result arrives — otherwise the
   // sprite covers "✓ ran · 214 ms", which is half of what the shot is for.
-  await moveTo(page, run.x - 240, run.y + 260, 380);
+  await moveTo(page, run.x - 160, run.y + 173, 380);
   await waitShadow(page, '.runstat');
   rec.mark('runstat');
-  await sleep(700);
+  await sleep(1100);
   await waitShadow(page, '.runfigs img');
   rec.mark('figure-in');
-  await sleep(1100);
+  await sleep(1500);
   await scrollShadowTo(page, '.runstat', { block: 'center' });
-  await sleep(900);
+  await sleep(1100);
 
   // full size, because a thumbnail in a 460px drawer is not a plot anybody reads
   const thumbSel = '.runfigs img';
@@ -306,38 +338,38 @@ async function thread(page, rec) {
     // sprite ends up UNDER it and reads as a dimmed smudge
     await raiseCursor(page);
     rec.mark('lightbox');
-    await sleep(420);
-    await moveTo(page, 1620, 960, 640);
-    await sleep(2600);
+    await sleep(500);
+    await moveTo(page, 1080, 640, 640);
+    await sleep(3600);
     await page.keyboard.press('Escape');
     rec.mark('lightbox-closed');
-    await sleep(1200);
+    await sleep(1400);
   }
 
   // ---- 7. file it ---------------------------------------------------------
   await scrollShadowTo(page, `${card} [data-act="resolve"]`, { block: 'center' });
-  await sleep(300);
+  await sleep(400);
   const tick = await shadowBox(page, `${card} [data-act="resolve"]`);
-  await clickAt(page, tick.x, tick.y, { travel: 640, hover: 560 });
+  await clickAt(page, tick.x, tick.y, { travel: 700, hover: 620 });
   await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
     `${card} [data-act="resolve"]`);
   rec.mark('resolved', tick);
-  await moveTo(page, 1180, 960, 420);
+  await moveTo(page, 787, 640, 420);
   await waitShadow(page, '.resolved-sec');
   const filedCount = await page.evaluate(() =>
     window.__bfp.drawer.shadow.querySelector('.resolved-head .rcount').textContent.trim());
   rec.mark('filed');
-  await sleep(1100);
+  await sleep(1500);
 
   // ---- 8. the archive, and the written summary ---------------------------
   await scrollShadowTo(page, '.resolved-sec', { block: 'end' });
-  await sleep(320);
-  await clickShadow(page, '[data-act="resolved-toggle"]', { travel: 520, hover: 460 });
+  await sleep(420);
+  await clickShadow(page, '[data-act="resolved-toggle"]', { travel: 560, hover: 500 });
   await waitShadow(page, '.resolved-list');
   const filedCard = `.resolved-list .card.resolved[data-thread="${focus}"]`;
   await scrollShadowTo(page, filedCard, { block: 'center' });
   rec.mark('archive-open');
-  await sleep(900);
+  await sleep(1200);
 
   // ask the agents for the written paragraph — it lands over the placeholder.
   // (The shipped companion queues this by itself on every resolve, server.mjs
@@ -345,20 +377,20 @@ async function thread(page, rec) {
   // the button the drawer offers for exactly that.)
   const sum = await shadowBox(page, `${filedCard} [data-act="summarize"]`);
   if (sum) {
-    await clickAt(page, sum.x, sum.y, { travel: 460, hover: 420 });
+    await clickAt(page, sum.x, sum.y, { travel: 500, hover: 460 });
     await page.evaluate(sel => window.__bfp.drawer.shadow.querySelector(sel).click(),
       `${filedCard} [data-act="summarize"]`);
     rec.mark('summarize');
     // The hand leaves BEFORE the paragraph arrives, not after. The digest lands
     // exactly where the button was, so a cursor that waits there is a cursor
     // sitting on top of the six lines this scene exists to let you read.
-    await moveTo(page, 1215, 985, 480);
+    await moveTo(page, 810, 657, 480);
     await page.waitForFunction(sel => {
       const p = window.__bfp.drawer.shadow.querySelector(sel + ' .digest');
       return !!(p && p.textContent.length > 240);
     }, filedCard, { timeout: 15000 });
     rec.mark('summary-landed');
-    await sleep(2400);
+    await sleep(3600);
   }
 
   // ---- 9. two green highlights in the page -------------------------------
@@ -367,8 +399,8 @@ async function thread(page, rec) {
   // and "green means settled" is shown rather than asserted.
   const green = await page.evaluate(() => document.querySelectorAll('mark.bfp-hl.bfp-done').length);
   await scrollPageTo(page, 'mark.bfp-hl.bfp-done', { block: 'center' });
-  await sleep(500);
-  await moveTo(page, 1108, 1008, 700);            // off the column, off the caption
+  await sleep(600);
+  await moveTo(page, 739, 672, 700);              // off the column, off the caption
   const greenBox = await page.evaluate(() => {
     const ms = [...document.querySelectorAll('mark.bfp-hl.bfp-done')];
     const rs = ms.map(m => m.getBoundingClientRect());
@@ -378,7 +410,7 @@ async function thread(page, rec) {
     };
   });
   rec.mark('green-visible', greenBox);
-  await sleep(2600);
+  await sleep(4200);
 
   return { newThread: focus, filedCount, greenMarks: green, quote: FOCUS_QUOTE };
 }
@@ -406,7 +438,7 @@ async function thread(page, rec) {
 // the half of this beat that is doing the work. So the motion is the note's own
 // scroll, 130px over two and a half seconds. Obsidian scrolls; the window does
 // not move.
-const DRIFT = 130;
+const DRIFT = 150;
 
 async function scrollElOver(page, from, to, ms) {
   const t0 = Date.now();
@@ -425,19 +457,19 @@ async function note(page, rec) {
     const s = document.getElementById('scroller');
     return s.scrollHeight - s.clientHeight;
   });
-  await sleep(800);
+  await sleep(1000);
   rec.mark('head');
-  await sleep(500);
-  await scrollElOver(page, 0, DRIFT, 2500);
-  await sleep(200);
+  await sleep(900);
+  await scrollElOver(page, 0, DRIFT, 4600);
+  await sleep(600);
   // the hard cut down the document: the foot is set up one drift above the end
   await page.evaluate(y => document.getElementById('scroller').scrollTo({ top: y, behavior: 'instant' }),
     travel - DRIFT);
-  await sleep(240);
+  await sleep(300);
   rec.mark('foot');
-  await sleep(500);
-  await scrollElOver(page, travel - DRIFT, travel, 2500);
-  await sleep(500);
+  await sleep(900);
+  await scrollElOver(page, travel - DRIFT, travel, 4600);
+  await sleep(900);
   return { travel, drift: DRIFT };
 }
 
@@ -454,8 +486,12 @@ async function main() {
     args: ['--force-color-profile=srgb', '--font-render-hinting=none',
            '--disable-lcd-text', '--hide-scrollbars=false'],
   });
+  // 1280×720 CSS × 1.5 device scale = 1920×1080 frames with 1.5× larger UI —
+  // the phone-legibility fix (see the header note). The braid is NOT shot in
+  // this context's geometry: it was filmed at 1:1 for v4 and is reused as-is,
+  // so `npm run capture -- thread note` is the usual v5 re-shoot.
   const ctx = await browser.newContext({
-    viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1,
+    viewport: { width: VIEW.w, height: VIEW.h }, deviceScaleFactor: DSF,
     reducedMotion: 'no-preference',
   });
 
@@ -500,7 +536,7 @@ async function main() {
     const np = await ctx.newPage();
     await np.goto(`file://${path.join(FOOTAGE, 'note.html')}`, { waitUntil: 'load' });
     await sleep(900);
-    const rec = new Recorder(np, path.join(TMP, 'note'));
+    const rec = new Recorder(np, path.join(TMP, 'note'), { coordScale: DSF });
     await rec.start();
     await note(np, rec);
     await rec.stop();

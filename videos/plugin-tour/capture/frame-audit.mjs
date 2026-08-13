@@ -24,7 +24,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 
 const MAX_SCALE = 1.55;                  // src/Camera.tsx
-const DRAWER_X = [1500, 1920];           // the drawer's own columns at scale 1.0
+// The drawer's own columns at scale 1.0. v5 shoots 1280 CSS × 1.5 dsf, so the
+// 420 CSS-px drawer is 630 frame px wide against the right edge: 1290..1920.
+const DRAWER_X = [1290, 1920];
 
 function window1d(size, view, s, o) {
   const half = Math.min(0.5, view / size / (2 * s));

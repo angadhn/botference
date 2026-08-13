@@ -37,7 +37,12 @@ export const HookCard: React.FC<{ title?: string; at?: number }> = ({ title, at 
       <div
         style={{
           opacity: p,
-          transform: `translateY(${(1 - p) * anim.EMPHASIS}px)`,
+          // (1-p) is the arrival; the -0.06/frame is a continuous drift of
+          // about 2px a second that never stops. v5 holds this card past four
+          // seconds, and a card whose last motion ends at 2.3s is a frame
+          // freezedetect calls dead air — which it did, at 1.17–4.03s, before
+          // the drift existed.
+          transform: `translateY(${(1 - p) * anim.EMPHASIS - frame * 0.06}px)`,
           fontFamily: brand.serif,
           fontSize: 76,
           lineHeight: 1.24,
@@ -58,13 +63,16 @@ export const HookCard: React.FC<{ title?: string; at?: number }> = ({ title, at 
       <div
         style={{
           marginTop: 54,
-          width: interpolate(frame, [at + 26, at + 68], [0, 96], {
+          // draws until 3.5s in — most of the v5 card's longer life — so the
+          // still part of the card stays under freezedetect's 2s line
+          width: interpolate(frame, [at + 26, at + 104], [0, 96], {
             easing: anim.EASE, extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
           }),
           height: 3,
           borderRadius: 2,
           background: brand.accent,
           opacity: p * 0.9,
+          transform: `translateY(${-frame * 0.06}px)`,
         }}
       />
     </AbsoluteFill>

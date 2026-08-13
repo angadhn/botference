@@ -24,13 +24,18 @@ export const sleep = ms => new Promise(r => setTimeout(r, ms));
 // Recorder
 // ---------------------------------------------------------------------------
 export class Recorder {
-  constructor(page, dir) {
+  constructor(page, dir, { coordScale = 1 } = {}) {
     this.page = page;
     this.dir = dir;
     this.frames = [];       // { file, t }  t = seconds, monotonic
     this.marks = [];        // { label, t } — the action timestamps for shots.json
     this.n = 0;
     this.t0 = null;
+    // v5 shoots at 1280×720 CSS under deviceScaleFactor 1.5, so the FRAME is
+    // still 1920×1080 but getBoundingClientRect speaks CSS px. Marks are the
+    // edit's coordinate system — they must land in frame px, so every measured
+    // position is multiplied through by this on the way into shots.json.
+    this.coordScale = coordScale;
   }
 
   async start() {
@@ -73,11 +78,12 @@ export class Recorder {
     const t = (Date.now() - this.wall0) / 1000;
     const m = { label, t: Number(t.toFixed(3)) };
     if (at) {
-      m.x = Math.round(at.x ?? (at.left + at.right) / 2);
-      m.y = Math.round(at.y ?? (at.top + at.bottom) / 2);
+      const k = this.coordScale;
+      m.x = Math.round((at.x ?? (at.left + at.right) / 2) * k);
+      m.y = Math.round((at.y ?? (at.top + at.bottom) / 2) * k);
       if (at.left != null) {
-        m.box = [Math.round(at.left), Math.round(at.top),
-                 Math.round(at.right), Math.round(at.bottom)];
+        m.box = [Math.round(at.left * k), Math.round(at.top * k),
+                 Math.round(at.right * k), Math.round(at.bottom * k)];
       }
     }
     this.marks.push(m);

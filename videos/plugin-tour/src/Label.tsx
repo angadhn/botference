@@ -37,19 +37,21 @@ import { markOf } from './shots';
 import type { Label as LabelT, Scene } from './edit';
 
 /** clear space between the type and the element it names, in frame px */
-const GAP = 30;
+const GAP = 34;
 /** the frame's own margin — nothing is drawn closer than this to an edge */
 const EDGE = 40;
 /** measured off the rendered type; only used to keep a label inside the frame */
-const APPROX_H = 46;
-const APPROX_CH = 15.2;
+const APPROX_H = 64;
+const APPROX_CH = 22.2;
 
 type Placed = { left?: number; right?: number; top: number; align: 'left' | 'right' };
 
 function place(
   cue: LabelT, scene: Scene, frame: number, W: number, H: number,
 ): Placed {
-  const corner: Placed = { right: EDGE, top: H - EDGE - APPROX_H, align: 'right' };
+  const corner: Placed = cue.corner === 'left'
+    ? { left: EDGE, top: H - EDGE - APPROX_H, align: 'left' }
+    : { right: EDGE, top: H - EDGE - APPROX_H, align: 'right' };
   if (cue.corner || !cue.anchorMark) return corner;
   const mark = markOf(scene, cue.anchorMark);
   if (!mark || !mark.box) return corner;
@@ -114,11 +116,15 @@ export const Labels: React.FC<{ scene: Scene; width: number; height: number }> =
                 display: 'inline-block',
                 background: 'rgba(9,12,17,.93)',
                 borderLeft: `3px solid ${brand.accent}`,
-                borderRadius: '3px 7px 7px 3px',
-                padding: '8px 15px 9px 13px',
+                borderRadius: '3px 8px 8px 3px',
+                padding: '10px 19px 12px 16px',
                 boxShadow: '0 8px 26px rgba(0,0,0,.35)',
                 fontFamily: brand.serif,
-                fontSize: 27,
+                // 40px, not v4's 27: a label has to survive the 1920px frame
+                // being watched at phone width (~400px), where 27px type is
+                // 5.6px of grey. 40px lands at ~8.3px on a phone — small but
+                // readable, and the phone is the reason v5 exists.
+                fontSize: 40,
                 lineHeight: 1.12,
                 letterSpacing: '-0.006em',
                 color: '#eef3f8',

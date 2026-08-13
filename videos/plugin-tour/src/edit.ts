@@ -16,8 +16,12 @@ export type Label = {
   anchorMark?: string;
   /** which side of that box the type sits on. Default 'below'. */
   place?: 'above' | 'below' | 'left' | 'right';
-  /** put it in the bottom-right corner and do not look for an anchor */
-  corner?: boolean;
+  /** put it in a bottom corner and do not look for an anchor. `true` is the
+   *  bottom-right; 'left' is the bottom-left, for scenes whose framing fills
+   *  the bottom-right with the very text the label must not cover (v5's
+   *  digest: the drawer runs to the frame's corner, and the corner label sat
+   *  on the summary's last two lines). */
+  corner?: boolean | 'left';
 };
 
 export type CameraKey = {
@@ -70,7 +74,7 @@ export const totalFrames = edit.scenes.reduce((n, s) => n + s.durationInFrames, 
  *   - one label at a time, ever
  *   - 45 seconds, hard
  */
-const CAP_SECONDS = 45;   // the storyboard's hard cap
+const CAP_SECONDS = 105;  // the storyboard's hard cap (v5: ~95s target)
 if (totalFrames > CAP_SECONDS * edit.meta.fps) {
   throw new Error(`the edit is ${(totalFrames / edit.meta.fps).toFixed(2)}s — the cap is ${CAP_SECONDS}s`);
 }
