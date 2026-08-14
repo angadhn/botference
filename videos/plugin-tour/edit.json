@@ -8,38 +8,57 @@
     "between entries, so a move is written as where the camera is at a moment, not as a verb.",
     "Origins are fractions of the frame.",
     "",
-    "v5, ~90.5s: the v4 story told at walking pace. The note back on the 40-second cut was that",
-    "viewers got disoriented and phones could not read the text, so v5 changes three things at",
-    "once. The TAKE is new (footage/thread.mp4, 84s): performed at 1280x720 CSS under a 1.5",
-    "deviceScaleFactor, so the same 1920x1080 frame carries UI half again as large, typed at",
-    "30cps instead of 58 and held on every payoff. The CAMERA breathes on a fixed rhythm —",
-    "establish wide, push hard onto the one thing happening, HOLD long enough to read it at",
-    "phone scale, release wide before the next thing — with a dedicated wide breather after",
-    "Claude's answer. And the film gains one scene v4 deferred: Claude's reply ends with the",
-    "room-protocol footer and the drawer renders it as its own chip, 'answered - 3 rpm is Mars,",
-    "not the Moon - over to @codex' (drawer.js envRow/ENV_NEXT) — the one honest way the",
-    "shipped UI shows an agent handing the thread to the other agent. The summon stays with the",
-    "reader (bridge-system-prompt.md rule 6; server.mjs summons only on a person's message), so",
-    "the next scene is the reader ratifying the handoff.",
+    "v6, ~94s: the v5 story with the three notes on that cut answered in the edit itself.",
+    "",
+    "ONE — the export is SHOWN. v5 cut from the green page to a note already sitting in",
+    "Obsidian; the note back was exact: nobody saw how it got there. The take now performs the",
+    "shipped affordance end to end — the drawer header's Obsidian crystal (drawer.js shell(),",
+    "data-act=\"export\"), the two-row chooser it opens (paintExportPick), the click on",
+    "'Everything', and the footbar printing the vault path the companion answered with — and",
+    "the film gains two scenes for it ('export', 'exported') before the Obsidian frame.",
+    "",
+    "TWO — the camera only moves when something moves it. The v5 cut zoomed gently through",
+    "almost every scene and the note back was 'nothing's happening, but we're zooming in and",
+    "out a fair bit'. So v6 has exactly SIX camera moves, each aimed at a mark from",
+    "footage/shots.json: the push onto the drag (highlight), the push into the composer as the",
+    "drawer arrives (compose), the release that reveals Claude's two bullets (claude), the",
+    "push-before-the-click and the release-on-the-figure (run), the push that rides the cursor",
+    "to the tick (resolve), the release when the written summary lands (digest), and the push",
+    "when the export chooser opens (export). Every other scene is a locked-off frame; the",
+    "motion in it is the performance — typing, streaming, scrolling, a resting hand's drift",
+    "(capture.mjs restHold). Four long reading holds (plot, digest pre-landing, green, close)",
+    "additionally carry a SUB-PERCEPTUAL pan of ~4px/s — the hook card's own anti-freeze",
+    "trick, an order of magnitude below the moves note 2 was about, because a resting hand",
+    "and a fading label both sit under freezedetect's per-frame threshold and a 4s hold of a",
+    "genuinely still frame reads as a stalled file. Where such a drift exists the rationale",
+    "names it; it is a drift, not a move, and no viewer can see it.",
+    "",
+    "THREE — the film has a voice. The cut is scored and cut on a beat grid: the v6 score runs",
+    "at 100 BPM, a quarter-note is exactly 18 frames at 30fps, and every durationInFrames below",
+    "is a multiple of 18, so every cut in the film lands ON a beat and the score's chords land",
+    "ON the cuts (music/compose.mjs re-derives both from these sums). The labels are one",
+    "narrator telling one small detective story — the post states a number, the number smells",
+    "wrong, Claude proves it, Codex brings the receipts, the case closes, the case file goes to",
+    "the vault — and two scenes carry a musical sting the score reads from this file ('tada'",
+    "on the plot, 'done' on the tick). Personality lives in cuts, copy and music; the camera",
+    "stays honest (note TWO).",
     "",
     "Cue times and label positions are not guessed — capture/capture.mjs marks the instant AND",
     "the frame-px box of every real action (footage/shots.json; boxes are measured in CSS px",
     "and scaled through the shoot's deviceScaleFactor by rig.mjs), every `at`/`inFrame` below",
-    "is one of those marks, and a label names the mark it is placed against. Change a duration",
-    "and music/compose.mjs re-derives its arrangement from the same sums.",
+    "is one of those marks, and a label names the mark it is placed against.",
     "",
     "ON ORIGINS. src/Camera.tsx refuses to show the void: at scale s the origin is clamped to",
-    "1/(2s) from each edge, so the reachable range at 1.32 is 0.379..0.621 and at 1.50 it is",
+    "1/(2s) from each edge, so the reachable range at 1.33 is 0.376..0.624 and at 1.50 it is",
     "0.333..0.667. Every origin below is inside its own scale's range, so the file says what",
-    "the camera does. 'the drawer, right edge flush' is 1 - 1/(2s); the v5 drawer is 630 frame",
-    "px wide (420 CSS x 1.5), columns 1290..1920, so the green scene must reach 1.50 before a",
+    "the camera does. 'the drawer, right edge flush' is 1 - 1/(2s); the drawer is 630 frame px",
+    "wide (420 CSS x 1.5), columns 1290..1920, so the green scene must reach 1.50 before a",
     "left-flush window excludes it entirely.",
     "",
     "ON LABELS. No label is at the top of the frame and none is centred over its action. A",
     "label either hangs off a MEASURED box (`anchorMark` + `place`, projected through this",
-    "scene's camera at the current frame) or sits in the bottom-right corner — and v5 sets",
-    "them at 40px, because a 27px label at phone width was 5.6px of grey. Beats that read on",
-    "their own get none."
+    "scene's camera at the current frame) or sits in a bottom corner — 40px, because a 27px",
+    "label at phone width was 5.6px of grey. Beats that read on their own get none."
   ],
   "meta": {
     "title": "botference Discuss — product tour",
@@ -54,11 +73,13 @@
       "beat": "hook",
       "kind": "card",
       "durationInFrames": 126,
-      "title": "Google-Docs comments on any blog — with agents in the thread.",
+      "title": "Google-Docs comments, on any blog.",
+      "kicker": "The commenters check your math.",
       "titleAt": 4,
+      "kickerAt": 30,
       "fadeIn": 8,
       "fadeOut": 6,
-      "rationale": "Say the thing, then show it. Four seconds now instead of v4's under-three: the sentence is the viewer's only map of the next ninety seconds, and the first note on the fast cut was that people never got oriented. Hard cut out — a dissolve would say the card and the product are one picture, and they are a claim and its evidence."
+      "rationale": "Say the thing, then say the thing with a grin. The first line is the map of the next ninety seconds; the kicker, arriving a beat later in the accent colour, is the film's whole plot in six words — because that is literally what happens: the post states a number and the commenters check it. Hard cut out — a dissolve would say the card and the product are one picture, and they are a claim and its evidence. 126 frames = exactly seven beats at the score's 100 BPM, so the cut out of the card lands on the downbeat that brings the bass in."
     },
     {
       "id": "page",
@@ -66,11 +87,10 @@
       "kind": "footage",
       "clip": "footage/thread.mp4",
       "inFrame": 25,
-      "durationInFrames": 165,
-      "rationale": "The post, held at its top long enough to actually read the title and the byline, then a reader's eased scroll down to the paragraph — 2.2s of scroll this time, not 1.5. Nothing in the product happens here and it is still the only part of the film that says WHERE this is happening: a real blog, its real typeface, the author's own logomark on the nav. The camera barely moves; the scroll is the motion.",
+      "durationInFrames": 162,
+      "rationale": "The post, held at its top long enough to read the title and the byline, then a reader's eased 2.2s scroll down to the paragraph. Nothing in the product happens here and it is still the only part of the film that says WHERE this is happening: a real blog, its real typeface, the author's own logomark on the nav. The camera is LOCKED at 1.0 — v5 drifted to 1.06 across this scene and that drift was the first unmotivated move the note called out. The scroll is the motion; it does not need help.",
       "camera": [
-        { "at": 0, "scale": 1, "origin": [0.5, 0.5] },
-        { "at": 165, "scale": 1.06, "origin": [0.48, 0.5], "ease": "ease" }
+        { "at": 0, "scale": 1, "origin": [0.5, 0.5] }
       ]
     },
     {
@@ -79,22 +99,21 @@
       "kind": "footage",
       "clip": "footage/thread.mp4",
       "inFrame": 190,
-      "durationInFrames": 145,
-      "rationale": "The drag, slower than v4 (26 steps at 60ms — the whole proposition is that a sentence in a blog is a thing you can grab, so the grabbing is watchable now), then the pill. The camera pushes in ON the drag and holds through the pill click. The sage-green mark two sentences above is in the same shot on purpose: a resolved thread already existed here before the film started.",
+      "durationInFrames": 144,
+      "rationale": "The drag (26 steps at 60ms — the proposition is that a sentence in a blog is a thing you can grab, so the grabbing is watchable), then the pill. MOVE 1 of 6: the camera pushes in ON the drag — mark drag-start is frame 202, scene-relative 12, and the push starts there and lands as the selection completes — then locks. v5 kept creeping to 1.30 after the push; v6 holds at 1.28 through the pill click, because the pill appearing is the event and a moving frame would smear it. The label is the narrator opening the case: the number in this sentence is, in fact, wrong, and the whole film is the receipts. The sage-green mark two sentences above is in the same shot on purpose: a resolved thread already existed here before the film started.",
       "labels": [
         {
-          "text": "Highlight, then comment.",
-          "at": 78,
-          "dur": 50,
+          "text": "This number smells wrong.",
+          "at": 76,
+          "dur": 52,
           "anchorMark": "selection-made",
           "place": "below"
         }
       ],
       "camera": [
         { "at": 0, "scale": 1.06, "origin": [0.48, 0.5] },
-        { "at": 16, "scale": 1.06, "origin": [0.46, 0.46] },
-        { "at": 64, "scale": 1.26, "origin": [0.42, 0.4], "ease": "emphasis" },
-        { "at": 145, "scale": 1.3, "origin": [0.41, 0.4] }
+        { "at": 12, "scale": 1.06, "origin": [0.48, 0.5] },
+        { "at": 64, "scale": 1.28, "origin": [0.42, 0.4], "ease": "emphasis" }
       ]
     },
     {
@@ -103,12 +122,12 @@
       "kind": "footage",
       "clip": "footage/thread.mp4",
       "inFrame": 336,
-      "durationInFrames": 214,
-      "rationale": "The drawer has arrived. First a beat WIDE — page and drawer in one frame, so a first-time viewer knows the new panel and the highlighted sentence are the same place — then the push onto the composer while the question is typed at reading speed (30cps; v4's 58 was the speed people called too fast). The question is the one this passage actually raises: the post states a diameter and two spin rates, and artificial gravity is one line of arithmetic away.",
+      "durationInFrames": 216,
+      "rationale": "The drawer has arrived. A beat WIDE — page and drawer in one frame, so a first-time viewer knows the new panel and the highlighted sentence are the same place — then MOVE 2 of 6: the push onto the composer, riding the cursor's travel to it (the click lands around relative frame 55, typing starts at 70), after which the camera locks and the typing is the show. The question is typed at 30cps, reading speed, and it is the one this passage actually raises: the post states a diameter and two spin rates, and artificial gravity is one line of arithmetic away.",
       "camera": [
         { "at": 0, "scale": 1.1, "origin": [0.545, 0.46] },
-        { "at": 46, "scale": 1.32, "origin": [0.621, 0.4], "ease": "ease" },
-        { "at": 214, "scale": 1.36, "origin": [0.632, 0.38], "ease": "ease" }
+        { "at": 20, "scale": 1.1, "origin": [0.545, 0.46] },
+        { "at": 56, "scale": 1.34, "origin": [0.6268, 0.4], "ease": "ease" }
       ]
     },
     {
@@ -116,12 +135,11 @@
       "beat": "thread",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 550,
-      "durationInFrames": 62,
-      "rationale": "The working chip: claude's ring spinning under the question, a stop button beside it. It is the smallest thing in the film and it gets its own tight shot, two seconds now, because it is the only frame that says a real agent is being waited on rather than a canned answer being revealed.",
+      "inFrame": 556,
+      "durationInFrames": 54,
+      "rationale": "The working chip: claude's ring spinning under the question, a stop button beside it. It is the smallest thing in the film and it gets its own locked-off tight shot — the spin is the only thing moving in the frame and that is the point: a real agent is being waited on, not a canned answer revealed. 54 frames (three beats), and the v5 creep from 1.48 to 1.52 across it is gone: a two-second shot of a spinner does not need a zoom to be about the spinner.",
       "camera": [
-        { "at": 0, "scale": 1.48, "origin": [0.662, 0.42] },
-        { "at": 62, "scale": 1.52, "origin": [0.671, 0.43] }
+        { "at": 0, "scale": 1.5, "origin": [0.6666, 0.42] }
       ]
     },
     {
@@ -129,13 +147,13 @@
       "beat": "thread",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 650,
-      "durationInFrames": 208,
-      "rationale": "The answer, streaming in and then held: w^2 r at r = 37.5 m, 3 rpm landing on 0.38 g, which is Mars and not the Moon. This is the frame that has to survive being paused AND being read on a phone, so the camera starts tight on the arriving words and eases back only far enough to hold the two bullets, then stays still for over three seconds of pure reading time.",
+      "inFrame": 648,
+      "durationInFrames": 180,
+      "rationale": "The answer, streaming in and then held: w^2 r at r = 37.5 m, 3 rpm landing on 0.38 g, which is Mars and not the Moon. The camera starts tight on the arriving words; MOVE 3 of 6 is the release AT the moment the reply finishes and scrolls to rest (mark claude-landed, relative 76), easing back just far enough to hold both bullets; then it locks for over two seconds of pure reading time. This is the frame that has to survive being paused AND being read on a phone. No label — 'which is Mars (0.38 g), not the Moon (0.17 g)' is already the best line in the film and it is Claude's.",
       "camera": [
-        { "at": 0, "scale": 1.4, "origin": [0.643, 0.4] },
-        { "at": 110, "scale": 1.32, "origin": [0.621, 0.44], "ease": "ease" },
-        { "at": 208, "scale": 1.3, "origin": [0.615, 0.46], "ease": "ease" }
+        { "at": 0, "scale": 1.4, "origin": [0.6428, 0.4] },
+        { "at": 76, "scale": 1.4, "origin": [0.6428, 0.4] },
+        { "at": 112, "scale": 1.3, "origin": [0.615, 0.46], "ease": "ease" }
       ]
     },
     {
@@ -143,21 +161,20 @@
       "beat": "handoff",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 858,
-      "durationInFrames": 75,
-      "rationale": "The new scene, and the reason v5 exists beyond pacing: Claude's own reply ends with the room-protocol footer and the drawer draws it as a chip — status dot, 'answered', the one-line summary, 'over to @codex'. This is the shipped UI showing one agent handing the thread to the other (drawer.js envRow/ENV_NEXT), filmed as-is. What it is NOT is a summon: rule 6 of the bridge system prompt forbids a bot @-tagging its counterpart to summon it and server.mjs only summons on a person's message, so the film gives the chip its own tight shot and then hands the routing back to the reader, which is the only version of this that is true.",
+      "inFrame": 846,
+      "durationInFrames": 90,
+      "rationale": "Claude's own reply ends with the room-protocol footer and the drawer draws it as a chip — status dot, 'answered', the one-line summary, 'over to @codex' (drawer.js envRow/ENV_NEXT). This is the shipped UI showing one agent handing the thread to the other, filmed as-is, in a locked-off tight frame; the chip scrolling into place is the scene's own motion. What it is NOT is a summon: rule 6 of the bridge system prompt forbids a bot @-tagging its counterpart to summon it and server.mjs only summons on a person's message, so the next scene hands the routing back to the reader — which is the only version of this that is true. The label says what the chip means in the narrator's voice; 'tags in' is exactly the wrestling move the footer is.",
       "labels": [
         {
-          "text": "Claude hands this to Codex.",
-          "at": 10,
+          "text": "Claude tags in Codex.",
+          "at": 16,
           "dur": 52,
           "anchorMark": "handoff-chip",
           "place": "left"
         }
       ],
       "camera": [
-        { "at": 0, "scale": 1.48, "origin": [0.662, 0.58] },
-        { "at": 75, "scale": 1.52, "origin": [0.671, 0.59] }
+        { "at": 0, "scale": 1.5, "origin": [0.6666, 0.58] }
       ]
     },
     {
@@ -165,12 +182,11 @@
       "beat": "handoff",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 933,
-      "durationInFrames": 60,
-      "rationale": "The zoom-out the v4 cut never took. Two seconds wide — the page, the yellow highlight, the open drawer, the cursor travelling to the composer — so a viewer who has been nose-against-the-glass for twenty seconds is re-anchored before the second half starts. The storyboard calls this the release half of the zoom rhythm; it is a shot of nothing happening, and it is load-bearing.",
+      "inFrame": 936,
+      "durationInFrames": 54,
+      "rationale": "The wide re-anchor before the second half — the page, the yellow highlight, the open drawer, the cursor travelling to the composer. v5 zoomed OUT across this shot; v6 makes it a hard CUT to a locked wide instead, which does the same re-anchoring job in the film's own grammar: the cut carries the release, the camera does not. The cursor's travel is the only motion, and it is enough.",
       "camera": [
-        { "at": 0, "scale": 1.12, "origin": [0.554, 0.5] },
-        { "at": 60, "scale": 1.04, "origin": [0.52, 0.5], "ease": "ease" }
+        { "at": 0, "scale": 1.06, "origin": [0.5283, 0.5] }
       ]
     },
     {
@@ -178,12 +194,11 @@
       "beat": "handoff",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 993,
-      "durationInFrames": 125,
-      "rationale": "The reader ratifies the handoff Claude proposed: '@codex plot gravity vs radius at 2, 3 and 5 rpm?' typed into the same composer, under the same quote. No label — a second @-name typed after a chip that said 'over to @codex' is a sentence the viewer has already read.",
+      "inFrame": 990,
+      "durationInFrames": 126,
+      "rationale": "The reader ratifies the handoff Claude proposed: '@codex plot gravity vs radius at 2, 3 and 5 rpm?' typed into the same composer, under the same quote. Locked frame; the typing is the motion. No label — a second @-name typed after a chip that said 'over to @codex' is a sentence the viewer has already read.",
       "camera": [
-        { "at": 0, "scale": 1.32, "origin": [0.621, 0.5] },
-        { "at": 125, "scale": 1.36, "origin": [0.632, 0.52], "ease": "ease" }
+        { "at": 0, "scale": 1.33, "origin": [0.624, 0.5] }
       ]
     },
     {
@@ -191,12 +206,11 @@
       "beat": "handoff",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 1125,
-      "durationInFrames": 60,
-      "rationale": "The same chip, the other agent, the same length, the same framing height off the message it waits under. Repeating the shot exactly is the point: the second dial is what tells you the first one was a state and not a flourish.",
+      "inFrame": 1122,
+      "durationInFrames": 54,
+      "rationale": "The same chip, the other agent, the same length, the same locked framing height off the message it waits under. Repeating the shot exactly is the point: the second dial is what tells you the first one was a state and not a flourish.",
       "camera": [
-        { "at": 0, "scale": 1.48, "origin": [0.662, 0.63] },
-        { "at": 60, "scale": 1.52, "origin": [0.671, 0.64] }
+        { "at": 0, "scale": 1.5, "origin": [0.6666, 0.63] }
       ]
     },
     {
@@ -205,11 +219,10 @@
       "kind": "footage",
       "clip": "footage/thread.mp4",
       "inFrame": 1350,
-      "durationInFrames": 98,
-      "rationale": "Codex's reply, and the thing at the bottom of it: a python block, every line inside 43 characters so nothing clips, with a Run button under it that nobody has pressed. The drawer scrolls the cell to centre inside the shot, which is motion enough; the camera only leans.",
+      "durationInFrames": 90,
+      "rationale": "Codex's reply, and the thing at the bottom of it: a python block, every line inside 43 characters so nothing clips, with a Run button under it that nobody has pressed. The drawer scrolls the cell to centre inside a locked frame — v5 had the camera 'leaning' 1.30 to 1.34 across this and the lean was exactly the kind of move the note meant. The scroll is the motion.",
       "camera": [
-        { "at": 0, "scale": 1.3, "origin": [0.615, 0.52] },
-        { "at": 98, "scale": 1.34, "origin": [0.627, 0.55], "ease": "ease" }
+        { "at": 0, "scale": 1.32, "origin": [0.621, 0.53] }
       ]
     },
     {
@@ -217,24 +230,24 @@
       "beat": "run",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 1448,
-      "durationInFrames": 157,
-      "rationale": "The surprising feature, so it gets the tightest framing in the film, and the push happens BEFORE the click — a viewer has to know where to look while the cursor is still travelling or the Run button reads as an accident. Then a pull back timed to the figure painting. The label sits to the LEFT of the button, clear of the status line that prints underneath it: 'ran - 214 ms' is small type and it is half the payoff. The plot is real matplotlib output from the code on screen.",
+      "inFrame": 1440,
+      "durationInFrames": 144,
+      "rationale": "The surprising feature, so it gets the tightest framing in the film. MOVES 4a and 4b of 6, both aimed at marks: the push lands BEFORE the click (run-clicked is relative 37; the push rides the cursor's approach, 12..34) so a viewer knows where to look while the cursor is still travelling — then the frame holds through the click and the status line printing 'ran - 214 ms' — and the release is cued to the figure painting in (figure-in, relative 83), pulling back exactly as the plot arrives so the reveal and the reframe are one event. The label is the narrator answering the question every viewer asks at this exact second. The plot is real matplotlib output from the code on screen.",
       "labels": [
         {
-          "text": "Code cells run.",
-          "at": 18,
-          "dur": 52,
+          "text": "Yes, it actually runs.",
+          "at": 42,
+          "dur": 50,
           "anchorMark": "run-clicked",
           "place": "left"
         }
       ],
       "camera": [
-        { "at": 0, "scale": 1.34, "origin": [0.627, 0.55] },
-        { "at": 26, "scale": 1.5, "origin": [0.667, 0.55], "ease": "emphasis" },
-        { "at": 64, "scale": 1.42, "origin": [0.648, 0.58], "ease": "ease" },
-        { "at": 116, "scale": 1.3, "origin": [0.615, 0.6], "ease": "ease" },
-        { "at": 157, "scale": 1.24, "origin": [0.6, 0.58], "ease": "ease" }
+        { "at": 0, "scale": 1.34, "origin": [0.6268, 0.55] },
+        { "at": 12, "scale": 1.34, "origin": [0.6268, 0.55] },
+        { "at": 34, "scale": 1.5, "origin": [0.6666, 0.55], "ease": "emphasis" },
+        { "at": 83, "scale": 1.5, "origin": [0.6666, 0.55] },
+        { "at": 119, "scale": 1.3, "origin": [0.615, 0.59], "ease": "ease" }
       ]
     },
     {
@@ -242,12 +255,22 @@
       "beat": "run",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 1660,
-      "durationInFrames": 145,
-      "rationale": "Full size, in the drawer's own lightbox, held for almost five seconds — because a thumbnail in a drawer is not a plot anybody reads, and because on a phone this is the one frame where the axes labels are genuinely legible. The picture settles the argument: at the crimson 37.5 m line the 3 rpm curve crosses Mars and the 5 rpm curve crosses Earth. No label; the axes are the label.",
+      "inFrame": 1674,
+      "durationInFrames": 126,
+      "sting": "tada",
+      "stingAt": 0,
+      "rationale": "Full size, in the drawer's own lightbox, held for four seconds — because a thumbnail in a drawer is not a plot anybody reads, and on a phone this is the one frame where the axes labels are genuinely legible. The picture settles the argument: at the crimson 37.5 m line the 3 rpm curve crosses Mars and the 5 rpm curve crosses Earth. The cut INTO it lands on a beat with the score's little two-bell 'tada' (the sting this scene declares), and the one-word label is the narrator resting their case — in the corner, off the axes. v5 drifted 1.02 to 1.08 across this; the plot did not ask for that. The camera here is a HOLD carrying the film's sub-perceptual anti-freeze pan (~17px across the whole scene, ~4px/s — see the header note): freezedetect called the locked version dead air, and it was right.",
+      "labels": [
+        {
+          "text": "Receipts.",
+          "at": 34,
+          "dur": 50,
+          "corner": true
+        }
+      ],
       "camera": [
-        { "at": 0, "scale": 1.02, "origin": [0.5, 0.5] },
-        { "at": 145, "scale": 1.08, "origin": [0.5, 0.5], "ease": "ease" }
+        { "at": 0, "scale": 1.03, "origin": [0.5085, 0.5] },
+        { "at": 126, "scale": 1.03, "origin": [0.4995, 0.5], "ease": "ease" }
       ]
     },
     {
@@ -255,13 +278,23 @@
       "beat": "resolve",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 1875,
-      "durationInFrames": 115,
-      "rationale": "One click. The tick, the card leaving the list, and the count under it going 1 to 2. A small push rides the cursor to the tick so the eye arrives with it; after the click the camera holds almost still, because the motion is the list and a move would steal it. No label — a tick that empties a list explains itself.",
+      "inFrame": 1878,
+      "durationInFrames": 108,
+      "sting": "done",
+      "stingAt": 56,
+      "rationale": "One click. MOVE 5 of 6: a small push rides the cursor to the tick (resolved is relative 56) so the eye arrives with it; after the click the camera is locked, because the motion is the card leaving the list and the count going 1 to 2, and a move would steal it. The score plays its two-note 'done' motif on the click (the sting above), and the label is the narrator closing the file — in the corner, because the drawer's own payoff ('All clear -- every comment on this page is resolved') owns the space beside the tick once the card files, and a label must never sit on the words it is celebrating. Both are small on purpose — the playful beat is a wink, not a fireworks cue.",
+      "labels": [
+        {
+          "text": "Case closed.",
+          "at": 64,
+          "dur": 44,
+          "corner": true
+        }
+      ],
       "camera": [
         { "at": 0, "scale": 1.36, "origin": [0.632, 0.4] },
-        { "at": 52, "scale": 1.44, "origin": [0.653, 0.37], "ease": "emphasis" },
-        { "at": 115, "scale": 1.44, "origin": [0.653, 0.4], "ease": "ease" }
+        { "at": 20, "scale": 1.36, "origin": [0.632, 0.4] },
+        { "at": 52, "scale": 1.44, "origin": [0.6527, 0.38], "ease": "emphasis" }
       ]
     },
     {
@@ -269,21 +302,21 @@
       "beat": "resolve",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 2145,
-      "durationInFrames": 190,
-      "rationale": "The archive, open, with both filed cards in it — and the written paragraph landing over the 'summarizing...' placeholder while you watch. This is the scene people repeat, so it stays the longest thread scene in the film and now holds over three seconds AFTER the paragraph lands, which is what it costs to read four lines at phone scale. Both cards are visible on purpose: one was already there when the film started, so the shape of the archive is established rather than asserted. The label goes to the corner, because every position beside the paragraph is on top of the paragraph.",
+      "inFrame": 2142,
+      "durationInFrames": 180,
+      "rationale": "The archive, open, with both filed cards in it — and the written paragraph landing over the 'summarizing...' placeholder while you watch. This is the scene people repeat, so it stays the longest thread scene in the film and holds over three seconds AFTER the paragraph lands, which is what it costs to read four lines at phone scale. MOVE 6 of 6: the release is cued to the paragraph landing (summary-landed, relative 78), easing back to hold all of it. The stretch before the landing and the hold after carry only the sub-perceptual anti-freeze pan (header note); nothing a viewer can see moves but the archive itself. Both cards are visible on purpose: one was already there when the film started. The label goes to the corner because every position beside the paragraph is on top of the paragraph — and 'minutes' is the joke that is also the literal truth: the agents write up what was decided.",
       "labels": [
         {
-          "text": "Filing a thread writes the summary.",
-          "at": 100,
-          "dur": 62,
+          "text": "It writes the minutes, too.",
+          "at": 104,
+          "dur": 58,
           "corner": "left"
         }
       ],
       "camera": [
-        { "at": 0, "scale": 1.34, "origin": [0.627, 0.5] },
-        { "at": 110, "scale": 1.28, "origin": [0.609, 0.55], "ease": "ease" },
-        { "at": 190, "scale": 1.26, "origin": [0.603, 0.56], "ease": "ease" }
+        { "at": 0, "scale": 1.34, "origin": [0.6268, 0.5] },
+        { "at": 78, "scale": 1.34, "origin": [0.6205, 0.5], "ease": "ease" },
+        { "at": 114, "scale": 1.28, "origin": [0.609, 0.55], "ease": "ease" }
       ]
     },
     {
@@ -291,12 +324,47 @@
       "beat": "resolve",
       "kind": "footage",
       "clip": "footage/thread.mp4",
-      "inFrame": 2378,
-      "durationInFrames": 152,
-      "rationale": "Back to the page, and the idea the whole beat sells: the mark stays. Both passages are sage green now — the one that was green before the camera rolled and the one that turned during it, two sentences apart in the same paragraph — so 'green means settled' is shown by a pair rather than explained by a caption. The v5 drawer is 630 frame px wide, so only a 1.50+ window flushed to the LEFT edge excludes it entirely; anything looser leaves an unreadable strip of it down the right edge, which is worse than either having it or not.",
+      "inFrame": 2340,
+      "durationInFrames": 144,
+      "rationale": "Back to the page, and the idea the whole beat sells: the mark stays. Both passages are sage green now — the one that was green before the camera rolled and the one that turned during it, two sentences apart in the same paragraph — so 'green means settled' is shown by a pair rather than explained by a caption. Locked left-flush at 1.52, which is what it takes to exclude the 630px drawer entirely (anything looser leaves an unreadable strip of it down the right edge). The page's own settle-scroll and the resting hand are the motion, plus the sub-perceptual anti-freeze pan (header note) across the four-second hold.",
       "camera": [
-        { "at": 0, "scale": 1.5, "origin": [0.333, 0.54] },
-        { "at": 152, "scale": 1.55, "origin": [0.323, 0.55], "ease": "ease" }
+        { "at": 0, "scale": 1.52, "origin": [0.333, 0.54] },
+        { "at": 144, "scale": 1.52, "origin": [0.3402, 0.5348], "ease": "ease" }
+      ]
+    },
+    {
+      "id": "export",
+      "beat": "export",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 2538,
+      "durationInFrames": 144,
+      "rationale": "The missing beat the v6 pass exists for: HOW the note gets to the vault. The cursor travels up to the drawer header's Obsidian crystal — the shipped export control, purple and unmistakable — clicks it, and the drawer's own chooser opens: 'EXPORT TO OBSIDIAN', 'Comments only', 'Everything (including the bot conversation)'. The reader picks Everything. The push (the last motivated move in the film, cued to the click at relative 39 that opens the chooser) frames button and chooser together; then locked while the two rows get read. No label — the popover is captioned by the product itself, and a narrator talking over a menu that says 'Export to Obsidian' would be narrating the weather.",
+      "camera": [
+        { "at": 0, "scale": 1.12, "origin": [0.5535, 0.45] },
+        { "at": 36, "scale": 1.12, "origin": [0.5535, 0.45] },
+        { "at": 66, "scale": 1.45, "origin": [0.655, 0.345], "ease": "emphasis" }
+      ]
+    },
+    {
+      "id": "exported",
+      "beat": "export",
+      "kind": "footage",
+      "clip": "footage/thread.mp4",
+      "inFrame": 2682,
+      "durationInFrames": 90,
+      "rationale": "The receipt for the export: the footbar at the drawer's foot printing the path the companion answered with — 'exported → /Users/angadh/Vault/Web Clippings/Where is my von Braun wheel?.md'. A locked tight frame on the drawer's bottom corner; the path is small type (it is the drawer's own 12px footbar, filmed honestly), so the 40px label above it carries the meaning at phone scale while the path carries the proof at desktop scale. After this shot a viewer can say the sentence the v5 cut never earned: 'I click the crystal and it's in my vault.'",
+      "labels": [
+        {
+          "text": "Off to your vault.",
+          "at": 14,
+          "dur": 52,
+          "anchorMark": "exported",
+          "place": "above"
+        }
+      ],
+      "camera": [
+        { "at": 0, "scale": 1.5, "origin": [0.6666, 0.6666] }
       ]
     },
     {
@@ -305,12 +373,12 @@
       "kind": "footage",
       "clip": "footage/note.mp4",
       "inFrame": 20,
-      "durationInFrames": 194,
-      "rationale": "The note, in the vault. The BODY is frontends/plugin/export.mjs's own renderNote() output — the properties block, the title, the passage as a blockquote, 'Resolved by angadh' and the exchange under it — and the room around it is a recreation of Obsidian's dark reading view: the ribbon, the file tree with this note selected and the copied figure sitting in attachments/ under its real sha1 name, the tab strip, Inter at a readable line width. Shot in the same 1.5x geometry as the thread, so the note's 20px body type reaches the frame at 30px. The camera does not move at all — any scale above 1.0 would crop the ribbon and the tree, which are half of what the shot is for — so the motion is the note's own slow scroll.",
+      "durationInFrames": 180,
+      "rationale": "And there it is: the note, in the vault the footbar just named. The BODY is frontends/plugin/export.mjs's own renderNote() output — the properties block, the title, the passage as a blockquote, 'Resolved by angadh' and the exchange under it — and the room around it is a recreation of Obsidian's dark reading view: the ribbon, the file tree with this note selected and the copied figure sitting in attachments/ under its real sha1 name, the tab strip, Inter at a readable line width. The camera does not move at all — any scale above 1.0 would crop the ribbon and the tree, which are half of what the shot is for — so the motion is the note's own slow scroll. The label closes the detective arc.",
       "labels": [
         {
-          "text": "Export to Obsidian.",
-          "at": 10,
+          "text": "The case file, in Obsidian.",
+          "at": 12,
           "dur": 55,
           "corner": true
         }
@@ -325,7 +393,7 @@
       "kind": "footage",
       "clip": "footage/note.mp4",
       "inFrame": 226,
-      "durationInFrames": 189,
+      "durationInFrames": 180,
       "rationale": "A hard cut down the same document rather than a pan: two thousand pixels of note past a 1080 frame is a whoosh nobody can read, and the film's own rule is that cuts carry the pace. The foot is the point anyway — the code cell is in the vault with Obsidian's own syntax colours on it, the plot is in the vault as a copied attachment, and the attachment is visible in the sidebar as a file with a name.",
       "camera": [
         { "at": 0, "scale": 1, "origin": [0.5, 0.5] }
@@ -337,18 +405,19 @@
       "kind": "braid",
       "clip": "footage/braid.mp4",
       "inFrame": 150,
-      "durationInFrames": 236,
+      "durationInFrames": 234,
       "title": "botference Discuss",
       "subtitle": "botference.com",
+      "tag": "Bring the bots to the margins.",
       "titleAt": 10,
       "qr": true,
       "fadeIn": 12,
       "fadeOut": 26,
       "camera": [
-        { "at": 0, "scale": 1.06, "origin": [0.5, 0.48] },
-        { "at": 236, "scale": 1, "origin": [0.5, 0.5], "ease": "ease" }
+        { "at": 0, "scale": 1.03, "origin": [0.5085, 0.5] },
+        { "at": 234, "scale": 1.03, "origin": [0.4915, 0.5], "ease": "ease" }
       ],
-      "rationale": "The braid entered late, where the three strands have already converged and 'the plan' has wiped out to the cursor — the site's own hero, filmed off its own markup rather than re-drawn, so it cannot drift from the real one. The type and the QR land together at frame 10 and hold: a code somebody is meant to scan off a playing video needs to be still, unfaded and large for long enough to acquire, which is over six seconds here against a 2.5-second floor. The url line is 38px now, for the same phone the QR is for."
+      "rationale": "The braid entered late, where the three strands have already converged and 'the plan' has wiped out to the cursor — the site's own hero, filmed off its own markup rather than re-drawn, so it cannot drift from the real one. The camera carries only the sub-perceptual anti-freeze pan (header note) under the type — the braid settles to a near-still frame once fused, and freezedetect flagged the locked version's last four seconds; the TYPE and the QR sit outside the camera, so the code a phone is hunting for does not move a pixel. The type and the QR land together at frame 10 and hold: a code somebody is meant to scan off a playing video needs to be still, unfaded and large for long enough to acquire, which is over six seconds here against a 2.5-second floor. The url line is 38px for the same phone the QR is for, and the tag line under it is the brand allowed one sentence of the narrator's voice on the way out."
     }
   ]
 }

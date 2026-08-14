@@ -35,7 +35,7 @@ const SceneView: React.FC<{ scene: Scene }> = ({ scene }) => {
   if (scene.kind === 'card') {
     return (
       <AbsoluteFill>
-        <HookCard title={scene.title} at={scene.titleAt} />
+        <HookCard title={scene.title} kicker={scene.kicker} at={scene.titleAt} kickerAt={scene.kickerAt} />
         <Fade inF={scene.fadeIn} outF={scene.fadeOut} length={scene.durationInFrames} />
       </AbsoluteFill>
     );
@@ -54,7 +54,7 @@ const SceneView: React.FC<{ scene: Scene }> = ({ scene }) => {
       </Camera>
 
       {scene.kind === 'braid' ? (
-        <TitleCard title={scene.title} subtitle={scene.subtitle} at={scene.titleAt} qr={scene.qr} />
+        <TitleCard title={scene.title} subtitle={scene.subtitle} tag={scene.tag} at={scene.titleAt} qr={scene.qr} />
       ) : (
         // the labels are outside the Camera so a push-in never drags the type
         // with it — only the anchor they are placed against moves

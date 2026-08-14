@@ -2,7 +2,7 @@
   "fps": 30,
   "width": 1920,
   "height": 1080,
-  "shot": "2026-08-13T23:12:00.457Z",
+  "shot": "2026-08-14T00:07:40.641Z",
   "shots": {
     "braid": {
       "clip": "footage/braid.mp4",
@@ -30,29 +30,29 @@
     },
     "thread": {
       "clip": "footage/thread.mp4",
-      "seconds": 84.387,
-      "frames": 2532,
-      "sourceFrames": 2752,
+      "seconds": 92.812,
+      "frames": 2784,
+      "sourceFrames": 4021,
       "harnessUrl": "test/harness.html?closed=1",
       "marks": [
         {
           "label": "entry",
-          "t": 2.072,
+          "t": 2.071,
           "frame": 62
         },
         {
           "label": "scrolled",
-          "t": 4.285,
+          "t": 4.287,
           "frame": 129
         },
         {
           "label": "drag-start",
-          "t": 6.721,
+          "t": 6.723,
           "frame": 202
         },
         {
           "label": "selection-made",
-          "t": 8.716,
+          "t": 8.714,
           "x": 726,
           "y": 304,
           "box": [
@@ -65,42 +65,42 @@
         },
         {
           "label": "pill-clicked",
-          "t": 10.493,
-          "frame": 315
+          "t": 10.483,
+          "frame": 314
         },
         {
           "label": "drawer-open",
-          "t": 11.804,
+          "t": 11.795,
           "frame": 354
         },
         {
           "label": "typing",
-          "t": 13.548,
+          "t": 13.539,
           "frame": 406
         },
         {
           "label": "sent",
-          "t": 17.588,
+          "t": 17.586,
           "frame": 528
         },
         {
           "label": "claude-thinking",
-          "t": 17.632,
-          "frame": 529
+          "t": 17.616,
+          "frame": 528
         },
         {
           "label": "claude-streaming",
-          "t": 20.685,
-          "frame": 621
+          "t": 20.632,
+          "frame": 619
         },
         {
           "label": "claude-landed",
-          "t": 24.199,
-          "frame": 726
+          "t": 24.146,
+          "frame": 724
         },
         {
           "label": "handoff-chip",
-          "t": 28.514,
+          "t": 28.462,
           "x": 1610,
           "y": 650,
           "box": [
@@ -109,41 +109,41 @@
             1865,
             684
           ],
-          "frame": 855
+          "frame": 854
         },
         {
           "label": "typing-2",
-          "t": 33.087,
-          "frame": 993
+          "t": 33.038,
+          "frame": 991
         },
         {
           "label": "sent-2",
-          "t": 36.533,
-          "frame": 1096
+          "t": 36.489,
+          "frame": 1095
         },
         {
           "label": "codex-thinking",
-          "t": 36.554,
-          "frame": 1097
+          "t": 36.507,
+          "frame": 1095
         },
         {
           "label": "codex-streaming",
-          "t": 39.581,
+          "t": 39.555,
           "frame": 1187
         },
         {
           "label": "unfolded",
-          "t": 44.919,
-          "frame": 1348
+          "t": 44.901,
+          "frame": 1347
         },
         {
           "label": "codex-landed",
-          "t": 47.531,
-          "frame": 1426
+          "t": 47.509,
+          "frame": 1425
         },
         {
           "label": "run-approach",
-          "t": 47.538,
+          "t": 47.515,
           "x": 1394,
           "y": 593,
           "box": [
@@ -152,11 +152,11 @@
             1434,
             610
           ],
-          "frame": 1426
+          "frame": 1425
         },
         {
           "label": "run-clicked",
-          "t": 49.244,
+          "t": 49.221,
           "x": 1394,
           "y": 593,
           "box": [
@@ -169,27 +169,27 @@
         },
         {
           "label": "runstat",
-          "t": 49.668,
-          "frame": 1490
+          "t": 49.644,
+          "frame": 1489
         },
         {
           "label": "figure-in",
-          "t": 50.775,
+          "t": 50.752,
           "frame": 1523
         },
         {
           "label": "lightbox",
-          "t": 55.64,
-          "frame": 1669
+          "t": 55.613,
+          "frame": 1668
         },
         {
           "label": "lightbox-closed",
-          "t": 60.441,
-          "frame": 1813
+          "t": 60.224,
+          "frame": 1807
         },
         {
           "label": "resolved",
-          "t": 64.679,
+          "t": 64.468,
           "x": 1820,
           "y": 209,
           "box": [
@@ -198,31 +198,31 @@
             1838,
             227
           ],
-          "frame": 1940
+          "frame": 1934
         },
         {
           "label": "filed",
-          "t": 65.141,
-          "frame": 1954
+          "t": 64.932,
+          "frame": 1948
         },
         {
           "label": "archive-open",
-          "t": 70.408,
-          "frame": 2112
+          "t": 70.2,
+          "frame": 2106
         },
         {
           "label": "summarize",
-          "t": 72.776,
-          "frame": 2183
+          "t": 72.571,
+          "frame": 2177
         },
         {
           "label": "summary-landed",
-          "t": 74.228,
-          "frame": 2227
+          "t": 74.015,
+          "frame": 2220
         },
         {
           "label": "green-visible",
-          "t": 80.186,
+          "t": 79.977,
           "x": 492,
           "y": 618,
           "box": [
@@ -231,13 +231,66 @@
             870,
             733
           ],
-          "frame": 2406
+          "frame": 2399
+        },
+        {
+          "label": "export-open",
+          "t": 85.896,
+          "x": 1820,
+          "y": 41,
+          "box": [
+            1795,
+            18,
+            1846,
+            63
+          ],
+          "frame": 2577
+        },
+        {
+          "label": "export-pick",
+          "t": 86.25,
+          "x": 1728,
+          "y": 190,
+          "box": [
+            1554,
+            78,
+            1902,
+            302
+          ],
+          "frame": 2588
+        },
+        {
+          "label": "export-run",
+          "t": 88.705,
+          "x": 1728,
+          "y": 248,
+          "box": [
+            1569,
+            210,
+            1887,
+            286
+          ],
+          "frame": 2661
+        },
+        {
+          "label": "exported",
+          "t": 89.211,
+          "x": 1606,
+          "y": 1042,
+          "box": [
+            1292,
+            1004,
+            1920,
+            1080
+          ],
+          "frame": 2676
         }
       ],
-      "newThread": "t-1786662619915-pn40",
+      "newThread": "t-1786665965611-grqy",
       "filedCount": "2",
       "greenMarks": 2,
-      "quote": "For example, one of von Braun’s designs called for a massive 75 metre diameter wheel that generated lunar gravity if spun at 3 rpm and Earth-like gravity at 5 rpm"
+      "quote": "For example, one of von Braun’s designs called for a massive 75 metre diameter wheel that generated lunar gravity if spun at 3 rpm and Earth-like gravity at 5 rpm",
+      "exported": "exported → /Users/angadh/Vault/Web Clippings/Where is my von Braun wheel?.md"
     },
     "note": {
       "clip": "footage/note.mp4",

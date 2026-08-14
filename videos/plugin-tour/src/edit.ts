@@ -46,10 +46,21 @@ export type Scene = {
   /** cards only */
   title?: string;
   subtitle?: string;
+  /** hook card: the second, smaller line in the accent colour */
+  kicker?: string;
+  kickerAt?: number;
+  /** close card: one small sentence of brand voice under the url */
+  tag?: string;
   titleAt?: number;
   qr?: boolean;
   fadeIn?: number;
   fadeOut?: number;
+  /** a musical event music/compose.mjs reads off this scene: 'tada' | 'done'.
+   *  The picture never sees it — it is the score's cue sheet living in the
+   *  same file as the cuts it plays against. */
+  sting?: string;
+  /** frame within the scene the sting lands on (default 0, the cut itself) */
+  stingAt?: number;
 };
 
 export type Edit = {

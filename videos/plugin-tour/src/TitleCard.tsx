@@ -48,9 +48,13 @@ export const QR_PX = 330;
 export const TitleCard: React.FC<{
   title?: string;
   subtitle?: string;
+  /** one small line of brand voice under the url — a garnish, not a focal
+   *  text, so it sits below the phone-legibility floor on purpose and the url
+   *  above it stays the line a phone must read */
+  tag?: string;
   at?: number;
   qr?: boolean;
-}> = ({ title, subtitle, at = 0, qr }) => (
+}> = ({ title, subtitle, tag, at = 0, qr }) => (
   <div
     style={{
       position: 'absolute',
@@ -111,6 +115,21 @@ export const TitleCard: React.FC<{
       >
         {subtitle}
       </Line>
+      {tag ? (
+        <Line
+          delay={at + anim.STAGGER * 2}
+          style={{
+            marginTop: 16,
+            fontFamily: brand.serif,
+            fontStyle: 'italic',
+            fontSize: 32,
+            letterSpacing: '0.01em',
+            color: brand.muted,
+          }}
+        >
+          {tag}
+        </Line>
+      ) : null}
     </div>
   </div>
 );

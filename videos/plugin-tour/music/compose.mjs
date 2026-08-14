@@ -7,40 +7,52 @@
  * delay for width. No samples, no audio files, no npm dependencies. The only
  * external tool is ffmpeg, and only at the very end, to normalise loudness.
  *
- * ── The arrangement (v5) ───────────────────────────────────────────────────
- * The v4 bed — foggy Ab pads at 84 — was the thing several viewers disliked.
- * The v5 score is warmer and lighter on its feet, in the register of the way
- * Anthropic scores its launch films: a soft FELT-PIANO figure in F major, a
- * gentle MARIMBA pattern picking out the chord above it, a felt kick you sense
- * rather than count, sparse glockenspiel-ish bells on the scene changes, and
- * the same tape-hiss floor. Playful, never jokey; nothing saturated, nothing
- * four-on-the-floor, nothing tense.
+ * ── The arrangement (v6) ───────────────────────────────────────────────────
+ * The v5 bed (felt piano, I–V–vi–IV at 92) was warm and nobody disliked it —
+ * the note on it was that it was TAME. v6 keeps the instruments and the key
+ * and gives the thing a pulse you can nod to: Claude-Code-launch-film energy,
+ * still felt, never corporate-EDM.
  *
- *   Progression   I – V – vi – IV   (F – C – Dm – Bb), cycling. The optimist's
- *   loop, one chord per two bars at 92 BPM, voiced with common tones so the
- *   changes glide.
+ *   Tempo    100 BPM — chosen so a quarter-note is EXACTLY 18 frames at
+ *            30fps. Every durationInFrames in edit.json is a multiple of 18,
+ *            so every cut in the film lands on a beat of this score and every
+ *            chord (which falls on a movement's own 2-bar grid, anchored to a
+ *            cut) lands on a cut. The lock is arithmetic, not luck.
+ *   Swing    the eighth grid is swung (~57%), on the marimba and the shaker,
+ *            which is where the bounce lives.
+ *   Bass     no longer a held root: root on the downbeat, root again on bar
+ *            two, the fifth walking in on its third beat and a swung octave
+ *            pickup into every change. The swagger is the bassline.
+ *   Pulse    felt kick on 1 and 3, a soft backbeat tick on 2 and 4, and a
+ *            whispery shaker on the swung offbeats from the Run movement on —
+ *            the film's own "drop" is the code cell running, so that is where
+ *            the momentum arrives.
+ *   Stings   edit.json is also the cue sheet: a scene may declare
+ *            "sting": "tada" (two rising bells — the plot landing) or
+ *            "sting": "done" (a falling fifth on the marimba — the ✓). The
+ *            score reads them with the same sums it reads the cuts from.
+ *
+ *   Progression   I – V – vi – IV   (F – C – Dm – Bb), cycling, resolved
+ *   V → I at the close, voiced with common tones so the changes glide.
  *
  * The shape comes from ../edit.json at runtime — nothing about the timing is
  * hardcoded. Scene boundaries are the cumulative sum of durationInFrames/fps
  * (grouped by `beat`), and every layer change hangs off a boundary index:
  *
- *   scene 0  (the hook card) — felt piano alone, blooming from silence: the
- *            first chord is rolled slowly and the key bus rises over the first
- *            ~60% of the scene. No pulse, no bass, no marimba.
+ *   scene 0  (the hook card) — felt piano alone, blooming from silence.
  *   scene 1  — bass + felt kick enter. From here every boundary gets a "lift":
  *            a fresh chord rolled exactly on the cut, a brief ~1.14x swell,
  *            and a single quiet bell on the new chord's top note.
- *   scene 2  — the marimba pattern enters, and the soft tick joins the kick.
- *   scene 3  — no new layer; the lift is harmonic (the 9th colour tone joins)
- *            so the busiest stretch stays still underneath.
- *   n-2      — thin out: marimba and tick drop away, pulse eases back.
+ *   scene 2  — the marimba pattern enters, and the backbeat tick joins.
+ *   scene 3  — the shaker arrives on the swung offbeats (the Run movement),
+ *            and the keys brighten; this is the film's busiest stretch and
+ *            the score's.
+ *   n-2      — thin out: marimba, tick and shaker drop away, pulse eases back.
  *   n-1      (the close) — pulse gone, harmony resolves V → I and the master
  *            fades to true digital silence across the final 4 s.
  *
- * Within a scene, chords fall on that scene's own 2-bar grid (so a chord always
- * lands on the cut); pulse and marimba run on one global beat grid so they never
- * stutter. Change a durationInFrames in edit.json, re-run, and all of it
- * re-aligns.
+ * Pulse, shaker and marimba run on one global beat grid so they never stutter.
+ * Change a durationInFrames in edit.json, re-run, and all of it re-aligns.
  *
  * ── Usage ──────────────────────────────────────────────────────────────────
  *   node music/compose.mjs              render + two-pass loudnorm to -16 LUFS
@@ -55,7 +67,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ───────────────────────────── SIX KNOBS ──────────────────────────────────
-const BPM            = 92;     // tempo. A walking lilt. 88–98 all work.
+const BPM            = 100;    // a quarter-note = 18 frames at 30fps, exactly.
+                               // The edit cuts on multiples of 18 — the lock
+                               // between cuts and beats is this number.
 const KEY_MIDI       = 53;     // tonic = F3 (MIDI 53). 50 = D3, 55 = G3, …
 const MASTER_GAIN    = 0.42;   // pre-normalisation level. Keeps raw peak ~-6 dBFS.
 const KEY_BRIGHTNESS = 2100;   // felt-piano lowpass cutoff in Hz. Lower = foggier.
@@ -65,8 +79,10 @@ const HISS_LEVEL     = 0.0035; // tape floor, ≈ -49 dBFS. 0 disables it.
 
 // Secondary trims — rarely need touching.
 const BELL_LEVEL   = 0.075;  // sparse high bell on chord changes at scene cuts
-const BASS_LEVEL   = 0.28;   // low root, sine-dominant
-const MAR_LEVEL    = 0.20;   // the marimba pattern (scene 2 onward)
+const BASS_LEVEL   = 0.28;   // the walking bass, sine-dominant
+const MAR_LEVEL    = 0.22;   // the marimba pattern (scene 2 onward)
+const SHAKER_LEVEL = 0.42;   // relative to PULSE_LEVEL; offbeats, Run movement on
+const SWING        = 0.57;   // where the offbeat eighth falls (0.5 = straight)
 const LIFT         = 1.14;   // size of the swell at each scene boundary
 const TAIL_FADE    = 4.0;    // seconds of fade at the end, to true silence
 const SR           = 44100;
@@ -121,6 +137,19 @@ for (const s of rawScenes) {
   if (prev && prev.id === key) prev.durationInFrames += s.durationInFrames;
   else scenes.push({ id: key, durationInFrames: s.durationInFrames, cuts: 0 });
   scenes[scenes.length - 1].cuts++;
+}
+
+// The cue sheet (v6): a RAW scene may declare a sting — a named musical event
+// at a frame inside that scene — so the picture's payoffs and the score's
+// winks live in the same file and cannot drift. Times are absolute seconds on
+// the master timeline, from the same cumulative sum as everything else.
+const stings = [];
+{
+  let f = 0;
+  for (const s of rawScenes) {
+    if (s.sting) stings.push({ motif: s.sting, at: (f + (s.stingAt || 0)) / fps, scene: s.id });
+    f += s.durationInFrames;
+  }
 }
 
 const durs = scenes.map((s) => s.durationInFrames / fps);
@@ -304,6 +333,27 @@ function renderTick(dst, t0, gain) {
   }
 }
 
+/** Shaker: a breath of band-passed noise, swung onto the offbeats. It is the
+ *  quietest thing in the pulse and the reason the busy stretch bounces. */
+function renderShaker(dst, t0, gain) {
+  const start = Math.round(t0 * SR);
+  if (start >= N) return;
+  const len = Math.min(N - start, Math.ceil(0.09 * SR));
+  const aLo = 1 - Math.exp(-TAU * 6800 / SR);
+  const aHi = 1 - Math.exp(-TAU * 3100 / SR);
+  let lp = 0, hp = 0;
+  const side = rand() < 0.5 ? -1 : 1;
+  for (let i = 0; i < len; i++) {
+    const t = i / SR;
+    const n = rand() * 2 - 1;
+    lp += aLo * (n - lp); hp += aHi * (lp - hp);
+    const env = Math.exp(-t / 0.02) * (1 - Math.exp(-t / 0.0015));
+    const s = (lp - hp) * env * gain;
+    dst.L[start + i] += s * (side > 0 ? 1 : 0.78);
+    dst.R[start + i] += s * (side > 0 ? 0.78 : 1);
+  }
+}
+
 /**
  * Marimba pluck: the fundamental with the bar's characteristic ~4x partial and
  * a whisper of the ~9.2x, each with its own fast decay. Rounded 2.5 ms attack
@@ -423,13 +473,38 @@ for (let i = 0; i < nScenes; i++) {
     feltChord(t, dur, tones, { bloom: isFirst && c === 0, bright, vel });
     chordSpans.push({ t, dur, ch });
 
-    // Low root. Sine-dominant, hard lowpass, dead centre.
-    renderTone(bass, {
-      t0: t, freq: mtof(KEY_MIDI + ch.bass), hold, release: release * 1.1,
-      gain: vel * MASTER_GAIN * BASS_LEVEL, attack: isFirst && c === 0 ? 2.4 : 0.06,
-      harmonics: [1, 0.18, 0.05],
-      cutoff: 300, pan: 0, detuneCents: 1.5, haas: 0.005, sustainDrop: 0.22,
-    });
+    // The bass. The cold open and the close hold a long root (the bloom and
+    // the resolution both want stillness); everywhere else it WALKS — root on
+    // the downbeat, root again on bar two, the fifth on that bar's third beat
+    // and a swung octave pickup into the next change. Sine-dominant, hard
+    // lowpass, dead centre; the swagger is in the where, not the what.
+    if (isFirst || isLast) {
+      renderTone(bass, {
+        t0: t, freq: mtof(KEY_MIDI + ch.bass), hold, release: release * 1.1,
+        gain: vel * MASTER_GAIN * BASS_LEVEL, attack: isFirst && c === 0 ? 2.4 : 0.06,
+        harmonics: [1, 0.18, 0.05],
+        cutoff: 300, pan: 0, detuneCents: 1.5, haas: 0.005, sustainDrop: 0.22,
+      });
+    } else {
+      const walk = [
+        //[offset in beats,        semitones over root, hold in beats, gain]
+        [0,                        0,  3.8,  1.0],
+        [4,                        0,  1.8,  0.78],
+        [6,                        7,  1.3,  0.66],
+        [7 + SWING,                12, 0.45, 0.52],
+      ];
+      for (const [offB, semi, holdB, g] of walk) {
+        const off = offB * BEAT;
+        if (off >= dur - 0.12) continue;
+        renderTone(bass, {
+          t0: t + off, freq: mtof(KEY_MIDI + ch.bass + semi),
+          hold: Math.min(holdB * BEAT, dur - off), release: 0.5,
+          gain: vel * MASTER_GAIN * BASS_LEVEL * g, attack: 0.014,
+          harmonics: [1, 0.18, 0.05],
+          cutoff: 330, pan: 0, detuneCents: 1.5, haas: 0.005, sustainDrop: 0.3,
+        });
+      }
+    }
 
     // One quiet bell per scene cut (never on the cold open), plus the final tonic.
     if ((atCut && i > 0 && !isLast) || final) {
@@ -457,7 +532,10 @@ const FIGURE = [
 if (nScenes > 3) {
   for (const { t, dur, ch } of chordSpans) {
     for (const [e, ti, oct, v] of FIGURE) {
-      const at = t + e * EIGHTH + (rand() - 0.5) * 0.016;
+      // odd eighths are offbeats, and the offbeats are SWUNG — this one line
+      // is where the v6 lilt comes from
+      const swing = e % 2 ? (SWING - 0.5) * BEAT : 0;
+      const at = t + e * EIGHTH + swing + (rand() - 0.5) * 0.016;
       if (at >= t + dur - 0.05 || at < 0) continue;
       const semi = ch.tones[Math.min(ti, ch.tones.length - 1)] + oct;
       renderPluck(mar, at, mtof(KEY_MIDI + semi),
@@ -467,11 +545,32 @@ if (nScenes > 3) {
   }
 }
 
+// ── 5c. the stings — the score's winks, cued by edit.json ─────────────────
+// 'tada' is two bells rising a fourth (C5 → F5) for the plot landing full
+// screen; 'done' is the marimba falling a fifth (C5 → F4) for the ✓ — the
+// oldest "settled" cadence there is, played on the smallest instrument in the
+// room. Both are scale tones of F that sit inside every chord of the loop, so
+// wherever the progression happens to be, the wink lands in tune.
+for (const { motif, at } of stings) {
+  if (motif === 'tada') {
+    renderBell(bell, at, mtof(KEY_MIDI + 19), MASTER_GAIN * BELL_LEVEL * 1.25, -0.3);
+    renderBell(bell, at + 0.17, mtof(KEY_MIDI + 24), MASTER_GAIN * BELL_LEVEL * 1.5, 0.3);
+  } else if (motif === 'done') {
+    renderPluck(mar, at, mtof(KEY_MIDI + 19), MASTER_GAIN * MAR_LEVEL * 1.5, -0.2);
+    renderPluck(mar, at + 0.15, mtof(KEY_MIDI + 12), MASTER_GAIN * MAR_LEVEL * 1.7, 0.25);
+  }
+}
+
 // Pulse on one continuous global beat grid; pulseEnv decides where it is audible.
+// v6: kick on 1 and 3, the tick is now a proper BACKBEAT on 2 and 4, and the
+// shaker whispers on the swung offbeats from the Run movement to the thin-out —
+// the film's own "drop" is the code cell running, so the momentum arrives there.
 const pulseFrom = nScenes > 1 ? b(1) : 0;
 const pulseTo = nScenes > 1 ? b(last) : TOTAL;
 const tickFrom = nScenes > 3 ? b(2) : Infinity;
 const tickTo = nScenes > 3 ? b(thin) : -Infinity;
+const shakerFrom = nScenes > 4 ? b(3) : Infinity;
+const shakerTo = nScenes > 4 ? b(thin) : -Infinity;
 for (let k = 0; ; k++) {
   const t = k * BEAT;
   if (t >= TOTAL) break;
@@ -479,8 +578,12 @@ for (let k = 0; ; k++) {
     if (k % 4 === 0) renderKick(pulse, t, PULSE_LEVEL * MASTER_GAIN * 1.0);
     else if (k % 4 === 2) renderKick(pulse, t, PULSE_LEVEL * MASTER_GAIN * 0.72);
   }
-  if (t >= tickFrom && t < tickTo && k % 4 !== 0) {
-    renderTick(pulse, t + (k % 2 ? 0 : BEAT / 2), PULSE_LEVEL * MASTER_GAIN * 0.30);
+  if (t >= tickFrom && t < tickTo && k % 2 === 1) {
+    renderTick(pulse, t, PULSE_LEVEL * MASTER_GAIN * 0.4);
+  }
+  if (t >= shakerFrom - 0.05 && t + BEAT * SWING < shakerTo) {
+    renderShaker(pulse, t + BEAT * SWING,
+      PULSE_LEVEL * MASTER_GAIN * SHAKER_LEVEL * (k % 2 ? 0.82 : 1));
   }
 }
 
@@ -551,7 +654,10 @@ if (!existsSync(OUTDIR)) mkdirSync(OUTDIR, { recursive: true });
 
 console.log(`botference tour score — ${nScenes} scenes, ${TOTAL.toFixed(3)}s @ ${fps}fps`);
 console.log(log.join('\n'));
-console.log(`  tempo ${BPM} BPM · chord every ${CHORD_SPAN.toFixed(2)}s · raw peak ${db(peak).toFixed(2)} dBFS`);
+if (stings.length) {
+  console.log(`  stings: ${stings.map((s) => `${s.motif} @ ${s.at.toFixed(2)}s (${s.scene})`).join(', ')}`);
+}
+console.log(`  tempo ${BPM} BPM · beat = ${(60 / BPM * fps).toFixed(1)} frames · chord every ${CHORD_SPAN.toFixed(2)}s · raw peak ${db(peak).toFixed(2)} dBFS`);
 
 if (!NORMALIZE) {
   writeWav(OUTWAV, mixL, mixR);

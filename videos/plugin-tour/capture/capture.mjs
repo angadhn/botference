@@ -22,6 +22,20 @@
 // payoff — because v5 is a ~95s film and its calm has to be lived in front of
 // the camera, not simulated by cutting less.
 //
+// v6 adds two things, both from the notes on the v5 cut:
+//   - THE EXPORT IS PERFORMED, not implied. v5 cut from the green page to a
+//     note already sitting in Obsidian; a viewer could not say how it got
+//     there. So the take now ends with the drawer's own affordance: the
+//     header's Obsidian crystal (drawer.js shell(), data-act="export"), the
+//     two-row chooser it opens (paintExportPick), the click on "Everything",
+//     and the footbar printing the vault path the companion answered with
+//     (exportFlow: 'exported → …'). Every control is the shipped one.
+//   - HOLDS DRIFT. The v6 camera holds still unless an action moves it, so
+//     the footage itself has to carry the film past ffmpeg's freezedetect on
+//     every long hold. restHold() below is how: the hand at rest is not a
+//     statue — it drifts a few px every second, the way a resting hand does —
+//     so a four-second hold is a live frame instead of dead air.
+//
 //   node capture/capture.mjs             the thread take (+ note, + braid)
 //   node capture/capture.mjs thread      just the long take
 //
@@ -104,6 +118,33 @@ async function take(ctx, base, id, query, body) {
 function writeShots() {
   fs.writeFileSync(path.join(FOOTAGE, 'shots.json'),
     JSON.stringify({ fps: FPS, width: 1920, height: 1080, shot: new Date().toISOString(), shots }, null, 2));
+}
+
+/**
+ * A hold the static v6 camera can survive.
+ *
+ * The v6 rule is that the camera never moves without an action to follow, so
+ * the long reading holds — Claude's bullets, the lightboxed plot, the pair of
+ * green marks — are static framings of a still screen, which is exactly the
+ * frame freezedetect (npm run freeze) calls dead air after two seconds. The
+ * honest fix is in the performance, not the camera: a person's resting hand
+ * drifts. This parks the cursor at (x, y) and lets it wander a few px on a
+ * slow ease, never still for longer than ~1s, until `ms` is up. The rest spot
+ * is chosen per hold to sit INSIDE the framing the edit gives that beat and
+ * on empty ground (page margin, lightbox scrim), never on the words the hold
+ * exists to let a viewer read.
+ */
+async function restHold(page, ms, x, y) {
+  const t0 = Date.now();
+  const drift = [[9, -5], [-7, 7], [6, -8], [-9, 4]];
+  let i = 0;
+  await moveTo(page, x, y, 560);
+  while (Date.now() - t0 < ms - 1100) {
+    const [dx, dy] = drift[i++ % drift.length];
+    await moveTo(page, x + dx, y + dy, 840);
+    await sleep(420);
+  }
+  await sleep(Math.max(0, ms - (Date.now() - t0)));
 }
 
 /** The per-agent working rings the drawer paints while a turn is in flight. */
@@ -245,7 +286,8 @@ async function thread(page, rec) {
   await sleep(2600);
   await scrollShadowTo(page, `${card} .reply.bot.claude`, { block: 'end' });
   rec.mark('claude-landed');
-  await sleep(3400);                        // long enough to read the bullets
+  // the reading hold: hand parked in the gutter left of the drawer, drifting
+  await restHold(page, 3400, 843, 470);
 
   // ---- 4b. Claude's own handoff -------------------------------------------
   // The reply ends with the room-protocol footer {"status","summary","next"}
@@ -257,7 +299,7 @@ async function thread(page, rec) {
   await scrollShadowTo(page, `${card} .envrow`, { block: 'center' });
   const chip = await shadowBox(page, `${card} .envrow .env`);
   rec.mark('handoff-chip', chip);
-  await sleep(2400);
+  await restHold(page, 2400, 843, 490);
 
   // ---- 5. the reader ratifies the handoff ---------------------------------
   // The summon itself stays with the reader: bridge-system-prompt.md rule 6
@@ -339,8 +381,9 @@ async function thread(page, rec) {
     await raiseCursor(page);
     rec.mark('lightbox');
     await sleep(500);
-    await moveTo(page, 1080, 640, 640);
-    await sleep(3600);
+    // rest on the scrim, clear of the axes — the drift is what keeps a
+    // 3.6s stare at a still image from reading as a stalled file
+    await restHold(page, 4100, 1080, 640);
     await page.keyboard.press('Escape');
     rec.mark('lightbox-closed');
     await sleep(1400);
@@ -390,7 +433,7 @@ async function thread(page, rec) {
       return !!(p && p.textContent.length > 240);
     }, filedCard, { timeout: 15000 });
     rec.mark('summary-landed');
-    await sleep(3600);
+    await restHold(page, 3600, 843, 500);
   }
 
   // ---- 9. two green highlights in the page -------------------------------
@@ -400,7 +443,8 @@ async function thread(page, rec) {
   const green = await page.evaluate(() => document.querySelectorAll('mark.bfp-hl.bfp-done').length);
   await scrollPageTo(page, 'mark.bfp-hl.bfp-done', { block: 'center' });
   await sleep(600);
-  await moveTo(page, 739, 672, 700);              // off the column, off the caption
+  await moveTo(page, 750, 350, 700);    // empty margin above the embed: off the
+                                        // column, off the video, off its caption
   const greenBox = await page.evaluate(() => {
     const ms = [...document.querySelectorAll('mark.bfp-hl.bfp-done')];
     const rs = ms.map(m => m.getBoundingClientRect());
@@ -410,9 +454,48 @@ async function thread(page, rec) {
     };
   });
   rec.mark('green-visible', greenBox);
-  await sleep(4200);
+  // parked in the empty margin above the wine-glass embed; the camera that
+  // frames this beat is left-flushed at ~1.5 so the rest spot must sit in
+  // source columns 0..0.66 — (750, 350) is empty paper inside that window
+  await restHold(page, 4200, 750, 350);
 
-  return { newThread: focus, filedCount, greenMarks: green, quote: FOCUS_QUOTE };
+  // ---- 10. the export — the note leaves for the vault ----------------------
+  // The v5 cut jumped from this green page to a note already in Obsidian, and
+  // the note back was exact: nobody saw how it got there. So the take now
+  // performs the shipped affordance end to end. The header's Obsidian crystal
+  // (drawer.js shell(), data-act="export") opens the two-row chooser
+  // (paintExportPick: "Comments only" / "Everything"); picking "Everything"
+  // runs doExport → POST /export, and the footbar prints the vault path the
+  // companion answered with ('exported → /Users/angadh/Vault/…'). Nothing here
+  // is staged for the camera — it is the same flow test/harness.html asserts.
+  const ob = await shadowBox(page, '.iconbtn.obsidian');
+  await clickAt(page, ob.x, ob.y, { travel: 950, hover: 560 });
+  await page.evaluate(() => window.__bfp.drawer.shadow.querySelector('.iconbtn.obsidian').click());
+  rec.mark('export-open', ob);
+  await waitShadow(page, '.popover.exportpick .xrow');
+  await sleep(350);
+  const pickBox = await shadowBox(page, '.popover.exportpick');
+  rec.mark('export-pick', pickBox);
+  await sleep(1300);                 // read the chooser: two rows, one click each
+  const allRow = await shadowBox(page, '.popover.exportpick .xrow[data-mode="all"]');
+  await clickAt(page, allRow.x, allRow.y, { travel: 420, hover: 520 });
+  await page.evaluate(() =>
+    window.__bfp.drawer.shadow.querySelector('.popover.exportpick .xrow[data-mode="all"]').click());
+  rec.mark('export-run', allRow);
+  // The vault path prints in the footbar at the drawer's foot; the hand comes
+  // off the popover's ghost and rests beside it so the line is unobscured.
+  await moveTo(page, 838, 655, 460);
+  await page.waitForFunction(() => {
+    const f = window.__bfp.drawer.shadow.querySelector('.footbar');
+    return !!f && /^exported → /.test(f.textContent.trim());
+  }, null, { timeout: 10000 });
+  const foot = await shadowBox(page, '.footbar');
+  const exported = await page.evaluate(() =>
+    window.__bfp.drawer.shadow.querySelector('.footbar').textContent.trim());
+  rec.mark('exported', foot);
+  await restHold(page, 3600, 838, 655);
+
+  return { newThread: focus, filedCount, greenMarks: green, quote: FOCUS_QUOTE, exported };
 }
 
 // ===========================================================================

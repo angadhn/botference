@@ -50,6 +50,8 @@ const BEATS = {
   resolve:       [['entry', null, 4], ['action', 'resolved', 6], ['payoff', 'filed', 25]],
   digest:        [['entry', null, 6], ['action', 'summarize', 8], ['payoff', 'summary-landed', 40]],
   green:         [['entry', null, 4], ['action', null, 60], ['payoff', null, 140]],
+  export:        [['entry', null, 4], ['action', 'export-pick', 8], ['payoff', 'export-run', -8]],
+  exported:      [['entry', null, 6], ['action', 'exported', 12], ['payoff', null, 78]],
   'note-head':   [['entry', null, 4], ['action', null, 90], ['payoff', null, 180]],
   'note-foot':   [['entry', null, 4], ['action', null, 90], ['payoff', null, 180]],
   close:         [['entry', null, 8], ['action', null, 60], ['payoff', null, 200]],
