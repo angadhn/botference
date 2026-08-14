@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="google-site-verification" content="KRsA25ngyRAQxINv5QY3FKv5tyx-iCgMxiQ7n8NeqVg">
+<title>Botference — one room, three minds: a multi-LLM planning council</title>
+<meta name="description" content="A multi-LLM planning council: Claude Code and Codex in one room — in your terminal, your browser, or as an AI web annotator that lets you chat with any webpage.">
+<meta name="author" content="Angadh Nanjangud">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="theme-color" content="#0b0e12">
+<meta property="og:site_name" content="Botference">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Botference — one room, three minds: a multi-LLM planning council">
+<meta property="og:description" content="Run Claude Code and Codex together in one free-form room: they debate, converge, and write the plan. In your terminal, your browser, over your documents — and, with the AI web annotator, on any page on the web.">
+<meta property="og:image" content="https://botference.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="Botference: one room, three minds — a multi-LLM planning council where Claude Code and Codex debate each other while you hold the floor.">
+<meta property="og:url" content="https://botference.com/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Botference — one room, three minds: a multi-LLM planning council">
+<meta name="twitter:description" content="Run Claude Code and Codex together in one free-form room: they debate, converge, and write the plan. In your terminal, your browser, over your documents — and, with the AI web annotator, on any page on the web.">
+<meta name="twitter:image" content="https://botference.com/og-image.png">
+<meta name="twitter:image:alt" content="Botference: one room, three minds — a multi-LLM planning council where Claude Code and Codex debate each other while you hold the floor.">
+<link rel="canonical" href="https://botference.com/">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Botference",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux",
+  "description": "A multi-LLM council: Claude Code and Codex debate each other in a free-form room, steered by you. Runs in the terminal, in the browser and on your phone, over your LaTeX and Markdown documents, and — via a browser extension — on any article page on the web.",
+  "featureList": [
+    "Free-form planning council in the terminal (botference plan)",
+    "Council on the web and phone with a per-agent context panel (botference plan --web)",
+    "Google-Docs-style document review with bots in the threads (botference review)",
+    "Discuss, the AI web annotator: highlight and comment on any page, summon the bots inline (botference discuss)",
+    "Headless screenshots so agents can see their own UIs and charts (botference see)"
+  ],
+  "url": "https://botference.com/",
+  "downloadUrl": "https://github.com/angadhn/botference",
+  "license": "https://github.com/angadhn/botference/blob/main/LICENSE",
+  "softwareRequirements": "Claude Code CLI and/or Codex CLI (authenticated), Python 3, Node.js + npm",
+  "isAccessibleForFree": true,
+  "image": "https://botference.com/og-image.png",
+  "screenshot": [
+    "https://botference.com/ink-ui.png",
+    "https://botference.com/plugin-annotator.png"
+  ],
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "availability": "https://schema.org/InStock"
+  },
+  "author": { "@type": "Person", "name": "Angadh Nanjangud", "url": "https://github.com/angadhn" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Can I chat with a webpage using my Claude subscription?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Discuss, the web annotator, talks to the Claude Code CLI already installed and authenticated on your machine, so it runs on your existing subscription. There are no API keys to paste and no third-party service in the middle — nothing leaves your machine but the page you were already reading."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I comment on any website with AI?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Load the browser extension once from frontends/plugin/extension, run botference discuss in your workspace, then highlight a passage on any page and leave a comment mentioning @claude, @codex or @all. The bots reply in that same margin thread, streaming into a drawer on the right."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use Claude Code and Codex together in one conversation?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "That is the point of the council. Both CLIs join one free-form room where a reply can hand the floor to the other model, recursively, until the thread converges and returns to you. Bot-to-bot debate runs against a visible turn and token budget, and typing interrupts at the next turn boundary."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need an API key to use Botference?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Botference drives the Claude Code and Codex CLIs you already have logged in, so it inherits their authentication and your existing plan. One CLI is enough to start — with both installed, @all gets you two models disagreeing about the same problem."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Botference free and open source?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes — MIT-licensed and built in the open, free to clone and run. The only cost is the CLI subscriptions you already pay for. Sponsorship is optional and funds continued development."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I run the planning council on my phone?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. botference plan --web serves the same council as a chat app — streaming transcript, slash commands, image attachments, markdown replies, plus a per-agent context panel. Adding --share puts a password gate and a tunnel in front of it: one URL to open on your phone."
+      }
+    }
+  ]
+}
+</script>
+<style>
+  :root {
+    --bg: #070a0e;
+    --panel: #0e131a;
+    --border: #1b2430;
+    --text: #dbe2ea;
+    --muted: #7f8c9c;
+    --accent: #34d399;
+    --accent2: #22d3ee;
+    --claude: #d97757;
+    --codex: #4a86c8;
+    --max: 1120px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  img, svg, video { max-width: 100%; height: auto; }
+  .tour-link { margin-top: 10px; font-size: .85rem; text-align: center; }
+  a { color: var(--text); text-decoration: none; }
+  a:hover { color: var(--accent); }
+  code { font: inherit; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+  /* ── header ───────────────────────────────────────────────── */
+  header .wrap {
+    display: flex; align-items: center; gap: 22px; height: 64px;
+    font-size: 13px; letter-spacing: .4px;
+  }
+  .logo { font-weight: 700; letter-spacing: 1px; color: var(--text); }
+  .logo span { color: var(--accent); }
+  header nav { margin-left: auto; display: flex; gap: 22px; color: var(--muted); }
+  header nav a { color: var(--muted); }
+
+  /* ── hero ─────────────────────────────────────────────────── */
+  .hero { text-align: center; padding: 76px 0 0; position: relative; }
+  .hero::before {
+    content: ""; position: absolute; inset: -12% 0 26%;
+    background: radial-gradient(80% 62% at 50% 45%, rgba(52,211,153,.10), transparent 72%);
+    pointer-events: none; z-index: -1;
+  }
+  .eyebrow {
+    color: var(--muted); font-size: 11px; letter-spacing: 5px; text-transform: uppercase;
+  }
+  h1 {
+    margin-top: 20px;
+    font-size: clamp(33px, 6.6vw, 64px); line-height: 1.04; font-weight: 700;
+    letter-spacing: -2px;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  .sub {
+    margin: 22px auto 0; max-width: 600px; color: var(--muted);
+    font-size: clamp(14px, 3.4vw, 16.5px); line-height: 1.65;
+  }
+
+  /* ── the braid ────────────────────────────────────────────── */
+  .art { max-width: 1240px; margin: 30px auto 0; padding: 0 16px; }
+  .braid { display: block; width: 100%; height: auto; }
+  .legend {
+    display: none; gap: 10px; justify-content: center; flex-wrap: wrap;
+    color: var(--muted); font-size: 12px; letter-spacing: .5px;
+  }
+  .legend .claude { color: var(--claude); }
+  .legend .you { color: var(--accent); }
+  .legend .codex { color: var(--codex); }
+
+  /* ── the braid, as a scope trace ──────────────────────────────
+     Every rule here leaves the FINISHED braid as its base state; the
+     unfinished state lives only inside @keyframes, paired with
+     animation-fill-mode:both. Switching the animations off — reduced
+     motion, or a browser that rejects the linear() easing — therefore
+     lands on the original static artwork, not on a blank frame. */
+  /* The beam. Each strand writes itself in, one taking over from the last.
+     The woven trace is already cut into 34 over/under segments whose paint
+     order IS the weave, so each segment dashes itself on over its own slice
+     of the sweep (timings inline, computed from its x-range). Gating the
+     whole group through one mask instead would leak fragments of strands
+     that have not been drawn yet, wherever two paths pass close. */
+  .bf-seg {
+    stroke-dasharray: 100 200; stroke-dashoffset: 0;
+    animation-name: bf-seg; animation-timing-function: linear; animation-fill-mode: both;
+  }
+  /* 102, not 100: a zero-length dash under a round linecap renders as a dot,
+     which would pepper the frame with segment heads before the sweep arrives */
+  @keyframes bf-seg { from { stroke-dashoffset: 102; } }
+
+  /* The bloom is one stroke down the whole strand, so unlike the segments it
+     cannot get its horizontal pacing from an x-range: dashing it advances the
+     front along ARC length, which on a wave runs well ahead of x. This easing
+     is the measured time → arc-length curve of the strands, which puts the
+     bloom back under the trace. Browsers without linear() take the plain
+     linear line above and trail the front a little; nothing breaks. */
+  .bf-sweep use { stroke-dasharray: 1000; stroke-dashoffset: 0; }
+  .bf-sweep .s1, .bf-sweep .s2, .bf-sweep .s3 {
+    animation: bf-sweep 2.5s both;
+    animation-timing-function: linear;
+    animation-timing-function: linear(0 0%, .061 5%, .122 10%, .184 15%, .246 20%,
+      .309 25%, .372 30%, .436 35%, .499 40%, .563 45%, .625 50%, .683 55%,
+      .737 60%, .785 65%, .827 70%, .864 75%, .896 80%, .925 85%, .951 90%,
+      .975 95%, 1 100%);
+  }
+  .bf-sweep .s1 { animation-delay: .20s; }
+  .bf-sweep .s2 { animation-delay: .42s; }
+  .bf-sweep .s3 { animation-delay: .64s; }
+  @keyframes bf-sweep { from { stroke-dashoffset: 1000; } }
+
+  /* graticule, emitters, crossing sparks, labels — all fade to their own
+     resting opacity, so the keyframe never has to know what that is */
+  .braid .rules  { animation: bf-in 1.1s ease-out .05s both; }
+  .bf-seed.s1    { animation: bf-in .5s ease-out .05s both; }
+  .bf-seed.s2    { animation: bf-in .5s ease-out .27s both; }
+  .bf-seed.s3    { animation: bf-in .5s ease-out .49s both; }
+  .bf-dots       { animation: bf-in .9s ease-out 2.35s both; }
+  .bf-label      { animation: bf-in .7s ease-out both; }
+  .bf-label.s1   { animation-delay: .10s; }
+  .bf-label.s2   { animation-delay: .32s; }
+  .bf-label.s3   { animation-delay: .54s; }
+  .bf-label.plan { animation-delay: 3.05s; }
+  @keyframes bf-in { from { opacity: 0; } }
+
+  /* the convergence lights last: the plan wipes out to the cursor */
+  .bf-plan-clip {
+    transform-box: view-box; transform-origin: 745px 170px; transform: scaleX(1);
+    animation: bf-plan 1.15s cubic-bezier(.22,.68,.28,1) 2.62s both;
+  }
+  @keyframes bf-plan { from { transform: scaleX(0); } }
+
+  /* Ambient — phosphor. A bright head runs one strand at a time (15s cycle,
+     5s apart, so exactly one strand is ever lit), reaches the fuse point, and
+     carries on down the plan line in that strand's colour; the cursor blooms a
+     beat later. Nothing but stroke-dashoffset and opacity moves, so no filter
+     is re-run per frame.
+     The head is four dashes of different lengths, offset so their LEADING
+     edges coincide and their tails do not — the overlap is the decay. Every
+     dash pattern and every offset range totals 3165 path units, so each layer
+     loops seamlessly and the four never drift apart. */
+  .bf-comet .t0 { stroke-dasharray:  30 3135; stroke-dashoffset:  64; animation-name: bf-c0; }
+  .bf-comet .t1 { stroke-dasharray:  26 3139; stroke-dashoffset:  60; animation-name: bf-c1; }
+  .bf-comet .t2 { stroke-dasharray:  60 3105; stroke-dashoffset:  94; animation-name: bf-c2; }
+  .bf-comet .t3 { stroke-dasharray: 150 3015; stroke-dashoffset: 184; animation-name: bf-c3; }
+  .bf-comet use { animation-duration: 15s; animation-timing-function: linear;
+                  animation-iteration-count: infinite; animation-fill-mode: both; }
+  .bf-comet .s1 use { animation-delay:  3.6s; }
+  .bf-comet .s2 use { animation-delay:  8.6s; }
+  .bf-comet .s3 use { animation-delay: 13.6s; }
+  @keyframes bf-c0 { from { stroke-dashoffset:  64 } to { stroke-dashoffset: -3101 } }
+  @keyframes bf-c1 { from { stroke-dashoffset:  60 } to { stroke-dashoffset: -3105 } }
+  @keyframes bf-c2 { from { stroke-dashoffset:  94 } to { stroke-dashoffset: -3071 } }
+  @keyframes bf-c3 { from { stroke-dashoffset: 184 } to { stroke-dashoffset: -2981 } }
+
+  .bf-plan-pulse g { stroke-dasharray: 12 1668; stroke-dashoffset: 12; }
+  .bf-plan-pulse .s1 { animation: bf-relay 15s linear  8.5s infinite both; }
+  .bf-plan-pulse .s2 { animation: bf-relay 15s linear 13.5s infinite both; }
+  .bf-plan-pulse .s3 { animation: bf-relay 15s linear 18.5s infinite both; }
+  @keyframes bf-relay { from { stroke-dashoffset: 12; } to { stroke-dashoffset: -1668; } }
+
+  .bf-cursor { animation: bf-cursor 5s ease-out 9.5s infinite both; }
+  @keyframes bf-cursor { 0% { opacity: 0 } 7% { opacity: .5 } 45%, 100% { opacity: 0 } }
+
+  .bf-glow { animation: bf-breathe 13s ease-in-out 4.2s infinite; }
+  @keyframes bf-breathe { 0%, 100% { opacity: .52 } 50% { opacity: .63 } }
+
+  /* one switch: base styles are already the finished braid, so dropping
+     the animations shows it whole and still, and stops all repainting */
+  @media (prefers-reduced-motion: reduce) {
+    .braid, .braid * { animation: none !important; }
+    .bf-comet, .bf-plan-pulse, .bf-cursor { display: none; }
+  }
+
+  /* ── install line ─────────────────────────────────────────── */
+  .install {
+    margin: 26px auto 0; max-width: 520px;
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; font-size: 13.5px; line-height: 1.5; text-align: left;
+    overflow-x: auto;
+  }
+  .install > span { display: flex; gap: 8px; align-items: baseline; }
+  .install .dollar { color: var(--accent); user-select: none; }
+  .install code { white-space: nowrap; }
+  .beneath {
+    margin: 16px 0 0; color: var(--muted); font-size: 12.5px; letter-spacing: .3px;
+  }
+  /* under a surface the caption sits below a centred h2, so it centres too */
+  .surface .beneath { text-align: center; max-width: 620px; margin-inline: auto; }
+  .surface .beneath code { color: var(--text); }
+  .beneath a { color: var(--muted); border-bottom: 1px solid var(--border); }
+  .beneath a:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ── surfaces ─────────────────────────────────────────────── */
+  .surface { margin-top: 132px; }
+  .surface figure {
+    border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    background: #0a0d12; box-shadow: 0 30px 90px rgba(0,0,0,.6);
+    line-height: 0;
+  }
+  .surface img { display: block; width: 100%; height: auto; }
+  h2 {
+    margin: 22px auto 0; max-width: 640px; text-align: center;
+    font-size: clamp(13.5px, 3.2vw, 15px); font-weight: 400; line-height: 1.7;
+    color: var(--muted); letter-spacing: .2px;
+  }
+  h2 b { color: var(--text); font-weight: 700; }
+  h2 code { color: var(--accent); white-space: nowrap; }
+
+  /* ── faq ──────────────────────────────────────────────────── */
+  .faq { margin: 132px auto 0; }
+  .faq details {
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    padding: 16px 2px;
+  }
+  .faq summary {
+    list-style: none; cursor: pointer; color: var(--muted);
+    font-size: 12px; letter-spacing: 2.4px; text-transform: uppercase;
+  }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::before { content: "+ "; color: var(--accent); }
+  .faq details[open] summary::before { content: "− "; }
+  .faq summary:hover { color: var(--text); }
+  .faq dl { margin-top: 22px; display: grid; gap: 20px; }
+  .faq dt { font-size: 14px; color: var(--text); }
+  .faq dd { margin-top: 5px; color: var(--muted); font-size: 13.5px; line-height: 1.65; max-width: 760px; }
+  .faq dd code, .faq dd .k { color: var(--accent); }
+
+  /* ── footer ───────────────────────────────────────────────── */
+  footer { margin-top: 72px; padding: 26px 0 56px; color: var(--muted); font-size: 12px; }
+  footer .wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+  footer .spacer { margin-left: auto; }
+  footer a { color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .hero { padding-top: 44px; }
+    .art { margin-top: 20px; padding: 0; }
+    .braid-labels, .braid .rules { display: none; }
+    .legend { display: flex; }
+    .wrap { padding: 0 18px; }
+    .install { margin-top: 20px; font-size: 10.5px; padding: 14px 12px; gap: 8px; }
+    .install code { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .surface { margin-top: 84px; }
+    .surface figure { border-radius: 10px; }
+    .faq { margin-top: 84px; }
+    footer .spacer { display: none; }
+  }
+
+  @media (max-width: 400px) {
+    .eyebrow { font-size: 10px; letter-spacing: 3px; }
+  }
+</style>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-GR3QKD82JS"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-GR3QKD82JS');
+</script>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="logo" href="/" title="Botference — home">botference<span>_</span></a>
+    <nav>
+      <a href="https://github.com/angadhn/botference">GitHub</a>
+      <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <div class="hero">
+    <div class="wrap">
+      <p class="eyebrow">multi-LLM planning council</p>
+      <h1>One room.<br><em>Three minds.</em></h1>
+      <p class="sub">
+        Claude Code and Codex argue it out in one free-form room, with you steering —
+        and a plan comes out the other side.
+      </p>
+    </div>
+
+    <div class="art">
+      <svg class="braid" viewBox="0 0 1200 340" role="img" aria-labelledby="braid-title" preserveAspectRatio="xMidYMid meet">
+<title id="braid-title">Three strands of light — claude, you, codex — twisting around one axis and fusing into a single bright line labelled "the plan".</title>
+<defs>
+<filter id="bl-soft" x="-30%" y="-60%" width="160%" height="220%"><feGaussianBlur stdDeviation="22"/></filter>
+<filter id="bl-hot" filterUnits="userSpaceOnUse" x="-80" y="-140" width="1360" height="620"><feGaussianBlur stdDeviation="5"/></filter>
+<filter id="bl-wide" filterUnits="userSpaceOnUse" x="-80" y="-140" width="1360" height="620"><feGaussianBlur stdDeviation="16"/></filter>
+<filter id="bl-dot" x="-400%" y="-400%" width="900%" height="900%"><feGaussianBlur stdDeviation="7"/></filter>
+<linearGradient id="fuse" x1="830" y1="0" x2="1108" y2="0" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#8ef7cf"/><stop offset="0.45" stop-color="#e8fff6"/><stop offset="1" stop-color="#ffffff"/></linearGradient>
+<path id="bf-claude" pathLength="1000" d="M118 68.5L120.7 64.1L123.5 60.3L126.2 57.2L129 54.8L131.7 53.2L134.4 52.3L137.2 52.1L139.9 52.7L142.6 54.1L145.4 56.2L148.1 59L150.9 62.5L153.6 66.7L156.3 71.6L159.1 77.1L161.8 83.2L164.6 89.9L167.3 97.1L170 104.8L172.8 112.9L175.5 121.4L178.2 130.2L181 139.2L183.7 148.5L186.5 158L189.2 167.5L191.9 177.1L194.7 186.6L197.4 196L200.2 205.3L202.9 214.4L205.6 223.2L208.4 231.7L211.1 239.8L213.8 247.5L216.6 254.7L219.3 261.4L222.1 267.5L224.8 273L227.5 277.8L230.3 282L233 285.5L235.8 288.2L238.5 290.2L241.2 291.4L244 291.8L246.7 291.5L249.4 290.4L252.2 288.5L254.9 285.9L257.7 282.5L260.4 278.4L263.1 273.7L265.9 268.2L268.6 262.1L271.4 255.4L274.1 248.2L276.8 240.4L279.6 232.2L282.3 223.6L285 214.7L287.8 205.4L290.5 195.9L293.3 186.2L296 176.5L298.7 166.6L301.5 156.8L304.2 147L307 137.4L309.7 128L312.4 118.8L315.2 110L317.9 101.5L320.6 93.4L323.4 85.8L326.1 78.8L328.9 72.3L331.6 66.5L334.3 61.2L337.1 56.7L339.8 52.9L342.6 49.9L345.3 47.6L348 46.1L350.8 45.3L353.5 45.4L356.2 46.2L359 47.9L361.7 50.3L364.5 53.5L367.2 57.4L369.9 62.1L372.7 67.4L375.4 73.4L378.2 80L380.9 87.2L383.6 95L386.4 103.2L389.1 111.8L391.8 120.8L394.6 130.2L397.3 139.8L400.1 149.6L402.8 159.5L405.5 169.5L408.3 179.5L411 189.4L413.8 199.2L416.5 208.8L419.2 218.1L422 227.1L424.7 235.7L427.4 243.8L430.2 251.4L432.9 258.4L435.7 264.8L438.4 270.6L441.1 275.7L443.9 280L446.6 283.6L449.4 286.4L452.1 288.4L454.8 289.6L457.6 290.1L460.3 289.7L463 288.6L465.8 286.7L468.5 284L471.3 280.6L474 276.6L476.7 271.9L479.5 266.5L482.2 260.6L485 254.2L487.7 247.3L490.4 240L493.2 232.3L495.9 224.4L498.6 216.2L501.4 207.8L504.1 199.3L506.9 190.8L509.6 182.2L512.3 173.7L515.1 165.4L517.8 157.2L520.6 149.3L523.3 141.6L526 134.3L528.8 127.4L531.5 120.9L534.2 114.8L537 109.3L539.7 104.3L542.5 99.8L545.2 95.9L547.9 92.6L550.7 89.9L553.4 87.8L556.2 86.2L558.9 85.3L561.6 85L564.4 85.3L567.1 86.1L569.8 87.4L572.6 89.3L575.3 91.7L578.1 94.5L580.8 97.8L583.5 101.4L586.3 105.4L589 109.7L591.8 114.3L594.5 119.2L597.2 124.2L600 129.3L602.7 134.6L605.4 139.9L608.2 145.2L610.9 150.5L613.7 155.8L616.4 160.9L619.1 165.9L621.9 170.8L624.6 175.4L627.4 179.8L630.1 184L632.8 187.9L635.6 191.5L638.3 194.7L641 197.7L643.8 200.3L646.5 202.6L649.3 204.5L652 206.1L654.7 207.3L657.5 208.2L660.2 208.8L663 209L665.7 209L668.4 208.7L671.2 208L673.9 207.2L676.6 206.1L679.4 204.7L682.1 203.2L684.9 201.6L687.6 199.7L690.3 197.8L693.1 195.8L695.8 193.7L698.6 191.5L701.3 189.3L704 187.1L706.8 185L709.5 182.9L712.2 180.8L715 178.8L717.7 176.9L720.5 175.1L723.2 173.4L725.9 171.8L728.7 170.3L731.4 169L734.2 167.8L736.9 166.8L739.6 165.9L742.4 165.1L745.1 164.5L747.8 164L750.6 163.7L753.3 163.4L756.1 163.3L758.8 163.3L761.5 163.3L764.3 163.5L767 163.7L769.8 164L772.5 164.4L775.2 164.8L778 165.2L780.7 165.6L783.4 166.1L786.2 166.5L788.9 167L791.7 167.4L794.4 167.8L797.1 168.2L799.9 168.5L802.6 168.8L805.4 169.1L808.1 169.3L810.8 169.5L813.6 169.7L816.3 169.8L819 169.9L821.8 169.9L824.5 170L827.3 170L830 170"/>
+<path id="bf-you" pathLength="1000" d="M118 170L120.7 179.3L123.5 188.6L126.2 197.8L129 206.9L131.7 215.7L134.4 224.2L137.2 232.5L139.9 240.3L142.6 247.7L145.4 254.6L148.1 261L150.9 266.8L153.6 272L156.3 276.6L159.1 280.5L161.8 283.7L164.6 286.2L167.3 288L170 289L172.8 289.3L175.5 288.8L178.2 287.5L181 285.5L183.7 282.7L186.5 279.2L189.2 275.1L191.9 270.2L194.7 264.7L197.4 258.6L200.2 251.9L202.9 244.7L205.6 237L208.4 228.9L211.1 220.3L213.8 211.5L216.6 202.3L219.3 193L222.1 183.4L224.8 173.8L227.5 164.1L230.3 154.5L233 144.9L235.8 135.5L238.5 126.3L241.2 117.4L244 108.7L246.7 100.5L249.4 92.7L252.2 85.3L254.9 78.5L257.7 72.3L260.4 66.7L263.1 61.7L265.9 57.4L268.6 53.8L271.4 51L274.1 48.9L276.8 47.6L279.6 47.1L282.3 47.3L285 48.3L287.8 50.1L290.5 52.7L293.3 56L296 60L298.7 64.8L301.5 70.2L304.2 76.3L307 82.9L309.7 90.2L312.4 97.9L315.2 106.1L317.9 114.8L320.6 123.8L323.4 133.1L326.1 142.6L328.9 152.3L331.6 162.2L334.3 172.1L337.1 182L339.8 191.8L342.6 201.6L345.3 211.1L348 220.3L350.8 229.3L353.5 237.9L356.2 246L359 253.7L361.7 260.9L364.5 267.5L367.2 273.4L369.9 278.7L372.7 283.4L375.4 287.3L378.2 290.4L380.9 292.8L383.6 294.4L386.4 295.3L389.1 295.3L391.8 294.5L394.6 292.9L397.3 290.6L400.1 287.5L402.8 283.6L405.5 279L408.3 273.7L411 267.7L413.8 261L416.5 253.8L419.2 246L422 237.8L424.7 229.1L427.4 220L430.2 210.7L432.9 201.1L435.7 191.4L438.4 181.6L441.1 171.8L443.9 162L446.6 152.3L449.4 142.9L452.1 133.6L454.8 124.7L457.6 116.2L460.3 108L463 100.4L465.8 93.3L468.5 86.8L471.3 80.9L474 75.6L476.7 71L479.5 67.2L482.2 64L485 61.6L487.7 59.9L490.4 59L493.2 58.8L495.9 59.4L498.6 60.7L501.4 62.6L504.1 65.3L506.9 68.6L509.6 72.5L512.3 77L515.1 82L517.8 87.6L520.6 93.5L523.3 99.9L526 106.6L528.8 113.5L531.5 120.8L534.2 128.1L537 135.6L539.7 143.2L542.5 150.8L545.2 158.3L547.9 165.8L550.7 173.1L553.4 180.2L556.2 187L558.9 193.6L561.6 199.8L564.4 205.7L567.1 211.1L569.8 216.2L572.6 220.8L575.3 224.9L578.1 228.5L580.8 231.6L583.5 234.2L586.3 236.3L589 237.9L591.8 239L594.5 239.5L597.2 239.6L600 239.2L602.7 238.3L605.4 237L608.2 235.2L610.9 233.1L613.7 230.6L616.4 227.8L619.1 224.7L621.9 221.3L624.6 217.7L627.4 213.9L630.1 210L632.8 206L635.6 201.8L638.3 197.6L641 193.5L643.8 189.3L646.5 185.2L649.3 181.2L652 177.3L654.7 173.5L657.5 169.9L660.2 166.5L663 163.3L665.7 160.3L668.4 157.5L671.2 155L673.9 152.8L676.6 150.8L679.4 149.1L682.1 147.7L684.9 146.5L687.6 145.6L690.3 144.9L693.1 144.5L695.8 144.3L698.6 144.3L701.3 144.6L704 145L706.8 145.7L709.5 146.5L712.2 147.4L715 148.4L717.7 149.6L720.5 150.9L723.2 152.2L725.9 153.6L728.7 155L731.4 156.4L734.2 157.8L736.9 159.2L739.6 160.6L742.4 161.9L745.1 163.1L747.8 164.3L750.6 165.5L753.3 166.5L756.1 167.5L758.8 168.3L761.5 169.1L764.3 169.8L767 170.4L769.8 170.8L772.5 171.2L775.2 171.5L778 171.8L780.7 171.9L783.4 172L786.2 172L788.9 172L791.7 171.9L794.4 171.7L797.1 171.6L799.9 171.4L802.6 171.2L805.4 171L808.1 170.9L810.8 170.7L813.6 170.5L816.3 170.4L819 170.2L821.8 170.1L824.5 170.1L827.3 170L830 170"/>
+<path id="bf-codex" pathLength="1000" d="M118 271.5L120.7 266.6L123.5 261.1L126.2 254.9L129 248.3L131.7 241.1L134.4 233.5L137.2 225.4L139.9 217L142.6 208.2L145.4 199.2L148.1 190L150.9 180.7L153.6 171.2L156.3 161.8L159.1 152.4L161.8 143L164.6 133.9L167.3 124.9L170 116.2L172.8 107.9L175.5 99.9L178.2 92.4L181 85.3L183.7 78.8L186.5 72.8L189.2 67.4L191.9 62.7L194.7 58.7L197.4 55.4L200.2 52.7L202.9 50.9L205.6 49.8L208.4 49.4L211.1 49.8L213.8 51L216.6 53L219.3 55.6L222.1 59.1L224.8 63.2L227.5 68L230.3 73.5L233 79.6L235.8 86.3L238.5 93.5L241.2 101.2L244 109.4L246.7 118L249.4 126.9L252.2 136.1L254.9 145.6L257.7 155.2L260.4 164.9L263.1 174.6L265.9 184.4L268.6 194L271.4 203.6L274.1 212.9L276.8 222L279.6 230.7L282.3 239.1L285 247L287.8 254.5L290.5 261.4L293.3 267.8L296 273.5L298.7 278.6L301.5 283L304.2 286.7L307 289.6L309.7 291.8L312.4 293.3L315.2 293.9L317.9 293.8L320.6 292.8L323.4 291.1L326.1 288.6L328.9 285.3L331.6 281.4L334.3 276.6L337.1 271.3L339.8 265.2L342.6 258.6L345.3 251.4L348 243.6L350.8 235.4L353.5 226.7L356.2 217.7L359 208.4L361.7 198.8L364.5 189.1L367.2 179.2L369.9 169.2L372.7 159.2L375.4 149.3L378.2 139.5L380.9 129.9L383.6 120.6L386.4 111.6L389.1 102.9L391.8 94.7L394.6 86.9L397.3 79.6L400.1 73L402.8 66.9L405.5 61.5L408.3 56.8L411 52.9L413.8 49.7L416.5 47.4L419.2 45.8L422 45.1L424.7 45.2L427.4 46.2L430.2 47.9L432.9 50.4L435.7 53.7L438.4 57.8L441.1 62.6L443.9 68L446.6 74.1L449.4 80.8L452.1 88L454.8 95.6L457.6 103.8L460.3 112.2L463 121L465.8 130L468.5 139.2L471.3 148.5L474 157.8L476.7 167.1L479.5 176.3L482.2 185.4L485 194.2L487.7 202.8L490.4 211L493.2 218.8L495.9 226.2L498.6 233.2L501.4 239.6L504.1 245.4L506.9 250.6L509.6 255.3L512.3 259.3L515.1 262.6L517.8 265.2L520.6 267.2L523.3 268.5L526 269.1L528.8 269.1L531.5 268.4L534.2 267L537 265L539.7 262.5L542.5 259.4L545.2 255.7L547.9 251.6L550.7 247.1L553.4 242.1L556.2 236.7L558.9 231.1L561.6 225.2L564.4 219.1L567.1 212.8L569.8 206.4L572.6 199.9L575.3 193.4L578.1 187L580.8 180.6L583.5 174.3L586.3 168.2L589 162.3L591.8 156.7L594.5 151.3L597.2 146.3L600 141.5L602.7 137.1L605.4 133.2L608.2 129.6L610.9 126.4L613.7 123.6L616.4 121.3L619.1 119.4L621.9 117.9L624.6 116.9L627.4 116.2L630.1 116L632.8 116.2L635.6 116.7L638.3 117.6L641 118.9L643.8 120.4L646.5 122.2L649.3 124.3L652 126.7L654.7 129.2L657.5 131.9L660.2 134.7L663 137.7L665.7 140.7L668.4 143.8L671.2 146.9L673.9 150L676.6 153.1L679.4 156.2L682.1 159.1L684.9 162L687.6 164.7L690.3 167.3L693.1 169.8L695.8 172L698.6 174.2L701.3 176.1L704 177.8L706.8 179.3L709.5 180.7L712.2 181.8L715 182.8L717.7 183.5L720.5 184.1L723.2 184.5L725.9 184.7L728.7 184.7L731.4 184.6L734.2 184.4L736.9 184L739.6 183.6L742.4 183L745.1 182.3L747.8 181.6L750.6 180.9L753.3 180.1L756.1 179.2L758.8 178.4L761.5 177.5L764.3 176.7L767 175.9L769.8 175.1L772.5 174.4L775.2 173.7L778 173.1L780.7 172.5L783.4 171.9L786.2 171.5L788.9 171.1L791.7 170.7L794.4 170.5L797.1 170.2L799.9 170.1L802.6 169.9L805.4 169.9L808.1 169.8L810.8 169.8L813.6 169.8L816.3 169.8L819 169.9L821.8 169.9L824.5 170L827.3 170L830 170"/>
+</defs>
+<clipPath id="bf-plan-wipe"><rect class="bf-plan-clip" x="745" y="60" width="470" height="220"/></clipPath>
+<g class="rules" stroke="#3a4a5c" stroke-width="1" opacity=".30">
+<line x1="40" y1="38" x2="1160" y2="38"/>
+<line x1="40" y1="104" x2="1160" y2="104"/>
+<line x1="40" y1="170" x2="1160" y2="170"/>
+<line x1="40" y1="236" x2="1160" y2="236"/>
+<line x1="40" y1="302" x2="1160" y2="302"/>
+</g>
+<g class="bf-sweep bf-glow" style="mix-blend-mode:screen" fill="none" stroke-linecap="round" filter="url(#bl-soft)" opacity=".52">
+<use class="s1" href="#bf-claude" stroke="#d97757" stroke-width="17"/>
+<use class="s2" href="#bf-you" stroke="#34d399" stroke-width="17"/>
+<use class="s3" href="#bf-codex" stroke="#4a86c8" stroke-width="17"/>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+<path class="bf-seg" pathLength="100" style="animation-duration:0.317s;animation-delay:0.640s" d="M118 271.5L120.7 266.6L123.5 261.1L126.2 254.9L129 248.3L131.7 241.1L134.4 233.5L137.2 225.4L139.9 217L142.6 208.2L145.4 199.2L148.1 190L150.9 180.7L153.6 171.2L156.3 161.8L159.1 152.4L161.8 143L164.6 133.9L167.3 124.9L170 116.2L172.8 107.9L175.5 99.9L178.2 92.4L181 85.3L183.7 78.8L186.5 72.8L189.2 67.4L191.9 62.7L194.7 58.7L197.4 55.4L200.2 52.7L202.9 50.9L205.6 49.8L208.4 49.4" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.289s;animation-delay:2.851s" d="M747.8 181.6L747.8 181.6L750.6 180.9L753.3 180.1L756.1 179.2L758.8 178.4L761.5 177.5L764.3 176.7L767 175.9L769.8 175.1L772.5 174.4L775.2 173.7L778 173.1L780.7 172.5L783.4 171.9L786.2 171.5L788.9 171.1L791.7 170.7L794.4 170.5L797.1 170.2L799.9 170.1L802.6 169.9L805.4 169.9L808.1 169.8L810.8 169.8L813.6 169.8L816.3 169.8L819 169.9L821.8 169.9L824.5 170L827.3 170L830 170" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:2.131s" d="M605.4 237L605.4 237L608.2 235.2L610.9 233.1L613.7 230.6L616.4 227.8L619.1 224.7L621.9 221.3L624.6 217.7L627.4 213.9L630.1 210L632.8 206L635.6 201.8L638.3 197.6L641 193.5L643.8 189.3L646.5 185.2L649.3 181.2L652 177.3L654.7 173.5L657.5 169.9L660.2 166.5L663 163.3L665.7 160.3L668.4 157.5L671.2 155L673.9 152.8L676.6 150.8L679.4 149.1L682.1 147.7L684.9 146.5L687.6 145.6L690.3 144.9L693.1 144.5L695.8 144.3L698.6 144.3L701.3 144.6L704 145L706.8 145.7L709.5 146.5L712.2 147.4" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:1.342s" d="M317.9 293.8L317.9 293.8L320.6 292.8L323.4 291.1L326.1 288.6L328.9 285.3L331.6 281.4L334.3 276.6L337.1 271.3L339.8 265.2L342.6 258.6L345.3 251.4L348 243.6L350.8 235.4L353.5 226.7L356.2 217.7L359 208.4L361.7 198.8L364.5 189.1L367.2 179.2L369.9 169.2L372.7 159.2L375.4 149.3L378.2 139.5L380.9 129.9L383.6 120.6L386.4 111.6L389.1 102.9L391.8 94.7L394.6 86.9L397.3 79.6L400.1 73L402.8 66.9L405.5 61.5L408.3 56.8L411 52.9L413.8 49.7L416.5 47.4L419.2 45.8L422 45.1L424.7 45.2" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:1.372s" d="M389.1 295.3L389.1 295.3L391.8 294.5L394.6 292.9L397.3 290.6L400.1 287.5L402.8 283.6L405.5 279L408.3 273.7L411 267.7L413.8 261L416.5 253.8L419.2 246L422 237.8L424.7 229.1L427.4 220L430.2 210.7L432.9 201.1L435.7 191.4L438.4 181.6L441.1 171.8L443.9 162L446.6 152.3L449.4 142.9L452.1 133.6L454.8 124.7L457.6 116.2L460.3 108L463 100.4L465.8 93.3L468.5 86.8L471.3 80.9L474 75.6L476.7 71L479.5 67.2L482.2 64L485 61.6L487.7 59.9L490.4 59L493.2 58.8L495.9 59.4" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:2.161s" d="M676.6 206.1L676.6 206.1L679.4 204.7L682.1 203.2L684.9 201.6L687.6 199.7L690.3 197.8L693.1 195.8L695.8 193.7L698.6 191.5L701.3 189.3L704 187.1L706.8 185L709.5 182.9L712.2 180.8L715 178.8L717.7 176.9L720.5 175.1L723.2 173.4L725.9 171.8L728.7 170.3L731.4 169L734.2 167.8L736.9 166.8L739.6 165.9L742.4 165.1L745.1 164.5L747.8 164L750.6 163.7L753.3 163.4L756.1 163.3L758.8 163.3L761.5 163.3L764.3 163.5L767 163.7L769.8 164L772.5 164.4L775.2 164.8L778 165.2L780.7 165.6L783.4 166.1" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:2.101s" d="M534.2 267L534.2 267L537 265L539.7 262.5L542.5 259.4L545.2 255.7L547.9 251.6L550.7 247.1L553.4 242.1L556.2 236.7L558.9 231.1L561.6 225.2L564.4 219.1L567.1 212.8L569.8 206.4L572.6 199.9L575.3 193.4L578.1 187L580.8 180.6L583.5 174.3L586.3 168.2L589 162.3L591.8 156.7L594.5 151.3L597.2 146.3L600 141.5L602.7 137.1L605.4 133.2L608.2 129.6L610.9 126.4L613.7 123.6L616.4 121.3L619.1 119.4L621.9 117.9L624.6 116.9L627.4 116.2L630.1 116L632.8 116.2L635.6 116.7L638.3 117.6L641 118.9" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:1.402s" d="M460.3 289.7L460.3 289.7L463 288.6L465.8 286.7L468.5 284L471.3 280.6L474 276.6L476.7 271.9L479.5 266.5L482.2 260.6L485 254.2L487.7 247.3L490.4 240L493.2 232.3L495.9 224.4L498.6 216.2L501.4 207.8L504.1 199.3L506.9 190.8L509.6 182.2L512.3 173.7L515.1 165.4L517.8 157.2L520.6 149.3L523.3 141.6L526 134.3L528.8 127.4L531.5 120.9L534.2 114.8L537 109.3L539.7 104.3L542.5 99.8L545.2 95.9L547.9 92.6L550.7 89.9L553.4 87.8L556.2 86.2L558.9 85.3L561.6 85L564.4 85.3L567.1 86.1L569.8 87.4" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:0.612s" d="M172.8 289.3L172.8 289.3L175.5 288.8L178.2 287.5L181 285.5L183.7 282.7L186.5 279.2L189.2 275.1L191.9 270.2L194.7 264.7L197.4 258.6L200.2 251.9L202.9 244.7L205.6 237L208.4 228.9L211.1 220.3L213.8 211.5L216.6 202.3L219.3 193L222.1 183.4L224.8 173.8L227.5 164.1L230.3 154.5L233 144.9L235.8 135.5L238.5 126.3L241.2 117.4L244 108.7L246.7 100.5L249.4 92.7L252.2 85.3L254.9 78.5L257.7 72.3L260.4 66.7L263.1 61.7L265.9 57.4L268.6 53.8L271.4 51L274.1 48.9L276.8 47.6L279.6 47.1L282.3 47.3" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:0.642s" d="M244 291.8L244 291.8L246.7 291.5L249.4 290.4L252.2 288.5L254.9 285.9L257.7 282.5L260.4 278.4L263.1 273.7L265.9 268.2L268.6 262.1L271.4 255.4L274.1 248.2L276.8 240.4L279.6 232.2L282.3 223.6L285 214.7L287.8 205.4L290.5 195.9L293.3 186.2L296 176.5L298.7 166.6L301.5 156.8L304.2 147L307 137.4L309.7 128L312.4 118.8L315.2 110L317.9 101.5L320.6 93.4L323.4 85.8L326.1 78.8L328.9 72.3L331.6 66.5L334.3 61.2L337.1 56.7L339.8 52.9L342.6 49.9L345.3 47.6L348 46.1L350.8 45.3L353.5 45.4" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.067s;animation-delay:0.200s" d="M118 68.5L120.7 64.1L123.5 60.3L126.2 57.2L129 54.8L131.7 53.2L134.4 52.3L137.2 52.1" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.029s;animation-delay:2.891s" d="M821.8 170.1L821.8 170.1L824.5 170.1L827.3 170L830 170" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.164s;animation-delay:2.536s" d="M783.4 166.1L783.4 166.1L786.2 166.5L788.9 167L791.7 167.4L794.4 167.8L797.1 168.2L799.9 168.5L802.6 168.8L805.4 169.1L808.1 169.3L810.8 169.5L813.6 169.7L816.3 169.8L819 169.9L821.8 169.9L824.5 170L827.3 170L830 170" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.164s;animation-delay:2.536s" d="M783.4 166.1L783.4 166.1L786.2 166.5L788.9 167L791.7 167.4L794.4 167.8L797.1 168.2L799.9 168.5L802.6 168.8L805.4 169.1L808.1 169.3L810.8 169.5L813.6 169.7L816.3 169.8L819 169.9L821.8 169.9L824.5 170L827.3 170L830 170" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:1.717s" d="M424.7 45.2L424.7 45.2L427.4 46.2L430.2 47.9L432.9 50.4L435.7 53.7L438.4 57.8L441.1 62.6L443.9 68L446.6 74.1L449.4 80.8L452.1 88L454.8 95.6L457.6 103.8L460.3 112.2L463 121L465.8 130L468.5 139.2L471.3 148.5L474 157.8L476.7 167.1L479.5 176.3L482.2 185.4L485 194.2L487.7 202.8L490.4 211L493.2 218.8L495.9 226.2L498.6 233.2L501.4 239.6L504.1 245.4L506.9 250.6L509.6 255.3L512.3 259.3L515.1 262.6L517.8 265.2L520.6 267.2L523.3 268.5L526 269.1L528.8 269.1L531.5 268.4L534.2 267" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:1.717s" d="M424.7 45.2L424.7 45.2L427.4 46.2L430.2 47.9L432.9 50.4L435.7 53.7L438.4 57.8L441.1 62.6L443.9 68L446.6 74.1L449.4 80.8L452.1 88L454.8 95.6L457.6 103.8L460.3 112.2L463 121L465.8 130L468.5 139.2L471.3 148.5L474 157.8L476.7 167.1L479.5 176.3L482.2 185.4L485 194.2L487.7 202.8L490.4 211L493.2 218.8L495.9 226.2L498.6 233.2L501.4 239.6L504.1 245.4L506.9 250.6L509.6 255.3L512.3 259.3L515.1 262.6L517.8 265.2L520.6 267.2L523.3 268.5L526 269.1L528.8 269.1L531.5 268.4L534.2 267" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.385s;animation-delay:2.506s" d="M712.2 147.4L712.2 147.4L715 148.4L717.7 149.6L720.5 150.9L723.2 152.2L725.9 153.6L728.7 155L731.4 156.4L734.2 157.8L736.9 159.2L739.6 160.6L742.4 161.9L745.1 163.1L747.8 164.3L750.6 165.5L753.3 166.5L756.1 167.5L758.8 168.3L761.5 169.1L764.3 169.8L767 170.4L769.8 170.8L772.5 171.2L775.2 171.5L778 171.8L780.7 171.9L783.4 172L786.2 172L788.9 172L791.7 171.9L794.4 171.7L797.1 171.6L799.9 171.4L802.6 171.2L805.4 171L808.1 170.9L810.8 170.7L813.6 170.5L816.3 170.4L819 170.2L821.8 170.1" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.385s;animation-delay:2.506s" d="M712.2 147.4L712.2 147.4L715 148.4L717.7 149.6L720.5 150.9L723.2 152.2L725.9 153.6L728.7 155L731.4 156.4L734.2 157.8L736.9 159.2L739.6 160.6L742.4 161.9L745.1 163.1L747.8 164.3L750.6 165.5L753.3 166.5L756.1 167.5L758.8 168.3L761.5 169.1L764.3 169.8L767 170.4L769.8 170.8L772.5 171.2L775.2 171.5L778 171.8L780.7 171.9L783.4 172L786.2 172L788.9 172L791.7 171.9L794.4 171.7L797.1 171.6L799.9 171.4L802.6 171.2L805.4 171L808.1 170.9L810.8 170.7L813.6 170.5L816.3 170.4L819 170.2L821.8 170.1" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:1.747s" d="M495.9 59.4L495.9 59.4L498.6 60.7L501.4 62.6L504.1 65.3L506.9 68.6L509.6 72.5L512.3 77L515.1 82L517.8 87.6L520.6 93.5L523.3 99.9L526 106.6L528.8 113.5L531.5 120.8L534.2 128.1L537 135.6L539.7 143.2L542.5 150.8L545.2 158.3L547.9 165.8L550.7 173.1L553.4 180.2L556.2 187L558.9 193.6L561.6 199.8L564.4 205.7L567.1 211.1L569.8 216.2L572.6 220.8L575.3 224.9L578.1 228.5L580.8 231.6L583.5 234.2L586.3 236.3L589 237.9L591.8 239L594.5 239.5L597.2 239.6L600 239.2L602.7 238.3L605.4 237" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:1.747s" d="M495.9 59.4L495.9 59.4L498.6 60.7L501.4 62.6L504.1 65.3L506.9 68.6L509.6 72.5L512.3 77L515.1 82L517.8 87.6L520.6 93.5L523.3 99.9L526 106.6L528.8 113.5L531.5 120.8L534.2 128.1L537 135.6L539.7 143.2L542.5 150.8L545.2 158.3L547.9 165.8L550.7 173.1L553.4 180.2L556.2 187L558.9 193.6L561.6 199.8L564.4 205.7L567.1 211.1L569.8 216.2L572.6 220.8L575.3 224.9L578.1 228.5L580.8 231.6L583.5 234.2L586.3 236.3L589 237.9L591.8 239L594.5 239.5L597.2 239.6L600 239.2L602.7 238.3L605.4 237" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:0.957s" d="M208.4 49.4L208.4 49.4L211.1 49.8L213.8 51L216.6 53L219.3 55.6L222.1 59.1L224.8 63.2L227.5 68L230.3 73.5L233 79.6L235.8 86.3L238.5 93.5L241.2 101.2L244 109.4L246.7 118L249.4 126.9L252.2 136.1L254.9 145.6L257.7 155.2L260.4 164.9L263.1 174.6L265.9 184.4L268.6 194L271.4 203.6L274.1 212.9L276.8 222L279.6 230.7L282.3 239.1L285 247L287.8 254.5L290.5 261.4L293.3 267.8L296 273.5L298.7 278.6L301.5 283L304.2 286.7L307 289.6L309.7 291.8L312.4 293.3L315.2 293.9L317.9 293.8" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.384s;animation-delay:0.957s" d="M208.4 49.4L208.4 49.4L211.1 49.8L213.8 51L216.6 53L219.3 55.6L222.1 59.1L224.8 63.2L227.5 68L230.3 73.5L233 79.6L235.8 86.3L238.5 93.5L241.2 101.2L244 109.4L246.7 118L249.4 126.9L252.2 136.1L254.9 145.6L257.7 155.2L260.4 164.9L263.1 174.6L265.9 184.4L268.6 194L271.4 203.6L274.1 212.9L276.8 222L279.6 230.7L282.3 239.1L285 247L287.8 254.5L290.5 261.4L293.3 267.8L296 273.5L298.7 278.6L301.5 283L304.2 286.7L307 289.6L309.7 291.8L312.4 293.3L315.2 293.9L317.9 293.8" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:0.267s" d="M137.2 52.1L137.2 52.1L139.9 52.7L142.6 54.1L145.4 56.2L148.1 59L150.9 62.5L153.6 66.7L156.3 71.6L159.1 77.1L161.8 83.2L164.6 89.9L167.3 97.1L170 104.8L172.8 112.9L175.5 121.4L178.2 130.2L181 139.2L183.7 148.5L186.5 158L189.2 167.5L191.9 177.1L194.7 186.6L197.4 196L200.2 205.3L202.9 214.4L205.6 223.2L208.4 231.7L211.1 239.8L213.8 247.5L216.6 254.7L219.3 261.4L222.1 267.5L224.8 273L227.5 277.8L230.3 282L233 285.5L235.8 288.2L238.5 290.2L241.2 291.4L244 291.8" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:0.267s" d="M137.2 52.1L137.2 52.1L139.9 52.7L142.6 54.1L145.4 56.2L148.1 59L150.9 62.5L153.6 66.7L156.3 71.6L159.1 77.1L161.8 83.2L164.6 89.9L167.3 97.1L170 104.8L172.8 112.9L175.5 121.4L178.2 130.2L181 139.2L183.7 148.5L186.5 158L189.2 167.5L191.9 177.1L194.7 186.6L197.4 196L200.2 205.3L202.9 214.4L205.6 223.2L208.4 231.7L211.1 239.8L213.8 247.5L216.6 254.7L219.3 261.4L222.1 267.5L224.8 273L227.5 277.8L230.3 282L233 285.5L235.8 288.2L238.5 290.2L241.2 291.4L244 291.8" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:0.997s" d="M282.3 47.3L282.3 47.3L285 48.3L287.8 50.1L290.5 52.7L293.3 56L296 60L298.7 64.8L301.5 70.2L304.2 76.3L307 82.9L309.7 90.2L312.4 97.9L315.2 106.1L317.9 114.8L320.6 123.8L323.4 133.1L326.1 142.6L328.9 152.3L331.6 162.2L334.3 172.1L337.1 182L339.8 191.8L342.6 201.6L345.3 211.1L348 220.3L350.8 229.3L353.5 237.9L356.2 246L359 253.7L361.7 260.9L364.5 267.5L367.2 273.4L369.9 278.7L372.7 283.4L375.4 287.3L378.2 290.4L380.9 292.8L383.6 294.4L386.4 295.3L389.1 295.3" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:0.997s" d="M282.3 47.3L282.3 47.3L285 48.3L287.8 50.1L290.5 52.7L293.3 56L296 60L298.7 64.8L301.5 70.2L304.2 76.3L307 82.9L309.7 90.2L312.4 97.9L315.2 106.1L317.9 114.8L320.6 123.8L323.4 133.1L326.1 142.6L328.9 152.3L331.6 162.2L334.3 172.1L337.1 182L339.8 191.8L342.6 201.6L345.3 211.1L348 220.3L350.8 229.3L353.5 237.9L356.2 246L359 253.7L361.7 260.9L364.5 267.5L367.2 273.4L369.9 278.7L372.7 283.4L375.4 287.3L378.2 290.4L380.9 292.8L383.6 294.4L386.4 295.3L389.1 295.3" stroke="#34d399" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:1.786s" d="M569.8 87.4L569.8 87.4L572.6 89.3L575.3 91.7L578.1 94.5L580.8 97.8L583.5 101.4L586.3 105.4L589 109.7L591.8 114.3L594.5 119.2L597.2 124.2L600 129.3L602.7 134.6L605.4 139.9L608.2 145.2L610.9 150.5L613.7 155.8L616.4 160.9L619.1 165.9L621.9 170.8L624.6 175.4L627.4 179.8L630.1 184L632.8 187.9L635.6 191.5L638.3 194.7L641 197.7L643.8 200.3L646.5 202.6L649.3 204.5L652 206.1L654.7 207.3L657.5 208.2L660.2 208.8L663 209L665.7 209L668.4 208.7L671.2 208L673.9 207.2L676.6 206.1" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:1.786s" d="M569.8 87.4L569.8 87.4L572.6 89.3L575.3 91.7L578.1 94.5L580.8 97.8L583.5 101.4L586.3 105.4L589 109.7L591.8 114.3L594.5 119.2L597.2 124.2L600 129.3L602.7 134.6L605.4 139.9L608.2 145.2L610.9 150.5L613.7 155.8L616.4 160.9L619.1 165.9L621.9 170.8L624.6 175.4L627.4 179.8L630.1 184L632.8 187.9L635.6 191.5L638.3 194.7L641 197.7L643.8 200.3L646.5 202.6L649.3 204.5L652 206.1L654.7 207.3L657.5 208.2L660.2 208.8L663 209L665.7 209L668.4 208.7L671.2 208L673.9 207.2L676.6 206.1" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:2.476s" d="M641 118.9L641 118.9L643.8 120.4L646.5 122.2L649.3 124.3L652 126.7L654.7 129.2L657.5 131.9L660.2 134.7L663 137.7L665.7 140.7L668.4 143.8L671.2 146.9L673.9 150L676.6 153.1L679.4 156.2L682.1 159.1L684.9 162L687.6 164.7L690.3 167.3L693.1 169.8L695.8 172L698.6 174.2L701.3 176.1L704 177.8L706.8 179.3L709.5 180.7L712.2 181.8L715 182.8L717.7 183.5L720.5 184.1L723.2 184.5L725.9 184.7L728.7 184.7L731.4 184.6L734.2 184.4L736.9 184L739.6 183.6L742.4 183L745.1 182.3L747.8 181.6" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:2.476s" d="M641 118.9L641 118.9L643.8 120.4L646.5 122.2L649.3 124.3L652 126.7L654.7 129.2L657.5 131.9L660.2 134.7L663 137.7L665.7 140.7L668.4 143.8L671.2 146.9L673.9 150L676.6 153.1L679.4 156.2L682.1 159.1L684.9 162L687.6 164.7L690.3 167.3L693.1 169.8L695.8 172L698.6 174.2L701.3 176.1L704 177.8L706.8 179.3L709.5 180.7L712.2 181.8L715 182.8L717.7 183.5L720.5 184.1L723.2 184.5L725.9 184.7L728.7 184.7L731.4 184.6L734.2 184.4L736.9 184L739.6 183.6L742.4 183L745.1 182.3L747.8 181.6" stroke="#4a86c8" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:1.027s" d="M353.5 45.4L353.5 45.4L356.2 46.2L359 47.9L361.7 50.3L364.5 53.5L367.2 57.4L369.9 62.1L372.7 67.4L375.4 73.4L378.2 80L380.9 87.2L383.6 95L386.4 103.2L389.1 111.8L391.8 120.8L394.6 130.2L397.3 139.8L400.1 149.6L402.8 159.5L405.5 169.5L408.3 179.5L411 189.4L413.8 199.2L416.5 208.8L419.2 218.1L422 227.1L424.7 235.7L427.4 243.8L430.2 251.4L432.9 258.4L435.7 264.8L438.4 270.6L441.1 275.7L443.9 280L446.6 283.6L449.4 286.4L452.1 288.4L454.8 289.6L457.6 290.1L460.3 289.7" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.375s;animation-delay:1.027s" d="M353.5 45.4L353.5 45.4L356.2 46.2L359 47.9L361.7 50.3L364.5 53.5L367.2 57.4L369.9 62.1L372.7 67.4L375.4 73.4L378.2 80L380.9 87.2L383.6 95L386.4 103.2L389.1 111.8L391.8 120.8L394.6 130.2L397.3 139.8L400.1 149.6L402.8 159.5L405.5 169.5L408.3 179.5L411 189.4L413.8 199.2L416.5 208.8L419.2 218.1L422 227.1L424.7 235.7L427.4 243.8L430.2 251.4L432.9 258.4L435.7 264.8L438.4 270.6L441.1 275.7L443.9 280L446.6 283.6L449.4 286.4L452.1 288.4L454.8 289.6L457.6 290.1L460.3 289.7" stroke="#d97757" stroke-width="5.4"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.192s;animation-delay:0.420s" d="M118 170L120.7 179.3L123.5 188.6L126.2 197.8L129 206.9L131.7 215.7L134.4 224.2L137.2 232.5L139.9 240.3L142.6 247.7L145.4 254.6L148.1 261L150.9 266.8L153.6 272L156.3 276.6L159.1 280.5L161.8 283.7L164.6 286.2L167.3 288L170 289L172.8 289.3" stroke="#080c11" stroke-width="11"/>
+<path class="bf-seg" pathLength="100" style="animation-duration:0.192s;animation-delay:0.420s" d="M118 170L120.7 179.3L123.5 188.6L126.2 197.8L129 206.9L131.7 215.7L134.4 224.2L137.2 232.5L139.9 240.3L142.6 247.7L145.4 254.6L148.1 261L150.9 266.8L153.6 272L156.3 276.6L159.1 280.5L161.8 283.7L164.6 286.2L167.3 288L170 289L172.8 289.3" stroke="#34d399" stroke-width="5.4"/>
+</g>
+<g class="bf-dots" fill="#ffffff" filter="url(#bl-dot)" opacity=".85" style="mix-blend-mode:screen">
+<circle cx="208" cy="230.7" r="5"/>
+<circle cx="315.8" cy="107.9" r="5"/>
+<circle cx="424.2" cy="234" r="5"/>
+<circle cx="532" cy="119.8" r="5"/>
+<circle cx="639.8" cy="196.4" r="5"/>
+<circle cx="747.6" cy="164.1" r="5"/>
+<circle cx="172.4" cy="111.8" r="5"/>
+<circle cx="280.2" cy="230.2" r="5"/>
+<circle cx="388.1" cy="108.4" r="5"/>
+<circle cx="495.9" cy="224.5" r="5"/>
+<circle cx="603.7" cy="136.5" r="5"/>
+<circle cx="711.5" cy="181.3" r="5"/>
+<circle cx="136.3" cy="229.9" r="5"/>
+<circle cx="244.1" cy="108.3" r="5"/>
+<circle cx="351.9" cy="233" r="5"/>
+<circle cx="459.8" cy="109.6" r="5"/>
+<circle cx="567.6" cy="212" r="5"/>
+<circle cx="675.4" cy="151.7" r="5"/>
+</g>
+<!-- ambient: a phosphor head, taking its turn on one strand at a time.
+     Three stacked strokes stand in for a blur so no filter runs per frame. -->
+<g class="bf-comet" fill="none" stroke-linecap="round" stroke-linejoin="round" style="mix-blend-mode:screen">
+<g class="s1"><use class="t3" href="#bf-claude" stroke="#d97757" stroke-width="3.4" opacity=".22"/><use class="t2" href="#bf-claude" stroke="#f6bda0" stroke-width="5.6" opacity=".3"/><use class="t0" href="#bf-claude" stroke="#f6bda0" stroke-width="22" opacity=".13"/><use class="t1" href="#bf-claude" stroke="#fff3ea" stroke-width="4" opacity=".9"/></g>
+<g class="s2"><use class="t3" href="#bf-you" stroke="#34d399" stroke-width="3.4" opacity=".22"/><use class="t2" href="#bf-you" stroke="#7cf0c4" stroke-width="5.6" opacity=".3"/><use class="t0" href="#bf-you" stroke="#7cf0c4" stroke-width="22" opacity=".13"/><use class="t1" href="#bf-you" stroke="#eafff5" stroke-width="4" opacity=".9"/></g>
+<g class="s3"><use class="t3" href="#bf-codex" stroke="#4a86c8" stroke-width="3.4" opacity=".22"/><use class="t2" href="#bf-codex" stroke="#8fb9e8" stroke-width="5.6" opacity=".3"/><use class="t0" href="#bf-codex" stroke="#8fb9e8" stroke-width="22" opacity=".13"/><use class="t1" href="#bf-codex" stroke="#edf5ff" stroke-width="4" opacity=".9"/></g>
+</g>
+<g style="mix-blend-mode:screen">
+<g class="bf-seed s1">
+<circle cx="118" cy="68.5" r="16" fill="#d97757" filter="url(#bl-wide)" opacity=".95"/>
+<circle cx="118" cy="68.5" r="5.5" fill="#f2fbff"/>
+</g>
+<g class="bf-seed s2">
+<circle cx="118" cy="170" r="16" fill="#34d399" filter="url(#bl-wide)" opacity=".95"/>
+<circle cx="118" cy="170" r="5.5" fill="#f2fbff"/>
+</g>
+<g class="bf-seed s3">
+<circle cx="118" cy="271.5" r="16" fill="#4a86c8" filter="url(#bl-wide)" opacity=".95"/>
+<circle cx="118" cy="271.5" r="5.5" fill="#f2fbff"/>
+</g>
+</g>
+<g clip-path="url(#bf-plan-wipe)" style="mix-blend-mode:screen">
+<line x1="800" y1="170" x2="1108" y2="170" stroke="url(#fuse)" stroke-width="14" filter="url(#bl-wide)" opacity=".9"/>
+<line x1="800" y1="170" x2="1108" y2="170" stroke="url(#fuse)" stroke-width="5" filter="url(#bl-hot)"/>
+<line x1="800" y1="170" x2="1108" y2="170" stroke="url(#fuse)" stroke-width="3.2"/>
+<rect x="1108" y="144" width="22" height="52" rx="3" fill="#eafff5" filter="url(#bl-hot)" opacity=".8"/>
+<rect x="1108" y="144" width="22" height="52" rx="3" fill="#f4fffb"/>
+</g>
+<!-- each head that reaches the fuse point carries on down the plan line in
+     its own colour, and the cursor blooms a beat later -->
+<g class="bf-plan-pulse" fill="none" stroke-linecap="round" style="mix-blend-mode:screen">
+<g class="s1"><line x1="800" y1="170" x2="1108" y2="170" pathLength="100" stroke="#f6bda0" stroke-width="11" opacity=".18"/><line x1="800" y1="170" x2="1108" y2="170" pathLength="100" stroke="#fff3ea" stroke-width="3.4" opacity=".6"/></g>
+<g class="s2"><line x1="800" y1="170" x2="1108" y2="170" pathLength="100" stroke="#7cf0c4" stroke-width="11" opacity=".18"/><line x1="800" y1="170" x2="1108" y2="170" pathLength="100" stroke="#eafff5" stroke-width="3.4" opacity=".6"/></g>
+<g class="s3"><line x1="800" y1="170" x2="1108" y2="170" pathLength="100" stroke="#8fb9e8" stroke-width="11" opacity=".18"/><line x1="800" y1="170" x2="1108" y2="170" pathLength="100" stroke="#edf5ff" stroke-width="3.4" opacity=".6"/></g>
+<rect class="bf-cursor" x="1102" y="138" width="34" height="64" rx="5" fill="#eafff5" filter="url(#bl-wide)" opacity="0"/>
+</g>
+<g class="braid-labels" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" letter-spacing="1.5">
+<text class="bf-label s1" x="92" y="75.5" text-anchor="end" fill="#d97757">claude</text>
+<text class="bf-label s2" x="92" y="177" text-anchor="end" fill="#34d399">you</text>
+<text class="bf-label s3" x="92" y="278.5" text-anchor="end" fill="#4a86c8">codex</text>
+<text class="bf-label plan" x="1119" y="248" text-anchor="middle" fill="#34d399">the plan</text>
+</g>
+</svg>
+      <p class="legend">
+        <span class="claude">claude</span> ·
+        <span class="you">you</span> ·
+        <span class="codex">codex</span> → <span class="you">the plan</span>
+      </p>
+    </div>
+
+    <div class="wrap">
+      <div class="install">
+        <span><span class="dollar">$</span> <code>git clone https://github.com/angadhn/botference</code></span>
+        <span><span class="dollar">$</span> <code>cd botference &amp;&amp; ./botference plan</code></span>
+      </div>
+      <p class="beneath">
+        MIT-licensed · runs on the <a href="https://github.com/angadhn/botference">Claude Code and Codex CLIs</a> you already have
+      </p>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+    <section class="surface">
+      <figure>
+        <video autoplay muted loop playsinline width="1280" height="774"
+               poster="plugin-tour-poster.jpg" preload="metadata"
+               aria-label="A silent loop of Discuss in action: a blog post is highlighted, a comment summons the bots, a code cell runs into a plot, and the resolved highlight turns green.">
+          <source src="plugin-tour-loop.webm" type="video/webm">
+          <source src="plugin-tour-loop.mp4" type="video/mp4">
+          <img src="plugin-annotator.png" width="2024" height="1225" loading="lazy" decoding="async"
+               alt="An essay open in the browser with two passages highlighted, and the Discuss drawer open on the right: a comment thread anchored to the first highlight, where Codex answers follow-up questions inline.">
+        </video>
+        <figcaption class="tour-link"><a href="plugin-tour.mp4">&#9654;&#xFE0E; watch the 94-second tour, with sound</a></figcaption>
+      </figure>
+      <h2><b>Discuss</b> — highlight anything on the web, ask the bots in the margin. <code>botference discuss</code></h2>
+      <div class="install">
+        <span><span class="dollar">$</span> <code>git clone https://github.com/angadhn/botference</code></span>
+        <span><span class="dollar">$</span> <code>cd botference &amp;&amp; ./botference discuss</code></span>
+      </div>
+      <p class="beneath">
+        then make it a browser extension, once: open <code>chrome://extensions</code>
+        (or <code>brave://extensions</code>), switch on <b>Developer&nbsp;mode</b>,
+        click <b>Load&nbsp;unpacked</b>, pick <code>frontends/plugin/extension</code> —
+        or just ask Claude&nbsp;Code to set it up for you.
+        <code>./botference discuss --install-autostart</code> makes it permanent;
+        the council is optional
+      </p>
+    </section>
+
+    <section class="surface">
+      <figure>
+        <img src="ink-ui.png" width="2448" height="1128" loading="lazy" decoding="async"
+             alt="The botference terminal UI: a projects panel on the left and the council room on the right, where Claude Code and Codex debate a planning question turn by turn.">
+      </figure>
+      <h2><b>Council</b> — two models arguing in your terminal, you holding the floor. <code>botference plan</code></h2>
+    </section>
+
+    <section class="faq">
+      <details>
+        <summary>Questions people ask</summary>
+        <dl>
+          <dt>Can I chat with a webpage using my Claude subscription?</dt>
+          <dd>Yes. Discuss, the web annotator, talks to the <b>Claude Code CLI</b> already installed and
+          authenticated on your machine, so it runs on your existing subscription. There are no API keys
+          to paste and no third-party service in the middle — nothing leaves your machine but the page
+          you were already reading.</dd>
+
+          <dt>How do I comment on any website with AI?</dt>
+          <dd>Load the browser extension once from <code>frontends/plugin/extension</code>, run
+          <code>botference discuss</code> in your workspace, then highlight a passage on any page and
+          leave a comment mentioning <span class="k">@claude</span>, <span class="k">@codex</span> or
+          <span class="k">@all</span>. The bots reply in that same margin thread, streaming into a
+          drawer on the right.</dd>
+
+          <dt>Can I use Claude Code and Codex together in one conversation?</dt>
+          <dd>That is the point of the council. Both CLIs join one free-form room where a reply can hand
+          the floor to the other model, recursively, until the thread converges and returns to you.
+          Bot-to-bot debate runs against a visible turn and token budget, and typing interrupts at the
+          next turn boundary.</dd>
+
+          <dt>Do I need an API key to use Botference?</dt>
+          <dd>No. Botference drives the Claude Code and Codex CLIs you already have logged in, so it
+          inherits their authentication and your existing plan. One CLI is enough to start — with both
+          installed, <span class="k">@all</span> gets you two models disagreeing about the same
+          problem.</dd>
+
+          <dt>Is Botference free and open source?</dt>
+          <dd>Yes — MIT-licensed and built in the open, free to clone and run. The only cost is the CLI
+          subscriptions you already pay for.
+          <a href="https://github.com/sponsors/angadhn">Sponsorship</a> is optional and funds continued
+          development.</dd>
+
+          <dt>Can I run the planning council on my phone?</dt>
+          <dd>Yes. <code>botference plan --web</code> serves the same council as a chat app — streaming
+          transcript, slash commands, image attachments, markdown replies, plus a per-agent context
+          panel. Adding <code>--share</code> puts a password gate and a tunnel in front of it: one URL
+          to open on your phone.</dd>
+        </dl>
+      </details>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Angadh Nanjangud · MIT</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/angadhn/botference">GitHub</a>
+    <a href="https://github.com/angadhn/botference/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+  </div>
+</footer>
+
+<script>
+  // reduced-motion readers get the poster and a play button, not an
+  // autoplaying loop — the CSS media query can't stop an autoplay attribute
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches)
+    document.querySelectorAll('video[autoplay]').forEach(function (v) {
+      v.removeAttribute('autoplay'); v.pause(); v.controls = true;
+    });
+</script>
+</body>
+</html>
