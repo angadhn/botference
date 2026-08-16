@@ -3154,7 +3154,7 @@
 
     // Focusing a thread must always RESULT IN A CARD ON SCREEN. Clicking a
     // green highlight on the page is the case that forces it: content.js does
-    // open → focus → scrollIntoView, and a filed thread lives inside a section
+    // open → focus → scrollToThread, and a filed thread lives inside a section
     // that is collapsed by default, so without this the click would open the
     // drawer onto nothing. So a focus that names a resolved thread opens the
     // archive and unfolds that card — the reader arrives at the thread itself,
@@ -3167,6 +3167,20 @@
       else D.shadow.querySelectorAll('.card').forEach(c => c.classList.toggle('focused', c.dataset.thread === id));
       D.el.comments.classList.toggle('dim-others', !!D.focused);
       cb('onFocus')(id);
+    }
+    // Arriving at a thread means its TOP is at the top of the pane: the
+    // blockquote and the first comment are what a highlight click promises,
+    // and a card taller than the pane has no useful "center". The jump is
+    // instant, not smooth — render() saves and restores scrollTop around every
+    // rebuild, so a scroll still animating when a stream event lands would be
+    // frozen wherever the animation happened to be.
+    function scrollToThread(id) {
+      if (!D.mounted || !id) return;
+      const card = D.shadow.querySelector('.card[data-thread="' + String(id).replace(/"/g, '\\"') + '"]');
+      if (!card) return;
+      const box = D.el.comments;
+      const top = card.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+      box.scrollTop = Math.max(0, top - 8);
     }
     // …whatever it takes to make `id` visible. Returns whether anything had to
     // change, so the caller knows a full render is needed rather than a class
@@ -4529,7 +4543,7 @@
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
       setExportMode, setOwner,
-      beginNew, cancelNew, showSel, hideSel, onEvent, focus, note,
+      beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
       // Whether a ```python block may be run from here: the companion's answer

@@ -1580,8 +1580,7 @@
     activate().then(d => {
       d.open('comments');
       d.focus(id);
-      const card = d.shadow && d.shadow.querySelector('.card[data-thread="' + id.replace(/"/g, '\\"') + '"]');
-      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      d.scrollToThread(id);
     });
   }, true);
 

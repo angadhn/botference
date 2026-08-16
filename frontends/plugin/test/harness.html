@@ -2855,6 +2855,17 @@ async function selftest() {
       return c && c.classList.contains('focused') && c.querySelector('.thread') ? c : null;
     }));
   check('…with the way back visible on it', !!cardFor(subject).querySelector('[data-act="reopen"]'));
+  // The pane arrives scrolled so the thread STARTS on screen: blockquote and
+  // first comment at the top, never the middle of a long conversation. A card
+  // near the bottom of the list can't always reach the top — then the pane is
+  // pinned to its end and the card top is simply on screen.
+  check('…scrolled so the thread starts at the top of the pane', (() => {
+    const pane = S.querySelector('.pane[data-pane="comments"]');
+    const pr = pane.getBoundingClientRect(), cr = cardFor(subject).getBoundingClientRect();
+    const atTop = cr.top >= pr.top - 1 && cr.top <= pr.top + 24;
+    const pinned = pane.scrollTop >= pane.scrollHeight - pane.clientHeight - 1;
+    return atTop || (pinned && cr.top >= pr.top - 1);
+  })());
 
   // ---- reopen is the undo, and it is one click too ------------------------
   check('reopen is one click, right on the card', await hit(subject, 'reopen'));
