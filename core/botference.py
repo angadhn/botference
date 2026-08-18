@@ -116,7 +116,7 @@ _STAGING_DIR = _REPO_ROOT / ".botference" / "tmp" / "attachments"
 
 
 def stage_attachments(attachments: list[dict]) -> tuple[list[str], list[str]]:
-    """Copy image files to a repo-local staging dir.
+    """Copy attached files (images, PDFs) to a repo-local staging dir.
 
     Returns (staged_paths, missing_paths). Staged names are
     content-addressed; Claude can read them with its Read tool — no
@@ -131,7 +131,7 @@ def stage_attachments(attachments: list[dict]) -> tuple[list[str], list[str]]:
     staged: list[str] = []
     missing: list[str] = []
     for att in attachments:
-        if att.get("type") != "image":
+        if att.get("type") not in ("image", "file"):
             continue
         src = Path(str(att["path"])).expanduser()
         if not src.is_file():
@@ -1535,9 +1535,8 @@ class Botference:
         """Newest-first shortlist of panel rows, deduped by session id."""
         sessions: list[ProjectPanelSession] = []
         seen: set[str] = set()
-        for _mtime, session_id, title, updated_at in sorted(
-            rows, key=self._panel_recency_key, reverse=True
-        ):
+        ordered = sorted(rows, key=self._panel_recency_key, reverse=True)
+        for _mtime, session_id, title, updated_at in ordered:
             if session_id in seen:
                 continue
             seen.add(session_id)
@@ -1549,6 +1548,20 @@ class Botference:
             ))
             if len(sessions) >= PANEL_SESSION_LIMIT:
                 break
+        # The active chat must always be visible even when it falls off the
+        # recency shortlist: web frontends confirm a /resume by finding the
+        # active flag in these rows, so a shortlisted-out chat would be
+        # unresumable from their side.
+        if self.session_id not in seen:
+            for _mtime, session_id, title, updated_at in ordered:
+                if session_id == self.session_id:
+                    sessions.append(ProjectPanelSession(
+                        session_id=session_id,
+                        title=title,
+                        updated_at=updated_at,
+                        active=True,
+                    ))
+                    break
         return sessions
 
     def project_panel_snapshot(self) -> ProjectPanelState:
@@ -2598,8 +2611,8 @@ class Botference:
             "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
             "",
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
-            "Images: drag files in (or Finder Cmd+C → Cmd+V) to attach by path — several at",
-            "once works. Ctrl+V attaches a raw copied image (screenshot, browser Copy Image).",
+            "Images, PDFs & spreadsheets: drag files in (or Finder Cmd+C → Cmd+V) to attach by",
+            "path — several at once. Ctrl+V attaches a raw copied image (screenshot, Copy Image).",
             "",
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows estimated occupancy (exact after tool-free turns).",
@@ -4126,22 +4139,27 @@ class Botference:
         prefix = f"{route} " if parsed.target else f"(→{route}) "
         self._add_room_entry(ui, "user", prefix + parsed.body)
 
-        # Stage image attachments to repo-local tmp dir so agents
+        # Stage attachments (images, PDFs) to repo-local tmp dir so agents
         # can read them as normal files — no --file flag or tokens needed.
         staged, missing = stage_attachments(attachments or [])
         if missing:
             names = ", ".join(Path(p).name for p in missing)
             self._add_room_entry(
                 ui, "system",
-                f"⚠ {len(missing)} attached image(s) could not be found and "
+                f"⚠ {len(missing)} attachment(s) could not be found and "
                 f"were NOT sent to the bots: {names}",
             )
         body = parsed.body
         if staged:
-            refs = "\n".join(
-                f"[Attached image: {p} — view it with your file-reading tool]"
-                for p in staged
-            )
+            def _ref(p: str) -> str:
+                low = p.lower()
+                if low.endswith(".pdf"):
+                    return f"[Attached PDF: {p} — read it with your file-reading tool]"
+                if low.endswith((".xlsx", ".xls", ".csv")):
+                    return (f"[Attached spreadsheet: {p} — read it with your "
+                            "tools (python/pandas or openpyxl work well)]")
+                return f"[Attached image: {p} — view it with your file-reading tool]"
+            refs = "\n".join(_ref(p) for p in staged)
             body = f"{body}\n\n{refs}"
 
         self.transcript.add("user", body)

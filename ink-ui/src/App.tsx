@@ -28,7 +28,7 @@ import {
 } from "./index.js";
 import { copyToClipboard } from "./v2/clipboard.js";
 import { sendDesktopNotification } from "./v2/notify.js";
-import { saveClipboardImage, tokenizePaste } from "./v2/attachments.js";
+import { IMAGE_EXTS, saveClipboardImage, tokenizePaste } from "./v2/attachments.js";
 import { flightRecorder, recordCrashEvidence } from "./index.js";
 import {
   buildToolStackText,
@@ -908,10 +908,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       const newAttachments = new Map(imageAttachmentsRef.current);
 
       for (const token of tokenizePaste(pasted)) {
-        if (token.type === "image") {
+        if (token.type === "image" || token.type === "file") {
           const id = nextImageId.current++;
           newAttachments.set(id, token.value);
-          insertion += `[image ${id}]`;
+          insertion += `[${token.type} ${id}]`;
         } else {
           insertion += token.value;
         }
@@ -1308,7 +1308,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         msg.attachments = Array.from(attachments.entries()).map(([id, filePath]) => ({
           id,
           path: filePath,
-          type: "image",
+          type: IMAGE_EXTS.test(filePath) ? "image" : "file",
         }));
       }
       proc.stdin.write(JSON.stringify(msg) + "\n");

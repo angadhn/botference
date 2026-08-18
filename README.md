@@ -318,6 +318,20 @@ tab while another chat's turn runs; tabs on the *same* chat share one
 live stream. `COUNCIL_MAX_CHATS` caps the pool (default 4; idle,
 unwatched chats are parked automatically when the cap is hit).
 
+The agents panel also carries **billing**: per agent, whether its CLI
+runs on the subscription it is logged into or on an API key
+(`auto` / `subscription` / `API key`, the same three modes and the same
+storage Discuss uses — see
+[API keys](#api-keys-if-you-would-rather-spend-credit-than-a-subscription)
+below; a key pasted in either product works in both, while the *mode* is
+each product's own). The switch works from anywhere you can sign in;
+**keys can only be added from the machine the server runs on**, so
+through the tunnel the fields are gone and the panel says where to add
+one instead. A billing change applies to agents started from then on — a
+chat already running keeps what it started with, because a process's
+environment is fixed when it starts and the server will not kill a live
+turn to answer a settings click.
+
 The sidebar drives housekeeping without leaving the browser, and every
 affordance sends the same slash command the TUI takes — one code path:
 
@@ -407,7 +421,9 @@ thread, streaming into a right-side drawer. Threads without bots stay
 private notes. Every page exports to one Obsidian note (quote +
 comment pairs, plus the page chat); bot conversations persist as
 council chats under the **Plugin pages** project, titled by the
-article's own headline.
+article's own headline — except on a page your own council wrote, where
+the chat is that project's own (see "the pages your council writes",
+below).
 
 ```bash
 botference discuss               # serve the companion on 127.0.0.1:4189
@@ -477,8 +493,34 @@ a hash tells you nothing.
 
 The file itself never leaves your machine — nothing is uploaded, copied
 or stored anywhere. What your phone reads is the text, exactly as for
-any PDF. Discuss annotates nothing else on your disk: a local page that
-is not a PDF is left completely alone.
+any PDF.
+
+**And the pages your council writes.** When a council chat builds an HTML
+artifact inside its own project —
+`…/botference/projects/spaceship-engineering/index.html` — opening that
+file gives you the drawer with no setup at all. Discuss recognises it by
+the folder above it (a `project.json` beside `work/` and `projects/`,
+with the file inside `projects/<id>/`); the header says which project it
+belongs to. The first time a new council folder turns up, the drawer
+asks once whether it is yours and keeps the answer.
+
+The chat behind such a page is the **real chat of that project**, in
+your real workspace, beside everything else the project has ever said —
+not a plugin chat. So Page chat becomes the project's chat archive: the
+bar names the chat you are standing in, the list behind it is every chat
+the project has, and opening one renders its recent history and lets you
+carry it on. "+ new" starts a fresh one, filed in the same place.
+
+This is the one local file identified by *where* it is rather than what
+it is — deliberately, because a project rebuilds its artifact in place
+and a hash would throw your comments away at every build. On these pages
+— and only these — the bots may also **edit** the files in that one
+project's folder when you ask them to, and nothing outside it; when a
+turn changes the file you are reading, the tab reloads itself.
+Deleting the page never deletes the project's chat.
+
+Discuss annotates nothing else on your disk: a local page that is
+neither a PDF nor a project artifact is left completely alone.
 
 **Message formatting.** Every message renders markdown — yours and the
 bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX
@@ -663,18 +705,23 @@ remove them from your account as well.
 
 ### API keys, if you would rather spend credit than a subscription
 
-Discuss drives the `claude` and `codex` CLIs, so by default it runs on
-whatever those are logged into and there is nothing to configure. If you
-would rather bill an API key, paste one per agent in the extension's
-options page. Keys are stored on the companion's machine in
+Discuss and the web council both drive the `claude` and `codex` CLIs, so
+by default they run on whatever those are logged into and there is
+nothing to configure. If you would rather bill an API key, paste one per
+agent — in the extension's options page, or in the council's agents
+panel. **There is one store of keys for both**: paste a key once and
+every botference frontend on that machine can use it. The billing *mode*
+is per product, so the council can sit on your subscription while
+Discuss burns credit. Keys are stored on that machine in
 `~/.botference/discuss-keys.json` (mode 0600) and are **write-only over
 the API**: the page can save one and remove one, and the only thing it
 can ever read back is `set` or `unset`. They can only be set from the
-machine the companion runs on — a request through the tunnel is refused
+machine the server runs on — a request through the tunnel is refused
 even when it is you, because a key has no business crossing a network to
 reach the CLIs running next to it.
 
-Each agent has a billing mode in the drawer's gear menu:
+Each agent has a billing mode — in Discuss the drawer's gear menu, in the
+web council the agents panel:
 
 | mode | what happens |
 |---|---|
@@ -687,10 +734,12 @@ environment rather than blanking it, and clears the other auth sources
 alongside it (`ANTHROPIC_AUTH_TOKEN`, the Bedrock/Vertex/Foundry
 switches), because an empty key and a leftover token are both ways to
 end up billing something you did not choose. Changes apply at the next
-bridge start; an idle bridge is restarted for you, a busy one finishes
-its turn first and the UI says so.
+bridge start. Discuss restarts an idle bridge for you and lets a busy one
+finish its turn first; the council leaves running chats alone entirely and
+says so ("applies to agents started from now on"), because in a council a
+running bridge is a chat someone has open.
 
-**The two CLIs disagree, and Discuss does not pretend otherwise.**
+**The two CLIs disagree, and botference does not pretend otherwise.**
 Claude Code prefers a key over your subscription whenever one is set —
 documented, and in the non-interactive mode the bridge uses there is not
 even a prompt. Codex is the other way round: its stored ChatGPT login
@@ -698,7 +747,7 @@ wins, and a key in the environment is only consulted when you are *not*
 logged in. So for Codex a saved key is a fallback, not an override; to
 make it authoritative, run `codex login --with-api-key` yourself. (There
 is a config key that forces it, and it silently deletes your
-`~/.codex/auth.json` when it switches — Discuss never sends it.)
+`~/.codex/auth.json` when it switches — botference never sends it.)
 
 ## Usage ping
 
@@ -1090,13 +1139,14 @@ if you're already looking at the council, nothing pops up. Interrupting a
 turn with Esc also suppresses the ping, since you're clearly at the
 keyboard.
 
-### Attaching images
+### Attaching images, PDFs and spreadsheets
 
-Three ways to get images to the bots (all support several at once):
+Three ways to get files to the bots (all support several at once):
 
 - **Drag files** from Finder into the terminal — the paths are parsed
   (including escaped spaces in screenshot names, quotes, and `file://`
-  URLs) and become `[image N]` attachments.
+  URLs) and become `[image N]` attachments. PDFs and spreadsheets
+  (`.xlsx`/`.xls`/`.csv`) work the same way and attach as `[file N]`.
 - **Finder Cmd+C → Cmd+V** — copied files paste as paths and attach the
   same way.
 - **Ctrl+V** — attaches a *raw* image from the clipboard (a screenshot
@@ -1106,8 +1156,9 @@ Three ways to get images to the bots (all support several at once):
 Only paths that actually exist become attachments; a bad path stays
 visible as text, and any attachment that can't be found at send time is
 reported in the room instead of silently dropped. Claude views attached
-images with its Read tool; Codex receives the file path (its CLI cannot
-view image content mid-session).
+images and reads attached PDFs with its Read tool; Codex receives the
+file path (its CLI cannot view image content mid-session, and reads PDFs
+only as well as its own tooling allows).
 
 ### Crash evidence
 

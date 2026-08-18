@@ -97,6 +97,40 @@ describe("tokenizePaste", () => {
       { type: "text", value: "please" },
     ]);
   });
+
+  it("PDF paths attach as file tokens, escapes and brackets included", () => {
+    const tokens = tokenizePaste(
+      "/dl/UKSAC26_0048_Open\\ Procedure\\ ITT\\ -\\ Studies\\ 26_27\\ \\(6\\)[77].pdf",
+      exists,
+      HOME,
+    );
+    assert.deepEqual(tokens, [{
+      type: "file",
+      value: "/dl/UKSAC26_0048_Open Procedure ITT - Studies 26_27 (6)[77].pdf",
+    }]);
+  });
+
+  it("an image and a PDF on one line each keep their own type", () => {
+    const tokens = tokenizePaste("/a/pic.png /b/doc.pdf", exists, HOME);
+    assert.deepEqual(tokens, [
+      { type: "image", value: "/a/pic.png" },
+      { type: "file", value: "/b/doc.pdf" },
+    ]);
+  });
+
+  it("spreadsheets attach as file tokens", () => {
+    const tokens = tokenizePaste("/dl/budget.xlsx /dl/legacy.xls /dl/data.csv", exists, HOME);
+    assert.deepEqual(tokens, [
+      { type: "file", value: "/dl/budget.xlsx" },
+      { type: "file", value: "/dl/legacy.xls" },
+      { type: "file", value: "/dl/data.csv" },
+    ]);
+  });
+
+  it("nonexistent PDFs stay visible as text too", () => {
+    const tokens = tokenizePaste("/dl/missing.pdf", exists, HOME);
+    assert.deepEqual(tokens, [{ type: "text", value: "/dl/missing.pdf" }]);
+  });
 });
 
 describe("saveClipboardImage", () => {

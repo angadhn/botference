@@ -1,5 +1,144 @@
 # CHANGELOG
 
+## 2026-08-18
+
+- **The web council bills what you tell it to, per agent.** The agents
+  panel gained a billing section: `auto` (a saved key if there is one,
+  else the subscription — Claude Code's own rule), `subscription`, or
+  `API key`, chosen per agent and applied to the environment every
+  bridge child is spawned with. Every path that means "no key" *deletes*
+  the variable rather than emptying it — including one the server
+  inherited from the shell or LaunchAgent that started it, and including
+  the sibling auth sources (`ANTHROPIC_AUTH_TOKEN`, the
+  Bedrock/Vertex/Foundry switches, `CODEX_*`) that would answer the same
+  question behind your back. The mode is the only authority.
+
+  **Keys never cross the tunnel.** The switch works from anywhere you
+  can sign in; saving or removing a key is refused for any request that
+  arrived through a proxy (`CF-*`/`X-Forwarded-*`) or from a non-loopback
+  peer, and the panel then hides the fields and tells you to add keys
+  from the Mac the server runs on. Keys are write-only over the API:
+  `GET /keys` answers `set` or `unset` and nothing else, and no response,
+  log or error ever carries key material.
+
+  The store is now **shared with Discuss** (`frontends/shared/keys.mjs`,
+  moved out of the plugin): one key pasted once serves both products,
+  while the mode stays each product's own (the council's in its
+  workspace state, Discuss's where it always was). Honest about timing —
+  a running chat keeps the billing it started with, since a process's
+  environment is fixed when it starts, and no live bridge is killed to
+  answer a settings click.
+
+- **Discuss: the bots can edit a project's artifact, and the tab
+  reloads itself.** On a confirmed project artifact page
+  (`…/projects/spaceship-engineering/index.html`) the agents may now
+  create and modify files under *that project's folder* — and nowhere
+  else. The scope is not a promise made in a prompt: the bridge child
+  for such a page is spawned with that one directory as its write root,
+  which becomes Claude's `permissions.allow` Edit rules and Codex's
+  `workspace-write` sandbox root, so a write anywhere else is refused
+  by the CLI itself. (One honest gap: Claude's `Bash` runs in a sandbox
+  whose workspace also holds the council root, since the bots must read
+  it — a *shell* write elsewhere inside the council is instructed
+  against rather than blocked. Codex is bounded either way, and
+  everything outside the council root is blocked for both.) Bridges are
+  now one per (council, project) rather than one per council, because
+  an environment is fixed when a process starts. Ordinary web pages,
+  PDFs and library chat keep deny-all writes exactly as before, and no
+  guest ever gains writes.
+
+  When a turn ends and something under the project moved, the companion
+  says so: the page's own file changing reloads the tab, siblings
+  changing get one line in the chat instead of throwing away your
+  scroll and half-typed comment. It is a census taken around the turn,
+  not a watcher — nothing runs while you are reading, and `sessions/`
+  is never counted. The "is this your council?" card now says what a
+  yes buys; an already-confirmed council keeps working unchanged.
+
+- **Discuss: project archives work on the original vault layout.** The
+  chat archive read only the project-local sessions store
+  (`work/sessions/`); a council using the legacy self-hosted layout
+  (`<root>/sessions/` — the original vault) listed "no chats in this
+  project yet" over a folder full of them. Both layouts are read now.
+  And a restored chat says what it is: one line over the tail —
+  "Restored council chat — the last 60 of 382 messages" — linking to
+  the complete chat in the council web UI, instead of pretending the
+  tail is the whole conversation.
+
+- **Council: spreadsheets attach too.** `.xlsx`, `.xls` (and `.csv` in
+  the terminal) join images and PDFs in both attachment paths — drag
+  into the TUI, or the web council's picker/paste/drop. The bots are
+  told "[Attached spreadsheet: … — read it with your tools
+  (python/pandas or openpyxl work well)]". The web server sniffs
+  content as ever: an xlsx must be a zip with `xl/` entries (a docx is
+  refused), a legacy xls must carry the OLE2 magic; the browser's
+  claimed type is never trusted.
+
+## 2026-08-17
+
+- **Council: PDFs attach like images.** Drag a PDF into the terminal (or
+  Finder Cmd+C → Cmd+V its path) and it becomes a `[file N]` attachment,
+  staged the same way images are; the bots are handed the staged path as
+  "[Attached PDF: … — read it with your file-reading tool]". Claude
+  reads PDFs natively; Codex gets the path and does what its own tooling
+  allows. Same rules as images: a bad path stays visible as text, a
+  missing file at send time is reported in the room.
+
+  The web council takes them too: the attach button, paste and drag-drop
+  all accept PDFs now (on iOS the picker's "Choose File" reaches Files).
+  The composer shows a name chip instead of a thumbnail, sent messages
+  render a "PDF · name" pill that opens the file, and the server sniffs
+  the `%PDF` magic bytes the same way it refuses fake images — the
+  attachment's type is derived from the stored bytes, never from what
+  the browser claims.
+
+- **Discuss: idle composers fold to one line.** Every thread used to
+  carry a full-height Reply box; now an idle composer is a single quiet
+  line, and its hint/Send row appears only while it is focused or holds
+  a draft. The active box grows with the text as you type (up to about
+  half the panel), so a long comment keeps its own context on screen
+  instead of scrolling inside a two-line slot — and that applies to the
+  in-place message editor too, which opens showing the whole message.
+  While an edit is open, the thread's own Reply box (dead weight under
+  an editor) is hidden until save/cancel.
+
+- **Discuss: the pages your council writes are now Discuss pages.** Open
+  a project's own HTML —
+  `file:///…/botference/projects/spaceship-engineering/index.html` — and
+  the drawer is there, with no setup at all. The extension used to
+  refuse every `file://` page outright; it now lets one through when the
+  companion recognises it: a folder above it holding `project.json`,
+  `work/` and `projects/`, with the file inside `projects/<id>/`. The
+  header says which project it belongs to. The first time a new council
+  folder turns up the drawer asks once whether it is yours, and keeps
+  the answer — a no is kept as firmly as a yes.
+
+  The chat behind such a page is not a plugin chat. It is filed under
+  the **real project in your real council**, beside everything else that
+  project has ever said, by a second bridge running with that folder as
+  its workspace. So Page chat becomes the project's chat archive: the
+  bar names the chat you are standing in, the list behind it is every
+  chat the project has (titles and ages, newest first), and you can open
+  any of them — the recent history renders, folded, and typing carries
+  it on. "+ new" starts a fresh one, filed in the same place.
+
+  The page is identified by its PATH, deliberately and unlike a local
+  PDF: these files are rebuilt in place by the project that owns them,
+  so a content hash would strand every annotation at the next build.
+  Bots still cannot write files here — that is next — and deleting the
+  page never deletes the council chat behind it.
+
+## 2026-08-16
+
+- **Fix: old Discuss pages could never rejoin their chat.** The project
+  panel snapshot shortlists each project's eight most recent chats, and
+  the companion confirms a `/resume` by finding the session flagged
+  active in those rows — so once a project held more than eight chats,
+  any page whose chat had aged off the shortlist failed every resume
+  with "couldn't resume this page's chat — nothing was sent". The
+  active session is now always included in the panel rows, shortlist or
+  not. (Surfaced when Plugin pages reached its twelfth chat.)
+
 ## 2026-08-12
 
 - **Site: Discuss shows itself moving.** The plugin screenshot on

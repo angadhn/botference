@@ -4,9 +4,14 @@ import os from "node:os";
 import path from "node:path";
 
 export const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
+// Non-image files that ride the same paste→stage pipeline. The bots read
+// the staged file with their own tools, so this list is whatever they can
+// usefully open — PDFs and spreadsheets for now.
+export const FILE_EXTS = /\.(pdf|xlsx?|csv)$/i;
+const isAttachable = (p: string) => IMAGE_EXTS.test(p) || FILE_EXTS.test(p);
 
 export interface PasteToken {
-  type: "text" | "image";
+  type: "text" | "image" | "file";
   value: string;
 }
 
@@ -116,7 +121,7 @@ export function tokenizePaste(
 
     const candidates = splitPathCandidates(line);
     const hasAnyPath = candidates.some(
-      (c) => looksLikePath(c) && IMAGE_EXTS.test(normalizePathCandidate(c, homedir)),
+      (c) => looksLikePath(c) && isAttachable(normalizePathCandidate(c, homedir)),
     );
     if (!hasAnyPath) {
       pushText(line);
@@ -128,14 +133,14 @@ export function tokenizePaste(
       const normalized = normalizePathCandidate(candidate, homedir);
       if (
         looksLikePath(candidate)
-        && IMAGE_EXTS.test(normalized)
+        && isAttachable(normalized)
         && fileExists(normalized)
       ) {
         if (pendingText.length) {
           pushText(pendingText.join(" ") + " ");
           pendingText = [];
         }
-        tokens.push({ type: "image", value: normalized });
+        tokens.push({ type: IMAGE_EXTS.test(normalized) ? "image" : "file", value: normalized });
       } else {
         pendingText.push(candidate);
       }

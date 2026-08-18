@@ -659,6 +659,62 @@ class TestAttachmentStaging:
         assert user_entries[-1].count("[Attached image:") == 2
         assert "file-reading tool" in user_entries[-1]
 
+    async def test_pdf_attachment_is_staged_and_labeled_as_pdf(
+        self, tmp_path, monkeypatch
+    ):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        doc = tmp_path / "ITT Studies (6)[77].pdf"
+        doc.write_bytes(b"%PDF-1.7 fake")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(
+            "@claude read this",
+            ui,
+            attachments=[{"id": 1, "path": str(doc), "type": "file"}],
+        )
+        user_entries = [
+            e.text for e in c.transcript.entries if e.speaker == "user"
+        ]
+        assert user_entries
+        assert "[Attached PDF:" in user_entries[-1]
+        assert "[Attached image:" not in user_entries[-1]
+        assert "file-reading tool" in user_entries[-1]
+        # staged copy keeps the .pdf extension so readers know what it is
+        staged_names = [p.name for p in (tmp_path / "staging").iterdir()]
+        assert staged_names and all(n.endswith(".pdf") for n in staged_names)
+
+    async def test_spreadsheet_attachment_is_labeled_as_spreadsheet(
+        self, tmp_path, monkeypatch
+    ):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        sheet = tmp_path / "budget 26_27.xlsx"
+        sheet.write_bytes(b"PK\x03\x04 fake xlsx")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(
+            "@claude what does this say",
+            ui,
+            attachments=[{"id": 1, "path": str(sheet), "type": "file"}],
+        )
+        user_entries = [
+            e.text for e in c.transcript.entries if e.speaker == "user"
+        ]
+        assert user_entries
+        assert "[Attached spreadsheet:" in user_entries[-1]
+        assert "pandas" in user_entries[-1]
+
+    async def test_unknown_attachment_types_are_still_skipped(
+        self, tmp_path, monkeypatch
+    ):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        staged, missing = bf.stage_attachments(
+            [{"id": 1, "path": str(doc), "type": "text"}]
+        )
+        assert staged == [] and missing == []
+
     async def test_tilde_paths_are_expanded(self, tmp_path, monkeypatch):
         import botference as bf
         monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
@@ -2407,6 +2463,33 @@ class TestBotferenceProjects:
         # The current controller's own (still-empty) session should not
         # inflate Inbox — we filter entry_count < 1 sessions.
         assert snapshot.inbox_session_count == 0
+
+    async def test_panel_always_lists_the_active_session(self, tmp_path):
+        # The active chat must survive the recency shortlist: web frontends
+        # confirm a /resume by finding the active flag in the panel rows, so
+        # an active session older than the newest PANEL_SESSION_LIMIT chats
+        # must still be listed (and flagged) rather than truncated away.
+        import botference as bf
+        project = tmp_path / "projects" / "plugin-pages"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        for i in range(bf.PANEL_SESSION_LIMIT + 1):
+            (c.paths.session_dir / f"chat-{i}.json").write_text(json.dumps({
+                "session_id": f"chat-{i}",
+                "project_id": "plugin-pages",
+                "transcript": [{"speaker": "user", "text": "hi"}],
+                # chat-0 is the oldest — the one the shortlist would drop
+                "updated_at": f"2026-05-{i + 1:02d}T00:00:00Z",
+            }), encoding="utf-8")
+        c.session_id = "chat-0"
+
+        snapshot = c.project_panel_snapshot()
+        rows = next(
+            p for p in snapshot.projects if p.project_id == "plugin-pages"
+        ).sessions
+        active = [s for s in rows if s.active]
+        assert [s.session_id for s in active] == ["chat-0"]
+        assert len(rows) == bf.PANEL_SESSION_LIMIT + 1
 
     async def test_panel_inbox_count_skips_empty_sessions(self, tmp_path):
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
