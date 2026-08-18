@@ -2103,3 +2103,151 @@ test('billing panel: per-agent switch, key fields only on the local machine, hon
   assert.ok(panel.querySelector('[data-bill="claude"]'), 'the mode switch is still there');
   assert.match(panel.textContent, /Add keys from the Mac the server runs on/);
 });
+
+// ------------------------------------------------------------- tasks panel
+
+const TASKS_V1 = 'Plan:\n\n- [ ] Pull the dataset\n- [ ] Rebuild the deflator\n- [ ] Redraw figure 3';
+const TASKS_V2 = 'Revised plan:\n\n- [x] Pull the dataset\n- [ ] Rebuild the deflator\n- [ ] Redraw figure 3\n- [ ] Re-run the regression';
+const panelItems = doc => [...doc.querySelectorAll('#tasks-body li.md-task .md-tasktext')]
+  .map(s => s.textContent.trim());
+
+test('tasks panel: the newest checklist in the room, replaced in place when the bots revise it',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const sec = doc.getElementById('tasks-sec');
+  assert.equal(sec.hasAttribute('hidden'), true, 'no list in the chat: no section');
+  // caught once by looking at a screenshot: the section's own `display: flex`
+  // outranks the UA's [hidden] rule, so "hidden" rendered as an empty box
+  assert.match(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'style.css'), 'utf8'),
+    /#tasks-sec\[hidden\][^{]*\{[^}]*display:\s*none/,
+    'hidden must actually be invisible — [hidden] needs an explicit display:none here');
+
+  C.handle({ type: 'room', speaker: 'claude', text: TASKS_V1 });
+  assert.equal(sec.hasAttribute('hidden'), false, 'a checklist raises the panel');
+  assert.deepEqual(panelItems(doc), ['Pull the dataset', 'Rebuild the deflator', 'Redraw figure 3']);
+  assert.match(doc.getElementById('tasks-meta').textContent, /from claude/);
+  assert.match(doc.getElementById('tasks-meta').textContent, /0\/3 done/);
+
+  // prose in between must not disturb it
+  C.handle({ type: 'room', speaker: 'codex', text: 'Agreed, starting on the deflator.' });
+  assert.deepEqual(panelItems(doc), ['Pull the dataset', 'Rebuild the deflator', 'Redraw figure 3']);
+
+  // the revision REPLACES: one list in the panel, never two
+  C.handle({ type: 'room', speaker: 'codex', text: TASKS_V2 });
+  assert.equal(doc.querySelectorAll('#tasks-body ul.md-tasklist').length, 1, 'no duplicate list');
+  assert.deepEqual(panelItems(doc),
+    ['Pull the dataset', 'Rebuild the deflator', 'Redraw figure 3', 'Re-run the regression']);
+  assert.match(doc.getElementById('tasks-meta').textContent, /from codex · 1\/4 done/,
+    'the [x] the bot baked in counts as done, and the author changed');
+  assert.equal(C.taskSrc(), doc.querySelectorAll('.msg.codex')[1], 'the newest list is the source');
+
+  // the panel is the same tick state as the message, not a copy of the text
+  const panelBoxes = [...doc.querySelectorAll('#tasks-body input.md-tick')];
+  assert.deepEqual(panelBoxes.map(b => b.checked), [true, false, false, false]);
+});
+
+test('tasks panel: ticking anywhere ticks everywhere — one store, panel and transcript',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'room', speaker: 'claude', text: TASKS_V1 });
+  const msgBoxes = () => [...doc.querySelectorAll('.msg.claude .body input.md-tick')];
+  const panelBoxes = () => [...doc.querySelectorAll('#tasks-body input.md-tick')];
+
+  // tick in the PANEL: the transcript's copy follows, and it is written down
+  const p = panelBoxes()[1];
+  p.checked = true;
+  p.dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.deepEqual(msgBoxes().map(b => b.checked), [false, true, false],
+    'the message in the transcript is ticked too');
+  assert.ok(msgBoxes()[1].parentNode.classList.contains('done'), 'and strikes through');
+  assert.match(doc.getElementById('tasks-meta').textContent, /1\/3 done/);
+  assert.match(w.localStorage.getItem('council-ticks') || '', /"on":\[1\]/);
+
+  // tick in the TRANSCRIPT: the panel follows
+  const m = msgBoxes()[2];
+  m.checked = true;
+  m.dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.deepEqual(panelBoxes().map(b => b.checked), [false, true, true]);
+  assert.match(doc.getElementById('tasks-meta').textContent, /2\/3 done/);
+
+  // and it is the SAME store the transcript already used: a replay of the same
+  // message brings both back ticked
+  C.handle({ type: 'clear_panes' });
+  assert.equal(doc.getElementById('tasks-sec').hasAttribute('hidden'), true,
+    'a cleared transcript empties the panel — it never shows a list that is gone');
+  C.handle({ type: 'restore', entries: [{ speaker: 'claude', text: TASKS_V1 }] });
+  assert.deepEqual(msgBoxes().map(b => b.checked), [false, true, true], 'ticks survive the replay');
+  assert.deepEqual(panelBoxes().map(b => b.checked), [false, true, true], 'in the panel as well');
+});
+
+test('tasks panel: per chat — a chat with no list has no section, and switching back restores it',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  const sec = doc.getElementById('tasks-sec');
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const projects = active => ({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, session_count: 2,
+      sessions: [
+        { session_id: 'sidA', title: 'A', updated_at: new Date().toISOString(), active: active === 'sidA' },
+        { session_id: 'sidB', title: 'B', updated_at: new Date().toISOString(), active: active === 'sidB' },
+      ],
+    }],
+  });
+  C.handle(projects('sidA'));
+  C.handle({ type: 'room', speaker: 'claude', text: TASKS_V1 });
+  assert.equal(sec.hasAttribute('hidden'), false);
+
+  // switch to B, which has no checklist at all
+  C.switchTo('sidB');
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: true });
+  C.handle({ type: 'replay_done', count: 0 });
+  C.handle({ type: 'clear_panes' });
+  C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'no lists here' }] });
+  C.handle(projects('sidB'));
+  C.handle({ type: 'ready' });
+  assert.match(doc.getElementById('transcript').textContent, /no lists here/);
+  assert.equal(sec.hasAttribute('hidden'), true, 'B has no list: the section is gone, not stale');
+  assert.equal(doc.getElementById('tasks-body').textContent, '');
+
+  // back to A: the cached paint alone restores the panel, before any event
+  C.switchTo('sidA');
+  assert.equal(sec.hasAttribute('hidden'), false, 'A brings its own list back');
+  assert.deepEqual(panelItems(doc), ['Pull the dataset', 'Rebuild the deflator', 'Redraw figure 3']);
+});
+
+test('tasks panel: the source control brings the message that holds the list into view',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'room', speaker: 'claude', text: TASKS_V1 });
+  for (let i = 0; i < 8; i++) C.handle({ type: 'room', speaker: 'codex', text: `filler ${i}` });
+  const src = doc.querySelector('.msg.claude');
+  const seen = [];
+  src.scrollIntoView = opts => seen.push(opts);
+  doc.getElementById('tasks-jump').click();
+  assert.equal(seen.length, 1, 'the source message is scrolled to');
+  assert.equal(seen[0].block, 'start', 'top-aligned, so the whole list reads');
+  assert.ok(src.classList.contains('task-src'), 'and marked, so the eye finds it');
+});
+
+test('tasks panel: collapsing it is remembered',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'room', speaker: 'claude', text: TASKS_V1 });
+  const fold = doc.getElementById('tasks-fold');
+  assert.equal(fold.getAttribute('aria-expanded'), 'true');
+  fold.click();
+  assert.equal(fold.getAttribute('aria-expanded'), 'false');
+  assert.equal(doc.getElementById('tasks-body').hasAttribute('hidden'), true);
+  assert.equal(w.localStorage.getItem('council-tasks-fold'), 'closed');
+  // a later list respects the choice instead of springing open
+  C.handle({ type: 'room', speaker: 'codex', text: TASKS_V2 });
+  assert.equal(doc.getElementById('tasks-body').hasAttribute('hidden'), true);
+  assert.equal(doc.getElementById('tasks-sec').hasAttribute('hidden'), false, 'the section itself stays');
+});

@@ -102,6 +102,20 @@
      reparents into the sidebar drawer slot on narrower screens -->
 <aside id="agents-panel" aria-label="agent status">
   <section id="agents-body">
+    <!-- tasks: the checklist from the NEWEST message that carries one, derived
+         live from the transcript (no stored copy, no protocol change). A revised
+         list replaces this one — there is only ever the current state here.
+         Ticks are the same localStorage records as the transcript's. -->
+    <section id="tasks-sec" hidden>
+      <div class="ap-label tasks-head">
+        <button id="tasks-fold" class="chip-label" aria-expanded="true" aria-controls="tasks-body"
+          title="collapse the task list">tasks<span class="fold-ic" aria-hidden="true">▾</span></button>
+        <button id="tasks-jump" title="show the message this list came from"
+          aria-label="show the message this list came from">↑ source</button>
+      </div>
+      <div id="tasks-body"></div>
+      <div id="tasks-meta"></div>
+    </section>
     <div class="chip-label ap-label">agents</div>
     <div id="agent-cards"></div>
     <div class="ap-actions">

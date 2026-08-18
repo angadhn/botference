@@ -591,6 +591,35 @@ main { position: relative }
 #ap-facts:empty { display: none }
 #ap-facts .fact b { font: 700 .62rem var(--sans); text-transform: uppercase;
   letter-spacing: .06em; color: var(--muted); margin-right: .45rem }
+/* tasks: the current checklist, lifted out of the transcript. Sans, tighter
+   and smaller than the prose it mirrors — a dashboard, not a second reading. */
+#tasks-sec { display: flex; flex-direction: column; gap: .4rem }
+/* an explicit display beats the UA's [hidden] rule — say it again, or a hidden
+   section is a visible empty box */
+#tasks-sec[hidden], #tasks-body[hidden], #tasks-meta[hidden] { display: none }
+.tasks-head { display: flex; align-items: center; gap: .5rem }
+#tasks-fold { border: 0; background: none; padding: 0; min-height: 0;
+  display: flex; align-items: center; gap: .25rem; cursor: pointer;
+  color: var(--muted) }
+#tasks-fold:hover { color: var(--accent) }
+#tasks-fold .fold-ic { font-size: .8em; line-height: 1;
+  transition: transform .15s ease }
+#tasks-sec.folded #tasks-fold .fold-ic { transform: rotate(-90deg) }
+#tasks-jump { margin-left: auto; font: .66rem var(--sans); color: var(--muted);
+  border: 1px solid var(--card-line); background: var(--card);
+  border-radius: 999px; padding: .16rem .48rem; min-height: 0 }
+#tasks-jump:hover { color: var(--accent); border-color: var(--accent) }
+#tasks-body { border: 1px solid var(--card-line); border-radius: 10px;
+  background: var(--card); padding: .5rem .6rem;
+  font: .78rem/1.5 var(--sans); max-height: 42vh; overflow-y: auto }
+#tasks-body .md-list { margin: 0; padding-left: .1rem }
+#tasks-body li.md-task { margin: .1rem 0; gap: .45rem }
+#tasks-body .md-tick { width: 14px; height: 14px; margin: .3em 0 0 }
+#tasks-meta { font: .66rem var(--sans); color: var(--muted) }
+/* the jump control marks its target for a moment — a checklist looks like its
+   neighbours, so landing on it is not the same as finding it */
+.msg.task-src { box-shadow: 0 0 0 2px var(--accent) }
+
 /* billing: one card per agent — a three-position switch, what it resolves to,
    and (on the server's own machine only) the key fields */
 #billing { display: flex; flex-direction: column; gap: .7rem }

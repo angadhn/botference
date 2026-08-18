@@ -318,6 +318,19 @@ tab while another chat's turn runs; tabs on the *same* chat share one
 live stream. `COUNCIL_MAX_CHATS` caps the pool (default 4; idle,
 unwatched chats are parked automatically when the cap is hit).
 
+At the top of that panel sits **tasks** — the checklist from the newest
+message that has one, whoever wrote it, kept in view while the chat
+scrolls past it. The bots re-issue their task list as the plan moves; a
+revised list *replaces* what the panel shows, so there is one list there
+and it is the current one. Its checkboxes are the same ticks as the
+message's (tick in either place and both follow; they survive reloads and
+replays), a quiet line says who it came from and how much is done, and
+`↑ source` scrolls the transcript back to the message it came from. The
+section collapses, and folds away entirely in a chat that has no list.
+Ticks are remembered per message, so a *revised* list starts from the
+`[x]` marks the bots wrote into it — nothing guesses which old item
+became which new one.
+
 The agents panel also carries **billing**: per agent, whether its CLI
 runs on the subscription it is logged into or on an API key
 (`auto` / `subscription` / `API key`, the same three modes and the same

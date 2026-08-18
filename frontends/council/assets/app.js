@@ -21,6 +21,8 @@
     agentsPanel: $('agents-panel'), agentsToggle: $('agents-toggle'),
     apFacts: $('ap-facts'), relayBoth: $('relay-both'), autoRelay: $('autorelay-toggle'),
     billing: $('billing'),
+    tasksSec: $('tasks-sec'), tasksBody: $('tasks-body'),
+    tasksMeta: $('tasks-meta'), tasksFold: $('tasks-fold'), tasksJump: $('tasks-jump'),
     presendWarn: $('presend-warn'),
     avatars: $('avatars'), banner: $('noauth-banner'), bannerX: $('noauth-x'),
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
@@ -1047,6 +1049,7 @@
     const li = box.parentNode;
     if (li && li.classList) li.classList.toggle('done', box.checked);
     recordTicks(body.getAttribute('data-ticks'), body);
+    renderTasks(); // the panel's copy is the same state — keep it honest
   });
 
   function updateEmpty() {
@@ -1089,6 +1092,164 @@
       }
     }).observe(els.transcript);
   }
+
+  // ── tasks panel: the current checklist, always in view ───────────────────
+  // The bots re-issue their task list as the plan moves, and the reader loses
+  // the live one as the transcript scrolls. This panel shows the checklist from
+  // the NEWEST message that carries one, whoever wrote it — derived from the
+  // transcript, never stored: no server state, no protocol change. A revised
+  // list REPLACES what is here, so there is only ever one, and it is current.
+  //
+  // Tracking is incremental: every paint() offers its message as the candidate
+  // (the newest paint wins), and a full rescan happens only at the boundaries
+  // where the transcript is rebuilt wholesale — replay swap, chat switch,
+  // clear. No polling, no per-message walk of the whole transcript.
+  //
+  // Honest limit: ticks are keyed by message hash (see the tick store), so a
+  // revised list starts from what its own [x] marks say. The bots re-issue with
+  // the completed items already ticked, which is the right source of truth
+  // anyway — nothing here guesses which old item became which new one.
+  const TASK_FOLD_KEY = 'council-tasks-fold';
+  let taskSrc = null;   // the message element the panel is showing
+  let taskAt = 0;       // when we first saw it live (0 = replayed, age unknown)
+  const taskLists = body =>
+    body ? body.querySelectorAll('ul.md-tasklist, ol.md-tasklist') : [];
+  // is `a` the same as, or later than, `b` in the transcript? A repaint of an
+  // OLDER message (an edit, a late finalize) must not steal the panel.
+  function atOrAfter(a, b) {
+    if (!b || !b.parentNode) return true;
+    if (a === b) return true;
+    if (a.parentNode !== b.parentNode) return true; // different containers: can't tell, take it
+    const kids = a.parentNode.children;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i] === a) return false;              // a comes first: it is older
+      if (kids[i] === b) return true;
+    }
+    return true;
+  }
+  // offered by paint() for every markdown message, live and replayed alike
+  function noteTasks(div, body) {
+    if (replayBuffer) return;               // offscreen build: the flush rescans
+    if (taskLists(body).length) {
+      if (!atOrAfter(div, taskSrc)) return;
+      if (div !== taskSrc) { taskSrc = div; taskAt = replayActive() ? 0 : Date.now(); }
+      renderTasks();
+    } else if (div === taskSrc) {
+      rescanTasks();                        // a rewrite dropped the list
+    }
+  }
+  // boundary rescan: newest message with a checklist wins, backwards from the end
+  function rescanTasks() {
+    taskSrc = null;
+    taskAt = 0;
+    const msgs = els.transcript.children;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.querySelector && taskLists(m.querySelector('.body')).length) { taskSrc = m; break; }
+    }
+    renderTasks();
+  }
+  const taskAge = at => {
+    const d = (Date.now() - at) / 1000;
+    if (d < 45) return 'just now';
+    if (d < 3600) return `${Math.round(d / 60)}m ago`;
+    if (d < 86400) return `${Math.round(d / 3600)}h ago`;
+    return `${Math.round(d / 86400)}d ago`;
+  };
+  function taskAuthor() {
+    if (!taskSrc || !taskSrc.classList) return '';
+    if (taskSrc.classList.contains('user')) return 'you';
+    return AGENTS.find(a => taskSrc.classList.contains(a)) || '';
+  }
+  function updateTasksMeta() {
+    if (!els.tasksMeta) return;
+    const boxes = els.tasksBody.querySelectorAll('input.md-tick');
+    const done = [...boxes].filter(b => b.checked).length;
+    const who = taskAuthor();
+    els.tasksMeta.textContent = [
+      who ? 'from ' + who : '', `${done}/${boxes.length} done`, taskAt ? taskAge(taskAt) : '',
+    ].filter(Boolean).join(' · ');
+  }
+  function applyTaskFold() {
+    if (!els.tasksFold) return;
+    const open = localStorage.getItem(TASK_FOLD_KEY) !== 'closed';
+    els.tasksSec.classList.toggle('folded', !open);
+    els.tasksFold.setAttribute('aria-expanded', String(open));
+    els.tasksFold.title = open ? 'collapse the task list' : 'expand the task list';
+    els.tasksBody.hidden = !open;
+    els.tasksMeta.hidden = !open;
+  }
+  // clone the source lists into the panel. The clone keeps the data-tick
+  // ordinals, so the panel's boxes address exactly the same tick records; the
+  // checked state is copied from the (already tick-applied) source and then the
+  // store is laid over it, so both agree by construction.
+  function renderTasks() {
+    if (!els.tasksSec) return;
+    const body = taskSrc && taskSrc.parentNode ? taskSrc.querySelector('.body') : null;
+    const lists = taskLists(body);
+    if (!lists.length) {
+      taskSrc = null;
+      els.tasksSec.hidden = true;
+      els.tasksBody.textContent = '';
+      els.tasksBody.removeAttribute('data-ticks');
+      return;
+    }
+    els.tasksBody.textContent = '';
+    for (const l of lists) els.tasksBody.appendChild(l.cloneNode(true));
+    const state0 = new Map([...body.querySelectorAll('input.md-tick')]
+      .map(b => [b.getAttribute('data-tick'), b.checked]));
+    for (const box of els.tasksBody.querySelectorAll('input.md-tick')) {
+      const on = !!state0.get(box.getAttribute('data-tick'));
+      box.checked = on;
+      if (box.parentNode && box.parentNode.classList) box.parentNode.classList.toggle('done', on);
+    }
+    const key = body.getAttribute('data-ticks') || hashText(taskSrc.getAttribute('data-raw') || '');
+    els.tasksBody.setAttribute('data-ticks', key);
+    applyTicks(els.tasksBody, key);
+    els.tasksSec.hidden = false;
+    updateTasksMeta();
+    applyTaskFold();
+  }
+  // a tick in the panel is a tick in the message: record it against the same
+  // key, then push the store back over the transcript's copy
+  if (els.tasksBody) {
+    els.tasksBody.addEventListener('change', e => {
+      const box = e.target.closest('input.md-tick');
+      if (!box) return;
+      const key = els.tasksBody.getAttribute('data-ticks');
+      if (!key) return;
+      if (box.parentNode && box.parentNode.classList) {
+        box.parentNode.classList.toggle('done', box.checked);
+      }
+      recordTicks(key, els.tasksBody);
+      const body = taskSrc && taskSrc.querySelector('.body');
+      if (body) applyTicks(body, key);
+      updateTasksMeta();
+    });
+  }
+  if (els.tasksFold) {
+    els.tasksFold.addEventListener('click', () => {
+      const open = localStorage.getItem(TASK_FOLD_KEY) !== 'closed';
+      try { localStorage.setItem(TASK_FOLD_KEY, open ? 'closed' : 'open'); } catch { }
+      applyTaskFold();
+    });
+  }
+  // jump: bring the source message into view (and mark it, so the eye finds it
+  // among neighbours) without yanking anything else about the scroll state
+  function jumpToTaskSrc() {
+    const src = taskSrc;
+    if (!src || !src.parentNode) return;
+    closeAgents();
+    if (typeof src.scrollIntoView === 'function') {
+      src.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
+      els.chat.scrollTop = Math.max(0, (src.offsetTop || 0) - 12);
+    }
+    els.jump.hidden = atBottom();
+    src.classList.add('task-src');
+    setTimeout(() => src.classList.remove('task-src'), 1600);
+  }
+  if (els.tasksJump) els.tasksJump.addEventListener('click', jumpToTaskSrc);
 
   const attThumbs = atts => (atts && atts.length)
     ? `<div class="att-row">${atts.map(a => {
@@ -1143,6 +1304,10 @@
     const old = div.querySelector('.env-row');
     if (old) old.remove();
     if (envs.length) body.insertAdjacentElement('afterend', envRow(envs));
+    // newest checklist in the room → the tasks panel. A first paint happens
+    // BEFORE the message is in the transcript; addMsg offers it again once it
+    // is there, so only re-paints (streaming, finalize) are handled here.
+    if (div.parentNode) noteTasks(div, body);
     return div;
   }
   const copyBtnHtml =
@@ -1173,6 +1338,7 @@
       div.innerHTML = `<div class="body">${sysFmt(text)}</div>`;
     }
     container().appendChild(div);
+    noteTasks(div, div.querySelector('.body'));
     if (!replayBuffer) {
       updateEmpty();
       follow(wasPinned);
@@ -1609,6 +1775,9 @@
       if (cached.atBottom) pinBottom();
       else { els.chat.scrollTop = cached.scrollTop; els.jump.hidden = atBottom(); }
     }
+    // the panel always describes what is ON SCREEN: the cached paint if we had
+    // one, the outgoing chat until its replay lands if we didn't
+    rescanTasks();
     setSyncing(true);
     reattach();
   }
@@ -1625,6 +1794,7 @@
     els.transcript.innerHTML = '';
     while (buf.firstChild) els.transcript.appendChild(buf.firstChild);
     updateEmpty();
+    rescanTasks(); // whole transcript replaced: re-derive the current list
     if (sameAsCached && !cached.atBottom) els.jump.hidden = atBottom();
     else settleBottom();
   }
@@ -2099,6 +2269,7 @@
         } else {
           els.transcript.innerHTML = '';
           updateEmpty();
+          rescanTasks();
         }
         break;
       case 'replay_done':
@@ -2163,6 +2334,7 @@
     resetLanes();
     setSyncing(false);
     updateEmpty();
+    rescanTasks();
   }
   // connect-time view prep: a deliberate chat switch keeps the visible
   // transcript (cached paint or the outgoing chat) and builds the replayed
@@ -2251,6 +2423,7 @@
     renderModelSwitcher, refreshPresendWarn, presendExhausted,
     noteAgentTurn, exhaustReason, modelsFor, effortsFor,
     laneEvent, hashSid, syncHash, routeHash, chatParam,
+    renderTasks, rescanTasks, taskSrc: () => taskSrc,
     renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
   };
 })();

@@ -2,6 +2,53 @@
 
 ## 2026-08-18
 
+- **Council web: the task list stops scrolling away.** The bots write and
+  rewrite markdown checklists as a plan moves, and the live one was
+  wherever the transcript happened to have left it. The agents panel now
+  opens with a **tasks** section holding the checklist from the newest
+  message that has one — user's or bot's — and a revision *replaces* it,
+  so there is exactly one list there and it is the current state. Its
+  checkboxes are not a copy: they are the same tick records as the
+  message's (keyed by message hash + ordinal in `localStorage`), so
+  ticking in the panel ticks the transcript and the other way round, and
+  both survive a reload or a replay. A quiet line says who it came from
+  and how many are done; `↑ source` scrolls back to the message that
+  holds it; the section collapses (remembered) and disappears in a chat
+  that has no list.
+
+  Nothing is stored and no event changed shape: the panel is derived from
+  the transcript on the fly — each rendered message offers itself as the
+  candidate, with a rescan only where the transcript is rebuilt wholesale
+  (replay, chat switch, clear), so a chat switch shows that chat's own
+  latest list. Because ticks are keyed per message, a revised list starts
+  from the `[x]` marks the bots baked into it rather than guessing which
+  old item became which new one.
+
+- **Discuss: the artifact you open from the chat is the same page as the
+  file on disk.** A bot links the HTML it wrote as `/files/<rel>` on the
+  council web server, so that link is usually how you meet it — and until
+  now the browser treated it as an ordinary web page: no project, no chat
+  archive, and a second record beside the `file://` one. Now the
+  companion recognises a `/files/…` url as the same project artifact and
+  hands the tab the **file: url as its identity**, so the two views are
+  one Discuss page — one record, one set of threads, the project's own
+  chat behind both, and the Phase-2 write scope unchanged.
+
+  **Only from an origin you have named.** What a url proves is who served
+  the bytes, and `https://evil.com/files/projects/<id>/index.html` spells
+  the same path as the real thing. So trust is an exact-origin allowlist
+  and nothing else: your `council_web` setting, its `http://localhost:4187`
+  default, and an optional `council_web_origins` list for a council
+  reached over a tunnel — one line in the companion's `config.json`:
+  `"council_web_origins": ["https://council.example.com"]`. Any other
+  origin stays an ordinary web page, because what hangs off a yes here is
+  your project's chat archive and a write-enabled bridge.
+
+  A root has to have been seen once at a `file://` address (that is what
+  records it as yours) before its web view can be recognised, and a
+  record created for the https address *before* this change is left where
+  it is rather than migrated.
+
 - **The web council bills what you tell it to, per agent.** The agents
   panel gained a billing section: `auto` (a saved key if there is one,
   else the subscription — Claude Code's own rule), `subscription`, or
