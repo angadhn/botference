@@ -171,9 +171,20 @@ export function status(modes = defaultModes) {
 
 export function setKey(agent, key) {
   if (!isAgent(agent)) return { ok: false, error: 'unknown agent' };
-  const v = String(key == null ? '' : key).trim();
+  // A key arrives by paste, and pastes off web pages carry invisible freight:
+  // zero-width spaces, BOM, soft hyphens, line wraps. The API rejects the
+  // whole header over one such character ("U+200B at character 12"), so every
+  // whitespace and format-class character is stripped, not just the ends.
+  const v = String(key == null ? '' : key)
+    .replace(/[\s​‌‍⁠﻿­]+/g, '');
   if (!v) return { ok: false, error: 'a key is required — use remove to clear one' };
   if (v.length > 500) return { ok: false, error: 'that does not look like an API key' };
+  // a double-pasted key concatenates into one long "valid-looking" string;
+  // a full vendor prefix appearing AGAIN mid-string is unambiguous (a bare
+  // "sk-" is not — three characters can occur in a key's own random body)
+  if (/(sk-ant-|sk-proj-)/.test(v) && v.slice(4).search(/(sk-ant-|sk-proj-)/) > 0) {
+    return { ok: false, error: 'that looks like two keys pasted together — paste just one' };
+  }
   const data = store.read();
   store.write({ ...data, keys: { ...obj(data.keys), [agent]: v } });
   return { ok: true };

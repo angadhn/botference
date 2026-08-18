@@ -1851,6 +1851,26 @@ test('billing: a stored key reaches the next bridge and is never handed back —
   } finally { s.stop(); }
 });
 
+test('billing: a pasted key is stripped of invisible freight, and a double-paste is refused', async () => {
+  const s = await startServer();
+  try {
+    // zero-width space + BOM + a line wrap — what a copy off a web console
+    // actually delivers ("Invalid X-Api-Key header value … U+200B at
+    // character 12" is the API error this prevents)
+    const dirty = ` ${CLAUDE_KEY.slice(0, 12)}​${CLAUDE_KEY.slice(12)}﻿\n`;
+    const w = await post(s.base, '/keys', { agent: 'claude', key: dirty });
+    assert.equal(w.status, 200);
+    const env = await newBridgeEnv(s, 'cleanpaste1');
+    assert.deepEqual(env, { ANTHROPIC_API_KEY: CLAUDE_KEY },
+      'the bridge gets the clean key, not the paste');
+
+    // the same key pasted twice concatenates into one long string — refused
+    const twice = await post(s.base, '/keys', { agent: 'claude', key: CLAUDE_KEY + CLAUDE_KEY });
+    assert.equal(twice.status, 400);
+    assert.match(await twice.text(), /two keys/);
+  } finally { s.stop(); }
+});
+
 test('billing: subscription mode wins over a key AND over what the server itself inherited', async () => {
   // the server is started the way a LaunchAgent or a login shell would start
   // it — with auth variables already in its environment
