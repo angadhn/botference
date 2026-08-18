@@ -48,16 +48,25 @@
   // it CAN do is say plainly that it is off and exactly where the switch is —
   // one sentence, the same one the viewer shows, because a reader who meets
   // this twice should meet the same words both times.
+  //
+  // It is the same switch a PROJECT ARTIFACT page needs — the HTML your own
+  // council wrote into projects/<id>/ — and the STATE line says so. The help
+  // sentence itself stays word-for-word the viewer's: it is shown where a
+  // local PDF failed to open, and that is what it should talk about there.
   const FILE_ACCESS_HELP =
     'Local PDFs need “Allow access to file URLs” — brave://extensions → ' +
     'Botference Discuss → Details → toggle it on.';
+  const FILE_ACCESS_ALSO = ' It is the same switch the pages your own council '
+    + 'writes need (projects/<id>/….html).';
   function fileAccessLine(allowed) {
     if (allowed === true) {
-      return { cls: 'on', text: 'On — a PDF on your disk opens in Discuss, ' +
-        'and stays the same page if you move or rename it.' };
+      return { cls: 'on', text: 'On — a PDF on your disk opens in Discuss and stays '
+        + 'the same page if you move or rename it, and a page your council wrote opens '
+        + 'in the project that wrote it.' };
     }
-    if (allowed === false) return { cls: 'off', text: FILE_ACCESS_HELP };
-    return { cls: '', text: 'This browser cannot say whether file access is on. ' + FILE_ACCESS_HELP };
+    if (allowed === false) return { cls: 'off', text: FILE_ACCESS_HELP + FILE_ACCESS_ALSO };
+    return { cls: '', text: 'This browser cannot say whether file access is on. '
+      + FILE_ACCESS_HELP + FILE_ACCESS_ALSO };
   }
 
   // The line under the buttons after a save: what was actually stored, which

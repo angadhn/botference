@@ -4,6 +4,7 @@
 // companion.test.mjs can exercise the whole turn choreography deterministically.
 // Every stdin object is appended to $MOCK_BRIDGE_LOG for the test to assert on.
 import fs from 'node:fs';
+import path from 'node:path';
 
 const LOG = process.env.MOCK_BRIDGE_LOG || '';
 const DELAY = Number(process.env.MOCK_TURN_DELAY_MS || 0);
@@ -18,15 +19,32 @@ if (process.env.MOCK_ENV_DUMP) {
     'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CODEX_API_KEY'];
   const seen = {};
   for (const k of want) if (k in process.env) seen[k] = process.env[k];
+  // Phase 2: WHERE this child may write, kept in its own field so `present`
+  // stays exactly the auth question it has always been. The real bridge turns
+  // these into the CLIs' own configuration (cli_adapters.planner_write_config)
+  // — claude's permissions.allow Edit rules, codex's workspace-write sandbox
+  // root — so what is present at spawn is the whole of the write scope,
+  // exactly as the API keys are the whole of the auth.
+  const scope = {};
+  for (const k of ['BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS', 'BOTFERENCE_PROJECT_ROOT']) {
+    if (k in process.env) scope[k] = process.env[k];
+  }
   try {
     fs.appendFileSync(process.env.MOCK_ENV_DUMP,
-      JSON.stringify({ present: want.filter(k => k in process.env), values: seen }) + '\n');
+      JSON.stringify({ present: want.filter(k => k in process.env), values: seen, scope }) + '\n');
   } catch { }
 }
 const ready = () => setImmediate(() => emit({ type: 'ready' }));
 const room = (speaker, text) => emit({ type: 'room', speaker, text, blocks: [] });
 
 let seq = 0, streamSeq = 0, sid = null, pendingDelete = null;
+// which [mock:write:…] directives have already been carried out (see below)
+const written = new Set();
+// Which project the room is in. "Plugin pages" until something opens another
+// one — a WORKSPACE bridge (a project-artifact page, SPEC "Project artifact
+// pages") opens the reader's real project instead, and its chats must be
+// reported under that id or the companion could not tell where they landed.
+let openProject = { id: 'plugin-pages', title: 'Plugin pages' };
 const sessions = [];
 const MODELS = {
   claude: ['claude-fable-5', 'claude-opus-5', 'claude-haiku-4-5'],
@@ -42,7 +60,7 @@ const live = { claude: 'claude-fable-5', codex: 'gpt-5.6-sol' };
 // turn asks for it — the companion must broadcast on the latter, not the former
 const use = { claude_tokens: 42000, codex_tokens: 31000, claude_pct: 4, codex_pct: 3 };
 const status = () => emit({
-  type: 'status', mode: 'plan', lead: 'claude', route: '@all', project: 'plugin-pages',
+  type: 'status', mode: 'plan', lead: 'claude', route: '@all', project: openProject.id,
   claude_model: live.claude, codex_model: live.codex,
   claude_pct: use.claude_pct, codex_pct: use.codex_pct,
   claude_tokens: use.claude_tokens, claude_window: 1000000,
@@ -73,11 +91,11 @@ function projects() {
   const visible = sessions.filter(s => s.entries > 0);
   emit({
     type: 'projects',
-    active_project_id: 'plugin-pages',
+    active_project_id: openProject.id,
     inbox_session_count: 0,
     inbox_sessions: [],
     projects: [{
-      id: 'plugin-pages', title: 'Plugin pages', status: 'active', next_action: '',
+      id: openProject.id, title: openProject.title, status: 'active', next_action: '',
       active: true, session_count: visible.length,
       sessions: visible.map(s => ({
         session_id: s.session_id, title: s.title,
@@ -89,7 +107,13 @@ function projects() {
 
 function input(text) {
   if (text.startsWith('/project create')) { room('system', 'Created project Plugin pages (plugin-pages).'); return ready(); }
-  if (text.startsWith('/project open')) { room('system', 'Project context set to Plugin pages (plugin-pages).'); projects(); return ready(); }
+  if (text.startsWith('/project open')) {
+    const id = text.slice('/project open'.length).trim() || 'plugin-pages';
+    openProject = { id, title: id === 'plugin-pages' ? 'Plugin pages' : id };
+    room('system', `Project context set to ${openProject.title} (${openProject.id}).`);
+    projects();
+    return ready();
+  }
   if (text.trim() === '/new') {
     seq++; sid = `sess-${seq}`; touch(sid);
     emit({ type: 'clear_panes' });
@@ -133,9 +157,34 @@ function input(text) {
   setTimeout(() => {
     // an agent that decided to write a file mid-turn: the real bridge blocks on
     // the answer, so the companion must refuse without waiting for a timer
-    if (/\[mock:perm\]/.test(text)) {
+    // …optionally naming the path it wants, so a test can ask for one INSIDE
+    // the project folder and prove the companion refuses that too (a yes here
+    // grants a whole extra write root, never one file — see chat.mjs)
+    const perm = /\[mock:perm(?::([^\]]+))?\]/.exec(text);
+    if (perm) {
+      const p = perm[1] || '/tmp/notes-from-the-page.md';
       emit({ type: 'permission_request', model: models[0], tool: 'Write',
-        path: '/tmp/notes-from-the-page.md', description: 'Write notes-from-the-page.md' });
+        path: p, description: `Write ${p}` });
+    }
+    // an agent that actually wrote a file mid-turn. The real thing does it
+    // through the CLI's own sandbox; here it is one fs call, which is all the
+    // companion's change census can see of it either way.
+    // ONCE per directive, ever. The envelope replays the thread's history above
+    // the new message, so a directive the reader sent three turns ago is still
+    // in the text of this one — a mock that re-ran it would rewrite the file on
+    // every subsequent turn and the companion's change census would be right to
+    // report it, which is a bug in the fixture and not in the thing under test.
+    // …and it is the NEW one that counts: the history sits above the message,
+    // so the first match in the text is the oldest, not the current ask.
+    const wm = [...String(text).matchAll(/\[mock:write(?::([^\]]+))?\]/g)]
+      .filter(m => !written.has(m[0])).pop();
+    const write = wm && (wm[1] || process.env.MOCK_WRITE_FILE || '');
+    if (write) {
+      written.add(wm[0]);
+      try {
+        fs.mkdirSync(path.dirname(write), { recursive: true });
+        fs.writeFileSync(write, `rewritten by the mock at ${new Date().toISOString()}\n`);
+      } catch { }
     }
     for (const model of models) {
       const stream_id = `${sid || 's0'}:room:${model}:${++streamSeq}`;

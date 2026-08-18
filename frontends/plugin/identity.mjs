@@ -29,13 +29,14 @@
 // `hub_device` cookie, never mints one. Approving a new browser stays the
 // hub's own osascript flow (or, failing that, typing the owner password here).
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { secretsDir } from '../shared/secrets.mjs';
 
-// ~/.botference, or wherever the tests point us
-export const secretsDir = () =>
-  process.env.BOTFERENCE_SECRETS_DIR || path.join(os.homedir(), '.botference');
+// ~/.botference, or wherever the tests point us. Defined once for every
+// frontend in ../shared/secrets.mjs and re-exported here, where the companion
+// has always imported it from.
+export { secretsDir };
 
 export const DEVICE_TTL_MS = 365 * 24 * 3600 * 1000; // hub.mjs's DEVICE_TTL_MS
 

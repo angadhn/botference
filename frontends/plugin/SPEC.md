@@ -40,11 +40,14 @@ frontends/plugin/
   server.mjs               ← companion server           (companion agent owns)
   chat.mjs                 ← bridge adapter, adapted from frontends/review/chat.mjs (companion agent)
   store.mjs                ← page/thread persistence    (companion agent)
+  workspace.mjs            ← project artifact pages: council-root detection,
+                             the project's chat archive   (companion agent)
   export.mjs               ← Obsidian export            (companion agent)
   run.mjs                  ← running a python code block (companion agent)
   bridge-system-prompt.md  ← bot role file              (companion agent)
   test/
     companion.test.mjs     ← endpoint tests w/ mock bridge (companion agent)
+    workspace.test.mjs     ← project artifact pages, end to end (companion agent)
     fixtures/article.html  ← sample static article, served at /test-page (companion agent)
     harness.html           ← loads extension JS with chrome-API + companion mocks for visual QA (extension agent)
     anchor.test.mjs        ← anchoring unit tests        (extension agent)
@@ -657,10 +660,14 @@ Contract deltas agreed during live testing — authoritative over the sections a
   `Domain`), so signing in at one hostname does not carry to the other — which
   is why the canonical address is the one the install tells you to bookmark.
 
-- API keys (`keys.mjs`). Per-agent auth for the CLIs the bridge spawns, since
-  both already read a key from the environment. Stored in
+- API keys (`../shared/keys.mjs`, shared with the council web server — one
+  stored key serves both, and each product keeps its own mode; the tunnel test
+  behind them, `isLocalDirect`, lives in `../shared/local.mjs` and is
+  re-exported by `hosted.mjs`). Per-agent auth for the CLIs the bridge spawns,
+  since both already read a key from the environment. Stored in
   `~/.botference/discuss-keys.json` (0600, mtime-watched like grants.json) as
-  `{keys:{claude,codex}, modes:{claude,codex}}`. Modes are `auto` (default —
+  `{keys:{claude,codex}, modes:{claude,codex}}` — the `modes` there are
+  Discuss's (the council's live in its own workspace state file). Modes are `auto` (default —
   a stored key is used, else the subscription, mirroring Claude Code itself),
   `subscription`, `key`. `applyEnv()` is the only consumer: called at every
   bridge spawn, it sets `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` when a key
@@ -1595,6 +1602,268 @@ Contract deltas agreed during live testing — authoritative over the sections a
     note says *Resolved by …* and carries the paragraph; and the library
     prompt tells the agents what a resolved thread means so an archive of
     filed threads is not read back as a pile of open questions.
+
+## Project artifact pages (Phase 1, shipped)
+
+A council chat writes HTML into its own project folder —
+`<council>/projects/spaceship-engineering/index.html` — and the reader opens it
+as a `file://` page. Those pages are first-class Discuss pages, **zero-config**,
+and the chat behind them is the REAL council chat that produced them.
+
+**Identity is the PATH, deliberately.** Everywhere else in this contract a
+local file is identified by the hash of its bytes and content.js says at length
+why (a path is where a thing is this morning). A project artifact gets the
+opposite rule and for the same reason: these files are regenerated in place —
+that is what the project is *for* — so under a content hash every rebuild would
+be a new page and every annotation would be stranded by the next build. The
+path is what is stable: `projects/<id>/index.html` is the artifact, whatever it
+currently says. `normUrl` handles `file:` urls unchanged and must keep doing so
+in all three copies (background.js, content.js, store.mjs).
+
+### Detection (workspace.mjs, companion)
+
+- A **council root** is a directory holding all three of `project.json`,
+  `work/` and `projects/`. Any one alone is an ordinary directory.
+- A file: url is a **project artifact** iff: it names an existing `.html`/`.htm`
+  file; walking up from it (≤24 levels, nearest wins) finds a council root; the
+  file sits under `<root>/projects/<id>/`; and that project folder still
+  exists. A deleted project ends the page.
+- The project **title** comes from `<root>/projects/portfolio.json`, falling
+  back to the folder name.
+- Symlinks are resolved on both sides of every comparison (`realish`).
+
+### The one-time council confirmation
+
+A directory with three familiar names in it is a hint, never a licence: what
+hangs off a yes is a bridge spawned with that folder as its workspace. So the
+first time a NEW root is seen the drawer asks, once, and the answer is kept in
+the plugin's own `config.json` as `council_roots: {"<abs path>": true|false}`.
+A **no** is kept as firmly as a yes — the extension does not attach to pages
+under that root again. Nothing is ever written inside a council root by the
+companion; only botference itself writes there, saving the session.
+
+### HTTP API (owner-only, all four — the answers are paths on this machine)
+
+| Method | Path | Request | Response |
+|---|---|---|---|
+| GET | `/project-page?url=<enc>` | — | `{ok, artifact:{root, project_id, project_title, rel, path, confirmed, declined} \| null}` |
+| POST | `/council-root` | `{root, confirm:bool}` | `{ok, root, state:"yes"\|"no"}` (400 if not a council root); broadcasts `{"type":"council-root", root, state}` |
+| GET | `/project-sessions?url=<enc>` | — | `{ok, project_id, project_title, root, current, sessions:[{session_id,title,updated_at,created_at,entry_count}]}` (409 unconfirmed) |
+| GET | `/project-session?url=<enc>&sid=` | — | `{ok, session:{session_id,title,updated_at,project_id,msgs,truncated}}` |
+| POST | `/project-chat` | `{url, sid}` or `{url, new:true}` | `{ok, session_id, session_title, page}` |
+
+The archive is read from `<root>/work/sessions/.metadata-index.json` — the same
+cache botference's own project panel is built from, so the list agrees with the
+TUI without parsing a transcript — plus any `projects/<id>/sessions/*.json`,
+with `projects/session-index.json` backfilling chats whose payload predates the
+`project_id` field. Chats with no turns are left out, as the panel leaves them
+out. A `sid` is checked against `/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/` before it
+addresses a file.
+
+### The second bridge
+
+`createChat({onEvent, root, projectOf})`. `root` is `BOTFERENCE_PROJECT_ROOT`
+for the child (`BOTFERENCE_HOME`, page records, config and the task file all
+stay put — they are the plugin's, not the council's). `projectOf(url)` answers
+`{id, title, path}`.
+
+- Ordinary pages: unchanged — `/project create Plugin pages` → `/project open
+  plugin-pages`, once per child.
+- A workspace bridge **never creates a project** (it exists — that is the
+  premise) and re-opens on every change: `/project open <id>` whenever the
+  project differs from the last one this child opened, because one council root
+  can hold artifacts from a dozen projects.
+- One bridge per council root, lazy, kept alive, never sent `/quit`. The
+  deny-all write gate stays on: file writes are Phase 2.
+- The **lazy rename never fires on a project artifact**. That chat has a name
+  the council gave it; a page whose `<h1>` differs is not evidence the reader
+  wanted it renamed. Only a chat the page itself created is renamed, once.
+- `/delete-page` never deletes a council session. Forgetting the page must not
+  destroy the project's chat.
+- `/health` and `/models` report `running` if ANY bridge is up; `queue` is the
+  sum. `/model`, `/effort` and `/relay` are imposed on every awake child.
+- Envelope: a project artifact's first-turn banner is
+  `[project artifact: "<title>" · project <name> (<id>) · <abs path>]` followed
+  by "This file is in your workspace — READ it for anything not shown below."
+  rather than the `[web page: …]` banner.
+- An **unconfirmed** root routes to no bridge at all: the comment is kept and
+  `{queued:false, reason}` says why.
+
+### Page chat becomes the project's chat archive
+
+Opening a past chat is a companion-side move of the page record's
+`session_id` — which is ALREADY the whole of the resume machinery (chat.mjs
+plans `/resume` when it is set and `/new` when it is not). So nothing new was
+invented: `POST /project-chat {sid}` sets `session_id`/`session_title` and
+replaces `page_chat` with that session's recent tail; `{new:true}` clears all
+three. What renders under the archive bar is an ordinary page record, so the
+fold (head + tail + "Show N earlier replies"), the composer and the streaming
+are untouched.
+
+Restored messages (`restored:true`) came out of a session record, not out of
+this companion's page file. They are offered no edit and no delete (nothing
+here owns them), and their `ts` is an ADDRESS (`<sid>#<n>`) rather than a date —
+so `when()` renders nothing rather than inventing a time the transcript never
+recorded. A user turn that carried a drawer envelope has it taken back off
+(`workspace.stripEnvelope`); a chat typed in the TUI passes through untouched.
+
+### Extension
+
+- content.js still refuses `file:` documents, with one exception: an HTML
+  document (contentType `text/html`, no top-level `<embed type=application/pdf>`
+  — both guards are about Chrome's PDF shell) whose url the companion confirms
+  is a project artifact. That is the file's ONE `await` during boot; every
+  other page still wires itself up synchronously.
+- Such a page is **never dormant**: it activates on load (drawer shut) like an
+  annotated page.
+- `HOSTNAME` — and therefore the record's `site` and the drawer's per-site tab
+  memory — is the project id, because a file: url has no hostname.
+- Drawer: `opts.project` / `d.setProject(p)`; header line "part of project
+  <name>"; callbacks `onConfirmRoot(bool)`, `onProjectSessions()`,
+  `onOpenSession(sid|null)`. Switching chats clears that target's outbox,
+  streams, note and spinner — they belonged to the conversation that left.
+- `test/harness.html?workspace=1` (plus `&unconfirmed=1`) is the visual QA
+  state; `window.__BFP_PROJECT` is the same isolated-world escape
+  `__BFP_HREF` is.
+
+Phase 2 (below) makes the write gate conditional for exactly these pages and
+adds the reload.
+
+### Amendments (2026-08-18, shipped)
+
+- **Both sessions layouts are read.** `workspace.mjs` resolves session
+  stores from `<root>/work/sessions` (project-local layout) AND
+  `<root>/sessions` (the legacy self-hosted layout the original vault
+  runs), for the metadata index and the payloads alike; work/sessions
+  wins when a sid appears in both. The live spaceship-engineering root
+  is legacy-layout — code that only knows work/sessions lists nothing.
+- **The restored-tail note.** `sessionTail` returns `total` (renderable
+  messages in the whole chat, system lines never counted) and
+  `/project-chat` persists it as `page.session_total`. Over a restored
+  chat the drawer renders one line — "Restored council chat — the last
+  N of TOTAL messages" — with a link to the complete chat in the
+  council web UI: `<council_web>/?chat=<sid>`, target _blank.
+  `council_web` rides the `/project-page` artifact payload, from the
+  companion config key `council_web`, default `http://localhost:4187`.
+  There is deliberately NO in-drawer "load earlier" paging: a
+  400-message read belongs in the council UI, and the link is the
+  feature.
+
+### Phase 2 (2026-08-18, shipped): the bots may edit the project
+
+On a **confirmed project artifact page** the bots may create and modify files
+under **that project's folder** — `<root>/projects/<id>/` — and nowhere else.
+Not the council root, not another project, not `corpus/`, not `work/`, not the
+companion's own state, not the rest of the disk. Owner and localhost only:
+nothing about hosted mode or a guest changes, because a guest never reaches
+`chatFor` at all (`/reply` from a guest is stored, and the bridge that answers
+it is the owner's). Ordinary web pages, PDFs and library chat keep deny-all
+writes exactly as before.
+
+#### Where the scope is enforced, honestly
+
+The scope is decided when a bridge CHILD IS SPAWNED, not per turn and not per
+file. `createChat({writeRoot})` (chat.mjs) passes the project directory as
+`BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS`, which `core/cli_adapters.py`
+(`planner_write_roots_for_env` → `planner_write_config`) turns into the CLIs'
+own configuration:
+
+| | what the CLI is given | what it mechanically prevents |
+|---|---|---|
+| **claude** | `cwd` = the project dir; `permissions.allow` = `Read, Glob, Grep, Bash, WebSearch, WebFetch` plus `Edit(//<dir>)`, `Edit(//<dir>/*)`, `Edit(//<dir>/**)` and no other writable path, under `permissions.defaultMode:"dontAsk"` and `sandbox.enabled`; the council root rides along as `--add-dir` so reads still work | `Write`/`Edit`/`MultiEdit` anywhere but the project folder |
+| **codex** | `cwd` = the project dir, `--sandbox workspace-write`, **no** extra writable roots | every write outside the project folder, by any means, at the OS sandbox level. Reads stay unrestricted, as codex's sandbox restricts writes only |
+
+**The gap, stated plainly.** Claude's `Bash` tool is pre-allowed and runs
+inside Claude's sandbox, whose writable workspace is `cwd` plus its
+`--add-dir`s — and the council root is an `--add-dir`, because the bots need to
+read it. So a *shell* write elsewhere **inside the council root** is not
+mechanically blocked for claude; it is blocked by instruction only. Everything
+outside the council root is blocked for both agents, and codex is fully bounded
+either way. Closing this would mean either dropping read access to the council
+root (which breaks Phase 1's premise) or changing `planner_write_config` in
+`core/`, which is the TUI's configuration too. Deliberately not done here.
+
+**Per-project, therefore per-child.** An environment is fixed when a process
+starts and there is no command that re-scopes a live bridge, so the server now
+keys workspace bridges by **(council root, project id)** rather than by root
+alone (`wsKey`). A second project in the same council gets a second child with
+its own folder; the `/project open <id>` choreography is unchanged (it now
+fires once per child rather than per switch). Cost: a reader who opens
+artifacts from several projects has several sleeping children. Deliberate — the
+alternative leaves the first project writable under the second project's page.
+
+**The permission gate does NOT open.** `permission_request` is still answered
+`allow:false` on every bridge including a workspace one, and that is not an
+oversight: the controller answers a yes by granting a whole additional write
+ROOT for the rest of the session (`_handle_write_access_request` →
+`_grant_plan_write_root`), which is exactly the widening this refuses. The
+project folder is writable without asking; anything that has to ask is by
+definition outside it. The refusal message names the one writable directory.
+
+**The envelope says it in words too.** Every turn on a project artifact page —
+not just the first — carries "You may create and edit files under `<abs project
+dir>` — this project's own folder and nothing outside it…", beside the
+snapshot-path line and for the same reason (a resumed session's replayed
+history is uneven and a bridge restart drops it whole).
+
+**The confirmation card now discloses it.** "…and the bots may edit that
+project's files when you ask them to. Nothing outside `projects/<id>/` is ever
+writable." An **already-confirmed root keeps working with no re-confirmation**:
+the answer stands and the new wording is for the next council the reader opens.
+
+#### Tab auto-reload after a turn
+
+The companion takes a **census** of the project folder at turn-start and
+another at turn-end (`workspace.scanProject` → `diffScans`, server.mjs
+`noteTurnStart`/`reportProjectChanges`) and broadcasts the difference:
+
+```
+{type:"project-files", url, root, project_id, project_title,
+ count, page_changed, files:[rel…≤20], at}
+```
+
+- A **census, not a watcher**: nothing runs while the reader is reading — no
+  polling at rest, no `fs.watch` handles — and no event unless a turn happened
+  **and** something under the project actually moved.
+- `sessions/`, dot-entries and `node_modules` are never counted. botference
+  writes the chat into `sessions/` during every turn, so counting it would make
+  every turn a change. Caps: 4000 files, 12 levels, symlinks not followed.
+- A summary (thread-filing) job emits no turn-start/turn-end and so never
+  triggers a census.
+- No loop is possible: a reload starts no turn, and only a turn-end emits the
+  event.
+
+The extension (`content.js onProjectFiles`) then does one of two things, and
+the difference is the point:
+
+- **this page's own file changed** → `location.reload()`. The drawer's state
+  survives it as far as it survives any reload: the record lives on the
+  companion, and the tab re-attaches and re-activates (a project artifact page
+  is never dormant).
+- **only siblings changed** → one line in the page chat — "the bots changed N
+  files in this project — not this page" — and nothing else. Reloading a page
+  whose bytes did not change would throw away the reader's scroll position,
+  selection and half-typed comment to show them what they were already looking
+  at.
+
+Duplicate events (SSE and the socket both up) reload once, deduped on `at`.
+
+`GET /project-changes?url=<enc>` → `{ok, changes:{…}|null}` — the last change
+set for a page, for a tab whose socket was down across the turn. Owner-only
+(403 for a guest), 404 for a non-artifact, 409 unconfirmed, like the other
+`/project-*` routes.
+
+**Tests.** `test/workspace.test.mjs` (the Phase 2 block: the exact write-root
+environment a workspace child is spawned with vs an ordinary one, one child per
+project, the envelope wording, the gate staying shut even for a path inside the
+project, the event for the page's own file and for a sibling, silence when
+nothing changed, silence when something outside the project moved, `sessions/`
+not counting, the guest 403). Harness `?workspace=1&selftest=1` asserts the
+confirm-card wording and drives scripted `project-files` events; the reload
+itself is held back by `window.__BFP_NO_RELOAD` and **counted**
+(`window.__bfp.reloads`) rather than performed, since a real reload would take
+the harness down mid-selftest — the same seam `__BFP_HREF`/`__BFP_PROJECT`
+already are.
 
 ## Out of scope for v1 (do not build)
 

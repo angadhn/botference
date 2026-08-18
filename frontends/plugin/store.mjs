@@ -65,6 +65,12 @@ export const DEFAULT_CONFIG = {
     model_options: { claude: [], codex: [] },
     effort_options: { claude: [], codex: [] },
   },
+  // Which directories on this machine the reader has said are their council
+  // (workspace.mjs). Absolute path → true (yes, treat it as mine) or false
+  // (asked once, told no, never ask again). A `project.json` beside a `work/`
+  // and a `projects/` is a strong hint and not a permission: what hangs off
+  // this map is a bridge spawned with that directory as its workspace.
+  council_roots: {},
 };
 export const VERBOSITY_LEVELS = ['short', 'long'];
 export const AGENTS = ['claude', 'codex'];

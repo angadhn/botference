@@ -112,7 +112,31 @@
 //                                         level: 'short'|'long'
 //   onRelay(agent)                      → {ok, queued} | {ok:false,error} (POST /relay)
 //                                         agent: 'claude'|'codex'|'both'
+//   onConfirmRoot(confirm)              the one-time "is <root> your council?"
+//                                        answer  (POST /council-root) — a NO is
+//                                        kept as firmly as a yes
+//   onProjectSessions()                 → {ok, sessions:[{session_id,title,
+//                                          updated_at,entry_count}], current}
+//                                        (GET /project-sessions) — the chats
+//                                        this project already has
+//   onOpenSession(sid|null)             → {ok, session_id}  (POST /project-chat)
+//                                        stand this page in that chat; null
+//                                        starts a fresh one
 //   onClose() / onReconnect() / onSelect()
+//
+// `project` (and `d.setProject(p)`) is the council project behind a PROJECT
+// ARTIFACT page — a local file the reader's own council wrote, opened as a
+// file: url (workspace.mjs). Null everywhere else, and where it is null
+// nothing about this drawer changes. Where it is set:
+//   · the header carries a second line, "part of project <name>"
+//   · Page chat becomes that PROJECT's chat archive rather than one
+//     conversation about one document: a bar naming the chat this page is
+//     standing in, the project's other chats behind it, and "+ new"
+//   · until `project.confirmed`, the tab holds the confirmation question and
+//     nothing else — no bridge is spawned against a folder nobody vouched for
+// Opening a past chat is a companion-side move of the page's `session_id`,
+// so what renders under the bar is an ordinary page record with an ordinary
+// `page_chat` — the fold, the composer and the streaming are untouched.
 (function (root) {
   'use strict';
 
@@ -1043,6 +1067,18 @@
       resolvedOpen: false,   // the "Resolved (N)" section is expanded
       resolvedCards: {},     // threadId -> the full thread under its digest is open
       resolving: {},         // threadId -> a resolve/reopen is in flight
+      // ---- the council project behind a project artifact page -----------
+      // Null on every ordinary page, and on those NOTHING below changes. On a
+      // page the reader's own council wrote (workspace.mjs), Page chat stops
+      // being one conversation about one document and becomes that PROJECT's
+      // chat archive: the chats it already has, the one this page is standing
+      // in, and the way between them.
+      //   project   {root, project_id, project_title, rel, path, confirmed}
+      //   archive   the list, once asked for: {list, loading, err, current}
+      //   picking   true while the list is showing instead of the conversation
+      project: opts.project || null,
+      archive: { list: null, loading: false, err: '', current: null, busy: '' },
+      picking: false,
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -1136,6 +1172,7 @@
         panel: shadow.querySelector('.panel'),
         title: shadow.querySelector('.hdr .title'),
         site: shadow.querySelector('.hdr .site'),
+        proj: shadow.querySelector('.hdr .proj'),
         conn: shadow.querySelector('.hdr .conn'),
         tabs: shadow.querySelector('.tabs'),
         cCount: shadow.querySelector('.tab[data-tab="comments"] .count'),
@@ -1159,6 +1196,7 @@
 
       applyWidth(D.width);
       wireEvents();
+      paintProject();
       paintTabs();
       restoreTab();
       restoreWidth();
@@ -1174,7 +1212,7 @@
   <div class="grip" title="Drag to resize · double-click to reset" role="separator" aria-orientation="vertical"></div>
   <div class="hdr">
     <div class="title">—</div>
-    <div class="meta"><span class="site"></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
+    <div class="meta"><span class="site"></span><span class="proj" hidden></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
     <div class="acts">
       <button class="iconbtn pages" data-act="pages" type="button" title="All annotated pages" aria-label="All annotated pages" aria-pressed="false">${PAGES_SVG}</button>
       <button class="iconbtn" data-act="models" type="button" title="Models" aria-label="Models">⚙</button>
@@ -1346,12 +1384,19 @@
       // vanishes half a second after the click is a confirmation nobody sees
       const ckey = target + '|' + r.ts;
       const cp = D.copied && D.copied.key === ckey ? D.copied : null;
+      // A RESTORED message came out of a council session record, not out of
+      // this companion's page file (workspace.mjs sessionTail). Nothing here
+      // owns it: there is nothing to edit and nothing to delete, and its `ts`
+      // is an address rather than a date, so it is offered neither control and
+      // shows no time. Copy stays — it takes nothing away.
+      const own = !!r.restored;
       const acts = `<div class="acts">` +
         `<button class="rebtn${cp && cp.ok ? ' done' : ''}" data-act="copy" data-copykey="${esc(ckey)}"` +
         ` title="${esc(cp ? (cp.ok ? 'copied' : COPY_FAIL) : COPY_TIP)}"` +
         ` aria-label="copy this message">${cp ? (cp.ok ? '✓' : '✕') : COPY_GLYPH}</button>` +
-        (mine ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
-        `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button></div>`;
+        (mine && !own ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
+        (own ? '' : `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button>`) +
+        `</div>`;
       // EVERY message is markdown now, whoever wrote it — people paste links
       // into their own comments and expect them to be links. Same renderer as
       // the bots get, which is the point: it builds DOM with createElement and
@@ -1539,7 +1584,7 @@
     function composerHtml(target, label, extra) {
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
-      return `<div class="composer" data-target="${esc(target)}">
+      return `<div class="composer${draft.trim() ? ' has-draft' : ''}" data-target="${esc(target)}">
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
         <div class="crow"><span class="hint">${esc(HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
@@ -1885,14 +1930,171 @@
       D.el.cCount.textContent = String(open.length);
     }
 
-    function renderChat() {
-      const msgs = (D.page && D.page.page_chat) || [];
-      const body = msgsHtml(PAGE_TARGET, msgs) + outboxHtml(PAGE_TARGET) + streamsHtml(PAGE_TARGET);
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
-        ${body ? `<div class="thread">${body}</div>` : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`}
-        ${statusHtml(PAGE_TARGET)}
-        ${composerHtml(PAGE_TARGET, 'Ask about this page…')}
+    // ---- Page chat on a project artifact page ---------------------------
+    // Everywhere else Page chat is ONE conversation about the document in
+    // front of you. Here the document came out of a project that already has
+    // conversations, so the tab is that project's chat archive: which chat
+    // this page is standing in, the rest of them, and the way between. What is
+    // rendered underneath is unchanged — opening a past chat moves the page's
+    // `session_id` and refills its `page_chat` with that chat's recent tail
+    // (companion side), so the thread, the fold, the composer and the
+    // streaming all work exactly as they always did.
+
+    // "3d", "2h", "now" — a chat list wants to say how stale a thing is in
+    // the width of a chip, not to print a date nobody reads.
+    function shortAge(iso) {
+      const t = Date.parse(String(iso || ''));
+      if (!t) return '';
+      const s = Math.max(0, (Date.now() - t) / 1000);
+      if (s < 90) return 'now';
+      if (s < 3600) return Math.round(s / 60) + 'm';
+      if (s < 86400) return Math.round(s / 3600) + 'h';
+      if (s < 86400 * 30) return Math.round(s / 86400) + 'd';
+      if (s < 86400 * 365) return Math.round(s / (86400 * 30)) + 'mo';
+      return Math.round(s / (86400 * 365)) + 'y';
+    }
+
+    // A directory with three familiar names in it is a hint, never a licence:
+    // what hangs off a yes here is a bridge spawned with that folder as its
+    // workspace, writing sessions into it. So it is asked once, in words, and
+    // a no is kept as firmly as a yes.
+    //
+    // Since Phase 2 a yes also buys the bots an EDIT permission — scoped to
+    // that one project's folder — and a question that did not say so would be
+    // asking for consent to something else. So the card says it, in the
+    // sentence the reader is agreeing to. An already-confirmed root is not
+    // asked again (SPEC.md Phase 2): the answer stands, and the new wording is
+    // for the next council the reader opens.
+    function confirmRootHtml() {
+      const p = D.project;
+      if (!p) return '';
+      return `<div class="card confirmroot">
+        <div class="confirmq">Is this your council?</div>
+        <p class="confirmp">This page is a file inside <code class="rootpath">${esc(p.root)}</code> — a folder that looks like a botference workspace.</p>
+        <p class="confirmp">Say yes and the chat behind this page becomes the real chat of project <b>${esc(p.project_title || p.project_id)}</b>, filed in that workspace beside all its others — and the bots may edit that project&rsquo;s files when you ask them to. Nothing outside <code class="rootpath">projects/${esc(p.project_id)}/</code> is ever writable. Asked once per folder.</p>
+        <div class="confirmacts">
+          <button class="pbtn yes" data-act="root-yes" type="button">Yes, that is my council</button>
+          <button class="pbtn no" data-act="root-no" type="button">No, leave this page alone</button>
+        </div></div>`;
+    }
+
+    function archiveHtml() {
+      const p = D.project;
+      if (!p || !p.confirmed) return '';
+      const a = D.archive;
+      const now = (D.page && D.page.session_title)
+        || (D.page && D.page.session_id ? 'this chat' : '');
+      const bar = `<div class="archbar">
+        <button class="archpick" data-act="arch-list" type="button" aria-expanded="${D.picking ? 'true' : 'false'}"
+          title="the chats in project ${esc(p.project_title || p.project_id)}">
+          <span class="archnow">${esc(now || 'new chat')}</span><span class="chev">${D.picking ? '▴' : '▾'}</span></button>
+        <button class="archnew" data-act="arch-new" type="button"
+          title="start a new chat in this project"${a.busy ? ' disabled' : ''}>+ new</button>
       </div>`;
+      if (!D.picking) return bar;
+      let body;
+      if (a.loading) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
+      else if (a.err) body = `<div class="archnote err">${esc(a.err)}</div>`;
+      else if (!a.list || !a.list.length) body = `<div class="archnote">no chats in this project yet</div>`;
+      else {
+        body = a.list.map(row => {
+          const on = row.session_id === ((D.page && D.page.session_id) || a.current);
+          return `<button class="archrow${on ? ' on' : ''}${a.busy === row.session_id ? ' busy' : ''}"
+            data-act="arch-open" data-sid="${esc(row.session_id)}" type="button"${a.busy ? ' disabled' : ''}>
+            <span class="at">${esc(row.title)}</span>
+            <span class="ax">${esc(shortAge(row.updated_at || row.created_at))}</span></button>`;
+        }).join('');
+      }
+      return bar + `<div class="archlist">${body}</div>`;
+    }
+
+    function renderChat() {
+      // an unvouched-for council root has one thing on this tab and it is the
+      // question — nothing else here is true until it is answered
+      if (D.project && !D.project.confirmed) {
+        D.el.chat.innerHTML = offlineHtml() + confirmRootHtml();
+        return;
+      }
+      const msgs = (D.page && D.page.page_chat) || [];
+      // A restored council chat opens on its tail, not its whole history.
+      // Say so, in numbers, and hand over a link to the complete chat in the
+      // council web UI — that is where a 400-message read belongs, not here.
+      let restnote = '';
+      const shown = msgs.filter(m => m && m.restored).length;
+      if (D.project && D.page && D.page.session_id && shown) {
+        // a chat opened before totals were stored has none — claim nothing
+        const total = Number(D.page.session_total) || 0;
+        const counts = total > shown ? ` — the last ${shown} of ${total} messages`
+          : total ? ` — all ${shown} messages` : '';
+        const base = String(D.project.council_web || 'http://localhost:4187').replace(/\/$/, '');
+        restnote = `<div class="restnote">Restored council chat${counts}.
+          <a href="${esc(base)}/?chat=${encodeURIComponent(D.page.session_id)}" target="_blank" rel="noopener">Open the full chat ↗</a></div>`;
+      }
+      const body = restnote + msgsHtml(PAGE_TARGET, msgs) + outboxHtml(PAGE_TARGET) + streamsHtml(PAGE_TARGET);
+      const empty = D.project
+        ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — mention a bot to get an answer. It files with the project\u2019s other chats.</div>`
+        : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
+        ${body ? `<div class="thread">${body}</div>` : empty}
+        ${statusHtml(PAGE_TARGET)}
+        ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026')}
+      </div>`;
+    }
+
+    // ---- archive actions -------------------------------------------------
+    async function loadArchive() {
+      if (D.archive.loading) return;
+      D.archive.loading = true; D.archive.err = '';
+      render();
+      const r = await cb('onProjectSessions')();
+      D.archive.loading = false;
+      if (r && r.ok) {
+        D.archive.list = r.sessions || [];
+        D.archive.current = r.current || null;
+      } else {
+        D.archive.err = (r && r.error) || 'the companion did not answer';
+      }
+      render();
+    }
+    // Opening a past chat, or starting a fresh one (sid null). The list is
+    // dropped afterwards rather than patched: the companion has just changed
+    // which session is current, and re-asking is one cheap call against
+    // guessing.
+    async function openSession(sid) {
+      if (D.archive.busy) return;
+      D.archive.busy = sid || 'new';
+      D.archive.err = '';
+      render();
+      const r = await cb('onOpenSession')(sid || null);
+      D.archive.busy = '';
+      if (r && r.ok) {
+        D.picking = false;
+        D.archive.list = null;
+        D.archive.current = r.session_id || null;
+        // Everything the PREVIOUS chat left on this tab goes with it. A
+        // pending send, a half-streamed answer, a "queued…" line and a
+        // spinner all belong to the conversation that is no longer here, and
+        // leaving any of them hanging over the new one would be a lie about
+        // which chat they came from.
+        delete D.outbox[PAGE_TARGET];
+        delete D.notes[PAGE_TARGET];
+        delete D.running[PAGE_TARGET];
+        for (const k of Object.keys(D.streams)) {
+          if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
+        }
+        D.expanded[PAGE_TARGET] = null;   // a chat just opened starts folded
+        D.tab = 'chat';
+      } else {
+        D.archive.err = (r && r.error) || 'could not open that chat';
+      }
+      render();
+    }
+    async function answerRoot(yes) {
+      const r = await cb('onConfirmRoot')(!!yes);
+      if (!r || !r.ok) { D.archive.err = (r && r.error) || 'the companion did not answer'; render(); return; }
+      if (D.project) D.project.confirmed = !!yes;
+      paintProject();
+      render();
     }
 
     // ---- the Pages view -------------------------------------------------
@@ -2214,6 +2416,9 @@
     function paintTabs() {
       if (!D.mounted) return;
       if (!CAPS.highlights && D.tab !== 'chat') D.tab = 'chat';
+      // a council folder nobody has vouched for yet has exactly one thing to
+      // say, and it is on this tab
+      if (D.project && !D.project.confirmed) D.tab = 'chat';
       D.el.tabs.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === D.tab));
       paintView();
     }
@@ -3028,6 +3233,16 @@
         if (act === 'resolved-toggle') { D.resolvedOpen = !D.resolvedOpen; render(); return; }
         if (act === 'resolved-card') { D.resolvedCards[target] = !D.resolvedCards[target]; render(); return; }
         if (act === 'summarize') { doSummarize(target); return; }
+        if (act === 'root-yes') { answerRoot(true); return; }
+        if (act === 'root-no') { answerRoot(false); return; }
+        if (act === 'arch-list') {
+          D.picking = !D.picking;
+          if (D.picking && !D.archive.list && !D.archive.loading) { loadArchive(); return; }
+          render();
+          return;
+        }
+        if (act === 'arch-new') { openSession(null); return; }
+        if (act === 'arch-open' && btn.dataset.sid) { openSession(btn.dataset.sid); return; }
         if (act === 'del-thread') { D.confirm = target; render(); return; }
         if (act === 'del-thread-no') { D.confirm = null; render(); return; }
         if (act === 'del-thread-yes') { D.confirm = null; doDelete(target, null); return; }
@@ -3046,7 +3261,11 @@
       // the caret moved or the text changed: the @-menu follows both
       D.shadow.addEventListener('input', e => {
         const ta = e.target;
-        if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) syncMention(ta);
+        if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) {
+          // a draft holds its composer open (the Send row) even after blur
+          ta.closest('.composer').classList.toggle('has-draft', !!ta.value.trim());
+          syncMention(ta);
+        }
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
       });
@@ -4313,7 +4532,32 @@
         D.el.title.textContent = title;
         D.el.title.title = title;
         D.el.site.textContent = (page && page.site) || opts.hostname || '';
+        paintProject();
       }
+      render();
+      return D;
+    }
+
+    // ---- the council project behind this page ---------------------------
+    // The header's second line, and the only thing about a project artifact
+    // that is visible before the reader touches anything: this file is not
+    // loose on the disk, it belongs to a project, and the drawer says which.
+    function paintProject() {
+      if (!D.mounted || !D.el.proj) return;
+      const p = D.project;
+      D.el.proj.hidden = !p;
+      if (!p) return;
+      const name = p.project_title || p.project_id || '';
+      D.el.proj.textContent = 'part of project ' + name;
+      D.el.proj.title = p.path || p.rel || '';
+      D.el.proj.classList.toggle('unconfirmed', !p.confirmed);
+    }
+
+    // content.js learned about the project after the drawer was made, or
+    // another tab answered the confirmation and the broadcast landed here.
+    function setProject(project) {
+      D.project = project || null;
+      paintProject();
       render();
       return D;
     }
@@ -4542,7 +4786,7 @@
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
-      setExportMode, setOwner,
+      setExportMode, setOwner, setProject,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,

@@ -110,6 +110,14 @@
                      identity must be the parent everywhere, before and after a
                      pushState. http:// only — a file:// page has no origin for
                      a canonical to share.
+    ?workspace=1     the page is a PROJECT ARTIFACT: a local file the reader's
+                     own council wrote, inside projects/<id>/ of a council root
+                     (workspace.mjs). The header says which project it belongs
+                     to and Page chat becomes that project's chat archive.
+                     `&unconfirmed=1` holds the one-time "is this your council?"
+                     card; `&picker=1` holds the archive list open;
+                     `&chatopen=1` starts already standing in a past chat.
+                     `&selftest=1` runs the project-page assertions.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -234,7 +242,75 @@ if (Q.get('dark') === '1') {
   document.documentElement.classList.add('forcelight');
   window.__BFP_THEME = 'light';
 }
-const log = m => { document.getElementById('h-log').textContent = m; };
+// …and a selftest's TALLY is final: the fake companion's own chatter (a turn
+// finishing on a timer of its own) must not land on top of the one line a
+// `--dump-dom` run reads the result off.
+let logQuiet = false;
+const log = m => { if (!logQuiet) document.getElementById('h-log').textContent = m; };
+
+// ───────────────────────────────────────────────────────────────────────────
+// 0a. ?workspace=1 — the project artifact world
+//     A local HTML file the reader's own council wrote, opened as a file: page
+//     (workspace.mjs, SPEC "Project artifact pages"). content.js normally
+//     refuses file: documents outright; here the companion has confirmed the
+//     file is inside projects/<id>/ of a council root, so the page is
+//     first-class and its Page chat is that PROJECT's chat archive.
+//     __BFP_PROJECT is the same isolated-world escape __BFP_HREF is: the
+//     content script's window, which the page it runs on cannot reach.
+// ───────────────────────────────────────────────────────────────────────────
+const WORKSPACE = Q.get('workspace') === '1';
+const WS_ROOT = '/Users/reader/MySiteFromObsidianVault/botference';
+const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
+  project_title: 'Spaceship Engineering', rel: 'projects/spaceship-engineering/index.html',
+  path: WS_ROOT + '/projects/spaceship-engineering/index.html',
+  confirmed: Q.get('unconfirmed') !== '1' };
+// every chat the project already has, newest first — what GET
+// /project-sessions answers and the archive list draws
+const WS_SESSIONS = [
+  { session_id: 'aaaa1111-0000-4000-8000-000000000001',
+    title: 'Radiator sizing for the transit hab',
+    updated_at: new Date(Date.now() - 2 * 3600e3).toISOString(), entry_count: 42 },
+  { session_id: 'bbbb2222-0000-4000-8000-000000000002',
+    title: 'Unitised hull economics and the shipyard analogy',
+    updated_at: new Date(Date.now() - 3 * 86400e3).toISOString(), entry_count: 18 },
+  { session_id: 'cccc3333-0000-4000-8000-000000000003',
+    title: 'What the plots should show',
+    updated_at: new Date(Date.now() - 40 * 86400e3).toISOString(), entry_count: 7 },
+];
+// the tail of one of them, as the companion reads it out of the session
+// record: `restored` on every message, and a ts that is an ADDRESS, never a
+// date the transcript did not record
+const WS_TAIL = {
+  'aaaa1111-0000-4000-8000-000000000001': [
+    ['reader', 'How big does the radiator have to be for a 12-person hab?'],
+    ['claude', 'About **400 m²** at a 350 K rejection temperature — it is the truss, not the hull, that ends up sized by it.'],
+    ['codex', 'Same number here. Worth saying the panel count is what drives the assembly schedule.'],
+    ['reader', 'And if we drop to 320 K?'],
+    ['claude', 'Roughly 700 m². Radiator area goes as T⁻⁴, so the last 30 K is expensive.'],
+  ],
+  'bbbb2222-0000-4000-8000-000000000002': [
+    ['reader', 'What does a unitised hull actually cost against a monolithic one?'],
+    ['claude', 'Cheaper per tonne once you are past about eight units — the learning curve is the whole argument.'],
+  ],
+  'cccc3333-0000-4000-8000-000000000003': [
+    ['reader', 'Which plots earn their place in the paper?'],
+    ['codex', 'Three: the mass ledger, the radiator sizing curve, and the unit-count learning curve.'],
+  ],
+};
+let wsCurrent = Q.get('chatopen') === '1' ? 'aaaa1111-0000-4000-8000-000000000001' : null;
+const wsRootAnswers = [];     // what POST /council-root was told, for the selftest
+const wsTailMsgs = sid => (WS_TAIL[sid] || []).map(([author, text], i) =>
+  ({ author, text, ts: sid + '#' + i, restored: true }));
+if (WORKSPACE) {
+  window.__BFP_PROJECT = WS_PROJECT;
+  window.__BFP_HREF = 'file://' + WS_PROJECT.path;
+  document.title = 'Spaceship Engineering — the field-formation argument';
+  // Phase 2: when the bots rewrite the file the tab is showing, content.js
+  // reloads it. Here that would take the harness down mid-selftest, so the
+  // reload is held back and COUNTED instead (window.__bfp.reloads) — the same
+  // kind of seam __BFP_HREF and __BFP_PROJECT already are.
+  window.__BFP_NO_RELOAD = true;
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // 0b. ?gdocs=1 — the site-adapter world
@@ -578,6 +654,21 @@ const RECORD = {
 };
 // a fresh page has no history: the record the first act creates starts empty
 if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }
+
+// The project-artifact record: a local file, filed under the project that
+// wrote it, and standing in whichever council chat the reader last opened.
+// `page_chat` is the drawer's mirror of THAT chat — restored messages, read
+// out of the session record by the companion — which is why the thread, the
+// fold and the composer under the archive bar need no special case at all.
+if (WORKSPACE) {
+  RECORD.url = 'file://' + WS_PROJECT.path;
+  RECORD.title = 'Spaceship Engineering — the field-formation argument';
+  RECORD.site = WS_PROJECT.project_id;
+  RECORD.session_id = wsCurrent;
+  RECORD.session_title = wsCurrent
+    ? (WS_SESSIONS.find(x => x.session_id === wsCurrent) || {}).title : '';
+  RECORD.page_chat = wsCurrent ? wsTailMsgs(wsCurrent) : [];
+}
 
 // The Docs record: a stale title the /page upsert has to correct (proving the
 // adapter's headline travelled), an empty page chat so the first @mention is
@@ -1149,6 +1240,31 @@ function companion(method, path, body) {
   // out loud wherever it was triggered.
   if (ownerOnly && OWNER_ROUTES.test(route)) {
     return { ok: false, status: 403, error: 'owner only' };
+  }
+  // ---- project artifact pages (workspace.mjs) --------------------------
+  if (route === '/project-page') {
+    return { ok: true, status: 200, data: { ok: true, artifact: WORKSPACE ? WS_PROJECT : null } };
+  }
+  if (route === '/council-root') {
+    wsRootAnswers.push(!!(body && body.confirm));
+    WS_PROJECT.confirmed = !!(body && body.confirm);
+    return { ok: true, status: 200, data: { ok: true, root: WS_ROOT, state: WS_PROJECT.confirmed ? 'yes' : 'no' } };
+  }
+  if (route === '/project-sessions') {
+    if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
+    return { ok: true, status: 200, data: { ok: true, project_id: WS_PROJECT.project_id,
+      project_title: WS_PROJECT.project_title, current: wsCurrent, sessions: WS_SESSIONS } };
+  }
+  if (route === '/project-chat') {
+    const sid = body && body.sid;
+    if (sid && !WS_TAIL[sid]) return { ok: false, status: 404, error: 'unknown session' };
+    wsCurrent = sid || null;
+    RECORD.session_id = wsCurrent;
+    RECORD.session_title = wsCurrent
+      ? (WS_SESSIONS.find(x => x.session_id === wsCurrent) || {}).title : '';
+    RECORD.page_chat = wsCurrent ? wsTailMsgs(wsCurrent) : [];
+    return { ok: true, status: 200, data: { ok: true, session_id: wsCurrent,
+      session_title: RECORD.session_title, page: RECORD } };
   }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   // the library is an ordinary page record on a reserved url — the companion
@@ -4258,6 +4374,7 @@ async function selftest() {
   check('…without anybody pressing Retry', /connected/i.test(connText()));
 
   const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST ' + (out.length - bad.length) + '/' + out.length +
@@ -4333,6 +4450,7 @@ async function selftestCanonical() {
   history.replaceState({}, '', splinter);
 
   const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (canonical) ' + (out.length - bad.length) + '/' + out.length +
@@ -4625,6 +4743,7 @@ async function selftestGdocs() {
   check('still nothing painted on a canvas page', document.querySelectorAll('mark.bfp-hl').length === 0);
 
   const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (gdocs) ' + (out.length - bad.length) + '/' + out.length +
@@ -4821,6 +4940,7 @@ async function selftestPdf() {
     !!warn && /no selectable text/i.test(warn.textContent));
 
   const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (pdf) ' + (out.length - bad.length) + '/' + out.length +
@@ -4929,6 +5049,7 @@ async function selftestPdfLocal() {
   window.__BFP_PDF_IDENT = PDF_IDENT_LOCAL;
 
   const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (pdf-local) ' + (out.length - bad.length) + '/' + out.length +
@@ -5006,10 +5127,185 @@ async function selftestFresh() {
     !!await until(() => q('.pane[data-pane="comments"] .card').length === 1));
 
   const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (fresh) ' + (out.length - bad.length) + '/' + out.length +
     (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?workspace=1&selftest=1 — the project artifact world.
+//
+// The claims: the page attached at all (a file: document normally gets none of
+// this), the header names the project it belongs to, Page chat is that
+// PROJECT's archive rather than one conversation, a past chat opens and
+// renders as an ordinary folded thread, its restored messages are offered no
+// edit or delete, and a new chat empties the pane. With &unconfirmed=1 the
+// same page holds the one-time question instead and answers it.
+async function selftestWorkspace() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const chat = sel => S.querySelectorAll('.pane[data-pane="chat"] ' + sel);
+  const PAGE_T = '__page__';
+
+  check('a project artifact page attaches at all', !!d && d.isOpen !== undefined);
+  check('content.js knows which project it is in',
+    (window.__bfp.project || {}).project_id === 'spaceship-engineering');
+
+  // ---- the one-time confirmation ---------------------------------------
+  if (Q.get('unconfirmed') === '1') {
+    d.open('chat');
+    await sleep(60);
+    check('an unvouched-for council root holds the question', !!S.querySelector('.card.confirmroot'));
+    check('\u2026naming the folder it is asking about',
+      /MySiteFromObsidianVault\/botference/.test((S.querySelector('.rootpath') || {}).textContent || ''));
+    // Phase 2: a yes now also buys an EDIT permission, so the question has to
+    // say so \u2014 consent to a read is not consent to a write
+    const cardText = (S.querySelector('.card.confirmroot') || {}).textContent || '';
+    check('\u2026and disclosing that the bots may EDIT this project\u2019s files',
+      /may edit that project\u2019s files/.test(cardText));
+    check('\u2026with the boundary named in the same breath',
+      /Nothing outside/.test(cardText)
+      && /projects\/spaceship-engineering\//.test(cardText));
+    check('\u2026and nothing else is on the tab', chat('.chatpane').length === 0);
+    check('the header says the project, quietly, until it is confirmed',
+      !!(S.querySelector('.hdr .proj') || { classList: { contains: () => false } }).classList.contains('unconfirmed'));
+    S.querySelector('[data-act="root-yes"]').click();
+    await until(() => !S.querySelector('.card.confirmroot'), 4000);
+    check('answering yes hands the answer to the companion',
+      wsRootAnswers.length === 1 && wsRootAnswers[0] === true);
+    check('\u2026and the conversation appears in its place', chat('.chatpane').length === 1);
+    check('\u2026and the header stops hedging',
+      !(S.querySelector('.hdr .proj') || { classList: { contains: () => true } }).classList.contains('unconfirmed'));
+  } else {
+    check('a confirmed root shows no question', !S.querySelector('.card.confirmroot'));
+    check('the header names the project this page belongs to',
+      (S.querySelector('.hdr .proj') || {}).textContent === 'part of project Spaceship Engineering');
+    check('\u2026and the record files under the project, not a hostname',
+      (window.__bfp.page || {}).site === 'spaceship-engineering');
+  }
+
+  // ---- the archive -------------------------------------------------------
+  d.open('chat');
+  await sleep(60);
+  check('Page chat carries the archive bar', !!S.querySelector('.archbar'));
+  check('\u2026which says the page is in no chat yet',
+    (S.querySelector('.archnow') || {}).textContent === 'new chat');
+  check('\u2026and offers a new one', !!S.querySelector('[data-act="arch-new"]'));
+  check('the composer is still there under it', chat('.composer textarea').length === 1);
+
+  S.querySelector('[data-act="arch-list"]').click();
+  await until(() => S.querySelectorAll('.archrow').length > 0, 4000);
+  const rows = [...q('.archrow')];
+  check('the list is the project\u2019s own chats', rows.length === 3);
+  check('\u2026newest first, by their real titles',
+    ((rows[0] || S).querySelector('.at') || {}).textContent === 'Radiator sizing for the transit hab');
+  check('\u2026each with a compact age',
+    /^(\d+(mo|[mhdy])|now)$/.test((((rows[0] || S).querySelector('.ax')) || {}).textContent || ''));
+  check('\u2026and none of them is marked current yet', !S.querySelector('.archrow.on'));
+
+  // ---- opening a past chat ----------------------------------------------
+  rows[0].click();
+  await until(() => chat('.reply').length > 0, 6000);
+  check('opening a past chat renders its tail', chat('.reply').length >= 3);
+  // the tail is long enough to fold, so it is the LAST exchange that has to be
+  // on screen \u2014 head, fold line, tail, exactly like any other long thread
+  check('\u2026with the bots\u2019 own words in it',
+    /700 m/.test(S.querySelector('.pane[data-pane="chat"]').textContent));
+  check('\u2026and the bar now names that chat',
+    (S.querySelector('.archnow') || {}).textContent === 'Radiator sizing for the transit hab');
+  check('the list closed behind the choice', q('.archrow').length === 0);
+  check('a restored message is offered no edit',
+    chat('.reply [data-act="edit"]').length === 0);
+  check('\u2026and no delete: this companion does not own it',
+    chat('.reply [data-act="del-msg"]').length === 0);
+  check('\u2026but copy is still there, on every one of them',
+    chat('.reply [data-act="copy"]').length === chat('.reply').length);
+  check('a restored message shows no invented time',
+    [...chat('.reply .when')].every(w => w.textContent === ''));
+  check('the composer continues that chat', chat('.composer textarea').length === 1);
+
+  // a long tail folds like any other long thread
+  check('a long chat folds behind one line',
+    chat('.showmore').length <= 1);
+
+  // ---- typing into the resumed chat --------------------------------------
+  const ta = S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  ta.value = '@claude and at 300 K?';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  await until(() => chat('.reply.bot').length >= 1, 8000);
+  check('a message into a resumed chat is answered',
+    /MOCK|reply/i.test(S.querySelector('.pane[data-pane="chat"]').textContent));
+  // …and the turn is allowed to FINISH — reaching the RECORD, not just the
+  // screen — before the chat is changed underneath it. A reply still in flight
+  // is answering the conversation it was asked in, and it lands wherever the
+  // page is when it arrives; switching mid-turn is the reader choosing that,
+  // not something the drawer should paper over.
+  await until(() => (((window.__bfp.page || {}).page_chat) || []).length >= 2, 9000);
+  await until(() => !d.running[PAGE_T], 9000);
+  await sleep(300);
+
+  // ---- starting a fresh one ----------------------------------------------
+  S.querySelector('[data-act="arch-new"]').click();
+  await until(() => chat('.empty').length === 1, 5000);
+  check('a new chat empties the pane', chat('.reply').length === 0);
+  check('\u2026and says which project it will file under',
+    /Spaceship Engineering/.test((S.querySelector('.pane[data-pane="chat"] .empty') || {}).textContent || ''));
+  check('\u2026and the bar says so too',
+    (S.querySelector('.archnow') || {}).textContent === 'new chat');
+
+  // ---- Phase 2: the bots changed the project's files ---------------------
+  // The companion broadcasts one `project-files` event at turn-end when the
+  // census of projects/<id>/ moved (server.mjs). Two outcomes, and they are
+  // different on purpose: this page's own file changed \u2192 reload it (held back
+  // here and counted, see __BFP_NO_RELOAD); only siblings changed \u2192 one line
+  // in the page chat and nothing else, because reloading a page whose bytes
+  // did not change would throw away the reader's scroll and half-typed
+  // comment to show them what they were already looking at.
+  const HREF = window.__BFP_HREF;
+  const reloadsBefore = window.__bfp.reloads;
+  toContent({ t: 'ws', ev: { type: 'project-files', url: HREF, root: WS_ROOT,
+    project_id: 'spaceship-engineering', count: 2, page_changed: false,
+    files: ['appendix.html', 'data/mass-ledger.csv'], at: '2026-08-18T10:00:00.000Z' } });
+  await sleep(80);
+  check('sibling files changing leaves the page alone',
+    window.__bfp.reloads === reloadsBefore);
+  check('\u2026and says so in the chat instead',
+    /the bots changed 2 files in this project/.test(S.textContent || ''));
+
+  toContent({ t: 'ws', ev: { type: 'project-files', url: HREF, root: WS_ROOT,
+    project_id: 'spaceship-engineering', count: 1, page_changed: true,
+    files: ['index.html'], at: '2026-08-18T10:05:00.000Z' } });
+  await sleep(80);
+  check('this page\u2019s own file changing reloads the tab',
+    window.__bfp.reloads === reloadsBefore + 1);
+  // the same event down both pipes (SSE and the socket) must not reload twice
+  toContent({ t: 'ws', ev: { type: 'project-files', url: HREF, root: WS_ROOT,
+    project_id: 'spaceship-engineering', count: 1, page_changed: true,
+    files: ['index.html'], at: '2026-08-18T10:05:00.000Z' } });
+  await sleep(80);
+  check('\u2026once, however many pipes carried the news',
+    window.__bfp.reloads === reloadsBefore + 1);
+  // and a change in a project this page is not in is not this page's business
+  toContent({ t: 'ws', ev: { type: 'project-files', url: HREF, root: WS_ROOT,
+    project_id: 'ai-futures', count: 3, page_changed: true,
+    files: ['index.html'], at: '2026-08-18T10:09:00.000Z' } });
+  await sleep(80);
+  check('another project\u2019s changes are ignored',
+    window.__bfp.reloads === reloadsBefore + 1);
+
+  const bad = out.filter(l => l[0] === '\u2717');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (workspace) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  \u2014  ' + bad.join('  ') : '  all passed');
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
   console.log(out.join('\n'));
@@ -5034,9 +5330,19 @@ window.__bfp.activate(false).then(() => {
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     if (Q.get('selftest') === '1') {
-      setTimeout(GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
+      setTimeout(WORKSPACE ? selftestWorkspace
+        : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
         : FRESH ? selftestFresh : selftest, 250);
       return;
+    }
+    // ?workspace=1&picker=1 — the project's chat archive, open: the list the
+    // reader picks a past council chat out of (screenshot state)
+    if (WORKSPACE && Q.get('picker') === '1') {
+      setTimeout(() => {
+        d.open('chat');
+        const b = d.shadow.querySelector('[data-act="arch-list"]');
+        if (b) b.click();
+      }, 300);
     }
     // the scan, without waiting for a mention: asking content.js for the
     // first-turn context is what discovers there is none (screenshot state)

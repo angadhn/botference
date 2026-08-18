@@ -61,7 +61,7 @@
 //                            page, so "not found" usually means "not yet".
 //
 // No adapter = the default: highlights on, extraction as it always was.
-(function () {
+(async function () {
   'use strict';
 
   if (window.__bfpLoaded) return;
@@ -121,7 +121,66 @@
   // being there. (`__BFP_HREF` is test/harness.html naming its own address, in
   // an isolated world the page cannot reach — the same escape it already uses
   // to pretend to be a site it is not.)
-  if (/^file:/i.test(location.href) && typeof window.__BFP_HREF !== 'string') return;
+  //
+  // ── …EXCEPT A PROJECT ARTIFACT ─────────────────────────────────────────
+  // One kind of local file IS a page, and its path IS its identity: the HTML a
+  // council chat wrote into its own project folder
+  // (`<council>/projects/<id>/index.html`). Those files are regenerated in
+  // place by design — the bots rewrite them and the reader reloads the tab —
+  // so a content hash would strand every annotation at the next build, which
+  // is the failure the hash exists to prevent arriving from the other
+  // direction. The path is what is stable here, and the companion is the only
+  // thing that can tell such a file from an ordinary local one: it looks for a
+  // council root above it (project.json + work/ + projects/) and a project
+  // folder the file sits inside. See workspace.mjs and SPEC.md.
+  //
+  // Two guards stand ahead of that question, and both are about the PDF shell
+  // described above — it must never be asked for a document this script has no
+  // business in. Chrome's built-in viewer is an HTML shell whose contentType is
+  // the PDF's, wrapping a single <embed>; either test alone would do, and both
+  // are free.
+  const FILE_DOC = /^file:/i.test(location.href) && typeof window.__BFP_HREF !== 'string';
+  // {root, project_id, project_title, rel, path, confirmed} — the companion's
+  // answer, or test/harness.html naming its own (the same isolated-world
+  // escape as __BFP_HREF: a content script's window is not the page's).
+  let PROJECT = (window.__BFP_PROJECT && typeof window.__BFP_PROJECT === 'object')
+    ? window.__BFP_PROJECT : null;
+  if (FILE_DOC) {
+    if ((document.contentType || 'text/html') !== 'text/html') return;
+    if (document.querySelector('body > embed[type="application/pdf"]')) return;
+    // The only await in this file's boot, and only ever on a file: document.
+    // An async function body runs synchronously until its first await, so
+    // every other page still wires itself up in one turn exactly as before.
+    PROJECT = await askProjectPage(location.href);
+    if (!PROJECT) return;
+  }
+
+  // GET /project-page, asked before anything else in this file exists — so it
+  // cannot use bg() (which stamps IDENT_HREF, still in its temporal dead zone
+  // at this point) and talks to the worker itself. A companion that is off,
+  // older than this feature, or belongs to somebody else all answer the same
+  // way as "no": nothing attaches. Function declaration, so the gate above can
+  // call it from further up the file.
+  function askProjectPage(href) {
+    return new Promise(resolve => {
+      let done = false;
+      const answer = art => { if (!done) { done = true; resolve(art); } };
+      // a worker that never answers must not leave the page half-booted
+      setTimeout(() => answer(null), 8000);
+      try {
+        chrome.runtime.sendMessage(
+          { t: 'api', method: 'GET', path: '/project-page?url=' + encodeURIComponent(href) },
+          r => {
+            void chrome.runtime.lastError;
+            const art = r && r.ok && r.data && r.data.artifact;
+            // a root the reader has already refused stays refused: the drawer
+            // asked once, and once is the whole promise
+            answer(art && !art.declined ? art : null);
+          },
+        );
+      } catch { answer(null); }
+    });
+  }
 
   // ---- the site adapter (see the header) ----------------------------------
   const SITE = (Adapters && Adapters.pick(HREF)) || null;
@@ -180,7 +239,10 @@
   // adapter may name it outright, which is what a local PDF needs: its identity
   // is `bfp-pdf://text/…` (or `…sha256/…` for a scan) and the hostname of
   // either is the name of an algorithm, not a place.
-  const HOSTNAME = (SITE && SITE.site) || (() => {
+  // …and a project artifact has no hostname at all (a file: url's is empty),
+  // so it files under — and remembers its drawer tab under — the project that
+  // made it. Which is the honest answer to "where is this page from".
+  const HOSTNAME = (PROJECT && PROJECT.project_id) || (SITE && SITE.site) || (() => {
     try { return new URL(IDENT_HREF).hostname.replace(/^www\./, ''); }
     catch { return location.hostname.replace(/^www\./, ''); }
   })();
@@ -1132,6 +1194,10 @@
       // on; normUrl is ours, not the drawer's, so it is handed over with it
       currentUrl: URL_NOW,
       normUrl,
+      // which council project this page came out of, if it came out of one:
+      // the header says so, and the Page chat tab becomes that project's chat
+      // archive rather than one conversation about one page
+      project: PROJECT,
       theme: window.__BFP_THEME || null,
       cssUrl: extUrl('drawer.css') || 'drawer.css',
       // the rest of KaTeX's stylesheet, inside the shadow root (see above)
@@ -1355,6 +1421,40 @@
         const r = await api('POST', '/tag-page', { url, tags });
         if (!r.ok) return failure(r);
         return { ok: true, tags: (r.data && r.data.tags) || [] };
+      },
+
+      // ---- the project behind a project artifact page ---------------------
+      // Only ever called on a page that HAS a project (the drawer draws none
+      // of this otherwise). All four are owner-only on the companion: the
+      // answers are absolute paths on this machine.
+      //
+      // The reader's one-time answer about a council root. `false` is a real
+      // answer and is kept: the drawer never asks about that folder again, and
+      // the next load of a page inside it does not attach at all.
+      onConfirmRoot: async confirm => {
+        const r = await api('POST', '/council-root',
+          { root: PROJECT && PROJECT.root, confirm: !!confirm });
+        if (!r.ok) return failure(r);
+        if (PROJECT) PROJECT.confirmed = !!confirm;
+        return { ok: true, state: (r.data && r.data.state) || '' };
+      },
+      onProjectSessions: async () => {
+        const r = await api('GET', '/project-sessions?url=' + encodeURIComponent(URL_NOW));
+        if (!r.ok) return failure(r);
+        const d = r.data || {};
+        return { ok: true, sessions: d.sessions || [], current: d.current || null,
+                 project_id: d.project_id || '', project_title: d.project_title || '' };
+      },
+      // Opening a past chat (or starting a fresh one) is a move of this page's
+      // `session_id`, which is already the whole of the resume machinery — so
+      // the answer is a page record like any other and lands the same way.
+      onOpenSession: async sid => {
+        await ensureRegistered();
+        const r = await api('POST', '/project-chat',
+          { url: URL_NOW, title: headline(), ...(sid ? { sid } : { new: true }) });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, session_id: (r.data && r.data.session_id) || null };
       },
 
       // ---- the library --------------------------------------------------
@@ -1591,6 +1691,47 @@
     if (e.key === 'Escape' && drawer && drawer.isOpen() && !drawer.escape()) { drawer.close(); }
   }, true);
 
+  // ---- the bots changed this project's files ------------------------------
+  // A project artifact is REGENERATED in place — that is what the project is
+  // for — and a browser has no idea a local file moved underneath it. So when
+  // a turn ends and the companion reports that something under the project
+  // changed (`project-files`, server.mjs), the tab does one of two things:
+  //
+  //   this page's own file changed  → reload it. The reader asked for a
+  //       rewrite and is otherwise left reading the version that no longer
+  //       exists. The drawer's state survives it as far as it survives any
+  //       reload: the record is on the companion (threads, chat, drafts the
+  //       composer has saved), and the tab re-attaches and re-opens.
+  //   only siblings changed         → a line in the page chat, and NOTHING
+  //       else. Reloading a page whose bytes did not change would throw away
+  //       the reader's scroll position, selection and half-typed comment to
+  //       show them exactly what they were already looking at.
+  //
+  // No loop is possible: a reload starts no turn, and only a turn-end emits
+  // this event.
+  let lastFilesAt = '';
+  function onProjectFiles(ev) {
+    if (!PROJECT || !ev || ev.project_id !== PROJECT.project_id) return;
+    if (normUrl(ev.url || '') !== URL_NOW) return;
+    // the same event arriving twice (SSE and the socket both up) must not
+    // reload twice
+    if (ev.at && ev.at === lastFilesAt) return;
+    lastFilesAt = ev.at || '';
+    if (ev.page_changed) { reloadForArtifact(); return; }
+    if (!drawer) return;
+    const n = ev.count || 0;
+    drawer.note(null, `the bots changed ${n} file${n === 1 ? '' : 's'} in this project — not this page`);
+  }
+
+  // The reload, behind one name so the harness can watch it happen without
+  // taking the test page down with it. Same seam as __BFP_HREF/__BFP_PROJECT:
+  // set __BFP_NO_RELOAD and the reloads are counted instead of performed.
+  function reloadForArtifact() {
+    if (window.__BFP_NO_RELOAD) { reloadsAsked++; return; }
+    try { location.reload(); } catch (_) { /* nothing else to try */ }
+  }
+  let reloadsAsked = 0;
+
   // ---- background messages -----------------------------------------------------
   alive(() => chrome.runtime.onMessage.addListener(
     (msg, sender, sendResponse) => handleWorkerMsg(msg, sendResponse)), null);
@@ -1634,7 +1775,18 @@
       // drawer swallows the throw, this catches anything left, and either way
       // the record is asked what really happened
       try {
-        if (ev.type === 'page') {
+        if (ev.type === 'council-root') {
+          // the reader answered the confirmation in ANOTHER tab; every page
+          // under that root stops asking (or starts working) at once
+          if (PROJECT && PROJECT.root === ev.root) {
+            PROJECT.confirmed = ev.state === 'yes';
+            if (drawer) drawer.setProject(PROJECT);
+          }
+        } else if (ev.type === 'project-files') {
+          // the bots changed something under this project during the turn that
+          // has just ended (server.mjs reportProjectChanges)
+          onProjectFiles(ev);
+        } else if (ev.type === 'page') {
           // the library's record changed (somebody asked it something from
           // another tab, or the phone): re-read that, not this page
           if (isLibraryUrl(ev.url)) {
@@ -1696,6 +1848,17 @@
     startLiveness();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
+      // A project artifact is never dormant. The dormancy rule exists because
+      // <all_urls> puts this script on the whole web and almost none of it is
+      // annotated; a page the reader's own council wrote, opened deliberately
+      // from their own project folder, is the opposite case — the chat behind
+      // it already exists and the drawer is how they get at it. It still does
+      // not barge in: activate(false) restores the highlights and leaves the
+      // drawer shut until asked for, exactly as an annotated page does.
+      if (PROJECT) {
+        activate(false).then(() => connSocket(!!r.connected));
+        return;
+      }
       if (r.known) {
         // an annotated page: wake up and restore the highlights, but do not
         // barge in — the drawer stays shut until asked for
@@ -1737,6 +1900,12 @@
     // the page identity this document settled on at load, and whether the
     // document's own canonical link is what decided it
     url: URL_NOW, identHref: IDENT_HREF, canonical: CANONICAL_HREF,
+    // the council project behind this page, or null — what decides that a
+    // file: document is a page at all (see the gate at the top)
+    get project() { return PROJECT; },
+    // how many times a `project-files` event asked this tab to reload, when
+    // __BFP_NO_RELOAD holds the reload back (the harness)
+    get reloads() { return reloadsAsked; },
     // the extension-reload guard. The FACTORY, not this page's instance: a
     // test drives its own over a fake chrome, because tripping the real one
     // would take the rest of the page down with it — which is exactly what it

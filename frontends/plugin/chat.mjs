@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
   readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle,
   pageKey, snapshotFile, hasSnapshot } from './store.mjs';
-import { applyEnv as applyKeyEnv } from './keys.mjs';
+import { applyEnv as applyKeyEnv } from '../shared/keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = path.join(PLUGIN, 'bridge-system-prompt.md');
@@ -42,8 +42,8 @@ export const EFFORT_DEFAULTS = { claude: 'high', codex: null };
 // numeric caps, not just "crisp": models hold a hard word count far better
 // than a vibe, and Claude in particular drifts past adjective-only limits
 const VERBOSITY_LINE = {
-  short: 'Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler.',
-  long: 'Reply conversationally: at most 4-5 sentences, 120 words max.',
+  short: 'Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.',
+  long: 'Reply conversationally: at most 4-5 sentences, 120 words max — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.',
 };
 export const verbosityLine = v => VERBOSITY_LINE[v] || VERBOSITY_LINE.short;
 // how long to wait for the `projects` event that names the live session
@@ -169,7 +169,7 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 // /resume's replayed history is uneven and a bridge restart drops it whole).
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageNumber, summary }) {
+  snapshotPath, pageNumber, summary, project }) {
   // filing a resolved thread: no page context, no verbosity line, no "your
   // reply is posted into the thread" — none of that is true of this turn
   if (summary) {
@@ -197,11 +197,37 @@ export function envelope({ url, title, target, text, quote, history,
       + 'sanitized HTML; a PDF has one <section> per page, each headed "Page N". '
       + 'READ that file to answer anything about parts of the document not shown here.\n'
     : '';
+  // A project artifact is not a web page and the turn should not pretend it
+  // is: it is a file THIS project wrote, sitting on this machine, and the
+  // agents already have read access to the whole council root. So the banner
+  // names the project and the path, and points at the file itself rather than
+  // at a scraped slice of it — the reader is asking about something their own
+  // council built, and "read your own output" is the shortest honest route.
+  const artifact = project && project.path
+    ? `[project artifact: "${title}" · project ${project.title || project.id} (${project.id})`
+      + ` · ${project.path}]\nThis file is in your workspace — READ it for anything not shown below.\n`
+    : '';
+  // The write rule, in words, on EVERY turn — not only the first. The CLIs are
+  // configured to enforce it (chat.mjs createChat, `writeRoot`), but a model
+  // that does not know it may write will not offer to, and a model that thinks
+  // the whole council is its workspace will waste the turn discovering it is
+  // not. So the sentence rides beside the snapshot path, for the same reason:
+  // a resumed session's replayed history is uneven and a bridge restart drops
+  // it whole, so the only thing a turn can rely on carrying is the turn.
+  const writes = project && project.write_dir
+    ? `You may create and edit files under ${project.write_dir} — this project's own `
+      + 'folder and nothing outside it. Writes anywhere else on this machine are '
+      + 'refused by the sandbox, so do not attempt them; edit the artifact in place '
+      + 'when the reader asks for a change, and say what you changed.\n'
+    : '';
+  const standing = `${snap}${writes}`;
   const ctx = first
-    ? `[web page: "${title}" · ${url}]\n${article}\n${snap}---\n`
+    ? (artifact
+      ? `${artifact}${article}\n${standing}---\n`
+      : `[web page: "${title}" · ${url}]\n${article}\n${standing}---\n`)
     : (article && articleChanged
-      ? `[the page content has been updated since earlier in this chat]\n${article}\n${snap}---\n`
-      : (snap ? `${snap}---\n` : ''));
+      ? `[the page content has been updated since earlier in this chat]\n${article}\n${standing}---\n`
+      : (standing ? `${standing}---\n` : ''));
   const prior = history && history.length
     ? `Earlier in this thread:\n${historyLines(history)}\n\n` : '';
   // one length instruction per turn, never two: the reader's verbosity setting
@@ -318,12 +344,61 @@ const activeSessionOf = ev => {
   return null;
 };
 
-export function createChat({ onEvent }) {
+// ── ONE ADAPTER, TWO KINDS OF BRIDGE ──────────────────────────────────────
+// The ordinary bridge runs against the COMPANION's workspace and files every
+// page under the plugin's own project "Plugin pages". A project-artifact page
+// (workspace.mjs) needs the other thing entirely: a bridge whose working root
+// is the reader's council, filing its chats under the REAL project that made
+// the file. Same choreography, two facts different — where the child works,
+// and which project it opens — so both are options here rather than a second
+// copy of this file.
+//
+//   root      BOTFERENCE_PROJECT_ROOT for the child. Default: this companion's
+//             own ROOT. Nothing else moves with it: page records, config and
+//             the task file stay under the companion's ROOT, because they are
+//             the plugin's state and not the council's.
+//   projectOf(url) → {id, title} | null
+//             which project a page's chat belongs in. Default null = the
+//             "Plugin pages" behaviour, created once per child and opened
+//             once. A workspace bridge answers a REAL project id, which is
+//             never created (it exists — that is the whole premise) and is
+//             opened whenever the project changes, not once per child: one
+//             council root can hold artifacts from a dozen projects.
+//   writeRoot The ONE directory this child may write in — absolute, always
+//             `<root>/projects/<id>/`. Default '' = write nothing, which is
+//             every other bridge in this companion.
+//
+// ── HOW THE WRITE SCOPE IS ACTUALLY ENFORCED (Phase 2) ────────────────────
+// `writeRoot` leaves here as BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS, which the
+// controller (core/cli_adapters.py planner_write_config) turns into the CLIs'
+// own configuration at spawn:
+//
+//   claude  cwd = the project dir; `permissions.allow` carries
+//           Edit(//<dir>), Edit(//<dir>/*), Edit(//<dir>/**) and NOTHING
+//           else writable, under sandbox.enabled — so Write/Edit/MultiEdit
+//           outside that folder is refused by Claude Code itself. The council
+//           root rides along as an `--add-dir` so the bots can still READ
+//           everything the project needs; see the honest gap in SPEC.md.
+//   codex   cwd = the project dir, `--sandbox workspace-write` with no extra
+//           writable roots — the OS sandbox refuses every write outside it,
+//           by any means, while reads stay unrestricted.
+//
+// The env is fixed when a process starts, so the scope is per CHILD: the
+// server keys workspace bridges by (root, project) rather than by root alone,
+// and a second project in the same council gets a second child with its own
+// folder. There is no re-asserting it mid-life and no command that widens it.
+//
+// The companion's permission gate does NOT open under any of this — see the
+// `permission_request` branch in handle(). That request is not a per-file
+// prompt: answering yes grants a whole additional write ROOT for the rest of
+// the session, which is precisely the widening this feature refuses.
+export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot = '' }) {
   let proc = null;
   let available = false;      // a live child we can write to
   let ready = false;          // bridge is between turns
   let running = false;        // the startup `ready` has landed
   let bootstrapped = false;   // "Plugin pages" created+opened in this process
+  let openedProject = '';     // the project id this child last opened
   let activeSid = null;       // the session the bridge currently drives
   let sidWaiters = [];        // pending waits on a `projects` event
   const queue = [];           // pending jobs, one in flight
@@ -379,14 +454,21 @@ export function createChat({ onEvent }) {
     // botference room would otherwise hand the child that room's workspace
     // paths and its tmux transport, neither of which apply here
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BOTFERENCE_')));
-    // API keys, per agent, decided fresh at every spawn (keys.mjs): a stored
+    // API keys, per agent, decided fresh at every spawn (shared/keys.mjs): a stored
     // key becomes ANTHROPIC_API_KEY / OPENAI_API_KEY, and anything meaning
     // "subscription" DELETES the variable rather than emptying it. This is the
     // only place either key is put anywhere.
     proc = spawn(cmd, args, {
       cwd: HOME,
-      env: applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: ROOT,
-        BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic' }),
+      // BOTFERENCE_HOME is where the CODE is and never moves; the working root
+      // is what a workspace bridge changes — that is the council whose
+      // sessions this child reads and writes
+      env: applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: root,
+        BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic',
+        // Phase 2: the one writable directory, or none at all. Set — never
+        // set empty — because an empty value reads as "unset" to the
+        // controller and would fall back to the project's own write_roots.
+        ...(writeRoot ? { BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: writeRoot } : {}) }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     available = true;
@@ -408,6 +490,7 @@ export function createChat({ onEvent }) {
   function died(error) {
     if (!proc) return;
     proc = null; available = false; ready = false; running = false; bootstrapped = false;
+    openedProject = '';
     emit({ type: 'bridge', state: 'exited', ...(error ? { error } : {}) });
     // nothing in flight can ever finish now: tell every waiting page
     const stranded = current ? [current.job, ...queue] : [...queue];
@@ -553,11 +636,21 @@ export function createChat({ onEvent }) {
       // is the whole prompt-injection surface. So: deny, immediately (a pending
       // permission stalls the turn for as long as it is pending), and say so in
       // the thread that asked — silence would look like the bot ignoring it.
+      //
+      // A WORKSPACE bridge does not soften this, and that is deliberate. This
+      // request is not "may I write this file?" — the controller answers a yes
+      // by granting an additional write ROOT for the rest of the session
+      // (botference.py _handle_write_access_request → _grant_plan_write_root),
+      // which is exactly the widening Phase 2 refuses. The project folder is
+      // already writable without asking, because the child was SPAWNED that
+      // way; anything that has to ask is by definition outside it.
       send({ type: 'permission_response', allow: false });
       const who = String(ev.model || '').trim() || 'an agent';
       if (current) {
         chat(current.job, { kind: 'error',
-          error: `${who} asked to write a file — file-writing is disabled in the annotator` });
+          error: writeRoot
+            ? `${who} asked to write outside the project — only ${writeRoot} is writable here`
+            : `${who} asked to write a file — file-writing is disabled in the annotator` });
       }
       return;
     }
@@ -658,18 +751,35 @@ export function createChat({ onEvent }) {
     const title = isLib ? LIBRARY_TITLE
       : (displayTitle(page) || job.title || job.url || '').replace(/\s+/g, ' ').trim().slice(0, SESSION_TITLE_MAX);
     const steps = [];
-    if (!bootstrapped) {
+    // Which project this chat is filed under. A workspace bridge answers with
+    // the page's REAL project and never creates anything: the project exists,
+    // the artifact came out of it. It also re-opens on every change, because
+    // one council root can hold artifacts from a dozen projects and the next
+    // page's /new must land in ITS project, not the last one's.
+    const proj = projectOf ? projectOf(job.url) : null;
+    // …and whether this turn is about to change it, which the resume decision
+    // below has to know: `/project open` makes that project's own chat the
+    // live one, so the `activeSid` sampled HERE — before the command has
+    // gone out — is not evidence about where the turn will land.
+    let switching = false;
+    if (proj && proj.id) {
+      if (openedProject !== proj.id) {
+        switching = true;
+        steps.push({ text: `/project open ${proj.id}`, before: () => { openedProject = proj.id; } });
+      }
+    } else if (!bootstrapped) {
       // tolerate "already exists" — the create is idempotent from our side
       steps.push({ text: `/project create ${PROJECT_TITLE}` });
       steps.push({ text: `/project open ${PROJECT_ID}` });
       bootstrapped = true;
+      openedProject = PROJECT_ID;
     }
     const sid = page.session_id || null;
     let sidBefore = null; // whatever the bridge was on when /new went out
     if (!sid) {
       steps.push({ text: '/new', before: () => { sidBefore = activeSid; } });
       steps.push({ text: `/rename ${title}` });
-    } else if (activeSid !== sid) {
+    } else if (activeSid !== sid || switching) {
       steps.push({ text: `/resume ${sid}`, after: () => confirmResume(job, sid) });
     }
     // A rename follows the page LAZILY: renaming a page never wakes the bridge
@@ -678,8 +788,12 @@ export function createChat({ onEvent }) {
     // session being renamed is certainly this page's. `session_title` is what
     // the chat was last called; absent (every record written before this) it
     // reads as the page's own name, so an untouched page never renames.
+    // …and NEVER on a project artifact page. That chat has a name the council
+    // gave it, in the council's own state, and a page whose <h1> happens to
+    // differ is not evidence that the reader wanted it renamed. Only a chat
+    // this page CREATED (the /new above, which renames once) is ours to name.
     const namedAs = page.session_title || page.title || '';
-    if (sid && title && namedAs !== title) {
+    if (!proj && sid && title && namedAs !== title) {
       steps.push({ text: `/rename ${title}`, after: () => rememberSessionTitle(job.url, title) });
     }
     // the whole document, where the extension has snapshotted it — checked
@@ -701,6 +815,10 @@ export function createChat({ onEvent }) {
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
         library: isLib ? DIR : '',
+        // where this page came from, when it came from a project of the
+        // reader's own council (workspace.mjs) — carrying the one directory
+        // this child may write in, which is this project's folder or nothing
+        project: proj ? { ...proj, write_dir: writeRoot || '' } : null,
         verbosity: readConfig().verbosity }),
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that
@@ -831,6 +949,14 @@ export function createChat({ onEvent }) {
       return true;
     },
     state: () => (available ? 'running' : 'stopped'),
+    // which workspace this child drives, and which project it last opened —
+    // the server keys its bridge map on the first and the tests assert the
+    // second (a workspace bridge must never send /project create)
+    root: () => root,
+    project: () => openedProject,
+    // the one directory this child may write in ('' = none), which is what the
+    // server keys its workspace bridges by and what the tests assert
+    writeRoot: () => writeRoot,
     queueLength: () => queue.length + (current ? 1 : 0),
     currentUrl: () => (current ? current.job.url : null),
     stop() { if (proc) { const p = proc; proc = null; available = false; try { p.kill(); } catch { } } },

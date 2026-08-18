@@ -176,6 +176,59 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font: 12px/1.4 var(--sans); color: var(--muted);
 }
 .hdr .site { text-transform: lowercase }
+/* ---- project artifact pages ------------------------------------------
+   A local file the reader's own council wrote. The header says which project
+   it belongs to; the Page chat tab becomes that project's chat archive. */
+.hdr .proj {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--accent); font-weight: 600;
+}
+.hdr .proj.unconfirmed { color: var(--muted); font-weight: 400; font-style: italic }
+/* the bar: which chat this page is standing in, and the way to the others */
+.archbar { display: flex; gap: 6px; align-items: center; margin: 0 0 8px }
+.archpick {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px;
+  padding: 5px 9px; font: 12px/1.3 var(--sans); text-align: left;
+}
+.archpick .archnow { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.archpick .chev { flex: none; color: var(--muted) }
+.archnew { flex: none; padding: 5px 9px; font: 12px/1.3 var(--sans) }
+.archlist {
+  margin: 0 0 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); overflow: hidden; max-height: 260px; overflow-y: auto;
+}
+.archrow {
+  display: flex; width: 100%; gap: 8px; align-items: baseline; text-align: left;
+  padding: 7px 10px; border: 0; border-radius: 0; background: transparent;
+  font: 13px/1.4 var(--sans); border-bottom: 1px solid var(--line);
+}
+.archrow:last-child { border-bottom: 0 }
+.archrow .at { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.archrow .ax { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums }
+.archrow.on { background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 600 }
+.archrow.busy { opacity: .55 }
+.archnote { padding: 10px; font: italic 12px/1.5 var(--sans); color: var(--muted); text-align: center }
+.archnote.err { color: var(--bad); font-style: normal }
+/* the one-line truth over a restored chat: how much of it this is, and the
+   way to the rest */
+.restnote { padding: 7px 10px; margin-bottom: 8px; font: 12px/1.5 var(--sans);
+  color: var(--muted); text-align: center; border-bottom: 1px solid var(--card-line) }
+.restnote a { color: var(--accent); text-decoration: none }
+.restnote a:hover { text-decoration: underline }
+/* the one-time question about a council folder. Its own type, not the pane's
+   empty-state italic: this is a question being asked, not a note about there
+   being nothing here. */
+.card.confirmroot { padding: 14px }
+.confirmq { font: 600 14px/1.35 var(--sans); color: var(--heading); margin: 0 0 8px }
+.confirmp { font: 13px/1.6 var(--sans); color: var(--fg); margin: 0 0 8px }
+.confirmp b { font-weight: 600 }
+.confirmroot .rootpath {
+  display: inline; overflow-wrap: anywhere;
+  font: 12px/1.5 var(--mono, monospace); color: var(--muted);
+}
+.confirmacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px }
+.confirmacts .pbtn { font: 12px/1.3 var(--sans); padding: 6px 10px }
+.confirmacts .pbtn.yes { border-color: var(--accent); color: var(--accent) }
 .iconbtn { padding: 5px 9px; line-height: 1; font-size: 15px; background: transparent; min-height: 30px }
 /* the Obsidian mark is inline SVG (100×120 viewBox → 16×19.2px), so it keeps
    its own purples on both themes; the button gives it a quiet hover ring */
@@ -1017,8 +1070,13 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 
 /* ── composers ─────────────────────────────────────────────────────────── */
 .composer { margin-top: 9px }
+/* One line when empty, and it grows with the text as you type (field-sizing:
+   content — this is a Chrome extension, so it is always there) up to about
+   half the drawer, so the writer keeps their own context on screen instead of
+   peering through a two-line slot. */
 .composer textarea {
-  display: block; width: 100%; resize: vertical; min-height: 74px; max-height: 220px;
+  display: block; width: 100%; resize: vertical;
+  field-sizing: content; min-height: 41px; max-height: min(48vh, 420px);
   font: 14px/1.5 var(--sans); padding: 10px;
   background: var(--bg); color: var(--fg);
   border: 1px solid var(--card-line); border-radius: 8px;
@@ -1027,6 +1085,20 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 /* the hint claims a full line of its own rather than squeezing between two
    buttons — it wraps out of the row instead of wrapping inside it */
 .composer .crow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 7px }
+/* Idle composers fold to that single quiet line: the hint/Send row exists
+   only while the box is focused or holds a draft, so a column of threads
+   costs one line each rather than a full composer each. Two exemptions: the
+   pending card's row carries its Cancel button, which must never vanish
+   while the card exists; and the inline editor's row carries Save/Cancel,
+   the only way out of an edit. */
+.composer .crow { display: none }
+.composer:focus-within .crow,
+.composer.has-draft .crow,
+.composer[data-target="__new__"] .crow,
+.composer[data-target="__edit__"] .crow { display: flex }
+/* while a message in this card is being edited, the card's own Reply box is
+   dead weight — the editor replaces it until save/cancel re-renders */
+.card:has(.composer[data-target="__edit__"]) > .composer { display: none }
 .composer .hint { flex: 1 1 190px; min-width: 0; font: 12px/1.35 var(--sans); color: var(--muted) }
 .composer .send { background: var(--accent); color: #fff; border-color: var(--accent); flex: none }
 .composer .send:hover { background: var(--accent-hover); color: #fff; border-color: var(--accent-hover) }

@@ -34,8 +34,9 @@ import { createHosted, CORS_HEADERS, isLocalDirect } from './hosted.mjs';
 import { pageView, pagesView, articleView } from './views.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
 import * as run from './run.mjs';
-import * as keys from './keys.mjs';
+import * as keys from '../shared/keys.mjs';
 import * as beacon from './beacon.mjs';
+import * as workspace from './workspace.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // The article view's scripts. anchor.js is the extension's own file, served
@@ -68,6 +69,8 @@ const hosted = createHosted({
 const NO_GRANT_REASON = "the owner hasn't granted you bot access";
 const AGENTS_OFF_REASON = 'agents are off on this companion';
 const AGENTS_OFF_ERROR = "agents are off — restart 'botference plugin' with claude/codex CLIs available";
+const UNCONFIRMED_REASON = 'this page is in a council folder you have not confirmed yet';
+const UNCONFIRMED_ERROR = 'confirm the council folder in the drawer before the bots can join this page';
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
 // article_text rides along with mentions, and a .docx may ride with them too —
@@ -117,6 +120,92 @@ function sseOpen(res) {
 // persistence, chat.mjs only reports what the bots said. So a /page refetch
 // after turn-end always agrees with what streamed.
 const chat = NO_AGENTS ? null : createChat({ onEvent: onChatEvent });
+
+// --- the workspace bridges ------------------------------------------------
+// A project-artifact page (workspace.mjs) is not filed under "Plugin pages":
+// its chat belongs to the council project that produced the file, in that
+// council's own state. So it gets its own bridge — same adapter, a different
+// working root — created the first time such a page has something to say and
+// kept for as long as the companion lives. One per council root, because a
+// bridge's workspace is fixed when the child starts.
+//
+// One per (council root, PROJECT), since Phase 2. It was one per root while
+// the bots could only read: the project inside a child moved with the page,
+// because `/project open <id>` costs a turn and nothing else depended on it.
+// Now something does — the child is spawned with exactly one writable
+// directory (`projects/<id>/`), and an environment is fixed when a process
+// starts. A second project in the same council therefore gets a second child
+// with its own folder, rather than a `/project open` that would leave the
+// first project's directory writable under the second project's page.
+const workspaceChats = new Map();   // "<root>\0<project id>" → chat
+const wsKey = (root, projectId) => `${root}\u0000${projectId}`;
+
+// Which artifact a url is, cached for a moment. Every /thread, /reply,
+// /interrupt and page load asks, and the answer costs half a dozen stat()s —
+// worth memoizing, not worth remembering: a project deleted while the
+// companion runs must stop being one within seconds, not at the next restart.
+const ART_TTL = 4000;
+const artCache = new Map();
+function artifactOf(url) {
+  const key = String(url || '');
+  if (!key) return null;
+  const now = Date.now();
+  const hit = artCache.get(key);
+  if (hit && now - hit.at < ART_TTL) return hit.art;
+  const art = workspace.artifactState(key);
+  if (artCache.size > 200) artCache.clear();
+  artCache.set(key, { at: now, art });
+  return art;
+}
+// a root the reader just answered for must be believed immediately
+const forgetArtifacts = () => artCache.clear();
+
+function workspaceChatFor(root, projectId, projectDir) {
+  const key = wsKey(root, projectId);
+  let c = workspaceChats.get(key);
+  if (c) return c;
+  c = createChat({
+    onEvent: onChatEvent,
+    root,
+    // The one directory this child may write in. Absolute, and exactly this
+    // project's folder: chat.mjs hands it to the CLIs as their write root, so
+    // the enforcement is the CLIs' own and not a promise made in a prompt.
+    writeRoot: projectDir || '',
+    // which project THIS page's chat is filed under. Still asked per turn —
+    // the child is per project now, so the answer never changes, but a page
+    // from ANOTHER project reaching this child would be a routing bug and the
+    // null keeps it out of this project's chats rather than papering over it.
+    projectOf: (u) => {
+      const a = artifactOf(u);
+      if (!a || a.root !== root || a.project_id !== projectId) return null;
+      return { id: a.project_id, title: a.project_title, path: a.path };
+    },
+  });
+  workspaceChats.set(key, c);
+  return c;
+}
+
+// The bridge that owns a page's chat. Everything that submits a turn, asks
+// what is queued or interrupts one goes through here — a project-artifact
+// page must never reach the "Plugin pages" bridge, and an ordinary page must
+// never reach a council's.
+//
+// An UNCONFIRMED root falls back to no bridge at all: the reader has not yet
+// said that directory is theirs, and spawning a child against it is precisely
+// what the confirmation exists to gate.
+function chatFor(url) {
+  if (!chat) return null;
+  const art = artifactOf(url);
+  if (!art) return chat;
+  if (!art.confirmed) return null;
+  return workspaceChatFor(art.root, art.project_id, art.project_dir);
+}
+const allChats = () => (chat ? [chat, ...workspaceChats.values()] : []);
+const anyRunning = () => allChats().some(c => c.state() === 'running');
+const totalQueue = () => allChats().reduce((n, c) => n + c.queueLength(), 0);
+// a setting is process-wide inside a child, so it is imposed on every child
+// that is awake; the asleep ones read the same config.json when they spawn
+const controlAll = text => { for (const c of allChats()) c.control(text); };
 // what the agents panel renders: the bridge's own model/effort/occupancy, plus
 // the one setting the companion owns (verbosity). Assembled in one place so
 // GET /models and every `models` broadcast agree field for field.
@@ -138,16 +227,82 @@ function modelsPayload() {
 // left alone and the caller is told the change waits.
 function applyKeyChange() {
   if (NO_AGENTS || !chat) return { applies: 'now' };
-  if (chat.state() !== 'running') return { applies: 'now' };
-  if (chat.queueLength() > 0) return { applies: 'next-restart' };
-  chat.stop();
+  if (!anyRunning()) return { applies: 'now' };
+  if (totalQueue() > 0) return { applies: 'next-restart' };
+  for (const c of allChats()) c.stop();
   return { applies: 'now' };
 }
+// --- what the bots changed, and telling the tab -----------------------------
+// Phase 2's other half. The bots may now rewrite the artifact the reader is
+// looking at, and a browser has no idea a local file moved underneath it. So
+// the companion takes a census of the project folder when a turn starts and
+// another when it ends (workspace.scanProject), and the difference is
+// broadcast as one `project-files` event.
+//
+// Turn-boundary, not a watcher: nothing runs while the reader is reading —
+// no polling at rest, no fs.watch handles, and no event at all unless a turn
+// happened AND something under the project actually moved. `sessions/` is not
+// counted (botference writes the chat there during every turn, which would
+// make every turn a change) — see workspace.scanProject.
+//
+// A reload cannot loop: reloading a tab starts no turn, and the event is only
+// ever emitted from a turn-end.
+const turnScans = new Map();     // page url → {dir, before}
+// The last change set per page, for a tab that reconnected across it
+// (GET /project-changes). Bounded, and the newest wins.
+const lastChanges = new Map();   // page url → the event payload
+const CHANGES_KEEP = 50;
+
+function noteTurnStart(url) {
+  const art = url ? artifactOf(url) : null;
+  if (!art || !art.confirmed || !art.project_dir) return;
+  turnScans.set(url, { dir: art.project_dir, before: workspace.scanProject(art.project_dir) });
+}
+
+function reportProjectChanges(url) {
+  const seen = url ? turnScans.get(url) : null;
+  if (!seen) return;
+  turnScans.delete(url);
+  const art = artifactOf(url);
+  // the project was deleted, or the root un-confirmed, while the turn ran
+  if (!art || !art.confirmed || art.project_dir !== seen.dir) return;
+  const changed = workspace.diffScans(seen.before, workspace.scanProject(seen.dir));
+  if (!changed.length) return;
+  // the artifact's own path inside its project — the difference between
+  // "reload, you are looking at the old one" and "they changed something else"
+  const own = path.relative(seen.dir, art.path).split(path.sep).join('/');
+  const payload = {
+    type: 'project-files',
+    url,
+    root: art.root,
+    project_id: art.project_id,
+    project_title: art.project_title,
+    count: changed.length,
+    // whether THIS page is one of them
+    page_changed: changed.includes(own),
+    files: changed.slice(0, workspace.CHANGED_LIST_MAX),
+    at: new Date().toISOString(),
+  };
+  lastChanges.set(url, payload);
+  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
+  broadcast(payload);
+}
+
 function onChatEvent(ev) {
   // chat.mjs knows nothing about config.json; the verbosity a tab renders
   // rides the same event as everything else in that panel
   if (ev.type === 'models') {
     return broadcast({ ...ev, verbosity: store.readConfig().verbosity, keys: keys.status() });
+  }
+  // the turn boundary is where the census is taken; a summary job (silent by
+  // construction) emits neither of these, so filing a thread never counts
+  if (ev.type === 'chat' && ev.kind === 'turn-start') noteTurnStart(ev.url);
+  if (ev.type === 'chat' && ev.kind === 'turn-end') {
+    broadcast(ev);
+    // after the turn-end, always: the drawer stops spinning first and only
+    // then hears that the file moved
+    reportProjectChanges(ev.url);
+    return;
   }
   if (ev.type === 'chat' && ev.kind === 'reply') {
     const page = store.readPage(ev.url);
@@ -194,7 +349,9 @@ function summarizeThread(page, thread) {
   const bot = [...(thread.msgs || [])].reverse()
     .find(m => m && m.kind !== 'tools' && /^(claude|codex)\b/i.test(String(m.author || '')));
   const agent = bot ? String(bot.author).toLowerCase().replace(/[^a-z]/g, '') : 'claude';
-  chat.submit({
+  const c = chatFor(page.url);
+  if (!c) return false;
+  c.submit({
     url: page.url, target: thread.id, title: page.title,
     // the whole of the routing: `text` is read for its @-mention and by nothing
     // else, because a summary job builds its own envelope (chat.mjs)
@@ -236,8 +393,16 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: refused });
     return { queued: false, reason: refused };
   }
+  // A project-artifact page whose council root the reader has not vouched for
+  // yet: the comment is kept, the bots are not summoned, and the drawer says
+  // why — the confirmation card is already on screen asking.
+  const c = chatFor(page.url);
+  if (!c) {
+    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: UNCONFIRMED_ERROR });
+    return { queued: false, reason: UNCONFIRMED_REASON };
+  }
   const thread = target === store.PAGE_CHAT ? null : store.findThread(page, target);
-  const { position, wait } = chat.submit({
+  const { position, wait } = c.submit({
     url: page.url, target, text, title: page.title,
     // on a shared page the bots are answering a room, not one reader: name
     // whoever is asking, unless it is the owner (whose annotator never did)
@@ -562,8 +727,10 @@ export function handler(req, res) {
   if (req.method === 'GET' && url === '/health') {
     const me = hosted.identity(req);
     return ok(res, {
-      bridge: NO_AGENTS ? 'disabled' : chat.state(),
-      queue: chat ? chat.queueLength() : 0,
+      // the WHOLE stable: 'running' the moment any bridge is up (the plugin's
+      // own or a council's), and one queue depth across all of them
+      bridge: NO_AGENTS ? 'disabled' : (anyRunning() ? 'running' : chat.state()),
+      queue: chat ? totalQueue() : 0,
       // hosted only: a remote extension has to know its own standing before it
       // can render (or gray out) the owner's controls
       ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),
@@ -574,11 +741,138 @@ export function handler(req, res) {
     const me = hosted.identity(req);
     return ok(res, { hosted: HOSTED, owner: me.owner, handle: me.handle, error: me.error });
   }
+  // --- project artifact pages -------------------------------------------
+  // A local file the council wrote, opened as a file:// page. Owner-only, all
+  // four of them: the answers are absolute paths on this machine and the names
+  // of this reader's projects, which is nobody's business over a tunnel.
+  //
+  // GET /project-page is the question content.js asks before it will attach to
+  // a file: document at all — no artifact, no extension on that page.
+  if (req.method === 'GET' && url === '/project-page') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const art = u ? artifactOf(store.normUrl(u)) : null;
+    if (!art) return ok(res, { artifact: null });
+    return ok(res, {
+      artifact: {
+        root: art.root,
+        project_id: art.project_id,
+        project_title: art.project_title,
+        rel: art.rel,
+        path: art.path,
+        // where the full chats live on the web — the drawer's "open the full
+        // chat" link. Owner-machine address by default; config can point it
+        // at a hosted council instead.
+        council_web: String(store.readConfig().council_web || 'http://localhost:4187'),
+        confirmed: art.confirmed,
+        declined: art.declined,
+      },
+    });
+  }
+  // The one-time answer to "treat <root> as your council?". Kept in the
+  // plugin's own config.json, so it survives the companion and is asked once
+  // per council rather than once per page.
+  if (req.method === 'POST' && url === '/council-root') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const root = String(data.root || '');
+      if (!root || !workspace.isCouncilRoot(workspace.realish(root))) {
+        return fail(res, 400, 'not a council root');
+      }
+      const state = workspace.setRootState(root, !!data.confirm);
+      forgetArtifacts();
+      // every tab on a page under this root has to stop asking, or start working
+      broadcast({ type: 'council-root', root: workspace.realish(root), state });
+      ok(res, { root: workspace.realish(root), state });
+    });
+  }
+  // The project's chat archive: every council session filed under it, newest
+  // first, plus which one this page is currently bound to.
+  if (req.method === 'GET' && url === '/project-sessions') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const art = u ? artifactOf(store.normUrl(u)) : null;
+    if (!art) return fail(res, 404, 'not a project artifact page');
+    if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+    const page = store.readPage(store.normUrl(u));
+    return ok(res, {
+      project_id: art.project_id,
+      project_title: art.project_title,
+      root: art.root,
+      current: (page && page.session_id) || null,
+      sessions: workspace.listSessions(art.root, art.project_id),
+    });
+  }
+  // One past chat's recent tail, read from the session record on disk. Never
+  // from the bridge: replaying a conversation is not a turn, and a companion
+  // whose bridge is asleep still has to be able to show it.
+  if (req.method === 'GET' && url === '/project-session') {
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(String(req.url || '').split('?')[1] || '');
+    const u = q.get('url') || '';
+    const art = u ? artifactOf(store.normUrl(u)) : null;
+    if (!art) return fail(res, 404, 'not a project artifact page');
+    if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+    const session = workspace.sessionTail(art.root, art.project_id, q.get('sid') || '');
+    if (!session) return fail(res, 404, 'unknown session');
+    return ok(res, { session });
+  }
+  // What the bots last changed under this project, if anything, since the
+  // companion started. A tab whose socket was down across the turn (or that
+  // has just reloaded because of it) asks here rather than missing it.
+  // Owner-only like every other /project-* route: the answer is a list of
+  // paths on the owner's machine.
+  if (req.method === 'GET' && url === '/project-changes') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const art = u ? artifactOf(store.normUrl(u)) : null;
+    if (!art) return fail(res, 404, 'not a project artifact page');
+    if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+    return ok(res, { changes: lastChanges.get(store.normUrl(u)) || null });
+  }
+  // Which chat this page is standing in. `{sid}` opens a past one, `{new:true}`
+  // starts a fresh one — and both work by moving `session_id` on the page
+  // record, because that field is ALREADY the whole of the resume machinery
+  // (chat.mjs plans /resume when it is set and /new when it is not). Nothing
+  // new had to be invented for this; the page simply points somewhere else.
+  //
+  // The page's own `page_chat` is the drawer's mirror of the chat it is
+  // standing in, so it is replaced by the tail of the newly opened session —
+  // a mirror of one conversation must never be shown under another.
+  if (req.method === 'POST' && url === '/project-chat') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const u = store.normUrl(String(data.url || ''));
+      const art = u ? artifactOf(u) : null;
+      if (!art) return fail(res, 404, 'not a project artifact page');
+      if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+      const page = store.readPage(u)
+        || store.upsertPage({ url: u, title: String(data.title || art.rel), site: art.project_id });
+      if (data.sid) {
+        const session = workspace.sessionTail(art.root, art.project_id, String(data.sid));
+        if (!session) return fail(res, 404, 'unknown session');
+        page.session_id = session.session_id;
+        page.session_title = session.title;
+        page.page_chat = session.msgs;
+        // so the drawer can say "the last N of TOTAL messages" over the tail
+        page.session_total = session.total;
+      } else {
+        page.session_id = null;
+        page.session_title = '';
+        page.page_chat = [];
+        page.session_total = 0;
+      }
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { session_id: page.session_id, session_title: page.session_title, page });
+    });
+  }
+
   // model picker: what the bots are running on, and what they could run on.
   // Both are null until the bridge has started and spoken — the extension
   // renders that as "unknown yet", never as an empty list.
   if (req.method === 'GET' && url === '/models') {
-    return ok(res, { ...modelsPayload(), bridge: NO_AGENTS ? 'disabled' : chat.state() });
+    return ok(res, { ...modelsPayload(), bridge: NO_AGENTS ? 'disabled' : (anyRunning() ? 'running' : chat.state()) });
   }
 
   // --- API keys: written from this machine, never read back --------------
@@ -914,7 +1208,15 @@ export function handler(req, res) {
         // a live bridge owns the session store (it holds the chat in memory
         // and would rewrite the file on its next save): ask it to delete.
         // Stopped, nobody owns the file and we can remove it ourselves.
-        if (chat && chat.state() === 'running') { chat.control(`/delete ${sid}`); session_deleted = true; }
+        // …and it must be THIS page's bridge: a council session is not the
+        // plugin bridge's to delete, and the file is not in this workspace
+        // …and NEVER a council's. A project-artifact page's chat lives in the
+        // reader's own workspace beside everything else that project has ever
+        // said; forgetting the PAGE must not destroy it. Phase 1 leaves it
+        // exactly where it is.
+        const owner = chatFor(page.url);
+        if (owner && owner !== chat) session_deleted = false;
+        else if (chat && chat.state() === 'running') { chat.control(`/delete ${sid}`); session_deleted = true; }
         else session_deleted = store.deleteSessionFile(sid);
       }
       store.deletePage(page.url);
@@ -1050,8 +1352,8 @@ export function handler(req, res) {
   // `applies` says which of those happened, and the drawer says so in words.
   const setAgentPref = (res, kind, agent, value, control) => {
     store.saveAgents({ [kind]: { [agent]: value } });
-    const live = chat.state() === 'running';
-    if (live) chat.control(control);
+    const live = anyRunning();
+    if (live) controlAll(control);
     // a preference the bridge has not been told about yet still moved: every
     // other tab's picker has to follow it now, not at the next wake
     broadcast({ type: 'models', ...modelsPayload() });
@@ -1109,8 +1411,8 @@ export function handler(req, res) {
       const agent = String(data.agent || '');
       if (!['claude', 'codex', 'both'].includes(agent)) return fail(res, 400, 'agent must be claude, codex or both');
       if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
-      if (chat.state() !== 'running') return fail(res, 409, 'agents are idle — nothing to relay');
-      chat.control(`/relay @${agent}`);
+      if (!anyRunning()) return fail(res, 409, 'agents are idle — nothing to relay');
+      controlAll(`/relay @${agent}`);
       ok(res, { queued: true });
     });
   }
@@ -1119,7 +1421,9 @@ export function handler(req, res) {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
       if (!data.url) return fail(res, 400, 'url required');
-      ok(res, { interrupted: !!(chat && chat.interrupt(store.normUrl(data.url))) });
+      const nu = store.normUrl(data.url);
+      const c = chatFor(nu);
+      ok(res, { interrupted: !!(c && c.interrupt(nu)) });
     });
   }
   return fail(res, 404, 'not found');
@@ -1143,7 +1447,7 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   // Ctrl-C / launcher stop: run the exit hooks (lock file) and take the
   // bridge child with us instead of orphaning it
   for (const sig of ['SIGINT', 'SIGTERM']) {
-    process.on(sig, () => { if (chat) chat.stop(); process.exit(0); });
+    process.on(sig, () => { for (const c of allChats()) c.stop(); process.exit(0); });
   }
   server.listen(PORT, '127.0.0.1', () => {
     const p = server.address().port;
