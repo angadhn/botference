@@ -694,6 +694,7 @@
   const NUMBER = /^[ \t]*(\d{1,9})[.)]\s+(.*)$/;
   const TASK = /^\[([ xX])\]\s+(.*)$/;
   const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+  const QUOTE = /^\s{0,3}>\s?/;
   // one alternation, tried left to right: code spans win over emphasis, so
   // `**not bold**` in backticks stays literal, and the bare url comes LAST so
   // a [text](url) link is never autolinked twice
@@ -759,7 +760,7 @@
   const isBlockStart = (lines, i) => {
     const l = lines[i];
     return FENCE.test(l) || BULLET.test(l) || NUMBER.test(l) || HEADING.test(l) ||
-      !l.trim() || isTableStart(lines, i);
+      QUOTE.test(l) || !l.trim() || isTableStart(lines, i);
   };
   // checkbox ordinal within its message, counted in document order — the key
   // the tick store persists against. Reset per renderMarkdown() call.
@@ -854,6 +855,26 @@
         // a second, quieter bullet in front of every one of them
         if (tasks) list.classList.add('md-tasklist');
         frag.appendChild(list);
+        continue;
+      }
+
+      // "> " lines are a handed-over draft ("Suggested reply:") — a real
+      // blockquote, not literal angle brackets. Consecutive quoted lines are
+      // one quote; a blank quoted line ("> ") splits paragraphs inside it.
+      // paint() dresses the box and gives it its own copy button.
+      if (QUOTE.test(line)) {
+        const bq = mk('blockquote');
+        let para = [];
+        const flush = () => {
+          if (para.length) mdInline(para.join('\n'), bq.appendChild(mk('p', 'md-p')));
+          para = [];
+        };
+        while (i < lines.length && QUOTE.test(lines[i])) {
+          const l = lines[i++].replace(QUOTE, '');
+          if (!l.trim()) flush(); else para.push(l);
+        }
+        flush();
+        frag.appendChild(bq);
         continue;
       }
 

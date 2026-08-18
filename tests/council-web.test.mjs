@@ -1090,6 +1090,32 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   assert.match(css, /#input\s*\{[^}]*font:\s*16px/, '16px input font (no iOS zoom-on-focus)');
 });
 
+test('markdown "> " lines render as a blockquote draft box with its own copy button',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'room', speaker: 'claude', text: [
+    'Suggested reply:',
+    '',
+    '> Hi Andrew,',
+    '> Thanks — £31,450 looks sensible to me.',
+    '>',
+    '> Best,',
+    '> Angadh',
+    '',
+    'I will check the plan next.',
+  ].join('\n') });
+  const body = doc.querySelector('.msg.claude .body');
+  const bq = body.querySelector('blockquote');
+  assert.ok(bq, '"> " lines become a real <blockquote>');
+  assert.ok(!bq.textContent.includes('>'), 'no literal angle brackets survive');
+  assert.equal(bq.querySelectorAll('p').length, 2, 'a blank "> " splits paragraphs');
+  assert.match(bq.querySelectorAll('p')[0].textContent, /Hi Andrew,\nThanks/,
+    'quoted line breaks survive inside a paragraph');
+  assert.ok(bq.querySelector('.bq-copy'), 'the draft box carries its own copy button');
+  assert.ok(!body.textContent.startsWith('>'), 'prose around the quote is untouched');
+});
+
 test('markdown tables render as real tables; cells escaped; bare pipes stay prose',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { doc, C } = await mkHarness(t);
