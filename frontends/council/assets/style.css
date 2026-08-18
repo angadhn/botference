@@ -66,6 +66,19 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, [tabindex]:focus-
   outline: 2px solid var(--accent); outline-offset: 2px }
 code { font: .85em var(--mono); background: var(--rail); padding: .08em .35em; border-radius: 4px }
 
+/* A blockquote from an agent is a handed-over draft ("Suggested reply:") —
+   its own box with its own copy button, like a code block in the native chat
+   apps: one tap takes the draft, never the analysis around it. */
+.msg .body blockquote { position: relative; margin: .65rem 0;
+  padding: .7rem 4.4rem .7rem .95rem;
+  background: var(--rail); border: 1px solid var(--card-line);
+  border-left: 3px solid var(--accent); border-radius: 10px }
+.msg .body blockquote p { margin: .3rem 0 }
+.bq-copy { position: absolute; top: .5rem; right: .5rem; padding: .18rem .55rem;
+  font: .72rem var(--sans); color: var(--muted); background: var(--card);
+  border: 1px solid var(--card-line); border-radius: 6px }
+.bq-copy:hover { color: var(--accent); border-color: var(--accent) }
+
 /* ── sidebar ─────────────────────────────────────────────── */
 #side { width: 272px; flex: none; display: flex; flex-direction: column;
   background: var(--rail); border-right: 1px solid var(--card-line);

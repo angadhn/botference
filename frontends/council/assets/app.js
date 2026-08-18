@@ -993,6 +993,21 @@
   els.chat.addEventListener('click', e => {
     const copyBtn = e.target.closest('.msg-copy');
     if (copyBtn) { copyMessage(copyBtn.closest('.msg')); return; }
+    // The draft box's own copy: the blockquote's text alone, button excluded.
+    // Read innerText from the LIVE node (a detached clone loses the line
+    // breaks between paragraphs) with the button display:none'd for the read.
+    const bqBtn = e.target.closest('.bq-copy');
+    if (bqBtn) {
+      const q = bqBtn.closest('blockquote');
+      if (q) {
+        const btns = [...q.querySelectorAll('.bq-copy')];
+        for (const b of btns) b.style.display = 'none';
+        const draft = q.innerText.trim();
+        for (const b of btns) b.style.display = '';
+        copyText(draft);
+      }
+      return;
+    }
     if (e.target.closest('.md-tick, .env-row')) return; // their own controls
     const sel = window.getSelection && window.getSelection();
     if (sel && String(sel).length) return; // user is selecting, not tapping
@@ -1092,6 +1107,16 @@
     const body = div.querySelector('.body');
     body.textContent = '';
     body.appendChild(renderMarkdown(prose));
+    // A blockquote in a council message is a handed-over draft ("Suggested
+    // reply: > Hi Andrew, …") — render it as its own box with its own copy,
+    // like a code block in the native chat apps: one tap takes the draft,
+    // never the analysis around it. The button is real markup (not a
+    // listener), so a transcript restored from the innerHTML cache keeps it;
+    // the click is handled by the transcript's delegated handler.
+    for (const bq of body.querySelectorAll('blockquote')) {
+      bq.insertAdjacentHTML('afterbegin',
+        '<button class="bq-copy" title="copy this draft" aria-label="copy this draft">⧉ copy</button>');
+    }
     applyTicks(body, hashText(prose));
     div.setAttribute('data-raw', prose);
     const old = div.querySelector('.env-row');
