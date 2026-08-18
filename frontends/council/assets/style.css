@@ -593,6 +593,16 @@ main { position: relative }
   letter-spacing: .06em; color: var(--muted); margin-right: .45rem }
 /* tasks: the current checklist, lifted out of the transcript. Sans, tighter
    and smaller than the prose it mirrors — a dashboard, not a second reading. */
+/* the panel's view pill: tasks | agents — one panel, two contents */
+.ap-viewpill { width: 100%; margin: 0 0 .9rem }
+.ap-viewpill .seg-btn { flex: 1; font: 700 .68rem var(--sans); text-transform: uppercase;
+  letter-spacing: .07em; padding: .4rem 0 }
+#agents-body[data-view="tasks"] #setup-sec { display: none }
+#agents-body[data-view="agents"] #tasks-sec,
+#agents-body[data-view="agents"] #tasks-none { display: none }
+#tasks-none { font: italic .8rem/1.5 var(--sans); color: var(--muted); padding: .1rem .1rem .5rem }
+#tasks-none[hidden] { display: none }
+
 #tasks-sec { display: flex; flex-direction: column; gap: .4rem }
 /* an explicit display beats the UA's [hidden] rule — say it again, or a hidden
    section is a visible empty box */

@@ -102,6 +102,13 @@
      reparents into the sidebar drawer slot on narrower screens -->
 <aside id="agents-panel" aria-label="agent status">
   <section id="agents-body">
+    <!-- one panel, two views: the pill swaps between the chat's task list and
+         the agents' setup (cards, relay, billing, facts) — both were one long
+         scroll and neither read well for it -->
+    <div class="seg ap-viewpill" role="group" aria-label="panel view">
+      <button class="seg-btn" data-apview="tasks" aria-pressed="false">tasks</button>
+      <button class="seg-btn on" data-apview="agents" aria-pressed="true">agents</button>
+    </div>
     <!-- tasks: the checklist from the NEWEST message that carries one, derived
          live from the transcript (no stored copy, no protocol change). A revised
          list replaces this one — there is only ever the current state here.
@@ -116,6 +123,9 @@
       <div id="tasks-body"></div>
       <div id="tasks-meta"></div>
     </section>
+    <div id="tasks-none" hidden>no task list in this chat yet — when the bots
+      write a checklist, its latest version lives here</div>
+    <section id="setup-sec">
     <div class="chip-label ap-label">agents</div>
     <div id="agent-cards"></div>
     <div class="ap-actions">
@@ -128,6 +138,7 @@
     <div class="chip-label ap-label">billing</div>
     <div id="billing"></div>
     <div id="ap-facts" aria-label="session facts"></div>
+    </section>
   </section>
 </aside>
 

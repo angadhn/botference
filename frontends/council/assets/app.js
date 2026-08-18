@@ -1183,6 +1183,32 @@
   // ordinals, so the panel's boxes address exactly the same tick records; the
   // checked state is copied from the (already tick-applied) source and then the
   // store is laid over it, so both agree by construction.
+  // ── panel views: one pill, two contents (tasks | agents) ─────────────────
+  // Both lived in one long scroll and neither read well for it. The choice is
+  // remembered; the tasks view owns its own empty state ("no task list yet")
+  // so switching to it is never a blank pane.
+  const AP_VIEW_KEY = 'council-ap-view';
+  function syncApView() {
+    const body = document.getElementById('agents-body');
+    if (!body) return;
+    let v = 'agents';
+    try { v = localStorage.getItem(AP_VIEW_KEY) || 'agents'; } catch { }
+    body.setAttribute('data-view', v);
+    for (const b of body.querySelectorAll('.ap-viewpill [data-apview]')) {
+      const on = b.dataset.apview === v;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+    const none = document.getElementById('tasks-none');
+    if (none) none.hidden = !(v === 'tasks' && els.tasksSec && els.tasksSec.hidden);
+  }
+  document.querySelectorAll('.ap-viewpill [data-apview]').forEach(b =>
+    b.addEventListener('click', () => {
+      try { localStorage.setItem(AP_VIEW_KEY, b.dataset.apview); } catch { }
+      syncApView();
+    }));
+  syncApView();
+
   function renderTasks() {
     if (!els.tasksSec) return;
     const body = taskSrc && taskSrc.parentNode ? taskSrc.querySelector('.body') : null;
@@ -1192,6 +1218,7 @@
       els.tasksSec.hidden = true;
       els.tasksBody.textContent = '';
       els.tasksBody.removeAttribute('data-ticks');
+      syncApView();
       return;
     }
     els.tasksBody.textContent = '';
@@ -1209,6 +1236,7 @@
     els.tasksSec.hidden = false;
     updateTasksMeta();
     applyTaskFold();
+    syncApView();
   }
   // a tick in the panel is a tick in the message: record it against the same
   // key, then push the store back over the transcript's copy
