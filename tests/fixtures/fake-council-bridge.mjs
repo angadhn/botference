@@ -8,6 +8,25 @@ import readline from 'node:readline';
 const rxFile = process.argv[2];
 const emit = obj => process.stdout.write(JSON.stringify(obj) + '\n');
 
+// Billing: the real bridge spawns the CLIs, which read their auth from the
+// environment they were handed — so what this process was HANDED is the whole
+// observable behaviour of the key modes. One JSON line per spawn, appended to
+// <rx>.env (never rx itself, which tests read for input verbatim), carrying
+// only the variables shared/keys.mjs takes authority over and only when they
+// are present, so "absent" is testable as absence. Values here are fixture
+// keys the tests wrote; no real credential is ever in this environment.
+const AUTH_VARS = [
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN',
+];
+if (rxFile) {
+  const seen = {};
+  for (const v of AUTH_VARS) if (v in process.env) seen[v] = process.env[v];
+  try { fs.appendFileSync(`${rxFile}.env`, JSON.stringify(seen) + '\n'); } catch { }
+}
+
 emit({ type: 'completion_context', global: ['/status', '/new', '/resume', '@claude ', '@codex '], scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-4-8'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] } });
 emit({ type: 'status', mode: 'chat', lead: '', route: '@all', project: 'demo', claude_pct: 12, codex_pct: 4, claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' });
 emit({

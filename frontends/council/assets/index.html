@@ -81,12 +81,12 @@
         <textarea id="input" rows="1" enterkeyhint="send"
           placeholder="Message the council…" aria-label="message"></textarea>
         <div class="composer-row">
-          <button id="attach" aria-label="attach images" title="attach images">
+          <button id="attach" aria-label="attach images, PDFs or spreadsheets" title="attach images, PDFs or spreadsheets">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-8.49 8.49a5.5 5.5 0 0 1-7.78-7.78l8.49-8.49a3.67 3.67 0 0 1 5.19 5.19l-8.49 8.48a1.83 1.83 0 0 1-2.59-2.59l7.78-7.78"/></svg>
           </button>
-          <!-- accept=image/* with no capture attr: iOS Safari offers
-               Photo Library / Take Photo / Choose File -->
-          <input type="file" id="file" accept="image/*" multiple hidden>
+          <!-- no capture attr: iOS Safari offers Photo Library / Take
+               Photo / Choose File (the last one reaches Files for docs) -->
+          <input type="file" id="file" accept="image/*,application/pdf,.xlsx,.xls" multiple hidden>
           <button id="stop" hidden>◼ stop</button>
           <span class="composer-hint">Enter to send · Shift+Enter for a new line</span>
           <button id="send" aria-label="send" disabled>
@@ -108,6 +108,11 @@
       <button id="relay-both" title="Reset both agents at once from one shared handoff (token-efficient)">↻ relay both</button>
       <div id="autorelay-toggle"></div>
     </div>
+    <!-- billing: what each agent's CLI bills — the subscription it is logged
+         into, or an API key stored on the server's own machine. Keys are only
+         ever typed here when this page is open ON that machine. -->
+    <div class="chip-label ap-label">billing</div>
+    <div id="billing"></div>
     <div id="ap-facts" aria-label="session facts"></div>
   </section>
 </aside>

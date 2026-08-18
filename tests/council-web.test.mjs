@@ -28,19 +28,39 @@ function freePort() {
   });
 }
 
+// Every variable frontends/shared/keys.mjs takes authority over. Stripped from
+// the base environment of every test server so a developer's REAL key can
+// never reach a fixture file or an assertion — tests put their own
+// (obviously fake) values back through `env`.
+const AUTH_VARS = [
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN',
+];
+function cleanEnv() {
+  const e = { ...process.env };
+  for (const v of AUTH_VARS) delete e[v];
+  return e;
+}
+
 async function startServer({ hosted = false, noauth = false, env = {} } = {}) {
   const port = await freePort();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'council-'));
   const rx = path.join(root, 'rx.txt');
+  // keys are written to a THROWAWAY secrets dir: no test ever reads or writes
+  // the real ~/.botference/discuss-keys.json
+  const secrets = path.join(root, 'secrets');
   const args = [SERVER];
   if (hosted) args.push('--hosted');
   if (noauth) args.push('--no-auth');
   const proc = spawn(process.execPath, args, {
     env: {
-      ...process.env,
+      ...cleanEnv(),
       PORT: String(port),
       BOTFERENCE_PROJECT_ROOT: root,
       BOTFERENCE_HOME: HOME,
+      BOTFERENCE_SECRETS_DIR: secrets,
       COUNCIL_BRIDGE_CMD: JSON.stringify([process.execPath, FAKE, rx]),
       COUNCIL_PASSWORD: hosted && !noauth ? 'test-pw' : '',
       ...env,
@@ -54,9 +74,30 @@ async function startServer({ hosted = false, noauth = false, env = {} } = {}) {
     if (Date.now() > deadline) { proc.kill(); throw new Error(`server did not start:\n${out}`); }
     await new Promise(r => setTimeout(r, 50));
   }
+  // the boot bridge records the auth environment it was handed a beat after
+  // the listen log; wait for that line so the billing tests can count spawns
+  const envDeadline = Date.now() + 5000;
+  while (!fs.existsSync(`${rx}.env`) && Date.now() < envDeadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
   return {
-    proc, port, root, rx, base: `http://127.0.0.1:${port}`,
-    stop: () => { proc.kill(); fs.rmSync(root, { recursive: true, force: true }); },
+    proc, port, root, rx, secrets, base: `http://127.0.0.1:${port}`,
+    keysFile: path.join(secrets, 'discuss-keys.json'),
+    modesFile: path.join(root, '.botference', 'council', 'key-modes.json'),
+    // one JSON object per bridge spawn: the auth variables that process was
+    // actually handed (fake-council-bridge.mjs writes it)
+    spawnEnvs: () => (fs.existsSync(`${rx}.env`)
+      ? fs.readFileSync(`${rx}.env`, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+      : []),
+    // a bridge child that is still exiting can write into the workspace while
+    // it is being removed; the temp dir is not the assertion, so retry a
+    // couple of times and never fail a test over housekeeping
+    stop: () => {
+      proc.kill();
+      for (let i = 0; i < 3; i++) {
+        try { fs.rmSync(root, { recursive: true, force: true }); return; } catch { }
+      }
+    },
   };
 }
 
@@ -658,6 +699,60 @@ test('upload roundtrip: sniffed, stored 0600 under .botference/uploads, served b
   assert.deepEqual(await only.json(), { ok: true });
 });
 
+test('PDF upload roundtrip: sniffed by %PDF magic, typed "file", served as application/pdf, bridge schema keeps the type', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  const PDF = Buffer.from('%PDF-1.4\ncouncil-pdf-upload-test');
+  const up = await postRaw(s.base, '/upload', PDF);
+  assert.equal(up.status, 200);
+  const { ok, attachment } = await up.json();
+  assert.equal(ok, true);
+  assert.match(attachment.url, /^\/uploads\/\d{4}-\d{2}\/[0-9a-f]{16}\.pdf$/);
+  assert.equal(attachment.type, 'file');
+  const got = await fetch(s.base + attachment.url);
+  assert.equal(got.status, 200);
+  assert.equal(got.headers.get('content-type'), 'application/pdf');
+  assert.deepEqual(Buffer.from(await got.arrayBuffer()), PDF);
+  // /input forwards it typed 'file' — and the type is re-derived from the
+  // stored file, so a browser claiming 'image' cannot mislabel it
+  const inp = await post(s.base, '/input', {
+    text: 'read this',
+    attachments: [{ id: attachment.id, path: attachment.path, type: 'image' }],
+  });
+  assert.deepEqual(await inp.json(), { ok: true });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && e.speaker === 'claude'));
+  const lines = fs.readFileSync(s.rx, 'utf8').trim().split('\n');
+  const att = JSON.parse(lines[1].replace(/^ATT /, ''));
+  assert.deepEqual(att, [{ id: attachment.id, path: attachment.path, type: 'file' }]);
+});
+
+test('xlsx upload roundtrip: sniffed as a zip with xl/ entries, typed "file", served with the sheet mime', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  const XLSX = Buffer.concat([
+    Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    Buffer.from('xl/workbook.xml council-xlsx-upload-test'),
+  ]);
+  const up = await postRaw(s.base, '/upload', XLSX);
+  assert.equal(up.status, 200);
+  const { ok, attachment } = await up.json();
+  assert.equal(ok, true);
+  assert.match(attachment.url, /\.xlsx$/);
+  assert.equal(attachment.type, 'file');
+  const got = await fetch(s.base + attachment.url);
+  assert.equal(got.headers.get('content-type'),
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  const inp = await post(s.base, '/input', {
+    text: 'read this sheet',
+    attachments: [{ id: attachment.id, path: attachment.path, type: 'image' }],
+  });
+  assert.deepEqual(await inp.json(), { ok: true });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && e.speaker === 'claude'));
+  const lines = fs.readFileSync(s.rx, 'utf8').trim().split('\n');
+  const att = JSON.parse(lines[1].replace(/^ATT /, ''));
+  assert.equal(att[0].type, 'file');
+});
+
 test('upload rejects: oversize, non-image bytes, forged attachment paths, too many attachments', async t => {
   const s = await startServer();
   t.after(s.stop);
@@ -671,6 +766,9 @@ test('upload rejects: oversize, non-image bytes, forged attachment paths, too ma
   const txt = await postRaw(s.base, '/upload', Buffer.from('#!/bin/sh\necho pwned'), { 'x-filename': 'x.png' });
   assert.equal(txt.status, 400);
   assert.match((await txt.json()).error, /not an image/);
+  // a zip that is NOT an xlsx (no xl/ entries — e.g. a docx) is refused too
+  const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('word/document.xml')]);
+  assert.equal((await postRaw(s.base, '/upload', zip)).status, 400);
   assert.ok(!fs.existsSync(path.join(s.root, '.botference', 'uploads'))
     || fs.readdirSync(path.join(s.root, '.botference', 'uploads')).length === 0, 'nothing stored');
   // /input refuses paths outside the uploads tree — the browser cannot make
@@ -981,10 +1079,11 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
       `only avatars and the message action row may block selection: ${m[1].trim()}`);
   }
   assert.match(css, /#transcript\s*\{[^}]*user-select:\s*text/, 'transcript opts into selection');
-  // the attach affordance is phone-real: image picker that lets iOS offer
-  // camera + library (accept=image/*, no capture attr), plus multiple
+  // the attach affordance is phone-real: picker that lets iOS offer
+  // camera + library + Files (accept includes image/* and PDFs, no
+  // capture attr), plus multiple
   const file = doc.getElementById('file');
-  assert.equal(file.getAttribute('accept'), 'image/*');
+  assert.equal(file.getAttribute('accept'), 'image/*,application/pdf,.xlsx,.xls');
   assert.equal(file.hasAttribute('capture'), false, 'no capture attr — keeps the library option on iOS');
   assert.ok(file.hasAttribute('multiple'));
   assert.ok(doc.getElementById('attach'), 'attach button present');
@@ -1671,4 +1770,257 @@ test('/files requires auth on a hosted server', async () => {
     const r = await fetch(`${s.base}/files/note.md`, { redirect: 'manual' });
     assert.notEqual(r.status, 200, 'unauthenticated /files must not serve content');
   } finally { s.stop(); }
+});
+
+// ------------------------------------------------------- billing (API keys)
+// Per-agent auth for the CLIs the bridges spawn: the modes are this server's
+// own (workspace state), the KEYS are the ones Discuss stores (one paste, both
+// products). What a mode DOES is only ever visible in the environment a bridge
+// child was handed, so that is what these assert — the fake bridge appends the
+// auth variables it was given to <rx>.env, one JSON object per spawn.
+//
+// Every key here is an obvious fixture; startServer strips the real ones out
+// of the environment it passes on, and points BOTFERENCE_SECRETS_DIR at a
+// throwaway directory, so no real credential is ever read, written or logged.
+const CLAUDE_KEY = 'sk-ant-api-TEST';
+const CODEX_KEY = 'sk-openai-TEST';
+const PROXY = { 'x-forwarded-for': '203.0.113.9' };   // what a tunnel stamps
+
+// Attach a tab to a chat nothing is driving yet: that spawns a NEW bridge,
+// which is the only moment a billing change can take effect. Returns the auth
+// environment that child was handed.
+async function newBridgeEnv(s, sid) {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const before = s.spawnEnvs().length;
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: `/ws?chat=${sid}` });
+  try {
+    await c.next(e => e.type === 'hello');
+    const deadline = Date.now() + 5000;
+    while (s.spawnEnvs().length <= before) {
+      if (Date.now() > deadline) throw new Error('no new bridge env recorded');
+      await new Promise(r => setTimeout(r, 25));
+    }
+  } finally { c.close(); }
+  return s.spawnEnvs()[before];
+}
+
+test('billing: a fresh council holds no key, defaults both agents to auto, and reports the codex asymmetry', async () => {
+  const s = await startServer();
+  try {
+    const r = await fetch(`${s.base}/keys`);
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.claude, 'unset');
+    assert.equal(j.codex, 'unset');
+    assert.deepEqual(j.modes, { claude: 'auto', codex: 'auto' });
+    // documented, never enforced: claude's env key beats its login, codex's
+    // stored ChatGPT login beats the env key (forcing it would mean
+    // `codex login --with-api-key`, which is the user's call)
+    assert.deepEqual(j.overrides_login, { claude: true, codex: false });
+    assert.equal(j.local, true, 'a direct loopback request is the local machine');
+    // the boot bridge got no auth variables at all — not even an empty one
+    const first = s.spawnEnvs()[0];
+    assert.deepEqual(first, {}, 'auto with no stored key hands the bridge nothing');
+  } finally { s.stop(); }
+});
+
+test('billing: a stored key reaches the next bridge and is never handed back — 0600 storage, "set" is all the API says', async () => {
+  const s = await startServer();
+  try {
+    const w = await post(s.base, '/keys', { agent: 'claude', key: CLAUDE_KEY });
+    assert.equal(w.status, 200);
+    const body = await w.text();
+    assert.ok(!body.includes(CLAUDE_KEY), 'the response never echoes the key back');
+    assert.match(body, /"claude":"set"/);
+    // running bridges keep the env they were spawned with, and this server
+    // will not kill one to answer a settings click — it says so instead
+    assert.equal(JSON.parse(body).applies, 'next-bridge');
+
+    const st = await (await fetch(`${s.base}/keys`)).json();
+    assert.equal(st.claude, 'set');
+    assert.equal(st.codex, 'unset');
+    assert.ok(!JSON.stringify(st).includes(CLAUDE_KEY), 'status carries no key material');
+
+    // stored on disk, readable by nobody else
+    assert.equal(fs.statSync(s.keysFile).mode & 0o777, 0o600);
+
+    // auto + a stored key: the next bridge bills the key
+    const env = await newBridgeEnv(s, 'keysid01');
+    assert.deepEqual(env, { ANTHROPIC_API_KEY: CLAUDE_KEY },
+      'the key, and nothing else that could answer the same question');
+  } finally { s.stop(); }
+});
+
+test('billing: subscription mode wins over a key AND over what the server itself inherited', async () => {
+  // the server is started the way a LaunchAgent or a login shell would start
+  // it — with auth variables already in its environment
+  const s = await startServer({
+    env: {
+      ANTHROPIC_API_KEY: 'sk-ant-api-TEST-INHERITED',
+      ANTHROPIC_AUTH_TOKEN: 'TEST-INHERITED-TOKEN',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      OPENAI_API_KEY: 'sk-openai-TEST-INHERITED',
+      CODEX_API_KEY: 'sk-codex-TEST-INHERITED',
+    },
+  });
+  try {
+    // auto, nothing stored: an inherited key is not an answer the user chose
+    assert.deepEqual(s.spawnEnvs()[0], {},
+      'auto with no stored key deletes the inherited key and its siblings');
+
+    // store both keys, then put both agents on the subscription
+    await post(s.base, '/keys', { agent: 'claude', key: CLAUDE_KEY });
+    await post(s.base, '/keys', { agent: 'codex', key: CODEX_KEY });
+    for (const agent of ['claude', 'codex']) {
+      const r = await post(s.base, '/key-mode', { agent, mode: 'subscription' });
+      assert.equal(r.status, 200);
+      const j = await r.json();
+      assert.equal(j.modes[agent], 'subscription');
+      assert.ok(!JSON.stringify(j).includes(CLAUDE_KEY) && !JSON.stringify(j).includes(CODEX_KEY));
+    }
+    const env = await newBridgeEnv(s, 'subsid01');
+    assert.deepEqual(env, {},
+      'subscription clears the key and every sibling — absent, never empty');
+    // the mode is the council's own state, not the shared secrets file
+    assert.deepEqual(JSON.parse(fs.readFileSync(s.modesFile, 'utf8')).modes,
+      { claude: 'subscription', codex: 'subscription' });
+    assert.ok(!fs.readFileSync(s.modesFile, 'utf8').includes(CLAUDE_KEY),
+      'no key material in the mode file');
+  } finally { s.stop(); }
+});
+
+test('billing: "key" mode with nothing stored is refused; codex mode "key" hands the key over without forcing a login', async () => {
+  const s = await startServer();
+  try {
+    const bad = await post(s.base, '/key-mode', { agent: 'claude', mode: 'key' });
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /no claude key saved/);
+    assert.equal((await (await fetch(`${s.base}/keys`)).json()).modes.claude, 'auto',
+      'the refused switch left the mode alone');
+    // an unknown agent or mode is refused the same way
+    assert.equal((await post(s.base, '/key-mode', { agent: 'gemini', mode: 'auto' })).status, 400);
+    assert.equal((await post(s.base, '/key-mode', { agent: 'claude', mode: 'always' })).status, 400);
+    assert.equal((await post(s.base, '/keys', { agent: 'claude', key: '   ' })).status, 400);
+
+    await post(s.base, '/keys', { agent: 'codex', key: CODEX_KEY });
+    assert.equal((await post(s.base, '/key-mode', { agent: 'codex', mode: 'key' })).status, 200);
+    const env = await newBridgeEnv(s, 'codexsid1');
+    // OPENAI_API_KEY is offered and CODEX_* siblings are cleared; nothing here
+    // ever writes forced_login_method or runs `codex login` — a stored ChatGPT
+    // login still wins, which is why the UI calls the key a fallback
+    assert.deepEqual(env, { OPENAI_API_KEY: CODEX_KEY });
+  } finally { s.stop(); }
+});
+
+test('billing: removing a key unsets it and releases a mode stranded on "key"', async () => {
+  const s = await startServer();
+  try {
+    await post(s.base, '/keys', { agent: 'claude', key: CLAUDE_KEY });
+    await post(s.base, '/key-mode', { agent: 'claude', mode: 'key' });
+    const r = await post(s.base, '/keys/remove', { agent: 'claude' });
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.removed, true);
+    assert.equal(j.claude, 'unset');
+    assert.equal(j.modes.claude, 'auto', '"key" with no key would be a lie — back to auto');
+    // the key really left the file, and a second removal is honest about it
+    assert.ok(!fs.readFileSync(s.keysFile, 'utf8').includes(CLAUDE_KEY));
+    assert.equal((await (await post(s.base, '/keys/remove', { agent: 'claude' })).json()).removed, false);
+    assert.deepEqual(await newBridgeEnv(s, 'gonesid01'), {});
+  } finally { s.stop(); }
+});
+
+test('billing: keys never cross the tunnel — a proxied write is refused, the switch and the status are not', async () => {
+  const s = await startServer();
+  try {
+    for (const url of ['/keys', '/keys/remove']) {
+      const r = await post(s.base, url, { agent: 'claude', key: CLAUDE_KEY }, PROXY);
+      assert.equal(r.status, 403, `${url} refuses a forwarded request`);
+      assert.match((await r.json()).error, /can only be set from the machine/);
+    }
+    assert.equal((await (await fetch(`${s.base}/keys`)).json()).claude, 'unset',
+      'the refused write stored nothing');
+    // status still answers a remote reader — and tells the UI to hide the
+    // fields and say where keys can be added instead
+    const remote = await fetch(`${s.base}/keys`, { headers: PROXY });
+    assert.equal(remote.status, 200);
+    assert.equal((await remote.json()).local, false);
+    // a MODE is a preference, not a secret: switchable from the phone
+    const m = await post(s.base, '/key-mode', { agent: 'claude', mode: 'subscription' }, PROXY);
+    assert.equal(m.status, 200);
+    assert.equal((await m.json()).modes.claude, 'subscription');
+  } finally { s.stop(); }
+});
+
+test('billing: keys are gated like everything else on a hosted server', async () => {
+  const s = await startServer({ hosted: true });
+  try {
+    assert.equal((await fetch(`${s.base}/keys`)).status, 401);
+    const w = await post(s.base, '/keys', { agent: 'claude', key: CLAUDE_KEY });
+    assert.equal(w.status, 401);
+    const auth = { authorization: 'Basic ' + Buffer.from('x:test-pw').toString('base64') };
+    assert.equal((await fetch(`${s.base}/keys`, { headers: auth })).status, 200);
+  } finally { s.stop(); }
+});
+
+test('billing panel: per-agent switch, key fields only on the local machine, honest about when it applies',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  const panel = doc.getElementById('billing');
+  assert.ok(panel, 'the agents panel has a billing section');
+
+  // on the machine the server runs on: the switch AND the key fields
+  C.setKeyInfo({
+    ok: true, claude: 'set', codex: 'unset',
+    modes: { claude: 'auto', codex: 'auto' },
+    overrides_login: { claude: true, codex: false }, local: true,
+  });
+  const claude = panel.querySelector('.bill-row[data-agent="claude"]');
+  assert.match(claude.textContent, /key saved/);
+  assert.match(claude.querySelector('.bill-eff').textContent, /bills the API key/,
+    'auto with a saved key resolves to the key — the same rule Claude Code uses');
+  assert.equal(claude.querySelector('[data-bill="claude"][data-mode="auto"]').getAttribute('aria-pressed'), 'true');
+  assert.ok(claude.querySelector('input[data-key="claude"]'), 'a key field, because this is the local machine');
+  assert.ok(claude.querySelector('[data-rm="claude"]'), 'a saved key can be removed');
+
+  const codex = panel.querySelector('.bill-row[data-agent="codex"]');
+  assert.match(codex.querySelector('.bill-eff').textContent, /bills the subscription/);
+  assert.ok(codex.querySelector('[data-bill="codex"][data-mode="key"]').hasAttribute('disabled'),
+    'no key saved, so "API key" is not a position you can pick');
+  assert.ok(!codex.querySelector('[data-rm="codex"]'), 'nothing to remove');
+  assert.match(panel.textContent, /Applies to agents started from now on/,
+    'the panel says a running chat keeps the billing it started with');
+
+  // switching mode posts the preference; typing a key posts it once and does
+  // not leave it sitting in the DOM
+  posts.length = 0;
+  claude.querySelector('[data-bill="claude"][data-mode="subscription"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts[0], { url: '/key-mode', body: { agent: 'claude', mode: 'subscription' } });
+  const input = panel.querySelector('input[data-key="claude"]');
+  input.value = 'sk-ant-api-TEST';
+  panel.querySelector('[data-save="claude"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts[1], { url: '/keys', body: { agent: 'claude', key: 'sk-ant-api-TEST' } });
+  assert.equal(input.value, '', 'the field is cleared the moment it is sent');
+
+  // codex asymmetry, said out loud where it applies
+  C.setKeyInfo({
+    ok: true, claude: 'unset', codex: 'set',
+    modes: { claude: 'auto', codex: 'key' },
+    overrides_login: { claude: true, codex: false }, local: true,
+  });
+  assert.match(panel.querySelector('.bill-row[data-agent="codex"] .bill-caveat').textContent,
+    /only falls back to the key when it is not logged in/);
+
+  // through the tunnel: the switch still works, the key fields are gone, and
+  // the panel says where a key can be added instead
+  C.setKeyInfo({
+    ok: true, claude: 'set', codex: 'unset',
+    modes: { claude: 'auto', codex: 'auto' },
+    overrides_login: { claude: true, codex: false }, local: false,
+  });
+  assert.equal(panel.querySelectorAll('input[data-key]').length, 0, 'no key field over the tunnel');
+  assert.ok(panel.querySelector('[data-bill="claude"]'), 'the mode switch is still there');
+  assert.match(panel.textContent, /Add keys from the Mac the server runs on/);
 });

@@ -28,6 +28,10 @@ import { spawn } from 'node:child_process';
 // WS transport shared with the review engine: cloudflared buffers streamed
 // HTTP bodies (SSE arrives header-only through tunnels), WebSockets don't
 import { attachWs } from '../review/ws.mjs';
+// per-agent billing: the same module Discuss uses, so one pasted key serves
+// both. Only the MODE is the council's own (see COUNCIL_MODES below).
+import * as keys from '../shared/keys.mjs';
+import { isLocalDirect } from '../shared/local.mjs';
 
 const COUNCIL = path.dirname(new URL(import.meta.url).pathname);
 const ASSETS = path.join(COUNCIL, 'assets');
@@ -43,6 +47,14 @@ fs.mkdirSync(STATE, { recursive: true });
 const UPLOADS = path.join(ROOT, '.botference', 'uploads');
 const UPLOAD_MAX = 10 * 1024 * 1024; // per image
 const UPLOAD_MAX_PER_MSG = 4;
+
+// --- billing: which auth each agent's CLI runs on ------------------------
+// The KEYS are shared with Discuss (~/.botference/discuss-keys.json, 0600,
+// write-only over any API) — a key pasted once works everywhere on this
+// machine. The MODE is this server's own preference and lives in the
+// workspace's council state, so putting the council on the subscription does
+// not quietly retune the browser plugin. See frontends/shared/keys.mjs.
+const COUNCIL_MODES = keys.modeStore(path.join(STATE, 'key-modes.json'));
 
 const PASSWORD = process.env.COUNCIL_PASSWORD || '';
 if (HOSTED && !NO_AUTH && !PASSWORD) {
@@ -308,12 +320,17 @@ class Bridge {
     const [cmd, ...args] = this.cmd();
     this.proc = spawn(cmd, args, {
       cwd: HOME,
-      env: {
+      // API keys, per agent, decided fresh at every spawn (shared/keys.mjs):
+      // a stored key is added, and every path that means "no key" DELETES the
+      // variable rather than emptying it — including one this server inherited
+      // from the shell or LaunchAgent that started it. The mode is the only
+      // authority; nothing left over in our own environment gets a vote.
+      env: keys.applyEnv({
         ...process.env,
         BOTFERENCE_HOME: HOME,
         BOTFERENCE_PROJECT_ROOT: ROOT,
         BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic', // the web frontend has no tmux to mirror
-      },
+      }, COUNCIL_MODES),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let buf = '';
@@ -517,7 +534,9 @@ function sseOpen(res) {
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
-  '.webp': 'image/webp', '.heic': 'image/heic',
+  '.webp': 'image/webp', '.heic': 'image/heic', '.pdf': 'application/pdf',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel',
   '.pdf': 'application/pdf', '.md': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8', '.json': 'application/json', '.csv': 'text/csv',
 };
@@ -539,10 +558,16 @@ function readBody(req, res, cap, fn) {
   });
 }
 
-// --- image uploads ------------------------------------------------------
+// --- file uploads (images + PDFs) ---------------------------------------
 // Content decides, not the filename: sniff magic bytes and derive the
 // extension from what the file actually is.
 function sniffImage(buf) {
+  if (buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-') return 'pdf';
+  // xlsx is a zip whose entries live under xl/ (docx says word/ — refused);
+  // legacy xls is an OLE2 compound document
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04
+    && buf.includes('xl/')) return 'xlsx';
+  if (buf.length >= 8 && buf.readUInt32BE(0) === 0xd0cf11e0 && buf.readUInt32BE(4) === 0xa1b11ae1) return 'xls';
   if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
   if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
   if (buf.length >= 6 && (buf.subarray(0, 6).toString('latin1') === 'GIF87a' || buf.subarray(0, 6).toString('latin1') === 'GIF89a')) return 'gif';
@@ -562,13 +587,13 @@ function uploadEndpoint(req, res) {
   });
   req.on('end', () => {
     if (size > UPLOAD_MAX) {
-      res.writeHead(413, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'image too large (10MB max)' }));
+      res.writeHead(413, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'file too large (10MB max)' }));
       return;
     }
     const buf = Buffer.concat(chunks);
     const ext = sniffImage(buf);
     if (!ext) {
-      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image (png/jpeg/gif/webp/heic)' }));
+      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image, PDF or spreadsheet (png/jpeg/gif/webp/heic · pdf · xlsx/xls)' }));
       return;
     }
     const month = new Date().toISOString().slice(0, 7); // yyyy-mm
@@ -584,13 +609,14 @@ function uploadEndpoint(req, res) {
     }
     res.writeHead(200, JSON_HEAD).end(JSON.stringify({
       ok: true,
-      attachment: { id, path: abs, type: 'image', url: uploadUrl(abs) },
+      attachment: { id, path: abs, type: /^(pdf|xlsx?)$/.test(ext) ? 'file' : 'image', url: uploadUrl(abs) },
     }));
   });
 }
 // /input attachments must point at files THIS server stored — never an
 // arbitrary path the browser names. Returns the bridge-schema list
-// ({id, path, type:'image'} — exactly what the Ink TUI sends) or null.
+// ({id, path, type:'image'|'file'} — exactly what the Ink TUI sends) or
+// null. The type is re-derived from the stored file, never trusted.
 function cleanAttachments(raw) {
   if (raw == null) return [];
   if (!Array.isArray(raw) || raw.length > UPLOAD_MAX_PER_MSG) return null;
@@ -599,7 +625,8 @@ function cleanAttachments(raw) {
     const p = path.resolve(String((a && a.path) || ''));
     const rel = path.relative(UPLOADS, p);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(p)) return null;
-    out.push({ id: String((a && a.id) || path.basename(p)), path: p, type: 'image' });
+    const type = /\.(pdf|xlsx?)$/i.test(p) ? 'file' : 'image';
+    out.push({ id: String((a && a.id) || path.basename(p)), path: p, type });
   }
   return out;
 }
@@ -627,6 +654,13 @@ const anyBridgeAvailable = () => {
   for (const b of bridges.values()) if (b.available) return true;
   return false;
 };
+// When a billing change actually bites. A process's environment is fixed at
+// exec: a bridge that is already running keeps the auth it was spawned with,
+// and there is no honest way around that short of killing a live turn — which
+// this server will not do to answer a settings click. So the answer is either
+// "now" (nothing is running, the next spawn reads the new mode) or
+// "next-bridge", and the UI says so in those words.
+const appliesWhen = () => (anyBridgeAvailable() ? 'next-bridge' : 'now');
 
 export function handler(req, res) {
   const url = req.url.split('?')[0];
@@ -737,6 +771,68 @@ export function handler(req, res) {
       const ok = bridge && bridge.send({ type: 'choice_response', index });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
     });
+    return;
+  }
+  // --- billing: which auth each agent runs on ----------------------------
+  // Status and the MODE switch are open to anyone the gate already trusts —
+  // they are preferences, and changing one from a phone is the whole point of
+  // a hosted council. A KEY is different: it may only be written from this
+  // machine, exactly as in Discuss. cloudflared's hop arrives on loopback too,
+  // so isLocalDirect is the three-part test (Host + no proxy headers + loopback
+  // peer), not a socket check.
+  //
+  // Nothing here ever answers with a key. Every response is built from
+  // keys.status(), which knows only "set" or "unset".
+  if (url === '/keys' || url === '/keys/remove' || url === '/key-mode') {
+    const local = isLocalDirect(req);
+    const snapshot = () => ({
+      ok: true, ...keys.status(COUNCIL_MODES),
+      overrides_login: keys.KEY_OVERRIDES_LOGIN, local,
+    });
+    if (req.method === 'GET' && url === '/keys') {
+      res.writeHead(200, JSON_HEAD).end(JSON.stringify(snapshot()));
+      return;
+    }
+    if (req.method === 'POST' && url === '/key-mode') {
+      readBody(req, res, 2000, data => {
+        // refusing 'key' with nothing stored is not pedantry: the CLIs would
+        // quietly fall back to the login and the switch would be a lie
+        if (String(data.mode) === 'key' && !keys.keyIsSet(data.agent)) {
+          res.writeHead(400, JSON_HEAD).end(JSON.stringify({
+            ok: false, error: `no ${data.agent} key saved — add one from the machine this server runs on`,
+          }));
+          return;
+        }
+        const r = COUNCIL_MODES.setMode(data.agent, data.mode);
+        if (!r.ok) { res.writeHead(400, JSON_HEAD).end(JSON.stringify(r)); return; }
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...snapshot(), applies: appliesWhen() }));
+      });
+      return;
+    }
+    if (req.method === 'POST' && (url === '/keys' || url === '/keys/remove')) {
+      if (!local) {
+        req.resume();
+        res.writeHead(403, JSON_HEAD).end(JSON.stringify({
+          ok: false, error: 'API keys can only be set from the machine this server runs on',
+        }));
+        return;
+      }
+      readBody(req, res, 4000, data => {
+        const r = url === '/keys' ? keys.setKey(data.agent, data.key) : keys.removeKey(data.agent);
+        if (!r.ok) { res.writeHead(400, JSON_HEAD).end(JSON.stringify(r)); return; }
+        // a removed key can strand a mode on 'key': fall back to 'auto', which
+        // is the same answer ("subscription") without the false promise
+        if (url === '/keys/remove' && COUNCIL_MODES.modeOf(data.agent) === 'key') {
+          COUNCIL_MODES.setMode(data.agent, 'auto');
+        }
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify({
+          ...snapshot(), ...(r.removed === undefined ? {} : { removed: r.removed }),
+          applies: appliesWhen(),
+        }));
+      });
+      return;
+    }
+    res.writeHead(404, JSON_HEAD).end('{"ok":false,"error":"not found"}');
     return;
   }
   res.writeHead(404, JSON_HEAD).end('{"ok":false,"error":"not found"}');

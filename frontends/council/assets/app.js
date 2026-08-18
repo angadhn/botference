@@ -20,6 +20,7 @@
     agentCards: $('agent-cards'), agentsBody: $('agents-body'),
     agentsPanel: $('agents-panel'), agentsToggle: $('agents-toggle'),
     apFacts: $('ap-facts'), relayBoth: $('relay-both'), autoRelay: $('autorelay-toggle'),
+    billing: $('billing'),
     presendWarn: $('presend-warn'),
     avatars: $('avatars'), banner: $('noauth-banner'), bannerX: $('noauth-x'),
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
@@ -367,6 +368,126 @@
     });
   }
   renderAutoRelay();
+
+  // ── billing (agents panel) ──
+  // What each agent's CLI bills: the subscription it is logged into, or an API
+  // key stored on the server's machine. Three modes, the default being Claude
+  // Code's own rule — `auto` uses a stored key and falls back to the
+  // subscription when there is none.
+  //
+  // The switch is a preference and works from anywhere the password does. A
+  // KEY is not: the server refuses to store one that arrived through the
+  // tunnel, so the fields only exist when this page is open on the machine the
+  // server runs on, and the panel says so when it is not. Keys are never sent
+  // back here — /keys answers "set" or "unset", nothing more.
+  const BILL_MODES = [
+    ['auto', 'auto', 'a saved key if there is one, otherwise the subscription'],
+    ['subscription', 'subscription', 'never a key, even when one is saved'],
+    ['key', 'API key', 'always the saved key'],
+  ];
+  let keyInfo = null;   // last /keys snapshot: {claude,codex,modes,local,overrides_login}
+  function billResolve(agent) {
+    const mode = (keyInfo.modes && keyInfo.modes[agent]) || 'auto';
+    const set = keyInfo[agent] === 'set';
+    return { mode, set, eff: mode === 'auto' ? (set ? 'key' : 'subscription') : mode };
+  }
+  function renderBilling() {
+    if (!els.billing) return;
+    if (!keyInfo) { els.billing.innerHTML = ''; return; }
+    const local = !!keyInfo.local;
+    const rows = AGENTS.map(a => {
+      const { mode, set, eff } = billResolve(a);
+      // codex is the honest exception: its stored ChatGPT login beats a key in
+      // the environment, so a key there is a fallback, not an override
+      const overrides = !keyInfo.overrides_login || keyInfo.overrides_login[a] !== false;
+      const caveat = eff === 'key' && set && !overrides
+        ? `${cap(a)} only falls back to the key when it is not logged in — the login wins otherwise`
+        : '';
+      const seg = BILL_MODES.map(([v, label, tip]) => {
+        const on = v === mode;
+        const off = v === 'key' && !set;
+        return `<button class="seg-btn${on ? ' on' : ''}" data-bill="${a}" data-mode="${v}"` +
+          ` aria-pressed="${on}"${off ? ' disabled' : ''}` +
+          ` title="${esc(off ? `no ${a} key saved yet` : tip)}">${esc(label)}</button>`;
+      }).join('');
+      const keyRow = local ? `<div class="bill-key">
+        <input type="password" class="bill-input" data-key="${a}" autocomplete="off"
+          spellcheck="false" placeholder="${a === 'claude' ? 'sk-ant-…' : 'sk-…'}"
+          aria-label="${cap(a)} API key">
+        <button class="bill-btn" data-save="${a}">save</button>
+        ${set ? `<button class="bill-btn" data-rm="${a}">remove</button>` : ''}
+      </div>` : '';
+      return `<div class="bill-row" data-agent="${a}">
+        <div class="bill-head">
+          <span class="ms-mark" style="--author:var(--${a})">${avatarHtml(a)}</span>
+          <span class="bill-name">${cap(a)}</span>
+          <span class="bill-state">${set ? 'key saved' : 'no key'}</span>
+        </div>
+        <div class="seg" role="group" aria-label="${cap(a)} billing">${seg}</div>
+        <div class="bill-eff">bills ${eff === 'key' ? 'the API key' : 'the subscription'}</div>
+        ${caveat ? `<div class="bill-caveat">${esc(caveat)}</div>` : ''}
+        ${keyRow}</div>`;
+    }).join('');
+    const where = local
+      ? 'Keys live in a 0600 file on this machine, shared with Discuss, and are never sent back to this page.'
+      : 'Add keys from the Mac the server runs on — a key typed here would cross the tunnel, so the server refuses it.';
+    els.billing.innerHTML = rows +
+      `<div class="bill-note">${esc(where)}</div>` +
+      '<div class="bill-note">Applies to agents started from now on — a chat already running keeps the billing it started with.</div>';
+  }
+  async function billFetch(url, opts) {
+    const r = await fetch(url, opts);
+    let j = null;
+    try { j = await r.json(); } catch { }
+    if (r.status >= 400 || !j || j.ok === false) return { err: (j && j.error) || 'that did not work' };
+    return { j };
+  }
+  async function loadBilling() {
+    if (typeof fetch !== 'function') return;
+    try {
+      const { j } = await billFetch('/keys');
+      // a boot snapshot never overwrites an answer from a change the reader
+      // has already made — the write's own response is the fresher truth
+      if (!j || keyInfo) return;
+      keyInfo = j;
+      renderBilling();
+    } catch { /* offline: the section simply stays empty */ }
+  }
+  async function billPost(url, body, note) {
+    const { j, err } = await billFetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!j) { toast(err); return null; }
+    keyInfo = { ...keyInfo, ...j };
+    renderBilling();
+    // honest about when it bites: the env of a running process cannot change
+    if (note) toast(j.applies === 'now' ? note : `${note} — from the next agent start`);
+    return j;
+  }
+  if (els.billing) {
+    els.billing.addEventListener('click', e => {
+      const seg = e.target.closest('[data-bill]');
+      if (seg) {
+        const { bill: agent, mode } = seg.dataset;
+        if (billResolve(agent).mode === mode) return;
+        billPost('/key-mode', { agent, mode }, `${cap(agent)}: ${mode}`);
+        return;
+      }
+      const save = e.target.closest('[data-save]');
+      if (save) {
+        const a = save.dataset.save;
+        const input = els.billing.querySelector(`input[data-key="${a}"]`);
+        const key = input ? input.value.trim() : '';
+        if (!key) { toast('paste a key first'); return; }
+        if (input) input.value = '';   // never leave a key sitting in the DOM
+        billPost('/keys', { agent: a, key }, `${cap(a)} key saved`);
+        return;
+      }
+      const rm = e.target.closest('[data-rm]');
+      if (rm) billPost('/keys/remove', { agent: rm.dataset.rm }, `${cap(rm.dataset.rm)} key removed`);
+    });
+  }
+  loadBilling();
 
   // flag/clear an agent as out-of-credits, updating avatars + switcher + notice
   function flagExhausted(agent, reason) {
@@ -934,8 +1055,12 @@
   }
 
   const attThumbs = atts => (atts && atts.length)
-    ? `<div class="att-row">${atts.map(a =>
-      `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`).join('')}</div>`
+    ? `<div class="att-row">${atts.map(a => {
+      const m = /\.(pdf|xlsx?)(\?|$)/i.exec(a.url || '');
+      return m
+        ? `<a class="att-doc-link" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(m[1].toUpperCase())} · ${esc((a.url || '').split('/').pop())}</a>`
+        : `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`;
+    }).join('')}</div>`
     : '';
 
   // ── one paint path for every markdown message (user and agent alike) ──────
@@ -1578,24 +1703,38 @@
   }
   function syncSend() { els.send.disabled = !els.input.value.trim() && !state.atts.length; }
 
-  // ── image attachments: picker (camera+library on iOS via accept=image/*),
+  // ── attachments (images + PDFs): picker (camera+library on iOS),
   // clipboard paste, drag-drop. Uploaded eagerly so send is instant and the
-  // server validates early; thumbnails with ✕ until sent. ──
+  // server validates early; thumbnails (a name chip for PDFs) with ✕ until
+  // sent. ──
   const IMG_LIMIT = 4, IMG_MAX_BYTES = 10 * 1024 * 1024;
+  const DOC_MIMES = ['application/pdf',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel'];
+  const DOC_EXT = /\.(pdf|xlsx?)$/i;
+  const isDocFile = f => DOC_MIMES.includes(f.type) || DOC_EXT.test(f.name || '');
+  const docLabel = name => ((/\.(\w+)$/.exec(name || '') || [])[1] || 'file').toUpperCase();
   function renderAtts() {
     if (!els.attStrip) return;
     els.attStrip.hidden = !state.atts.length;
     els.attStrip.innerHTML = state.atts.map((a, i) =>
-      `<div class="att${a.status === 'up' ? ' uploading' : ''}">
-        <img src="${esc(a.thumb)}" alt="">
-        <button class="att-x" data-x="${i}" aria-label="remove image">✕</button></div>`).join('');
+      `<div class="att${a.kind === 'doc' ? ' att-doc' : ''}${a.status === 'up' ? ' uploading' : ''}">
+        ${a.kind === 'doc'
+          ? `<span class="att-doc-chip" title="${esc(a.name)}">${esc(docLabel(a.name))} · ${esc(a.name)}</span>`
+          : `<img src="${esc(a.thumb)}" alt="">`}
+        <button class="att-x" data-x="${i}" aria-label="remove attachment">✕</button></div>`).join('');
   }
   async function addFiles(files) {
     for (const f of Array.from(files || [])) {
-      if (!(f && (/^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|heic)$/i.test(f.name || '')))) continue;
-      if (state.atts.length >= IMG_LIMIT) { toast(`${IMG_LIMIT} images max per message`); break; }
-      if (f.size > IMG_MAX_BYTES) { toast('image too large (10MB max)'); continue; }
-      const item = { id: '', path: '', url: '', thumb: URL.createObjectURL(f), status: 'up' };
+      const doc = f && isDocFile(f);
+      if (!(f && (doc || /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|heic)$/i.test(f.name || '')))) continue;
+      if (state.atts.length >= IMG_LIMIT) { toast(`${IMG_LIMIT} attachments max per message`); break; }
+      if (f.size > IMG_MAX_BYTES) { toast('file too large (10MB max)'); continue; }
+      const item = {
+        id: '', path: '', url: '', status: 'up',
+        kind: doc ? 'doc' : 'img', name: f.name || 'document',
+        thumb: doc ? '' : URL.createObjectURL(f),
+      };
       state.atts.push(item);
       renderAtts(); syncSend();
       let r = null;
@@ -1635,7 +1774,7 @@
     els.input.addEventListener('paste', e => {
       const items = (e.clipboardData && e.clipboardData.items) || [];
       const files = Array.from(items)
-        .filter(i => i.kind === 'file' && /^image\//.test(i.type))
+        .filter(i => i.kind === 'file' && (/^image\//.test(i.type) || DOC_MIMES.includes(i.type)))
         .map(i => i.getAsFile()).filter(Boolean);
       if (files.length) { e.preventDefault(); addFiles(files); }
     });
@@ -2016,5 +2155,6 @@
     renderModelSwitcher, refreshPresendWarn, presendExhausted,
     noteAgentTurn, exhaustReason, modelsFor, effortsFor,
     laneEvent, hashSid, syncHash, routeHash, chatParam,
+    renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
   };
 })();
