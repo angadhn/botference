@@ -760,6 +760,14 @@ export function handler(req, res) {
         project_title: art.project_title,
         rel: art.rel,
         path: art.path,
+        // How this url reached the artifact: its own file: address, or the
+        // council's web UI at `/files/…` from an origin the reader has named
+        // as their council (workspace.mjs says why that allowlist is the whole
+        // of the trust). `ident_href` is set only in the second case — the
+        // file: url of the same file, which is the identity BOTH views file
+        // under, so the two are one Discuss page rather than twins.
+        via: art.via || 'file',
+        ...(art.ident_href ? { ident_href: art.ident_href } : {}),
         // where the full chats live on the web — the drawer's "open the full
         // chat" link. Owner-machine address by default; config can point it
         // at a hosted council instead.

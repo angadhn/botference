@@ -291,6 +291,152 @@ await test('a NO is kept as firmly as a yes', async () => {
   assert.equal(st.declined, true, 'the extension must not attach at all');
 });
 
+// ---------------------------------------------------------------------------
+// The same artifact, read through the council's own web UI.
+//
+// A bot links the file it wrote as `/files/<rel>`, so the reader often meets
+// the artifact at an http(s) address. That must be the SAME Discuss page — and
+// the only thing that separates the reader's council from evil.com serving the
+// identical path is the origin allowlist, so most of what is below is about
+// what must NOT be believed.
+// ---------------------------------------------------------------------------
+console.log('\nworkspace — the council web view');
+
+{
+  const store = await import(path.join(PLUGIN, 'store.mjs'));
+  const LOCAL = 'http://localhost:4187';
+  const TUNNEL = 'https://council.example.com';
+  const cwRoot = council('cweb');
+  ws.setRootState(cwRoot, true);
+  const a = artifact(cwRoot, 'spaceship-engineering', 'artifacts/lot3.2 rpod draft.review.html');
+  const filesUrl = (base, rel) => `${base}/files/${rel.split('/').map(encodeURIComponent).join('/')}`;
+  const REL = 'projects/spaceship-engineering/artifacts/lot3.2 rpod draft.review.html';
+  const localUrl = filesUrl(LOCAL, REL);
+
+  await test('a trusted council-web url is the same artifact as its file: twin', async () => {
+    assert.ok(localUrl.includes('%20'), 'sanity: the spaces are escaped, as the browser sends them');
+    const found = ws.artifactFor(localUrl);
+    assert.ok(found, 'the default council_web origin is trusted');
+    assert.equal(found.root, cwRoot);
+    assert.equal(found.project_id, 'spaceship-engineering');
+    assert.equal(found.project_title, 'Spaceship Engineering');
+    assert.equal(found.path, a.path);
+    assert.equal(found.rel, path.relative(cwRoot, a.path));
+    assert.equal(found.via, 'council-web');
+  });
+
+  await test('…and its identity is the file: twin\'s, exactly', async () => {
+    assert.equal(ws.artifactFor(localUrl).ident_href, a.url);
+    const twin = ws.artifactFor(a.url);
+    assert.equal(twin.via, 'file');
+    assert.equal(twin.ident_href, undefined,
+      'a file: page keeps the address it already has — nothing to canonicalise');
+    // and the confirmation state travels with it, either way in
+    assert.equal(ws.artifactState(localUrl).confirmed, true);
+  });
+
+  await test('an UNTRUSTED origin serving the same path is an ordinary web page', async () => {
+    for (const base of ['https://evil.com', 'http://evil.com:4187', TUNNEL,
+                        'http://localhost:4188', 'https://localhost:4187']) {
+      assert.equal(ws.artifactFor(filesUrl(base, REL)), null, base);
+      assert.equal(ws.councilWebPaths(filesUrl(base, REL)).length, 0, base);
+    }
+  });
+
+  await test('the tunnel origin is one line of config away, and no more', async () => {
+    store.saveConfig({ council_web_origins: [TUNNEL] });
+    assert.ok(ws.councilWebOrigins().has(TUNNEL), 'the list is read');
+    const found = ws.artifactFor(filesUrl(TUNNEL, REL));
+    assert.ok(found, 'the tunnel now serves this reader\'s own council');
+    assert.equal(found.ident_href, a.url, 'and the identity is still the file: twin');
+    // a neighbour on the same host is still nobody
+    assert.equal(ws.artifactFor(filesUrl('https://other.example.com', REL)), null);
+    // …and garbage in the list is ignored rather than trusted
+    store.saveConfig({ council_web_origins: [TUNNEL, 'not a url', 'file:///etc', 42] });
+    assert.deepEqual([...ws.councilWebOrigins()].sort(),
+      ['http://localhost:4187', TUNNEL].sort());
+    store.saveConfig({ council_web_origins: [] });
+    assert.equal(ws.artifactFor(filesUrl(TUNNEL, REL)), null, 'and it is gone again when removed');
+  });
+
+  await test('the configured council_web origin is trusted, path and all', async () => {
+    store.saveConfig({ council_web: 'https://council.example.com/?chat=abc' });
+    assert.ok(ws.artifactFor(filesUrl(TUNNEL, REL)), 'only the origin of it is taken');
+    store.saveConfig({ council_web: LOCAL });
+  });
+
+  await test('traversal out of /files/ is refused, encoded or not', async () => {
+    const outside = path.join(cwRoot, 'work', 'report.html');
+    fs.writeFileSync(outside, '<h1>report</h1>');
+    // A dot SEGMENT never survives to be a traversal, plain or percent-spelled:
+    // the URL parser collapses `.`, `..`, `%2e` and `%2e%2e` alike (as the
+    // browser does before it sends, and as the council server therefore sees
+    // it), so `…/../../work/report.html` simply IS `/files/work/report.html` —
+    // refused, but by the projects/<id>/ rule rather than by a check of ours.
+    for (const rel of ['projects/spaceship-engineering/../../work/report.html',
+                       'projects/spaceship-engineering/%2e%2e/%2e%2e/work/report.html',
+                       'projects/spaceship-engineering/../..',
+                       '../../../etc/hosts',
+                       '%2e%2e/%2e%2e/etc/hosts']) {
+      const u = `${LOCAL}/files/${rel}`;
+      assert.equal(ws.artifactFor(u), null, u);
+    }
+    // A traversal hidden behind an encoded SLASH is a different matter: it is
+    // one path segment to the parser, so it survives untouched and is refused
+    // HERE, after decoding — which is the only place it can be refused.
+    const escapes = [
+      'projects/spaceship-engineering/..%2f..%2fwork%2freport.html',
+      '..%2f..%2f..%2fetc%2fhosts',
+      'projects/spaceship-engineering/.hidden/index.html',
+      'projects/spaceship-engineering/%2findex.html',
+      'projects%2f..%2f..%2fwork%2freport.html',
+    ];
+    for (const rel of escapes) {
+      const u = `${LOCAL}/files/${rel}`;
+      assert.equal(ws.artifactFor(u), null, u);
+      assert.equal(ws.councilWebPaths(u).length, 0, u);
+    }
+  });
+
+  await test('only the /files/ route, and only a real .html file under it', async () => {
+    for (const p of [
+      `${LOCAL}/`, `${LOCAL}/?chat=abc`, `${LOCAL}/uploads/projects/spaceship-engineering/index.html`,
+      `${LOCAL}/filesystem/projects/spaceship-engineering/index.html`,
+      `${LOCAL}/files/`, `${LOCAL}/files/projects/spaceship-engineering/gone.html`,
+      `${LOCAL}/files/projects/spaceship-engineering`,
+    ]) assert.equal(ws.artifactFor(p), null, p);
+    fs.writeFileSync(path.join(cwRoot, 'projects', 'spaceship-engineering', 'paper.pdf'), '%PDF-1.4');
+    assert.equal(ws.artifactFor(`${LOCAL}/files/projects/spaceship-engineering/paper.pdf`), null,
+      'a PDF is left to the PDF rules, whichever way it arrived');
+  });
+
+  await test('a file inside the council but outside projects/<id>/ is not an artifact', async () => {
+    fs.writeFileSync(path.join(cwRoot, 'README.html'), '<h1>readme</h1>');
+    assert.equal(ws.artifactFor(`${LOCAL}/files/README.html`), null);
+    assert.equal(ws.artifactFor(`${LOCAL}/files/work/report.html`), null);
+  });
+
+  await test('a root the reader has never been asked about resolves nothing', async () => {
+    // the same rel path, in a council the companion has never seen: an http url
+    // carries no absolute path to walk up from, so `council_roots` is the only
+    // honest source of candidates
+    const unknown = council('cweb-unknown');
+    artifact(unknown, 'spaceship-engineering', 'artifacts/lot3.2 rpod draft.review.html');
+    assert.equal(ws.rootState(unknown), '', 'sanity: never answered for');
+    const found = ws.artifactFor(localUrl);
+    assert.equal(found.root, cwRoot, 'the known root answered, not the stranger');
+    // …and a DECLINED root still resolves, so the answer stays "declined"
+    // rather than quietly becoming an ordinary page for another reason
+    const no = council('cweb-declined', { projects: ['ai-futures'] });
+    const nb = artifact(no, 'ai-futures');
+    ws.setRootState(no, false);
+    const st = ws.artifactState(`${LOCAL}/files/projects/ai-futures/index.html`);
+    assert.ok(st, 'resolved');
+    assert.equal(st.path, nb.path);
+    assert.equal(st.declined, true);
+  });
+}
+
 console.log('\nworkspace — the project\'s chats');
 
 const ARCHIVE = council('archive', {
@@ -504,6 +650,82 @@ console.log('\ncompanion — the project-page endpoints');
     assert.equal(r.json.state, 'yes');
     const p = await GET(base, '/project-page?url=' + enc(a.url));
     assert.equal(p.json.artifact.confirmed, true);
+  });
+
+  // ---- the same artifact through the council's web UI ------------------
+  // The reader clicks the link a bot posted — `/files/<rel>` on the council
+  // web server — and must land on the SAME Discuss page, not a twin of it.
+  const cwRel = path.relative(root, a.path).split(path.sep).map(enc).join('/');
+  const cwUrl = `http://localhost:4187/files/${cwRel}`;
+  const CFG_FILE = path.join(workspaceRoot, '.botference', 'plugin', 'config.json');
+
+  await test('GET /project-page answers for a trusted council-web url', async () => {
+    const r = await GET(base, '/project-page?url=' + enc(cwUrl));
+    assert.equal(r.status, 200);
+    const art = r.json.artifact;
+    assert.ok(art, 'the default council_web origin is this reader\'s own council');
+    assert.equal(art.project_id, 'spaceship-engineering');
+    assert.equal(art.project_title, 'Spaceship Engineering');
+    assert.equal(art.root, root);
+    assert.equal(art.confirmed, true, 'the root\'s answer travels, whichever view asked');
+    assert.equal(art.via, 'council-web');
+    // the identity the extension will file everything under: the file: twin
+    assert.equal(art.ident_href, a.url);
+  });
+
+  await test('…and the file: view is still told its address IS its identity', async () => {
+    const r = await GET(base, '/project-page?url=' + enc(a.url));
+    assert.equal(r.json.artifact.via, 'file');
+    assert.equal(r.json.artifact.ident_href, undefined);
+  });
+
+  await test('an UNTRUSTED origin serving the same path gets no artifact', async () => {
+    for (const u of [`https://evil.com/files/${cwRel}`,
+                     `http://localhost:4188/files/${cwRel}`,
+                     `https://council.example.com/files/${cwRel}`]) {
+      const r = await GET(base, '/project-page?url=' + enc(u));
+      assert.equal(r.status, 200);
+      assert.equal(r.json.artifact, null, u);
+    }
+  });
+
+  await test('the tunnel origin is one line in config.json and nothing else', async () => {
+    // a file of its own, so the artifact cache from the refusals above cannot
+    // answer this question (server.mjs memoizes per url for a few seconds)
+    const b = artifact(root, 'spaceship-engineering', 'via-tunnel.html');
+    const rel = path.relative(root, b.path).split(path.sep).map(enc).join('/');
+    const cfg = JSON.parse(fs.readFileSync(CFG_FILE, 'utf8'));
+    cfg.council_web_origins = ['https://council.example.com'];
+    fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2));
+    const r = await GET(base, '/project-page?url=' + enc(`https://council.example.com/files/${rel}`));
+    assert.ok(r.json.artifact, 'the listed origin is now the reader\'s own council');
+    assert.equal(r.json.artifact.ident_href, b.url);
+    // and a neighbour of it is still nobody
+    const n = await GET(base, '/project-page?url=' + enc(`https://other.example.com/files/${rel}`));
+    assert.equal(n.json.artifact, null);
+    cfg.council_web_origins = [];
+    fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2));
+  });
+
+  await test('the council-web view writes into the file: twin\'s record, not a second one', async () => {
+    // exactly what the extension does: ask, then use the identity it was given
+    const art = (await GET(base, '/project-page?url=' + enc(cwUrl))).json.artifact;
+    await POST(base, '/page', { url: art.ident_href, title: 'Artifact', site: art.project_id });
+    await POST(base, '/reply', { url: art.ident_href, thread_id: '__page__', text: 'from the web view' });
+    const twin = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.equal(twin.url, a.url);
+    assert.equal(twin.page_chat.at(-1).text, 'from the web view', 'one record, reached two ways');
+    const stray = (await GET(base, '/page?url=' + enc(cwUrl))).json;
+    assert.equal(stray.page, null, 'and nothing was ever filed under the http address');
+  });
+
+  await test('the archive and the tail answer a council-web url too', async () => {
+    const s = await GET(base, '/project-sessions?url=' + enc(cwUrl));
+    assert.equal(s.status, 200);
+    assert.equal(s.json.project_id, 'spaceship-engineering');
+    const t = await GET(base, '/project-session?url=' + enc(cwUrl) + '&sid=sess-old-1');
+    assert.equal(t.status, 200);
+    assert.equal(t.json.session.session_id, 'sess-old-1');
   });
 
   await test('GET /project-sessions is the project\'s chat archive', async () => {

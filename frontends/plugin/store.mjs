@@ -71,6 +71,16 @@ export const DEFAULT_CONFIG = {
   // and a `projects/` is a strong hint and not a permission: what hangs off
   // this map is a bridge spawned with that directory as its workspace.
   council_roots: {},
+  // Which WEB origins serve those councils — the addresses at which a project
+  // artifact reached through the council's own UI (`/files/<rel>`) is still
+  // that project's artifact and not an ordinary web page (workspace.mjs).
+  // `council_web` and `http://localhost:4187` are trusted without being
+  // listed; this is for a council reached over a tunnel under its own
+  // hostname, e.g. ["https://council.example.com"]. An origin that is not on
+  // the list is an ordinary web page whatever path it serves — that allowlist
+  // is the entire trust boundary, so it stays a list of exact origins with no
+  // wildcards in it.
+  council_web_origins: [],
 };
 export const VERBOSITY_LEVELS = ['short', 'long'];
 export const AGENTS = ['claude', 'codex'];

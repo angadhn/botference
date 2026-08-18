@@ -1646,7 +1646,7 @@ companion; only botference itself writes there, saving the session.
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| GET | `/project-page?url=<enc>` | — | `{ok, artifact:{root, project_id, project_title, rel, path, confirmed, declined} \| null}` |
+| GET | `/project-page?url=<enc>` | — | `{ok, artifact:{root, project_id, project_title, rel, path, confirmed, declined, via, ident_href?} \| null}` |
 | POST | `/council-root` | `{root, confirm:bool}` | `{ok, root, state:"yes"\|"no"}` (400 if not a council root); broadcasts `{"type":"council-root", root, state}` |
 | GET | `/project-sessions?url=<enc>` | — | `{ok, project_id, project_title, root, current, sessions:[{session_id,title,updated_at,created_at,entry_count}]}` (409 unconfirmed) |
 | GET | `/project-session?url=<enc>&sid=` | — | `{ok, session:{session_id,title,updated_at,project_id,msgs,truncated}}` |
@@ -1864,6 +1864,99 @@ itself is held back by `window.__BFP_NO_RELOAD` and **counted**
 (`window.__bfp.reloads`) rather than performed, since a real reload would take
 the harness down mid-selftest — the same seam `__BFP_HREF`/`__BFP_PROJECT`
 already are.
+
+### Amendment (2026-08-18, shipped): the same artifact through the council web UI
+
+A bot links the file it just wrote into the chat as `/files/<rel>` on the
+council's own web server (`frontends/council/server.mjs`, `GET /files/…`, the
+remainder `decodeURIComponent`d and resolved against the council root, any
+dot-segment refused). So the reader usually meets an artifact at an **http(s)
+address**, not at its `file://` one — and it is the same document, which has to
+mean the same Discuss page: same project, same archive, same threads, **one
+record**. Before this amendment the council-web view was an ordinary web page
+with a chat of its own.
+
+**Detection (workspace.mjs).** `artifactFor(url)` now answers for an http(s)
+url too, iff **all** of:
+
+- the url's **origin is trusted** (below);
+- its pathname starts with `/files/`;
+- the decoded remainder is a plain descending path — every segment non-empty and
+  not starting with `.`, checked **after** decoding, because `%2e%2e%2f` is the
+  same traversal as `../` and only the encoded form survives URL parsing (a
+  plainly-written `..` is collapsed by the parser, exactly as the browser and
+  the council server see it);
+- resolved against a **candidate council root**, it names a file that passes
+  every existing rule — a real `.html`/`.htm` file, inside a council root, inside
+  that root's `projects/<id>/`, symlinks resolved on both sides.
+
+Candidate roots are the keys of `council_roots` (confirmed first, then declined),
+because an http url carries no absolute path to walk up from and that map is the
+only honest source. **Consequence:** a council the companion has never been
+*asked* about cannot be recognised through its web UI until it has been seen
+once at a `file://` address (which is what puts the root in the map). A declined
+root still resolves, so the answer stays "that root, declined" rather than
+quietly becoming an ordinary page for a different reason than the reader chose.
+
+The answer carries `via: 'council-web' | 'file'` and, for the council-web view
+only, **`ident_href`** — the `file://` url of the same file. The `file://` view
+gets no `ident_href`: its address already *is* its identity, and rewriting it
+would be a chance to disagree with a record that already exists.
+
+**Trusted origins, strictly (`councilWebOrigins`).** The companion's
+`council_web` config value, its default `http://localhost:4187`, and the
+optional `council_web_origins` list — exact origins, lowercased, http(s) only,
+no pattern and no wildcard. Adding a tunnel is one line of `config.json`:
+
+```json
+"council_web_origins": ["https://council.botference.com"]
+```
+
+**Why the allowlist is the whole of the trust.** What is on the screen is
+whatever that origin served. `https://evil.com/files/projects/<id>/index.html`
+maps to the identical relative path, so believing the path would hand an
+attacker-controlled page the reader's project trust: the council header and
+project name, the project's entire chat archive (titles and transcripts of their
+own council sessions), the identity of a real artifact record — and, since Phase
+2, a bridge child spawned **write-enabled** inside `projects/<id>/`, driven by
+comments on a page the attacker wrote. An unlisted origin is an ordinary web
+page, full stop.
+
+**One identity, not twins (extension).** `content.js` still refuses `file:`
+documents except a confirmed artifact, and now also asks about an **http(s)
+document whose path starts with `/files/`** — one cheap `GET /project-page`, and
+a `no` there simply leaves it an ordinary web page (unlike the file: gate, where
+a no ends the page). Every other page in the world keeps its zero
+companion round-trips per load: the path prefix is what decides whether to ask.
+`IDENT_HREF` then takes `PROJECT.ident_href` ahead of an adapter's
+`identityHref`, the canonical link and the address — the same "the document's
+identity is not its address" mechanism the PDF viewer uses, decided once at load
+and never revisited. Everything downstream already comes from `IDENT_HREF` and
+nothing else (hello, `/page`, `/thread`, `/reply`, the snapshot, the worker's
+routing table, `project-files` events, the auto-open key), so the council-web tab
+and the `file://` tab address one record, with `HOSTNAME` the project id in both.
+
+Two knock-on notes, both deliberate: an ordinary page record created for the
+https url **before** this amendment is not migrated (it is simply left behind);
+and the drawer's Pages list still cannot *open* an artifact row, because
+`openPage` only navigates to http(s) urls and the record's url is the `file://`
+one — unchanged by this amendment, which is about identity and not navigation.
+
+**Tests.** `test/workspace.test.mjs` — "the council web view" (trusted origin
+with URL-encoded segments; identity equal to the file: twin's and absent on the
+twin; untrusted origins including a wrong port, a wrong scheme and the unlisted
+tunnel; the tunnel accepted once listed and refused again once removed; garbage
+in the list ignored; traversal plain and encoded; only `/files/`; only a real
+`.html`; outside `projects/<id>/`; an unknown root; a declined root) and, at the
+companion level, `/project-page` for a trusted council-web url (`via`,
+`ident_href`, the root's confirmation travelling), the untrusted refusals, the
+tunnel as one line of config.json, `/project-sessions` and `/project-session`
+answering a council-web url, and a reply posted through the council-web view
+landing in the **file: twin's record** with nothing filed under the http
+address. Harness `?workspace=1&councilweb=1` (plus `&unconfirmed=1`) stages the
+council-web origin: `__BFP_PROJECT` is deliberately *not* preset, so the gate
+does the asking, and the selftest asserts the ask, the canonicalised identity
+and that hello/routing carry the twin's url.
 
 ## Out of scope for v1 (do not build)
 

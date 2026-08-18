@@ -117,6 +117,10 @@
                      `&unconfirmed=1` holds the one-time "is this your council?"
                      card; `&picker=1` holds the archive list open;
                      `&chatopen=1` starts already standing in a past chat.
+                     `&councilweb=1` reaches THE SAME artifact through the
+                     council web server instead (`/files/<rel>` on a trusted
+                     origin): the gate asks, and the page's identity is
+                     canonicalised to the file: twin's, so it is one record.
                      `&selftest=1` runs the project-page assertions.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
@@ -301,9 +305,28 @@ let wsCurrent = Q.get('chatopen') === '1' ? 'aaaa1111-0000-4000-8000-00000000000
 const wsRootAnswers = [];     // what POST /council-root was told, for the selftest
 const wsTailMsgs = sid => (WS_TAIL[sid] || []).map(([author, text], i) =>
   ({ author, text, ts: sid + '#' + i, restored: true }));
+// ?workspace=1&councilweb=1 — the same artifact, reached through the council's
+// own web UI. A bot links the file it wrote as `/files/<rel>`, so this is how
+// the reader usually meets it; the origin is one the companion has been told is
+// this reader's council (workspace.mjs — an unlisted origin serving the same
+// path is an ordinary web page). Two things are being staged here and nothing
+// else: content.js ASKS about an http page whose path starts with `/files/`
+// (__BFP_PROJECT is deliberately NOT preset, so the gate does the asking), and
+// the answer's `ident_href` canonicalises the page's identity to the file:
+// twin's — one record, not two.
+const COUNCIL_WEB = WORKSPACE && Q.get('councilweb') === '1';
+const CW_HREF = 'https://council.botference.com/files/projects/spaceship-engineering/index.html';
+if (COUNCIL_WEB) {
+  WS_PROJECT.via = 'council-web';
+  WS_PROJECT.ident_href = 'file://' + WS_PROJECT.path;
+}
 if (WORKSPACE) {
-  window.__BFP_PROJECT = WS_PROJECT;
-  window.__BFP_HREF = 'file://' + WS_PROJECT.path;
+  if (COUNCIL_WEB) {
+    window.__BFP_HREF = CW_HREF;
+  } else {
+    window.__BFP_PROJECT = WS_PROJECT;
+    window.__BFP_HREF = 'file://' + WS_PROJECT.path;
+  }
   document.title = 'Spaceship Engineering — the field-formation argument';
   // Phase 2: when the bots rewrite the file the tab is showing, content.js
   // reloads it. Here that would take the harness down mid-selftest, so the
@@ -5157,6 +5180,26 @@ async function selftestWorkspace() {
   check('content.js knows which project it is in',
     (window.__bfp.project || {}).project_id === 'spaceship-engineering');
 
+  // ---- the council-web view is the SAME page --------------------------
+  // Reached at `/files/<rel>` on a trusted origin rather than at its file:
+  // address. Nothing about the page may differ: the gate asks (once, and only
+  // because the path starts with /files/), and the identity it is handed is the
+  // file: twin's — which is what makes it one record instead of two.
+  if (COUNCIL_WEB) {
+    const asked = apiCalls.filter(c => String(c.path).startsWith('/project-page'));
+    check('an http page under /files/ asks the companion about itself',
+      asked.length === 1 && decodeURIComponent(String(asked[0].path).split('url=')[1] || '') === CW_HREF);
+    check('…and it asked about the address it is ON, not the one it becomes',
+      window.__bfp.identHref === 'file://' + WS_PROJECT.path);
+    check('the identity is the file: twin\'s, not the http address',
+      window.__bfp.url === 'file://' + WS_PROJECT.path);
+    check('…so the worker routes this tab to the twin\'s record',
+      helloUrls.every(u => u === 'file://' + WS_PROJECT.path)
+      && routeUrls.every(u => u === 'file://' + WS_PROJECT.path));
+    check('…and the record it loaded is the twin\'s',
+      (window.__bfp.page || {}).url === 'file://' + WS_PROJECT.path);
+  }
+
   // ---- the one-time confirmation ---------------------------------------
   if (Q.get('unconfirmed') === '1') {
     d.open('chat');
@@ -5193,9 +5236,13 @@ async function selftestWorkspace() {
   // ---- the archive -------------------------------------------------------
   d.open('chat');
   await sleep(60);
+  // &chatopen=1 boots the page ALREADY standing in a past chat \u2014 the bar and
+  // the list must say so, where the base state says "no chat yet"
+  const OPENED_CHAT = Q.get('chatopen') === '1' ? 'Radiator sizing for the transit hab' : null;
   check('Page chat carries the archive bar', !!S.querySelector('.archbar'));
-  check('\u2026which says the page is in no chat yet',
-    (S.querySelector('.archnow') || {}).textContent === 'new chat');
+  check(OPENED_CHAT ? '\u2026which names the chat the page stands in'
+    : '\u2026which says the page is in no chat yet',
+  (S.querySelector('.archnow') || {}).textContent === (OPENED_CHAT || 'new chat'));
   check('\u2026and offers a new one', !!S.querySelector('[data-act="arch-new"]'));
   check('the composer is still there under it', chat('.composer textarea').length === 1);
 
@@ -5207,10 +5254,16 @@ async function selftestWorkspace() {
     ((rows[0] || S).querySelector('.at') || {}).textContent === 'Radiator sizing for the transit hab');
   check('\u2026each with a compact age',
     /^(\d+(mo|[mhdy])|now)$/.test((((rows[0] || S).querySelector('.ax')) || {}).textContent || ''));
-  check('\u2026and none of them is marked current yet', !S.querySelector('.archrow.on'));
+  check(OPENED_CHAT ? '\u2026and the chat the page stands in is marked current'
+    : '\u2026and none of them is marked current yet',
+  OPENED_CHAT ? !!S.querySelector('.archrow.on') : !S.querySelector('.archrow.on'));
 
   // ---- opening a past chat ----------------------------------------------
+  // Wait for the OPEN to settle, not for replies: under &chatopen the tail is
+  // already on screen before the click, so replies-exist resolves instantly
+  // while openSession is still in flight with the list open.
   rows[0].click();
+  await until(() => q('.archrow').length === 0, 6000);
   await until(() => chat('.reply').length > 0, 6000);
   check('opening a past chat renders its tail', chat('.reply').length >= 3);
   // the tail is long enough to fold, so it is the LAST exchange that has to be
@@ -5268,7 +5321,9 @@ async function selftestWorkspace() {
   // in the page chat and nothing else, because reloading a page whose bytes
   // did not change would throw away the reader's scroll and half-typed
   // comment to show them what they were already looking at.
-  const HREF = window.__BFP_HREF;
+  // the event addresses the page's IDENTITY, which is the file: url whichever
+  // way this tab reached the file (the council-web view canonicalises to it)
+  const HREF = window.__bfp.identHref;
   const reloadsBefore = window.__bfp.reloads;
   toContent({ t: 'ws', ev: { type: 'project-files', url: HREF, root: WS_ROOT,
     project_id: 'spaceship-engineering', count: 2, page_changed: false,
@@ -5323,7 +5378,15 @@ document.getElementById('h-dark').onclick = () => {
   if (window.__bfp.drawer) window.__bfp.drawer.setTheme(on ? 'dark' : 'light');
 };
 
-window.__bfp.activate(false).then(() => {
+// content.js publishes window.__bfp at the END of its boot — and that boot is
+// one `await` long whenever the page had to ASK the companion what it is: a
+// file: document, or (?councilweb=1) an http page under `/files/`. So the
+// harness waits for it instead of assuming it is already there.
+function whenBfp(fn) {
+  if (window.__bfp) { fn(); return; }
+  const t = setInterval(() => { if (window.__bfp) { clearInterval(t); fn(); } }, 10);
+}
+whenBfp(() => window.__bfp.activate(false).then(() => {
   afterBoot(d => {
     if (!OFFLINE) d.setConn(true);
     if (window.__BFP_THEME) d.setTheme(window.__BFP_THEME);
@@ -5481,5 +5544,5 @@ window.__bfp.activate(false).then(() => {
     else if (Q.get('stream') === '1') setTimeout(() => playTurn(STREAM_TARGET(), '@claude what would you cut?'), 500);
     log((GDOCS ? 'google docs mode · highlights off · ' : 'drawer mounted · ') + RECORD.threads.length + ' threads');
   });
-});
+}));
 </script>

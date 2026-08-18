@@ -140,19 +140,42 @@
   // the PDF's, wrapping a single <embed>; either test alone would do, and both
   // are free.
   const FILE_DOC = /^file:/i.test(location.href) && typeof window.__BFP_HREF !== 'string';
-  // {root, project_id, project_title, rel, path, confirmed} — the companion's
-  // answer, or test/harness.html naming its own (the same isolated-world
-  // escape as __BFP_HREF: a content script's window is not the page's).
+  // ── …AND THE SAME ARTIFACT SERVED BY THE COUNCIL'S OWN WEB UI ──────────
+  // A bot links the file it wrote into the chat as `/files/<rel>`, so the
+  // reader often meets the artifact at an http(s) address instead — and it is
+  // the same document, which has to mean the same Discuss page. Only the
+  // companion can say so: the origin has to be one the reader has named as
+  // their council (workspace.mjs: an unlisted origin serving the same path is
+  // an ordinary web page, because the bytes on screen are whatever it sent).
+  //
+  // The PATH PREFIX is what decides whether to ask at all. `/files/` is the
+  // council server's one route for workspace files, and every other web page
+  // in the world must stay exactly as cheap as it was — no companion
+  // round-trip on any load, which is the whole reason this is a prefix test in
+  // the page and not a question asked everywhere.
+  const FILES_DOC = !FILE_DOC && /^https?:/i.test(HREF) && (() => {
+    try { return new URL(HREF).pathname.startsWith('/files/'); } catch { return false; }
+  })();
+  // {root, project_id, project_title, rel, path, confirmed, ident_href?} — the
+  // companion's answer, or test/harness.html naming its own (the same
+  // isolated-world escape as __BFP_HREF: a content script's window is not the
+  // page's).
   let PROJECT = (window.__BFP_PROJECT && typeof window.__BFP_PROJECT === 'object')
     ? window.__BFP_PROJECT : null;
   if (FILE_DOC) {
     if ((document.contentType || 'text/html') !== 'text/html') return;
     if (document.querySelector('body > embed[type="application/pdf"]')) return;
-    // The only await in this file's boot, and only ever on a file: document.
-    // An async function body runs synchronously until its first await, so
-    // every other page still wires itself up in one turn exactly as before.
+    // The only await in this file's boot, and only ever on a file: document —
+    // or, since the council-web view, an http page under `/files/`. An async
+    // function body runs synchronously until its first await, so every other
+    // page still wires itself up in one turn exactly as before.
     PROJECT = await askProjectPage(location.href);
     if (!PROJECT) return;
+  } else if (FILES_DOC && !PROJECT) {
+    // A `no` here is not the end of the page, unlike above: an http document
+    // that is not an artifact is still an ordinary web page and gets the
+    // ordinary treatment.
+    PROJECT = await askProjectPage(HREF);
   }
 
   // GET /project-page, asked before anything else in this file exists — so it
@@ -224,7 +247,17 @@
   // document: it moves with the extension id, it is nobody's link, and the
   // record has to be the PDF's own url or the same paper read on two machines
   // becomes two records. `identityHref` is how an adapter says so.
-  const IDENT_HREF = (SITE && SITE.identityHref) || CANONICAL_HREF || HREF;
+  // …and a project artifact outranks even an adapter, because the companion has
+  // just told us what document this is. `ident_href` is set only when the
+  // ADDRESS IS NOT THE IDENTITY — the artifact reached through the council's
+  // web UI at `/files/<rel>`, whose identity is the file: url of the same file
+  // on this disk. Same mechanism as the PDF viewer's `identityHref`, same
+  // reason: one document must not become two records because it was reached
+  // two ways. Everything downstream (hello, /page, /thread, /reply, the
+  // worker's routing table) already comes from this line and nothing else, so
+  // the council-web tab and the file: tab address one record.
+  const IDENT_HREF = (PROJECT && PROJECT.ident_href)
+    || (SITE && SITE.identityHref) || CANONICAL_HREF || HREF;
   const URL_NOW = normUrl(IDENT_HREF);
   // …and NOTHING is ever filed under the extension's own address. That is not a
   // page: it moves with the extension id, it is nobody's link, and a record

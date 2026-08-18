@@ -32,7 +32,7 @@
 // changed, which is the other half of Phase 2.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readConfig, saveConfig } from './store.mjs';
 
 const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
@@ -139,14 +139,15 @@ export function projectOf(root, absPath) {
   return { id, title: projectTitle(root, id), dir };
 }
 
-// The whole question in one call: is this url a project artifact page, and if
-// so whose? Returns null for everything else — an http page, a local PDF, a
-// stray .html in Downloads, an artifact whose project has been deleted.
-export function artifactFor(url) {
-  const raw = pathFromFileUrl(url);
-  if (!raw || !ARTIFACT_RE.test(raw)) return null;
-  if (!isFile(raw)) return null;
-  const p = realish(raw);
+// The rules, applied to one absolute path: an existing .html file, inside a
+// council root, inside one of that root's `projects/<id>/`. Every caller goes
+// through here, whatever url brought the path in — a file: address or the
+// council's own web server (below) — so there is exactly one definition of
+// what a project artifact is.
+function artifactAt(absPath) {
+  if (!absPath || !ARTIFACT_RE.test(absPath)) return null;
+  if (!isFile(absPath)) return null;
+  const p = realish(absPath);
   const root = councilRootOf(p);
   if (!root) return null;
   const proj = projectOf(realish(root), p);
@@ -159,6 +160,130 @@ export function artifactFor(url) {
     path: p,
     rel: path.relative(realish(root), p),
   };
+}
+
+// ---- the same artifact, read through the council's web UI -----------------
+// The council web server (frontends/council/server.mjs) serves anything under
+// its root at `/files/<path relative to the root>`, which is how a bot links
+// the artifact it just wrote into the chat. Click that link and the reader is
+// looking at the SAME FILE as the file:// tab — so it must be the same Discuss
+// page: same project, same archive, same threads, one record. Anything else
+// gives the reader two chats about one document and blames the address bar.
+//
+// ── WHY AN ORIGIN ALLOWLIST, AND NOTHING WEAKER ─────────────────────────
+// The only thing a url tells us here is who served the bytes. A page at
+// `https://evil.com/files/projects/spaceship-engineering/index.html` maps to
+// exactly the same relative path as the real one, and what is on the screen is
+// whatever evil.com decided to send. Believing the path would hand an
+// attacker-controlled page the reader's project trust: the council header and
+// project name, the project's whole chat archive (titles and transcripts of
+// the reader's own council sessions), the identity of a real artifact record —
+// and, since Phase 2, a bridge whose child is spawned WRITE-ENABLED inside
+// `projects/<id>/`, driven by comments on a page the attacker wrote. So the
+// origin must be one the reader has already named as their own council, and an
+// unlisted origin is an ordinary web page, full stop. There is deliberately no
+// pattern, no wildcard and no "any localhost port".
+//
+// Which origins those are: the companion's `council_web` config value (the one
+// the drawer already links "the full chat" to), its default, and the optional
+// `council_web_origins` list — which exists for the reader whose council is
+// reachable over a tunnel under a real hostname. One line of config:
+//   "council_web_origins": ["https://council.example.com"]
+const COUNCIL_WEB_DEFAULT = 'http://localhost:4187';
+// The council server's route, exactly (frontends/council/server.mjs).
+export const FILES_ROUTE = '/files/';
+
+// The origin of a configured value, or '' — http(s) only, lowercased, and
+// nothing but scheme+host+port survives (a `council_web` with a path on it
+// still names one origin).
+const originOf = v => {
+  try {
+    const u = new URL(String(v || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return u.origin.toLowerCase();
+  } catch { return ''; }
+};
+
+export function councilWebOrigins() {
+  const cfg = readConfig();
+  const list = Array.isArray(cfg.council_web_origins) ? cfg.council_web_origins : [];
+  const out = new Set();
+  for (const v of [COUNCIL_WEB_DEFAULT, cfg.council_web, ...list]) {
+    const o = originOf(v);
+    if (o) out.add(o);
+  }
+  return out;
+}
+
+// Which roots a `/files/` path may be resolved against. A file: url carries an
+// absolute path and the root is found by walking UP from it; an http url
+// carries neither, so the roots have to come from somewhere — and the only
+// honest source is the set the reader has already been asked about
+// (`council_roots`). Confirmed roots are tried first; a declined one is still
+// resolved, so the answer stays "that root, declined" rather than silently
+// becoming an ordinary web page for a different reason than the reader chose.
+// Consequence, documented in SPEC: a council the companion has never seen at a
+// file: address cannot be recognised through its web UI until it has been
+// asked about once.
+export function knownCouncilRoots() {
+  const m = rootsMap();
+  return Object.keys(m)
+    .filter(k => path.isAbsolute(k) && isCouncilRoot(realish(k)))
+    .sort((a, b) => (m[b] ? 1 : 0) - (m[a] ? 1 : 0) || a.localeCompare(b))
+    .map(realish);
+}
+
+// Every existing file a trusted `/files/` url could name, confirmed roots
+// first. Returns [] for an untrusted origin, another route, or a remainder
+// that is not a plain descending path.
+export function councilWebPaths(u) {
+  const s = String(u || '');
+  if (!/^https?:\/\//i.test(s)) return [];
+  let url = null;
+  try { url = new URL(s); } catch { return []; }
+  if (!councilWebOrigins().has(url.origin.toLowerCase())) return [];
+  if (!url.pathname.startsWith(FILES_ROUTE)) return [];
+  let rel = '';
+  // decoded the way the council server decodes it, so the two agree about
+  // which file a url names
+  try { rel = decodeURIComponent(url.pathname.slice(FILES_ROUTE.length)); } catch { return []; }
+  if (!rel || rel.includes('\0')) return [];
+  // Checked AFTER decoding, because `%2e%2e%2f` is the same traversal as `../`
+  // and a url may spell it either way. Empty, `.`, `..` and dot-anything are
+  // all refused — the same refusal the council server makes, so a path it
+  // would answer 403 to never gets treated as a project artifact here.
+  const segs = rel.split('/');
+  if (segs.some(seg => !seg || seg.startsWith('.'))) return [];
+  const out = [];
+  for (const root of knownCouncilRoots()) {
+    const abs = path.resolve(root, ...segs);
+    // belt and braces: the segment check already makes escaping impossible
+    if (!within(root, abs)) continue;
+    if (isFile(abs)) out.push(abs);
+  }
+  return out;
+}
+
+// The whole question in one call: is this url a project artifact page, and if
+// so whose? Returns null for everything else — an ordinary http page, a local
+// PDF, a stray .html in Downloads, an artifact whose project has been deleted.
+//
+// A trusted council-web url answers with the same shape PLUS `ident_href`: the
+// file: url of the same file, which is the identity BOTH views of it are filed
+// under. (The file: view leaves `ident_href` unset — its address already IS
+// its identity, and rewriting it would be a chance to disagree with a record
+// that already exists.)
+export function artifactFor(url) {
+  const s = String(url || '');
+  if (/^https?:/i.test(s)) {
+    for (const abs of councilWebPaths(s)) {
+      const art = artifactAt(abs);
+      if (art) return { ...art, via: 'council-web', ident_href: pathToFileURL(abs).href };
+    }
+    return null;
+  }
+  const art = artifactAt(pathFromFileUrl(s));
+  return art ? { ...art, via: 'file' } : null;
 }
 
 // ---- what the bots changed -----------------------------------------------
