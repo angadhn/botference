@@ -2009,6 +2009,39 @@ test('billing: keys are gated like everything else on a hosted server', async ()
   } finally { s.stop(); }
 });
 
+test('composer @-menu: typing @cl mid-sentence offers @claude with its mark; accepting splices the handle in',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc } = await mkHarness(t);
+  const input = doc.getElementById('input');
+  const menu = doc.getElementById('complete');
+
+  const typeTo = (text, caret = text.length) => {
+    input.value = text;
+    input.selectionStart = input.selectionEnd = caret;
+    input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  };
+
+  // mid-sentence fragment opens the menu with agent rows
+  typeTo('route the spreadsheet work to @cl');
+  assert.equal(menu.hidden, false, 'the menu opened mid-sentence');
+  const row = menu.querySelector('.opt.mention');
+  assert.ok(row, 'mention rows, not command completions');
+  assert.match(row.textContent, /@claude/);
+  assert.ok(row.querySelector('.avatar'), 'the agent wears its logomark');
+
+  // accepting splices just the handle — the sentence survives
+  row.dispatchEvent(new doc.defaultView.Event('mousedown', { bubbles: true }));
+  assert.equal(input.value, 'route the spreadsheet work to @claude ');
+
+  // a literal @ in prose is left alone (no start-of-word trigger)
+  typeTo('mail me at angadh@qmul');
+  assert.equal(menu.hidden, true, 'user@host never opens the menu');
+
+  // bare @ offers the whole roster
+  typeTo('hand this over: @');
+  assert.equal(menu.querySelectorAll('.opt.mention').length, 3, '@claude, @codex, @all');
+});
+
 test('billing panel: per-agent switch, key fields only on the local machine, honest about when it applies',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { doc, C, posts } = await mkHarness(t);

@@ -1700,6 +1700,26 @@
   // global entries prefix-match the whole input; scoped entries kick in when
   // the input starts with a scoped prefix and substring-match the rest) ──
   let compItems = [], compSel = -1;
+  // 'line' = the old whole-input command completions; 'mention' = an "@" under
+  // the caret ANYWHERE in the message — the plugin's behavior, ported: typing
+  // @cl mid-sentence offers @claude with its logomark, accepting splices just
+  // the handle in, and a literal @ in prose (user@host) is left alone because
+  // the trigger requires start-of-word.
+  let compMode = 'line', mentionCtx = null;
+  const MENTION_HANDLES = ['claude', 'codex', 'all'];
+  function mentionAtCaret() {
+    const pos = els.input.selectionStart;
+    if (pos == null || pos !== els.input.selectionEnd) return null;
+    const before = els.input.value.slice(0, pos);
+    const m = /(^|[\s([{"'])@([a-zA-Z]*)$/.exec(before);
+    if (!m) return null;
+    // caret must be at the fragment's end-of-word, not inside a longer token
+    if (/^[\w@]/.test(els.input.value.slice(pos))) return null;
+    const frag = m[2].toLowerCase();
+    const items = MENTION_HANDLES.filter(h => h.startsWith(frag) && h !== frag);
+    if (!items.length) return null;
+    return { start: pos - m[2].length - 1, end: pos, items };
+  }
   function computeCompletions(text) {
     if (!text || /\n/.test(text)) return [];
     const out = [];
@@ -1720,19 +1740,39 @@
   }
   function renderCompletions() {
     if (!compItems.length) { els.complete.hidden = true; return; }
-    els.complete.innerHTML = compItems.map((c, i) =>
-      `<div class="opt${i === compSel ? ' sel' : ''}" role="option" aria-selected="${i === compSel}" data-i="${i}"><code>${esc(c)}</code></div>`).join('');
+    els.complete.innerHTML = compItems.map((c, i) => {
+      const sel = `class="opt${compMode === 'mention' ? ' mention' : ''}${i === compSel ? ' sel' : ''}" role="option" aria-selected="${i === compSel}" data-i="${i}"`;
+      return compMode === 'mention'
+        ? `<div ${sel}>${MARKS[c] ? avatarHtml(c) : '<span class="avatar" aria-hidden="true">@</span>'}<span class="mname">@${esc(c)}</span></div>`
+        : `<div ${sel}><code>${esc(c)}</code></div>`;
+    }).join('');
     els.complete.hidden = false;
   }
   function refreshCompletions() {
-    compItems = computeCompletions(els.input.value);
+    mentionCtx = mentionAtCaret();
+    if (mentionCtx) {
+      compMode = 'mention';
+      compItems = mentionCtx.items;
+    } else {
+      compMode = 'line';
+      compItems = computeCompletions(els.input.value);
+    }
     compSel = compItems.length ? 0 : -1;
     renderCompletions();
   }
   function acceptCompletion(i) {
     if (i < 0 || i >= compItems.length) return;
-    els.input.value = compItems[i];
-    els.input.focus();
+    if (compMode === 'mention' && mentionCtx) {
+      // splice the handle in at the fragment, never touch the rest
+      const v = els.input.value;
+      els.input.value = v.slice(0, mentionCtx.start) + '@' + compItems[i] + ' ' + v.slice(mentionCtx.end);
+      const p = mentionCtx.start + compItems[i].length + 2;
+      els.input.focus();
+      els.input.setSelectionRange(p, p);
+    } else {
+      els.input.value = compItems[i];
+      els.input.focus();
+    }
     autosize();
     refreshCompletions();
     syncSend();
@@ -1840,6 +1880,16 @@
     state.sendOverride = false; // editing invalidates a prior "send anyway"
     autosize(); refreshCompletions(); syncSend(); refreshPresendWarn();
   });
+  // the @-menu follows the caret, not just the text: moving into or out of a
+  // fragment opens/closes it. While the menu is open the arrows are ITS
+  // navigation (handled on keydown) — refreshing on their keyup would reset
+  // the selection to the top.
+  els.input.addEventListener('keyup', e => {
+    if (!/^(Arrow|Home|End)/.test(e.key || '')) return;
+    if (!els.complete.hidden && /^Arrow(Up|Down)/.test(e.key)) return;
+    refreshCompletions();
+  });
+  els.input.addEventListener('click', () => refreshCompletions());
   els.input.addEventListener('keydown', e => {
     if (!els.complete.hidden) {
       if (e.key === 'ArrowDown') { e.preventDefault(); compSel = (compSel + 1) % compItems.length; renderCompletions(); return; }
