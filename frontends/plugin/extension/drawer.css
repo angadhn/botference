@@ -764,6 +764,9 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font: 12px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .03em;
   background: var(--rail); border-radius: 6px; padding: 1px 6px; margin-left: 6px;
   color: var(--muted); vertical-align: baseline; white-space: nowrap;
+  /* inline-block, so an orphaned quote's line-through never draws through
+     the badges riding inside it — a struck ORPHANED label reads as a joke */
+  display: inline-block;
 }
 .badge.bot-badge { color: var(--author, var(--muted)); background: color-mix(in srgb, var(--author, var(--muted)) 12%, transparent) }
 .badge.orphan-badge { color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent) }
