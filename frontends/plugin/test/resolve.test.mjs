@@ -149,6 +149,16 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   store.appendMsg(q, 't1', { author: 'codex', kind: 'tools', text: 'read 3 files' });
   ok('a bot NARRATING its tools is not a bot answering — that alone marks nothing',
     !store.isAddressed(q.threads[0]));
+  // …and it takes nothing DOWN either. A turn's tool summary can land after its
+  // answer (codex does exactly that), and a `tools` line that cleared the flag
+  // would undo the "ready for review" the answer had just earned. Send review's
+  // fan-out gives every thread a bot turn of its own, so this ordering is
+  // ordinary now.
+  store.appendMsg(q, 't1', { author: 'codex', text: 'done — the units are fixed.' });
+  store.appendMsg(q, 't1', { author: 'codex', kind: 'tools', text: 'Explored\n└ Read index.html' });
+  ok('a tools line landing AFTER the answer does not unmark the thread',
+    store.isAddressed(q.threads[0]));
+  eq('…and the claimant is still the bot that answered', q.threads[0].addressed_by, 'codex');
 
   const r = mk();
   r.threads[0].resolved = true; r.threads[0].resolved_at = '1';

@@ -34,6 +34,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readConfig, saveConfig } from './store.mjs';
+// the routing rules, borrowed rather than copied: a per-thread review turn is
+// addressed by exactly the tags every other turn is addressed by (chat.routeOf),
+// and two copies of that rule could disagree about who a thread belongs to
+import { routePrefix, isBotAuthor } from './chat.mjs';
 
 const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
@@ -597,11 +601,27 @@ export function sessionTail(root, projectId, sid, limit = TAIL_MAX) {
   };
 }
 
-// --- the send-review digest ----------------------------------------------
+// --- send review: the fan-out --------------------------------------------
 // The reader has been through the draft leaving comments in the margins, the
 // way they would in Google Docs or Word. Retyping any of that into the chat is
-// work the machine can do, so one button hands the WHOLE review over as a
-// single page-chat turn (server.mjs POST /send-review).
+// work the machine can do, so one button hands the WHOLE review over
+// (server.mjs POST /send-review).
+//
+// It used to go as ONE page-chat turn carrying a digest of every thread, and
+// the answer therefore landed in page chat — one lump of prose about twenty
+// comments, with nothing connecting any sentence of it to the thread it
+// answered. The reason was structural and is documented in SPEC.md: the bridge
+// fixes a turn's target when the job is QUEUED (chat.mjs, job.target), so a bot
+// cannot choose which thread to reply into and an instruction to "reply in each
+// comment's own thread" was an instruction it could not obey.
+//
+// So the companion chooses instead. A round is now a PREAMBLE turn into page
+// chat (so the council's own chat records that a round happened, and any
+// cross-comment context rides it) followed by ONE JOB PER OPEN THREAD, each
+// queued against THAT THREAD exactly as a directly-tagged thread reply is
+// queued today. Everything downstream then falls out of machinery that already
+// existed: the reply lands in the thread → store.appendMsg marks it addressed →
+// "ready for review" → the "now reads" sentence → re-anchor and track-changes.
 //
 // A pure function of the page record, deliberately: everything it decides —
 // which threads, which order, what gets cut — is testable without a server, a
@@ -623,8 +643,13 @@ export function sessionTail(root, projectId, sid, limit = TAIL_MAX) {
 //     the bots' own replies included, because a thread where a bot already
 //     answered and the reader pushed back is precisely the thread that needs
 //     the push-back read.
+// The thread cap stays: twenty jobs is already a long round, and past that the
+// honest answer is "send review again after these" rather than a queue nobody
+// can read the end of. The old 8000-character cap on the WHOLE review is gone —
+// it was the size of one turn's digest, and there is no such turn any more; a
+// per-thread turn carries one quote and one conversation, which the per-thread
+// caps below keep small on their own.
 export const REVIEW_THREADS_MAX = 20;
-export const REVIEW_CHARS_MAX = 8000;
 export const REVIEW_QUOTE_MAX = 300;
 export const REVIEW_MSG_MAX = 800;
 export const REVIEW_MSGS_PER_THREAD = 12;
@@ -648,62 +673,95 @@ export const openThreads = page => ((page && page.threads) || [])
   .slice()
   .sort((a, b) => (Number(a.page) || 0) - (Number(b.page) || 0));
 
-// One block per thread: the passage, then the conversation under it.
-function threadBlock(t, n, total) {
-  const where = Number(t.page) > 0 ? ` · page ${Number(t.page)}` : '';
-  const orph = t.orphaned ? ' · the passage has since been edited out of the page' : '';
-  const msgs = t.msgs || [];
-  const shown = msgs.slice(-REVIEW_MSGS_PER_THREAD);
-  const dropped = msgs.length - shown.length;
-  const lines = shown.map(m => `${m.author}: ${clip(m.text, REVIEW_MSG_MAX)}`);
-  if (dropped > 0) lines.unshift(`(${dropped} earlier message${dropped === 1 ? '' : 's'} in this thread are not shown)`);
-  return `--- comment ${n} of ${total}${where}${orph} ---\n`
-    + `> ${clip(t.quote, REVIEW_QUOTE_MAX)}\n`
-    + lines.join('\n');
+// Who a per-thread turn is addressed to.
+//
+// @all by default: a review of a draft is the room's business. The one exception
+// is a thread whose LAST HUMAN message tags exactly one bot — there the reader
+// has already chosen who they are talking to in this thread, and a round that
+// broadened it back out to the room would overrule them and spend a second
+// agent's turn doing it. Bot messages are not read for this (a bot answering
+// "@codex, over to you" is not the reader's address) and neither is a `tools`
+// line, which is narration.
+export function reviewRoute(t) {
+  const said = ((t && t.msgs) || []).filter(m => m && m.kind !== 'tools' && !isBotAuthor(m.author));
+  const last = said[said.length - 1];
+  const p = routePrefix(last && last.text);
+  return p === '@claude ' || p === '@codex ' ? p.trim() : '@all';
 }
 
-// Returns {text, sent, omitted, total} — or null when there is nothing open to
-// send, which the endpoint turns into a friendly 400 rather than an empty turn.
-export function reviewDigest(page, { threadsMax = REVIEW_THREADS_MAX, charsMax = REVIEW_CHARS_MAX } = {}) {
+// The round's opening turn, into page chat. Short on purpose: the comments
+// themselves are not in it — each one is its own turn — so this says only what
+// is about to happen, and what the round expects of a bot. It is what makes the
+// council's own chat record that a round took place, and it is where any
+// cross-comment context lives (a bot reading comment 7 has the round's terms in
+// the session, not just the one comment in front of it).
+export function reviewPreamble(sent, omitted = 0) {
+  const more = omitted
+    ? ` (…and ${omitted} more open comment thread${omitted === 1 ? '' : 's'} did not fit in this `
+      + `round — send review again after these.)`
+    : '';
+  return `Review round: I have been down this draft leaving comments in the margins. `
+    + `${sent} comment${sent === 1 ? '' : 's'} follow${sent === 1 ? 's' : ''} this message, `
+    + `in page order, one turn each${more}\n\n`
+    + `For each one: make the change it calls for (the write rules on this turn say where you may `
+    + `write) and say what you changed; where it calls for no change, answer it. Each of those `
+    + `turns is posted into that comment's own thread, so reply to the comment in front of you and `
+    + `nothing else. Where a change rewrites the passage a comment quotes, quote the new wording `
+    + `back verbatim — "done — this passage now reads: “…”".\n\n`
+    + `Nothing is resolved by any of this — I file the threads myself once I am satisfied.`;
+}
+
+// One turn per thread. The thread's own envelope (chat.envelope, target = the
+// thread) already carries the quote, the page number and the conversation, and
+// already ends with "Your reply text is posted directly into the comment
+// thread" — so all this text adds is the one line of round context, and the
+// route tag that decides who answers.
+function reviewTurn(t, n, total) {
+  const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');
+  const shown = msgs.slice(-REVIEW_MSGS_PER_THREAD);
+  const dropped = msgs.length - shown.length;
+  const orph = t.orphaned
+    ? ` The passage has since been edited out of the page, so quote whatever stands in its place.` : '';
+  const cut = dropped > 0
+    ? ` (${dropped} earlier message${dropped === 1 ? '' : 's'} in this thread are not shown.)` : '';
+  return {
+    thread_id: t.id,
+    page: Number(t.page) || 0,
+    route: reviewRoute(t),
+    // clipped here rather than in the envelope: a per-thread turn is small and
+    // must stay small, and a reader who pasted four thousand characters into
+    // one comment is not asking for four thousand to ride every turn of a round
+    quote: clip(t.quote, REVIEW_QUOTE_MAX),
+    history: shown.map(m => ({ author: m.author, text: clip(m.text, REVIEW_MSG_MAX) })),
+    text: `${reviewRoute(t)} [review round · comment ${n} of ${total}] `
+      + `This is part of the review round I just opened in the chat, and this turn is this one `
+      + `comment. Work this point through: where it calls for a change, MAKE the change (the `
+      + `draft's files are yours to edit — the write rules on this turn say where) and say what `
+      + `you changed; where it does not, answer it. If your change rewrites the passage quoted `
+      + `above, quote the new wording back verbatim — "done — this passage now reads: “…”".`
+      + `${orph}${cut}`,
+  };
+}
+
+// Returns {preamble, turns, sent, omitted, total} — or null when there is
+// nothing open to send, which the endpoint turns into a friendly 400 rather
+// than an empty round. Pure, so every rule about which threads go, in what
+// order, addressed to whom and clipped how is testable without a server, a
+// bridge or a browser, and lives in exactly one place.
+export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX } = {}) {
   const threads = openThreads(page);
   if (!threads.length) return null;
   const total = threads.length;
-  const head = `I have finished reviewing this draft. Here is my whole margin review — `
-    + `${total} open comment thread${total === 1 ? '' : 's'}, in page order, quote first and the `
-    + `conversation under it.\n\n`
-    + `Work through every point. Where a point calls for a change to the files, MAKE the change `
-    + `(the write rules on this turn say where you may write) and say what you changed; where it `
-    + `does not, answer it here.\n\n`
-    // The one instruction that costs the bots nothing and saves the reader the
-    // whole page. When a change REWRITES the passage a comment is anchored to,
-    // the highlight orphans — the thread still holds the old wording as its
-    // quote, but nothing on the page or in the record says what replaced it,
-    // and the reader is left re-reading the draft to find out. Asking for the
-    // new wording verbatim puts the "after" in the conversation beside the
-    // "before", so the link survives the edit with no new mechanism at all.
-    + `Whenever a change you make REWRITES one of the quoted passages, say so and quote the new `
-    + `wording back verbatim — "comment 3: done — this passage now reads: “…”". The quote `
-    + `above it is the before; that line is the after, and without it the highlight I am reading `
-    + `points at words that are no longer in the file.\n\n`
-    + `Nothing is resolved by this message — I file the threads myself once I am satisfied.\n`;
-  const blocks = [];
-  let used = head.length;
-  for (const t of threads) {
-    if (blocks.length >= threadsMax) break;
-    const b = threadBlock(t, blocks.length + 1, total);
-    // the FIRST thread always goes in, however long it is: a cap that can send
-    // nothing is a button that silently does nothing
-    if (blocks.length && used + b.length + 2 > charsMax) break;
-    blocks.push(b);
-    used += b.length + 2;
-  }
-  const omitted = total - blocks.length;
-  // Never a silent truncation. The reader is looking at the same threads in
-  // the Comments tab and would otherwise have no way to know which of them the
-  // bots were never shown.
-  const tail = omitted
-    ? `\n\n…and ${omitted} more open comment thread${omitted === 1 ? '' : 's'} that did not fit `
-      + `in one turn — read the page's own records for those, or ask me and I will send them next.`
-    : '';
-  return { text: `${head}\n${blocks.join('\n\n')}${tail}`, sent: blocks.length, omitted, total };
+  const taken = threads.slice(0, threadsMax);
+  const omitted = total - taken.length;
+  return {
+    // …and never a silent truncation: the preamble says how many did not fit,
+    // because the reader is looking at the same threads in the Comments tab and
+    // would otherwise have no way to know which the bots were never shown.
+    preamble: reviewPreamble(taken.length, omitted),
+    turns: taken.map((t, i) => reviewTurn(t, i + 1, taken.length)),
+    sent: taken.length,
+    omitted,
+    total,
+  };
 }

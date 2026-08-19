@@ -1320,150 +1320,241 @@ console.log('\ncompanion — untagged page chat on an artifact goes to @all');
 }
 
 
-// --- the send-review button ----------------------------------------------
-// One click hands the reader's WHOLE margin review to the bots as a single
-// page-chat turn. SPEC.md "the send-review button"; workspace.reviewDigest
-// composes it, POST /send-review submits it.
-console.log('\nthe send-review digest');
+// --- send review: the fan-out --------------------------------------------
+// One click hands the reader's WHOLE margin review to the bots as a ROUND: a
+// preamble turn into page chat and then one turn PER OPEN THREAD, each queued
+// against that thread so the answer lands where the comment is. SPEC.md
+// "send review: the fan-out"; workspace.reviewFanout composes it, POST
+// /send-review queues it.
+console.log('\nsend review — the fan-out');
 
 const revPage = (threads) => ({ url: 'file:///x/index.html', threads });
-const revThread = (quote, msgs, extra = {}) => ({ id: 'x' + Math.random(), quote, msgs, ...extra });
+let revN = 0;
+const revThread = (quote, msgs, extra = {}) => ({ id: 'x' + (++revN), quote, msgs, ...extra });
 
-await test('the digest is the OPEN threads, quote first and the talk under it', async () => {
-  const d = ws.reviewDigest(revPage([
+await test('a round is one turn per OPEN thread, each carrying its own comment', async () => {
+  const f = ws.reviewFanout(revPage([
     revThread('the truss, not the hull', [
       { author: 'angadh', text: 'this mass number looks wrong' },
       { author: 'claude', text: 'it is the dry mass' },
       { author: 'angadh', text: 'then say so in the caption' },
     ]),
   ]));
-  assert.equal(d.sent, 1);
-  assert.equal(d.total, 1);
-  assert.equal(d.omitted, 0);
-  assert.ok(/finished reviewing this draft/.test(d.text), 'the reader has been through it');
-  assert.ok(/Work through every point/.test(d.text));
-  assert.ok(/MAKE the change/.test(d.text), 'a point that calls for an edit gets an edit');
-  assert.ok(/Nothing is resolved by this message/.test(d.text), 'filing stays the reader\'s click');
-  assert.ok(/--- comment 1 of 1 ---/.test(d.text));
-  assert.ok(/^> the truss, not the hull$/m.test(d.text), 'the passage, quoted');
-  // every message, attributed — the bot\'s answer included, because a thread
-  // where the reader pushed back is the thread that needs the push-back read
-  assert.ok(/^angadh: this mass number looks wrong$/m.test(d.text));
-  assert.ok(/^claude: it is the dry mass$/m.test(d.text));
-  assert.ok(/^angadh: then say so in the caption$/m.test(d.text));
+  assert.equal(f.sent, 1);
+  assert.equal(f.total, 1);
+  assert.equal(f.omitted, 0);
+  assert.equal(f.turns.length, 1, 'one job per thread — that is the whole feature');
+  const t = f.turns[0];
+  assert.equal(t.thread_id, f.turns[0].thread_id);
+  assert.equal(t.quote, 'the truss, not the hull', 'the passage rides the turn');
+  // every message, attributed — the bot's own answers included, because a
+  // thread where the reader pushed back is the thread that needs the push-back
+  assert.deepEqual(t.history.map(m => m.author), ['angadh', 'claude', 'angadh']);
+  assert.ok(/review round . comment 1 of 1/.test(t.text), 'and it says where it sits in the round');
+  assert.ok(/MAKE the change/.test(t.text), 'a point that calls for an edit gets an edit');
+  assert.ok(/files are yours to edit/.test(t.text), 'one line of round context, not a whole digest');
 });
 
-await test('a RESOLVED thread is not sent — that argument is over', async () => {
-  const d = ws.reviewDigest(revPage([
+await test('the preamble opens the round and carries no comment text at all', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('the truss', [{ author: 'angadh', text: 'this mass number looks wrong' }]),
+    revThread('the radiator', [{ author: 'angadh', text: 'cite a source' }]),
+  ]));
+  assert.ok(/^Review round:/.test(f.preamble));
+  assert.ok(/2 comments follow this message/.test(f.preamble), 'the council chat records that a round happened');
+  assert.ok(/one turn each/.test(f.preamble));
+  assert.ok(!/this mass number looks wrong/.test(f.preamble), 'the comments are their own turns now');
+  assert.ok(/Nothing is resolved by any of this/.test(f.preamble), "filing stays the reader's click");
+});
+
+await test('a RESOLVED thread gets no turn — that argument is over', async () => {
+  const f = ws.reviewFanout(revPage([
     revThread('open one', [{ author: 'angadh', text: 'still bothers me' }]),
     revThread('filed one', [{ author: 'angadh', text: 'settled' }], { resolved: true }),
   ]));
-  assert.equal(d.total, 1);
-  assert.ok(/still bothers me/.test(d.text));
-  assert.ok(!/settled/.test(d.text));
+  assert.equal(f.total, 1);
+  assert.equal(f.turns.length, 1);
+  assert.equal(f.turns[0].quote, 'open one');
 });
 
 // A thread a bot has already replied into is sitting under "Ready for review"
 // waiting on the READER. Sending it back would ask for work that has already
 // been reported — and a second send after a round is precisely the case this
 // state exists for.
-await test('a thread already ready for review is not sent either', async () => {
-  const d = ws.reviewDigest(revPage([
+await test('a thread already ready for review gets no turn either', async () => {
+  const f = ws.reviewFanout(revPage([
     revThread('open one', [{ author: 'angadh', text: 'still bothers me' }]),
     revThread('answered one', [
       { author: 'angadh', text: 'the units are wrong' },
       { author: 'claude', text: 'done — fixed in the caption' },
     ], { addressed: true, addressed_by: 'claude' }),
   ]));
-  assert.equal(d.total, 1, 'the count the button shows is the count that is sent');
-  assert.ok(/still bothers me/.test(d.text));
-  assert.ok(!/fixed in the caption/.test(d.text), 'the bots are not asked to redo it');
+  assert.equal(f.total, 1, 'the count the button shows is the count that is sent');
+  assert.equal(f.turns.length, 1);
 });
 
-await test('a page with nothing open composes NO digest at all', async () => {
-  assert.equal(ws.reviewDigest(revPage([])), null);
-  assert.equal(ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'b' }], { resolved: true })])), null);
-  assert.equal(ws.reviewDigest(revPage([revThread('q', [])])), null, 'an empty thread is not a comment');
-  assert.equal(ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'b' }], { addressed: true })])), null,
+await test('a page with nothing open composes NO round at all', async () => {
+  assert.equal(ws.reviewFanout(revPage([])), null);
+  assert.equal(ws.reviewFanout(revPage([revThread('q', [{ author: 'a', text: 'b' }], { resolved: true })])), null);
+  assert.equal(ws.reviewFanout(revPage([revThread('q', [])])), null, 'an empty thread is not a comment');
+  assert.equal(ws.reviewFanout(revPage([revThread('q', [{ author: 'a', text: 'b' }], { addressed: true })])), null,
     'a page whose every thread is ready for review has nothing left to send');
 });
 
 // A change that REWRITES a quoted passage orphans its highlight: the thread
 // holds the old wording, the page no longer contains it, and nothing says what
-// replaced it. The one instruction that fixes it costs the bots a line.
-await test('the digest asks for the new wording whenever a change rewrites a passage', async () => {
-  const d = ws.reviewDigest(revPage([
+// replaced it. The one instruction that fixes it costs the bots a line — and it
+// now rides EVERY turn of the round, beside the passage it is about.
+await test('every turn asks for the new wording when a change rewrites its passage', async () => {
+  const f = ws.reviewFanout(revPage([
     revThread('the truss, not the hull', [{ author: 'angadh', text: 'this reads badly' }]),
+    revThread('the radiator area', [{ author: 'angadh', text: 'and so does this' }]),
   ]));
-  assert.ok(/REWRITES one of the quoted passages/.test(d.text), 'the case is named');
-  assert.ok(/quote the new wording back verbatim/.test(d.text), 'and what to do about it');
-  assert.ok(/now reads/.test(d.text), 'in the phrasing the drawer draws a diff from');
+  for (const t of f.turns) {
+    assert.ok(/rewrites the passage quoted above/.test(t.text), 'the case is named');
+    assert.ok(/quote the new wording back verbatim/.test(t.text), 'and what to do about it');
+    assert.ok(/now reads/.test(t.text), 'in the phrasing the drawer draws a diff from');
+  }
+  assert.ok(/now reads/.test(f.preamble), 'the round says it once up front too');
+});
+
+await test('an orphaned thread says so in its own turn', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('a passage that is gone', [{ author: 'angadh', text: 'fix this' }], { orphaned: true }),
+  ]));
+  assert.ok(/edited out of the page/.test(f.turns[0].text));
 });
 
 await test('paged documents go in page order; unpaged keep record order', async () => {
-  const d = ws.reviewDigest(revPage([
+  const f = ws.reviewFanout(revPage([
     revThread('late', [{ author: 'a', text: 'on page nine' }], { page: 9 }),
     revThread('early', [{ author: 'a', text: 'on page two' }], { page: 2 }),
     revThread('middle', [{ author: 'a', text: 'on page four' }], { page: 4 }),
   ]));
-  const order = [...d.text.matchAll(/^> (early|middle|late)$/gm)].map(m => m[1]);
-  assert.deepEqual(order, ['early', 'middle', 'late']);
-  assert.ok(/comment 1 of 3 . page 2 ---/.test(d.text), 'and each says which page it is on');
+  assert.deepEqual(f.turns.map(t => t.quote), ['early', 'middle', 'late']);
+  assert.deepEqual(f.turns.map(t => t.page), [2, 4, 9], 'and each turn knows which page it is on');
+  assert.ok(/comment 1 of 3/.test(f.turns[0].text));
   // an unpaged HTML artifact: the companion has no DOM and does not pretend to
   // know where a highlight falls, so record order stands
-  const flat = ws.reviewDigest(revPage([
+  const flat = ws.reviewFanout(revPage([
     revThread('third', [{ author: 'a', text: 'c' }]),
     revThread('first', [{ author: 'a', text: 'a' }]),
   ]));
-  assert.deepEqual([...flat.text.matchAll(/^> (third|first)$/gm)].map(m => m[1]), ['third', 'first']);
-  assert.ok(!/ . page /.test(flat.text), 'and no page is claimed');
+  assert.deepEqual(flat.turns.map(t => t.quote), ['third', 'first']);
+  assert.deepEqual(flat.turns.map(t => t.page), [0, 0], 'and no page is claimed');
 });
 
-await test('a very long quote and a very long comment are both clipped', async () => {
-  const d = ws.reviewDigest(revPage([
+await test('a very long quote and a very long comment are both clipped, per turn', async () => {
+  const f = ws.reviewFanout(revPage([
     revThread('Q'.repeat(4000), [{ author: 'angadh', text: 'M'.repeat(4000) }]),
   ]));
-  const quoteLine = d.text.split('\n').find(l => l.startsWith('> '));
-  assert.ok(quoteLine.length <= ws.REVIEW_QUOTE_MAX + 2, `quote clipped — got ${quoteLine.length}`);
-  assert.ok(quoteLine.endsWith('…'), 'and says it was clipped');
-  const msgLine = d.text.split('\n').find(l => l.startsWith('angadh: '));
-  assert.ok(msgLine.length <= ws.REVIEW_MSG_MAX + 8);
-  assert.ok(msgLine.endsWith('…'));
+  const t = f.turns[0];
+  assert.ok(t.quote.length <= ws.REVIEW_QUOTE_MAX, `quote clipped — got ${t.quote.length}`);
+  assert.ok(t.quote.endsWith('…'), 'and says it was clipped');
+  assert.ok(t.history[0].text.length <= ws.REVIEW_MSG_MAX);
+  assert.ok(t.history[0].text.endsWith('…'));
 });
 
 await test('a very long thread keeps its LATEST messages and says how many it dropped', async () => {
   const msgs = Array.from({ length: 30 }, (_, i) => ({ author: 'angadh', text: `point ${i}` }));
-  const d = ws.reviewDigest(revPage([revThread('q', msgs)]));
-  assert.ok(/\(18 earlier messages in this thread are not shown\)/.test(d.text));
-  assert.ok(/point 29/.test(d.text), 'the latest is kept');
-  assert.ok(!/point 11\b/.test(d.text), 'the oldest is not');
+  const f = ws.reviewFanout(revPage([revThread('q', msgs)]));
+  const t = f.turns[0];
+  assert.equal(t.history.length, ws.REVIEW_MSGS_PER_THREAD);
+  assert.equal(t.history[t.history.length - 1].text, 'point 29', 'the latest is kept');
+  assert.ok(!t.history.some(m => m.text === 'point 11'), 'the oldest is not');
+  assert.ok(/\(18 earlier messages in this thread are not shown\.\)/.test(t.text),
+    'and the turn says so — never a silent truncation');
 });
 
-await test('over the thread cap, the extra are NAMED and never silently dropped', async () => {
+await test('a bot narrating with a tools line is not part of the conversation', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('q', [
+      { author: 'angadh', text: 'check the units' },
+      { author: 'claude', kind: 'tools', text: 'Explored\n└ Read index.html' },
+    ]),
+  ]));
+  assert.deepEqual(f.turns[0].history.map(m => m.text), ['check the units']);
+});
+
+await test('over the thread cap, the extra are NAMED and sent next time', async () => {
   const threads = Array.from({ length: 26 }, (_, i) => revThread(`quote ${i}`, [{ author: 'a', text: `note ${i}` }]));
-  const d = ws.reviewDigest(revPage(threads));
-  assert.equal(d.total, 26);
-  assert.equal(d.sent, ws.REVIEW_THREADS_MAX);
-  assert.equal(d.omitted, 6);
-  assert.ok(/…and 6 more open comment threads that did not fit in one turn/.test(d.text));
-  assert.ok(/read the page's own records/.test(d.text));
+  const f = ws.reviewFanout(revPage(threads));
+  assert.equal(f.total, 26);
+  assert.equal(f.sent, ws.REVIEW_THREADS_MAX);
+  assert.equal(f.turns.length, ws.REVIEW_THREADS_MAX);
+  assert.equal(f.omitted, 6);
+  assert.ok(/…and 6 more open comment threads did not fit in this round/.test(f.preamble));
+  assert.ok(/send review again after these/.test(f.preamble), 'and the reader is told the remedy');
+  assert.ok(/20 comments follow/.test(f.preamble), 'the count is what actually went');
 });
 
-await test('over the character cap, the same honest line', async () => {
+// The old 8000-character cap was the size of ONE turn's digest. There is no
+// such turn any more, so twenty fat threads are twenty ordinary turns rather
+// than four threads and a "did not fit" line.
+await test('no whole-review character cap binds any more — every thread gets its turn', async () => {
   const N = 18;
   const threads = Array.from({ length: N }, (_, i) =>
     revThread(`quote ${i}`, [{ author: 'a', text: ('x'.repeat(1200) + ` tail${i}`) }]));
-  const d = ws.reviewDigest(revPage(threads));
-  assert.ok(d.text.length <= ws.REVIEW_CHARS_MAX + 1200, `capped — got ${d.text.length}`);
-  assert.ok(d.sent > 0 && d.sent < ws.REVIEW_THREADS_MAX, `the CHARACTER cap bit first — sent ${d.sent}`);
-  assert.equal(d.omitted, N - d.sent);
-  assert.ok(new RegExp(`and ${d.omitted} more open comment thread`).test(d.text));
+  const f = ws.reviewFanout(revPage(threads));
+  assert.equal(f.sent, N);
+  assert.equal(f.omitted, 0);
+  assert.ok(f.turns.every(t => t.text.length < 1200), 'and each turn is small on its own');
+  assert.equal(ws.REVIEW_CHARS_MAX, undefined, 'the whole-review cap is retired, not merely unused');
 });
 
 await test('one enormous thread still goes: a cap that sends nothing is a dead button', async () => {
-  const d = ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'y'.repeat(50000) }])]));
-  assert.equal(d.sent, 1);
-  assert.equal(d.omitted, 0);
+  const f = ws.reviewFanout(revPage([revThread('q', [{ author: 'a', text: 'y'.repeat(50000) }])]));
+  assert.equal(f.sent, 1);
+  assert.equal(f.omitted, 0);
+});
+
+console.log('\nsend review — who each turn is addressed to');
+
+await test('a turn is the room’s by default', async () => {
+  assert.equal(ws.reviewRoute({ msgs: [{ author: 'angadh', text: 'this needs a source' }] }), '@all');
+});
+
+await test('…unless the reader’s LAST message in that thread tags one bot', async () => {
+  assert.equal(ws.reviewRoute({ msgs: [
+    { author: 'angadh', text: '@claude is this a quote or a paraphrase?' },
+    { author: 'claude', text: 'a paraphrase' },
+    { author: 'angadh', text: '@codex check the source document' },
+  ] }), '@codex', 'the reader already chose; the round does not overrule them');
+});
+
+await test('an EARLIER tag does not win — the last word is the address', async () => {
+  assert.equal(ws.reviewRoute({ msgs: [
+    { author: 'angadh', text: '@claude have a look at this' },
+    { author: 'claude', text: 'looked' },
+    { author: 'angadh', text: 'still not right' },
+  ] }), '@all');
+});
+
+await test('a BOT’s tag is not the reader’s address, and a tools line addresses nobody', async () => {
+  assert.equal(ws.reviewRoute({ msgs: [
+    { author: 'angadh', text: 'whose call is this?' },
+    { author: 'claude', text: '@codex over to you' },
+  ] }), '@all');
+  assert.equal(ws.reviewRoute({ msgs: [
+    { author: 'angadh', text: '@codex check the source' },
+    { author: 'claude', kind: 'tools', text: 'Explored\n└ Read @claude notes.md' },
+  ] }), '@codex');
+});
+
+await test('both bots tagged, or @all, is the room', async () => {
+  assert.equal(ws.reviewRoute({ msgs: [{ author: 'a', text: '@claude @codex both of you' }] }), '@all');
+  assert.equal(ws.reviewRoute({ msgs: [{ author: 'a', text: '@all thoughts?' }] }), '@all');
+});
+
+await test('the route rides the turn text, so the bridge routes it like any other', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('one', [{ author: 'a', text: 'plain' }]),
+    revThread('two', [{ author: 'a', text: '@codex your call' }]),
+  ]));
+  assert.ok(f.turns[0].text.startsWith('@all '));
+  assert.equal(f.turns[0].route, '@all');
+  assert.ok(f.turns[1].text.startsWith('@codex '));
+  assert.equal(f.turns[1].route, '@codex');
 });
 
 console.log('\ncompanion — POST /send-review');
@@ -1485,7 +1576,7 @@ console.log('\ncompanion — POST /send-review');
   await POST(base, '/council-root', { root, confirm: true });
   await POST(base, '/page', { url: a.url, title: 'Artifact', site: 'spaceship-engineering' });
 
-  await test('with no open comments the answer is a friendly 400, not an empty turn', async () => {
+  await test('with no open comments the answer is a friendly 400, not an empty round', async () => {
     fs.writeFileSync(logFile, '');
     const r = await POST(base, '/send-review', { url: a.url });
     assert.equal(r.status, 400);
@@ -1509,51 +1600,107 @@ console.log('\ncompanion — POST /send-review');
     assert.equal(r.status, 409);
   });
 
-  let firstDigest = '';
-  await test('the whole review reaches the bridge as ONE turn, routed @all', async () => {
+  let turns = [];
+  let ids = [];
+  await test('the round reaches the bridge as a preamble and then ONE TURN PER THREAD', async () => {
     fs.writeFileSync(logFile, '');
-    await POST(base, '/thread', { url: a.url, quote: 'the truss, not the hull', msg: { text: 'this mass looks wrong' } });
-    // a thread the reader tagged at one bot weeks ago: it must not be allowed
-    // to address a review of the whole draft
-    const tagged = (await POST(base, '/thread', { url: a.url, quote: 'the radiator area', msg: { text: '@codex cite a source for this' } })).json.thread;
+    const t1 = (await POST(base, '/thread', { url: a.url, quote: 'the truss, not the hull',
+      msg: { text: 'this mass looks wrong' } })).json.thread;
+    // a thread the reader tagged at one bot: the round keeps that choice
+    const t2 = (await POST(base, '/thread', { url: a.url, quote: 'the radiator area',
+      msg: { text: '@codex cite a source for this' } })).json.thread;
     // …and codex answers it, which marks that thread READY FOR REVIEW and takes
-    // it out of the digest. The reader writing once more makes it their open
+    // it out of the round. The reader writing once more makes it their open
     // question again — which is what puts it back in.
     await waitFor(async () => {
       const page = (await GET(base, '/page?url=' + enc(a.url))).json;
-      const t = (page.threads || []).find(x => x.id === tagged.id);
+      const t = (page.threads || []).find(x => x.id === t2.id);
       return t && t.addressed;
     }, 'codex answering the tagged thread');
-    await POST(base, '/reply', { url: a.url, thread_id: tagged.id, text: 'still need that source.' });
-    await sleep(200);
+    // the reader says "not done" — the one clearing that summons nobody, so the
+    // thread is open again with the reader's own "@codex" still its last word
+    await POST(base, '/addressed', { url: a.url, thread_id: t2.id, addressed: false });
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      return !(page.threads || []).some(t => t.addressed);
+    }, 'both threads open again');
+    ids = [t1.id, t2.id];
     fs.writeFileSync(logFile, '');
     const r = await POST(base, '/send-review', { url: a.url });
     assert.equal(r.status, 200);
     assert.equal(r.json.sent, 2);
     assert.equal(r.json.total, 2);
     assert.equal(r.json.omitted, 0);
-    assert.equal(r.json.queued, true);
-    await waitFor(() => inputs(logFile).some(t => /finished reviewing this draft/.test(t)), 'the review turn');
-    const turns = inputs(logFile).filter(t => /finished reviewing this draft/.test(t));
-    assert.equal(turns.length, 1, 'one turn for the whole review, not one per thread');
-    const turn = turns[0];
-    assert.ok(turn.startsWith('@all '), `the room, not one bot — got ${JSON.stringify(turn.slice(0, 40))}`);
-    assert.ok(/this mass looks wrong/.test(turn));
-    assert.ok(/cite a source for this/.test(turn));
-    firstDigest = turn;
+    assert.equal(r.json.queued, 3, 'the preamble and one turn per thread');
+    assert.deepEqual(r.json.threads, ids, 'named, in page order, so the drawer can spin them');
+    await waitFor(() => inputs(logFile).filter(t => /review round/i.test(t)).length === 3,
+      'the preamble and both per-thread turns');
+    turns = inputs(logFile).filter(t => /review round/i.test(t));
   });
 
-  await test('…and the turn carries the Phase 2 write rules', async () => {
-    assert.ok(/You may create and edit files under .*projects[/]spaceship-engineering/.test(firstDigest),
-      'a point that calls for a change has to be allowed to make it');
+  await test('the preamble goes first, into page chat, routed @all', async () => {
+    assert.ok(/^@all /.test(turns[0]), `the room, not one bot — got ${JSON.stringify(turns[0].slice(0, 40))}`);
+    assert.ok(/Review round:/.test(turns[0]));
+    assert.ok(/asked about this page/.test(turns[0]), 'the page-chat envelope, like any typed message');
+    assert.ok(!/highlighted this passage/.test(turns[0]), 'and it is not a thread turn');
   });
 
-  await test('the digest is a REAL, visible user message in page chat', async () => {
+  await test('…then one turn per thread, in page order, each in ITS thread’s envelope', async () => {
+    assert.equal(turns.length, 3);
+    assert.ok(/the truss, not the hull/.test(turns[1]));
+    assert.ok(/the radiator area/.test(turns[2]));
+    for (const t of turns.slice(1)) {
+      assert.ok(/highlighted this passage/.test(t), 'the thread envelope, quote first');
+      assert.ok(/posted directly into the comment thread/.test(t),
+        'which is the sentence that is finally true of a review turn');
+      assert.ok(/comment \d+ of 2/.test(t), 'and each says where it sits in the round');
+    }
+  });
+
+  await test('…routed @all unless that thread’s last message chose one bot', async () => {
+    assert.ok(/^@all /.test(turns[1]), 'an untagged thread is the room’s');
+    assert.ok(/^@codex /.test(turns[2]), 'a thread the reader addressed to codex stays codex’s');
+  });
+
+  await test('…and every turn of the round carries the Phase 2 write rules', async () => {
+    for (const t of turns) {
+      assert.ok(/You may create and edit files under .*projects[/]spaceship-engineering/.test(t),
+        'a point that calls for a change has to be allowed to make it');
+    }
+  });
+
+  await test('the preamble is a REAL, visible user message in page chat', async () => {
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
     const mine = (page.page_chat || []).filter(m => !/^(claude|codex)/i.test(m.author));
     assert.equal(mine.length, 1);
-    assert.ok(/finished reviewing this draft/.test(mine[0].text), 'the reader can see what was sent');
-    assert.ok(/this mass looks wrong/.test(mine[0].text));
+    assert.ok(/Review round:/.test(mine[0].text), 'the reader can see the round they started');
+    assert.ok(!/this mass looks wrong/.test(mine[0].text), 'the comments are not retyped into it');
+  });
+
+  await test('the ANSWERS land in the threads — which is the whole point', async () => {
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      return ids.every(id => {
+        const t = (page.threads || []).find(x => x.id === id);
+        return t && (t.msgs || []).some(m => /^(claude|codex)/i.test(m.author) && /MOCK/.test(m.text));
+      });
+    }, 'a bot reply in each thread');
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    const t2 = (page.threads || []).find(x => x.id === ids[1]);
+    const last = (t2.msgs || []).filter(m => m.kind !== 'tools').pop();
+    assert.ok(/^codex/i.test(last.author), 'answered by the bot that thread was addressed to');
+  });
+
+  await test('…so every thread flips to ready for review, through the SAME choke point', async () => {
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      return ids.every(id => ((page.threads || []).find(x => x.id === id) || {}).addressed);
+    }, 'addressed on both threads');
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    for (const id of ids) {
+      const t = (page.threads || []).find(x => x.id === id);
+      assert.ok(t.addressed_by, 'and the badge knows which bot claimed it');
+    }
   });
 
   await test('the threads are left OPEN — resolution stays the reader\'s click', async () => {
@@ -1562,12 +1709,9 @@ console.log('\ncompanion — POST /send-review');
     assert.ok(page.threads.every(t => !t.resolved), 'nothing was filed on the reader\'s behalf');
   });
 
-  await test('…and both bots answer, in page chat', async () => {
-    await waitFor(async () => {
-      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
-      const who = new Set((page.page_chat || []).map(m => m.author));
-      return who.has('claude') && who.has('codex');
-    }, 'a reply from each');
+  await test('a second round after the first sends nothing: every thread is ready', async () => {
+    const r = await POST(base, '/send-review', { url: a.url });
+    assert.equal(r.status, 400, 'the work has been reported; asking again would ask for it twice');
   });
 
   await test('a guest is refused outright — this is an owner-only endpoint', async () => {
@@ -1584,8 +1728,10 @@ console.log('\ncompanion — POST /send-review');
 }
 
 {
-  // agents off: the digest is still written down, and the refusal is the same
-  // {queued:false, reason} shape every other submit answers with
+  // agents off: the preamble is still written down, the refusal is the same
+  // {queued:false, reason} shape every other submit answers with, and NOTHING is
+  // queued — twenty per-thread turns behind a refusal would be twenty identical
+  // error lines in twenty threads
   const root = council('review-noagents');
   const a = artifact(root, 'spaceship-engineering');
   const { base } = await startServer({
@@ -1599,23 +1745,25 @@ console.log('\ncompanion — POST /send-review');
   await test('with the agents off the review is kept and the refusal explains', async () => {
     const r = await POST(base, '/send-review', { url: a.url });
     assert.equal(r.status, 200);
-    assert.equal(r.json.queued, false);
+    assert.equal(r.json.queued, 0, 'no turn was queued at all');
+    assert.deepEqual(r.json.threads, [], 'and no thread is told to expect one');
     assert.ok(r.json.reason, 'the same shape as any other refused submit');
     assert.equal(r.json.sent, 1);
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
-    assert.ok((page.page_chat || []).some(m => /finished reviewing this draft/.test(m.text)),
+    assert.ok((page.page_chat || []).some(m => /Review round:/.test(m.text)),
       'a refusal loses the review nowhere');
+    assert.ok((page.threads || []).every(t => !t.addressed), 'and claims nothing about any thread');
   });
 
   await test('a second click within seconds sends nothing twice', async () => {
     const before = (await GET(base, '/page?url=' + enc(a.url))).json.page_chat.length;
     const r = await POST(base, '/send-review', { url: a.url });
     assert.equal(r.json.deduped, true);
+    assert.equal(r.json.queued, 0);
     const after = (await GET(base, '/page?url=' + enc(a.url))).json.page_chat.length;
     assert.equal(after, before);
   });
 }
-
 
 for (const p of spawned) { try { p.kill(); } catch { } }
 await sleep(150);

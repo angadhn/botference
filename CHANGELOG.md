@@ -2,6 +2,30 @@
 
 ## 2026-08-19
 
+- **Discuss: "send review" now answers in the comments.** The button used to
+  hand your whole margin review to the bots as ONE chat message, and the answer
+  came back as one essay in page chat — nothing attached to the comment it was
+  about, no thread marked as dealt with. Now a click starts a **round**: a short
+  note in page chat saying what is coming, and then **one turn per open comment,
+  answered in that comment's own thread**, in page order. Each waiting thread
+  says so on its own card ("queued in this review round…") and works through one
+  at a time, so a reply lands where the comment is — which means the amber
+  **ready for review** badge, the before→after card and the tracked change on
+  the page all light up by themselves, for every comment, with no new machinery
+  behind them.
+
+  A round is addressed to the room, except in a thread where your last message
+  tagged one bot — there that bot answers alone, because you already chose. The
+  20-comment limit stays (the rest stay open: send review again and they go
+  next); the old 8000-character limit on the whole review is gone, since no
+  single turn carries all of it any more. Nothing is resolved for you, as
+  before. If the companion is restarted mid-round the turns still queued are
+  lost like any other queued turn — the comments they never reached are still
+  open, so the same button sends exactly those.
+
+  Fixed while proving it out: a bot's tool-activity line landing after its own
+  answer used to strip the "ready for review" badge that answer had just earned.
+
 - **Discuss: track changes, on the page itself.** When a bot's edit
   rewrites a passage a comment was anchored to, the thread now
   RE-ANCHORS to the new wording (the original kept as `prior_quote`)

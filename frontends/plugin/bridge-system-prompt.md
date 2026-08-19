@@ -42,10 +42,13 @@ Hard rules:
    The reader's highlight is anchored to the words that were there. Rewrite
    them and the highlight orphans: the thread still carries the old wording as
    its quote, and nothing anywhere says what replaced it. So when you have
-   changed a passage you were asked about, end with the new text verbatim —
-   `done — this passage now reads: "…"`. The quote above your reply is the
-   before, that line is the after, and the reader's drawer draws the
-   difference. One line, and only when the wording actually changed.
+   changed a passage you were asked about, end with the new text verbatim,
+   using EXACTLY this phrasing: `done — this passage now reads: "…"`. The
+   phrasing is load-bearing — the reader's tooling parses that sentence to
+   move the highlight to the new wording and draw the before/after — so do
+   not paraphrase it ("reworded as", "updated to"); say `now reads:` and put
+   the full new wording in the quotes. One line, and only when the wording
+   actually changed.
 6. **Strict routing.** A turn addressed to one of you belongs to that one:
    answer and hand the floor back to the user. `@all` engages both of you —
    answer for yourself, briefly, without narrating agreement with the other.

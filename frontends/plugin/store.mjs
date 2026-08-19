@@ -758,12 +758,22 @@ export function appendMsg(page, threadId, { author, text, ts, kind }) {
   //                                    claim of "done" is stale
   //
   // A `tools` line is a bot narrating what it ran, not a bot answering, so it
-  // never counts — otherwise a thread would go amber the moment an agent
-  // opened a file in it.
+  // MARKS NOTHING — otherwise a thread would go amber the moment an agent
+  // opened a file in it — and it UNMARKS nothing either. That second half is
+  // not symmetry for its own sake: a turn's tool summary can land after its
+  // answer (codex does exactly this), and clearing the flag there would take
+  // down the "ready for review" the answer had just earned. Since send review
+  // fans out one turn per thread, that ordering is now ordinary rather than
+  // exotic.
   if (threadId !== PAGE_CHAT) {
     const thread = findThread(page, threadId);
+    // reopening ENDS a claim (setResolved says so, and is right about it), so a
+    // narration passing through here has to put back the one it did not make
+    const keep = kind === 'tools' && thread && thread.addressed
+      ? { at: thread.addressed_at, by: thread.addressed_by } : null;
     setResolved(thread, false);
-    setAddressed(thread, kind !== 'tools' && isAgentAuthor(author), author);
+    if (kind !== 'tools') setAddressed(thread, isAgentAuthor(author), author);
+    else if (keep) { setAddressed(thread, true, keep.by); thread.addressed_at = keep.at; }
   }
   return msg;
 }
@@ -830,7 +840,7 @@ export function setAddressed(thread, on, by) {
 // (anchor.js carries the browser-side twin of this regex, `Anchor.newWording`.
 // Keep the two in step.)
 export const NEW_WORDING_RE =
-  /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+  /\b(?:(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?|(?:reworded|rewritten|rewrote)\b[^"“\n]{0,80}[:—-]|(?:changed|updated)(?: it)? to\b\s*[:—-]?)\s*[“"']([\s\S]{4,400}?)[”"']/i;
 
 export function newWording(thread) {
   const msgs = (thread && thread.msgs) || [];

@@ -2124,6 +2124,11 @@ half-typed draft survives it.
 
 ### Amendment (2026-08-19, shipped): the send-review button
 
+> **Superseded in part** by "send review fans out" below: the button, its
+> placement, its confirm and its gates are exactly as described here, but the
+> ONE-TURN digest this section specifies is gone. A round is now a preamble turn
+> plus one turn per thread, and `workspace.reviewDigest` has been retired.
+
 A reader reviews a draft the way they always have: down the page, highlighting
 passages and writing in the margins. At the end of that pass they have twenty
 comments and a bot that has read none of them. Retyping the review into the
@@ -2426,10 +2431,13 @@ bridge fixes a turn's target when the job is queued (`chat.mjs`, `job.target`)
 and the bot's whole turn text is posted back into that same target; a bot has
 no way to choose a different thread. A send-review turn is queued against page
 chat, so its answer lands in page chat, and an instruction to reply into each
-thread would be an instruction the bots could not obey. **Deferred, not built:**
-a send-review that fans out one job per thread would close that loop — at the
-cost of N turns of agent time and the "one turn for the whole review" property
-the endpoint is built on.
+thread would be an instruction the bots could not obey. ~~**Deferred, not
+built:** a send-review that fans out one job per thread would close that loop —
+at the cost of N turns of agent time and the "one turn for the whole review"
+property the endpoint is built on.~~ — **built**, see "send review fans out"
+below: the COMPANION chooses the thread, because it is the thing that queues the
+job, and the one-turn property was worth less than answers that land where the
+comments are.
 
 `POST /addressed {url, thread_id, addressed}` exists for the CLEARING
 direction, which is the one thing only a person can mean. Same gate as
@@ -2698,6 +2706,146 @@ both directions, resolve taking it down and the highlight going sage, and a
 claimed wording the page cannot find leaving the thread orphaned with nothing
 written. `?ready=1&rewrite=1` is the screenshot pose and now rewrites the page
 itself rather than only the record.
+
+### Amendment (2026-08-19, shipped): send review fans out — one turn per comment
+
+The button was right and its answer was in the wrong place. A reader who sent
+twenty margin comments got back one page-chat essay about twenty comments: no
+sentence of it attached to the thread it answered, no thread marked as dealt
+with, no badge, no before→after card, nothing on the page. Every mechanism built
+for "a bot answered this comment" sat idle, because none of them can see a turn
+that landed in page chat.
+
+**So the round is the unit now, not the turn.** `POST /send-review` queues:
+
+1. **One PREAMBLE turn into page chat** — short, routed `@all`, appended as a
+   real user message like any other. It says a round is starting, how many
+   comments follow, that each is its own turn, and what a bot is expected to do
+   with one (make the change, say what changed, quote the new wording when a
+   passage is rewritten, resolve nothing). It exists for two reasons: the
+   council's own chat should record that a review happened, and it is where
+   cross-comment context lives — a bot reading comment 7 has the round's terms
+   in its session, not just the one comment in front of it.
+2. **One job per OPEN thread, in page order, each targeted AT THAT THREAD** —
+   queued through exactly the path a directly-tagged thread reply is queued
+   through today (`summon` → `chat.submit`, `job.target` = the thread). Each
+   turn carries its thread's own envelope (quote, page number, the conversation)
+   plus one line of round context: *"[review round · comment 3 of 12] … the
+   draft's files are yours to edit …"*.
+
+**Why this works where an instruction could not.** The bridge fixes a turn's
+target when the job is QUEUED and posts the whole answer back into that target,
+so a bot can never choose a thread. The thing that CAN choose is the thing that
+queues, which is the companion. That is the entire content of this amendment,
+and it is why "reply into each comment's thread" had to become N jobs rather
+than N sentences.
+
+#### Everything downstream was already built
+
+Nothing new happens after the reply lands. Verified end to end, in that order:
+
+```
+bot reply into the thread   → store.appendMsg (the choke point, untouched)
+                            → addressed / addressed_by
+                            → the amber "ready for review" badge and section
+                            → "…now reads: “…”"  → Anchor.newWording
+                            → POST /reanchor → prior_quote → track changes
+```
+
+One bug fell out of exercising it: `appendMsg` CLEARED `addressed` on a bot's
+`tools` line, because reopening spends the claim (`setResolved`) and a narration
+came through that door. SPEC's own table said a `tools` line marks nothing — it
+must unmark nothing either, or a codex turn whose tool summary lands after its
+answer takes down the badge that answer just earned. With one bot turn per
+thread that ordering is ordinary, so the choke point now puts the claim back.
+
+#### In the drawer
+
+The button, its count, its tooltip, its one-step inline confirm and its
+placement are all unchanged. What changed is the receipt: the outcome line reads
+*"sent 3 comments — one turn each, answered in the threads"*, and every thread
+with a turn coming gets the ORDINARY waiting note on its own card — *"◐ queued
+in this review round…"*. That is the whole spinner story, and it is deliberately
+not a new affordance: a round of twelve reads as twelve waiting THREADS, one of
+them working, rather than twelve spinners stacked on a page chat that is not
+where the work is. Each note is taken down by exactly what takes down any wait —
+that thread's own `turn-start`, or a refetch showing a new bot message in it
+(`clearAnsweredWaits`).
+
+The reader still lands on **Page chat** after sending, where the button and the
+preamble are; the tab strip's count is what says the threads have started
+moving.
+
+#### Routing: `@all`, unless the reader already chose
+
+Each per-thread turn is addressed by `workspace.reviewRoute`: `@all`, unless the
+thread's **last human message** tags exactly one bot, in which case that bot
+alone. The reader picked who they were talking to in that thread and a round has
+no business overruling them (nor spending a second agent's turn doing it). Bot
+messages are not read for this — a bot writing "@codex, over to you" is not the
+reader's address — and neither is a `tools` line. An EARLIER tag never wins: the
+last word is the address. The tag rides the turn's own text, so the bridge routes
+it exactly as it routes every other turn (`chat.routePrefix`); `forceAll` is now
+used for the preamble alone.
+
+#### Caps, rethought
+
+- **20 threads still.** The first 20 open threads go; the preamble carries
+  *"…and N more open comment threads did not fit in this round — send review
+  again after these"*, which is now true advice rather than a consolation: the
+  threads a bot never reached are still open, so a second click sends precisely
+  those.
+- **The ~8000-character whole-review cap is retired** (`REVIEW_CHARS_MAX` is
+  gone). It was the size of ONE turn's digest and there is no such turn. Twenty
+  fat threads are twenty ordinary turns.
+- **Per-thread caps stand and now apply per turn**: 300 per quote, 800 per
+  message, 12 messages, latest kept, and the turn SAYS `(N earlier messages in
+  this thread are not shown.)` — never a silent truncation.
+- Response shape: `{ok, sent, omitted, total, queued, threads}` — `queued`
+  counts the turns (the preamble plus one per thread; `0` when the bots were
+  refused), `threads` names the threads with a turn coming, for the queued
+  markers. `msg` is still the preamble message.
+
+#### Failure honesty
+
+If the companion dies mid-round, **whatever was still queued is lost**, exactly
+as any queued turn is lost. There is no resume machinery and none is planned:
+the threads nothing answered are still open, so the remedy is the button the
+reader already has. A refused submit (agents off, a guest's budget) queues
+**nothing at all** — twenty per-thread turns behind a refusal would be twenty
+identical error lines in twenty threads — and the preamble is still kept, in the
+`{queued:false, reason}` shape every other refused submit answers with.
+
+The gates are untouched: guest **403**, not an artifact **404**, unconfirmed root
+**409**, nothing open **400**, agents off `{queued:false, reason}`, and the
+double-click guard (now keyed on the preamble) swallows the second click of a
+round.
+
+#### Testing
+
+`workspace.test.mjs` covers `reviewFanout` as a pure function (one turn per open
+thread with its quote and conversation; the preamble carrying no comment text;
+resolved and addressed threads excluded; page order vs record order; per-turn
+quote/message clipping and the named drop; a `tools` line out of the
+conversation; the 20-thread cap naming the remainder; twenty fat threads all
+going now that no character cap binds; `REVIEW_CHARS_MAX` gone) and
+`reviewRoute` on its own (default room, the last human tag winning, an earlier
+tag not winning, a bot's tag and a `tools` line claiming nothing, both-tagged =
+room). Over the wire it drives a real round against the mock bridge: the
+preamble first with the page-chat envelope routed `@all`, then one turn per
+thread in page order with the THREAD envelope and "posted directly into the
+comment thread", the routes (`@all` and `@codex`), the Phase 2 write rules on
+every turn of the round, `queued: 3` and the named threads, the answers landing
+in the threads, `addressed` flipping on both, nothing resolved, a second send
+refused because every thread is now ready, the agents-off round queueing nothing
+while keeping the review, and the double-click guard. `resolve.test.mjs` holds
+the `tools`-line fix. Harness `?workspace=1&selftest=1` drives the round in the
+DOM: a preamble and one turn per thread with the right targets and routes, the
+queued marker on every waiting card and only one card working at a time, replies
+landing IN the threads, the flip to ready and the section that grows from it,
+the markers cleared by the turns that answered them, and nothing filed.
+`?workspace=1&round=1` is the mid-round screenshot pose (the queue held, the
+first thread's turn frozen mid-stream).
 
 ## Out of scope for v1 (do not build)
 

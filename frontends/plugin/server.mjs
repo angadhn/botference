@@ -1078,23 +1078,36 @@ export function handler(req, res) {
 
   // --- handing the whole margin review over ------------------------------
   // The reader has been down the draft leaving comments in the margins. This
-  // is the one button that gives all of it to the bots at once: every OPEN
-  // thread — the passage and the conversation under it — composed into a
-  // single page-chat turn (workspace.reviewDigest owns the format and the
-  // caps) and submitted through the ordinary path.
+  // is the one button that gives all of it to the bots at once — and it FANS
+  // OUT: one preamble turn into page chat saying a round is starting, then one
+  // turn per OPEN thread, each queued AGAINST THAT THREAD, in page order
+  // (workspace.reviewFanout owns the wording, the order, the routing and the
+  // caps).
   //
-  // Ordinary is the whole design. The digest is appended as a REAL user
-  // message in page chat, so the reader can see exactly what was sent, edit or
-  // delete it like anything else they wrote, and find it in the session file
-  // afterwards; and `summon` does the queueing, the streaming, the mirror and
-  // the persistence with no special case of its own. The only thing this route
-  // adds to a typed message is the text.
+  // Why fan-out rather than one digest turn: the bridge fixes a turn's target
+  // when the job is QUEUED (chat.mjs, job.target) and posts the whole answer
+  // back into that target, so a bot cannot choose a thread. Telling twenty
+  // bots-worth of prose to "reply in each comment's thread" was therefore an
+  // instruction nothing could obey, and the answers all landed in one page-chat
+  // lump. Queueing the jobs against the threads is the only way the answers get
+  // to the comments — and the companion, which does the queueing, is the only
+  // thing that can decide it.
   //
-  // What it does NOT do: resolve anything. The bots answer in page chat and
-  // the reader files the threads they are satisfied with, one click each, the
-  // same as every other day. A button that closed twenty threads on the
-  // strength of an answer nobody has read yet would be filing the reader's
-  // decisions for them.
+  // Everything else is the ordinary path, deliberately. The preamble is
+  // appended as a REAL user message in page chat (visible, editable, deletable,
+  // in the session file), each per-thread turn goes through the same `summon`
+  // as a tagged thread reply, and NOTHING here is a special case downstream:
+  // the reply lands in the thread, store.appendMsg marks it addressed, the
+  // drawer's "ready for review" section and the track-changes machinery take it
+  // from there.
+  //
+  // What it does NOT do: resolve anything. The reader files the threads they
+  // are satisfied with, one click each, the same as every other day.
+  //
+  // If the companion dies mid-round, whatever was still queued is lost exactly
+  // as any queued turn is lost — there is no resume, and the reader's remedy is
+  // the button they already have: the threads a bot never reached are still
+  // open, so send review again sends precisely those.
   if (req.method === 'POST' && url === '/send-review') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
@@ -1105,26 +1118,42 @@ export function handler(req, res) {
       if (!art) return fail(res, 404, 'not a project artifact page');
       if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
       const page = store.readPage(u);
-      const digest = page ? workspace.reviewDigest(page) : null;
-      if (!digest) {
+      const fan = page ? workspace.reviewFanout(page) : null;
+      if (!fan) {
         return fail(res, 400, 'no open comments to send — highlight something and comment first, or reopen a filed thread');
       }
+      const counts = { sent: fan.sent, omitted: fan.omitted, total: fan.total };
       // the same guard a typed message gets: over a tunnel the button has no
-      // receipt for a second, and the expensive half of a double-click is the
-      // agent run, not the message
-      const dedupe = dedupeCheck([store.pageKey(page.url), store.PAGE_CHAT, me.handle, digest.text]);
-      if (dedupe.hit) return ok(res, { msg: dedupe.hit, deduped: true, sent: digest.sent, omitted: digest.omitted, total: digest.total });
-      const msg = store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: digest.text });
+      // receipt for a second, and the expensive half of a double-click is a
+      // whole round of agent time, not the message
+      const dedupe = dedupeCheck([store.pageKey(page.url), store.PAGE_CHAT, me.handle, fan.preamble]);
+      if (dedupe.hit) return ok(res, { msg: dedupe.hit, deduped: true, ...counts, queued: 0, threads: [] });
+      const msg = store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: fan.preamble });
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      // routed @all whatever the quoted comments say (summon's forceAll), and
-      // carrying no page context of its own: the artifact banner and the write
-      // rules ride every turn on these pages already (chat.envelope), and the
-      // digest is the message.
-      const summoned = summon(page, store.PAGE_CHAT, digest.text,
+      // The preamble is routed @all whatever the comments say (summon's
+      // forceAll) and carries this page's text; the per-thread turns do not
+      // need to carry it again — the artifact banner, the snapshot path and the
+      // write rules ride EVERY turn on these pages already (chat.envelope).
+      const head = summon(page, store.PAGE_CHAT, fan.preamble,
         { forceAll: true, articleText: data.article_text, articleChanged: !!data.article_changed }, me);
-      ok(res, { msg, sent: digest.sent, omitted: digest.omitted, total: digest.total, ...summoned });
+      // Refused (agents off, a guest's budget, an unconfirmed root): the review
+      // is kept and NOTHING is queued. Queueing twenty per-thread turns behind a
+      // refusal would be twenty identical error lines in twenty threads.
+      if (!head.queued) return ok(res, { msg, ...counts, ...head, queued: 0, threads: [] });
+      const threads = [];
+      for (const t of fan.turns) {
+        // exactly the queueing a tagged reply in that thread gets — the target
+        // IS the thread — with the thread's own quote and conversation clipped
+        // to round size (workspace.reviewFanout) rather than rebuilt here
+        const s = summon(page, t.thread_id, t.text, { quote: t.quote, history: t.history }, me);
+        if (s.queued) threads.push(t.thread_id);
+      }
+      // `queued` is the number of TURNS this round put in the queue — the
+      // preamble plus one per thread — and `threads` names the threads they are
+      // addressed to, which is what lets the drawer spin the right cards.
+      ok(res, { msg, ...counts, queued: threads.length + 1, threads });
     });
   }
 

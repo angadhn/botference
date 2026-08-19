@@ -1818,8 +1818,11 @@
         if (!r.ok) return failure(r);
         await loadPage();
         const d = r.data || {};
+        // `threads` names the threads the round queued a turn against, so the
+        // drawer can put a queued spinner on each of their cards
         return { ok: true, sent: d.sent || 0, omitted: d.omitted || 0, total: d.total || 0,
-                 queued: d.queued, reason: d.reason };
+                 queued: d.queued, threads: Array.isArray(d.threads) ? d.threads : [],
+                 reason: d.reason };
       },
 
       // ---- the library --------------------------------------------------

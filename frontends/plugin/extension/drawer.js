@@ -142,12 +142,17 @@
 //                                        stand this page in that chat; null
 //                                        starts a fresh one
 //   onSendReview()                      → {ok, sent, omitted, total, queued,
-//                                          reason} | {ok:false, error}
+//                                          threads:[id], reason}
+//                                          | {ok:false, error}
 //                                        (POST /send-review) — hand every OPEN
 //                                        comment thread on this page to the
-//                                        bots as ONE page-chat turn. The
-//                                        companion writes the digest; nothing
-//                                        is resolved by it
+//                                        bots as a ROUND: one preamble turn in
+//                                        page chat, then one turn per thread,
+//                                        each answered IN that thread. `queued`
+//                                        counts the turns; `threads` names the
+//                                        ones with a turn coming. The companion
+//                                        writes every word of it; nothing is
+//                                        resolved by it
 //   onClose() / onReconnect() / onSelect()
 //
 // `project` (and `d.setProject(p)`) is the council project behind a PROJECT
@@ -1877,7 +1882,7 @@
     // the same sentence that draws this diff is what moves the highlight onto
     // the rewritten passage, and two copies of the rule could drift into a
     // card that draws a change the page does not show (or the reverse).
-    const NOW_READS = /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+    const NOW_READS = /\b(?:(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?|(?:reworded|rewritten|rewrote)\b[^"“\n]{0,80}[:—-]|(?:changed|updated)(?: it)? to\b\s*[:—-]?)\s*[“"']([\s\S]{4,400}?)[”"']/i;
     const ANCH = (typeof BFPAnchor !== 'undefined' && BFPAnchor) ? BFPAnchor : null;
     const newWordingOf = t => {
       if (ANCH && ANCH.newWording) return ANCH.newWording(t);
@@ -2421,7 +2426,7 @@
     }
 
     // How many comment threads a "send review" would actually send: the OPEN
-    // ones. (workspace.reviewDigest applies the same rule server-side and is
+    // ones. (workspace.openThreads applies the same rule server-side and is
     // the authority; this count exists so the button can say the number before
     // anything is sent, and so it can be disabled honestly when it is zero.)
     // (…and not the ADDRESSED ones either: a thread a bot has already replied
@@ -2433,13 +2438,14 @@
         t && !isResolved(t) && !isAddressed(t) && (t.msgs || []).length)).length;
 
     // Obsidian-export for a margin review: everything the reader wrote down
-    // the side of the draft, handed over in one turn, without retyping any of
-    // it.
+    // the side of the draft, handed over in one click and worked through one
+    // comment per turn, without retyping any of it.
     //
     // Placement, twice decided. It is on the CHAT tab and not on Comments
-    // where the threads are, because the chat is where the answer lands: a
-    // button whose result appears on a tab you are not looking at is a button
-    // that seems not to have worked. And it sits in its OWN row under the
+    // where the threads are, because the chat is where the round OPENS (the
+    // preamble) and where its receipt is: the answers now land in the threads,
+    // but a button whose click showed nothing at all on the tab you are looking
+    // at is a button that seems not to have worked. And it sits in its OWN row under the
     // archive bar rather than as a third control inside it — partly because
     // three buttons do not fit across a drawer that is often 320px wide, and
     // partly because it is not a chat control at all: the bar above says which
@@ -2455,7 +2461,7 @@
              <button class="rebtn" data-act="review-no" type="button">no</button>`
           : `<button class="archsend" data-act="send-review" type="button"
                title="${esc(n
-                 ? `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots as one message`
+                 ? `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads`
                  : 'nothing to send yet — this page has no open comments. Highlight a passage and comment on it first.')}"${n ? '' : ' disabled'}>send review${n ? ` (${n})` : ''}</button>`
             + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
               : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
@@ -2576,10 +2582,18 @@
       }
       render();
     }
-    // The digest comes back as an ordinary message in the pane (the companion
+    // The preamble comes back as an ordinary message in the pane (the companion
     // appends it and content.js reloads the record), so there is nothing to
-    // render here but the outcome line: what went, what did not, and whether
-    // the bots were actually summoned.
+    // render here but the outcome line — what went, what did not, and whether
+    // the bots were actually summoned — plus one thing the round needs that a
+    // typed message never did: a QUEUED marker on every thread with a turn
+    // coming.
+    //
+    // Those markers are the ordinary waiting notes, one per thread target, so a
+    // round of twelve renders as twelve cards each saying it is waiting rather
+    // than as twelve spinners stacked on the page chat. Each is cleared by
+    // exactly what clears any wait: that thread's own turn-start, or a refetch
+    // that shows a new bot message in it (clearAnsweredWaits).
     async function sendReview() {
       const r = D.review;
       if (r.busy) return;
@@ -2589,17 +2603,24 @@
       r.busy = false;
       if (!a || !a.ok) {
         r.err = (a && a.error) || 'the companion did not answer';
-      } else if (a.queued === false && a.reason) {
-        // agents off, or a guest's budget: the digest IS posted, only the bots
+      } else if (!a.queued && a.reason) {
+        // agents off, or a guest's budget: the review IS posted, only the bots
         // are withheld — say which of the two happened
         r.note = `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`;
       } else {
+        for (const id of a.threads || []) {
+          if (D.running[id]) continue;   // this one is already under way
+          D.notes[id] = { text: 'queued in this review round…', transient: true, bots: botsIn(id) };
+        }
         r.note = a.omitted
-          ? `sent ${a.sent} of ${a.total} comments — ${a.omitted} did not fit in one turn`
-          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — the threads stay open until you file them`;
+          ? `sent ${a.sent} of ${a.total} comments — one turn each; send review again for the other ${a.omitted}`
+          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads`;
       }
-      // the digest is long and it is the last thing in the pane: land on it,
-      // so the reader can read what was actually sent in their name
+      // The round OPENS in page chat (the preamble is the last thing in the
+      // pane) and the answers land on Comments. Landing here, where the button
+      // is: the outcome line and the preamble are both on this tab, the tab
+      // strip's own count says when the threads start moving, and a click is
+      // all it takes to go and watch.
       D.tab = 'chat';
       paintTabs();
       render();

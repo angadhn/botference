@@ -146,7 +146,9 @@
                      origin): the gate asks, and the page's identity is
                      canonicalised to the file: twin's, so it is one record.
                      `&review=1` opens Page chat with the send-review button
-                     mid-confirm (screenshot state).
+                     mid-confirm (screenshot state); `&round=1` sends the review
+                     and holds the round mid-flight on the Comments tab — one
+                     thread's turn streaming, the rest queued (screenshot state).
                      `&selftest=1` runs the project-page assertions.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
@@ -375,7 +377,8 @@ const WS_TAIL = {
 };
 let wsCurrent = Q.get('chatopen') === '1' ? 'aaaa1111-0000-4000-8000-000000000001' : null;
 const wsRootAnswers = [];     // what POST /council-root was told, for the selftest
-const sentReviews = [];       // every digest POST /send-review composed
+const sentReviews = [];       // every PREAMBLE POST /send-review composed
+const reviewRounds = [];      // {preamble, turns:[{thread_id, text}]} per round
 const wsTailMsgs = sid => (WS_TAIL[sid] || []).map(([author, text], i) =>
   ({ author, text, ts: sid + '#' + i, restored: true }));
 // ?workspace=1&councilweb=1 — the same artifact, reached through the council's
@@ -898,7 +901,9 @@ let queueDepth = 0;
 // then holds still for a screenshot instead of being overtaken by the chip.
 // (mutable: the selftest holds the queue for a moment too, to read the wait
 // line before a turn overtakes it)
-let HOLD_QUEUE = Q.get('queued') === '1';
+// (…and the mid-round pose holds it too: a screenshot wants the round frozen
+// with one thread working and the rest queued, not finished — see `&round=1`)
+let HOLD_QUEUE = Q.get('queued') === '1' || Q.get('round') === '1';
 // what the companion says it is WAITING FOR when it answers {queued:true} —
 // 'bridge_starting' (the agents are being woken) or 'busy' (another chat has
 // the floor). null = an older companion that says nothing, which must still
@@ -1284,9 +1289,13 @@ function reopenOnWrite(rec, threadId, msg) {
   const t = (rec.threads || []).find(x => x.id === threadId);
   if (!t) return;
   delete t.resolved; delete t.resolved_at; delete t.resolved_by;
+  // a `tools` line marks nothing and UNMARKS nothing: it is a bot narrating,
+  // and a summary that lands after its own answer must not take down the
+  // "ready for review" that answer earned (store.appendMsg says the same)
+  if (msg && msg.kind === 'tools') return;
   delete t.addressed; delete t.addressed_at; delete t.addressed_by;
   const author = msg && msg.author;
-  if (msg && msg.kind !== 'tools' && /^(claude|codex)\b/i.test(String(author || ''))) {
+  if (msg && /^(claude|codex)\b/i.test(String(author || ''))) {
     t.addressed = true; t.addressed_at = now(); t.addressed_by = String(author);
   }
 }
@@ -1305,7 +1314,7 @@ function digestOf(t) {
 // then a `page` invalidation, exactly as the companion would.
 // `url` is the page the turn belongs to — this page unless it is the library's,
 // which is a conversation on a page nobody is standing on.
-function playTurn(target, text, url) {
+function playTurn(target, text, url, then) {
   const on = url || PAGE_URL;
   const rec = on === LIBRARY_URL ? libraryRecord() : RECORD;
   const streamId = 's-' + Math.random().toString(36).slice(2, 8);
@@ -1341,6 +1350,9 @@ function playTurn(target, text, url) {
       toContent({ t: 'ws', ev: { type: 'page', url: on } });
       queueDepth = Math.max(0, queueDepth - 1);
       log('turn done (' + model + ')');
+      // a round drains its queue one turn at a time, so the next job starts
+      // where this one ended — never all at once (see /send-review)
+      if (then) setTimeout(then, 60);
       return;
     }
     ev({ type: 'chat', kind: 'stream', model, stream_id: streamId, text: chunks[i++] });
@@ -1425,10 +1437,12 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: { ok: true, session_id: wsCurrent,
       session_title: RECORD.session_title, page: RECORD } };
   }
-  // The whole margin review, in one page-chat turn. The real companion
-  // composes the digest itself (workspace.reviewDigest) — the drawer only
-  // asks and then reloads the record — so the fake does the same, minus the
-  // caps, which are the node suite's business and not the browser's.
+  // The whole margin review, as a ROUND: a preamble turn into page chat and
+  // then one turn PER OPEN THREAD, each targeted at that thread. The real
+  // companion composes every word of it (workspace.reviewFanout) and queues the
+  // jobs (server.mjs) — the drawer only asks and then reloads the record — so
+  // the fake does the same, minus the caps, which are the node suite's business
+  // and not the browser's.
   if (route === '/send-review') {
     if (!WORKSPACE) return { ok: false, status: 404, error: 'not a project artifact page' };
     if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
@@ -1437,18 +1451,42 @@ function companion(method, path, body) {
     // review", and re-sending it would ask for work already reported
     const open = RECORD.threads.filter(t => !t.resolved && !t.addressed && (t.msgs || []).length);
     if (!open.length) return { ok: false, status: 400, error: 'no open comments to send' };
-    const text = 'I have finished reviewing this draft. Here is my whole margin review — '
-      + open.length + ' open comment threads, in page order, quote first and the conversation under it.\n\n'
-      + 'Work through every point.\n\n'
-      + open.map((t, i) => '--- comment ' + (i + 1) + ' of ' + open.length + ' ---\n> ' + t.quote
-        + '\n' + t.msgs.map(m => m.author + ': ' + m.text).join('\n')).join('\n\n');
-    sentReviews.push(text);
-    RECORD.page_chat.push(stampMsg(text));
+    const preamble = 'Review round: I have been down this draft leaving comments in the margins. '
+      + open.length + ' comments follow this message, in page order, one turn each\n\n'
+      + 'For each one: make the change it calls for and say what you changed; where it calls for '
+      + 'no change, answer it. Each of those turns is posted into that comment’s own thread.\n\n'
+      + 'Nothing is resolved by any of this — I file the threads myself once I am satisfied.';
+    // workspace.reviewRoute: @all, unless the thread's LAST human message tags
+    // one bot — then that bot alone, because the reader already chose
+    const routeOfThread = t => {
+      const said = (t.msgs || []).filter(m => m.kind !== 'tools' && !/^(claude|codex)\b/i.test(String(m.author || '')));
+      const last = said[said.length - 1] || {};
+      const tags = String(last.text || '').match(/@(claude|codex|all)\b/gi) || [];
+      const set = new Set(tags.map(s => s.slice(1).toLowerCase()));
+      if (set.size === 1 && !set.has('all')) return '@' + [...set][0];
+      return '@all';
+    };
+    const turns = open.map((t, i) => ({
+      thread_id: t.id,
+      text: routeOfThread(t) + ' [review round · comment ' + (i + 1) + ' of ' + open.length + '] '
+        + 'This is part of the review round I just opened in the chat, and this turn is this one comment.',
+    }));
+    reviewRounds.push({ preamble: preamble, turns: turns });
+    sentReviews.push(preamble);
+    RECORD.page_chat.push(stampMsg(preamble));
     RECORD.updated_at = now();
-    queueDepth++;
-    if (!HOLD_QUEUE) setTimeout(() => playTurn('__page__', text), 350);
+    queueDepth += 1 + turns.length;
+    // one at a time, in page order, exactly as the bridge drains its queue: the
+    // preamble first, then each thread's own turn when the one before it is done
+    if (!HOLD_QUEUE) {
+      const chain = i => {
+        if (i >= turns.length) return;
+        playTurn(turns[i].thread_id, turns[i].text, null, () => chain(i + 1));
+      };
+      setTimeout(() => playTurn('__page__', preamble, null, () => chain(0)), 350);
+    }
     return { ok: true, status: 200, data: { ok: true, sent: open.length, total: open.length,
-      omitted: 0, queued: true, position: queueDepth } };
+      omitted: 0, queued: 1 + turns.length, threads: turns.map(t => t.thread_id) } };
   }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   // the library is an ordinary page record on a reserved url — the companion
@@ -6290,23 +6328,80 @@ async function selftestWorkspace() {
     check('backing out sends nothing and puts the button back',
       !S.querySelector('.reviewrow.confirm') && sentReviews.length === 0 && !!sendBtn());
 
+    // …and one more comment in the middle thread, addressed to ONE bot. The
+    // round must keep the reader's choice rather than broadening that thread
+    // back out to the room (workspace.reviewRoute reads the LAST human message,
+    // which is why the "@claude" at the top of this same thread must not win).
+    RECORD.threads[1].msgs.push(stampMsg('@codex can you check the source document?'));
+    d.setPage(RECORD); await sleep(40);
+
     sendBtn().click();
     await sleep(40);
     S.querySelector('[data-act="review-yes"]').click();
-    await until(() => sentReviews.length === 1, 4000);
-    check('confirming hands the whole review over in ONE turn', sentReviews.length === 1);
-    check('…carrying every open thread, quote and comments alike',
-      /--- comment 3 of 3 ---/.test(sentReviews[0])
-      && /The mood in the stands was flat/.test(sentReviews[0])
-      && /This is the line the whole piece hangs on/.test(sentReviews[0]));
-    await until(() => /finished reviewing this draft/.test(chatText()), 4000);
-    check('…and the digest is a visible message in page chat, not a hidden prompt',
-      /finished reviewing this draft/.test(chatText()));
+    await until(() => reviewRounds.length === 1, 4000);
+    const round = reviewRounds[0] || { turns: [] };
+    const ids = RECORD.threads.map(t => t.id);
+    check('confirming opens a ROUND: a preamble, then one turn per open thread',
+      reviewRounds.length === 1 && round.turns.length === 3);
+    check('…the preamble says what is coming and carries no comment text itself',
+      /Review round/.test(round.preamble || '') && !/--- comment/.test(round.preamble || ''));
+    check('…and each turn is aimed at its OWN thread, in page order',
+      round.turns.map(t => t.thread_id).join(',') === ids.join(','));
+    check('…routed @all, because a draft review is the room’s business',
+      /^@all /.test(round.turns[0].text || ''));
+    check('…unless the reader last tagged one bot in that thread',
+      /^@codex /.test(round.turns[1].text || ''));
+    await until(() => /Review round/.test(chatText()), 4000);
+    check('the preamble is a visible message in page chat, not a hidden prompt',
+      /Review round/.test(chatText()));
     check('the reader is told what happened', /sent 3 comments/.test(S.textContent || ''));
-    check('…including that filing is still theirs to do',
-      /threads stay open until you file them/.test(S.textContent || ''));
+    check('…including that it is one turn each, answered in the threads',
+      /one turn each, answered in the threads/.test(S.textContent || ''));
     check('and nothing was resolved on their behalf',
       RECORD.threads.every(t => !t.resolved));
+
+    // Spinner sanity. N queued turns must read as N waiting THREADS, not as N
+    // spinners stacked on the page chat: every thread with a turn coming says
+    // so on its own card, one runs at a time, and the chat pane carries at most
+    // the one status chip it has always carried.
+    const cardOf = id => S.querySelector('.card[data-thread="' + id + '"]');
+    const textOf = id => ((cardOf(id) || {}).textContent || '');
+    const queuedCards = () => ids.filter(id => /queued in this review round/.test(textOf(id))).length;
+    const chatChips = () => S.querySelectorAll('.pane[data-pane="chat"] .status-chip').length;
+    check('every thread with a turn coming says it is queued, on its own card',
+      queuedCards() === 3);
+    check('…and the page chat is not carrying three spinners of its own', chatChips() <= 1);
+    const working = () => ids.filter(id => !!(cardOf(id) || { querySelector: () => null }).querySelector('.status-chip .stop'));
+    const running = await until(() => working()[0], 8000);
+    check('a thread whose turn has started shows the working chip on that card', !!running);
+    check('…and only one card is working at a time', working().length <= 1);
+    check('…which is one fewer thread still saying queued', queuedCards() < 3);
+
+    // The whole point of the fan-out: the answers land IN THE THREADS, which is
+    // what makes them addressed — and everything downstream (the badge, the
+    // Ready for review section) then falls out of machinery that already
+    // existed, with no send-review case of its own.
+    const answered = await until(() => RECORD.threads.every(t =>
+      (t.msgs || []).some(m => /^(claude|codex)/i.test(String(m.author || '')) && m.kind !== 'tools')), 20000);
+    check('every comment is answered IN ITS OWN THREAD, not in one page-chat lump', !!answered);
+    check('…by the bot that thread was addressed to',
+      /^codex/i.test(String((RECORD.threads[1].msgs.filter(m => m.kind !== 'tools').pop() || {}).author || '')));
+    check('…and the page chat holds the preamble and its answer, not the review',
+      (RECORD.page_chat || []).filter(m => /--- comment/.test(m.text || '')).length === 0
+      && (RECORD.page_chat || []).some(m => /Review round/.test(m.text || '')));
+    const ready = await until(() => RECORD.threads.every(t => t.addressed), 8000);
+    check('a reply in a thread flips it to ready for review — the choke point, untouched', !!ready);
+    await until(() => !!S.querySelector('.ready-sec'), 4000);
+    check('…so the drawer grows a "Ready for review" section for the round',
+      !!S.querySelector('.ready-sec')
+      && ((S.querySelector('.ready-sec .rcount') || {}).textContent || '') === '3');
+    check('…and every queued marker has been cleared by the turn that answered it',
+      queuedCards() === 0);
+    check('nothing was filed on the reader’s behalf, then or now',
+      RECORD.threads.every(t => !t.resolved));
+    // put the page back the way the rest of the selftest expects it
+    RECORD.threads.forEach(t => { delete t.addressed; delete t.addressed_at; delete t.addressed_by; });
+    d.setPage(RECORD); await sleep(40);
   }
 
   // ---- Phase 2: the bots changed the project's files ---------------------
@@ -6413,6 +6508,28 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         d.open('chat');
         const b = d.shadow.querySelector('[data-act="send-review"]');
         if (b) b.click(); else log('review: no send-review button');
+      }, 300);
+    }
+    // ?workspace=1&round=1 — the mid-round pose: the review sent, the queue
+    // held, and the first thread's turn frozen mid-stream. This is what the
+    // fan-out actually looks like to a reader — a queued marker on every thread
+    // with a turn coming, one card working, and nothing stacked on the page
+    // chat — so it is the state the screenshot has to be able to reach.
+    if (WORKSPACE && Q.get('round') === '1') {
+      setTimeout(() => {
+        d.open('chat');
+        const b = d.shadow.querySelector('[data-act="send-review"]');
+        if (!b) { log('round: no send-review button'); return; }
+        b.click();
+        setTimeout(() => {
+          const y = d.shadow.querySelector('[data-act="review-yes"]');
+          if (y) y.click(); else log('round: no confirm');
+          setTimeout(() => {
+            d.open('comments');
+            const first = (RECORD.threads[0] || {}).id;
+            if (first) freezeTurn(first);
+          }, 500);
+        }, 80);
       }, 300);
     }
     // ?ready=1 — the screenshot pose for the middle state. A thread only ever
