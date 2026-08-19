@@ -2012,8 +2012,15 @@ test('billing: flipping a switch retires idle bridges — the next turn already 
     const env1 = await newBridgeEnv(s, 'retire001');
     assert.equal(env1.ANTHROPIC_API_KEY, CLAUDE_KEY);
     // the key "wears out"; the reader flips to subscription — no remove, no
-    // restart, no new tab
-    const r = await (await post(s.base, '/key-mode', { agent: 'claude', mode: 'subscription' })).json();
+    // restart, no new tab. The bridge may still be mid-boot (busy) for a
+    // moment, so retry the flip until it lands on an idle bridge.
+    let r = null;
+    const deadline = Date.now() + 5000;
+    do {
+      r = await (await post(s.base, '/key-mode', { agent: 'claude', mode: 'subscription' })).json();
+      if (r.applies === 'now') break;
+      await new Promise(x => setTimeout(x, 50));
+    } while (Date.now() < deadline);
     assert.equal(r.applies, 'now', 'the idle bridge was retired by the flip');
     const env2 = await newBridgeEnv(s, 'retire001');
     assert.equal(env2.ANTHROPIC_API_KEY, undefined,
