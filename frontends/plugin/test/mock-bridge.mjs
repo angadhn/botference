@@ -198,11 +198,19 @@ function input(text) {
         emit({ type: 'room', speaker: model, blocks: [],
           text: 'Explored\n├ Search web for night train load factors\n└ Read notes.md' });
       }
+      // [mock:reads:…] — the answer a bot gives when its change REWROTE the
+      // passage a comment is about: it quotes the new wording back verbatim
+      // (bridge-system-prompt rule 5), which is what lets the page re-anchor
+      // the thread onto the rewrite instead of leaving it orphaned.
+      const reads = /\[mock:reads:([^\]]+)\]/.exec(text);
+      const body = reads
+        ? `Done — this passage now reads: "${reads[1]}"`
+        : `MOCK ${model} reply.`;
       emit({ type: 'stream', kind: 'start', ...head });
-      emit({ type: 'stream', kind: 'text_delta', ...head, text: 'MOCK ' });
-      emit({ type: 'stream', kind: 'text_delta', ...head, text: `${model} reply.` });
+      emit({ type: 'stream', kind: 'text_delta', ...head, text: body.slice(0, 5) });
+      emit({ type: 'stream', kind: 'text_delta', ...head, text: body.slice(5) });
       emit({ type: 'stream', kind: 'done', ...head });
-      room(model, `MOCK ${model} reply.`);
+      room(model, body);
     }
     // every turn burns context: tokens always move, pct only on demand
     use.claude_tokens += 1200; use.codex_tokens += 900;

@@ -799,6 +799,77 @@ export function setAddressed(thread, on, by) {
   return { thread, changed: was !== !!on };
 }
 
+// ---- re-anchoring onto the wording a change put there ---------------------
+//
+// The gap this closes: a bot's change REWRITES the quoted passage, so the
+// thread's anchor no longer matches anything on the page and the highlight
+// orphans. The reader is then left with a card that says what changed and a
+// page that gives them no bearing at all on where it landed.
+//
+// The bot has already said what the passage now reads (bridge-system-prompt
+// rule 5), so the wording is there to anchor to. WHO DOES THE ANCHORING is the
+// design question, and the answer is: the page, not this file.
+//
+// The companion has no DOM. It cannot check that the new wording is really in
+// the document, only that a bot claimed it — and acting on the claim alone
+// would rewrite a thread's anchor on the strength of a sentence, possibly
+// destroying an anchor that still matched perfectly. So the extension locates
+// the new wording first (anchor.js, against the live page) and only a
+// SUCCESSFUL, unambiguous locate is allowed to reach this file. A locate that
+// fails changes nothing and the thread stays orphaned exactly as before.
+//
+// What this file is still the authority on is WHICH wording may be written:
+// `newWording` re-parses the thread's own last bot message here, and a
+// /reanchor that asks for anything else is refused. A client cannot use this
+// door to rewrite a quote into whatever it likes.
+//
+// `prior_quote` is the original wording, kept forever — it is the "was" half
+// of the drawer's before→after, and losing it would leave a diff with one end.
+// It is written ONCE: a passage rewritten twice still has one original.
+//
+// (anchor.js carries the browser-side twin of this regex, `Anchor.newWording`.
+// Keep the two in step.)
+export const NEW_WORDING_RE =
+  /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+
+export function newWording(thread) {
+  const msgs = (thread && thread.msgs) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.kind === 'tools' || !isAgentAuthor(m.author)) continue;
+    const hit = NEW_WORDING_RE.exec(String(m.text || ''));
+    return hit ? hit[1].trim() : '';
+  }
+  return '';
+}
+
+// whitespace-insensitive equality, the same fold anchor.js matches under: the
+// extension sends back what it FOUND on the page, which may be broken across
+// tags and lines, not a byte copy of what the bot typed
+const looseSame = (a, b) =>
+  String(a || '').replace(/\s+/g, ' ').trim() === String(b || '').replace(/\s+/g, ' ').trim();
+
+export function reanchorThread(thread, anchor) {
+  if (!thread) return { ok: false, reason: 'unknown thread' };
+  if (!isAddressed(thread)) return { ok: false, reason: 'not a thread the bots have answered' };
+  const want = newWording(thread);
+  if (!want) return { ok: false, reason: 'no bot in this thread quoted a new wording' };
+  const quote = String((anchor && anchor.quote) || '').trim();
+  if (!quote) return { ok: false, reason: 'no quote' };
+  if (!looseSame(quote, want)) return { ok: false, reason: 'that is not the wording the bot quoted back' };
+  // idempotent: a second tab locating the same passage is not a second rewrite
+  if (looseSame(thread.quote, quote)) return { ok: true, thread, changed: false };
+  if (!thread.prior_quote) thread.prior_quote = thread.quote;
+  thread.quote = quote;
+  // same shape addThread stores: 32 chars of context either side
+  if (anchor && typeof anchor.prefix === 'string') thread.prefix = anchor.prefix.slice(-32);
+  if (anchor && typeof anchor.suffix === 'string') thread.suffix = anchor.suffix.slice(0, 32);
+  thread.reanchored_at = nowIso();
+  // the anchor was just FOUND: whatever the record said about it is stale
+  thread.orphaned = false;
+  return { ok: true, thread, changed: true };
+}
+
 // ---- resolving a thread -------------------------------------------------
 // A page collects comments faster than anybody works through them, so a thread
 // can be marked HANDLED: it leaves the drawer's main list for a collapsed

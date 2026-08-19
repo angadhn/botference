@@ -465,6 +465,29 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    look — comments written over there do not reach the bots. */
 .standdown.pageown { background: var(--card); border: 1px solid var(--card-line); opacity: 1 }
 
+/* TRACK CHANGES ON THE PAGE — the reader's switch for the struck-through old
+   wording shown where a bot's change landed. Same block as the standdown note
+   and deliberately the same shape: both are one sentence about what this
+   drawer is currently doing to the page, with the other choice beside it.
+
+   ON (the default) is the quieter state, for the same reason the standdown
+   default is: nothing has gone wrong, and the reader who is happy seeing the
+   changes should not be made to read a box about them. */
+.trackbar {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 8px 10px; border-radius: 8px;
+  background: var(--card); border: 1px solid var(--card-line);
+  color: var(--muted); font: 12px/1.5 var(--sans);
+}
+.trackbar.on { background: transparent; border: 1px dashed var(--card-line); opacity: .85 }
+.trackbar .tctext { flex: 1 1 150px; min-width: 0 }
+.trackbar .sdbtn {
+  flex: 0 0 auto; font: 11px/1 var(--sans); padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--card-line); background: transparent; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+}
+.trackbar .sdbtn:hover { border-color: var(--accent); color: var(--accent) }
+
 /* the tab bar is display:flex, which outranks the UA's [hidden] rule — the
    pages view hides it outright, so restore it explicitly */
 .tabs[hidden] { display: none }

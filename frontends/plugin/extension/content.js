@@ -373,6 +373,20 @@
   let registered = false;
   let orphans = {};       // threadId -> bool
   let locs = {};          // threadId -> {start,end}
+  // threadId -> {was, unique, long} for a READY thread whose passage a bot
+  // rewrote: what the wording used to be, and whether the new wording sits
+  // somewhere unambiguous enough to show the change inline. Rebuilt from the
+  // record on every re-anchor, so it can never outlive the state it describes.
+  let tracks = {};
+  // The reader's switch for the on-page markup. ON is the default — the whole
+  // point is that the change is visible without being asked for — and the
+  // answer is per page, because "show me the edits" is a thing about the draft
+  // in front of them and not a mood.
+  let trackChanges = true;
+  const TRACK_KEY = 'bfp:track-changes:' + URL_NOW;
+  // in-flight /reanchor ids: a repaint storm must not post the same durable
+  // re-anchor a dozen times
+  const reanchoring = Object.create(null);
   let pendingSel = null;  // {quote,prefix,suffix,start,end} awaiting the 💬 click
   let drawer = null;
   // The first-turn context travels once per page and the companion only ever
@@ -671,7 +685,21 @@
 
   function genericArticleText() {
     const el = articleRoot();
-    return collapse(el.innerText || el.textContent).slice(0, 6000);
+    return withoutWasMarkup(() => collapse(el.innerText || el.textContent).slice(0, 6000));
+  }
+
+  // Read the page as it stands, not as it stood. `innerText` is a rendering of
+  // what is laid out, so our struck old wording would ride into it — and the
+  // one thing the bots must never be handed is a draft with the sentences a
+  // change removed still sitting in it, unmarked. buildTextIndex skips the
+  // markup structurally; innerText has no such door, so the nodes are hidden
+  // for the length of the read and put back before anything can paint.
+  function withoutWasMarkup(fn) {
+    let hidden = [];
+    try { hidden = [...document.querySelectorAll('del.bfp-was')]; } catch { hidden = []; }
+    for (const n of hidden) n.style.setProperty('display', 'none', 'important');
+    try { return fn(); }
+    finally { for (const n of hidden) n.style.removeProperty('display'); }
   }
 
   // ---- the article, as a thing a phone can read ---------------------------
@@ -711,6 +739,12 @@
         while (m.firstChild) parent.insertBefore(m.firstChild, m);
         parent.removeChild(m);
       });
+      // …and our TRACK-CHANGES markup is REMOVED outright, which is the
+      // opposite call and the right one: the struck old wording is a sentence
+      // that is not in the document any more. Unwrapping it would put a
+      // deleted passage back into the prose the phone reads and the bots are
+      // sent, where nothing marks it as gone.
+      clone.querySelectorAll('del.bfp-was').forEach(n => n.remove());
       clone.querySelectorAll('#bfp-root').forEach(n => n.remove());
       clone.querySelectorAll(SNAP_JUNK).forEach(n => n.remove());
       // relative URLs mean nothing on the companion's hostname
@@ -880,8 +914,10 @@
     if (!CAPS.highlights) {
       locs = {};
       orphans = {};
+      tracks = {};
       for (const t of threads) orphans[t.id] = true;
       if (drawer) drawer.setOrphans(orphans);
+      if (drawer) drawer.setTrackChanges({ on: trackChanges, threads: [] });
       return;
     }
     // RECONCILE, not just add: a thread can vanish from the record between two
@@ -896,16 +932,37 @@
     for (const id of Object.keys(locs)) if (!live[id]) delete locs[id];
     for (const id of Object.keys(orphans)) if (!live[id]) delete orphans[id];
 
+    // the struck old wording comes down BEFORE the index is built: it is
+    // skipped by buildTextIndex anyway, but a re-anchor that rebuilds it from
+    // the record is the only thing allowed to decide it is still there
+    Anchor.unpaintWas(null);
     for (const t of threads) Anchor.unpaint(t.id);
     Anchor.unpaint('__new__');
 
     let index = freshIndex();
     const nextOrphans = {};
     locs = {};
+    tracks = {};
     for (const t of threads) {
       const r = Anchor.locate(index.raw, t);
-      if (r.ok) { locs[t.id] = { start: r.start, end: r.end }; nextOrphans[t.id] = false; }
-      else nextOrphans[t.id] = true;
+      if (r.ok) {
+        locs[t.id] = { start: r.start, end: r.end }; nextOrphans[t.id] = false;
+        // Already re-anchored on an earlier visit: the record's own anchor is
+        // the NEW wording and `prior_quote` is what it replaced, so the change
+        // is still the thing to show here — and it survives a reload, another
+        // tab and another machine, which is what made it worth storing.
+        noteTrack(t, r, t.prior_quote);
+        continue;
+      }
+      // THE PASSAGE IS GONE. Which is exactly what a change that rewrote it
+      // looks like — and if a bot said what it now reads, the page can be
+      // asked about THAT instead of leaving the thread stranded.
+      const moved = relocateRewritten(t, index.raw);
+      if (moved) {
+        locs[t.id] = { start: moved.start, end: moved.end }; nextOrphans[t.id] = false;
+        noteTrack(t, moved, t.prior_quote || t.quote);
+        makeDurable(t, moved, index.raw);
+      } else nextOrphans[t.id] = true;
     }
     for (const t of threads) {
       if (nextOrphans[t.id]) continue;
@@ -943,6 +1000,148 @@
     }
     orphans = nextOrphans;
     if (drawer) drawer.setOrphans(orphans);
+    paintTrackChanges();
+  }
+
+  // ---- track changes, on the page -----------------------------------------
+  //
+  // THE PROBLEM. A bot rewrites the passage a comment is about. The old
+  // wording is no longer on the page, so the highlight orphans; the card can
+  // draw a before→after because the bot quoted the new wording back, but the
+  // page itself shows only the new text, unmarked. The reader re-reading their
+  // own draft has no bearing at all on where the change landed.
+  //
+  // THE ANSWER, in two halves. The highlight moves onto the new wording (so
+  // the thread has a place again, and clicking it opens the thread through the
+  // machinery that was already there), and the wording it REPLACED is shown
+  // struck through immediately before it — Word's idiom, and the same idiom
+  // the card's diff already uses.
+  //
+  // WHERE IT FIRES: here, on the first successful LOCATE, and not at the
+  // choke point that sets `addressed`. The companion has no DOM; it can only
+  // know that a bot CLAIMED a new wording, never that the wording is really on
+  // the page. Re-anchoring on the claim would rewrite a thread's anchor on the
+  // strength of a sentence — and could destroy an anchor that still matched.
+  // So the page proves it first, and only then is it written down. A locate
+  // that fails changes nothing and the thread stays orphaned exactly as it did
+  // before any of this existed.
+  const WHY_AMBIGUOUS = 'this passage was rewritten — the new wording appears more '
+    + 'than once here, so the change is shown in the comment rather than inline';
+  const WHY_LONG = 'this passage was rewritten — too long to show the old wording '
+    + 'inline, so the change is shown in the comment';
+
+  // Ask the page about the wording a bot said the passage NOW reads. Only for
+  // a thread the bots have answered and the reader has not filed: an open
+  // thread has had no claim made about it, and a filed one is finished.
+  function relocateRewritten(t, raw) {
+    if (!t || !t.addressed || t.resolved) return null;
+    const now = Anchor.newWording(t);
+    if (!now) return null;
+    // the OLD context still applies: a rewrite replaces the passage, not the
+    // paragraph around it, so prefix/suffix are exactly what disambiguates
+    const r = Anchor.locate(raw, { quote: now, prefix: t.prefix, suffix: t.suffix });
+    if (!r.ok) return null;
+    return { start: r.start, end: r.end, unique: !!r.unique, quote: now };
+  }
+
+  // What this thread's inline markup should say, if anything. `was` is the
+  // wording that left; there is nothing to show without one.
+  function noteTrack(t, r, was) {
+    if (!t.addressed || t.resolved) return;
+    was = String(was || '').trim();
+    if (!was) return;
+    const now = String(t.quote || '');
+    tracks[t.id] = {
+      was,
+      unique: r.unique !== false,
+      // Cap sanity: passages are prose spans, not pages. Past this the inline
+      // markup stops being a change and becomes a second copy of the document
+      // sitting in the middle of the first one.
+      long: was.length > Anchor.WAS_MAX || now.length > Anchor.WAS_MAX,
+    };
+  }
+
+  // Write the re-anchor down. Owner-only server-side; a guest's companion
+  // simply refuses and the tab keeps its local re-anchor for this visit, which
+  // is the harmless direction.
+  function makeDurable(t, moved, raw) {
+    if (reanchoring[t.id]) return;
+    reanchoring[t.id] = true;
+    const a = Anchor.buildAnchor(raw, moved.start, moved.end);
+    api('POST', '/reanchor', {
+      url: URL_NOW, thread_id: t.id,
+      quote: a.quote, prefix: a.prefix, suffix: a.suffix,
+    }).then(r => {
+      delete reanchoring[t.id];
+      if (!r || !r.ok) return;
+      const saved = r.data && r.data.thread;
+      if (!saved) return;
+      // fold the companion's answer straight in rather than refetching: the
+      // record is the same object the drawer is rendering
+      const live = ((PAGE && PAGE.threads) || []).find(x => x.id === t.id);
+      if (live) {
+        live.prior_quote = saved.prior_quote;
+        live.quote = saved.quote;
+        live.prefix = saved.prefix;
+        live.suffix = saved.suffix;
+        live.orphaned = false;
+        if (drawer) drawer.setPage(PAGE);
+      }
+    }).catch(() => { delete reanchoring[t.id]; });
+  }
+
+  // Sync every `.bfp-was` on the page with `tracks` and the reader's switch.
+  // One sweep, both directions, so there is no path by which markup outlives
+  // the state that justified it — resolving, "not done", a refetch and the
+  // toggle all end up here.
+  function paintTrackChanges() {
+    const showing = Object.create(null);
+    if (trackChanges) {
+      for (const id of Object.keys(tracks)) {
+        if (orphans[id]) continue;
+        showing[id] = tracks[id];
+      }
+    }
+    for (const id of Anchor.wasIds()) if (!showing[id]) Anchor.unpaintWas(id);
+    for (const id of Object.keys(tracks)) if (!showing[id]) Anchor.markInserted(id, false);
+    for (const id of Object.keys(showing)) {
+      const info = showing[id];
+      // Ambiguous or oversized: the highlight still moved (the thread has a
+      // place again) but the old wording is not put inline, and the mark says
+      // why for anyone who hovers it.
+      if (!info.unique || info.long) {
+        Anchor.unpaintWas(id);
+        Anchor.markInserted(id, true, info.long ? WHY_LONG : WHY_AMBIGUOUS);
+        continue;
+      }
+      if (!Anchor.paintWas(id, info.was)) Anchor.markInserted(id, true, WHY_LONG);
+    }
+    if (drawer) drawer.setTrackChanges({ on: trackChanges, threads: Object.keys(tracks) });
+  }
+
+  // The switch itself, thrown from the drawer's Comments tab. Persisted per
+  // page, exactly like the margin switch: the default (ON) stores nothing, so
+  // a page nobody has an opinion about costs no storage at all.
+  function setTrackChanges(want) {
+    trackChanges = !!want;
+    try {
+      if (!trackChanges) chrome.storage.local.set({ [TRACK_KEY]: true });
+      else if (chrome.storage.local.remove) chrome.storage.local.remove(TRACK_KEY);
+      else chrome.storage.local.set({ [TRACK_KEY]: false });
+    } catch { /* the choice still holds for this page view */ }
+    paintTrackChanges();
+  }
+
+  // …read back at boot. A stored value means the reader turned it OFF here.
+  function loadTrackChanges() {
+    if (!extensionAlive()) return;
+    try {
+      chrome.storage.local.get(TRACK_KEY, r => {
+        if (!r || !r[TRACK_KEY]) return;
+        trackChanges = false;
+        paintTrackChanges();
+      });
+    } catch { /* no storage: the markup shows, which is the default */ }
   }
 
   // Where a new anchor sits in the visual order of the page: every already
@@ -1310,6 +1509,10 @@
       // The drawer says so where the comments would be and carries the switch.
       reviewHost: { hosts: HOSTS_REVIEW_UI, pageOwns: pageOwnsMargin },
       onPageComments: want => setPageOwnsMargin(want),
+      // …and the reader's switch for the on-page track changes: the struck old
+      // wording beside a passage a bot rewrote. Default ON, per page.
+      trackChanges: trackChanges,
+      onTrackChanges: want => setTrackChanges(want),
       // the pages list needs to know which row is the page it is being shown
       // on; normUrl is ours, not the drawer's, so it is handed over with it
       currentUrl: URL_NOW,
@@ -1482,8 +1685,20 @@
       // refusal puts the colour back.
       onResolve: async (threadId, resolved) => {
         Anchor.markResolved(threadId, !!resolved);
+        // filing a thread ends its track changes with it: the reader has
+        // looked at the change, and a struck sentence beside a sage highlight
+        // would be the page still asking a question that has been answered.
+        // (Resolving CLEARS `addressed` server-side, and reopening clears it
+        // too, so a reopened thread comes back yellow and unmarked — the
+        // markup returns when a bot next claims something about it.)
+        const keptTrack = tracks[threadId];
+        if (resolved) { delete tracks[threadId]; paintTrackChanges(); }
         const r = await api('POST', '/resolve', { url: URL_NOW, thread_id: threadId, resolved: !!resolved });
-        if (!r.ok) { Anchor.markResolved(threadId, !resolved); return failure(r); }
+        if (!r.ok) {
+          Anchor.markResolved(threadId, !resolved);
+          if (keptTrack) { tracks[threadId] = keptTrack; paintTrackChanges(); }
+          return failure(r);
+        }
         await loadPage();
         return { ok: true, thread: r.data && r.data.thread,
                  summarizing: !!(r.data && r.data.summarizing) };
@@ -1826,7 +2041,11 @@
 
   // click a highlight → open the drawer at that thread
   document.addEventListener('click', e => {
-    const mark = e.target && e.target.closest && e.target.closest('mark.bfp-hl');
+    // …and the struck old wording beside a rewritten one opens the same
+    // thread: to the reader it is one thing — the change — and half of it
+    // being inert would be a small betrayal of that.
+    const mark = e.target && e.target.closest
+      && e.target.closest('mark.bfp-hl, del.bfp-was[data-bfp]');
     if (!mark) return;
     const id = mark.getAttribute('data-bfp');
     if (!id || id === '__new__') return;
@@ -2046,6 +2265,7 @@
   function boot() {
     consumeAutoOpen();
     loadPageComments();
+    loadTrackChanges();
     startLiveness();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;

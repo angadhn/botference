@@ -2510,9 +2510,10 @@ rather than an edit — it falls back to the two quotes stacked and labelled
 **was / now**, which says the same thing and cannot mislead. Pure client-side:
 no new data, nothing server-side, no page-side rendering.
 
-**Deferred, not built:** having the companion RE-ANCHOR the thread to the new
+~~**Deferred, not built:** having the companion RE-ANCHOR the thread to the new
 wording (anchor.js) when a bot reply carries it, so the highlight moves onto the
-rewritten passage instead of orphaning at all.
+rewritten passage instead of orphaning at all.~~ — **built**, see the next
+amendment.
 
 #### Testing
 
@@ -2534,6 +2535,169 @@ it, and the before→after diff (word diff, stacked fallback, and nothing at all
 for a reply that quotes no new wording). `?ready=1` is the screenshot pose and
 `?ready=1&rewrite=1` the one for the diff. The workspace selftest asserts the
 send-review count drops when a thread goes ready and comes back when it does.
+
+### Amendment (2026-08-19, shipped): track changes on the page
+
+The previous amendment gave the reader a **card** that says what a bot's change
+did to a passage. It left the **page** saying nothing at all.
+
+A change that rewrites the quoted passage orphans its highlight. The old
+wording is not there any more, so nothing is painted; the new wording is there,
+unmarked, indistinguishable from prose nobody has touched. The reader
+re-reading their own draft after a round with the bots has no bearing on where
+the change landed or what it replaced — the one thing they came back to look
+at. The card knew; the document did not.
+
+So: **the highlight moves onto the rewritten passage, and the wording it
+replaced is shown, struck through, immediately before it.** Word's idiom, and
+the same before→after idiom the card already used, in the body of the page.
+
+#### 1. Re-anchoring — and who is allowed to do it
+
+The bot has already said what the passage now reads (`done — this passage now
+reads: "…"`, bridge-system-prompt rule 5). That sentence is now doing two jobs,
+so **the parse moved to `anchor.js`** (`Anchor.newWording`) — beside the
+locating it feeds. `drawer.js` calls it for the diff and `content.js` calls it
+for the anchor; two copies of the rule could drift into a card that draws a
+change the page does not show.
+
+**Where it fires: the extension, on the first successful LOCATE — not at the
+choke point that sets `addressed`.** This was the choice, and it is not the
+convenient one:
+
+> The companion has no DOM. `store.appendMsg` can know that a bot CLAIMED a new
+> wording; it can never know the wording is on the page. Re-anchoring there
+> would rewrite a thread's anchor on the strength of a sentence — and would
+> happily destroy an anchor that still matched perfectly, on a page the change
+> never reached. So the page proves it first.
+
+`content.js`'s `reanchorAll` already locates every thread against clean text.
+A thread that fails to locate, is `addressed`, is not `resolved`, and carries a
+parsed new wording is looked up a second time — `Anchor.locate` against the new
+wording, with the thread's OLD prefix/suffix, because a rewrite replaces the
+passage and not the paragraph around it. On success the thread is located,
+painted READY amber and clicks through to its card like any other. **On failure
+nothing happens at all: the thread stays orphaned exactly as it did before any
+of this existed, and nothing is written down.**
+
+**Durable, `POST /reanchor {url, thread_id, quote, prefix, suffix}`** —
+`store.reanchorThread`. `prior_quote` takes the original wording (written ONCE:
+a passage rewritten twice still has one original — it is the "was" half of the
+card's diff, and the only thing here that nothing can recover), `quote` becomes
+the new wording, prefix/suffix the fresh context, `orphaned` goes false, and
+`reanchored_at` stamps it. Idempotent: a second tab locating the same passage
+is not a second rewrite.
+
+**OWNER-ONLY**, unlike `/resolve` and `/addressed`. Those are opinions about a
+thread and are free to undo; this EDITS the record's own anchor.
+
+And the companion is still the authority on one thing: **which** wording may be
+written. `store.newWording` re-parses the thread's own last bot message and
+refuses anything else, so the door cannot be used to set a quote to whatever a
+client likes. (That parse is the node-side twin of `Anchor.newWording`; the two
+are kept in step by hand and both are unit-tested.)
+
+The drawer's `rewriteHtml` reads its "was" from `t.prior_quote || t.quote`:
+once the re-anchor has happened `quote` IS the new wording, and diffing it
+against itself would draw nothing.
+
+#### 2. The markup, and why it is not a fourth tint
+
+```
+<del class="bfp-was" data-bfp="<id>" aria-hidden="true">the old wording </del>
+<mark class="bfp-hl bfp-ready bfp-ins" data-bfp="<id>">the new wording</mark>
+```
+
+The obvious move — paint the arrival in the green/ok tint — was **not** taken.
+Three background tints already mean three states of a THREAD (yellow open,
+amber ready, sage filed), read down a page as a progress bar, and a fourth
+would muddle the one thing the colours are for. Worse, "green" is already
+*filed*. So the mark keeps the tint its thread's state earns it, and the
+arrival is marked the way Word marks an insertion: **an underline in the
+accepted green**, over whatever background is already there. The departure is
+the struck, dimmed `<del>`, which is not part of the page at all.
+
+Clicking either opens the thread — the click handler takes
+`mark.bfp-hl, del.bfp-was[data-bfp]`, because to the reader it is one thing.
+
+#### 3. Display-only, and the proof of it
+
+The `<del>` is inserted into the page's own DOM, which is a thing worth being
+paranoid about. Four doors, all shut:
+
+| door | what happens |
+| --- | --- |
+| `Anchor.buildTextIndex` | `WAS_CLASS` is **skipped in the walk**, beside `#bfp-root`. This is the single place every locate, offset and paint reads the page through — so the struck text is invisible to anchoring, and a thread can never re-anchor onto its own ghost. |
+| `snapshotHtml` | **removed outright** (not unwrapped, which is what our `mark`s get — those wrap the very text an anchor points at). A deleted sentence must not go back into the prose the phone reads. |
+| `genericArticleText` | `innerText` renders what is laid out, and has no structural door. So `withoutWasMarkup` hides the nodes for the length of the read and restores them in a `finally`. The bots must never be handed a draft with the sentences a change removed still in it. |
+| the reader's own selection | `user-select: none`, so a drag across the passage cannot capture a quote half of which is not on the page. |
+
+Plus `aria-hidden="true"`: a screen reader working down the prose should hear
+the draft as it stands.
+
+#### 4. The reader's switch
+
+`.trackbar`, at the top of the Comments pane with the standdown note and for
+the same reason — it is the answer to a question the page itself raises ("why
+is there a struck sentence in my draft?"), and a setting behind a gear is a
+setting nobody finds. It renders **only where there is such a passage**.
+
+**Default ON**: the change should be visible without being asked for.
+Persisted per page in `chrome.storage.local` under
+`bfp:track-changes:<url>` — and, like the margin switch, only the NON-default
+is stored, so a page nobody has an opinion about costs no storage.
+
+**Filing a thread (✓) takes its markup down with it** and the highlight goes
+sage, as always. Note that reopening does NOT bring it back: `/resolve` clears
+`addressed` in both directions (that rule predates this and is right — "not
+done" is what a reopen means), so a reopened thread is an open thread, yellow
+and unmarked, until a bot claims something about it again. The markup is a pure
+function of `addressed && located && prior_quote && switch on`, swept in one
+place (`paintTrackChanges`), so nothing can outlive the state that justified it.
+
+#### 5. Cap sanity
+
+Passages are prose spans, not pages (`Anchor.WAS_MAX = 600`). Past that, or
+where the new wording located only by prefix/suffix scoring rather than
+uniquely, **the highlight still moves** — the thread has a place again, which
+is most of the value — but the old wording is not put inline, and the mark
+carries a `title` saying which of the two reasons it was.
+
+A locate that fails outright is a different case and keeps its old behaviour:
+orphaned, no highlight, no markup, nothing written down.
+
+#### Plugin-less visitors
+
+See nothing of this. All of it is extension-side except `prior_quote` /
+`reanchored_at` on the record, which are inert data — the reading room and the
+Obsidian export read `quote` exactly as they always did.
+
+#### Testing
+
+`anchor.test.mjs` covers the parse (the four phrasings, curly quotes, last bot
+word wins, a reader cannot move an anchor by typing the sentence, a `tools`
+line claims nothing, a bot quoting the reader back claims nothing) and the
+locate of the named wording against the old context, including the ambiguous
+and not-found cases. `resolve.test.mjs` covers `store.newWording` and
+`reanchorThread` — the rewrite, `prior_quote` written once across two rewrites,
+idempotency, whitespace-insensitive comparison, and every refusal (a forged
+quote, an unanswered thread, a filed one, a bot that claimed nothing).
+`companion.test.mjs` drives `/reanchor` over the wire, including the 409 before
+a bot has claimed anything, the forged-quote refusal, and the 404.
+(`mock-bridge.mjs` gained `[mock:reads:…]`, which makes a mock turn answer with
+the rule-5 sentence.)
+
+Harness `?ready=1&selftest=1` drives the whole thing in the DOM: the paragraph
+rewritten under the thread, the highlight moving onto the new wording in amber,
+the re-anchor posted once and the record carrying `prior_quote`, the struck
+`<del>` immediately before the mark with the old wording in it, the arrival
+underline, `aria-hidden` and `user-select`, the card's diff still two-ended
+from the stored original, all four leak doors (the index, `findSpans` on the
+old quote, the snapshot, the article text), the switch and its persistence in
+both directions, resolve taking it down and the highlight going sage, and a
+claimed wording the page cannot find leaving the thread orphaned with nothing
+written. `?ready=1&rewrite=1` is the screenshot pose and now rewrites the page
+itself rather than only the record.
 
 ## Out of scope for v1 (do not build)
 

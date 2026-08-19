@@ -746,6 +746,63 @@ async function main() {
       && /2026\/ready/.test(t)), 'the filing turn to drain');
   });
 
+  // --- the passage moved, and the page found it again ---------------------
+  // A bot's change rewrites the quoted passage: the highlight orphans and the
+  // reader loses all bearing on where the change landed. The bot has said what
+  // it now reads; the EXTENSION locates that on the live page (this companion
+  // has no DOM and must never rewrite an anchor on a claim alone) and posts
+  // the proven anchor here, where it is made durable for the next visit, the
+  // phone, and every other tab.
+  const MOVED_URL = 'https://ledger.test/2026/moved';
+  await test('POST /reanchor moves a ready thread onto the wording a bot quoted back', async () => {
+    await POST(base, '/page', { url: MOVED_URL, title: 'Moved', site: 'ledger.test' });
+    const WAS = 'the walk back to the tram stop was quieter than it has been in years';
+    const NOW = 'the walk back to the tram stop was quiet, and unhurried';
+    const t = (await POST(base, '/thread', {
+      url: MOVED_URL, quote: WAS, prefix: 'the season with a draw.', suffix: '— not angry',
+      msg: { text: 'tighten this?' },
+    })).json.thread;
+
+    // not yet: nobody has answered here, and nobody has claimed a new wording
+    assert.equal((await POST(base, '/reanchor',
+      { url: MOVED_URL, thread_id: t.id, quote: NOW })).status, 409);
+
+    // the bot's answer, exactly as one arrives — the reply path that already
+    // marks the thread addressed is the same one that carries the claim
+    await POST(base, '/reply', {
+      url: MOVED_URL, thread_id: t.id,
+      text: '@claude tighten this. [mock:reads:' + NOW + ']',
+    });
+    const ready = await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(MOVED_URL)}`)).json;
+      return p.threads[0].addressed ? p : null;
+    }, 'the thread to go ready');
+    assert.equal(ready.threads[0].quote, WAS, 'the anchor is still the old wording until a page proves otherwise');
+
+    const r = await POST(base, '/reanchor', {
+      url: MOVED_URL, thread_id: t.id, quote: NOW,
+      prefix: 'the season with a draw.', suffix: '. Nobody sang',
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.changed, true);
+    const p = (await GET(base, `/page?url=${encodeURIComponent(MOVED_URL)}`)).json;
+    assert.equal(p.threads[0].quote, NOW, 'the anchor is the new wording, durably');
+    assert.equal(p.threads[0].prior_quote, WAS, 'and the original is kept — it is the "was" half of the diff');
+    assert.equal(p.threads[0].orphaned, false, 'the anchor was just found, so the record stops saying it is lost');
+    assert.ok(p.threads[0].reanchored_at, 'stamped');
+
+    const again = await POST(base, '/reanchor', { url: MOVED_URL, thread_id: t.id, quote: NOW });
+    assert.equal(again.json.changed, false, 'a second tab locating the same passage is not a second rewrite');
+
+    // the one thing the companion IS the authority on: which wording may be
+    // written. A client cannot use this door to set a quote to anything it likes.
+    const forged = await POST(base, '/reanchor',
+      { url: MOVED_URL, thread_id: t.id, quote: 'whatever the client felt like' });
+    assert.equal(forged.status, 409);
+    assert.equal((await GET(base, `/page?url=${encodeURIComponent(MOVED_URL)}`)).json.threads[0].quote, NOW);
+    assert.equal((await POST(base, '/reanchor', { url: MOVED_URL, thread_id: 'no-such', quote: NOW })).status, 404);
+  });
+
   await test('/resolve refuses a thread that is not there, and /summarize queues on demand', async () => {
     const gone = await POST(base, '/resolve', { url: REOPEN_URL, thread_id: 'no-such-thread', resolved: true });
     assert.equal(gone.status, 404);

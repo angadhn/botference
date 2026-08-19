@@ -57,6 +57,39 @@
   // Comparable form of a fragment: folded, single-spaced, trimmed.
   const normalize = s => normIndex(s).norm.trim();
 
+  // ---- "this passage now reads: …" ---------------------------------------
+  // A bot whose change rewrote the quoted passage is asked to quote the new
+  // wording back verbatim (bridge-system-prompt rule 5). That one line is what
+  // lets the drawer draw a before→after AND what lets the page find the
+  // passage again after the rewrite orphaned it — so the parse lives HERE,
+  // beside the locating it feeds, and the drawer and content.js share it
+  // rather than each carrying a regex that could drift from the other.
+  //
+  // Only that explicit phrasing, and only from a BOT. A loose "any quoted
+  // string in a reply" rule would move an anchor every time an agent quoted
+  // the reader back at themselves.
+  // (store.mjs carries the node-side twin, `store.newWording`, for the one
+  // thing the companion must not take a client's word for: which wording a
+  // /reanchor is allowed to write. Keep the two in step.)
+  const NEW_WORDING_RE =
+    /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+  // the same authors the drawer calls bots and store.mjs calls agents
+  const isBotAuthor = a => /^(claude|codex)/i.test(String(a || '').trim());
+
+  // The LAST bot word on the wording, or ''. A human writing into the thread
+  // after it does not clear this on its own — `addressed` does that, and every
+  // caller here is already gated on a thread being addressed.
+  function newWording(thread) {
+    const msgs = (thread && thread.msgs) || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m || m.kind === 'tools' || !isBotAuthor(m.author)) continue;
+      const hit = NEW_WORDING_RE.exec(String(m.text || ''));
+      return hit ? hit[1].trim() : '';
+    }
+    return '';
+  }
+
   // Every (up to `limit`) whitespace-tolerant match of `needle` in `raw`, as
   // {start, end} offsets into raw. `end` is exclusive and lands on the last
   // matched non-space character + 1, so trailing raw whitespace inside a
@@ -159,6 +192,27 @@
   const DONE_CLASS = 'bfp-done';
   const READY_CLASS = 'bfp-ready';
   const FOCUS_CLASS = 'bfp-focused';
+  // ---- track changes -----------------------------------------------------
+  // A re-anchored ready thread: the highlight sits on the wording the bot put
+  // there, and the wording it REPLACED is shown, struck through, immediately
+  // before it. Word's idiom, and the drawer's own before→after idiom, on the
+  // page itself — so the reader looking at the draft can see where the change
+  // landed and what changed without opening a card.
+  //
+  // The tint is NOT the sage of a resolved highlight. Three background tints
+  // already mean three states of a THREAD (open / ready / filed) and a fourth
+  // would muddle the one thing the colours are for. So the arrival is marked
+  // the way Word marks an insertion — an underline in the accepted colour,
+  // over whatever background the thread's state already gives it — and the
+  // departure is a struck, dimmed <del> that is not part of the page at all.
+  const INS_CLASS = 'bfp-ins';       // on the mark: this wording ARRIVED
+  const WAS_CLASS = 'bfp-was';       // the display-only <del> before it
+  // Passages are prose spans, not pages. Past this the inline markup stops
+  // being a change and starts being a second copy of the document sitting in
+  // the middle of the first one, so the highlight is left to speak alone.
+  const WAS_MAX = 600;
+  const INS_LINE = 'rgba(45, 145, 85, .95)';
+  const WAS_BG = 'rgba(203, 68, 58, .10)';
 
   function styleMark(mark, focused) {
     const st = mark.style;
@@ -178,6 +232,21 @@
     st.setProperty('box-decoration-break', 'clone', 'important');
     st.setProperty('-webkit-box-decoration-break', 'clone', 'important');
     st.setProperty('transition', 'background-color .15s ease', 'important');
+    // …and, where track changes is showing, the Word underline that says this
+    // wording ARRIVED. Set both ways every time: styleMark is what a restyle
+    // goes through, so a mark that has stopped being an insertion must lose it
+    // here rather than keep a stale decoration.
+    if (cl && cl.contains(INS_CLASS)) {
+      st.setProperty('text-decoration-line', 'underline', 'important');
+      st.setProperty('text-decoration-color', INS_LINE, 'important');
+      st.setProperty('text-decoration-thickness', '2px', 'important');
+      st.setProperty('text-underline-offset', '2px', 'important');
+    } else {
+      st.removeProperty('text-decoration-line');
+      st.removeProperty('text-decoration-color');
+      st.removeProperty('text-decoration-thickness');
+      st.removeProperty('text-underline-offset');
+    }
   }
 
   function isHidden(el) {
@@ -214,6 +283,15 @@
           const tag = n.nodeName.toUpperCase();
           if (SKIP_TAGS.test(tag)) continue;
           if (n.id === 'bfp-root' || (n.classList && n.classList.contains('bfp-ui'))) continue;
+          // OUR OWN track-changes markup is not part of the page. The struck
+          // old wording we insert before a re-anchored highlight is display
+          // only: if it entered the index it would be matchable text, and the
+          // very first thing it would match is the anchor it was made from —
+          // a thread would re-anchor onto its own ghost and every repaint
+          // would have two candidates for one passage. Skipped here, which is
+          // the single place every locate, offset and paint reads the page
+          // through, so there is nowhere else for it to leak in.
+          if (n.classList && n.classList.contains(WAS_CLASS)) continue;
           if (isHidden(n)) continue;
           if (tag === 'BR') { sep(); continue; }
           const block = BLOCK_TAGS.test(tag);
@@ -408,6 +486,91 @@
     return !!(m && m.classList.contains(READY_CLASS) && !m.classList.contains(DONE_CLASS));
   };
 
+  // ---- track changes, on the page ----------------------------------------
+  // The wording a bot's change REPLACED, shown struck through immediately
+  // before the wording that replaced it. A <del> because that is what it is,
+  // `aria-hidden` because a screen reader working down the prose should hear
+  // the draft as it stands and not a sentence that no longer exists, and
+  // `user-select:none` so a reader dragging across the passage to comment on
+  // it cannot capture a quote half of which is not on the page.
+  //
+  // Display only, and provably so: WAS_CLASS is skipped by buildTextIndex (so
+  // it is invisible to every locate and every offset) and removed outright
+  // from the snapshot and from the article text content.js sends the bots.
+  const wasFor = id => document.querySelector(
+    'del.' + WAS_CLASS + '[data-bfp="' + String(id).replace(/"/g, '\\"') + '"]');
+
+  function paintWas(id, text) {
+    const mark = marksFor(id)[0];
+    if (!mark || !mark.parentNode) return null;
+    const body = String(text == null ? '' : text).trim();
+    if (!body || body.length > WAS_MAX) return null;
+    unpaintWas(id);
+    const del = (mark.ownerDocument || document).createElement('del');
+    del.className = WAS_CLASS;
+    del.setAttribute('data-bfp', String(id));
+    del.setAttribute('aria-hidden', 'true');
+    del.setAttribute('title', 'this passage was rewritten — click to open the comment');
+    // a hair space after the struck text keeps it from butting up against the
+    // wording that replaced it; it lives INSIDE the del, so it leaves with it
+    del.textContent = body + ' ';
+    const st = del.style;
+    st.setProperty('text-decoration', 'line-through', 'important');
+    st.setProperty('text-decoration-thickness', '1px', 'important');
+    st.setProperty('background-color', WAS_BG, 'important');
+    st.setProperty('color', 'inherit', 'important');
+    st.setProperty('opacity', '.55', 'important');
+    st.setProperty('border-radius', '2px', 'important');
+    st.setProperty('cursor', 'pointer', 'important');
+    st.setProperty('user-select', 'none', 'important');
+    st.setProperty('-webkit-user-select', 'none', 'important');
+    st.setProperty('box-decoration-break', 'clone', 'important');
+    st.setProperty('-webkit-box-decoration-break', 'clone', 'important');
+    mark.parentNode.insertBefore(del, mark);
+    markInserted(id, true);
+    return del;
+  }
+
+  function unpaintWas(id) {
+    let n = 0;
+    const sel = 'del.' + WAS_CLASS + (id == null ? '' :
+      '[data-bfp="' + String(id).replace(/"/g, '\\"') + '"]');
+    for (const del of document.querySelectorAll(sel)) {
+      const parent = del.parentNode;
+      if (!parent) continue;
+      parent.removeChild(del);
+      parent.normalize();
+      n++;
+    }
+    if (id != null) markInserted(id, false);
+    return n;
+  }
+
+  // Every thread id currently carrying track-changes markup — the same reason
+  // paintedIds exists: a sweep needs to find markup whose thread has moved on.
+  function wasIds() {
+    const seen = [];
+    for (const del of document.querySelectorAll('del.' + WAS_CLASS + '[data-bfp]')) {
+      const id = del.getAttribute('data-bfp');
+      if (id && seen.indexOf(id) === -1) seen.push(id);
+    }
+    return seen;
+  }
+
+  // The arrival half, on its own: a re-anchored passage whose old wording is
+  // too long (or too ambiguously placed) to show inline still gets the
+  // underline, with the reason in a title the reader can hover.
+  function markInserted(id, on, why) {
+    const marks = marksFor(id);
+    for (const mark of marks) {
+      mark.classList.toggle(INS_CLASS, !!on);
+      if (why) mark.setAttribute('title', why);
+      else if (!on) mark.removeAttribute('title');
+      styleMark(mark, mark.classList.contains(FOCUS_CLASS));
+    }
+    return marks.length;
+  }
+
   function scrollTo(id) {
     const m = marksFor(id)[0];
     if (m && m.scrollIntoView) m.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -422,14 +585,15 @@
   const api = {
     // pure
     normIndex, normalize, findSpans, buildAnchor, locate, tailOverlap, headOverlap,
-    CTX, WINDOW,
+    newWording, NEW_WORDING_RE, CTX, WINDOW, WAS_MAX,
     // dom
     buildTextIndex, offsetsFromRange, offsetOf, rangeFromOffsets, textNodesIn,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
     markResolved, isMarkResolved, markAddressed, isMarkAddressed,
+    paintWas, unpaintWas, wasFor, wasIds, markInserted,
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,
-    DONE_CLASS, READY_CLASS, FOCUS_CLASS,
+    DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAnchor = api;

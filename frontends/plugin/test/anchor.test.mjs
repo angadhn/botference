@@ -154,6 +154,56 @@ const PAGE = [
   eq('tailOverlap', A.tailOverlap('the quick fox', 'a quick fox'), 10);
   eq('headOverlap', A.headOverlap('fox jumped', 'fox jumps'), 8);
 }
+// ---- "this passage now reads: …", and finding the wording it names ----------
+// The parse that lets a rewritten passage be found again. It lives here rather
+// than in the drawer because the same sentence does two jobs — it draws the
+// card's before→after AND it moves the highlight onto the new wording — and
+// two copies of the rule could drift into a card that shows a change the page
+// does not.
+{
+  const t = msgs => ({ id: 't1', quote: 'the old wording', msgs });
+  const NEW = 'the walk back was quiet, and unhurried';
+  ok('a bot quoting the new wording back is read',
+    A.newWording(t([{ author: 'claude', ts: '1', text: 'Done — this passage now reads: "' + NEW + '"' }])) === NEW);
+  ok('…in curly quotes too, which is what an agent actually types',
+    A.newWording(t([{ author: 'codex', ts: '1', text: 'it now reads: “' + NEW + '”' }])) === NEW);
+  ok('…"reads now", "now says" and "new wording is" all count',
+    A.newWording(t([{ author: 'claude', ts: '1', text: 'reads now: "abcd"' }])) === 'abcd'
+    && A.newWording(t([{ author: 'claude', ts: '1', text: 'now says "abcd"' }])) === 'abcd'
+    && A.newWording(t([{ author: 'claude', ts: '1', text: 'new wording is "abcd"' }])) === 'abcd');
+  ok('the LAST bot word on it wins — an agent may correct itself',
+    A.newWording(t([
+      { author: 'claude', ts: '1', text: 'now reads: "first try"' },
+      { author: 'claude', ts: '2', text: 'now reads: "second try"' },
+    ])) === 'second try');
+  ok('a READER cannot move an anchor by typing the sentence',
+    A.newWording(t([{ author: 'angadh', ts: '1', text: 'it now reads: "whatever I like"' }])) === '');
+  ok('…nor can a bot NARRATING its tools',
+    A.newWording(t([{ author: 'claude', ts: '1', kind: 'tools', text: 'now reads: "x y z"' }])) === '');
+  ok('a bot quoting the reader back at themselves claims nothing',
+    A.newWording(t([{ author: 'claude', ts: '1',
+      text: 'you asked whether "structural failure of oversight" is a quote. It is a paraphrase.' }])) === '');
+  ok('a reply that says nothing about the wording says nothing',
+    A.newWording(t([{ author: 'claude', ts: '1', text: 'Fixed the units, nothing else changed.' }])) === '');
+  ok('no messages, no claim', A.newWording({ msgs: [] }) === '' && A.newWording(null) === '');
+
+  // …and the wording it names is located exactly as any other quote is: the
+  // OLD context still applies, because a rewrite replaces the passage and not
+  // the paragraph around it
+  const raw = 'They drew on Saturday. ' + NEW + '. Nobody sang on the way home.';
+  const hit = A.locate(raw, { quote: NEW, prefix: 'They drew on Saturday.', suffix: 'Nobody sang' });
+  ok('the new wording locates against the old context', hit.ok && hit.unique
+    && raw.slice(hit.start, hit.end) === NEW);
+  ok('…and a wording that is not on the page locates nowhere, which leaves the '
+    + 'thread orphaned exactly as it was',
+    A.locate(raw, { quote: 'a sentence nobody wrote' }).ok === false);
+  const twice = NEW + '. ' + NEW + '.';
+  const amb = A.locate(twice, { quote: NEW, prefix: '', suffix: '' });
+  ok('a wording that appears twice with nothing to tell them apart is ambiguous',
+    amb.ok === false && amb.reason === 'ambiguous');
+
+  ok('the cap is a prose span, not a page', A.WAS_MAX === 600);
+}
 
 // ---- report -----------------------------------------------------------------
 if (fail) {

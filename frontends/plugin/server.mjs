@@ -1606,6 +1606,41 @@ export function handler(req, res) {
       ok(res, { thread });
     });
   }
+  // The passage moved under the thread, and the page found it again.
+  //
+  // A bot's change rewrites the quoted passage; the highlight orphans; the
+  // bot's reply says what it now reads. The EXTENSION locates that wording on
+  // the live page (the companion has no DOM and must never rewrite an anchor
+  // on a claim alone), and this is where a successful locate is made durable —
+  // so the highlight is on the new wording on the next visit, on the phone,
+  // and in every other tab, and not only in the tab that happened to look.
+  //
+  // OWNER-ONLY, unlike /resolve and /addressed. Those are opinions about a
+  // thread and are free to undo; this EDITS the record's own anchor, and
+  // `prior_quote` is the one thing a wrong write here would cost — the "was"
+  // half of the before→after, which nothing can recover once it is gone.
+  //
+  // store.reanchorThread refuses anything but the wording the thread's own
+  // last bot message quoted back, so the door cannot be used to set a quote to
+  // whatever a client likes.
+  if (req.method === 'POST' && url === '/reanchor') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = store.findThread(page, data.thread_id);
+      if (!thread) return fail(res, 404, 'unknown thread');
+      const r = store.reanchorThread(thread, {
+        quote: data.quote, prefix: data.prefix, suffix: data.suffix,
+      });
+      if (!r.ok) return fail(res, 409, r.reason);
+      if (r.changed) {
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+      }
+      ok(res, { thread: r.thread, changed: !!r.changed });
+    });
+  }
   // Ask for the paragraph again — the same job /resolve queues, on demand, for
   // a thread whose summary landed while the bridge was down or which has moved
   // on since it was filed.

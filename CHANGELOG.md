@@ -2,6 +2,18 @@
 
 ## 2026-08-19
 
+- **Discuss: track changes, on the page itself.** When a bot's edit
+  rewrites a passage a comment was anchored to, the thread now
+  RE-ANCHORS to the new wording (the original kept as `prior_quote`)
+  instead of orphaning — the amber highlight moves to where the change
+  landed, and the change renders inline, Word-style: the old wording
+  struck and dimmed just before the new wording in the green tint. A
+  "show changes on the page" toggle (default on, per page) hides the
+  markup; resolving a thread clears it and the highlight goes sage.
+  The inserted "was" text is display-only — excluded from snapshots,
+  text extraction and anchoring, so it can never feed back into the
+  bots or the anchors.
+
 - **Discuss: two comment pills never fight over one page again — and yours
   wins.** Open a review page — the review engine's build, or one of the
   `*.review.html` documents the review-doc skill makes — and the Discuss drawer

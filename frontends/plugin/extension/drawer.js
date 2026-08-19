@@ -1047,6 +1047,14 @@
     const RH = Object.assign({ hosts: false, pageOwns: false }, opts.reviewHost || {});
     const standDown = () => RH.hosts && !!RH.pageOwns;
 
+    // TRACK CHANGES ON THE PAGE. content.js owns the markup and the storage;
+    // this is only the switch and the fact that there is anything to switch.
+    // `threads` is the list of thread ids currently carrying (or entitled to
+    // carry) inline markup — the control does not render at all when it is
+    // empty, because a toggle for a thing that is not on the page is clutter
+    // in the one pane the reader came to for their comments.
+    const TC = { on: opts.trackChanges !== false, threads: [] };
+
     const D = {
       page: null,          // the page record from /page
       orphans: {},         // threadId -> bool (content.js's live anchoring verdict)
@@ -1865,8 +1873,14 @@
     // Only on a READY thread, only from a BOT's message, and only on that
     // explicit phrasing. A loose "quoted string in a reply" rule would draw a
     // diff every time an agent quoted the reader back at themselves.
+    // The parse itself lives in anchor.js, beside the LOCATING it also feeds:
+    // the same sentence that draws this diff is what moves the highlight onto
+    // the rewritten passage, and two copies of the rule could drift into a
+    // card that draws a change the page does not show (or the reverse).
     const NOW_READS = /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+    const ANCH = (typeof BFPAnchor !== 'undefined' && BFPAnchor) ? BFPAnchor : null;
     const newWordingOf = t => {
+      if (ANCH && ANCH.newWording) return ANCH.newWording(t);
       const msgs = (t && t.msgs) || [];
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
@@ -1923,7 +1937,11 @@
     function rewriteHtml(t) {
       const now = newWordingOf(t);
       if (!now) return '';
-      const was = String(t.quote || '');
+      // `prior_quote` is the wording the thread was ANCHORED to before the
+      // page re-anchored it onto the rewrite. Once that has happened `quote`
+      // IS the new wording, and diffing it against itself would draw nothing —
+      // so the original is what the "was" half reads from wherever it exists.
+      const was = String(t.prior_quote || t.quote || '');
       if (!was.trim() || was.trim() === now.trim()) return '';
       const ops = wordDiff(was, now);
       const body = ops
@@ -2079,6 +2097,33 @@
         `<button class="sdbtn" data-act="page-comments" data-want="${own ? '0' : '1'}" type="button" ` +
         `title="${own ? esc('Comment with Discuss on this page instead') : esc('Give the margin back to this page’s own review commenting')}">` +
         `${own ? 'let Discuss comment here' : 'use the page’s own commenting'}</button></div>`;
+    };
+
+    // The reader's switch for the track changes on the PAGE — the old wording,
+    // struck through, beside the wording a bot's change put in its place.
+    //
+    // WHERE. In the Comments pane with the standdown note, and for the same
+    // reason: it is the answer to a question the page itself raises ("why is
+    // there a struck sentence in my draft?"), and a setting behind a gear the
+    // reader has to go looking for is a setting they never find. It renders
+    // only where there IS such a passage — a control for something that is not
+    // on the page is clutter in the pane the reader came here for.
+    //
+    // Default ON, which is the whole point: the change should be visible
+    // without being asked for.
+    const trackHtml = () => {
+      if (!TC.threads.length || !CAPS.highlights) return '';
+      const n = TC.threads.length;
+      const what = n === 1 ? 'One passage on this page was rewritten'
+        : `${n} passages on this page were rewritten`;
+      return `<div class="trackbar${TC.on ? ' on' : ''}" role="status">` +
+        `<span class="tctext">${esc(what)}${TC.on
+          ? esc(' — the old wording is shown struck through, in place.')
+          : esc(' — the changes are hidden on the page.')}</span>` +
+        `<button class="sdbtn" data-act="track-changes" data-want="${TC.on ? '0' : '1'}" type="button" ` +
+        `title="${TC.on ? esc('Hide the struck-through old wording on the page')
+          : esc('Show the old wording, struck through, where each change landed')}">` +
+        `${TC.on ? 'hide changes on the page' : 'show changes on the page'}</button></div>`;
     };
 
     // Something the bots are about to answer WITHOUT — the page text a site
@@ -2275,7 +2320,7 @@
       const open = live.filter(t => !isAddressed(t));
       const ready = live.filter(isAddressed);
       const done = threads.filter(isResolved);
-      let html = offlineHtml() + nohlHtml() + standdownHtml() + taskCardHtml();
+      let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + taskCardHtml();
       html += D.pending ? pendingHtml() : '';
       // "select any text and hit 💬" is a lie where selection does nothing —
       // the note above has already said what to do instead. Same on a page
@@ -3662,6 +3707,14 @@
         // content.js persists the answer per page, swaps which selection pill
         // is live, and hands the new state back through setReviewHost
         if (act === 'page-comments') { cb('onPageComments')(btn.dataset.want === '1'); return; }
+        if (act === 'track-changes') {
+          // optimistic, like every other one-click switch here: content.js
+          // repaints the page and hands the same answer straight back
+          TC.on = btn.dataset.want === '1';
+          render();
+          cb('onTrackChanges')(TC.on);
+          return;
+        }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
@@ -5341,6 +5394,16 @@
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the
       // switch flips in place.
+      // {on, threads} — the reader's switch for the on-page track changes and
+      // the threads it applies to. Re-rendered in place, like setReviewHost.
+      setTrackChanges: tc => {
+        const before = TC.on + '|' + TC.threads.join(',');
+        Object.assign(TC, tc || {});
+        TC.threads = (TC.threads || []).slice();
+        if (before !== TC.on + '|' + TC.threads.join(',')) render();
+        return D;
+      },
+      trackChangesOn: () => !!TC.on,
       setReviewHost: rh => {
         Object.assign(RH, rh || {});
         if (standDown() && D.pending) cancelNew();   // takes render() with it

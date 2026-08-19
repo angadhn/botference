@@ -1047,6 +1047,43 @@ const summarizePosts = [];  // …and every /summarize the reader asked for by h
 let resolveFail = false;    // the selftest flips this to exercise the revert
 const addressedPosts = [];  // every /addressed {thread_id, addressed} — "not done"
 let addressedFail = false;  // …and the same revert, one rung down
+// every /reanchor {thread_id, quote} — the durable half of a thread whose
+// passage a bot rewrote and the page then found again
+const reanchorPosts = [];
+// The companion's own copy of the parse (store.newWording), deliberately NOT
+// borrowed from anchor.js: the point of the check server-side is that a client
+// cannot set a quote to whatever it likes, and a fake companion that asked the
+// client's parser would test nothing.
+const NOW_READS_RE =
+  /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+function nowReadsOf(t) {
+  const msgs = (t && t.msgs) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.kind === 'tools' || !/^(claude|codex)/i.test(String(m.author || ''))) continue;
+    const hit = NOW_READS_RE.exec(String(m.text || ''));
+    return hit ? hit[1].trim() : '';
+  }
+  return '';
+}
+// The change itself: the writer took the bot's edit and the paragraph on the
+// page now says something else. Whole-paragraph, because that is what an edit
+// to a draft actually looks like — and it takes any highlights inside it with
+// it, exactly as a real re-render would.
+function rewritePassage(was, now) {
+  // whitespace-tolerant, like every other match against page text: the prose
+  // in the fixture is wrapped, so the stored quote's single spaces are line
+  // breaks in the DOM
+  const re = new RegExp(String(was).trim().split(/\s+/)
+    .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'));
+  for (const p of document.querySelectorAll('article p')) {
+    const text = p.textContent || '';
+    if (!re.test(text)) continue;
+    p.textContent = text.replace(re, now);
+    return true;
+  }
+  return false;
+}
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const renamePosts = [];     // every /rename-page {url, title}
 const tagPosts = [];        // every /tag-page {url, tags}
@@ -1770,6 +1807,36 @@ function companion(method, path, body) {
     RECORD.updated_at = now();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t } };
+  }
+  // The passage moved under the thread and the page found it again.
+  //
+  // A bot's change rewrites the quoted passage: the highlight orphans and the
+  // reader has no bearing on where the change landed. The bot has said what it
+  // NOW reads, so the extension locates that on the live page and posts the
+  // proven anchor here. The companion has no DOM and never re-anchors on a
+  // claim alone — but it IS the authority on which wording may be written, so
+  // this mirrors store.reanchorThread's refusals faithfully.
+  if (method === 'POST' && route === '/reanchor') {
+    reanchorPosts.push({ thread_id: body.thread_id, quote: body.quote });
+    const t = RECORD.threads.find(x => x.id === body.thread_id);
+    if (!t) return { ok: false, status: 404, error: 'unknown thread' };
+    const want = nowReadsOf(t);
+    const q = String(body.quote || '').replace(/\s+/g, ' ').trim();
+    const same = a => String(a || '').replace(/\s+/g, ' ').trim();
+    if (!t.addressed || t.resolved || !want || !q || same(want) !== q) {
+      return { ok: false, status: 409, error: 'that is not the wording the bot quoted back' };
+    }
+    if (same(t.quote) === q) return { ok: true, status: 200, data: { ok: true, thread: t, changed: false } };
+    if (!t.prior_quote) t.prior_quote = t.quote;
+    t.quote = body.quote;
+    if (typeof body.prefix === 'string') t.prefix = body.prefix.slice(-32);
+    if (typeof body.suffix === 'string') t.suffix = body.suffix.slice(0, 32);
+    t.reanchored_at = now();
+    t.orphaned = false;
+    RECORD.updated_at = now();
+    log('re-anchored: ' + t.id);
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true, thread: t, changed: true } };
   }
   // …and the agents' paragraph landing over the top of the placeholder, later,
   // as a `page` event — never as a message in the thread
@@ -5717,6 +5784,141 @@ async function selftestReady() {
   rec(other).msgs.push({ author: 'claude', ts: now(), text: 'Fixed the units, nothing else changed.' });
   d.setPage(RECORD); await sleep(80);
   check('a reply that quotes no new wording draws no diff at all', !wn());
+  delete rec(other).addressed; delete rec(other).addressed_by;
+
+  // ---- TRACK CHANGES ON THE PAGE ------------------------------------------
+  //
+  // The card could always draw the difference. The PAGE could not: the bot
+  // rewrote the passage, the highlight orphaned, and the reader re-reading
+  // their own draft had no bearing at all on where the change landed or what
+  // it replaced. So the highlight moves onto the new wording and the wording
+  // it replaced is shown, struck through, right in front of it.
+  const WAS = rec(subject).quote;
+  const NOW = 'The mood in the stands was flat, and the walk home was quiet, and unhurried';
+  // the writer took the edit: the paragraph on the page says something else now
+  check('the page can be rewritten under the thread', rewritePassage(WAS, NOW));
+  rec(subject).msgs.push({ author: 'claude', ts: now(),
+    text: 'Done — this passage now reads: "' + NOW + '"' });
+  rec(subject).addressed = true; rec(subject).addressed_by = 'claude';
+  const reanchors = reanchorPosts.length;
+  toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+
+  const moved = await until(() => markFor(subject)
+    && (markFor(subject).textContent || '').includes('walk home was quiet'), 8000);
+  check('the highlight moves onto the wording the change put there', !!moved);
+  check('…wearing the READY amber, because the thread is still the reader’s to look at',
+    !!markFor(subject) && markFor(subject).classList.contains('bfp-ready')
+    && !markFor(subject).classList.contains('bfp-done'));
+  check('…and the thread is not orphaned any more', !rec(subject).orphaned);
+
+  // durable, not a trick of this one tab
+  check('the re-anchor is written down, once',
+    reanchorPosts.length === reanchors + 1 && reanchorPosts[reanchors].thread_id === subject);
+  check('…so the record’s anchor IS the new wording',
+    !!await until(() => /walk home was quiet/.test(rec(subject).quote || ''), 6000));
+  check('…and the original is kept beside it, which is what keeps the diff two-ended',
+    rec(subject).prior_quote === WAS);
+
+  // the change itself, in the body
+  const wasEl = () => document.querySelector('del.bfp-was[data-bfp="' + subject + '"]');
+  check('the wording it REPLACED is put back on the page, struck through',
+    !!await until(() => wasEl(), 6000));
+  check('…saying what the passage used to say',
+    !!wasEl() && wasEl().textContent.includes('quieter than it has been in years'));
+  check('…actually struck, not merely dimmed',
+    !!wasEl() && /line-through/.test(getComputedStyle(wasEl()).textDecorationLine));
+  check('…immediately before the wording that replaced it, which is what makes it a change',
+    !!wasEl() && wasEl().nextElementSibling === markFor(subject));
+  check('…and the new wording is marked as ARRIVED, Word-style',
+    !!markFor(subject) && markFor(subject).classList.contains('bfp-ins')
+    && /underline/.test(getComputedStyle(markFor(subject)).textDecorationLine));
+  check('the old wording is not read out to a screen reader as if it were the draft',
+    !!wasEl() && wasEl().getAttribute('aria-hidden') === 'true');
+  check('…nor draggable into a new comment as if it were on the page',
+    !!wasEl() && /none/.test(getComputedStyle(wasEl()).userSelect
+      || getComputedStyle(wasEl()).webkitUserSelect));
+  check('clicking it opens the thread it belongs to — the change is ONE thing',
+    !!wasEl() && wasEl().dataset.bfp === subject);
+
+  // the card keeps both ends, now that the record's own quote has moved
+  await sleep(60);
+  const wnS = () => cardFor(subject).querySelector('.wasnow');
+  check('the card still draws the before→after, from the stored original',
+    !!wnS() && /quieter/.test([...wnS().querySelectorAll('del')].map(e => e.textContent).join(' ')));
+
+  // ---- IT MUST NOT LEAK -----------------------------------------------------
+  // Display-only means display-only. The struck sentence is not in the page,
+  // so nothing that reads the page may see it: not the anchoring (or a thread
+  // would re-anchor onto its own ghost), not the snapshot the phone reads, not
+  // the article text the bots are answering from.
+  const idx = window.BFPAnchor.buildTextIndex(document.body);
+  check('the anchoring cannot see it: a passage that is gone stays gone',
+    !idx.raw.includes('quieter than it has been in years'));
+  check('…so it can never re-anchor anything onto its own ghost',
+    window.BFPAnchor.findSpans(idx.raw, WAS).length === 0);
+  check('the snapshot the phone reads excludes it',
+    !/quieter than it has been in years/.test(window.__bfp.snapshotHtml()));
+  check('…while still carrying the wording that replaced it',
+    /walk home was quiet/.test(window.__bfp.snapshotHtml()));
+  const art = await window.__bfp.articleText();
+  check('and the article text the bots answer from excludes it too',
+    !!art && !/quieter than it has been in years/.test(art) && /walk home was quiet/.test(art));
+  check('…and is left showing afterwards, not hidden by the reading', !!wasEl().offsetParent);
+
+  // ---- the reader's switch --------------------------------------------------
+  const bar = () => S.querySelector('.trackbar');
+  check('the drawer offers the reader a switch for it', !!bar());
+  check('…saying what happened, in the pane the comments are in',
+    !!bar() && /rewritten/i.test(bar().textContent));
+  check('…which is ON by default: the change should be visible without being asked for',
+    !!bar() && bar().classList.contains('on')
+    && /hide changes on the page/i.test(bar().querySelector('.sdbtn').textContent));
+  bar().querySelector('.sdbtn').click();
+  check('turning it off takes the markup off the page',
+    !!await until(() => !wasEl(), 4000));
+  check('…and the arrival underline with it',
+    !!markFor(subject) && !markFor(subject).classList.contains('bfp-ins'));
+  check('…leaving the highlight exactly where the change put it',
+    !!markFor(subject) && (markFor(subject).textContent || '').includes('walk home was quiet'));
+  check('…and the switch says how to get it back',
+    !!bar() && /show changes on the page/i.test(bar().querySelector('.sdbtn').textContent));
+  const trackKeys = () => Object.keys(store).filter(k => k.startsWith('bfp:track-changes:'));
+  check('…persisted per page, so a reload does not undo the answer',
+    trackKeys().length === 1 && store[trackKeys()[0]] === true);
+  bar().querySelector('.sdbtn').click();
+  check('turning it back on puts it back', !!await until(() => wasEl(), 4000));
+  check('…and forgets the answer rather than storing the default', trackKeys().length === 0);
+
+  // ---- filing it ends it ----------------------------------------------------
+  cardFor(subject).querySelector('[data-act="resolve"]').click();
+  check('the reader’s ✓ takes the track changes down with the thread',
+    !!await until(() => !wasEl(), 6000));
+  check('…and the highlight is sage, not amber',
+    !!markFor(subject) && markFor(subject).classList.contains('bfp-done')
+    && !markFor(subject).classList.contains('bfp-ready')
+    && !markFor(subject).classList.contains('bfp-ins'));
+  check('…leaving the passage itself alone: the mark is still on the new wording',
+    !!markFor(subject) && (markFor(subject).textContent || '').includes('walk home was quiet'));
+  check('…and the switch goes away with the last change on the page', !S.querySelector('.trackbar'));
+
+  // ---- a claim the page cannot verify changes NOTHING -----------------------
+  // The companion has no DOM: it can only know a bot CLAIMED a new wording.
+  // If the page cannot find it, the thread stays orphaned exactly as it did
+  // before any of this existed — and no anchor is rewritten on the strength of
+  // a sentence.
+  const lost = threads[2];             // the already-orphaned one
+  const posts2 = reanchorPosts.length;
+  rec(lost).msgs.push({ author: 'claude', ts: now(),
+    text: 'Done — this passage now reads: "a sentence that is nowhere on this page at all"' });
+  rec(lost).addressed = true; rec(lost).addressed_by = 'claude';
+  toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+  await sleep(400);
+  check('a wording the page cannot find leaves the thread orphaned, as before',
+    !markFor(lost) && !!cardFor(lost) && cardFor(lost).classList.contains('orphaned'));
+  check('…and nothing is written down on a bot’s word alone',
+    reanchorPosts.length === posts2);
+  check('…and no old wording is struck into a page that never changed',
+    !document.querySelector('del.bfp-was[data-bfp="' + lost + '"]'));
   } catch (e) { check('the run got to the end without throwing: ' + (e && e.message), false); }
 
   const bad = out.filter(l => l[0] === '✗');
@@ -6232,12 +6434,17 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
           setTimeout(() => {
             const t = RECORD.threads.find(x => x.id === first.dataset.thread);
             if (!t) { log('ready: no thread to rewrite'); return; }
-            const w = t.quote.split(/\s+/);
+            const wording = 'The mood in the stands was flat, and the walk home '
+              + 'had gone quiet long before the whistle';
+            // the change is a change: the paragraph on the page says the new
+            // thing now, which is what orphans the old anchor and is what the
+            // re-anchor + track changes exist to answer
+            rewritePassage(t.quote, wording);
             t.msgs.push({ author: 'claude', ts: now(),
-              text: 'Done — this passage now reads: "'
-                + w.slice(0, Math.max(1, w.length - 3)).join(' ') + ' had gone quiet long before the whistle."' });
+              text: 'Done — this passage now reads: "' + wording + '"' });
             t.addressed = true; t.addressed_by = 'claude';
             d.setPage(RECORD);
+            toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
           }, 2600);
         }
       }, 400);

@@ -164,6 +164,82 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
     !s.threads[0].addressed && !s.page_chat[0].addressed);
 }
 
+// ---- 1d. re-anchoring onto the wording a change put there -----------------
+// A bot's change rewrites the quoted passage: the highlight orphans, the
+// thread still holds the old wording, and the page gives the reader no bearing
+// on where the change landed. The bot has already said what it now reads, so
+// the extension locates THAT on the live page and this is where a successful
+// locate is made durable.
+//
+// The companion's job here is not to decide the wording — it has no DOM and
+// could not check one — but to refuse any wording the thread's own last bot
+// message did not quote back. That is what stops this door being a way to set
+// a quote to whatever a client likes.
+{
+  const NOW = 'the walk back to the tram stop was quiet, and unhurried';
+  const bot = { author: 'claude', ts: '2', text: 'Done — this passage now reads: "' + NOW + '"' };
+  const mk = () => thread(
+    [{ author: 'angadh', ts: '1', text: 'tighten this?' }, { ...bot }],
+    { addressed: true, addressed_by: 'claude', orphaned: true,
+      quote: 'the walk back to the tram stop was quieter than it has been in years',
+      prefix: 'the season with a draw.', suffix: '— not angry, just unconvinced.' });
+
+  eq('the companion reads the new wording out of the bot’s own message',
+    store.newWording(mk()), NOW);
+  eq('…only from a BOT', store.newWording(thread([{ author: 'angadh', ts: '1',
+    text: 'it now reads: "something I made up"' }], { addressed: true })), '');
+  eq('…and only on that explicit phrasing, never any quoted string in a reply',
+    store.newWording(thread([{ author: 'claude', ts: '1',
+      text: 'you asked about "structural failure of oversight" — it is a paraphrase.' }],
+      { addressed: true })), '');
+  eq('…a tools line is a bot narrating, not a bot answering',
+    store.newWording(thread([{ author: 'claude', ts: '1', kind: 'tools',
+      text: 'edited: now reads "whatever I like"' }], { addressed: true })), '');
+
+  const t = mk();
+  const was = t.quote;
+  const r = store.reanchorThread(t, { quote: NOW, prefix: 'the season with a draw.', suffix: '— not angry' });
+  ok('a locate the page proved is written down', r.ok && r.changed);
+  eq('…the anchor becomes the NEW wording', t.quote, NOW);
+  eq('…the original is kept, because it is the "was" half of the diff', t.prior_quote, was);
+  ok('…stamped', typeof t.reanchored_at === 'string' && t.reanchored_at.length > 10);
+  ok('…and the thread is no longer orphaned: the anchor was just found', t.orphaned === false);
+  ok('…with the fresh context stored beside it', t.suffix === '— not angry');
+
+  ok('a second tab locating the same passage is not a second rewrite',
+    store.reanchorThread(t, { quote: NOW }).changed === false);
+
+  // …and the original survives a SECOND rewrite: one passage, one original
+  const t2 = mk();
+  store.reanchorThread(t2, { quote: NOW });
+  const NOW2 = 'the walk back was quiet';
+  t2.msgs.push({ author: 'claude', ts: '3', text: 'Done — this passage now reads: "' + NOW2 + '"' });
+  store.reanchorThread(t2, { quote: NOW2 });
+  eq('a passage rewritten twice still has ONE original', t2.prior_quote, was);
+  eq('…and the anchor is the latest wording', t2.quote, NOW2);
+
+  // the refusals
+  const bad = mk();
+  ok('a quote no bot in this thread ever said is refused',
+    store.reanchorThread(bad, { quote: 'whatever the client felt like' }).ok === false);
+  eq('…and the anchor is untouched by the attempt', bad.quote, was);
+  const open = thread([{ author: 'angadh', ts: '1', text: 'hm' }, { ...bot }], { quote: was });
+  ok('a thread the bots have not answered cannot be re-anchored at all',
+    store.reanchorThread(open, { quote: NOW }).ok === false);
+  const filed = mk(); filed.resolved = true;
+  ok('…and neither can a filed one', store.reanchorThread(filed, { quote: NOW }).ok === false);
+  const silent = thread([{ author: 'claude', ts: '1', text: 'fixed the units.' }],
+    { addressed: true, quote: was });
+  ok('a bot that claimed no wording gives nothing to re-anchor to',
+    store.reanchorThread(silent, { quote: NOW }).ok === false);
+
+  // the extension sends back what it FOUND on the page, which may be broken
+  // across tags and lines — never a byte copy of what the bot typed
+  const loose = mk();
+  ok('the wording is compared whitespace-insensitively, as the page yields it',
+    store.reanchorThread(loose, { quote: NOW.replace(/ /g, '\n  ') }).ok === true);
+}
+
 // ---- the summary field ----------------------------------------------------
 {
   const t = thread([]);
