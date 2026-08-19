@@ -1489,6 +1489,19 @@
         await loadPage();
         return { ok: true, session_id: (r.data && r.data.session_id) || null };
       },
+      // The whole margin review, handed to the bots as one page-chat turn.
+      // The companion composes the digest (it holds the threads); the drawer
+      // only asks. Reloading the record afterwards is what puts the digest —
+      // a real message, deliberately visible — into the pane.
+      onSendReview: async () => {
+        await ensureRegistered();
+        const r = await api('POST', '/send-review', { url: URL_NOW });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        const d = r.data || {};
+        return { ok: true, sent: d.sent || 0, omitted: d.omitted || 0, total: d.total || 0,
+                 queued: d.queued, reason: d.reason };
+      },
 
       // ---- the library --------------------------------------------------
       // One conversation about the whole archive, on a reserved url no tab can

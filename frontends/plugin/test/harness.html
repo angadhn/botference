@@ -125,6 +125,8 @@
                      council web server instead (`/files/<rel>` on a trusted
                      origin): the gate asks, and the page's identity is
                      canonicalised to the file: twin's, so it is one record.
+                     `&review=1` opens Page chat with the send-review button
+                     mid-confirm (screenshot state).
                      `&selftest=1` runs the project-page assertions.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
@@ -312,6 +314,7 @@ const WS_TAIL = {
 };
 let wsCurrent = Q.get('chatopen') === '1' ? 'aaaa1111-0000-4000-8000-000000000001' : null;
 const wsRootAnswers = [];     // what POST /council-root was told, for the selftest
+const sentReviews = [];       // every digest POST /send-review composed
 const wsTailMsgs = sid => (WS_TAIL[sid] || []).map(([author, text], i) =>
   ({ author, text, ts: sid + '#' + i, restored: true }));
 // ?workspace=1&councilweb=1 — the same artifact, reached through the council's
@@ -1311,6 +1314,28 @@ function companion(method, path, body) {
     RECORD.page_chat = wsCurrent ? wsTailMsgs(wsCurrent) : [];
     return { ok: true, status: 200, data: { ok: true, session_id: wsCurrent,
       session_title: RECORD.session_title, page: RECORD } };
+  }
+  // The whole margin review, in one page-chat turn. The real companion
+  // composes the digest itself (workspace.reviewDigest) — the drawer only
+  // asks and then reloads the record — so the fake does the same, minus the
+  // caps, which are the node suite's business and not the browser's.
+  if (route === '/send-review') {
+    if (!WORKSPACE) return { ok: false, status: 404, error: 'not a project artifact page' };
+    if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
+    const open = RECORD.threads.filter(t => !t.resolved && (t.msgs || []).length);
+    if (!open.length) return { ok: false, status: 400, error: 'no open comments to send' };
+    const text = 'I have finished reviewing this draft. Here is my whole margin review — '
+      + open.length + ' open comment threads, in page order, quote first and the conversation under it.\n\n'
+      + 'Work through every point.\n\n'
+      + open.map((t, i) => '--- comment ' + (i + 1) + ' of ' + open.length + ' ---\n> ' + t.quote
+        + '\n' + t.msgs.map(m => m.author + ': ' + m.text).join('\n')).join('\n\n');
+    sentReviews.push(text);
+    RECORD.page_chat.push(stampMsg(text));
+    RECORD.updated_at = now();
+    queueDepth++;
+    if (!HOLD_QUEUE) setTimeout(() => playTurn('__page__', text), 350);
+    return { ok: true, status: 200, data: { ok: true, sent: open.length, total: open.length,
+      omitted: 0, queued: true, position: queueDepth } };
   }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   // the library is an ordinary page record on a reserved url — the companion
@@ -5525,6 +5550,65 @@ async function selftestWorkspace() {
   check('\u2026and the bar says so too',
     (S.querySelector('.archnow') || {}).textContent === 'new chat');
 
+  // ---- the send-review button -------------------------------------------
+  // One click hands the whole margin review to the bots as a page-chat turn.
+  // It lives in the archbar (a page-level action, on the tab where the answer
+  // lands), never fires without a one-step inline confirm, and is plainly dead
+  // when there is nothing open to send.
+  {
+    const sendBtn = () => S.querySelector('[data-act="send-review"]');
+    const chatText = () => (S.querySelector('.pane[data-pane="chat"]') || {}).textContent || '';
+    check('the archbar carries a send-review button', !!sendBtn());
+    check('…which says how many comments it would send',
+      /^send review \(3\)$/.test((sendBtn() || {}).textContent || ''));
+    check('…and is live, because this page has open comments', !sendBtn().disabled);
+
+    // with every thread filed there is nothing to hand over: the button goes
+    // dead and SAYS why, rather than sending an empty review
+    const wasOpen = RECORD.threads.map(t => !!t.resolved);
+    RECORD.threads.forEach(t => { t.resolved = true; });
+    d.setPage(RECORD); await sleep(40);
+    check('with every comment filed the button is disabled',
+      !!sendBtn() && sendBtn().disabled);
+    check('…and the tooltip says why, instead of the button just failing',
+      /no open comments/.test(sendBtn().title || ''));
+    RECORD.threads.forEach((t, i) => { if (!wasOpen[i]) delete t.resolved; });
+    d.setPage(RECORD); await sleep(40);
+    check('reopening them brings it back', !!sendBtn() && !sendBtn().disabled);
+
+    // one step, inline — never window.confirm, which the page's own modals
+    // and focus traps would fight with (the same rule del-thread follows)
+    sendBtn().click();
+    await sleep(40);
+    const conf = S.querySelector('.reviewrow.confirm');
+    check('clicking it asks first, inline', !!conf);
+    check('…naming the number it is about to spend agent time on',
+      /send 3 open comments to the bots\?/.test((conf || {}).textContent || ''));
+    check('…and nothing has been sent yet', sentReviews.length === 0);
+    S.querySelector('[data-act="review-no"]').click();
+    await sleep(40);
+    check('backing out sends nothing and puts the button back',
+      !S.querySelector('.reviewrow.confirm') && sentReviews.length === 0 && !!sendBtn());
+
+    sendBtn().click();
+    await sleep(40);
+    S.querySelector('[data-act="review-yes"]').click();
+    await until(() => sentReviews.length === 1, 4000);
+    check('confirming hands the whole review over in ONE turn', sentReviews.length === 1);
+    check('…carrying every open thread, quote and comments alike',
+      /--- comment 3 of 3 ---/.test(sentReviews[0])
+      && /The mood in the stands was flat/.test(sentReviews[0])
+      && /This is the line the whole piece hangs on/.test(sentReviews[0]));
+    await until(() => /finished reviewing this draft/.test(chatText()), 4000);
+    check('…and the digest is a visible message in page chat, not a hidden prompt',
+      /finished reviewing this draft/.test(chatText()));
+    check('the reader is told what happened', /sent 3 comments/.test(S.textContent || ''));
+    check('…including that filing is still theirs to do',
+      /threads stay open until you file them/.test(S.textContent || ''));
+    check('and nothing was resolved on their behalf',
+      RECORD.threads.every(t => !t.resolved));
+  }
+
   // ---- Phase 2: the bots changed the project's files ---------------------
   // The companion broadcasts one `project-files` event at turn-end when the
   // census of projects/<id>/ moved (server.mjs). Two outcomes, and they are
@@ -5617,6 +5701,17 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         d.open('chat');
         const b = d.shadow.querySelector('[data-act="arch-list"]');
         if (b) b.click();
+      }, 300);
+    }
+    // ?workspace=1&review=1 — the send-review button mid-confirm: the one-step
+    // inline "send 3 open comments to the bots?" a click opens (screenshot
+    // state). The confirm is drawer session state, so the only way to it from
+    // out here is the button itself, exactly as with the picker above.
+    if (WORKSPACE && Q.get('review') === '1') {
+      setTimeout(() => {
+        d.open('chat');
+        const b = d.shadow.querySelector('[data-act="send-review"]');
+        if (b) b.click(); else log('review: no send-review button');
       }, 300);
     }
     // ?tasks=1&folded=1 — the tasks card folded to its one line: the state a

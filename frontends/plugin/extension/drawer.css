@@ -193,6 +193,25 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .archpick .archnow { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .archpick .chev { flex: none; color: var(--muted) }
 .archnew { flex: none; padding: 5px 9px; font: 12px/1.3 var(--sans) }
+/* "send review" — the whole margin review, handed over in one turn. Its own
+   row under the bar: three controls do not fit across a 320px drawer, and the
+   bar above is about which CHAT you are in while this is about the draft.
+   Quiet by default and plainly dead when there is nothing to send — a button
+   that looks ready but does nothing is worse than one that says why it cannot. */
+.reviewrow {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin: -4px 0 8px; min-height: 24px;
+  font: 12px/1.5 var(--sans); color: var(--muted);
+}
+.archsend { flex: none; padding: 5px 9px; font: 12px/1.3 var(--sans) }
+.archsend:not([disabled]):hover { border-color: var(--accent); color: var(--accent) }
+.archsend[disabled] { opacity: .4; cursor: default }
+.reviewrow .rvq { color: var(--fg) }
+.reviewrow.confirm .rebtn { opacity: 1; text-decoration: underline }
+.reviewrow .rvnote { flex: 1 1 120px; min-width: 0 }
+.reviewrow .rvnote.busy { font-style: italic }
+.reviewrow .rvnote.err { color: var(--bad); font-style: normal }
+.reviewrow .rvnote.note { color: var(--done-line) }
 .archlist {
   margin: 0 0 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--card); overflow: hidden; max-height: 260px; overflow-y: auto;

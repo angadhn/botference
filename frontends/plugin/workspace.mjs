@@ -596,3 +596,96 @@ export function sessionTail(root, projectId, sid, limit = TAIL_MAX) {
     total: msgs.length,
   };
 }
+
+// --- the send-review digest ----------------------------------------------
+// The reader has been through the draft leaving comments in the margins, the
+// way they would in Google Docs or Word. Retyping any of that into the chat is
+// work the machine can do, so one button hands the WHOLE review over as a
+// single page-chat turn (server.mjs POST /send-review).
+//
+// A pure function of the page record, deliberately: everything it decides —
+// which threads, which order, what gets cut — is testable without a server, a
+// bridge or a browser, and there is exactly one copy of the rules.
+//
+// What goes in:
+//   · OPEN threads only. A resolved one is a decision the reader already
+//     closed; sending it back would ask the bots to reopen an argument that is
+//     over. (Resolution stays the reader's click, in both directions: this
+//     turn resolves NOTHING — the bots answer in page chat and the reader
+//     files what they are satisfied with, exactly as before.)
+//   · in page order as far as page order is knowable. On a paged document
+//     (a PDF) each thread stores the page its highlight sits on, so that is
+//     the sort key; ties, and every thread on an unpaged HTML artifact, keep
+//     RECORD order — which is the order the Comments tab lists them in and the
+//     order they were made. The companion has no DOM and cannot know where on
+//     an HTML page a highlight really falls, so it does not pretend to.
+//   · the quote, then every message in the thread, attributed by author —
+//     the bots' own replies included, because a thread where a bot already
+//     answered and the reader pushed back is precisely the thread that needs
+//     the push-back read.
+export const REVIEW_THREADS_MAX = 20;
+export const REVIEW_CHARS_MAX = 8000;
+export const REVIEW_QUOTE_MAX = 300;
+export const REVIEW_MSG_MAX = 800;
+export const REVIEW_MSGS_PER_THREAD = 12;
+
+const clip = (s, n) => {
+  const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t;
+};
+
+export const openThreads = page => ((page && page.threads) || [])
+  .filter(t => t && !t.resolved && (t.msgs || []).length)
+  // a stable sort by page number: Array#sort is stable in every JS engine
+  // this runs on, so equal pages keep record order without an index dance
+  .slice()
+  .sort((a, b) => (Number(a.page) || 0) - (Number(b.page) || 0));
+
+// One block per thread: the passage, then the conversation under it.
+function threadBlock(t, n, total) {
+  const where = Number(t.page) > 0 ? ` · page ${Number(t.page)}` : '';
+  const orph = t.orphaned ? ' · the passage has since been edited out of the page' : '';
+  const msgs = t.msgs || [];
+  const shown = msgs.slice(-REVIEW_MSGS_PER_THREAD);
+  const dropped = msgs.length - shown.length;
+  const lines = shown.map(m => `${m.author}: ${clip(m.text, REVIEW_MSG_MAX)}`);
+  if (dropped > 0) lines.unshift(`(${dropped} earlier message${dropped === 1 ? '' : 's'} in this thread are not shown)`);
+  return `--- comment ${n} of ${total}${where}${orph} ---\n`
+    + `> ${clip(t.quote, REVIEW_QUOTE_MAX)}\n`
+    + lines.join('\n');
+}
+
+// Returns {text, sent, omitted, total} — or null when there is nothing open to
+// send, which the endpoint turns into a friendly 400 rather than an empty turn.
+export function reviewDigest(page, { threadsMax = REVIEW_THREADS_MAX, charsMax = REVIEW_CHARS_MAX } = {}) {
+  const threads = openThreads(page);
+  if (!threads.length) return null;
+  const total = threads.length;
+  const head = `I have finished reviewing this draft. Here is my whole margin review — `
+    + `${total} open comment thread${total === 1 ? '' : 's'}, in page order, quote first and the `
+    + `conversation under it.\n\n`
+    + `Work through every point. Where a point calls for a change to the files, MAKE the change `
+    + `(the write rules on this turn say where you may write) and say what you changed; where it `
+    + `does not, answer it here. Nothing is resolved by this message — I file the threads myself `
+    + `once I am satisfied.\n`;
+  const blocks = [];
+  let used = head.length;
+  for (const t of threads) {
+    if (blocks.length >= threadsMax) break;
+    const b = threadBlock(t, blocks.length + 1, total);
+    // the FIRST thread always goes in, however long it is: a cap that can send
+    // nothing is a button that silently does nothing
+    if (blocks.length && used + b.length + 2 > charsMax) break;
+    blocks.push(b);
+    used += b.length + 2;
+  }
+  const omitted = total - blocks.length;
+  // Never a silent truncation. The reader is looking at the same threads in
+  // the Comments tab and would otherwise have no way to know which of them the
+  // bots were never shown.
+  const tail = omitted
+    ? `\n\n…and ${omitted} more open comment thread${omitted === 1 ? '' : 's'} that did not fit `
+      + `in one turn — read the page's own records for those, or ask me and I will send them next.`
+    : '';
+  return { text: `${head}\n${blocks.join('\n\n')}${tail}`, sent: blocks.length, omitted, total };
+}

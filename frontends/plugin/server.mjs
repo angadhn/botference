@@ -564,8 +564,15 @@ function untaggedGoesToAll(page, target, text) {
 // an @-mention in any message — first comment or tenth reply — is the only
 // thing that summons the bots, except on a project artifact's page chat
 // (untaggedGoesToAll)
+// `extras.forceAll` is the send-review turn saying "this one is the room's,
+// whatever the text looks like": its body quotes the reader's own margin
+// comments, and an "@claude" typed at one thread weeks ago is not the address
+// of a review of the whole draft. Nothing else sets it, and it is stripped
+// out here rather than travelling on as a job field.
 function summon(page, target, text, extras = {}, me = { owner: true }) {
-  const untaggedAll = untaggedGoesToAll(page, target, text);
+  const { forceAll, ...rest } = extras;
+  extras = rest;
+  const untaggedAll = !!forceAll || untaggedGoesToAll(page, target, text);
   if (!hasMention(text) && !untaggedAll) return {};
   if (NO_AGENTS) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: AGENTS_OFF_ERROR });
@@ -1066,6 +1073,58 @@ export function handler(req, res) {
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { session_id: page.session_id, session_title: page.session_title, page });
+    });
+  }
+
+  // --- handing the whole margin review over ------------------------------
+  // The reader has been down the draft leaving comments in the margins. This
+  // is the one button that gives all of it to the bots at once: every OPEN
+  // thread — the passage and the conversation under it — composed into a
+  // single page-chat turn (workspace.reviewDigest owns the format and the
+  // caps) and submitted through the ordinary path.
+  //
+  // Ordinary is the whole design. The digest is appended as a REAL user
+  // message in page chat, so the reader can see exactly what was sent, edit or
+  // delete it like anything else they wrote, and find it in the session file
+  // afterwards; and `summon` does the queueing, the streaming, the mirror and
+  // the persistence with no special case of its own. The only thing this route
+  // adds to a typed message is the text.
+  //
+  // What it does NOT do: resolve anything. The bots answer in page chat and
+  // the reader files the threads they are satisfied with, one click each, the
+  // same as every other day. A button that closed twenty threads on the
+  // strength of an answer nobody has read yet would be filing the reader's
+  // decisions for them.
+  if (req.method === 'POST' && url === '/send-review') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const u = store.normUrl(String(data.url || ''));
+      const art = u ? artifactOf(u) : null;
+      if (!art) return fail(res, 404, 'not a project artifact page');
+      if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+      const page = store.readPage(u);
+      const digest = page ? workspace.reviewDigest(page) : null;
+      if (!digest) {
+        return fail(res, 400, 'no open comments to send — highlight something and comment first, or reopen a filed thread');
+      }
+      // the same guard a typed message gets: over a tunnel the button has no
+      // receipt for a second, and the expensive half of a double-click is the
+      // agent run, not the message
+      const dedupe = dedupeCheck([store.pageKey(page.url), store.PAGE_CHAT, me.handle, digest.text]);
+      if (dedupe.hit) return ok(res, { msg: dedupe.hit, deduped: true, sent: digest.sent, omitted: digest.omitted, total: digest.total });
+      const msg = store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: digest.text });
+      dedupe.remember(msg);
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      // routed @all whatever the quoted comments say (summon's forceAll), and
+      // carrying no page context of its own: the artifact banner and the write
+      // rules ride every turn on these pages already (chat.envelope), and the
+      // digest is the message.
+      const summoned = summon(page, store.PAGE_CHAT, digest.text,
+        { forceAll: true, articleText: data.article_text, articleChanged: !!data.article_changed }, me);
+      ok(res, { msg, sent: digest.sent, omitted: digest.omitted, total: digest.total, ...summoned });
     });
   }
 

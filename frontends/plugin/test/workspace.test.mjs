@@ -1319,6 +1319,264 @@ console.log('\ncompanion — untagged page chat on an artifact goes to @all');
   });
 }
 
+
+// --- the send-review button ----------------------------------------------
+// One click hands the reader's WHOLE margin review to the bots as a single
+// page-chat turn. SPEC.md "the send-review button"; workspace.reviewDigest
+// composes it, POST /send-review submits it.
+console.log('\nthe send-review digest');
+
+const revPage = (threads) => ({ url: 'file:///x/index.html', threads });
+const revThread = (quote, msgs, extra = {}) => ({ id: 'x' + Math.random(), quote, msgs, ...extra });
+
+await test('the digest is the OPEN threads, quote first and the talk under it', async () => {
+  const d = ws.reviewDigest(revPage([
+    revThread('the truss, not the hull', [
+      { author: 'angadh', text: 'this mass number looks wrong' },
+      { author: 'claude', text: 'it is the dry mass' },
+      { author: 'angadh', text: 'then say so in the caption' },
+    ]),
+  ]));
+  assert.equal(d.sent, 1);
+  assert.equal(d.total, 1);
+  assert.equal(d.omitted, 0);
+  assert.ok(/finished reviewing this draft/.test(d.text), 'the reader has been through it');
+  assert.ok(/Work through every point/.test(d.text));
+  assert.ok(/MAKE the change/.test(d.text), 'a point that calls for an edit gets an edit');
+  assert.ok(/Nothing is resolved by this message/.test(d.text), 'filing stays the reader\'s click');
+  assert.ok(/--- comment 1 of 1 ---/.test(d.text));
+  assert.ok(/^> the truss, not the hull$/m.test(d.text), 'the passage, quoted');
+  // every message, attributed — the bot\'s answer included, because a thread
+  // where the reader pushed back is the thread that needs the push-back read
+  assert.ok(/^angadh: this mass number looks wrong$/m.test(d.text));
+  assert.ok(/^claude: it is the dry mass$/m.test(d.text));
+  assert.ok(/^angadh: then say so in the caption$/m.test(d.text));
+});
+
+await test('a RESOLVED thread is not sent — that argument is over', async () => {
+  const d = ws.reviewDigest(revPage([
+    revThread('open one', [{ author: 'angadh', text: 'still bothers me' }]),
+    revThread('filed one', [{ author: 'angadh', text: 'settled' }], { resolved: true }),
+  ]));
+  assert.equal(d.total, 1);
+  assert.ok(/still bothers me/.test(d.text));
+  assert.ok(!/settled/.test(d.text));
+});
+
+await test('a page with nothing open composes NO digest at all', async () => {
+  assert.equal(ws.reviewDigest(revPage([])), null);
+  assert.equal(ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'b' }], { resolved: true })])), null);
+  assert.equal(ws.reviewDigest(revPage([revThread('q', [])])), null, 'an empty thread is not a comment');
+});
+
+await test('paged documents go in page order; unpaged keep record order', async () => {
+  const d = ws.reviewDigest(revPage([
+    revThread('late', [{ author: 'a', text: 'on page nine' }], { page: 9 }),
+    revThread('early', [{ author: 'a', text: 'on page two' }], { page: 2 }),
+    revThread('middle', [{ author: 'a', text: 'on page four' }], { page: 4 }),
+  ]));
+  const order = [...d.text.matchAll(/^> (early|middle|late)$/gm)].map(m => m[1]);
+  assert.deepEqual(order, ['early', 'middle', 'late']);
+  assert.ok(/comment 1 of 3 . page 2 ---/.test(d.text), 'and each says which page it is on');
+  // an unpaged HTML artifact: the companion has no DOM and does not pretend to
+  // know where a highlight falls, so record order stands
+  const flat = ws.reviewDigest(revPage([
+    revThread('third', [{ author: 'a', text: 'c' }]),
+    revThread('first', [{ author: 'a', text: 'a' }]),
+  ]));
+  assert.deepEqual([...flat.text.matchAll(/^> (third|first)$/gm)].map(m => m[1]), ['third', 'first']);
+  assert.ok(!/ . page /.test(flat.text), 'and no page is claimed');
+});
+
+await test('a very long quote and a very long comment are both clipped', async () => {
+  const d = ws.reviewDigest(revPage([
+    revThread('Q'.repeat(4000), [{ author: 'angadh', text: 'M'.repeat(4000) }]),
+  ]));
+  const quoteLine = d.text.split('\n').find(l => l.startsWith('> '));
+  assert.ok(quoteLine.length <= ws.REVIEW_QUOTE_MAX + 2, `quote clipped — got ${quoteLine.length}`);
+  assert.ok(quoteLine.endsWith('…'), 'and says it was clipped');
+  const msgLine = d.text.split('\n').find(l => l.startsWith('angadh: '));
+  assert.ok(msgLine.length <= ws.REVIEW_MSG_MAX + 8);
+  assert.ok(msgLine.endsWith('…'));
+});
+
+await test('a very long thread keeps its LATEST messages and says how many it dropped', async () => {
+  const msgs = Array.from({ length: 30 }, (_, i) => ({ author: 'angadh', text: `point ${i}` }));
+  const d = ws.reviewDigest(revPage([revThread('q', msgs)]));
+  assert.ok(/\(18 earlier messages in this thread are not shown\)/.test(d.text));
+  assert.ok(/point 29/.test(d.text), 'the latest is kept');
+  assert.ok(!/point 11\b/.test(d.text), 'the oldest is not');
+});
+
+await test('over the thread cap, the extra are NAMED and never silently dropped', async () => {
+  const threads = Array.from({ length: 26 }, (_, i) => revThread(`quote ${i}`, [{ author: 'a', text: `note ${i}` }]));
+  const d = ws.reviewDigest(revPage(threads));
+  assert.equal(d.total, 26);
+  assert.equal(d.sent, ws.REVIEW_THREADS_MAX);
+  assert.equal(d.omitted, 6);
+  assert.ok(/…and 6 more open comment threads that did not fit in one turn/.test(d.text));
+  assert.ok(/read the page's own records/.test(d.text));
+});
+
+await test('over the character cap, the same honest line', async () => {
+  const N = 18;
+  const threads = Array.from({ length: N }, (_, i) =>
+    revThread(`quote ${i}`, [{ author: 'a', text: ('x'.repeat(1200) + ` tail${i}`) }]));
+  const d = ws.reviewDigest(revPage(threads));
+  assert.ok(d.text.length <= ws.REVIEW_CHARS_MAX + 1200, `capped — got ${d.text.length}`);
+  assert.ok(d.sent > 0 && d.sent < ws.REVIEW_THREADS_MAX, `the CHARACTER cap bit first — sent ${d.sent}`);
+  assert.equal(d.omitted, N - d.sent);
+  assert.ok(new RegExp(`and ${d.omitted} more open comment thread`).test(d.text));
+});
+
+await test('one enormous thread still goes: a cap that sends nothing is a dead button', async () => {
+  const d = ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'y'.repeat(50000) }])]));
+  assert.equal(d.sent, 1);
+  assert.equal(d.omitted, 0);
+});
+
+console.log('\ncompanion — POST /send-review');
+
+{
+  const root = council('review');
+  const a = artifact(root, 'spaceship-engineering');
+  const unconfirmedRoot = council('review-unconfirmed');
+  const ua = artifact(unconfirmedRoot, 'spaceship-engineering');
+  const workspaceRoot = tmp('review-companion');
+  const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const { base } = await startServer({
+    root: workspaceRoot,
+    env: {
+      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+      MOCK_BRIDGE_LOG: logFile,
+    },
+  });
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: a.url, title: 'Artifact', site: 'spaceship-engineering' });
+
+  await test('with no open comments the answer is a friendly 400, not an empty turn', async () => {
+    fs.writeFileSync(logFile, '');
+    const r = await POST(base, '/send-review', { url: a.url });
+    assert.equal(r.status, 400);
+    assert.ok(/no open comments/.test(r.json.error));
+    await sleep(300);
+    assert.equal(inputs(logFile).length, 0);
+  });
+
+  await test('a page that is not an artifact is a 404', async () => {
+    const u = 'https://example.test/ordinary';
+    await POST(base, '/page', { url: u, title: 'Ordinary', site: 'example.test' });
+    await POST(base, '/thread', { url: u, quote: 'something', msg: { text: 'a note' } });
+    const r = await POST(base, '/send-review', { url: u });
+    assert.equal(r.status, 404);
+  });
+
+  await test('an UNCONFIRMED council root is a 409', async () => {
+    await POST(base, '/page', { url: ua.url, title: 'Artifact', site: 'spaceship-engineering' });
+    await POST(base, '/thread', { url: ua.url, quote: 'the truss', msg: { text: 'check this' } });
+    const r = await POST(base, '/send-review', { url: ua.url });
+    assert.equal(r.status, 409);
+  });
+
+  let firstDigest = '';
+  await test('the whole review reaches the bridge as ONE turn, routed @all', async () => {
+    fs.writeFileSync(logFile, '');
+    await POST(base, '/thread', { url: a.url, quote: 'the truss, not the hull', msg: { text: 'this mass looks wrong' } });
+    // a thread the reader tagged at one bot weeks ago: it must not be allowed
+    // to address a review of the whole draft
+    await POST(base, '/thread', { url: a.url, quote: 'the radiator area', msg: { text: '@codex cite a source for this' } });
+    await sleep(200);
+    fs.writeFileSync(logFile, '');
+    const r = await POST(base, '/send-review', { url: a.url });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.sent, 2);
+    assert.equal(r.json.total, 2);
+    assert.equal(r.json.omitted, 0);
+    assert.equal(r.json.queued, true);
+    await waitFor(() => inputs(logFile).some(t => /finished reviewing this draft/.test(t)), 'the review turn');
+    const turns = inputs(logFile).filter(t => /finished reviewing this draft/.test(t));
+    assert.equal(turns.length, 1, 'one turn for the whole review, not one per thread');
+    const turn = turns[0];
+    assert.ok(turn.startsWith('@all '), `the room, not one bot — got ${JSON.stringify(turn.slice(0, 40))}`);
+    assert.ok(/this mass looks wrong/.test(turn));
+    assert.ok(/cite a source for this/.test(turn));
+    firstDigest = turn;
+  });
+
+  await test('…and the turn carries the Phase 2 write rules', async () => {
+    assert.ok(/You may create and edit files under .*projects[/]spaceship-engineering/.test(firstDigest),
+      'a point that calls for a change has to be allowed to make it');
+  });
+
+  await test('the digest is a REAL, visible user message in page chat', async () => {
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    const mine = (page.page_chat || []).filter(m => !/^(claude|codex)/i.test(m.author));
+    assert.equal(mine.length, 1);
+    assert.ok(/finished reviewing this draft/.test(mine[0].text), 'the reader can see what was sent');
+    assert.ok(/this mass looks wrong/.test(mine[0].text));
+  });
+
+  await test('the threads are left OPEN — resolution stays the reader\'s click', async () => {
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.equal(page.threads.length, 2);
+    assert.ok(page.threads.every(t => !t.resolved), 'nothing was filed on the reader\'s behalf');
+  });
+
+  await test('…and both bots answer, in page chat', async () => {
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      const who = new Set((page.page_chat || []).map(m => m.author));
+      return who.has('claude') && who.has('codex');
+    }, 'a reply from each');
+  });
+
+  await test('a guest is refused outright — this is an owner-only endpoint', async () => {
+    const h = await startServer({
+      root: tmp('review-hosted'),
+      args: ['--hosted', '--no-agents'],
+      env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' },
+    });
+    const guest = { host: 'annotations.example', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
+    const r = await POST(h.base, '/send-review', { url: a.url }, guest);
+    assert.equal(r.status, 403);
+    h.proc.kill();
+  });
+}
+
+{
+  // agents off: the digest is still written down, and the refusal is the same
+  // {queued:false, reason} shape every other submit answers with
+  const root = council('review-noagents');
+  const a = artifact(root, 'spaceship-engineering');
+  const { base } = await startServer({
+    root: tmp('review-noagents-companion'),
+    args: ['--no-agents'],
+  });
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: a.url, title: 'Artifact', site: 'spaceship-engineering' });
+  await POST(base, '/thread', { url: a.url, quote: 'the truss', msg: { text: 'this needs a number' } });
+
+  await test('with the agents off the review is kept and the refusal explains', async () => {
+    const r = await POST(base, '/send-review', { url: a.url });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.queued, false);
+    assert.ok(r.json.reason, 'the same shape as any other refused submit');
+    assert.equal(r.json.sent, 1);
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.ok((page.page_chat || []).some(m => /finished reviewing this draft/.test(m.text)),
+      'a refusal loses the review nowhere');
+  });
+
+  await test('a second click within seconds sends nothing twice', async () => {
+    const before = (await GET(base, '/page?url=' + enc(a.url))).json.page_chat.length;
+    const r = await POST(base, '/send-review', { url: a.url });
+    assert.equal(r.json.deduped, true);
+    const after = (await GET(base, '/page?url=' + enc(a.url))).json.page_chat.length;
+    assert.equal(after, before);
+  });
+}
+
+
 for (const p of spawned) { try { p.kill(); } catch { } }
 await sleep(150);
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }

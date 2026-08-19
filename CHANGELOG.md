@@ -2,6 +2,35 @@
 
 ## 2026-08-19
 
+- **Discuss: one button hands your whole margin review to the bots.** On a
+  confirmed project artifact page, Page chat now carries **send review**
+  under the chat bar. Click it, confirm the count, and every OPEN comment
+  thread on the page — the passage you highlighted and the whole
+  conversation under it, attributed — goes to both bots as a single
+  page-chat turn, addressed to the room. This is the Obsidian-export move
+  for a document review: you go down the draft leaving comments the way
+  you would in Google Docs, and then hand the lot over without retyping
+  any of it.
+
+  The turn asks the bots to work through every point and, where a point
+  calls for a change to the files, to **make** it — Phase 2's write rules
+  already scope that to the project's own folder. The digest is posted as
+  a real, visible message in your name, so you can read exactly what was
+  sent (and edit or delete it like anything else you wrote). Threads are
+  **not** auto-resolved: the bots answer in page chat and filing stays
+  your click, in both directions.
+
+  Honest about its limits. Resolved threads are left out (that argument is
+  over), long quotes and long comments are clipped with an ellipsis, a
+  very long thread keeps its latest messages and says how many it dropped,
+  and past 20 threads or ~8k characters the turn ends with "…and N more
+  open comment threads that did not fit in one turn" rather than
+  truncating in silence. The button is disabled — with a tooltip saying
+  why — on a page with nothing open. Guests get a 403, an unconfirmed
+  council root a 409, and with the agents switched off the review is still
+  written down and the refusal explains itself, the same as any other
+  send.
+
 - **Discuss: an artifact page's chat stops going stale.** Page chat on a
   project artifact mirrors a real council session — and that session is
   also driven from the TUI and from the council's own web UI, by a

@@ -2122,6 +2122,139 @@ queueing nothing, an unconfirmed root queueing nothing). Harness
 broadcast carrying a council turn, checking the new tail renders **and** a
 half-typed draft survives it.
 
+### Amendment (2026-08-19, shipped): the send-review button
+
+A reader reviews a draft the way they always have: down the page, highlighting
+passages and writing in the margins. At the end of that pass they have twenty
+comments and a bot that has read none of them. Retyping the review into the
+chat is the work the machine should be doing, so on a **confirmed project
+artifact page** one button — **send review** — hands the whole thing over as a
+single page-chat turn. It is the Obsidian-export move applied to a document
+review: one click, no retyping.
+
+**Where it is, and why there.** Its own row directly under the archive bar on
+the **Page chat** tab. Two decisions, both deliberate:
+
+- **Chat, not Comments.** The threads are on the Comments tab, but the ANSWER
+  lands in page chat. A button whose result appears on a tab the reader is not
+  looking at is a button that seems not to have worked.
+- **Its own row, not a third control in the archbar.** Three buttons do not fit
+  across a drawer that is often 320px wide (they did not, and the screenshot
+  said so); and the bar above is about which CONVERSATION this page is standing
+  in, while this is about the DRAFT. Different questions, different rows.
+
+**Disabled honestly.** With no open comment threads the button is dead and its
+tooltip says why — "nothing to send yet — this page has no open comments.
+Highlight a passage and comment on it first" — rather than being live and
+failing. With comments it carries the count: *send review (3)*.
+
+**One-step inline confirm**, never `window.confirm` (the same rule del-thread
+follows, and for the same reason: the page's own modals and focus traps would
+fight with a browser dialog). The row becomes *send 3 open comments to the
+bots? yes no*. The count IS the warning — this spends real agent time on a
+message nobody typed.
+
+#### The digest (`workspace.reviewDigest`)
+
+A pure function of the page record, so every rule about what goes in, in what
+order, and what gets cut is testable without a server, a bridge or a browser,
+and exists in exactly one place.
+
+- **OPEN threads only.** A resolved thread is a decision the reader already
+  closed; sending it back asks the bots to reopen an argument that is over.
+- **Page order as far as page order is knowable.** On a paged document (a PDF)
+  each thread stores the page its highlight sits on, so that is the sort key
+  (stable, so ties hold). On an unpaged HTML artifact every thread's page is 0
+  and **record order** stands — which is the order the Comments tab lists them
+  in and the order they were made. The companion has no DOM and cannot know
+  where on an HTML page a highlight really falls, so it does not pretend to.
+- **Per thread**: the quote, then every message attributed by author — the
+  bots' own replies included, because a thread where a bot answered and the
+  reader pushed back is precisely the thread that needs the push-back read.
+- **The preamble**: the reader has finished reviewing this draft; work through
+  every point; where a point calls for a change to the files, MAKE it and say
+  what you changed; and — in the same breath — *nothing is resolved by this
+  message*. Phase 2's write rules ride the turn as they ride every turn on
+  these pages, so "make the change" is a thing the bots can actually do, scoped
+  to `projects/<id>/`.
+
+```
+I have finished reviewing this draft. Here is my whole margin review — 3 open
+comment threads, in page order, quote first and the conversation under it.
+
+Work through every point. Where a point calls for a change to the files, MAKE
+the change (the write rules on this turn say where you may write) and say what
+you changed; where it does not, answer it here. Nothing is resolved by this
+message — I file the threads myself once I am satisfied.
+
+--- comment 1 of 3 ---
+> the truss, not the hull
+angadh: this mass number looks wrong
+claude: it is the dry mass
+angadh: then say so in the caption
+
+--- comment 2 of 3 · page 4 ---
+> the radiator area
+angadh: cite a source for this
+```
+
+**Caps, and never a silent truncation.** 20 threads, ~8000 characters, 300 per
+quote, 800 per message, 12 messages per thread. A clipped quote or comment ends
+in an ellipsis; a thread that lost messages says `(N earlier messages in this
+thread are not shown)` and keeps the LATEST ones; and a digest that could not
+carry every thread ends with "…and N more open comment threads that did not fit
+in one turn — read the page's own records for those". The reader is looking at
+the same threads in the Comments tab and would otherwise have no way to know
+which of them the bots were never shown. One exception to the character cap:
+the FIRST thread always goes in however long it is, because a cap that can send
+nothing is a button that silently does nothing.
+
+#### `POST /send-review {url}` — owner only
+
+Owner-only like every other `/project-*` route (the answer names this reader's
+projects), and gated exactly as they are: guest **403**, not an artifact
+**404**, unconfirmed root **409**, nothing open to send **400** with a friendly
+error naming the fix. Agents off gives the same `{queued:false, reason}` shape
+as any other submit — and, as with any other refused submit, the message is
+still kept.
+
+The route adds one thing to a typed message: the text. The digest is appended
+as a **real user message** in page chat (visible, editable, deletable, in the
+session file) and then goes through `summon` like anything else — queued,
+streamed, persisted, mirrored, double-click-guarded. Nothing about the submit
+path, the mirror or the census has a case for it.
+
+**Routed `@all`, whatever the quoted comments say.** `summon` takes
+`extras.forceAll` and `chat.routeOf` now lets the flag WIN over `routePrefix`.
+For the flag's original caller (`untaggedGoesToAll`) that precedence is
+provably a no-op — the flag is only ever set when `hasMention(text)` is false,
+and hasMention reads exactly the tags routePrefix reads — so nothing else
+changes. What it buys is this turn: a review of a whole draft is the room's
+business, and an "@claude" the reader typed at one thread three weeks ago is
+not the address of it.
+
+**Nothing is resolved.** The bots reply in page chat; the reader files the
+threads they are satisfied with, one click each. A button that closed twenty
+threads on the strength of an answer nobody has read yet would be filing the
+reader's decisions for them.
+
+**Tests.** `test/workspace.test.mjs` — "the send-review digest" (open threads
+only with the quote and the attributed talk; a resolved thread left out; no
+digest at all with nothing open; paged order vs record order; quote and comment
+clipping; a long thread keeping its latest and naming the drop; the thread cap
+and the character cap each naming what did not fit; one enormous thread still
+going) and "companion — POST /send-review" (400/404/409, the whole review
+reaching the mock bridge as ONE turn prefixed `@all` despite a quoted `@codex`,
+the Phase 2 write rules on that turn, the digest visible as a user message in
+page chat, the threads left unresolved, both bots answering, a guest's 403, the
+agents-off `{queued:false, reason}` with the review still kept, and the
+double-click guard). Harness `?workspace=1&selftest=1` drives the button
+end-to-end: present and counting, disabled with its tooltip when every thread
+is filed and live again when they are reopened, the inline confirm asking and
+sending nothing until it is answered, backing out, and a confirmed send putting
+the digest in page chat with nothing resolved behind it.
+`?workspace=1&review=1` is the screenshot pose (the confirm, mid-step).
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, SPA mutation observers,

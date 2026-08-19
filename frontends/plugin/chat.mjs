@@ -75,8 +75,18 @@ export function routePrefix(text) {
 // mention is still a note to yourself, everywhere, including on these pages.
 // (The decision is the companion's — server.mjs, where the artifact is known —
 // and this is only the plumbing that carries it into the envelope.)
+//
+// The flag WINS over what the text says, and that is deliberate rather than
+// accidental. For its original caller the two can never disagree:
+// `untaggedGoesToAll` is false whenever `hasMention(text)` is, and hasMention
+// reads exactly the tags routePrefix reads, so an untagged-@all turn always
+// had an empty routePrefix anyway. What the precedence buys is the SEND-REVIEW
+// turn, whose body is a digest of the reader's own margin comments and may
+// quote an "@claude" they typed weeks ago at one thread. That old tag is not
+// the address of this turn — the whole review is the room's business — so a
+// phrase inside a quotation must not be allowed to route it.
 export const routeOf = (text, untaggedAll = false) =>
-  routePrefix(text) || (untaggedAll ? '@all ' : '');
+  (untaggedAll ? '@all ' : '') || routePrefix(text);
 
 // which agents a turn engages — the same rule routeOf applies, reused so
 // the drawer can spin only the agent(s) actually working

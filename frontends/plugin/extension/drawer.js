@@ -122,6 +122,13 @@
 //   onOpenSession(sid|null)             → {ok, session_id}  (POST /project-chat)
 //                                        stand this page in that chat; null
 //                                        starts a fresh one
+//   onSendReview()                      → {ok, sent, omitted, total, queued,
+//                                          reason} | {ok:false, error}
+//                                        (POST /send-review) — hand every OPEN
+//                                        comment thread on this page to the
+//                                        bots as ONE page-chat turn. The
+//                                        companion writes the digest; nothing
+//                                        is resolved by it
 //   onClose() / onReconnect() / onSelect()
 //
 // `project` (and `d.setProject(p)`) is the council project behind a PROJECT
@@ -1094,6 +1101,9 @@
       project: opts.project || null,
       archive: { list: null, loading: false, err: '', current: null, busy: '' },
       picking: false,
+      // "send review": the one-step inline confirm (never window.confirm — see
+      // del-thread), the in-flight flag, and whatever the companion said last
+      review: { confirm: false, busy: false, err: '', note: '' },
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -2168,6 +2178,43 @@
         </div></div>`;
     }
 
+    // How many comment threads a "send review" would actually send: the OPEN
+    // ones. (workspace.reviewDigest applies the same rule server-side and is
+    // the authority; this count exists so the button can say the number before
+    // anything is sent, and so it can be disabled honestly when it is zero.)
+    const openThreadCount = () =>
+      (((D.page && D.page.threads) || []).filter(t => t && !isResolved(t) && (t.msgs || []).length)).length;
+
+    // Obsidian-export for a margin review: everything the reader wrote down
+    // the side of the draft, handed over in one turn, without retyping any of
+    // it.
+    //
+    // Placement, twice decided. It is on the CHAT tab and not on Comments
+    // where the threads are, because the chat is where the answer lands: a
+    // button whose result appears on a tab you are not looking at is a button
+    // that seems not to have worked. And it sits in its OWN row under the
+    // archive bar rather than as a third control inside it — partly because
+    // three buttons do not fit across a drawer that is often 320px wide, and
+    // partly because it is not a chat control at all: the bar above says which
+    // conversation you are in, and this says something about the DRAFT.
+    function reviewHtml() {
+      const r = D.review;
+      const n = openThreadCount();
+      const inner = r.busy
+        ? `<span class="rvnote busy">handing ${n} comment${n === 1 ? '' : 's'} to the bots…</span>`
+        : r.confirm
+          ? `<span class="rvq">send ${n} open comment${n === 1 ? '' : 's'} to the bots?</span>
+             <button class="rebtn yes" data-act="review-yes" type="button">yes</button>
+             <button class="rebtn" data-act="review-no" type="button">no</button>`
+          : `<button class="archsend" data-act="send-review" type="button"
+               title="${esc(n
+                 ? `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots as one message`
+                 : 'nothing to send yet — this page has no open comments. Highlight a passage and comment on it first.')}"${n ? '' : ' disabled'}>send review${n ? ` (${n})` : ''}</button>`
+            + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
+              : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
+      return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`;
+    }
+
     function archiveHtml() {
       const p = D.project;
       if (!p || !p.confirmed) return '';
@@ -2180,7 +2227,7 @@
           <span class="archnow">${esc(now || 'new chat')}</span><span class="chev">${D.picking ? '▴' : '▾'}</span></button>
         <button class="archnew" data-act="arch-new" type="button"
           title="start a new chat in this project"${a.busy ? ' disabled' : ''}>+ new</button>
-      </div>`;
+      </div>` + reviewHtml();
       if (!D.picking) return bar;
       let body;
       if (a.loading) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
@@ -2282,6 +2329,36 @@
       }
       render();
     }
+    // The digest comes back as an ordinary message in the pane (the companion
+    // appends it and content.js reloads the record), so there is nothing to
+    // render here but the outcome line: what went, what did not, and whether
+    // the bots were actually summoned.
+    async function sendReview() {
+      const r = D.review;
+      if (r.busy) return;
+      r.busy = true; r.err = ''; r.note = ''; r.confirm = false;
+      render();
+      const a = await cb('onSendReview')();
+      r.busy = false;
+      if (!a || !a.ok) {
+        r.err = (a && a.error) || 'the companion did not answer';
+      } else if (a.queued === false && a.reason) {
+        // agents off, or a guest's budget: the digest IS posted, only the bots
+        // are withheld — say which of the two happened
+        r.note = `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`;
+      } else {
+        r.note = a.omitted
+          ? `sent ${a.sent} of ${a.total} comments — ${a.omitted} did not fit in one turn`
+          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — the threads stay open until you file them`;
+      }
+      // the digest is long and it is the last thing in the pane: land on it,
+      // so the reader can read what was actually sent in their name
+      D.tab = 'chat';
+      paintTabs();
+      render();
+      if (D.el && D.el.chat) D.el.chat.scrollTop = D.el.chat.scrollHeight;
+    }
+
     async function answerRoot(yes) {
       const r = await cb('onConfirmRoot')(!!yes);
       if (!r || !r.ok) { D.archive.err = (r && r.error) || 'the companion did not answer'; render(); return; }
@@ -3449,6 +3526,12 @@
           render();
           return;
         }
+        // one step, inline, like del-thread: the count is the whole of the
+        // warning, because "send" here spends real agent time on a message
+        // nobody typed
+        if (act === 'send-review') { D.review.confirm = true; D.review.err = ''; D.review.note = ''; render(); return; }
+        if (act === 'review-no') { D.review.confirm = false; render(); return; }
+        if (act === 'review-yes') { sendReview(); return; }
         if (act === 'arch-new') { openSession(null); return; }
         if (act === 'arch-open' && btn.dataset.sid) { openSession(btn.dataset.sid); return; }
         if (act === 'del-thread') { D.confirm = target; render(); return; }
