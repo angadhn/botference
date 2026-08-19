@@ -1058,6 +1058,14 @@
       // middle. In memory for the session only: a collapse is a reading
       // convenience, not a decision worth persisting.
       expanded: {},
+      // ---- the tasks card ------------------------------------------------
+      // The newest checklist on this page, wherever it lives, pinned at the
+      // top of both panes. DERIVED: `tasks` is recomputed from the record by
+      // every render() and holds nothing of its own —
+      // {target, thread, msg, key} or null. `tasksOpen` is the fold, session
+      // only, like every other reading position in here.
+      tasks: null,
+      tasksOpen: true,
       // ---- resolved threads ---------------------------------------------
       // The main list is what still needs the reader; everything they have
       // marked handled drops into one collapsed section at the bottom. Both
@@ -1407,7 +1415,7 @@
       // the agent's own class carries its typeface (drawer.css --font-claude /
       // --font-codex); the colour rides the same rule through speakerColor
       const who = agentOf(r.author);
-      return `<div class="reply${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}" style="--author:${speakerColor(r.author)}">
+      return `<div class="reply${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}${own ? ' restored' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}"${own ? ' data-restored="1"' : ''} style="--author:${speakerColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}</div>`;
     }
@@ -1893,11 +1901,186 @@
         `title="Dismiss" aria-label="Dismiss this warning">✕</button></div>`
       : '';
 
+    // ── the tasks card: the current checklist, never lost to scroll ────────
+    // The bots write and rewrite markdown checklists as a plan moves, and the
+    // live one ends up wherever the conversation happened to leave it — twenty
+    // replies up a comment thread, or above a bot turn in Page chat. So the top
+    // of the drawer carries the checklist from the NEWEST message on this page
+    // that has one, whichever conversation it is in, and a revised list
+    // REPLACES it: there is only ever one list here and it is the current one.
+    // No list anywhere on the page → no card.
+    //
+    // It is rendered into BOTH panes (renderComments and renderChat), at the
+    // top of each pane's own scrolling content. The tab bar sits above the
+    // panes and each pane scrolls alone, so there is no shared strip to pin it
+    // to — and a list that came out of a comment thread is exactly what a
+    // reader typing in Page chat needs to see. Both copies are built from the
+    // same message text, so they cannot disagree.
+    //
+    // NOTHING is stored and nothing is remembered: `D.tasks` is recomputed
+    // from the record on the render paths that already exist (a message
+    // arriving, a tick coming back, a refetch), which is why a revision
+    // replaces the card by itself and why there is no polling here.
+    //
+    // Ticks are the transcript's own ticks — the SAME /tick call, which is a
+    // message edit the companion performs and answers with (see "checklists"
+    // below). The card holds no checkbox state of its own; both renderings come
+    // out of the message text, so they move together by construction.
+    const READONLY_TIP = 'this list lives in the council chat — tick it there';
+    // The same shape renderMarkdown's BULLET/NUMBER + TASK pair recognises, so
+    // "there is a checklist in here" and "these are its boxes" can never
+    // disagree. Deliberately not run over the envelope-stripped text: a room
+    // footer is JSON and cannot hold a checklist line.
+    const TASK_LINE = /^[ \t]*(?:[-*+]|\d{1,9}[.)])\s+\[[ xX]\]\s/;
+    const hasTasks = text =>
+      String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n').some(l => TASK_LINE.test(l));
+
+    // How old a message is, for "newest wins". A live message has a real
+    // timestamp; a RESTORED one (workspace.mjs sessionTail) has an ADDRESS
+    // (`<sid>#<n>`) and no date at all — and it is history: every live message
+    // on the page was written after the council chat it was restored from. So
+    // restored messages sort below everything live, and among themselves by
+    // their ordinal in the session.
+    function msgAge(m) {
+      if (m && m.restored) {
+        const n = Number(String(m.ts || '').split('#')[1]);
+        return -1e15 + (isFinite(n) ? n : 0);
+      }
+      const t = Date.parse((m && m.ts) || '');
+      return isFinite(t) ? t : 0;
+    }
+
+    // The newest message on this page carrying a checklist, across every
+    // comment thread AND page chat. Each conversation is scanned from its END
+    // and abandoned at its first hit — its own array order is authoritative, so
+    // that is one comparison per conversation, not one per message.
+    function taskSource() {
+      const convos = ((D.page && D.page.threads) || []).map(t => ({ target: t.id, thread: t, msgs: t.msgs || [] }));
+      // page chat last: it is the live conversation, so it takes a tie (two
+      // messages CAN share a millisecond — see findMsg)
+      convos.push({ target: PAGE_TARGET, thread: null, msgs: (D.page && D.page.page_chat) || [] });
+      let best = null;
+      for (const c of convos) {
+        for (let i = c.msgs.length - 1; i >= 0; i--) {
+          const m = c.msgs[i];
+          // a tool-activity row is process detail, not an answer, and is not
+          // rendered as markdown at all
+          if (!m || m.kind === 'tools' || !hasTasks(m.text)) continue;
+          const key = msgAge(m);
+          // an ADDRESS, not the object: the card resolves it through findMsg,
+          // exactly as the transcript's own renderer and /tick do, so the two
+          // cannot end up rendering two different copies of one message
+          if (!best || key >= best.key) {
+            best = { target: c.target, thread: c.thread, ts: m.ts, author: m.author,
+                     restored: !!m.restored, key };
+          }
+          break;
+        }
+      }
+      return best;
+    }
+    // the message the card is showing, addressed the way every other
+    // message-addressing path in here addresses one
+    const taskMsg = () => (D.tasks ? findMsg(D.tasks.target, D.tasks.ts, D.tasks.author) : null);
+
+    const trunc = (s, n) => {
+      const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+      return t.length > n ? t.slice(0, n - 1) + '…' : t;
+    };
+
+    // The shell only. The list itself is DOM, built by fillTasks() from the
+    // message text — markdown never travels as an HTML string in here.
+    function taskCardHtml() {
+      const s = D.tasks;
+      if (!s) return '';
+      const open = D.tasksOpen;
+      const ro = !!s.restored;
+      const hide = open ? '' : ' hidden';
+      return `<div class="tasks${open ? '' : ' folded'}${ro ? ' ro' : ''}"
+        data-taskfor="${esc(s.target)}" data-taskts="${esc(s.ts)}" data-taskauthor="${esc(s.author)}"
+        style="--author:${speakerColor(s.author)}">
+        <div class="taskhead">
+          <button class="taskfold" data-act="tasks-fold" type="button" aria-expanded="${open ? 'true' : 'false'}"
+            title="${open ? 'fold the task list away' : 'show the task list'}">
+            <span class="tcaret" aria-hidden="true">${open ? '▾' : '▸'}</span>Tasks<span class="tcount"></span></button>
+          <button class="rebtn taskjump" data-act="tasks-jump" type="button"
+            title="go to the message this list came from" aria-label="go to the message this list came from">↑ source</button>
+        </div>
+        <div class="taskbody"${hide}></div>
+        ${ro ? `<div class="tasknote"${hide}>from the council chat — tick it there</div>` : ''}
+        <div class="taskmeta"${hide}></div>
+      </div>`;
+    }
+
+    // Move the checklists out of a fresh rendering of the source message and
+    // into the card — the lists only, never the prose around them. Rendering
+    // the WHOLE message is the point: `data-tick` is an ordinal over the
+    // message, so the card's boxes address exactly the same boxes the
+    // transcript's do, and a /tick from either lands on the same line.
+    function fillTasks() {
+      const s = D.tasks;
+      const msg = taskMsg();
+      if (!D.mounted || !s || !msg) return;
+      const text = splitEnvelopes(String(msg.text == null ? '' : msg.text)).text;
+      D.shadow.querySelectorAll('.tasks').forEach(sec => {
+        const body = sec.querySelector('.taskbody');
+        if (!body) return;
+        body.textContent = '';
+        const frag = renderMarkdown(text);
+        frag.querySelectorAll('ul.md-tasklist, ol.md-tasklist').forEach(l => body.appendChild(l));
+        const boxes = [...body.querySelectorAll('.md-tick')];
+        const done = boxes.filter(b => b.checked).length;
+        // A restored council message is READ-ONLY here for the same reason it
+        // is offered no ✎ and no ✕ in the transcript: ticking it would mean
+        // editing a council session this companion does not own. The list still
+        // shows, and ↑ source still goes to it.
+        if (s.restored) boxes.forEach(b => { b.disabled = true; b.title = READONLY_TIP; });
+        const count = sec.querySelector('.tcount');
+        if (count) count.textContent = boxes.length ? `${done}/${boxes.length}` : '';
+        const meta = sec.querySelector('.taskmeta');
+        if (meta) {
+          meta.textContent = [
+            s.author || '',
+            `${done}/${boxes.length} done`,
+            s.thread ? '“' + trunc(s.thread.quote, 38) + '”' : 'page chat',
+          ].filter(Boolean).join(' · ');
+        }
+      });
+    }
+
+    // ↑ source. Whatever it takes to put the message on screen: the right tab,
+    // the thread unfolded (a long thread's middle is exactly where an older
+    // list hides) and spotlit the way a highlight click spotlights it, then the
+    // message itself flashed so the eye finds it among its neighbours.
+    function jumpToTasks() {
+      const s = D.tasks;
+      if (!s || !D.mounted) return;
+      const chat = s.target === PAGE_TARGET;
+      if (D.view === 'pages') showThreads();
+      if (D.tab !== (chat ? 'chat' : 'comments') && CAPS.highlights) {
+        D.tab = chat ? 'chat' : 'comments';
+        paintTabs();
+        rememberTab();
+      }
+      D.expanded[s.target] = FOLD_OPEN;
+      if (!chat) focus(s.target);            // reveals a FILED thread, and dims the rest
+      render();                              // …and the unfold lands here
+      const pane = chat ? D.el.chat : D.el.comments;
+      const reply = [...pane.querySelectorAll('.reply[data-ts]')].find(r =>
+        r.getAttribute('data-ts') === String(s.ts) &&
+        r.getAttribute('data-author') === String(s.author));
+      if (!reply) { if (!chat) scrollToThread(s.target); return; }
+      const top = reply.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+      pane.scrollTop = Math.max(0, top - 10);
+      reply.classList.add('tasksrc');
+      setTimeout(() => reply.classList.remove('tasksrc'), 1600);
+    }
+
     function renderComments() {
       const threads = (D.page && D.page.threads) || [];
       const open = threads.filter(t => !isResolved(t));
       const done = threads.filter(isResolved);
-      let html = offlineHtml() + nohlHtml();
+      let html = offlineHtml() + nohlHtml() + taskCardHtml();
       html += D.pending ? pendingHtml() : '';
       // "select any text and hit 💬" is a lie where selection does nothing —
       // the note above has already said what to do instead
@@ -2034,7 +2217,7 @@
       const empty = D.project
         ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — mention a bot to get an answer. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         ${body ? `<div class="thread">${body}</div>` : empty}
         ${statusHtml(PAGE_TARGET)}
         ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026')}
@@ -2383,6 +2566,13 @@
       harvestDrafts();
       const cTop = D.el.comments.scrollTop, chTop = D.el.chat.scrollTop;
       const pTop = D.el.pages ? D.el.pages.scrollTop : 0;
+      // the newest checklist on the page, recomputed from the record: derived
+      // state, so a revision replaces the card and a vanished list removes it
+      D.tasks = taskSource();
+      // …and only if the address still resolves to a message with a list in it:
+      // two messages can share a timestamp, and the card must show whatever
+      // findMsg shows the transcript rather than a second copy of it
+      if (D.tasks && !hasTasks((taskMsg() || {}).text)) D.tasks = null;
       renderComments();
       renderChat();
       // the library is a conversation like the others and moves with the same
@@ -2393,6 +2583,10 @@
       // which need the markdown to exist first and the record to say what the
       // last run of each block printed
       decorateRuns(D.shadow);
+      // …and the tasks card gets the newest checklist, moved out of a rendering
+      // of the message it lives in (same ordinals, same /tick)
+      fillTasks();
+      lockRestored(D.shadow);
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
       if (D.el.pages) D.el.pages.scrollTop = pTop;
@@ -3222,6 +3416,10 @@
         // both stick for the session — a new reply never undoes either
         if (act === 'expand') { D.expanded[target] = FOLD_OPEN; render(); return; }
         if (act === 'fold') { D.expanded[target] = FOLD_SHUT; render(); return; }
+        // the tasks card: its fold is a reading position (session only, like
+        // every other one here), and ↑ source is the way back to the message
+        if (act === 'tasks-fold') { D.tasksOpen = !D.tasksOpen; render(); return; }
+        if (act === 'tasks-jump') { jumpToTasks(); return; }
         if (act === 'interrupt') { doInterrupt(btn); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }
         if (act === 'warn-dismiss') { setWarning(''); return; }
@@ -4025,15 +4223,36 @@
       D.el.light.innerHTML = '';
     }
 
+    // A restored council message is not this companion's to rewrite: its ts is
+    // an address into a session file, and /tick would have nothing to edit. It
+    // is offered no ✎ and no ✕ for the same reason, so its checkboxes are
+    // locked here rather than left to fail at the server.
+    function lockRestored(scope) {
+      if (!scope) return;
+      scope.querySelectorAll('.reply[data-restored] .md-tick').forEach(b => {
+        b.disabled = true;
+        b.title = READONLY_TIP;
+      });
+    }
+
     async function doTick(box) {
       const li = box.closest('li');
       const reply = box.closest('.reply');
       const card = box.closest('.card[data-thread]');
-      const target = card && card.getAttribute('data-thread');
-      const ts = reply && reply.getAttribute('data-ts');
+      // A box in the TASKS CARD is a box in the message the card is showing:
+      // the address travels on the card rather than on a rendered reply, and
+      // everything after this point is identical — the same POST, the same
+      // optimistic flip, the same authoritative body coming back. That is the
+      // whole reason the card holds no state of its own.
+      const sec = box.closest('.tasks[data-taskfor]');
+      const target = sec ? sec.getAttribute('data-taskfor') : (card && card.getAttribute('data-thread'));
+      const ts = sec ? sec.getAttribute('data-taskts') : (reply && reply.getAttribute('data-ts'));
+      const author = sec ? sec.getAttribute('data-taskauthor')
+        : (reply && reply.getAttribute('data-author'));
+      const readonly = sec ? sec.classList.contains('ro') : !!(reply && reply.hasAttribute('data-restored'));
       const index = Number(box.getAttribute('data-tick'));
       const checked = !!box.checked;
-      if (!target || !ts || !isFinite(index)) { box.checked = !checked; return; }
+      if (!target || !ts || !isFinite(index) || readonly) { box.checked = !checked; return; }
       if (li) li.classList.toggle('done', checked);
       box.disabled = true;
       let r;
@@ -4047,8 +4266,9 @@
         return;
       }
       // reconcile from the authoritative body, then let render() rebuild the
-      // list from it — the checkbox states come back out of the text
-      const msg = findMsg(target, ts, reply && reply.getAttribute('data-author'));
+      // list from it — the checkbox states come back out of the text, in the
+      // transcript and in the tasks card alike
+      const msg = findMsg(target, ts, author);
       if (msg && typeof r.text === 'string' && r.text) msg.text = r.text;
       box.disabled = false;
       render();

@@ -1603,6 +1603,57 @@ Contract deltas agreed during live testing — authoritative over the sections a
     prompt tells the agents what a resolved thread means so an archive of
     filed threads is not read back as a pile of open questions.
 
+- **The tasks card: the current checklist, at the top of the drawer**
+  (`drawer.js taskSource/taskCardHtml/fillTasks/jumpToTasks`, `.tasks` in
+  drawer.css). The bots write and rewrite markdown checklists as a plan moves,
+  and the live one ends up wherever the conversation left it — twenty replies up
+  a comment thread, or above a bot turn in Page chat. So the top of the drawer
+  carries the checklist from the **newest message on this page that has one**,
+  across every comment thread AND page chat, and a revised list **replaces** it:
+  there is exactly one list there and it is the current state. No list anywhere
+  on the page → no card.
+  - **Derived, never stored.** `D.tasks` is recomputed from the record by every
+    `render()` — the paths a message arrival, a tick, a refetch and a `setPage`
+    already go through — so nothing polls, no event changed shape and no copy of
+    a list exists anywhere. Each conversation is scanned from its END and
+    abandoned at its first hit (its own array order is authoritative), and the
+    winner is the newest by timestamp, with page chat taking a tie because two
+    messages can share a millisecond. A **restored** message
+    (`restored:true`, `ts = "<sid>#<n>"`) sorts below everything live: its `ts`
+    is an address, not a date, and the council chat it came out of predates
+    every message on the page.
+  - **Its checkboxes are the transcript's own.** The card is rendered from the
+    source message's text and keeps `data-tick` — the ordinal over that whole
+    message — so a box in the card addresses exactly the box the transcript's
+    does and goes through the same `POST /tick` (`doTick` reads the address off
+    the card instead of off a `.reply`). Optimistic flip, authoritative body
+    back, one `render()` and both renderings agree by construction. The card
+    holds no checkbox state of its own; there is nothing to keep in sync.
+  - **A restored council list is READ-ONLY**, in the card and in the transcript:
+    ticking it would mean editing a session this companion does not own, so the
+    boxes are disabled with a hover reason and the card says *"from the council
+    chat — tick it there"*. `↑ source` still works. (The transcript's restored
+    replies carry `data-restored` and are locked by `lockRestored()` for the
+    same reason they are offered no ✎ and no ✕.)
+  - **Both panes, at the top of each.** The tab bar sits above the panes and each
+    pane scrolls alone, so there is no shared strip to pin one card to — and a
+    list that came out of a comment thread is exactly what a reader typing in
+    Page chat needs. Both copies come from the same message text. Not in the
+    Pages view, which is about other pages.
+  - **Meta and jump.** One quiet line: who wrote it · `n/m done` · the thread's
+    quote or "page chat" (the fold's own line keeps the count). `↑ source`
+    crosses to the right tab, unfolds the thread (`D.expanded → FOLD_OPEN` —
+    an older list is exactly what a long thread hides), spotlights the card
+    through the existing `focus()`, and flashes the message itself
+    (`.reply.tasksrc`). The fold is session state like every other reading
+    position in the drawer (`D.tasksOpen`), never persisted.
+  - Tests: harness `?selftest=1` (the card appears, newest wins, a revision
+    replaces it, a card tick is the same `/tick` as a thread tick and both
+    renderings move, a thread-sourced list and its jump, the fold, the card
+    disappearing with its list) and `?workspace=1&selftest=1` (a restored list,
+    read-only, shown though its message is folded away). Screenshot states:
+    `?tasks=1` and `?tasks=1&folded=1`.
+
 ## Project artifact pages (Phase 1, shipped)
 
 A council chat writes HTML into its own project folder —

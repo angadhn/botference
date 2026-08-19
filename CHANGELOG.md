@@ -1,5 +1,45 @@
 # CHANGELOG
 
+## 2026-08-19
+
+- **Council: Word documents attach too.** `.docx`/`.doc` join images,
+  PDFs and spreadsheets in both attachment paths. The web server sniffs
+  content as ever — a docx is a zip with `word/` entries, a legacy .doc
+  is an OLE2 file whose stream directory says "WordDocument" (an OLE2
+  without it stays an xls, as before). The bots are told the way in
+  (macOS `textutil -convert txt` extracts the text) and the way back
+  (an edited version is a NEW file written into the workspace — an
+  attachment is never edited in place).
+
+- **Discuss: the checklist stops scrolling away here too.** The council
+  web panel got a tasks section last week; the drawer now has the same
+  thing. Pinned at the top of both panes — Comments and Page chat — is
+  the checklist from the **newest message on this page that has one**,
+  wherever it lives: twenty replies up a comment thread, or above a bot
+  turn in the page chat. A revised list *replaces* it, so there is
+  exactly one list there and it is the current state. No list anywhere on
+  the page, no card.
+
+  **The boxes are the transcript's own.** The card is rendered from the
+  source message's text and keeps the same `data-tick` ordinals, so a tick
+  in the card is the same `POST /tick` a tick in the thread is — the
+  message edit the companion already performs, answered with the
+  authoritative body. The card holds no checkbox state of its own, which
+  is why both renderings move together and there is nothing to keep in
+  sync. Nothing is stored and no event changed shape: the card is derived
+  from the page record by the renders that already happen (a message
+  arriving, a tick coming back, a refetch), so nothing polls.
+
+  A quiet line says who wrote it, how many are done, and which passage
+  it hangs off (or "page chat"); `↑ source` crosses to the right tab,
+  unfolds the thread and marks the message itself; the fold is a reading
+  position, kept for the session. A list that came out of a **restored
+  council chat** shows read-only, with the reason in plain words — *from
+  the council chat — tick it there* — because ticking it would mean
+  editing a session this companion does not own; for the same reason
+  those messages' checkboxes are now locked in the transcript too, beside
+  the ✎ and ✕ they were already refused.
+
 ## 2026-08-18
 
 - **Council web: the task list stops scrolling away.** The bots write and

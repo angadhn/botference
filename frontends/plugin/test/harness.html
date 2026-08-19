@@ -88,6 +88,10 @@
                      state, with its warning in Page chat (screenshot state)
     ?checklist=1     seed the page chat with a bot checklist (screenshot state
                      for the interactive checkboxes)
+    ?tasks=1         seed a bot checklist INSIDE a comment thread — the newest
+                     list on the page, so the tasks card at the top of both
+                     panes shows it and its meta line names the thread it lives
+                     in (screenshot state). `&folded=1` holds the card folded.
     ?run=1           seed the page chat with a bot reply carrying a runnable
                      ```python block, already run: the Run button, the output
                      and two figure thumbnails (screenshot state)
@@ -288,7 +292,12 @@ const WS_TAIL = {
   'aaaa1111-0000-4000-8000-000000000001': [
     ['reader', 'How big does the radiator have to be for a 12-person hab?'],
     ['claude', 'About **400 m²** at a 350 K rejection temperature — it is the truss, not the hull, that ends up sized by it.'],
-    ['codex', 'Same number here. Worth saying the panel count is what drives the assembly schedule.'],
+    // …carrying a checklist, and buried in the fold: the tasks card must show
+    // it even though the message it lives in is folded away, and it must be
+    // READ-ONLY there — a restored council message is not this companion's to
+    // rewrite
+    ['codex', 'Same number here. Worth saying the panel count is what drives the assembly schedule.\n\n'
+      + '- [x] Size the radiator at 350 K\n- [ ] Count the panels\n- [ ] Check the truss mass'],
     ['reader', 'And if we drop to 320 K?'],
     ['claude', 'Roughly 700 m². Radiator area goes as T⁻⁴, so the last 30 K is expensive.'],
   ],
@@ -1055,6 +1064,20 @@ if (Q.get('run')) {
 if (Q.get('checklist') === '1') {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(7), text: '@claude give me a checklist for the desk' });
   RECORD.page_chat.push({ author: 'claude', ts: iso(6), text: CHECKLIST_DONE });
+}
+
+// ?tasks=1 — the tasks card, sourced from a COMMENT THREAD. The list is the
+// newest one on the page (its ts is later than anything in page chat), so the
+// card at the top of both panes shows it wherever the reader is standing, and
+// its meta line names the thread's quote rather than "page chat".
+if (Q.get('tasks') === '1') {
+  RECORD.threads[1].msgs.push({ author: 'angadh', ts: iso(5),
+    text: '@codex give me the checks for this one.' });
+  RECORD.threads[1].msgs.push({ author: 'codex', ts: iso(4),
+    text: 'Before it goes anywhere:\n\n'
+      + '- [x] Pull the report itself\n'
+      + '- [ ] Find the sentence the paraphrase came from\n'
+      + '- [ ] Ask the desk which version they filed\n' });
 }
 
 // ?handles=1 — the shape of a shared companion: a page chat several people are
@@ -1960,6 +1983,9 @@ async function selftest() {
 
   check('3 threads restored', q('.pane[data-pane="comments"] .card').length === 3);
   check('orphan badge shown', q('.badge.orphan-badge').length === 1);
+  // the tasks card is derived from the record, so a page whose conversations
+  // hold no checklist has no card at all — not an empty one
+  check('a page with no checklist anywhere has no tasks card', q('.tasks').length === 0);
   check('highlights painted', document.querySelectorAll('mark.bfp-hl').length >= 3);
   check('export button shows the Obsidian mark', !!S.querySelector('[data-act="export"] svg.obs polygon'));
 
@@ -3389,6 +3415,117 @@ async function selftest() {
   }));
   check('…while the raw brackets never reach the label',
     !/\[[ xX]\]/.test(mineRow().querySelector('.ctext').textContent));
+
+  // ---- the tasks card ----------------------------------------------------
+  // One place in the drawer that always holds the CURRENT list: the checklist
+  // from the newest message on this page that has one, whichever conversation
+  // it lives in. Derived from the record, so a revision replaces it and a page
+  // with no list has no card; its boxes are the transcript's own /tick, so
+  // ticking in either place moves both.
+  const card = p => S.querySelector('.pane[data-pane="' + p + '"] .tasks');
+  const cboxes = p => [...(card(p) ? card(p).querySelectorAll('.md-tick') : [])];
+  const cmeta = p => ((card(p) || S).querySelector('.taskmeta') || {}).textContent || '';
+  const citems = p => [...(card(p) ? card(p).querySelectorAll('li.md-task') : [])];
+
+  check('a checklist on the page puts a tasks card in both panes',
+    !!card('chat') && !!card('comments'));
+  check('…at the very top of each pane, above the conversation',
+    S.querySelector('.pane[data-pane="chat"]').firstElementChild === card('chat') &&
+    S.querySelector('.pane[data-pane="comments"]').firstElementChild === card('comments'));
+  check('…holding the NEWEST list on the page, not the first one it found',
+    cboxes('chat').length === 2 && /check the xGA table/.test(card('chat').textContent) &&
+    !/structural failure/.test(card('chat').textContent));
+  check('…the list only, never the prose around it',
+    !/Before I forget/.test(card('chat').textContent));
+  check('…with the same box ordinals the message has, which is how it addresses it',
+    cboxes('chat').map(b => b.getAttribute('data-tick')).join(',') === '0,1');
+  // the state is the message TEXT, so the card shows whatever the companion
+  // last wrote into it — a tick made in the transcript reaches the card on the
+  // render that the answer to it triggers, never on the optimistic flip
+  check('…and the state the message text carries, ticked items struck through',
+    !!await until(() => (cboxes('chat')[1] && cboxes('chat')[1].checked &&
+      citems('chat')[1].classList.contains('done') && !cboxes('chat')[0].checked) || null));
+  check('…under a meta line saying who wrote it, how much is done and where it lives',
+    /angadh/.test(cmeta('chat')) && /1\/2 done/.test(cmeta('chat')) &&
+    /page chat/.test(cmeta('chat')));
+  check('…and both panes show the same card', cboxes('comments').length === 2);
+
+  // the whole claim: this is the transcript's checkbox, not a copy of it
+  const nTicks = tickPosts.length;
+  cboxes('chat')[0].click();
+  check('ticking in the card POSTs the same /tick as ticking in the thread',
+    !!await until(() => tickPosts.slice(nTicks).some(p =>
+      p.thread_id === '__page__' && p.ts === myTs && p.index === 0 && p.checked === true)));
+  check('…which the companion wrote into that message, once',
+    !!await until(() => /- \[x\] check the xGA table/.test((msgIn('__page__', myTs) || {}).text || '')));
+  check('…and BOTH renderings moved with it', !!await until(() => {
+    const c = cboxes('chat')[0], t = myBoxes()[0];
+    return c && t && c.checked && t.checked ? true : null;
+  }));
+  check('…including the count on the meta line',
+    !!await until(() => /2\/2 done/.test(cmeta('chat')) || null));
+  cboxes('chat')[0].click();
+  check('unticking in the card is the same call the other way', !!await until(() =>
+    tickPosts.some(p => p.ts === myTs && p.index === 0 && p.checked === false) &&
+    !/- \[x\] check the xGA table/.test((msgIn('__page__', myTs) || {}).text || '')));
+  check('…and the card came back with it', !!await until(() =>
+    (cboxes('chat')[0] && !cboxes('chat')[0].checked && /1\/2 done/.test(cmeta('chat'))) || null));
+
+  // a revised list REPLACES the card's content — there is only ever one here
+  const REVISED = 'Revised, after the desk came back:\n\n'
+    + '- [x] check the xGA table\n- [x] ask about the draw\n- [ ] re-read the second filing';
+  RECORD.page_chat.push({ author: 'codex', ts: now(), text: REVISED });
+  d.setPage(RECORD);
+  check('a newer list replaces the card, rather than piling up beside it',
+    cboxes('chat').length === 3 && card('chat').querySelectorAll('.md-tasklist').length === 1);
+  check('…and the meta line follows it to its new author and count',
+    /codex/.test(cmeta('chat')) && /2\/3 done/.test(cmeta('chat')));
+
+  // a list in a COMMENT THREAD is the same card, and ↑ source goes to it.
+  // A real millisecond has to pass first: page chat takes a TIE (two messages
+  // can share a timestamp, and the live conversation is the better guess), so
+  // "the thread's list is newer" has to actually be true to be tested.
+  await sleep(5);
+  const TASK_THREAD = { id: 't-1754500250-task', quote: 'the shape that had looked passive for an hour',
+    prefix: '', suffix: '', orphaned: false,
+    msgs: [
+      { author: 'angadh', ts: now(), text: 'Checks for this passage:' },
+      { author: 'codex', ts: now(), text: 'Three of them:\n\n- [ ] Time the shift\n- [ ] Count the passes\n- [ ] Ask who called it' },
+    ] };
+  RECORD.threads.push(TASK_THREAD);
+  d.setPage(RECORD);
+  check('a list in a comment thread takes the card over when it is the newest',
+    cboxes('chat').length === 3 && /Time the shift/.test(card('chat').textContent));
+  check('…and the meta line names the passage it hangs off, not "page chat"',
+    /looked passive/.test(cmeta('chat')) && !/page chat/.test(cmeta('chat')));
+  d.open('chat');
+  card('chat').querySelector('[data-act="tasks-jump"]').click();
+  check('↑ source crosses to the tab the list actually lives on',
+    !!await until(() => !S.querySelector('.pane[data-pane="comments"]').hidden));
+  check('…and spotlights the thread it is in', !!await until(() =>
+    !!S.querySelector('.card[data-thread="' + TASK_THREAD.id + '"].focused')));
+  check('…and marks the message itself, so the eye finds it among its neighbours',
+    !!S.querySelector('.card[data-thread="' + TASK_THREAD.id + '"] .reply.tasksrc'));
+
+  // fold: a reading position, kept for the session
+  const foldNow = () => card('comments').querySelector('[data-act="tasks-fold"]');
+  foldNow().click();
+  check('the card folds to one line', card('comments').classList.contains('folded') &&
+    card('comments').querySelector('.taskbody').hidden &&
+    foldNow().getAttribute('aria-expanded') === 'false');
+  check('…which still says how much is done',
+    card('comments').querySelector('.tcount').textContent === '0/3');
+  d.setPage(RECORD);
+  check('…and the fold survives the next render', card('comments').classList.contains('folded'));
+  foldNow().click();
+  check('…and opens again on the same control', !card('comments').classList.contains('folded'));
+
+  // and when the list goes, so does the card
+  RECORD.threads = RECORD.threads.filter(t => t.id !== TASK_THREAD.id);
+  d.setPage(RECORD);
+  check('losing that message hands the card back to the next-newest list',
+    cboxes('chat').length === 3 && /re-read the second filing/.test(card('chat').textContent));
+  d.open('chat');
 
   // ---- running a python code block ---------------------------------------
   // The button is quiet, it is owner-only, and what it sends is an ADDRESS: the
@@ -5287,6 +5424,33 @@ async function selftestWorkspace() {
   check('a long chat folds behind one line',
     chat('.showmore').length <= 1);
 
+  // ---- the tasks card over a restored council chat ------------------------
+  // The newest list here lives in a RESTORED message — one this companion does
+  // not own — and it is folded away in the middle of the chat, which is exactly
+  // the case the card exists for. So it shows, it says whose list it is, and it
+  // is READ-ONLY: ticking would mean editing a council session, and the boxes
+  // say so instead of failing at the server.
+  const tcard = () => S.querySelector('.pane[data-pane="chat"] .tasks');
+  const tbox = () => [...(tcard() ? tcard().querySelectorAll('.md-tick') : [])];
+  check('a checklist in a restored chat still reaches the tasks card',
+    !!tcard() && tbox().length === 3 && /Count the panels/.test(tcard().textContent));
+  check('…even though the message it lives in is folded away',
+    !/Count the panels/.test(S.querySelector('.pane[data-pane="chat"] .thread').textContent));
+  check('…marked read-only, with the reason in plain words',
+    tcard().classList.contains('ro') &&
+    /from the council chat — tick it there/.test(tcard().textContent));
+  check('…and every box inert', tbox().every(b => b.disabled));
+  const wsTicks = tickPosts.length;
+  tbox()[1].click();
+  await sleep(120);
+  check('…so a click on one asks the companion for nothing', tickPosts.length === wsTicks);
+  check('…and nothing was ticked', !tbox()[1].checked);
+  // …but finding it is still allowed: the jump unfolds the chat and marks it
+  tcard().querySelector('[data-act="tasks-jump"]').click();
+  check('↑ source unfolds the chat and marks the restored message',
+    !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.tasksrc')) &&
+    /Count the panels/.test(S.querySelector('.pane[data-pane="chat"] .thread').textContent));
+
   // ---- typing into the resumed chat --------------------------------------
   const ta = S.querySelector('.pane[data-pane="chat"] .composer textarea');
   ta.value = '@claude and at 300 K?';
@@ -5308,6 +5472,7 @@ async function selftestWorkspace() {
   S.querySelector('[data-act="arch-new"]').click();
   await until(() => chat('.empty').length === 1, 5000);
   check('a new chat empties the pane', chat('.reply').length === 0);
+  check('…and takes the tasks card with it: no list, no card', chat('.tasks').length === 0);
   check('\u2026and says which project it will file under',
     /Spaceship Engineering/.test((S.querySelector('.pane[data-pane="chat"] .empty') || {}).textContent || ''));
   check('\u2026and the bar says so too',
@@ -5405,6 +5570,16 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         d.open('chat');
         const b = d.shadow.querySelector('[data-act="arch-list"]');
         if (b) b.click();
+      }, 300);
+    }
+    // ?tasks=1&folded=1 — the tasks card folded to its one line: the state a
+    // reader who has read the list leaves it in. The fold is session state
+    // inside the drawer, so the only way to it from out here is the control
+    // itself (which is the point — nothing else may set it).
+    if (Q.get('tasks') === '1' && Q.get('folded') === '1') {
+      setTimeout(() => {
+        const b = d.shadow.querySelector('[data-act="tasks-fold"]');
+        if (b) b.click(); else log('tasks: no card to fold');
       }, 300);
     }
     // the scan, without waiting for a mention: asking content.js for the
