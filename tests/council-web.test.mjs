@@ -1886,9 +1886,9 @@ test('billing: a stored key reaches the next bridge and is never handed back —
     const body = await w.text();
     assert.ok(!body.includes(CLAUDE_KEY), 'the response never echoes the key back');
     assert.match(body, /"claude":"set"/);
-    // running bridges keep the env they were spawned with, and this server
-    // will not kill one to answer a settings click — it says so instead
-    assert.equal(JSON.parse(body).applies, 'next-bridge');
+    // a billing change retires idle bridges on the spot (their chats resume
+    // on the next turn), so the answer is 'now' unless one is mid-turn
+    assert.equal(JSON.parse(body).applies, 'now');
 
     const st = await (await fetch(`${s.base}/keys`)).json();
     assert.equal(st.claude, 'set');
@@ -2001,6 +2001,23 @@ test('billing: removing a key unsets it and releases a mode stranded on "key"', 
     assert.ok(!fs.readFileSync(s.keysFile, 'utf8').includes(CLAUDE_KEY));
     assert.equal((await (await post(s.base, '/keys/remove', { agent: 'claude' })).json()).removed, false);
     assert.deepEqual(await newBridgeEnv(s, 'gonesid01'), {});
+  } finally { s.stop(); }
+});
+
+test('billing: flipping a switch retires idle bridges — the next turn already bills the new mode', async () => {
+  const s = await startServer({ env: { ANTHROPIC_API_KEY: 'sk-ant-api-INHERITED' } });
+  try {
+    await post(s.base, '/keys', { agent: 'claude', key: CLAUDE_KEY });
+    await post(s.base, '/key-mode', { agent: 'claude', mode: 'key' });
+    const env1 = await newBridgeEnv(s, 'retire001');
+    assert.equal(env1.ANTHROPIC_API_KEY, CLAUDE_KEY);
+    // the key "wears out"; the reader flips to subscription — no remove, no
+    // restart, no new tab
+    const r = await (await post(s.base, '/key-mode', { agent: 'claude', mode: 'subscription' })).json();
+    assert.equal(r.applies, 'now', 'the idle bridge was retired by the flip');
+    const env2 = await newBridgeEnv(s, 'retire001');
+    assert.equal(env2.ANTHROPIC_API_KEY, undefined,
+      'the respawned bridge bills the subscription — the dead key is gone');
   } finally { s.stop(); }
 });
 

@@ -670,6 +670,18 @@ const anyBridgeAvailable = () => {
 // "next-bridge", and the UI says so in those words.
 const appliesWhen = () => (anyBridgeAvailable() ? 'next-bridge' : 'now');
 
+// A billing change only reaches a NEWLY spawned bridge — so retire every idle
+// one the moment the user flips a switch or changes a key. Their chats lose
+// nothing: the next turn respawns with /resume from the session file, now
+// under the new billing. Only a bridge that is mid-turn keeps its old env,
+// and only until that turn ends; appliesWhen() then answers 'now' in the
+// common case instead of leaving the reader to guess they needed a restart.
+function retireIdleBridges() {
+  for (const b of [...bridges.values()]) {
+    if (!b.busy) despawnBridge(b);
+  }
+}
+
 export function handler(req, res) {
   const url = req.url.split('?')[0];
   if (req.method === 'POST' && rateLimited(req)) {
@@ -813,6 +825,7 @@ export function handler(req, res) {
         }
         const r = COUNCIL_MODES.setMode(data.agent, data.mode);
         if (!r.ok) { res.writeHead(400, JSON_HEAD).end(JSON.stringify(r)); return; }
+        retireIdleBridges();
         res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...snapshot(), applies: appliesWhen() }));
       });
       return;
@@ -833,6 +846,7 @@ export function handler(req, res) {
         if (url === '/keys/remove' && COUNCIL_MODES.modeOf(data.agent) === 'key') {
           COUNCIL_MODES.setMode(data.agent, 'auto');
         }
+        retireIdleBridges();
         res.writeHead(200, JSON_HEAD).end(JSON.stringify({
           ...snapshot(), ...(r.removed === undefined ? {} : { removed: r.removed }),
           applies: appliesWhen(),
