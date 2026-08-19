@@ -2255,6 +2255,286 @@ sending nothing until it is answered, backing out, and a confirmed send putting
 the digest in page chat with nothing resolved behind it.
 `?workspace=1&review=1` is the screenshot pose (the confirm, mid-step).
 
+### Amendment (2026-08-19, shipped): one margin, and it is Discuss's
+
+Some of the pages a reader opens are already a review surface. The review
+engine's build (`frontends/review/build.mjs`) and the review-doc skill's
+single-file `*.review.html` both paint their own highlights, keep their own
+margin rail, and pop their own **💬 Comment** pill the moment a drag ends. Put
+the Discuss drawer on top of that and one selection raises two pills, from two
+systems, writing into two records neither of which knows about the other. That
+is not a feature with a workaround; it is a page the reader cannot use.
+
+**One of them has to win, and with the plugin installed it is ours.** On such a
+page Discuss KEEPS the margin and **the page's own selection pill is put
+away**. The rule is the reader's own if/else: *if the plugin is here, the
+plugin's comment button; otherwise the page's own.*
+
+The reason is not that our pill is prettier. It is where the comments GO. A
+comment written into the page's own record is a line in a JSON file beside the
+document; a comment written into Discuss reaches the bots, joins **send
+review**, lands in the project's chat and shows up in the pages library. On a
+page the owner is reviewing with their council, the second of those is the only
+one that does anything.
+
+**Nobody else is affected.** A visitor without the extension gets the page's
+built-in commenting exactly as the page ships it — the suppression is a
+stylesheet the content script injects into a page it is already running in, and
+the file on disk is untouched. There is no version of this that degrades a
+plugin-less reader's page.
+
+#### What is suppressed, and what is not
+
+Only the **selection-triggered** affordance:
+
+```
+#selpop        the review-doc single file's "💬 Comment" pill
+#sel-pill      the review engine's "💬 Comment on selection"
+#sel-pop       …and its selection popup
+```
+
+hidden by an injected `<style id="bfp-page-sel-off">` carrying
+`display:none !important`, which outranks the inline `display`/`hidden` both
+engines toggle. Nothing of the page's DOM is touched, so the engine can go on
+showing and hiding an element that simply does not paint, and undoing the whole
+thing is removing one node.
+
+**The engines' TOOLBARS stay.** "+ General comment", "Copy feedback",
+"Export ⬇", "Send to Claude", the resolved filter — these are how the reader
+works with the comments that already live in that page's own record, and none
+of them is a second answer to a drag. Suppressing them would break a page we
+were only trying to de-duplicate.
+
+#### The marker
+
+Detection is **one `querySelector`, once, at attach time** in content.js
+(`REVIEW_UI_MARKER`) — never inferred from the url, because a review build is
+served from wherever the reader put it (file:, the council web server, a static
+host), and never re-run, because a page does not stop being a review surface
+while it is open.
+
+```
+body[data-docid] > #selpop        the review-doc single file
+body[data-slug]  > aside#margin   the review engine's build
+```
+
+Each alternative demands **both** halves: a body-level data attribute the
+engine writes (`data-docid` / `data-slug`), **and** that engine's own
+commenting element as a **direct child of body**. Structural, cheap, and hard
+to trip by accident — an ordinary prose page has neither half; a CMS that
+happens to put `data-slug` on its body, or a layout with a stray `#margin`,
+has only one. `window.__bfp.reviewHost.marker` exposes the selector so the
+harness asserts against the real string rather than a copy of it.
+
+#### The switch: "use the page's own commenting"
+
+The default is the sensible one, not a verdict. A reader who wants the page's
+own margin back can have it — **once per page**, and the answer is remembered.
+
+**Where.** A one-line note at the top of the **Comments tab**, with the switch
+in the same block:
+
+> Discuss is handling comments on this page, so its own 💬 is put away — one
+> margin, and your comments reach the bots.  **[use the page's own commenting]**
+
+Not a gear popover: the note is the sentence that explains where the page's own
+💬 went, and the switch is the answer to that sentence. Split them and the
+reader hunts for a setting they do not yet know exists. A gear would also be a
+new surface on a drawer that has none — and the Comments tab is precisely where
+a reader goes when they wonder about their comments.
+
+**After the switch** the note stays and gets LOUDER (a solid card rather than
+the default's dashed, dimmed line), reading *"This page's own review commenting
+is handling the margin — new comments there won't reach the bots. Discuss
+threads already here still work"* with **[let Discuss comment here]**. The
+default is the quiet one because nothing has gone wrong in it; the handed-back
+state is the one worth a second look, because comments written over there do
+not reach the bots.
+
+Standing down is NARROW. It withdraws exactly two things — our selection pill
+and `beginNew` — and **nothing else**: Page chat, the project archive, the
+tasks card, the project header, send-review, the pages library, Phase 2's write
+rules, and every Discuss thread already on the page, which still renders, still
+paints its highlight and **still takes replies** in both arrangements.
+
+**Persistence.** `chrome.storage.local`, key `bfp:page-comments:<URL_NOW>` —
+the page's settled identity, so the file: twin and the council-web twin of one
+artifact share the answer, and nothing else on the web is affected. Read once
+at boot and only on a page where the question arises; an ordinary page never
+touches storage for this. **Unknown reads as the default** (Discuss has the
+margin), and the suppression is applied SYNCHRONOUSLY at boot, before storage
+answers, so the page's pill cannot flash up on the reader's first drag while a
+callback is in flight. Turning it on stores `true`; turning it off *removes*
+the key rather than storing a false.
+
+**Ordinary pages and non-review artifacts are byte-identical**: no marker, no
+note, no stylesheet, no storage read, no branch taken.
+
+#### Testing
+
+Harness `?reviewpage=1` wears the marker on the ordinary article (docid on the
+body, an engine-shaped `#selpop` as a direct child of it, and the engine's
+toolbar buttons beside it) with the three usual threads restored. `&selftest=1`
+asserts: the marker is seen and Discuss does NOT stand down; the page's own
+pill is suppressed and stays invisible even when the page itself sets an inline
+`display:block`; the suppression is a stylesheet and the pill is still in the
+DOM; the toolbar buttons are untouched; our pill floats on a drag and starts a
+comment; the three threads still list, still paint and still take a reply; the
+note is shown, in its quiet state, naming Discuss as the one handling comments;
+"use the page's own commenting" stands Discuss down, persists the key, gives
+the page's pill back, flips the note to its loud state, refuses `beginNew` and
+leaves the threads alone; and "let Discuss comment here" restores every one of
+those, forgetting the key. `?reviewpage=1&pageown=1` is the screenshot pose for
+the handed-back state.
+
+### Amendment (2026-08-19, shipped): ready for review — the bots get a middle state
+
+Resolving stays **the reader's click alone**. A bot must never close the
+reader's question, and nothing in this amendment lets one.
+
+But between "open" and "resolved" there was a gap. After a round with the bots
+the reader had no way to see WHICH threads had moved — the list looked exactly
+as it had before, and the only way to find out was to re-read every thread on
+the page. So a thread now has a third state: **addressed**, shown as *ready for
+review*.
+
+#### The mechanism, and why this one
+
+**A bot's reply landing in a thread marks it.** That is the whole rule, and it
+needs no new API on the bot side at all: the bots already reply into threads
+whenever the reader tags them there, and every write into a thread — `/reply`,
+the reading room's composer, the bridge's `reply` event — goes through
+`store.appendMsg`. So the rule is stated once, beside the "new activity is the
+end of resolved" rule that already lived there:
+
+```
+a BOT wrote into this thread    → addressed  (their go is done; the reader's turn)
+a HUMAN wrote into this thread  → not addressed  (a new question; any claim is stale)
+a bot's `tools` line            → nothing  (narrating, not answering)
+```
+
+Same shape as `resolved`, deliberately: **state, not history**. Clearing
+REMOVES `addressed` / `addressed_at` / `addressed_by`, so a thread that was
+never addressed is byte-identical to one that was addressed and written into
+again, and every record written before this reads as not-addressed. Resolving
+clears it (the reader has looked) and so does reopening (the reader saying "not
+done" is exactly the answer the badge was asking for).
+
+**What was considered and NOT built:** telling the bots, in the send-review
+digest, to "reply one line into each comment's own thread". They cannot. The
+bridge fixes a turn's target when the job is queued (`chat.mjs`, `job.target`)
+and the bot's whole turn text is posted back into that same target; a bot has
+no way to choose a different thread. A send-review turn is queued against page
+chat, so its answer lands in page chat, and an instruction to reply into each
+thread would be an instruction the bots could not obey. **Deferred, not built:**
+a send-review that fans out one job per thread would close that loop — at the
+cost of N turns of agent time and the "one turn for the whole review" property
+the endpoint is built on.
+
+`POST /addressed {url, thread_id, addressed}` exists for the CLEARING
+direction, which is the one thing only a person can mean. Same gate as
+`/resolve` (an author, not ownership): on a shared companion the people reading
+the page are the people working through its comments, and the act is free to
+undo. The `addressed:true` direction is accepted for symmetry and so a second
+reader can hand a thread over without replying into it, but nothing in the
+drawer offers it.
+
+#### In the drawer
+
+An addressed thread wears an amber **ready for review** badge — inside the
+quote, flowing after it the way the orphan badge always has, because a badge in
+the row beside it takes a flex share and squeezes a three-line quote into a
+column — and sorts into a **"Ready for review (N)"** section between the open
+list and the Resolved archive. That is where these threads are in their life:
+past the bots, not yet past the reader.
+
+Collapsible like the archive, but **open by default**: the archive's whole
+point is to be out of the way, and this section is the thing the reader came
+back to the page to look at. Its cards are the ORDINARY cards, because a thread
+here is still a live conversation that takes replies.
+
+The reader's **✓** files it exactly as it files an open one. **↺ "not done"**
+is the one-click disagreement: back into the open list, in page order, and a
+candidate for the next send review again. Replying into it does the same thing
+implicitly, because the reader writing there is a new question.
+
+The **tab count is unchanged**: it counts every unresolved thread, ready ones
+included, because a ready thread still wants the reader — that is what ready
+means. What "All clear" means is unchanged too: it appears only when every
+thread is FILED, never while one is merely ready.
+
+#### On the page
+
+A third highlight tint, between the other two on the same arc:
+
+```
+--hl     yellow   nobody has been here
+--ready  amber    somebody has; your turn        (bfp-ready)
+--done   sage     done                           (bfp-done)
+```
+
+Resolved outranks ready outranks open, read off the mark's own classes, so a
+repaint from the record can never disagree with what is on screen. Read down a
+page the three tints are a progress bar the reader never has to open the drawer
+to see.
+
+#### send-review sends only OPEN threads
+
+`workspace.openThreads` now excludes `addressed` as well as `resolved`, and the
+drawer's button count applies the same rule so the number it shows is the
+number that is sent. Re-sending a thread a bot has already reported on would
+ask for work that has been done — and a second send after a round is precisely
+the case this state exists for.
+
+#### before → after, when a change rewrote the passage
+
+A change that REWRITES the quoted passage orphans its highlight: the thread
+still carries the old wording, the page no longer contains it, and nothing says
+what replaced it. So the bots are asked — in the digest, and as rule 5 of the
+bridge system prompt — to quote the new wording back verbatim when that
+happens: `done — this passage now reads: "…"`.
+
+That one line is enough. On a **ready** thread the drawer looks at the last
+bot message for that explicit phrasing (`now reads` / `reads now` / `now says` /
+`new wording`, followed by a quoted string — never a loose "any quoted string in
+a reply", which would draw a diff every time an agent quoted the reader back at
+themselves) and renders a compact **before → after** word diff against the
+thread's stored quote: the same suggested-edit idiom the review engine uses,
+struck-through where words left, the accepted tint where they arrived.
+
+Word-level LCS, whitespace never diffed and every run re-joined with a single
+space (diffing the gaps as tokens is what makes a word diff render as
+"beenhad ingone"). On any doubt — a passage too long to diff, or two versions
+sharing less than a fifth of their length, which is two different sentences
+rather than an edit — it falls back to the two quotes stacked and labelled
+**was / now**, which says the same thing and cannot mislead. Pure client-side:
+no new data, nothing server-side, no page-side rendering.
+
+**Deferred, not built:** having the companion RE-ANCHOR the thread to the new
+wording (anchor.js) when a bot reply carries it, so the highlight moves onto the
+rewritten passage instead of orphaning at all.
+
+#### Testing
+
+`resolve.test.mjs` covers the state transition and `store.appendMsg`'s rule
+(bot marks, human clears, `tools` marks nothing, page chat is never marked,
+resolve and reopen both clear it). `companion.test.mjs` drives the endpoints: a
+bot's answer marking a thread over the wire, the reader's reply clearing it,
+`/addressed` in both directions and its 404, and filing/reopening spending the
+claim. `workspace.test.mjs` covers the digest — an addressed thread is not
+sent, a page whose every thread is ready composes no digest, and the digest
+carries the new-wording instruction.
+
+Harness `?ready=1&selftest=1` drives the whole thing in the DOM: a bot reply
+marking the thread, the badge, the section and its count, the fold, the amber
+highlight, the tab count that does not drop, "not done" and its refusal path,
+the reader's ✓ still resolving through `/resolve`, reopening landing in the
+OPEN list rather than back in Ready for review, the reader's own reply clearing
+it, and the before→after diff (word diff, stacked fallback, and nothing at all
+for a reply that quotes no new wording). `?ready=1` is the screenshot pose and
+`?ready=1&rewrite=1` the one for the diff. The workspace selftest asserts the
+send-review count drops when a thread goes ready and comes back when it does.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, SPA mutation observers,

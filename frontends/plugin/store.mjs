@@ -731,6 +731,11 @@ export function setCheckbox(text, index, checked) {
   return hit ? out : null;
 }
 
+// Who is a bot. The handles the bridge speaks under are `claude` and `codex`
+// (sometimes suffixed — "claude (sonnet)"), and three places now need the same
+// answer, so it is written once here rather than as a third copy of the regex.
+export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
+
 export function appendMsg(page, threadId, { author, text, ts, kind }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
@@ -742,8 +747,56 @@ export function appendMsg(page, threadId, { author, text, ts, kind }) {
   // again, whatever it was a second ago. This is the ONE place that has to
   // know it: /reply, the reading room's composer and the bridge's `reply`
   // event all append here, so none of them carries the rule separately.
-  if (threadId !== PAGE_CHAT) setResolved(findThread(page, threadId), false);
+  //
+  // …AND IT IS ALSO WHERE "ADDRESSED" IS DECIDED, for the same reason: every
+  // write into a thread comes through here, so the rule is stated once.
+  //
+  //   a BOT wrote into this thread   → addressed: the bots have had their go,
+  //                                    and it is the reader's turn to look
+  //   a HUMAN wrote into this thread → not addressed: the reader has just
+  //                                    asked something new, so any earlier
+  //                                    claim of "done" is stale
+  //
+  // A `tools` line is a bot narrating what it ran, not a bot answering, so it
+  // never counts — otherwise a thread would go amber the moment an agent
+  // opened a file in it.
+  if (threadId !== PAGE_CHAT) {
+    const thread = findThread(page, threadId);
+    setResolved(thread, false);
+    setAddressed(thread, kind !== 'tools' && isAgentAuthor(author), author);
+  }
   return msg;
+}
+
+// ---- ready for review ---------------------------------------------------
+// The middle state between "open" and "resolved", and the reason it exists:
+// after the bots work through a page's margin review the reader has no way to
+// see WHICH threads moved without re-reading all of them. `addressed` says a
+// bot has replied into this thread since the reader last wrote in it.
+//
+// RESOLVING IS STILL THE READER'S CLICK ALONE. A bot can say "I did this"; it
+// can never close the reader's question. Addressed is a flag on the way to
+// that click, not a substitute for it.
+//
+// Same shape as `resolved`, deliberately: state, not history. Clearing REMOVES
+// the three fields, so a thread that was never addressed is byte-identical to
+// one that was addressed and then written into again, and every record written
+// before this reads as not-addressed.
+export const isAddressed = t => !!(t && t.addressed && !t.resolved);
+
+export function setAddressed(thread, on, by) {
+  if (!thread) return null;
+  const was = !!thread.addressed;
+  if (on) {
+    thread.addressed = true;
+    thread.addressed_at = nowIso();
+    if (by) thread.addressed_by = sanitizeHandle(by); else delete thread.addressed_by;
+  } else {
+    delete thread.addressed;
+    delete thread.addressed_at;
+    delete thread.addressed_by;
+  }
+  return { thread, changed: was !== !!on };
 }
 
 // ---- resolving a thread -------------------------------------------------
@@ -768,6 +821,12 @@ export const isResolved = t => !!(t && t.resolved);
 export function setResolved(thread, on, by) {
   if (!thread) return null;
   const was = !!thread.resolved;
+  // Either direction ends "ready for review". Resolving is the reader having
+  // looked, so the flag has done its job; reopening is the reader saying "not
+  // done", which is exactly the answer the amber badge was asking for. Leaving
+  // it set through a reopen would put a thread straight back into the section
+  // the reader had just taken it out of.
+  setAddressed(thread, false);
   if (on) {
     thread.resolved = true;
     thread.resolved_at = nowIso();
@@ -817,7 +876,7 @@ export function threadDigest(thread) {
   const msgs = (thread && thread.msgs) || [];
   const said = msgs.filter(m => m && m.kind !== 'tools');
   const tally = said.map(m => boxes(m.text)).filter(Boolean).pop();
-  const lastBot = [...said].reverse().find(m => /^(claude|codex)\b/i.test(String(m.author || '')));
+  const lastBot = [...said].reverse().find(m => isAgentAuthor(m.author));
   const last = said[said.length - 1];
   const head = tally ? `Checklist: ${tally.done}/${tally.total} done.` : '';
   const body = firstSentence((lastBot || last || {}).text);

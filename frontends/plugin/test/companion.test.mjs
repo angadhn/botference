@@ -676,6 +676,76 @@ async function main() {
     assert.ok(page.threads[0].msgs.some(m => /MOCK claude reply/.test(m.text)), 'the answer is in the thread');
   });
 
+  // --- ready for review --------------------------------------------------
+  // The middle state, and the reason it needs no new bot-side API: a bot's
+  // reply landing in a thread is what marks it, and every write goes through
+  // store.appendMsg, which the bridge's `reply` event already uses. Resolving
+  // is untouched — a bot can say "I did this"; it can never close the reader's
+  // question.
+  const READY_URL = 'https://ledger.test/2026/ready';
+  await test('a bot replying into a thread marks it READY FOR REVIEW, never resolved', async () => {
+    await POST(base, '/page', { url: READY_URL, title: 'Ready', site: 'ledger.test' });
+    const t = (await POST(base, '/thread', {
+      url: READY_URL, quote: 'the sleeper is the point', prefix: '', suffix: '',
+      msg: { text: '@claude can you fix the units here?' },
+    })).json.thread;
+    const page = await waitFor(async () => {
+      const p = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json;
+      return p.threads[0].addressed ? p : null;
+    }, 'the bot answer to mark it');
+    assert.equal(page.threads[0].id, t.id);
+    assert.ok(page.threads[0].addressed_at, 'stamped');
+    assert.match(String(page.threads[0].addressed_by), /^claude/, 'and the bot is named as the claimant');
+    assert.equal(page.threads[0].resolved, undefined, 'the reader files it, and nothing else does');
+  });
+
+  await test('the READER writing there makes it their open question again', async () => {
+    const id = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json.threads[0].id;
+    await POST(base, '/reply', { url: READY_URL, thread_id: id, text: 'not quite — the second half.' });
+    const p = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json;
+    assert.equal(p.threads[0].addressed, undefined);
+    assert.equal(p.threads[0].addressed_at, undefined);
+    assert.equal(p.threads[0].addressed_by, undefined, 'no addressed fields left behind: state, not history');
+  });
+
+  await test('POST /addressed is the reader\'s "not done", and only clears', async () => {
+    const id = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json.threads[0].id;
+    // put it back into the state by hand — the symmetric direction exists so a
+    // second reader can hand a thread over without replying into it
+    const on = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: true });
+    assert.equal(on.status, 200);
+    assert.equal(on.json.thread.addressed, true);
+
+    const off = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: false });
+    assert.equal(off.status, 200);
+    assert.equal(off.json.thread.addressed, undefined);
+    const p = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json;
+    assert.equal(p.threads[0].addressed, undefined, 'it survives the round trip');
+    assert.equal(p.threads[0].resolved, undefined, '…and nothing was filed on the reader\'s behalf');
+
+    // a form has no booleans, and the reading room's button posts one
+    const bare = await POST(base, '/addressed', { url: READY_URL, thread_id: id });
+    assert.equal(bare.status, 200);
+    assert.equal(bare.json.thread.addressed, undefined, 'an absent flag means "not done"');
+    assert.equal((await POST(base, '/addressed', { url: READY_URL, thread_id: 'no-such' })).status, 404);
+  });
+
+  await test('filing a ready thread spends the claim, and reopening does not restore it', async () => {
+    const id = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json.threads[0].id;
+    await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: true });
+    const filed = await POST(base, '/resolve', { url: READY_URL, thread_id: id, resolved: true });
+    assert.equal(filed.json.thread.resolved, true);
+    assert.equal(filed.json.thread.addressed, undefined, 'the reader looked; the claim has done its job');
+    const back = await POST(base, '/resolve', { url: READY_URL, thread_id: id, resolved: false });
+    assert.equal(back.json.thread.resolved, undefined);
+    assert.equal(back.json.thread.addressed, undefined,
+      '"not done" is what a reopen means — it must not land back in Ready for review');
+    // …and let the filing turn that /resolve queued drain before anything else
+    // snapshots the bridge's inputs: a straggler would land in someone's slice
+    await waitFor(() => inputs(logFile).some(t => /file a resolved comment thread/.test(t)
+      && /2026\/ready/.test(t)), 'the filing turn to drain');
+  });
+
   await test('/resolve refuses a thread that is not there, and /summarize queues on demand', async () => {
     const gone = await POST(base, '/resolve', { url: REOPEN_URL, thread_id: 'no-such-thread', resolved: true });
     assert.equal(gone.status, 404);

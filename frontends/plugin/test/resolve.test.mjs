@@ -76,6 +76,94 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   ok('setResolved survives being handed nothing', store.setResolved(null, true) === null);
 }
 
+// ---- 1b. READY FOR REVIEW — the middle state ------------------------------
+// Between "open" and "resolved" there is now "a bot has replied here since the
+// reader last wrote in it". It exists because after a round with the bots the
+// reader had no way to see WHICH threads moved without re-reading all of them.
+//
+// The one thing it is NOT is resolved. A bot can say "I did this"; it can
+// never close the reader's question — so nothing in this block ever sets
+// `resolved`, and `/resolve` stays the only thing that does.
+{
+  const t = thread([{ author: 'angadh', ts: '1', text: 'is this right?' }]);
+  ok('an untouched thread is not addressed', !store.isAddressed(t));
+
+  const { changed } = store.setAddressed(t, true, 'claude');
+  ok('marking it says it changed something', changed);
+  ok('…and sets the flag', t.addressed === true);
+  ok('…stamps it', typeof t.addressed_at === 'string' && t.addressed_at.length > 10);
+  eq('…and names the bot that claimed it', t.addressed_by, 'claude');
+  ok('isAddressed agrees', store.isAddressed(t));
+  ok('…but nothing was resolved on the way', !t.resolved && !store.isResolved(t));
+
+  store.setAddressed(t, false);
+  eq('clearing it leaves NO addressed fields behind — state, not history',
+    Object.keys(t).filter(k => k.startsWith('addressed')), []);
+  ok('…so a record that was never addressed and one that was are identical',
+    JSON.stringify(t) === JSON.stringify(thread([{ author: 'angadh', ts: '1', text: 'is this right?' }])));
+  ok('a handle is sanitized on the way in, like every other author on the wire',
+    store.setAddressed(thread([]), true, 'Ada L <x>').thread.addressed_by !== 'Ada L <x>');
+  ok('setAddressed survives being handed nothing', store.setAddressed(null, true) === null);
+
+  // a filed thread is filed, whatever was claimed about it on the way there
+  const r = thread([], { addressed: true, addressed_by: 'claude', resolved: true });
+  ok('isAddressed says no about a RESOLVED thread, so it can only be in one place at once',
+    !store.isAddressed(r));
+
+  // Both directions of resolve end it: resolving is the reader having looked,
+  // and reopening is the reader saying "not done" — which is exactly the
+  // answer the amber badge was asking for.
+  const u = thread([], { addressed: true, addressed_at: '1', addressed_by: 'claude' });
+  store.setResolved(u, true, 'angadh');
+  ok('filing a thread spends the claim rather than remembering it', !u.addressed);
+  const v = thread([], { resolved: true, addressed: true, addressed_at: '1', addressed_by: 'codex' });
+  store.setResolved(v, false);
+  ok('…and reopening puts it back OPEN, not back into "ready for review"',
+    !v.addressed && !v.resolved);
+}
+
+// ---- 1c. …and appendMsg is the only thing that decides it -----------------
+// Every write into a thread — /reply, the reading room's composer, a bot's
+// answer off the bridge — comes through store.appendMsg, so the rule is stated
+// once there and nowhere else. That is what makes the bots need NO new API:
+// "addressed" falls out of the reply path they already write through.
+{
+  const mk = () => ({
+    url: 'https://ledger.test/a', threads: [thread([{ author: 'angadh', ts: '1', text: 'is this right?' }])],
+    page_chat: [],
+  });
+  ok('a bot handle is a bot handle', store.isAgentAuthor('claude') && store.isAgentAuthor('Codex (gpt-5)'));
+  ok('…and a reader is not', !store.isAgentAuthor('angadh') && !store.isAgentAuthor(''));
+
+  const p = mk();
+  store.appendMsg(p, 't1', { author: 'claude', text: 'done — the units are fixed.' });
+  ok('a BOT replying into a thread marks it ready for review', store.isAddressed(p.threads[0]));
+  eq('…named as the claimant', p.threads[0].addressed_by, 'claude');
+  ok('…and STILL not resolved: that stays the reader’s click', !p.threads[0].resolved);
+
+  store.appendMsg(p, 't1', { author: 'angadh', text: 'not quite — the second half.' });
+  ok('the READER writing there makes it their open question again',
+    !store.isAddressed(p.threads[0]));
+
+  const q = mk();
+  store.appendMsg(q, 't1', { author: 'codex', kind: 'tools', text: 'read 3 files' });
+  ok('a bot NARRATING its tools is not a bot answering — that alone marks nothing',
+    !store.isAddressed(q.threads[0]));
+
+  const r = mk();
+  r.threads[0].resolved = true; r.threads[0].resolved_at = '1';
+  store.appendMsg(r, 't1', { author: 'claude', text: 'one more thing.' });
+  ok('a bot answering a FILED thread reopens it, as it always did',
+    !r.threads[0].resolved);
+  ok('…and it lands in "ready for review" rather than back at the top of the list',
+    store.isAddressed(r.threads[0]));
+
+  const s = mk();
+  store.appendMsg(s, store.PAGE_CHAT, { author: 'claude', text: 'about the page as a whole…' });
+  ok('page chat is not a thread and is never marked anything',
+    !s.threads[0].addressed && !s.page_chat[0].addressed);
+}
+
 // ---- the summary field ----------------------------------------------------
 {
   const t = thread([]);

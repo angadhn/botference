@@ -2,6 +2,56 @@
 
 ## 2026-08-19
 
+- **Discuss: two comment pills never fight over one page again — and yours
+  wins.** Open a review page — the review engine's build, or one of the
+  `*.review.html` documents the review-doc skill makes — and the Discuss drawer
+  now **keeps the margin**. Its 💬 is the one that answers your drag, and the
+  page's own selection pill is quietly put away, so there is one commenting
+  system on the page instead of two writing into records that know nothing
+  about each other. Your comments land where the bots, **send review** and the
+  project chat already are.
+
+  Anyone reading that same page **without** the extension is untouched: the
+  page's built-in commenting works exactly as it shipped. The suppression is a
+  stylesheet the extension injects into a page it is already running in, and
+  only the selection pill goes — **+ General comment**, **Copy feedback**,
+  **Export** and the rest of the page's toolbar all stay exactly where they
+  were.
+
+  And you get the last word. One quiet line at the top of the Comments tab says
+  which margin has the page and carries **use the page's own commenting**: one
+  click hands it back, the choice is remembered for that page alone, and **let
+  Discuss comment here** takes it again. Either way every Discuss thread
+  already on the page still shows, still paints its highlight and still takes
+  replies. Ordinary pages behave exactly as they always have — the whole thing
+  hangs off one structural marker checked once when the drawer attaches, so a
+  page without it never takes the branch at all.
+
+- **Discuss: "ready for review" — the bots get a middle state.** After the bots
+  work through a page of comments, you used to have to re-read all of them to
+  find out which ones had moved. Now a thread a bot has replied into since you
+  last wrote in it is marked **ready for review**: an amber badge on the card,
+  an amber highlight on the passage (between the open yellow and the filed
+  sage), and its own **Ready for review** section between the open list and the
+  archive.
+
+  **Resolving is still your click, and only yours.** A bot can say it did
+  something; it can never close your question. The ✓ files a ready thread
+  exactly as it files any other, and **↺ not done** puts it straight back in
+  the open list if you disagree — as does simply replying to it, because that
+  is a new question.
+
+  **Send review only sends what is still open.** A thread the bots have already
+  answered drops out of the count and out of the digest, so a second send after
+  a round asks about the points still outstanding rather than the ones just
+  done.
+
+  And when a change **rewrites** the passage a comment was anchored to — which
+  used to orphan the highlight and lose the link between the comment and what
+  came of it — the bots are now asked to quote the new wording back. The card
+  draws it as a **before → after**: the old words struck through, the new ones
+  in green, right under the quote. Nothing to click, and nothing new stored.
+
 - **Discuss: one button hands your whole margin review to the bots.** On a
   confirmed project artifact page, Page chat now carries **send review**
   under the chat bar. Click it, confirm the count, and every OPEN comment

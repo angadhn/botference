@@ -21,6 +21,18 @@
 // text is painted to a canvas — the drawer opens on Page chat whatever the
 // per-site memory says, and the Comments tab stays visible but inert.
 //
+// `reviewHost` ({hosts, pageOwns}) is the other, narrower switch: a page that
+// carries the review engine's OWN commenting UI (content.js's marker). Two
+// selection UIs must never fight over one drag, so exactly one of them is
+// live — and with the plugin installed the DEFAULT is ours: Discuss keeps the
+// margin and content.js puts the page's own selection pill away. The Comments
+// tab says so in one quiet line and offers the reader the other choice ("use
+// the page's own commenting" → `onPageComments(true)`), which content.js
+// persists per page and hands back through `setReviewHost`. With `pageOwns`
+// set, Discuss stands down instead: no pill, no new threads — and nothing else
+// changes, because Page chat, the archive, the tasks card, send-review and
+// every thread already on the page carry on either way.
+//
 // Callbacks (all optional, all may return a Promise):
 // Sending is OPTIMISTIC: the message appears in its thread and the composer
 // empties before onSave/onReply is even called (they are slow — they re-read
@@ -46,6 +58,13 @@
 //   onDelete(threadId, ts|null)         null ts = delete the whole thread
 //   onResolve(threadId, resolved)       file a thread / put it back →
 //                                       {ok, thread, summarizing}
+//   onNotDone(threadId)                 the reader disagreeing that a thread
+//                                       is handled: out of "Ready for review"
+//                                       and back into the open list → {ok,
+//                                       thread}. There is no onAddressed:
+//                                       marking a thread ready is what a bot's
+//                                       reply landing in it does, server-side,
+//                                       and is never a click.
 //   onSummarize(threadId)               ask the agents to write a filed
 //                                       thread's paragraph again → {ok}
 //   onTick(threadId, ts, index, checked) a checkbox in a bot's markdown
@@ -1013,6 +1032,21 @@
     const CAPS = Object.assign({ highlights: true }, opts.capabilities || {});
     const NOHL = 'highlights aren’t supported on this site — use Page chat';
 
+    // A page that carries its own margin commenting (content.js's
+    // REVIEW_UI_MARKER — the review engine's build, or a review-doc
+    // `*.review.html`). This is a property of the DOM, not of the site, so it
+    // arrives separately from CAPS and can change while the drawer is up: the
+    // reader may decide, once per page, to hand the margin back to the page's
+    // own commenting (`pageOwns`).
+    //
+    // Standing down is NARROW on purpose. It withdraws exactly two things —
+    // the selection pill and the ability to start a thread — and nothing else.
+    // Page chat, the archive, the tasks card, the project header, send-review
+    // and every thread already on this page carry on untouched, because a
+    // conversation already in flight is not undone by whose pill is showing.
+    const RH = Object.assign({ hosts: false, pageOwns: false }, opts.reviewHost || {});
+    const standDown = () => RH.hosts && !!RH.pageOwns;
+
     const D = {
       page: null,          // the page record from /page
       orphans: {},         // threadId -> bool (content.js's live anchoring verdict)
@@ -1087,6 +1121,11 @@
       // which digest cards have been unfolded are reading positions, not
       // decisions — the decision (resolved / not) lives in the record.
       resolvedOpen: false,   // the "Resolved (N)" section is expanded
+      // …the "Ready for review (N)" section, OPEN by default — unlike the
+      // archive, whose whole point is to be out of the way, this section is
+      // the thing the reader came back to the page to look at
+      readyOpen: true,
+      addressing: {},        // threadId -> a "not done" round trip is in flight
       resolvedCards: {},     // threadId -> the full thread under its digest is open
       resolving: {},         // threadId -> a resolve/reopen is in flight
       // ---- the council project behind a project artifact page -----------
@@ -1779,8 +1818,16 @@
     }
 
     const isResolved = t => !!(t && t.resolved);
-    const quoteHtml = (t, orph) =>
-      `<div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}</div>`;
+    // The middle state. A bot has replied into this thread since the reader
+    // last wrote in it, so it is waiting on the READER now, not on the bots —
+    // "ready for review", never "resolved": closing the reader's question is
+    // the reader's click and nothing else's.
+    const isAddressed = t => !!(t && t.addressed && !t.resolved);
+    // `extra` rides INSIDE the quote, flowing after the closing curly quote the
+    // way the orphan badge always has — a badge in the row beside it would take
+    // a flex share and squeeze a three-line quote down to a column.
+    const quoteHtml = (t, orph, extra) =>
+      `<div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}${extra || ''}</div>`;
 
     // The resolve control. One click, no confirm, no menu, no dialog: the
     // reader is triaging a page with forty threads on it and the whole value
@@ -1797,11 +1844,102 @@
     const reopenBtn = t => (D.resolving[t.id]
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-reopen" data-act="reopen" data-target="${esc(t.id)}" type="button" title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`);
+    // …and the same undo one rung lower: "not done" takes a thread OUT of
+    // Ready for review and back into the open list. It sits beside the ✓ and
+    // not instead of it — the reader may agree (✓, which files it) or disagree
+    // (↺, which puts it back in the queue), and both are one click.
+    const notDoneBtn = t => (D.addressing[t.id]
+      ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
+      : `<button class="rebtn thr-notdone" data-act="not-done" data-target="${esc(t.id)}" type="button" title="not done — back to the open list, highlight back to yellow" aria-label="put this thread back in the open list">↺</button>`);
+
+    // ---- before → after, when a bot's change rewrote the passage -----------
+    //
+    // A change that rewrites the quoted passage ORPHANS the highlight: the
+    // thread still carries the old wording, the page no longer contains it,
+    // and the reader is left re-reading the draft to find out what replaced
+    // it. The bots are asked (bridge-system-prompt rule 5) to quote the new
+    // wording back — "this passage now reads: “…”" — and that one line is
+    // enough to draw the difference here, with no new data and nothing
+    // server-side.
+    //
+    // Only on a READY thread, only from a BOT's message, and only on that
+    // explicit phrasing. A loose "quoted string in a reply" rule would draw a
+    // diff every time an agent quoted the reader back at themselves.
+    const NOW_READS = /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
+    const newWordingOf = t => {
+      const msgs = (t && t.msgs) || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m || m.kind === 'tools' || !isBot(m.author)) continue;
+        const hit = NOW_READS.exec(String(m.text || ''));
+        return hit ? hit[1].trim() : '';   // the LAST bot word on it, or nothing
+      }
+      return '';
+    };
+    // Word-level LCS. Both sides are one passage, so the quadratic table is
+    // small — and anything unreasonable falls back to the stacked pair below
+    // rather than being diffed at any cost.
+    const DIFF_WORDS_MAX = 220;
+    // words only — the whitespace between them is never diffed, and every run
+    // is re-joined with a single space. Diffing the gaps as tokens is what
+    // makes a word diff render as "beenhad ingone": the space ends up inside
+    // one side of the change and the two runs collide.
+    const words = s => String(s).trim().split(/\s+/).filter(Boolean);
+    function wordDiff(a, b) {
+      const A = words(a), B = words(b);
+      if (!A.length || !B.length || A.length > DIFF_WORDS_MAX || B.length > DIFF_WORDS_MAX) return null;
+      const n = A.length, m = B.length;
+      const L = new Uint16Array((n + 1) * (m + 1));
+      const at = (i, j) => i * (m + 1) + j;
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          L[at(i, j)] = A[i] === B[j] ? L[at(i + 1, j + 1)] + 1
+            : Math.max(L[at(i + 1, j)], L[at(i, j + 1)]);
+        }
+      }
+      const ops = [];           // {t:'=' | '-' | '+', s} — s is a run of words
+      const push = (t, w) => {
+        const last = ops[ops.length - 1];
+        if (last && last.t === t) last.s += ' ' + w; else ops.push({ t, s: w });
+      };
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        if (A[i] === B[j]) { push('=', A[i]); i++; j++; }
+        else if (L[at(i + 1, j)] >= L[at(i, j + 1)]) { push('-', A[i]); i++; }
+        else { push('+', B[j]); j++; }
+      }
+      while (i < n) push('-', A[i++]);
+      while (j < m) push('+', B[j++]);
+      const kept = ops.filter(o => o.t === '=').reduce((s, o) => s + o.s.length, 0);
+      // nothing recognisably shared: two different sentences, not an edit —
+      // a diff of those is confetti, and the stacked pair is the honest read
+      if (kept < Math.min(String(a).trim().length, String(b).trim().length) * 0.2) return null;
+      return ops;
+    }
+    // The same suggested-edit idiom the review engine uses: struck-through
+    // where words left, the accepted tint where they arrived. On any doubt —
+    // no shared words, a passage too long to diff — the two are simply stacked
+    // and labelled, which says the same thing and can never mislead.
+    function rewriteHtml(t) {
+      const now = newWordingOf(t);
+      if (!now) return '';
+      const was = String(t.quote || '');
+      if (!was.trim() || was.trim() === now.trim()) return '';
+      const ops = wordDiff(was, now);
+      const body = ops
+        ? `<div class="wndiff">${ops.map(o => o.t === '=' ? esc(o.s)
+            : o.t === '-' ? `<del>${esc(o.s)}</del>` : `<ins>${esc(o.s)}</ins>`).join(' ')}</div>`
+        : `<div class="wnstack"><div class="wnrow"><span class="wnlab">was</span><span class="wnval">${esc(was)}</span></div>`
+          + `<div class="wnrow"><span class="wnlab">now</span><span class="wnval">${esc(now)}</span></div></div>`;
+      return `<div class="wasnow"${ops ? '' : ' data-stacked="1"'}>`
+        + `<span class="wnhead">the passage was rewritten</span>${body}</div>`;
+    }
 
     function cardHtml(t) {
       const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
       const author = threadAuthor(t);
-      const cls = ['card', orph ? 'orphaned' : '', D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : ''].filter(Boolean).join(' ');
+      const ready = isAddressed(t);
+      const cls = ['card', ready ? 'ready' : '', orph ? 'orphaned' : '', D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : ''].filter(Boolean).join(' ');
       const msgs = msgsHtml(t.id, t.msgs);
       // one-step inline confirm — never a browser confirm() dialog, which the
       // page's own modals and focus traps would fight with
@@ -1809,12 +1947,20 @@
         ? `<div class="confirm">delete thread?
              <button class="rebtn yes" data-act="del-thread-yes" data-target="${esc(t.id)}" type="button">yes</button>
              <button class="rebtn" data-act="del-thread-no" type="button">no</button></div>`
-        : `${resolveBtn(t)}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
+        : `${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
+      // The badge says WHICH bot claimed it and leaves the verdict to the
+      // reader — "ready for review", never "done". It rides the quote row, the
+      // one line of the card that is always visible however long the thread.
+      const badge = ready
+        ? `<span class="badge ready-badge" title="${esc((t.addressed_by ? t.addressed_by + ' has' : 'a bot has')
+            + ' replied here since you last wrote — resolving is still your click')}">ready for review</span>`
+        : '';
       return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${speakerColor(author)}">
         <div class="chead">
-          ${quoteHtml(t, orph)}
+          ${quoteHtml(t, orph, badge)}
           ${head}
         </div>
+        ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
         ${composerHtml(t.id, 'Reply…')}
@@ -1906,6 +2052,34 @@
     // say so where the comments would be, in the same words as the tooltip.
     const nohlHtml = () => CAPS.highlights ? ''
       : `<div class="nohl">${esc(NOHL)}</div>`;
+
+    // Which margin owns this page, said out loud, with the other choice next
+    // to it.
+    //
+    // WHERE. At the top of the Comments tab, not behind a gear. The note is
+    // the sentence that explains why the page's own 💬 stopped appearing (or
+    // why ours did), and the switch is the answer to that sentence — putting
+    // them anywhere apart makes the reader hunt for a setting they do not yet
+    // know exists. A gear popover would also be a new surface on a drawer that
+    // has none, and the Comments tab is precisely where a reader goes when
+    // they wonder where their comments went.
+    //
+    // It is shown in BOTH states, so the arrangement is never a mystery and is
+    // always one click from being the other one. The default state is the
+    // quieter of the two: nothing has gone wrong, and the reader who never
+    // wonders should not be made to read a box about it.
+    const standdownHtml = () => {
+      if (!RH.hosts || !CAPS.highlights) return '';
+      const own = standDown();          // the page's own commenting has it
+      return `<div class="standdown${own ? ' pageown' : ''}" role="status">` +
+        `<span class="sdtext">${own
+          ? esc('This page’s own review commenting is handling the margin — new comments there won’t reach the bots. Discuss threads already here still work.')
+          : esc('Discuss is handling comments on this page, so its own 💬 is put away — one margin, and your comments reach the bots.')
+        }</span>` +
+        `<button class="sdbtn" data-act="page-comments" data-want="${own ? '0' : '1'}" type="button" ` +
+        `title="${own ? esc('Comment with Discuss on this page instead') : esc('Give the margin back to this page’s own review commenting')}">` +
+        `${own ? 'let Discuss comment here' : 'use the page’s own commenting'}</button></div>`;
+    };
 
     // Something the bots are about to answer WITHOUT — the page text a site
     // adapter could not read (content.js sets it). It belongs in Page chat
@@ -2095,20 +2269,41 @@
 
     function renderComments() {
       const threads = (D.page && D.page.threads) || [];
-      const open = threads.filter(t => !isResolved(t));
+      // three buckets, in the order a thread travels through them: still
+      // waiting on somebody → answered and waiting on the reader → filed
+      const live = threads.filter(t => !isResolved(t));
+      const open = live.filter(t => !isAddressed(t));
+      const ready = live.filter(isAddressed);
       const done = threads.filter(isResolved);
-      let html = offlineHtml() + nohlHtml() + taskCardHtml();
+      let html = offlineHtml() + nohlHtml() + standdownHtml() + taskCardHtml();
       html += D.pending ? pendingHtml() : '';
       // "select any text and hit 💬" is a lie where selection does nothing —
-      // the note above has already said what to do instead
-      if (!threads.length && !D.pending && CAPS.highlights) {
+      // the note above has already said what to do instead. Same on a page
+      // that owns its own margin: the stand-down note is the instruction.
+      if (!threads.length && !D.pending && CAPS.highlights && !standDown()) {
         html += `<div class="empty"><b>No comments yet</b>Select any text on the page and hit 💬.</div>`;
-      } else if (!open.length && !D.pending && CAPS.highlights) {
+      } else if (!live.length && !D.pending && CAPS.highlights && !standDown()) {
         // every thread on this page is filed — say so, rather than showing the
-        // "no comments yet" line above a section full of them
+        // "no comments yet" line above a section full of them. (A thread that
+        // is merely READY is not filed: it is exactly what the reader still
+        // has to do, so "all clear" would be a lie while one is sitting there.)
         html += `<div class="empty allclear"><b>All clear</b>Every comment on this page is resolved.</div>`;
       }
       html += open.map(cardHtml).join('');
+      // BETWEEN the open list and the archive, because that is where these
+      // threads are in their life: past the bots, not yet past the reader.
+      // Collapsible like the archive — a page whose whole review came back at
+      // once would otherwise bury the threads still waiting on a bot — but
+      // OPEN by default, and its cards are the ordinary cards, because a
+      // thread here is still a live conversation that takes replies.
+      if (ready.length) {
+        html += `<div class="ready-sec${D.readyOpen ? ' open' : ''}">
+          <button class="ready-head" data-act="ready-toggle" type="button" aria-expanded="${D.readyOpen ? 'true' : 'false'}">
+            <span class="rcaret" aria-hidden="true">${D.readyOpen ? '▾' : '▸'}</span>Ready for review <span class="rcount">${ready.length}</span>
+          </button>
+          ${D.readyOpen ? `<div class="ready-list">${ready.map(cardHtml).join('')}</div>` : ''}
+        </div>`;
+      }
       // ONE collapsed section at the bottom, never a tab: the archive is the
       // foot of this page's list, not a place to navigate to. Closed by
       // default, and its cards are not built at all until it is opened — a
@@ -2126,8 +2321,10 @@
       // strand a stale dim on rebuilt rows — the class survives innerHTML
       D.el.comments.classList.toggle('dim-others', !!D.focused);
       // the tab counts what still wants the reader — the list visibly shrinks
-      // as they sweep down it, which is the whole point of resolving
-      D.el.cCount.textContent = String(open.length);
+      // as they sweep down it, which is the whole point of resolving. A READY
+      // thread still wants them (that is what ready means), so it counts:
+      // the number is every unresolved thread, exactly as it always was.
+      D.el.cCount.textContent = String(live.length);
     }
 
     // ---- Page chat on a project artifact page ---------------------------
@@ -2182,8 +2379,13 @@
     // ones. (workspace.reviewDigest applies the same rule server-side and is
     // the authority; this count exists so the button can say the number before
     // anything is sent, and so it can be disabled honestly when it is zero.)
+    // (…and not the ADDRESSED ones either: a thread a bot has already replied
+    // into is sitting under "Ready for review" waiting on the reader, and
+    // sending it again would ask for work that has been reported. Re-sending
+    // after a round is precisely what that state exists to prevent.)
     const openThreadCount = () =>
-      (((D.page && D.page.threads) || []).filter(t => t && !isResolved(t) && (t.msgs || []).length)).length;
+      (((D.page && D.page.threads) || []).filter(t =>
+        t && !isResolved(t) && !isAddressed(t) && (t.msgs || []).length)).length;
 
     // Obsidian-export for a margin review: everything the reader wrote down
     // the side of the draft, handed over in one turn, without retyping any of
@@ -3456,6 +3658,10 @@
         if (act === 'verb') { setVerbosity(btn.dataset.level); return; }
         if (act === 'bill') { doBill(btn.dataset.agent, btn.dataset.bill); return; }
         if (act === 'keys') { cb('onOpenOptions')(null); return; }
+        // "use the page's own commenting" / "let Discuss comment here":
+        // content.js persists the answer per page, swaps which selection pill
+        // is live, and hands the new state back through setReviewHost
+        if (act === 'page-comments') { cb('onPageComments')(btn.dataset.want === '1'); return; }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
@@ -3515,7 +3721,9 @@
         if (act === 'del-msg') { doDelete(target, btn.dataset.ts); return; }
         if (act === 'resolve') { doResolve(target, true); return; }
         if (act === 'reopen') { doResolve(target, false); return; }
+        if (act === 'not-done') { doNotDone(target); return; }
         if (act === 'resolved-toggle') { D.resolvedOpen = !D.resolvedOpen; render(); return; }
+        if (act === 'ready-toggle') { D.readyOpen = !D.readyOpen; render(); return; }
         if (act === 'resolved-card') { D.resolvedCards[target] = !D.resolvedCards[target]; render(); return; }
         if (act === 'summarize') { doSummarize(target); return; }
         if (act === 'root-yes') { answerRoot(true); return; }
@@ -4436,6 +4644,34 @@
       render();
     }
 
+    // "not done": the reader disagreeing with a bot's claim that a thread is
+    // handled. It rejoins the open list — in page order, where it was — and
+    // becomes a candidate for the next send-review again, which is the whole
+    // reason the button exists rather than leaving the reader to reply "no"
+    // and hope. Optimistic on the same reasoning as resolve, and one click,
+    // with reply-or-resolve as the two ways back out of it.
+    async function doNotDone(target) {
+      const t = threadById(target);
+      if (!t || D.addressing[target]) return;
+      const was = t.addressed, wasBy = t.addressed_by, wasAt = t.addressed_at;
+      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
+      D.addressing[target] = true;
+      render();
+      let r;
+      try { r = await cb('onNotDone')(target); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      delete D.addressing[target];
+      if (!r || r.ok === false) {
+        const now = threadById(target);
+        if (now && was) { now.addressed = was; if (wasBy) now.addressed_by = wasBy; if (wasAt) now.addressed_at = wasAt; }
+        note(target, (r && r.error) || 'could not put that thread back', true);
+        return;   // note() renders
+      }
+      const fresh = r.thread, mine = threadById(target);
+      if (fresh && mine) Object.assign(mine, fresh);
+      render();
+    }
+
     async function doSummarize(target) {
       let r;
       try { r = await cb('onSummarize')(target); }
@@ -4805,6 +5041,7 @@
     function beginNew(anchor) {
       mount();
       if (!CAPS.highlights) return D;   // nothing can be anchored here
+      if (standDown()) return D;        // …and no new threads on a review page
       D.pending = anchor;
       // the composer arrives already under the spotlight: the box being
       // filled in is "the" card, everything else recedes until send or cancel
@@ -4933,6 +5170,7 @@
     function showSel(x, y) {
       mount();
       if (!CAPS.highlights) return D;   // no pill where nothing can be marked
+      if (standDown()) return D;        // …nor beside the page's own pill
       const b = D.el.selbtn;
       b.style.left = Math.max(8, Math.min(x, window.innerWidth - 110)) + 'px';
       b.style.top = Math.max(8, Math.min(y, window.innerHeight - 40)) + 'px';
@@ -5100,6 +5338,17 @@
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
       setExportMode, setOwner, setProject,
+      // {hosts, pageOwns} — the page's own review UI, and which margin the
+      // reader has given this page to. Re-rendered, never remounted: the
+      // switch flips in place.
+      setReviewHost: rh => {
+        Object.assign(RH, rh || {});
+        if (standDown() && D.pending) cancelNew();   // takes render() with it
+        else render();
+        return D;
+      },
+      // observable for the harness: is Discuss's margin off on this page?
+      standingDown: () => standDown(),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,

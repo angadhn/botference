@@ -1575,6 +1575,37 @@ export function handler(req, res) {
       ok(res, { thread, ...(queued ? { summarizing: true } : {}) });
     });
   }
+  // "not done" — the reader's answer to a thread the bots claimed handled.
+  //
+  // Marking a thread ADDRESSED is automatic and needs no endpoint: a bot's
+  // reply landing in it does that, in store.appendMsg, which every write path
+  // already goes through. UNMARKING is the one thing only a person can mean,
+  // so it is the one thing that needs a door. It is the same class of act as
+  // reopening — free, undoable, attributable — so it takes the same gate as
+  // /resolve (an author, not ownership): on a shared companion the people
+  // reading the page are the people working through its comments.
+  //
+  // The `addressed:true` direction is accepted too, for symmetry and so a
+  // second reader can hand a thread back without replying into it, but it is
+  // not the path the bots use and nothing in the drawer offers it.
+  if (req.method === 'POST' && url === '/addressed') {
+    return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = store.findThread(page, data.thread_id);
+      if (!thread) return fail(res, 404, 'unknown thread');
+      // a form has no booleans: absent/""/"0"/"false" all mean "not done"
+      const on = data.addressed === undefined ? false
+        : !(data.addressed === false || data.addressed === 'false' || data.addressed === '' || data.addressed === '0');
+      store.setAddressed(thread, on, on ? me.handle : '');
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      if (data._form) return seeOther(res, backTo(data, page, thread.id));
+      ok(res, { thread });
+    });
+  }
   // Ask for the paragraph again — the same job /resolve queues, on demand, for
   // a thread whose summary landed while the bridge was down or which has moved
   // on since it was filed.

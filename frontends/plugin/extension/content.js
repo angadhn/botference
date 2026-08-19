@@ -284,6 +284,85 @@
   // file name tells a reader which of their PDFs it was. The PATH is never sent.
   const FILE_NAME = (SITE && SITE.fileName) || '';
 
+  // ---- pages that carry their own margin commenting ------------------------
+  // Some pages the reader opens are already a review surface: the review
+  // engine's own build (`frontends/review/build.mjs`) and the review-doc
+  // skill's single-file `*.review.html` both paint their own highlights and
+  // pop their own "💬 Comment" pill on selection. Two selection UIs fighting
+  // over one drag is the worst of both.
+  //
+  // ONE OF THEM HAS TO WIN, AND WITH THE PLUGIN INSTALLED IT IS OURS. On such
+  // a page Discuss KEEPS the margin and the page's own selection pill is put
+  // away — the reader's comments then land where the bots, send-review and the
+  // project chat already are, instead of in a second record that knows nothing
+  // about any of them. The rule the reader stated is an if/else, and this is
+  // it: if the plugin is here, the plugin's comment button; otherwise the
+  // page's own.
+  //
+  // Nobody else is affected. A visitor without the extension gets the page's
+  // built-in commenting exactly as the page ships it — the suppression is a
+  // stylesheet this content script injects into a page it is running in, so a
+  // plugin-less reader never sees it and the file on disk is untouched.
+  //
+  // WHAT IS SUPPRESSED IS ONLY THE SELECTION AFFORDANCE. The engines' toolbars
+  // — "+ General comment", "Copy feedback", "Export", "Send to Claude", the
+  // resolved filter — are how the reader works with the comments that already
+  // exist there, and none of them is a second answer to a drag. They stay.
+  //
+  // THE MARKER. One querySelector, at attach time, structural, and never
+  // guessed from the url (a review build is served from anywhere):
+  //
+  //   body[data-docid] > #selpop      the review-doc single file: its docid on
+  //                                   the body, its own selection pill a direct
+  //                                   child of it
+  //   body[data-slug] > aside#margin  the review engine's build: its section
+  //                                   slug on the body, its comment rail a
+  //                                   direct child of it
+  //
+  // Both halves must hit for either alternative to match, and both require the
+  // body-level data attribute AND the engine's own commenting element as a
+  // DIRECT child of body. An ordinary prose page has neither; a page with a
+  // stray `#margin` or a CMS's `data-slug` has only one.
+  const REVIEW_UI_MARKER = 'body[data-docid] > #selpop, body[data-slug] > aside#margin';
+  const HOSTS_REVIEW_UI = (() => {
+    try { return !!document.querySelector(REVIEW_UI_MARKER); } catch { return false; }
+  })();
+  // The selection-triggered pills the two engines raise on a drag, and nothing
+  // else of theirs. `#selpop` is review-doc's; `#sel-pill` and `#sel-pop` are
+  // the review engine's. Both engines show theirs by clearing an inline
+  // `display`/`hidden`, and a stylesheet rule marked !important outranks both.
+  const PAGE_SEL_UI = '#selpop, #sel-pill, #sel-pop';
+  const SUPPRESS_STYLE_ID = 'bfp-page-sel-off';
+
+  // …and the reader gets the last word, once per page. The drawer's Comments
+  // tab carries the switch; the answer lives in chrome.storage.local under
+  // this page's identity, so it holds across reloads and applies to nothing
+  // else. Unknown until storage answers — and unknown means the DEFAULT, which
+  // is that Discuss keeps the margin: that is the whole point of installing it.
+  const PAGE_COMMENTS_KEY = 'bfp:page-comments:' + URL_NOW;
+  // true = the reader asked for the page's own commenting back on this page
+  let pageOwnsMargin = false;
+  // The single question everything else asks: is Discuss's margin commenting
+  // switched off on this page right now? Only ever true where the page has its
+  // own AND the reader has handed it back.
+  const standDown = () => HOSTS_REVIEW_UI && pageOwnsMargin;
+
+  // Put the page's own selection pill away — or give it back. A stylesheet
+  // rather than an inline style or a removal, so nothing of the page's DOM is
+  // touched: the engine can go on showing and hiding an element that simply
+  // does not paint, and undoing the whole thing is removing one node.
+  function suppressPageSelUI(on) {
+    try {
+      const have = document.getElementById(SUPPRESS_STYLE_ID);
+      if (!on) { if (have) have.remove(); return; }
+      if (have) return;
+      const st = document.createElement('style');
+      st.id = SUPPRESS_STYLE_ID;
+      st.textContent = PAGE_SEL_UI + '{display:none !important}';
+      (document.head || document.documentElement).appendChild(st);
+    } catch { /* a page that will not take a stylesheet keeps both pills */ }
+  }
+
   let active = false;
   let PAGE = null;        // the /page record
   // Does the companion hold a record for this page? Nothing is POSTed anywhere
@@ -831,8 +910,11 @@
     for (const t of threads) {
       if (nextOrphans[t.id]) continue;
       // a resolved thread is painted green from the record, so a page reloaded
-      // months later still shows at a glance which passages were dealt with
-      Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id, !!t.resolved);
+      // months later still shows at a glance which passages were dealt with —
+      // and one a bot has answered but the reader has not yet filed is painted
+      // amber, so the same glance says which passages are waiting on them
+      Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id,
+        t.resolved ? true : (t.addressed ? 'ready' : false));
       index = freshIndex();
     }
     // repaint the provisional highlight if a new comment is being composed
@@ -1223,6 +1305,11 @@
       // what this site can actually do (see the adapter note at the top):
       // {highlights:false} turns off the selection pill and opens on Page chat
       capabilities: CAPS,
+      // …and whether this page carries a review UI of its own, which is a
+      // property of the DOM rather than of the site (see REVIEW_UI_MARKER).
+      // The drawer says so where the comments would be and carries the switch.
+      reviewHost: { hosts: HOSTS_REVIEW_UI, pageOwns: pageOwnsMargin },
+      onPageComments: want => setPageOwnsMargin(want),
       // the pages list needs to know which row is the page it is being shown
       // on; normUrl is ours, not the drawer's, so it is handed over with it
       currentUrl: URL_NOW,
@@ -1326,6 +1413,11 @@
           // trip later when the `page` broadcast lands
           const t = (PAGE.threads || []).find(x => x.id === threadId);
           if (t && t.resolved) { delete t.resolved; Anchor.markResolved(threadId, false); }
+          // …and it is no longer "ready for review" either: the reader has
+          // just asked something new here, so whatever a bot claimed about
+          // this thread a moment ago is stale (store.appendMsg says the same
+          // thing server-side; this is the optimistic half of it)
+          if (t && t.addressed) { delete t.addressed; Anchor.markAddressed(threadId, false); }
           drawer.setPage(PAGE);
         } else if (r.data && r.data.deduped) {
           // deduped with nothing echoed: the record is the only truth left
@@ -1395,6 +1487,18 @@
         await loadPage();
         return { ok: true, thread: r.data && r.data.thread,
                  summarizing: !!(r.data && r.data.summarizing) };
+      },
+      // "not done" — the reader's answer to a thread the bots claimed handled.
+      // Only the clearing direction exists here: marking a thread ADDRESSED is
+      // what a bot's reply landing in it does, server-side, and is never a
+      // click. Same optimistic repaint as resolve, for the same reason.
+      onNotDone: async threadId => {
+        Anchor.markAddressed(threadId, false);
+        const r = await api('POST', '/addressed',
+          { url: URL_NOW, thread_id: threadId, addressed: false });
+        if (!r.ok) { Anchor.markAddressed(threadId, true); return failure(r); }
+        await loadPage();
+        return { ok: true, thread: r.data && r.data.thread };
       },
       // "ask again" for a filed thread's paragraph — queued, never awaited:
       // the answer arrives as a `page` event whenever the job drains
@@ -1665,6 +1769,9 @@
   document.addEventListener('mouseup', e => {
     // no highlights on this site: selecting text is just selecting text
     if (!CAPS.highlights) return;
+    // …and the same where the reader has handed this page's margin back to
+    // the page's own commenting: the drag belongs to its pill, not ours
+    if (standDown()) return;
     if (drawer && inOurUI(e.target)) return;
     setTimeout(() => {
       const sel = window.getSelection();
@@ -1691,6 +1798,7 @@
   // 💬 clicked: freeze the anchor, paint it provisionally, open the composer
   function commitSelection() {
     if (!CAPS.highlights) return;
+    if (standDown()) return;   // no new threads where the page owns the margin
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     const index = freshIndex();
@@ -1889,8 +1997,55 @@
     } catch { /* no storage: the drawer simply stays shut */ }
   }
 
+  // The reader's standing answer to "which margin owns this page", read once
+  // at boot and only where the question arises at all — an ordinary page never
+  // touches storage for this. A stored `true` hands the page its own
+  // commenting back; anything else leaves Discuss holding the margin, which is
+  // both the default and the state we booted in.
+  //
+  // The suppression is applied SYNCHRONOUSLY at boot, before storage answers,
+  // because the page's pill must not flash up on the reader's first drag while
+  // a callback is still in flight. If the stored answer turns out to be "the
+  // page's", it is given back a tick later — which is the harmless direction.
+  function loadPageComments() {
+    if (!HOSTS_REVIEW_UI) return;
+    suppressPageSelUI(true);
+    if (!extensionAlive()) return;
+    try {
+      chrome.storage.local.get(PAGE_COMMENTS_KEY, r => {
+        if (!r || !r[PAGE_COMMENTS_KEY]) return;
+        setPageOwnsMargin(true);
+      });
+    } catch { /* no storage: Discuss keeps the margin, which is the default */ }
+  }
+
+  // The switch itself, thrown from the drawer's Comments tab. Persisted first
+  // (it is a per-page preference, not a session mood), then applied: exactly
+  // one of the two pills is live afterwards, and a composer already open on a
+  // selection is withdrawn rather than left floating over a page that has just
+  // stopped taking new Discuss comments.
+  function setPageOwnsMargin(want) {
+    pageOwnsMargin = !!want;
+    try {
+      if (pageOwnsMargin) chrome.storage.local.set({ [PAGE_COMMENTS_KEY]: true });
+      else if (chrome.storage.local.remove) chrome.storage.local.remove(PAGE_COMMENTS_KEY);
+      else chrome.storage.local.set({ [PAGE_COMMENTS_KEY]: false });
+    } catch { /* the choice still holds for this page view */ }
+    // the page's own pill comes back exactly when ours goes away, and vice
+    // versa: there is never a drag with two answers to it, or none
+    suppressPageSelUI(HOSTS_REVIEW_UI && !pageOwnsMargin);
+    if (drawer) {
+      if (standDown()) {
+        drawer.hideSel();
+        if (pendingSel) drawer.cancelNew();
+      }
+      drawer.setReviewHost({ hosts: HOSTS_REVIEW_UI, pageOwns: pageOwnsMargin });
+    }
+  }
+
   function boot() {
     consumeAutoOpen();
+    loadPageComments();
     startLiveness();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
@@ -1943,6 +2098,19 @@
     },
     get title() { return PAGE ? displayTitle(PAGE) : ''; },
     site: SITE, caps: CAPS,
+    // a page that carries its own review commenting: what the marker said,
+    // which margin owns the page now, whether the page's own selection pill is
+    // suppressed, and the switch itself
+    reviewHost: {
+      marker: REVIEW_UI_MARKER,
+      pageSelUI: PAGE_SEL_UI,
+      get hosts() { return HOSTS_REVIEW_UI; },
+      get pageOwns() { return pageOwnsMargin; },
+      get standDown() { return standDown(); },
+      get suppressed() { return !!document.getElementById(SUPPRESS_STYLE_ID); },
+      set: setPageOwnsMargin,
+      load: loadPageComments,
+    },
     // the page identity this document settled on at load, and whether the
     // document's own canonical link is what decided it
     url: URL_NOW, identHref: IDENT_HREF, canonical: CANONICAL_HREF,

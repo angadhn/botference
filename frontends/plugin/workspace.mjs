@@ -634,8 +634,15 @@ const clip = (s, n) => {
   return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t;
 };
 
+// What a review sends: the threads that are still WAITING on somebody.
+//
+// Not resolved (the reader has filed it) and not `addressed` (a bot has
+// already replied into it since the reader last wrote there, and it is sitting
+// in the drawer's "Ready for review" section waiting to be looked at). Sending
+// an addressed thread back would ask the bots to redo work they have already
+// reported — and re-sending after a round is exactly what this state is for.
 export const openThreads = page => ((page && page.threads) || [])
-  .filter(t => t && !t.resolved && (t.msgs || []).length)
+  .filter(t => t && !t.resolved && !t.addressed && (t.msgs || []).length)
   // a stable sort by page number: Array#sort is stable in every JS engine
   // this runs on, so equal pages keep record order without an index dance
   .slice()
@@ -666,8 +673,19 @@ export function reviewDigest(page, { threadsMax = REVIEW_THREADS_MAX, charsMax =
     + `conversation under it.\n\n`
     + `Work through every point. Where a point calls for a change to the files, MAKE the change `
     + `(the write rules on this turn say where you may write) and say what you changed; where it `
-    + `does not, answer it here. Nothing is resolved by this message — I file the threads myself `
-    + `once I am satisfied.\n`;
+    + `does not, answer it here.\n\n`
+    // The one instruction that costs the bots nothing and saves the reader the
+    // whole page. When a change REWRITES the passage a comment is anchored to,
+    // the highlight orphans — the thread still holds the old wording as its
+    // quote, but nothing on the page or in the record says what replaced it,
+    // and the reader is left re-reading the draft to find out. Asking for the
+    // new wording verbatim puts the "after" in the conversation beside the
+    // "before", so the link survives the edit with no new mechanism at all.
+    + `Whenever a change you make REWRITES one of the quoted passages, say so and quote the new `
+    + `wording back verbatim — "comment 3: done — this passage now reads: “…”". The quote `
+    + `above it is the before; that line is the after, and without it the highlight I am reading `
+    + `points at words that are no longer in the file.\n\n`
+    + `Nothing is resolved by this message — I file the threads myself once I am satisfied.\n`;
   const blocks = [];
   let used = head.length;
   for (const t of threads) {

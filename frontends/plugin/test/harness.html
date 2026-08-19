@@ -78,6 +78,26 @@
                      annotator is loaded, exactly as the real boot does, and
                      the record is filed under `bfp-pdf://text/<hex>`.
                      `&selftest=1` runs the local-PDF assertions.
+    ?reviewpage=1    the same article, wearing the review engine's own marker
+                     (a docid on the body, its "💬 Comment" pill as a direct
+                     child of it, and its toolbar). With the plugin installed
+                     DISCUSS KEEPS THE MARGIN: our pill answers the drag and
+                     the page's own is put away by an injected stylesheet — the
+                     page's toolbar buttons are untouched. `&selftest=1` runs
+                     the assertions; without it, the note and its "use the
+                     page's own commenting" control are the screenshot state.
+                     `&pageown=1` holds the pose AFTER the reader hands the
+                     margin back — the page's 💬 returns and Discuss stands
+                     down.
+    ?ready=1         the same article after a bot has replied into one of its
+                     three threads. That thread is READY FOR REVIEW: an amber
+                     badge, an amber highlight on the page, its own section
+                     between the open list and the archive, and out of what a
+                     send review would hand over. The reader's ✓ still resolves
+                     it and "not done" puts it back. `&selftest=1` runs the
+                     assertions; without it, the section is the screenshot.
+                     `&rewrite=1` has the bot's reply quote the NEW wording
+                     back, so the card draws the before→after word diff.
     ?fresh=1         a page the companion has NEVER heard of: GET /page answers
                      page:null until something is posted. With `&selftest=1`
                      this runs the lazy-persistence assertions — a visit (even
@@ -257,6 +277,47 @@ if (Q.get('dark') === '1') {
 // `--dump-dom` run reads the result off.
 let logQuiet = false;
 const log = m => { if (!logQuiet) document.getElementById('h-log').textContent = m; };
+
+// ───────────────────────────────────────────────────────────────────────────
+// 0. ?reviewpage=1 — a page that CARRIES ITS OWN margin commenting
+//     The same article, wearing the review engine's marker: the docid on the
+//     body and the engine's own "💬 Comment" pill as a direct child of it
+//     (content.js's REVIEW_UI_MARKER), plus the toolbar buttons a real
+//     *.review.html carries. With the plugin installed Discuss KEEPS the
+//     margin here and the page's own pill is put away — while the toolbar,
+//     everything else in the drawer and the three restored threads carry on.
+//     Staged BEFORE the extension scripts load at the foot of this file,
+//     because the marker is read once, at attach time, exactly as it is on a
+//     real review page.
+// ───────────────────────────────────────────────────────────────────────────
+// ?ready=1 — the middle state. The ordinary article, where a bot has replied
+// into one of the three threads: it wears an amber "ready for review" badge,
+// sorts into its own section between the open list and the archive, and is out
+// of what a send review would hand over. Resolving is STILL the reader's click.
+// `&selftest=1` runs the assertions; without it, the section is the screenshot.
+const READY = Q.get('ready') === '1';
+const REVIEWPAGE = Q.get('reviewpage') === '1';
+if (REVIEWPAGE) {
+  document.body.setAttribute('data-docid', 'the-quiet-machine');
+  const selpop = document.createElement('div');
+  selpop.id = 'selpop';
+  selpop.textContent = '💬 Comment';
+  selpop.style.cssText = 'position:absolute;display:none;z-index:2;padding:4px 9px;'
+    + 'border-radius:6px;background:#d97757;color:#fff8f2;font:600 12px ui-sans-serif,system-ui,sans-serif';
+  document.body.appendChild(selpop);
+  // …and the engine's TOOLBAR, which is not a second answer to a drag and must
+  // survive untouched: these are how the reader works with the comments that
+  // already live in that page's own record.
+  const bar = document.createElement('div');
+  bar.id = 'reviewbar';
+  bar.style.cssText = 'position:fixed;top:0;right:0;z-index:2;padding:4px';
+  for (const [id, label] of [['general', '+ General comment'], ['copyfb', 'Copy feedback'], ['export', 'Export ⬇']]) {
+    const b = document.createElement('button');
+    b.id = id; b.textContent = label;
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // 0a. ?workspace=1 — the project artifact world
@@ -984,6 +1045,8 @@ const orphanPosts = [];     // every /orphan body
 const resolvePosts = [];    // every /resolve {thread_id, resolved}
 const summarizePosts = [];  // …and every /summarize the reader asked for by hand
 let resolveFail = false;    // the selftest flips this to exercise the revert
+const addressedPosts = [];  // every /addressed {thread_id, addressed} — "not done"
+let addressedFail = false;  // …and the same revert, one rung down
 const exportPosts = [];     // every /export {url, mode} — the header's and the rows'
 const renamePosts = [];     // every /rename-page {url, title}
 const tagPosts = [];        // every /tag-page {url, tags}
@@ -1174,11 +1237,21 @@ function msgIn(threadId, ts) {
 // reading room's composer, and a bot's answer arriving off the bridge — so the
 // fake one has to as well, or the drawer would be tested against a companion
 // that is kinder than the real one.
-function reopenOnWrite(rec, threadId) {
+// …and its other other half: a write into a thread also settles whether the
+// thread is "ready for review". A BOT writing there means the bots have had
+// their go and it is the reader's turn; a HUMAN writing there means the reader
+// has just asked something new, so any earlier claim is stale. A `tools` line
+// is a bot narrating, not answering, and never counts.
+function reopenOnWrite(rec, threadId, msg) {
   if (!threadId || threadId === '__page__') return;
   const t = (rec.threads || []).find(x => x.id === threadId);
   if (!t) return;
   delete t.resolved; delete t.resolved_at; delete t.resolved_by;
+  delete t.addressed; delete t.addressed_at; delete t.addressed_by;
+  const author = msg && msg.author;
+  if (msg && msg.kind !== 'tools' && /^(claude|codex)\b/i.test(String(author || ''))) {
+    t.addressed = true; t.addressed_at = now(); t.addressed_by = String(author);
+  }
 }
 // store.threadDigest, as the fake companion: the instant placeholder written
 // the moment a thread is resolved, so triage never waits on an agent.
@@ -1219,7 +1292,7 @@ function playTurn(target, text, url) {
         : (rec.threads.find(t => t.id === target) || { msgs: [] }).msgs;
       // the companion persists a bot reply through the same appendMsg every
       // other write goes through — so a bot answering a filed thread reopens it
-      const post = m => { list.push(m); reopenOnWrite(rec, target); ev({ type: 'chat', kind: 'reply', msg: m }); };
+      const post = m => { list.push(m); reopenOnWrite(rec, target, m); ev({ type: 'chat', kind: 'reply', msg: m }); };
       // codex is the tool user here: one summary before the answer, one after —
       // the out-of-order case the drawer has to hoist and merge
       if (model === 'codex') post({ author: model, ts: now(), kind: 'tools', text: TOOLS_A });
@@ -1322,7 +1395,10 @@ function companion(method, path, body) {
   if (route === '/send-review') {
     if (!WORKSPACE) return { ok: false, status: 404, error: 'not a project artifact page' };
     if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
-    const open = RECORD.threads.filter(t => !t.resolved && (t.msgs || []).length);
+    // workspace.openThreads: not resolved, and not ADDRESSED either — a thread
+    // a bot has already replied into is waiting on the reader under "Ready for
+    // review", and re-sending it would ask for work already reported
+    const open = RECORD.threads.filter(t => !t.resolved && !t.addressed && (t.msgs || []).length);
     if (!open.length) return { ok: false, status: 400, error: 'no open comments to send' };
     const text = 'I have finished reviewing this draft. Here is my whole margin review — '
       + open.length + ' open comment threads, in page order, quote first and the conversation under it.\n\n'
@@ -1408,7 +1484,7 @@ function companion(method, path, body) {
     }
     const msg = stampMsg(body.text);
     list.push(msg);
-    reopenOnWrite(rec, body.thread_id);
+    reopenOnWrite(rec, body.thread_id, msg);
     rec.updated_at = now();
     // Page chat on a confirmed project artifact IS a council chat, where plain
     // text goes to the room (server.mjs untaggedGoesToAll). Everywhere else —
@@ -1660,6 +1736,10 @@ function companion(method, path, body) {
     if (resolveFail) return { ok: false, status: 500, error: 'simulated resolve failure' };
     const t = RECORD.threads.find(x => x.id === body.thread_id);
     if (!t) return { ok: false, status: 404, error: 'unknown thread' };
+    // either direction ends "ready for review": resolving is the reader having
+    // looked, reopening is the reader saying "not done" — which is exactly the
+    // answer the amber badge was asking for
+    delete t.addressed; delete t.addressed_at; delete t.addressed_by;
     if (body.resolved) {
       const first = !t.resolved;
       t.resolved = true;
@@ -1674,6 +1754,22 @@ function companion(method, path, body) {
     RECORD.updated_at = now();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t, summarizing: !!body.resolved } };
+  }
+  // "not done" — the reader's answer to a thread the bots claimed handled.
+  // Only the CLEARING direction is ever asked for by the drawer: marking a
+  // thread addressed is what a bot's reply landing in it does (reopenOnWrite),
+  // never a click.
+  if (method === 'POST' && route === '/addressed') {
+    addressedPosts.push({ thread_id: body.thread_id, addressed: !!body.addressed });
+    if (addressedFail) return { ok: false, status: 500, error: 'simulated not-done failure' };
+    const t = RECORD.threads.find(x => x.id === body.thread_id);
+    if (!t) return { ok: false, status: 404, error: 'unknown thread' };
+    if (body.addressed) { t.addressed = true; t.addressed_at = now(); t.addressed_by = 'angadh'; }
+    else { delete t.addressed; delete t.addressed_at; delete t.addressed_by; }
+    log((body.addressed ? 'addressed: ' : 'not done: ') + t.id);
+    RECORD.updated_at = now();
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true, thread: t } };
   }
   // …and the agents' paragraph landing over the top of the placeholder, later,
   // as a `page` event — never as a message in the thread
@@ -2937,6 +3033,9 @@ async function selftest() {
   // lost: the highlight stays on the page, in green, and the thread is one
   // click from being live again.
   const cards = () => q('.pane[data-pane="comments"] > .card:not(.pending)');
+  // every UNRESOLVED card, wherever it sits: the open list, or the "Ready for
+  // review" section a bot's reply moves a thread into
+  const liveCards = () => q('.pane[data-pane="comments"] > .card:not(.pending), .pane[data-pane="comments"] .ready-list > .card');
   const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
   const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
   const bgOf = el => getComputedStyle(el).backgroundColor;
@@ -2963,8 +3062,14 @@ async function selftest() {
     return !!b;
   };
 
-  const openBefore = cards().length;
-  const subject = cards()[1].dataset.thread;   // the thread with a bot in it
+  // every unresolved card, wherever it sits — a thread a bot has answered is
+  // in the Ready for review section, and is still one of the reader's open
+  // pieces of work
+  const openBefore = liveCards().length;
+  // named off the RECORD, not off the list's second row: a thread a bot has
+  // already answered sits in Ready for review, so row order and record order
+  // are no longer the same thing
+  const subject = RECORD.threads.filter(t => !t.resolved)[1].id;   // the thread with a bot in it
   const yellow = bgOf(markFor(subject));
 
   check('every thread carries the resolve control, right there in the row',
@@ -2976,7 +3081,7 @@ async function selftest() {
   check('the resolve button is there to click', await hit(subject, 'resolve'));
   check('one click resolves — no confirmation step of any kind',
     !S.querySelector('.confirm') && !!await until(() => !!S.querySelector('.resolved-sec')));
-  check('the thread leaves the main list', !!await until(() => cards().length === openBefore - 1));
+  check('the thread leaves the main list', !!await until(() => liveCards().length === openBefore - 1));
   check('…and the count shrinks with it, which is what the sweep is FOR',
     S.querySelector('.tab[data-tab="comments"] .count').textContent === String(openBefore - 1));
   check('it went to the collapsed archive at the foot of the list, not a tab',
@@ -3065,7 +3170,7 @@ async function selftest() {
   // ---- reopen is the undo, and it is one click too ------------------------
   check('reopen is one click, right on the card', await hit(subject, 'reopen'));
   check('reopening returns it to the main list',
-    !!await until(() => cards().length === openBefore));
+    !!await until(() => liveCards().length === openBefore));
   check('…and the archive is gone with the last thread in it',
     !S.querySelector('.resolved-sec'));
   check('the highlight goes back to yellow',
@@ -3087,7 +3192,7 @@ async function selftest() {
     cardFor(subject).querySelector('.composer .send').click();
   }
   check('replying to a filed thread REOPENS it: new activity means it is live again',
-    !!await until(() => cards().length === openBefore && !S.querySelector('.resolved-sec')));
+    !!await until(() => liveCards().length === openBefore && !S.querySelector('.resolved-sec')));
   check('…and the highlight comes back to yellow with it',
     !!markFor(subject) && !markFor(subject).classList.contains('bfp-done'));
 
@@ -3097,14 +3202,21 @@ async function selftest() {
   await until(() => !!S.querySelector('.resolved-sec'));
   playTurn(subject, '@claude one last look?');
   check('a bot reply landing in a filed thread reopens it too',
-    !!await until(() => !S.querySelector('.resolved-sec') && cards().length === openBefore, 9000));
+    !!await until(() => !S.querySelector('.resolved-sec') && liveCards().length === openBefore, 9000));
+  // …and it does not come back to the top of the list as if nothing had
+  // happened: a bot has answered here, so it is READY FOR REVIEW
+  check('…into "Ready for review", not back into the open list',
+    !!S.querySelector('.ready-list .card[data-thread="' + subject + '"]'));
 
   // ---- a refusal puts everything back ------------------------------------
   resolveFail = true;
-  const failing = cards()[1].dataset.thread;
+  // a PAINTED, open thread — the subject is now sitting under "Ready for
+  // review" and the last of the three is the orphaned one, which has no
+  // highlight to put back
+  const failing = [...cards()].map(c => c.dataset.thread).find(id => id !== subject && markFor(id));
   await hit(failing, 'resolve');
   check('a resolve the companion refuses is undone, card and all',
-    !!await until(() => cards().length === openBefore && !S.querySelector('.resolved-sec')));
+    !!await until(() => liveCards().length === openBefore && !S.querySelector('.resolved-sec')));
   check('…the highlight goes back to yellow with it',
     !markFor(failing).classList.contains('bfp-done'));
   check('…and the refusal is said out loud rather than swallowed',
@@ -4198,6 +4310,17 @@ async function selftest() {
     .filter(u => u.some(m => m.kind === 'tools')).length;
   check('…and every tool row with them',
     longCard().querySelectorAll('.tools').length === toolUnits && toolUnits === 6);
+  // The fold is about LENGTH and nothing else, so this block owns the thread it
+  // measures: whatever the resolve and reply sections above left in it is
+  // cleared back to its root message first. (They used to leave it alone by
+  // luck — a thread a bot has answered now sits in Ready for review, so which
+  // thread the second row of the list is has stopped being a constant.)
+  RECORD.threads[0].msgs = RECORD.threads[0].msgs.slice(0, 1);
+  delete RECORD.threads[0].addressed;
+  delete RECORD.threads[0].addressed_by;
+  delete RECORD.threads[0].addressed_at;
+  d.setPage(RECORD);
+  await sleep(40);
   check('a short thread is never folded',
     !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore'));
   check('…and is not offered a fold control either — there is nothing to fold',
@@ -5249,6 +5372,364 @@ async function selftestPdfLocal() {
   console.log(out.join('\n'));
 }
 
+// ?reviewpage=1&selftest=1 — a page that carries its OWN margin commenting.
+//
+// Two selection UIs must never fight over one drag, so exactly one is live —
+// and with the plugin installed the default is OURS: Discuss keeps the margin
+// and the page's own 💬 is put away, so the reader's comments land where the
+// bots, send-review and the project chat already are. A visitor without the
+// extension is unaffected; the suppression is a stylesheet this content script
+// injects into a page it is running in.
+//
+// The reader can hand the margin back, once per page, and that answer is
+// remembered. Everything else — Page chat, the archive, the tasks card, the
+// threads already here — is untouched in both arrangements.
+async function selftestReviewPage() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const pane = () => S.querySelector('.pane[data-pane="comments"]');
+  const note = () => S.querySelector('.standdown');
+  const sdBtn = () => S.querySelector('[data-act="page-comments"]');
+  const KEY = 'bfp:page-comments:' + window.__bfp.url;
+  const selpop = () => document.getElementById('selpop');
+  // the page's own pill, asked the way the page itself asks: it shows by
+  // setting an inline display, and a suppressed one must still not paint
+  const pagePillShows = () => {
+    const el = selpop();
+    if (!el) return false;
+    el.style.display = 'block';
+    const shown = getComputedStyle(el).display !== 'none';
+    el.style.display = 'none';
+    return shown;
+  };
+  // select the same phrase demoSelect uses, and report whether our pill floated
+  async function tryPill() {
+    const p = [...document.querySelectorAll('article p')].find(el => el.textContent.includes('found a rhythm'));
+    const t = [...p.childNodes].find(n => n.nodeType === 3 && n.data.includes('found a rhythm'));
+    const from = t.data.indexOf('By the hour mark');
+    const to = t.data.indexOf('found a rhythm') + 'found a rhythm'.length;
+    const r = document.createRange();
+    r.setStart(t, from); r.setEnd(t, to);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await sleep(320);
+    return S.querySelector('.selbtn').classList.contains('on');
+  }
+
+  try {
+  // ---- the marker, read once, at attach time ------------------------------
+  check('the page really is wearing the review engine’s marker',
+    !!document.querySelector(window.__bfp.reviewHost.marker));
+  check('content.js saw it', window.__bfp.reviewHost.hosts === true);
+  check('…and Discuss KEEPS the margin, because the plugin is installed',
+    window.__bfp.reviewHost.standDown === false && d.standingDown() === false);
+  check('the reader has not been asked anything yet', window.__bfp.reviewHost.pageOwns === false);
+  check('…and nothing was written to storage by merely arriving', !(KEY in store));
+
+  // ---- the page's own selection pill is put away --------------------------
+  check('the page’s own 💬 is suppressed', window.__bfp.reviewHost.suppressed === true);
+  check('…and stays invisible even when the page itself tries to show it',
+    !pagePillShows());
+  check('…by a stylesheet, so nothing of the page’s own DOM was touched',
+    !!selpop() && selpop().isConnected && !!document.getElementById('bfp-page-sel-off'));
+  check('the page’s TOOLBAR is untouched — only the selection affordance went',
+    !!document.getElementById('general') && getComputedStyle(document.getElementById('general')).display !== 'none'
+    && !!document.getElementById('copyfb') && getComputedStyle(document.getElementById('copyfb')).display !== 'none');
+
+  // ---- …and ours is the one that answers a drag ---------------------------
+  check('selecting a passage floats the Discuss 💬', await tryPill());
+  S.querySelector('.selbtn').click();
+  const pending = await until(() => S.querySelector('.card.pending textarea'), 4000);
+  check('…and a new Discuss comment can be started from it', !!pending);
+  d.cancelNew();
+  getSelection().removeAllRanges();
+
+  // ---- everything else is exactly as it is anywhere else ------------------
+  check('the three threads already on this page are still listed',
+    q('.pane[data-pane="comments"] .card[data-thread]').length === 3);
+  check('…and their highlights are still painted',
+    document.querySelectorAll('mark.bfp-hl').length >= 3);
+  check('the Comments tab is still a tab, not a disabled one',
+    !!S.querySelector('.tab[data-tab="comments"]') && !S.querySelector('.tab[data-tab="comments"]').disabled);
+  check('…and the drawer opened on it, as on any article page', d.tab === 'comments');
+  check('Page chat is untouched',
+    !!S.querySelector('.pane[data-pane="chat"] .composer textarea'));
+
+  // ---- the note, where the comments are -----------------------------------
+  check('the Comments tab says which margin has the page', !!note());
+  check('…naming Discuss as the one handling comments here',
+    !!note() && /Discuss is handling comments/i.test(note().textContent));
+  check('…and saying the page’s own 💬 is what was put away',
+    !!note() && /put away/i.test(note().textContent));
+  check('the default arrangement is the quiet one, not the loud one',
+    !!note() && !note().classList.contains('pageown'));
+
+  // ---- a conversation in flight carries on --------------------------------
+  const first = () => S.querySelector('.pane[data-pane="comments"] .card[data-thread]');
+  const before = first().querySelectorAll('.reply').length;
+  const rta = await until(() => first() && first().querySelector('.composer textarea'), 8000);
+  check('an existing thread still offers a reply composer', !!rta);
+  if (rta) {
+    rta.value = 'still true after a second read.';
+    rta.dispatchEvent(new Event('input', { bubbles: true }));
+    first().querySelector('.composer .send').click();
+  }
+  check('…and the reply lands',
+    !!await until(() => first().querySelectorAll('.reply').length > before, 8000));
+
+  // ---- handing the margin back, once per page -----------------------------
+  check('the note carries the other choice', !!sdBtn());
+  check('…which offers the page’s own commenting by name',
+    !!sdBtn() && /use the page’s own commenting/i.test(sdBtn().textContent));
+  sdBtn().click();
+  await until(() => note() && note().classList.contains('pageown'), 4000);
+  check('“use the page’s own commenting” stands Discuss down',
+    d.standingDown() === true && window.__bfp.reviewHost.standDown === true);
+  check('…and the answer is remembered for THIS page', store[KEY] === true);
+  check('…the page gets its own 💬 back', pagePillShows()
+    && window.__bfp.reviewHost.suppressed === false);
+  check('…and the note says so, in the louder of the two states',
+    !!note() && note().classList.contains('pageown'));
+  check('…now offering the way back', !!sdBtn() && /let Discuss comment here/i.test(sdBtn().textContent));
+  check('the Discuss pill is gone', !(await tryPill()));
+  check('…and paints no provisional highlight',
+    !document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
+  d.beginNew({ quote: 'anything at all', prefix: '', suffix: '' });
+  await sleep(60);
+  check('…and a Discuss composer cannot be forced open either',
+    !S.querySelector('.card.pending textarea'));
+  check('the threads already here are STILL listed and still replyable',
+    q('.pane[data-pane="comments"] .card[data-thread]').length === 3
+    && !!first().querySelector('.composer textarea'));
+  getSelection().removeAllRanges();
+
+  // ---- …and back again ----------------------------------------------------
+  sdBtn().click();
+  await until(() => note() && !note().classList.contains('pageown'), 4000);
+  check('“let Discuss comment here” takes the margin back', d.standingDown() === false);
+  check('…and forgets the choice rather than remembering a false',
+    store[KEY] === undefined);
+  check('…the page’s own 💬 goes away again', !pagePillShows());
+  check('…and the Discuss pill answers a drag once more', await tryPill());
+  getSelection().removeAllRanges();
+  d.hideSel();
+  } catch (e) { check('the run got to the end without throwing: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?ready=1&selftest=1 — the middle state, end to end.
+//
+// The reader's page fills with comments faster than anyone works through them,
+// and after a round with the bots they had no way to see WHICH threads moved
+// without re-reading all of them. So a thread a bot has replied into since the
+// reader last wrote in it is READY FOR REVIEW: amber badge, amber highlight,
+// its own section, and out of the next send review.
+//
+// The one thing it is NOT is resolved. A bot can say "I did this"; it can
+// never close the reader's question. The ✓ is still the reader's click, and
+// "not done" is the one-click way to disagree.
+async function selftestReady() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const pane = () => S.querySelector('.pane[data-pane="comments"]');
+  const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const openList = () => q('.pane[data-pane="comments"] > .card[data-thread]');
+  const readyList = () => q('.pane[data-pane="comments"] .ready-list > .card[data-thread]');
+  const readyHead = () => S.querySelector('.ready-head');
+  const tabCount = () => (S.querySelector('.tab[data-tab="comments"] .count') || {}).textContent;
+  const rec = id => RECORD.threads.find(t => t.id === id);
+  // reply into a thread tagging a bot, and wait for the bot's answer to land —
+  // the ONLY way a thread ever becomes addressed, and no new API for the bots:
+  // it falls out of the reply path they already write through.
+  async function botAnswers(id, text) {
+    const box = await until(() => cardFor(id) && cardFor(id).querySelector('.composer textarea'), 8000);
+    if (!box) return false;
+    box.value = text;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    cardFor(id).querySelector('.composer .send').click();
+    return !!await until(() => rec(id) && rec(id).addressed, 12000);
+  }
+
+  const threads = RECORD.threads.map(t => t.id);
+  const subject = threads[0];
+  try {
+  check('the page starts with three open threads and no ready section',
+    openList().length === 3 && !S.querySelector('.ready-sec'));
+  check('…and no passage on the page is wearing the ready tint yet',
+    !document.querySelector('mark.bfp-hl.bfp-ready'));
+
+  // ---- a bot's reply is what marks a thread ready -------------------------
+  const answered = await botAnswers(subject, '@claude can you fix the units here?');
+  check('a bot replying into a thread marks it addressed, with no new bot-side API', answered);
+  check('…and the reader is never the one who did it — the companion names the bot',
+    !!rec(subject) && /^claude/i.test(String(rec(subject).addressed_by || '')));
+  check('…and it is NOT resolved: a bot can never close the reader’s question',
+    !!rec(subject) && !rec(subject).resolved);
+
+  await until(() => !!S.querySelector('.ready-sec'), 6000);
+  check('a "Ready for review" section appears', !!S.querySelector('.ready-sec'));
+  check('…counting what is in it, in the header', /1/.test((readyHead() || {}).textContent || ''));
+  check('…between the open list and the archive, which is where the thread is in its life',
+    !!pane().querySelector('.card[data-thread] ~ .ready-sec'));
+  check('the thread moved into it', readyList().length === 1
+    && readyList()[0].dataset.thread === subject);
+  check('…and out of the open list', openList().length === 2);
+  check('the card wears an amber "ready for review" badge',
+    !!cardFor(subject).querySelector('.badge.ready-badge')
+    && /ready for review/i.test(cardFor(subject).querySelector('.badge.ready-badge').textContent));
+  check('…and says WHICH bot claimed it, without claiming it is done',
+    /claude/i.test(cardFor(subject).querySelector('.badge.ready-badge').title || '')
+    && !/resolved/i.test(cardFor(subject).querySelector('.badge.ready-badge').textContent));
+  check('the passage on the page turns amber — between open yellow and filed sage',
+    !!await until(() => markFor(subject) && markFor(subject).classList.contains('bfp-ready')
+      && !markFor(subject).classList.contains('bfp-done'), 6000));
+  check('the tab still counts it: ready means it wants the READER', tabCount() === '3');
+  check('…and it is still a live conversation, with a reply box on it',
+    !!cardFor(subject).querySelector('.composer textarea'));
+
+  // the section folds away — a page whose whole review came back at once would
+  // otherwise bury the threads still waiting on a bot
+  readyHead().click();
+  await sleep(60);
+  check('the section folds', !S.querySelector('.ready-list'));
+  readyHead().click();
+  await until(() => !!S.querySelector('.ready-list'), 3000);
+  check('…and unfolds again', readyList().length === 1);
+
+  // ---- "not done": the reader disagreeing ---------------------------------
+  const posts = addressedPosts.length;
+  cardFor(subject).querySelector('[data-act="not-done"]').click();
+  check('"not done" puts the thread back in the open list',
+    !!await until(() => openList().length === 3 && !S.querySelector('.ready-sec'), 6000));
+  check('…and tells the companion, in the clearing direction only',
+    addressedPosts.length === posts + 1
+    && addressedPosts[posts].thread_id === subject
+    && addressedPosts[posts].addressed === false);
+  check('…and the highlight goes back to yellow with it',
+    !!markFor(subject) && !markFor(subject).classList.contains('bfp-ready'));
+  check('…and nothing was resolved on the way', !rec(subject).resolved);
+
+  // a refusal is undone, card and highlight alike — the same rule resolve follows
+  await botAnswers(subject, '@claude and the date in the caption?');
+  await until(() => !!S.querySelector('.ready-sec'), 6000);
+  addressedFail = true;
+  cardFor(subject).querySelector('[data-act="not-done"]').click();
+  check('a "not done" the companion refuses is undone, card and all',
+    !!await until(() => !!S.querySelector('.ready-sec') && readyList().length === 1, 6000));
+  check('…the highlight goes back to amber with it',
+    !!markFor(subject) && markFor(subject).classList.contains('bfp-ready'));
+  check('…and the refusal is said out loud rather than swallowed',
+    /simulated not-done failure/.test(cardFor(subject).textContent));
+  addressedFail = false;
+  d.render();
+
+  // ---- the reader's ✓ still resolves it -----------------------------------
+  const resolves = resolvePosts.length;
+  cardFor(subject).querySelector('[data-act="resolve"]').click();
+  check('the reader’s ✓ files a ready thread exactly as it files an open one',
+    !!await until(() => !!S.querySelector('.resolved-sec') && !S.querySelector('.ready-sec'), 6000));
+  check('…through /resolve, which is still the only thing that resolves anything',
+    resolvePosts.length === resolves + 1 && resolvePosts[resolves].resolved === true);
+  check('…and the highlight is green, not amber',
+    !!markFor(subject) && markFor(subject).classList.contains('bfp-done')
+    && !markFor(subject).classList.contains('bfp-ready'));
+  check('filing spends the claim rather than remembering it', !rec(subject).addressed);
+  check('the tab count drops to what is left', tabCount() === '2');
+
+  // reopening is "not done" one rung up: back to OPEN, not back to ready —
+  // otherwise the reader would land straight back in the section they just
+  // took the thread out of
+  const arch = await until(() => S.querySelector('[data-act="resolved-toggle"]'), 6000);
+  if (arch) arch.click();
+  await until(() => !!S.querySelector('.resolved-list'), 3000);
+  const reop = await until(() => cardFor(subject) && cardFor(subject).querySelector('[data-act="reopen"]'), 6000);
+  check('a filed thread offers the reopen it always did', !!reop);
+  if (reop) reop.click();
+  check('reopening puts it back in the OPEN list, not in Ready for review',
+    !!await until(() => openList().length === 3 && !S.querySelector('.ready-sec'), 6000));
+  check('…and its highlight is yellow again',
+    !!markFor(subject) && !markFor(subject).classList.contains('bfp-ready')
+    && !markFor(subject).classList.contains('bfp-done'));
+
+  // ---- the reader writing there clears it too ------------------------------
+  await botAnswers(subject, '@claude last one, promise.');
+  await until(() => !!S.querySelector('.ready-sec'), 6000);
+  const box = cardFor(subject).querySelector('.composer textarea');
+  box.value = 'Not quite — the second half is still wrong.';
+  box.dispatchEvent(new Event('input', { bubbles: true }));
+  cardFor(subject).querySelector('.composer .send').click();
+  check('the reader writing in a ready thread makes it open again: their question is live',
+    !!await until(() => openList().length === 3 && !S.querySelector('.ready-sec'), 8000));
+  check('…and the companion agrees, rather than the drawer guessing alone',
+    !!rec(subject) && !rec(subject).addressed);
+
+  // ---- before → after, where the change rewrote the passage ---------------
+  // A change that rewrites the quoted passage orphans the highlight: the
+  // thread holds the old wording, the page no longer contains it, and the link
+  // between the comment and what came of it is gone. The bots are asked to
+  // quote the new wording back, and that one line is enough to draw the
+  // difference here — client-side, no new data, nothing server-side.
+  const other = threads[1];
+  const was = rec(other).quote;
+  const w = was.split(/\s+/);
+  const now2 = w.slice(0, Math.max(1, w.length - 2)).join(' ') + ' found its footing at last.';
+  rec(other).msgs.push({ author: 'claude', ts: now(),
+    text: 'Done — this passage now reads: "' + now2 + '"' });
+  rec(other).addressed = true; rec(other).addressed_by = 'claude';
+  d.setPage(RECORD); await sleep(80);
+  const wn = () => cardFor(other).querySelector('.wasnow');
+  check('a bot quoting the new wording draws a before→after in the card', !!wn());
+  check('…as a word diff, not two blocks of prose',
+    !!wn() && !wn().dataset.stacked && !!wn().querySelector('.wndiff'));
+  const wnText = sel => !wn() ? '' : [...wn().querySelectorAll(sel)].map(e => e.textContent).join('');
+  check('…striking through what left',
+    !!wn() && !!wn().querySelector('del') && wnText('del').includes(w[w.length - 1]));
+  check('…and marking what arrived', !!wn() && /footing/.test(wnText('ins')));
+  check('…keeping the words both versions share out of the diff',
+    !!wn() && wn().querySelector('.wndiff').textContent.includes(w[0]));
+
+  // nothing recognisably shared: a diff of two different sentences is
+  // confetti, so the two are stacked and labelled instead
+  rec(other).msgs.pop();
+  rec(other).msgs.push({ author: 'claude', ts: now(),
+    text: 'Done — this passage now reads: "Quite another sentence entirely, sharing nothing."' });
+  d.setPage(RECORD); await sleep(80);
+  check('two unrelated sentences fall back to a stacked was/now',
+    !!wn() && wn().dataset.stacked === '1'
+    && [...wn().querySelectorAll('.wnlab')].map(e => e.textContent).join('/') === 'was/now');
+
+  // and a bot reply that claims nothing about the wording draws nothing
+  rec(other).msgs.pop();
+  rec(other).msgs.push({ author: 'claude', ts: now(), text: 'Fixed the units, nothing else changed.' });
+  d.setPage(RECORD); await sleep(80);
+  check('a reply that quotes no new wording draws no diff at all', !wn());
+  } catch (e) { check('the run got to the end without throwing: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?fresh=1&selftest=1 — lazy persistence, the client's half.
 //
 // Nothing is written to disk for a page until the reader ACTS. So a visit —
@@ -5576,6 +6057,23 @@ async function selftestWorkspace() {
     d.setPage(RECORD); await sleep(40);
     check('reopening them brings it back', !!sendBtn() && !sendBtn().disabled);
 
+    // …and a thread the bots have ALREADY replied into is out of the digest
+    // too. That is the whole point of "ready for review": a second send after
+    // a round asks for the points still outstanding, not the ones just done.
+    RECORD.threads[0].addressed = true;
+    RECORD.threads[0].addressed_by = 'claude';
+    d.setPage(RECORD); await sleep(40);
+    check('a thread marked ready for review is not counted for send review',
+      /^send review \(2\)$/.test((sendBtn() || {}).textContent || ''));
+    RECORD.threads.forEach(t => { t.addressed = true; t.addressed_by = 'claude'; });
+    d.setPage(RECORD); await sleep(40);
+    check('…and with every thread ready there is nothing left to send',
+      !!sendBtn() && sendBtn().disabled);
+    RECORD.threads.forEach(t => { delete t.addressed; delete t.addressed_by; });
+    d.setPage(RECORD); await sleep(40);
+    check('putting them back makes them sendable again',
+      /^send review \(3\)$/.test((sendBtn() || {}).textContent || ''));
+
     // one step, inline — never window.confirm, which the page's own modals
     // and focus traps would fight with (the same rule del-thread follows)
     sendBtn().click();
@@ -5691,7 +6189,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (Q.get('selftest') === '1') {
       setTimeout(WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
-        : FRESH ? selftestFresh : selftest, 250);
+        : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
+        : READY ? selftestReady : selftest, 250);
       return;
     }
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
@@ -5712,6 +6211,46 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         d.open('chat');
         const b = d.shadow.querySelector('[data-act="send-review"]');
         if (b) b.click(); else log('review: no send-review button');
+      }, 300);
+    }
+    // ?ready=1 — the screenshot pose for the middle state. A thread only ever
+    // becomes ready because a BOT replied into it, so the only route to the
+    // pose from out here is to have one do exactly that: tag it, let the turn
+    // run, and the section builds itself.
+    if (READY) {
+      setTimeout(() => {
+        const first = d.shadow.querySelector('.pane[data-pane="comments"] > .card[data-thread]');
+        if (!first) { log('ready: no threads'); return; }
+        const box = first.querySelector('.composer textarea');
+        if (!box) { log('ready: no composer'); return; }
+        box.value = '@claude can you fix the units here?';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        first.querySelector('.composer .send').click();
+        // &rewrite=1 — …and the bot's change REWROTE the passage, so its reply
+        // quotes the new wording back and the card draws the difference.
+        if (Q.get('rewrite') === '1') {
+          setTimeout(() => {
+            const t = RECORD.threads.find(x => x.id === first.dataset.thread);
+            if (!t) { log('ready: no thread to rewrite'); return; }
+            const w = t.quote.split(/\s+/);
+            t.msgs.push({ author: 'claude', ts: now(),
+              text: 'Done — this passage now reads: "'
+                + w.slice(0, Math.max(1, w.length - 3)).join(' ') + ' had gone quiet long before the whistle."' });
+            t.addressed = true; t.addressed_by = 'claude';
+            d.setPage(RECORD);
+          }, 2600);
+        }
+      }, 400);
+    }
+    // ?reviewpage=1&pageown=1 — the pose AFTER the reader hands the margin
+    // back: the page's own 💬 returns, Discuss stands down, and the note says
+    // so in the louder of its two states. The choice is per-page storage set
+    // by the control itself, so the only route to this pose from out here is
+    // the control (as with the picker and the confirm).
+    if (REVIEWPAGE && Q.get('pageown') === '1') {
+      setTimeout(() => {
+        const b = d.shadow.querySelector('[data-act="page-comments"]');
+        if (b) b.click(); else log('reviewpage: no margin note');
       }, 300);
     }
     // ?tasks=1&folded=1 — the tasks card folded to its one line: the state a

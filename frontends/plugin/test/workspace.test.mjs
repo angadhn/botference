@@ -1363,10 +1363,41 @@ await test('a RESOLVED thread is not sent — that argument is over', async () =
   assert.ok(!/settled/.test(d.text));
 });
 
+// A thread a bot has already replied into is sitting under "Ready for review"
+// waiting on the READER. Sending it back would ask for work that has already
+// been reported — and a second send after a round is precisely the case this
+// state exists for.
+await test('a thread already ready for review is not sent either', async () => {
+  const d = ws.reviewDigest(revPage([
+    revThread('open one', [{ author: 'angadh', text: 'still bothers me' }]),
+    revThread('answered one', [
+      { author: 'angadh', text: 'the units are wrong' },
+      { author: 'claude', text: 'done — fixed in the caption' },
+    ], { addressed: true, addressed_by: 'claude' }),
+  ]));
+  assert.equal(d.total, 1, 'the count the button shows is the count that is sent');
+  assert.ok(/still bothers me/.test(d.text));
+  assert.ok(!/fixed in the caption/.test(d.text), 'the bots are not asked to redo it');
+});
+
 await test('a page with nothing open composes NO digest at all', async () => {
   assert.equal(ws.reviewDigest(revPage([])), null);
   assert.equal(ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'b' }], { resolved: true })])), null);
   assert.equal(ws.reviewDigest(revPage([revThread('q', [])])), null, 'an empty thread is not a comment');
+  assert.equal(ws.reviewDigest(revPage([revThread('q', [{ author: 'a', text: 'b' }], { addressed: true })])), null,
+    'a page whose every thread is ready for review has nothing left to send');
+});
+
+// A change that REWRITES a quoted passage orphans its highlight: the thread
+// holds the old wording, the page no longer contains it, and nothing says what
+// replaced it. The one instruction that fixes it costs the bots a line.
+await test('the digest asks for the new wording whenever a change rewrites a passage', async () => {
+  const d = ws.reviewDigest(revPage([
+    revThread('the truss, not the hull', [{ author: 'angadh', text: 'this reads badly' }]),
+  ]));
+  assert.ok(/REWRITES one of the quoted passages/.test(d.text), 'the case is named');
+  assert.ok(/quote the new wording back verbatim/.test(d.text), 'and what to do about it');
+  assert.ok(/now reads/.test(d.text), 'in the phrasing the drawer draws a diff from');
 });
 
 await test('paged documents go in page order; unpaged keep record order', async () => {
@@ -1484,7 +1515,16 @@ console.log('\ncompanion — POST /send-review');
     await POST(base, '/thread', { url: a.url, quote: 'the truss, not the hull', msg: { text: 'this mass looks wrong' } });
     // a thread the reader tagged at one bot weeks ago: it must not be allowed
     // to address a review of the whole draft
-    await POST(base, '/thread', { url: a.url, quote: 'the radiator area', msg: { text: '@codex cite a source for this' } });
+    const tagged = (await POST(base, '/thread', { url: a.url, quote: 'the radiator area', msg: { text: '@codex cite a source for this' } })).json.thread;
+    // …and codex answers it, which marks that thread READY FOR REVIEW and takes
+    // it out of the digest. The reader writing once more makes it their open
+    // question again — which is what puts it back in.
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      const t = (page.threads || []).find(x => x.id === tagged.id);
+      return t && t.addressed;
+    }, 'codex answering the tagged thread');
+    await POST(base, '/reply', { url: a.url, thread_id: tagged.id, text: 'still need that source.' });
     await sleep(200);
     fs.writeFileSync(logFile, '');
     const r = await POST(base, '/send-review', { url: a.url });

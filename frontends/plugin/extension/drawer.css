@@ -24,6 +24,11 @@
      #3ecfa0), the reader's speech colour — a handled annotation and a person
      talking must not read as one thing. */
   --done: rgba(141, 199, 146, 0.42); --done-line: rgba(96, 158, 108, 0.85);
+  /* the middle state, between --hl (open, yellow) and --done (filed, sage):
+     a thread a bot has answered and the reader has not yet filed. Amber, on
+     the same arc, so the three read as one progression rather than three
+     unrelated colours. */
+  --ready: rgba(246, 173, 85, 0.42); --ready-line: rgba(214, 138, 40, 0.85);
   --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -68,6 +73,7 @@
     --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
     --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
     --done: rgba(120, 180, 130, 0.30); --done-line: rgba(126, 196, 134, 0.75);
+    --ready: rgba(214, 148, 66, 0.30); --ready-line: rgba(233, 168, 84, 0.75);
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
     --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
@@ -81,6 +87,7 @@
   --line: rgba(217, 119, 87, 0.18); --accent: #d97757; --accent-hover: #e8896d;
   --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
   --done: rgba(120, 180, 130, 0.30); --done-line: rgba(126, 196, 134, 0.75);
+  --ready: rgba(214, 148, 66, 0.30); --ready-line: rgba(233, 168, 84, 0.75);
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
   --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
@@ -432,6 +439,32 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .tab[disabled]:hover { color: var(--muted) }
 .nohl { color: var(--muted); font: 12px/1.55 var(--sans); padding: 2px 2px 12px }
 
+/* a page that carries its OWN margin commenting (a review build, a
+   *.review.html). Exactly one margin is live there, and this line says which —
+   quietly, because nothing has gone wrong either way. The other choice sits in
+   the same block as the sentence that explains the current one.
+
+   DEFAULT (Discuss has the margin, the page's own 💬 is put away): dashed and
+   dimmed. It is the ordinary state for anyone who installed the plugin, and a
+   reader who never wonders should not be made to read a box about it. */
+.standdown {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 8px 10px; border-radius: 8px;
+  background: transparent; border: 1px dashed var(--card-line); opacity: .85;
+  color: var(--muted); font: 12px/1.5 var(--sans);
+}
+.standdown .sdtext { flex: 1 1 150px; min-width: 0 }
+.standdown .sdbtn {
+  flex: 0 0 auto; font: 11px/1 var(--sans); padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--card-line); background: transparent; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+}
+.standdown .sdbtn:hover { border-color: var(--accent); color: var(--accent) }
+/* HANDED BACK (the page's own commenting has the margin): a solid card. This
+   is the deliberate, non-default arrangement, and it is the one worth a second
+   look — comments written over there do not reach the bots. */
+.standdown.pageown { background: var(--card); border: 1px solid var(--card-line); opacity: 1 }
+
 /* the tab bar is display:flex, which outranks the UA's [hidden] rule — the
    pages view hides it outright, so restore it explicitly */
 .tabs[hidden] { display: none }
@@ -734,6 +767,14 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .badge.bot-badge { color: var(--author, var(--muted)); background: color-mix(in srgb, var(--author, var(--muted)) 12%, transparent) }
 .badge.orphan-badge { color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent) }
+/* "ready for review": a bot has replied here since the reader last wrote, and
+   the thread is waiting on THEM. Amber, matching the passage's own tint on the
+   page, so the badge and the highlight are visibly the same fact. It is a
+   status, not an alarm — the same size and weight as every other badge. */
+.badge.ready-badge {
+  color: var(--ready-line); background: color-mix(in srgb, var(--ready) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ready-line) 35%, transparent);
+}
 
 .thread { border-top: 1px dotted var(--card-line); padding-top: 6px; margin-top: 2px }
 .card.chatpane .thread { border-top: 0; padding-top: 0 }
@@ -744,11 +785,78 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    not shout: the row it lives on is one of forty the reader is scanning. */
 .rebtn.thr-res:hover { color: var(--done-line) }
 .rebtn.thr-reopen:hover { color: var(--accent) }
+.rebtn.thr-notdone:hover { color: var(--ready-line) }
+.rebtn.thr-notdone.busy { opacity: .85; color: var(--muted); cursor: default }
 .rebtn.thr-res.busy { opacity: .85; color: var(--muted); cursor: default;
   display: inline-flex; align-items: center; justify-content: center;
   animation: bfp-spin 1s linear infinite }
 @keyframes bfp-spin { to { transform: rotate(360deg) } }
 @media (prefers-reduced-motion: reduce) { .rebtn.thr-res.busy { animation: none } }
+
+/* ── before → after, where a change rewrote the passage ─────────────────── */
+/* When a bot's change rewrites the quoted passage the highlight orphans, and
+   the reader loses the link between the comment and what came of it. The bot
+   is asked to quote the new wording back; this draws the difference, in the
+   same suggested-edit idiom the review engine uses — struck through where
+   words left, the accepted tint where they arrived. Sits directly under the
+   quote it is about, above the conversation. */
+.wasnow {
+  margin: 6px 0 2px; padding: 7px 9px; border-radius: 7px;
+  background: var(--rail); border: 1px solid var(--card-line);
+  font: 12px/1.55 var(--serif); color: var(--fg);
+}
+.wasnow .wnhead {
+  display: block; margin-bottom: 4px;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.wasnow .wndiff { overflow-wrap: anywhere }
+/* a little air around each change, so a del and the ins that replaced it
+   read as two things and not one long word */
+.wasnow del, .wasnow ins { border-radius: 3px; padding: 0 2px }
+.wasnow del {
+  text-decoration: line-through; color: var(--muted);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+.wasnow ins {
+  text-decoration: none; color: var(--fg);
+  background: color-mix(in srgb, var(--done) 55%, transparent);
+}
+/* the fallback: two sentences with nothing recognisably shared. A diff of
+   those is confetti, so they are simply stacked and labelled — which says the
+   same thing and can never mislead. */
+.wasnow .wnrow { display: flex; gap: 8px; align-items: baseline }
+.wasnow .wnrow + .wnrow { margin-top: 3px }
+.wasnow .wnlab {
+  flex: 0 0 auto; width: 30px; font: 12px/1.4 var(--sans); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.wasnow .wnval { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere }
+.wasnow .wnrow:first-child .wnval { color: var(--muted); text-decoration: line-through }
+
+/* ── ready for review ───────────────────────────────────────────────────── */
+/* BETWEEN the open list and the archive, because that is where these threads
+   are in their life: past the bots, not yet past the reader. Same shape as the
+   archive's header so the two read as one pair of sections rather than two
+   inventions — but open by default, and its cards are the ORDINARY cards,
+   because a thread here is still a live conversation that takes replies. */
+.ready-sec { margin: 16px 0 4px; border-top: 1px solid var(--card-line); padding-top: 10px }
+.ready-head {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: none; border: 0; padding: 5px 2px; min-height: 28px;
+  font: 12px/1.4 var(--sans); color: var(--muted); text-align: left;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.ready-head:hover { color: var(--fg); border-color: transparent }
+.ready-head .rcaret { font-size: 10px; width: 10px; flex: none }
+.ready-head .rcount {
+  font-size: 12px; letter-spacing: 0; padding: 1px 7px; border-radius: 999px;
+  background: var(--ready); color: var(--fg);
+}
+.ready-list { margin-top: 8px }
+/* The card itself keeps its full weight — it is not filed, and the reader is
+   about to read it. Only the rail says where it is. */
+.card.ready { border-left-color: var(--ready-line) }
 
 /* ── the resolved archive ───────────────────────────────────────────────── */
 /* One collapsed section at the FOOT of the comments list — not a tab, not a

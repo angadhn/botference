@@ -144,17 +144,31 @@
   const HL_BG_FOCUS = 'rgba(250, 190, 60, .6)';
   const HL_BG_DONE = 'rgba(141, 199, 146, .42)';
   const HL_BG_DONE_FOCUS = 'rgba(108, 184, 118, .58)';
+  // …and the middle state: a thread a bot has replied into and the reader has
+  // not yet filed ("ready for review"). Amber, and deliberately BETWEEN the
+  // other two on the same hue arc — yellow says "nobody has been here", amber
+  // says "somebody has, your turn", sage says "done". Read down a page, the
+  // three tints are a progress bar the reader never has to open the drawer to
+  // see.
+  const HL_BG_READY = 'rgba(246, 173, 85, .45)';
+  const HL_BG_READY_FOCUS = 'rgba(237, 145, 40, .6)';
   // The state lives on the mark itself, as classes, rather than in a table
   // beside it: every restyle (focus, resolve, reopen) can then read the mark's
   // current state off the mark, and a repaint from the record cannot disagree
   // with what is on screen.
   const DONE_CLASS = 'bfp-done';
+  const READY_CLASS = 'bfp-ready';
   const FOCUS_CLASS = 'bfp-focused';
 
   function styleMark(mark, focused) {
     const st = mark.style;
-    const done = mark.classList && mark.classList.contains(DONE_CLASS);
+    const cl = mark.classList;
+    // resolved outranks ready outranks open — a filed thread is filed whatever
+    // was claimed about it on the way there
+    const done = cl && cl.contains(DONE_CLASS);
+    const ready = !done && cl && cl.contains(READY_CLASS);
     const bg = done ? (focused ? HL_BG_DONE_FOCUS : HL_BG_DONE)
+      : ready ? (focused ? HL_BG_READY_FOCUS : HL_BG_READY)
       : (focused ? HL_BG_FOCUS : HL_BG);
     st.setProperty('background-color', bg, 'important');
     st.setProperty('color', 'inherit', 'important');
@@ -295,7 +309,13 @@
   // Splitting a text node never changes the page's concatenated text, so
   // offsets computed from an earlier index stay valid — but `index` itself is
   // stale afterwards and callers must rebuild it before painting the next one.
-  function paintOffsets(index, start, end, id, resolved) {
+  // `state` is `true`/"done" for a resolved thread, "ready" for one a bot has
+  // answered and the reader has not yet filed, anything falsy for an open one.
+  // (The boolean spelling is the original one and is still what most callers
+  // pass, so it keeps working unchanged.)
+  function paintOffsets(index, start, end, id, state) {
+    const stateClass = state === true || state === 'done' ? ' ' + DONE_CLASS
+      : state === 'ready' ? ' ' + READY_CLASS : '';
     const parts = textNodesIn(index, start, end);
     const marks = [];
     for (const p of parts) {
@@ -305,7 +325,7 @@
       if (p.s > 0) n = n.splitText(p.s);
       if (!n.data.trim()) continue; // don't leave empty marks on inter-node whitespace
       const mark = (n.ownerDocument || document).createElement('mark');
-      mark.className = resolved ? 'bfp-hl ' + DONE_CLASS : 'bfp-hl';
+      mark.className = 'bfp-hl' + stateClass;
       mark.setAttribute('data-bfp', String(id));
       styleMark(mark, false);
       n.parentNode.insertBefore(mark, n);
@@ -359,6 +379,10 @@
     const marks = marksFor(id);
     for (const mark of marks) {
       mark.classList.toggle(DONE_CLASS, !!on);
+      // filing a thread spends its "ready" — and the companion clears
+      // `addressed` in the same write, so leaving the class on would mean a
+      // reopen flashed amber for a passage nobody had claimed since
+      if (on) mark.classList.remove(READY_CLASS);
       styleMark(mark, mark.classList.contains(FOCUS_CLASS));
     }
     return marks.length;
@@ -366,6 +390,22 @@
   const isMarkResolved = id => {
     const m = marksFor(id)[0];
     return !!(m && m.classList.contains(DONE_CLASS));
+  };
+
+  // Yellow ⇄ amber, the same way and for the same reason: a bot's reply
+  // landing in a thread turns its passage amber where the reader is looking,
+  // without disturbing the anchor or the focus it already had.
+  function markAddressed(id, on) {
+    const marks = marksFor(id);
+    for (const mark of marks) {
+      mark.classList.toggle(READY_CLASS, !!on);
+      styleMark(mark, mark.classList.contains(FOCUS_CLASS));
+    }
+    return marks.length;
+  }
+  const isMarkAddressed = id => {
+    const m = marksFor(id)[0];
+    return !!(m && m.classList.contains(READY_CLASS) && !m.classList.contains(DONE_CLASS));
   };
 
   function scrollTo(id) {
@@ -386,8 +426,10 @@
     // dom
     buildTextIndex, offsetsFromRange, offsetOf, rangeFromOffsets, textNodesIn,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
-    markResolved, isMarkResolved,
-    HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS, DONE_CLASS, FOCUS_CLASS,
+    markResolved, isMarkResolved, markAddressed, isMarkAddressed,
+    HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
+    HL_BG_READY, HL_BG_READY_FOCUS,
+    DONE_CLASS, READY_CLASS, FOCUS_CLASS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAnchor = api;
