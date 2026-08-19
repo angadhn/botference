@@ -1152,14 +1152,15 @@ if you're already looking at the council, nothing pops up. Interrupting a
 turn with Esc also suppresses the ping, since you're clearly at the
 keyboard.
 
-### Attaching images, PDFs and spreadsheets
+### Attaching images, PDFs, spreadsheets and Word files
 
 Three ways to get files to the bots (all support several at once):
 
 - **Drag files** from Finder into the terminal — the paths are parsed
   (including escaped spaces in screenshot names, quotes, and `file://`
-  URLs) and become `[image N]` attachments. PDFs and spreadsheets
-  (`.xlsx`/`.xls`/`.csv`) work the same way and attach as `[file N]`.
+  URLs) and become `[image N]` attachments. PDFs, spreadsheets
+  (`.xlsx`/`.xls`/`.csv`) and Word documents (`.docx`/`.doc`) work the
+  same way and attach as `[file N]`.
 - **Finder Cmd+C → Cmd+V** — copied files paste as paths and attach the
   same way.
 - **Ctrl+V** — attaches a *raw* image from the clipboard (a screenshot

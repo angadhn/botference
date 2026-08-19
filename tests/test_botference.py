@@ -703,6 +703,27 @@ class TestAttachmentStaging:
         assert "[Attached spreadsheet:" in user_entries[-1]
         assert "pandas" in user_entries[-1]
 
+    async def test_word_attachment_gets_textutil_guidance(
+        self, tmp_path, monkeypatch
+    ):
+        import botference as bf
+        monkeypatch.setattr(bf, "_STAGING_DIR", tmp_path / "staging")
+        doc = tmp_path / "ITT response draft.docx"
+        doc.write_bytes(b"PK\x03\x04 fake docx")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(
+            "@claude review this",
+            ui,
+            attachments=[{"id": 1, "path": str(doc), "type": "file"}],
+        )
+        user_entries = [
+            e.text for e in c.transcript.entries if e.speaker == "user"
+        ]
+        assert user_entries
+        assert "[Attached Word document:" in user_entries[-1]
+        assert "textutil" in user_entries[-1]
+        assert "edited version" in user_entries[-1]
+
     async def test_unknown_attachment_types_are_still_skipped(
         self, tmp_path, monkeypatch
     ):

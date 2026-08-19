@@ -537,6 +537,8 @@ const MIME = {
   '.webp': 'image/webp', '.heic': 'image/heic', '.pdf': 'application/pdf',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   '.xls': 'application/vnd.ms-excel',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc': 'application/msword',
   '.pdf': 'application/pdf', '.md': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8', '.json': 'application/json', '.csv': 'text/csv',
 };
@@ -563,11 +565,17 @@ function readBody(req, res, cap, fn) {
 // extension from what the file actually is.
 function sniffImage(buf) {
   if (buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-') return 'pdf';
-  // xlsx is a zip whose entries live under xl/ (docx says word/ — refused);
-  // legacy xls is an OLE2 compound document
-  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04
-    && buf.includes('xl/')) return 'xlsx';
-  if (buf.length >= 8 && buf.readUInt32BE(0) === 0xd0cf11e0 && buf.readUInt32BE(4) === 0xa1b11ae1) return 'xls';
+  // xlsx/docx are zips telling their kind by their entry paths (xl/ vs
+  // word/); a legacy Office file is an OLE2 compound document whose stream
+  // directory names the app — "WordDocument" (UTF-16LE) marks a .doc, and
+  // anything else OLE2 keeps the old answer, xls.
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) {
+    if (buf.includes('xl/')) return 'xlsx';
+    if (buf.includes('word/')) return 'docx';
+  }
+  if (buf.length >= 8 && buf.readUInt32BE(0) === 0xd0cf11e0 && buf.readUInt32BE(4) === 0xa1b11ae1) {
+    return buf.includes(Buffer.from('WordDocument', 'utf16le')) ? 'doc' : 'xls';
+  }
   if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
   if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
   if (buf.length >= 6 && (buf.subarray(0, 6).toString('latin1') === 'GIF87a' || buf.subarray(0, 6).toString('latin1') === 'GIF89a')) return 'gif';
@@ -593,7 +601,7 @@ function uploadEndpoint(req, res) {
     const buf = Buffer.concat(chunks);
     const ext = sniffImage(buf);
     if (!ext) {
-      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image, PDF or spreadsheet (png/jpeg/gif/webp/heic · pdf · xlsx/xls)' }));
+      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image, PDF, spreadsheet or Word file (png/jpeg/gif/webp/heic · pdf · xlsx/xls · docx/doc)' }));
       return;
     }
     const month = new Date().toISOString().slice(0, 7); // yyyy-mm
@@ -609,7 +617,7 @@ function uploadEndpoint(req, res) {
     }
     res.writeHead(200, JSON_HEAD).end(JSON.stringify({
       ok: true,
-      attachment: { id, path: abs, type: /^(pdf|xlsx?)$/.test(ext) ? 'file' : 'image', url: uploadUrl(abs) },
+      attachment: { id, path: abs, type: /^(pdf|xlsx?|docx?)$/.test(ext) ? 'file' : 'image', url: uploadUrl(abs) },
     }));
   });
 }
@@ -625,7 +633,7 @@ function cleanAttachments(raw) {
     const p = path.resolve(String((a && a.path) || ''));
     const rel = path.relative(UPLOADS, p);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(p)) return null;
-    const type = /\.(pdf|xlsx?)$/i.test(p) ? 'file' : 'image';
+    const type = /\.(pdf|xlsx?|docx?)$/i.test(p) ? 'file' : 'image';
     out.push({ id: String((a && a.id) || path.basename(p)), path: p, type });
   }
   return out;

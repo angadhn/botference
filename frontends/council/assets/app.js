@@ -1281,7 +1281,7 @@
 
   const attThumbs = atts => (atts && atts.length)
     ? `<div class="att-row">${atts.map(a => {
-      const m = /\.(pdf|xlsx?)(\?|$)/i.exec(a.url || '');
+      const m = /\.(pdf|xlsx?|docx?)(\?|$)/i.exec(a.url || '');
       return m
         ? `<a class="att-doc-link" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(m[1].toUpperCase())} · ${esc((a.url || '').split('/').pop())}</a>`
         : `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`;
@@ -1994,8 +1994,10 @@
   const IMG_LIMIT = 4, IMG_MAX_BYTES = 10 * 1024 * 1024;
   const DOC_MIMES = ['application/pdf',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.ms-excel'];
-  const DOC_EXT = /\.(pdf|xlsx?)$/i;
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/msword'];
+  const DOC_EXT = /\.(pdf|xlsx?|docx?)$/i;
   const isDocFile = f => DOC_MIMES.includes(f.type) || DOC_EXT.test(f.name || '');
   const docLabel = name => ((/\.(\w+)$/.exec(name || '') || [])[1] || 'file').toUpperCase();
   function renderAtts() {

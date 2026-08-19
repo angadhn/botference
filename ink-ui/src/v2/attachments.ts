@@ -6,8 +6,9 @@ import path from "node:path";
 export const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
 // Non-image files that ride the same paste→stage pipeline. The bots read
 // the staged file with their own tools, so this list is whatever they can
-// usefully open — PDFs and spreadsheets for now.
-export const FILE_EXTS = /\.(pdf|xlsx?|csv)$/i;
+// usefully open — PDFs, spreadsheets, and Word documents (macOS textutil
+// reads and writes .doc/.docx, so the bots always have a way in).
+export const FILE_EXTS = /\.(pdf|xlsx?|csv|docx?)$/i;
 const isAttachable = (p: string) => IMAGE_EXTS.test(p) || FILE_EXTS.test(p);
 
 export interface PasteToken {

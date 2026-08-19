@@ -2611,8 +2611,8 @@ class Botference:
             "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
             "",
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
-            "Images, PDFs & spreadsheets: drag files in (or Finder Cmd+C → Cmd+V) to attach by",
-            "path — several at once. Ctrl+V attaches a raw copied image (screenshot, Copy Image).",
+            "Images, PDFs, spreadsheets & Word files: drag them in (or Finder Cmd+C → Cmd+V) to",
+            "attach by path — several at once. Ctrl+V attaches a raw copied image (screenshot).",
             "",
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows estimated occupancy (exact after tool-free turns).",
@@ -4158,6 +4158,12 @@ class Botference:
                 if low.endswith((".xlsx", ".xls", ".csv")):
                     return (f"[Attached spreadsheet: {p} — read it with your "
                             "tools (python/pandas or openpyxl work well)]")
+                if low.endswith((".docx", ".doc")):
+                    return (f"[Attached Word document: {p} — extract its text "
+                            f"with: textutil -convert txt -stdout '{p}' . To "
+                            "hand back an edited version, write a new file "
+                            "into the workspace (textutil converts txt/html "
+                            "to docx) and tell the user where it is]")
                 return f"[Attached image: {p} — view it with your file-reading tool]"
             refs = "\n".join(_ref(p) for p in staged)
             body = f"{body}\n\n{refs}"

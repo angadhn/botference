@@ -118,13 +118,14 @@ describe("tokenizePaste", () => {
     ]);
   });
 
-  it("spreadsheets attach as file tokens", () => {
-    const tokens = tokenizePaste("/dl/budget.xlsx /dl/legacy.xls /dl/data.csv", exists, HOME);
-    assert.deepEqual(tokens, [
-      { type: "file", value: "/dl/budget.xlsx" },
-      { type: "file", value: "/dl/legacy.xls" },
-      { type: "file", value: "/dl/data.csv" },
-    ]);
+  it("spreadsheets and Word documents attach as file tokens", () => {
+    const tokens = tokenizePaste(
+      "/dl/budget.xlsx /dl/legacy.xls /dl/data.csv /dl/draft.docx /dl/old.doc",
+      exists, HOME,
+    );
+    assert.deepEqual(tokens.map((t) => t.type), ["file", "file", "file", "file", "file"]);
+    assert.equal(tokens[3].value, "/dl/draft.docx");
+    assert.equal(tokens[4].value, "/dl/old.doc");
   });
 
   it("nonexistent PDFs stay visible as text too", () => {

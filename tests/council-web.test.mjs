@@ -753,6 +753,34 @@ test('xlsx upload roundtrip: sniffed as a zip with xl/ entries, typed "file", se
   assert.equal(att[0].type, 'file');
 });
 
+test('Word uploads: a word/ zip is a docx, an OLE2 with a WordDocument stream is a doc (not an xls)', async t => {
+  const s = await startServer();
+  try {
+    const DOCX = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from('word/document.xml council-docx-upload-test'),
+    ]);
+    const up = await (await postRaw(s.base, '/upload', DOCX)).json();
+    assert.equal(up.ok, true);
+    assert.match(up.attachment.url, /\.docx$/);
+    assert.equal(up.attachment.type, 'file');
+    const got = await fetch(s.base + up.attachment.url);
+    assert.equal(got.headers.get('content-type'),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+
+    // legacy .doc: OLE2 header + the UTF-16LE "WordDocument" stream name
+    const DOC = Buffer.concat([
+      Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+      Buffer.alloc(64),
+      Buffer.from('WordDocument', 'utf16le'),
+    ]);
+    const up2 = await (await postRaw(s.base, '/upload', DOC)).json();
+    assert.equal(up2.ok, true);
+    assert.match(up2.attachment.url, /\.doc$/);
+    assert.equal(up2.attachment.type, 'file');
+  } finally { s.stop(); }
+});
+
 test('upload rejects: oversize, non-image bytes, forged attachment paths, too many attachments', async t => {
   const s = await startServer();
   t.after(s.stop);
@@ -766,8 +794,8 @@ test('upload rejects: oversize, non-image bytes, forged attachment paths, too ma
   const txt = await postRaw(s.base, '/upload', Buffer.from('#!/bin/sh\necho pwned'), { 'x-filename': 'x.png' });
   assert.equal(txt.status, 400);
   assert.match((await txt.json()).error, /not an image/);
-  // a zip that is NOT an xlsx (no xl/ entries — e.g. a docx) is refused too
-  const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('word/document.xml')]);
+  // a zip that is neither an xlsx nor a docx (no xl/ or word/ entries) is refused
+  const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('some/archive.txt')]);
   assert.equal((await postRaw(s.base, '/upload', zip)).status, 400);
   assert.ok(!fs.existsSync(path.join(s.root, '.botference', 'uploads'))
     || fs.readdirSync(path.join(s.root, '.botference', 'uploads')).length === 0, 'nothing stored');
@@ -1083,7 +1111,7 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   // camera + library + Files (accept includes image/* and PDFs, no
   // capture attr), plus multiple
   const file = doc.getElementById('file');
-  assert.equal(file.getAttribute('accept'), 'image/*,application/pdf,.xlsx,.xls');
+  assert.equal(file.getAttribute('accept'), 'image/*,application/pdf,.xlsx,.xls,.docx,.doc');
   assert.equal(file.hasAttribute('capture'), false, 'no capture attr — keeps the library option on iOS');
   assert.ok(file.hasAttribute('multiple'));
   assert.ok(doc.getElementById('attach'), 'attach button present');
