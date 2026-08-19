@@ -91,6 +91,9 @@ across the extension/server boundary (extension can't import server files).
   "created_at": "ISO", "updated_at": "ISO",
   "session_id": null,                     // botference sid once bots joined
   "session_title": "…",                   // what that chat is currently called
+  // project artifact pages only (see "Project artifact pages"): the mirrored
+  // council chat's length, and the session file's mtime as of the last refill
+  "session_total": 0, "session_sync": 0,
   "threads": [                            // anchored comment threads, page order maintained on insert
     { "id": "t-<ts>-<rand4>",
       "quote": "exact selected text",
@@ -2008,6 +2011,116 @@ address. Harness `?workspace=1&councilweb=1` (plus `&unconfirmed=1`) stages the
 council-web origin: `__BFP_PROJECT` is deliberately *not* preset, so the gate
 does the asking, and the selftest asserts the ask, the canonicalised identity
 and that hello/routing carry the twin's url.
+
+### Amendment (2026-08-19, shipped): the mirror stays level, and plain text is the room's
+
+Two fixes to project artifact pages, both about the same fact: **an artifact's
+Page chat is not a chat about a web page — it is a council chat**, the very
+session the TUI is driving, reached through a second bridge.
+
+#### 1. The mirror is refreshed in both directions
+
+`page_chat` on an artifact page is a MIRROR of a council session: the tail
+`sessionTail` read off disk when the chat was opened, plus what the drawer has
+appended since. The same session is written by the TUI and by the council web
+UI — a different process, the same file — and nothing told this companion. The
+reader chatted in the council, came back to the artifact tab, and saw a
+conversation that stopped hours ago.
+
+**The sync mark.** `page.session_sync` is the session file's mtime in whole
+milliseconds as of the last refill (`workspace.sessionMtime`; `sessionFile`
+gives the path). Disagreement with the file on disk is the whole of the
+freshness test, and the answer is to read the tail again — same
+`sessionTail`, same `restored:true` semantics `/project-chat` uses, plus a
+refreshed `session_total` and `session_title`.
+
+**On read.** `GET /page` runs `freshenMirror` first: an artifact page standing
+in a confirmed root's session whose mark is stale is refilled before the record
+is answered. Every drawer asks `/page` on load and after every `page`
+broadcast, so a tab returning to a stale mirror catches up with no watcher
+involved and nothing running while nobody is looking.
+
+**While open.** A session a connected tab is standing in is watched with
+`fs.watch`, debounced 300 ms; an external change refills and broadcasts
+`{type:'page', url}` — the existing re-render signal — so open drawers catch up
+without a reload. Design notes, each load-bearing:
+
+- **`fs.watch`, not a heartbeat stat.** The SSE heartbeat is 15 s, and "your
+  council reply shows up within fifteen seconds" is not a live mirror; the
+  reader flips tabs in one. The watcher is event-driven and still does zero
+  work at rest.
+- **The DIRECTORY is watched, not the file.** botference saves a session by
+  writing a temp file and renaming it over the old one; a watch on the file
+  follows the replaced inode and goes deaf after the first save. Events are
+  filtered to the one basename (a platform that reports no filename falls back
+  to the whole directory) and answered with one `stat`.
+- **Nothing at rest.** A watcher exists only while at least one client is
+  connected AND at least one recently-read page is standing in a council
+  session (`standing`, 10-minute TTL, 40 entries max). The last tab closing
+  closes them; `persistent:false` means one can never hold the process open.
+- **Never from our own writes.** The bridge this companion spawns *is*
+  botference and saves the same file every turn. `refillMirror` refuses while a
+  turn for that page is in flight or queued (`chat.busyFor` → `pageBusy`), so a
+  turn's saves never rewrite the conversation it is answering into; the save
+  that lands after turn-end is picked up on the next event or read, when it is
+  simply the truth like any other. A refill that is not needed writes nothing
+  and broadcasts nothing, so no loop is possible.
+
+**The honesty rule.** After a refill the session file is the truth: a message
+the drawer authored becomes a `restored:true` entry like every other, offered
+no edit and no delete, because that is now what it is. The single exception is
+a message the file *cannot* have seen — anything this companion stamped after
+the file's own mtime (a note typed with the agents off, a guest comment that
+summoned nobody). Deleting those would lose words no other copy holds, so up to
+20 of them are kept under the refilled tail. `{new:true}` clears the mark with
+the mirror.
+
+Client-side drafts survive the re-render as they survive every other one
+(`render` → `harvestDrafts`); nothing about `D.drafts` had to change.
+
+**Concurrency caveat, documented and not solved.** Two bridges over one session
+is supported **sequentially** — chat in the council, come back, chat in the
+drawer. Both sides typing at the same moment is out of scope: the council owns
+the file, the companion only reads it, and last writer wins.
+
+#### 2. Untagged page chat on an artifact goes to `@all`
+
+Everywhere else in Discuss no mention means a note and no bots — deliberate,
+and kept. But the council's own rule is that plain text is addressed to the
+room, and this IS a council chat. So on a **confirmed project artifact page**,
+in **page chat only**, an untagged message is routed `@all`.
+
+- Decided companion-side, where the artifact is known: `untaggedGoesToAll(page,
+  target, text)` in server.mjs (`target === PAGE_CHAT`, no mention, artifact,
+  confirmed). It rides the turn as `untaggedAll:true`.
+- `chat.routeOf(text, untaggedAll)` supplies the prefix — `routePrefix` first,
+  `@all ` only where the flag says so — and `envelope` and `routedAgents` both
+  go through it, so the spinner spins the agents that are actually working. The
+  reader's own words are untouched: the prefix is the envelope's, never
+  something typed into the message on their behalf.
+- **Unchanged everywhere else**: comment threads on artifact pages included, all
+  page chat on ordinary pages, the library, and an **unconfirmed** root (an
+  untagged sentence must not be the thing that asks the reader to vouch for a
+  folder).
+- The drawer's page-chat hint on an artifact page reads *plain text goes to
+  @all — or tag one bot*; thread composers keep `@claude, @codex or @all to
+  bring in the bots`. The empty-state line changed to match.
+
+**Tests.** `test/workspace.test.mjs` — "the mirror stays level with the
+council" (the mark recorded on open; a council turn reaching the mirror on the
+next read with `session_total` moving and everything restored; an idempotent
+re-read that writes and broadcasts nothing; the watcher's `page` broadcast to a
+connected client; another chat in the same folder ignored; a turn in flight
+deferring the refill and the reader's words surviving it; the deferred refill
+landing after turn-end with post-mtime messages kept; `{new:true}` clearing the
+mark; an ordinary page never growing one) and "untagged page chat on an
+artifact goes to @all" (the `@all ` prefix on the wire with the message body
+unchanged, both bots answering, strict routing still strict when tagged, an
+untagged thread comment and reply queueing nothing, an untagged ordinary page
+queueing nothing, an unconfirmed root queueing nothing). Harness
+`?workspace=1&selftest=1` asserts both hint lines and drives a scripted `page`
+broadcast carrying a council turn, checking the new tail renders **and** a
+half-typed draft survives it.
 
 ## Out of scope for v1 (do not build)
 

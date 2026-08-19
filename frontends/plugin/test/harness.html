@@ -1385,7 +1385,12 @@ function companion(method, path, body) {
     list.push(msg);
     reopenOnWrite(rec, body.thread_id);
     rec.updated_at = now();
-    const mention = MENTION.test(body.text);
+    // Page chat on a confirmed project artifact IS a council chat, where plain
+    // text goes to the room (server.mjs untaggedGoesToAll). Everywhere else —
+    // every comment thread, every ordinary page — no mention still means no
+    // bots.
+    const mention = MENTION.test(body.text)
+      || (WORKSPACE && WS_PROJECT.confirmed && body.thread_id === '__page__');
     // saved, but this sender does not get to summon the bots
     if (mention && guestRefuse) {
       return { ok: true, status: 200, data: { ok: true, msg, queued: false, reason: GUEST_REASON } };
@@ -5451,6 +5456,23 @@ async function selftestWorkspace() {
     !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.tasksrc')) &&
     /Count the panels/.test(S.querySelector('.pane[data-pane="chat"] .thread').textContent));
 
+  // ---- plain text on an artifact page is the ROOM's ----------------------
+  // Page chat here IS a council chat, and the council's rule is that an
+  // untagged message goes to everyone (server.mjs untaggedGoesToAll). The
+  // composer has to SAY so, or the reader types a sentence expecting a note
+  // and gets two bots. Comment threads on the same page keep the ordinary
+  // Discuss rule, and the ordinary line.
+  check('the page-chat hint says plain text goes to the room',
+    (S.querySelector('.pane[data-pane="chat"] .composer .hint') || {}).textContent
+      === 'plain text goes to @all \u2014 or tag one bot');
+  d.open('comments');
+  await sleep(60);
+  const thints = [...S.querySelectorAll('.pane[data-pane="comments"] .composer .hint')];
+  check('\u2026while a comment thread on the same page keeps the ordinary one',
+    thints.length > 0 && thints.every(h => h.textContent === '@claude, @codex or @all to bring in the bots'));
+  d.open('chat');
+  await sleep(60);
+
   // ---- typing into the resumed chat --------------------------------------
   const ta = S.querySelector('.pane[data-pane="chat"] .composer textarea');
   ta.value = '@claude and at 300 K?';
@@ -5467,6 +5489,31 @@ async function selftestWorkspace() {
   await until(() => (((window.__bfp.page || {}).page_chat) || []).length >= 2, 9000);
   await until(() => !d.running[PAGE_T], 9000);
   await sleep(300);
+
+  // ---- the council wrote, and the drawer catches up ----------------------
+  // The same session is driven from the TUI and the council web UI by another
+  // bridge. The companion notices (server.mjs refillMirror) and broadcasts the
+  // ordinary re-render signal, {type:'page'} — which must bring the new tail
+  // in WITHOUT eating what is half typed in the composer.
+  const ta2 = S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  ta2.value = 'half a thought about the tru';
+  ta2.dispatchEvent(new Event('input', { bubbles: true }));
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'reader', text: 'asked in the TUI, not here', ts: wsCurrent + '#90', restored: true },
+    { author: 'claude', text: 'and answered over there too', ts: wsCurrent + '#91', restored: true },
+  ]);
+  RECORD.session_total = RECORD.page_chat.length;
+  toContent({ t: 'ws', ev: { type: 'page', url: window.__bfp.identHref } });
+  await until(() => /answered over there too/.test(
+    S.querySelector('.pane[data-pane="chat"]').textContent), 6000);
+  check('a turn made in the council arrives as a page event',
+    /answered over there too/.test(S.querySelector('.pane[data-pane="chat"]').textContent));
+  check('\u2026and the half-typed message survives the re-render',
+    (S.querySelector('.pane[data-pane="chat"] .composer textarea') || {}).value
+      === 'half a thought about the tru');
+  const ta3 = S.querySelector('.pane[data-pane="chat"] .composer textarea');
+  ta3.value = '';
+  ta3.dispatchEvent(new Event('input', { bubbles: true }));
 
   // ---- starting a fresh one ----------------------------------------------
   S.querySelector('[data-act="arch-new"]').click();

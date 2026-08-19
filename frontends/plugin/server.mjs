@@ -201,6 +201,12 @@ function chatFor(url) {
   return workspaceChatFor(art.root, art.project_id, art.project_dir);
 }
 const allChats = () => (chat ? [chat, ...workspaceChats.values()] : []);
+// Does THIS page have a turn in flight or waiting anywhere? The mirror refill
+// below asks before it rewrites a page chat: a turn owns that conversation
+// until it ends, and refilling underneath one would race the reply about to
+// land in it. Asked across every bridge, because a page's bridge can change
+// (an unconfirmed root routes to none, a confirmed one to its own child).
+const pageBusy = url => allChats().some(c => c.busyFor && c.busyFor(url));
 const anyRunning = () => allChats().some(c => c.state() === 'running');
 const totalQueue = () => allChats().reduce((n, c) => n + c.queueLength(), 0);
 // a setting is process-wide inside a child, so it is imposed on every child
@@ -286,6 +292,163 @@ function reportProjectChanges(url) {
   lastChanges.set(url, payload);
   if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
   broadcast(payload);
+}
+
+// --- the mirror, kept level with the council ------------------------------
+// A project artifact page standing in a council session shows a MIRROR of that
+// session: `page_chat` is the tail `sessionTail` read off disk when the chat
+// was opened, plus whatever the drawer has appended since. The same session is
+// also open in the TUI and in the council's own web UI — a different bridge,
+// the same file — and turns made THERE never touch this companion. Without
+// what follows, the reader chats in the council, comes back to the artifact
+// tab, and sees a conversation that stopped hours ago.
+//
+// The whole of the freshness test is one number: `page.session_sync`, the
+// session file's mtime as of the last refill. Disagreement means the council
+// has written since, and the answer is to read the tail again.
+//
+// ── THE HONESTY RULE ───────────────────────────────────────────────────────
+// After a refill the session file is the truth. A message the drawer authored
+// becomes a `restored:true` entry like every other, offered no edit and no
+// delete — because that is now what it is: a line in somebody else's record.
+// The one exception is a message the file CANNOT have seen yet: anything this
+// companion stamped after the file's own mtime (a note typed while the agents
+// were off, a guest's comment that summoned nobody). Deleting those would be
+// losing words no other copy holds, so they are kept under the refilled tail.
+const MIRROR_KEEP = 20;
+
+function refillMirror(page, art) {
+  if (!page || !page.session_id || !art || !art.confirmed) return false;
+  const mtime = workspace.sessionMtime(art.root, art.project_id, page.session_id);
+  if (!mtime || Number(page.session_sync) === mtime) return false;
+  // a turn owns this conversation until it ends — try again on the next quiet read
+  if (pageBusy(page.url)) return false;
+  const session = workspace.sessionTail(art.root, art.project_id, page.session_id);
+  // a half-written file parses as nothing; saying "no change" is the harmless
+  // direction to fail in, and the next event or read will find it whole
+  if (!session) return false;
+  const unseen = (page.page_chat || [])
+    .filter(m => m && !m.restored && Date.parse(m.ts) > mtime)
+    .slice(-MIRROR_KEEP);
+  page.page_chat = unseen.length ? [...session.msgs, ...unseen] : session.msgs;
+  page.session_total = session.total;
+  page.session_title = session.title;
+  page.session_sync = mtime;
+  store.savePage(page);
+  return true;
+}
+
+// The read path. Every drawer asks GET /page on load and after every `page`
+// broadcast, so this is where a tab returning to a stale mirror catches up —
+// no watcher required and nothing running while nobody is looking.
+function freshenMirror(page) {
+  if (!page || !page.session_id) return page;
+  const art = artifactOf(page.url);
+  if (!art || !art.confirmed) return page;
+  noteStanding(page.url, art, page.session_id);
+  refillMirror(page, art);
+  return page;
+}
+
+// --- watching, but only while somebody is looking --------------------------
+// The read path alone leaves an OPEN drawer stale until something else makes
+// it refetch. So a session a connected tab is standing in is watched.
+//
+// ── WHY fs.watch AND NOT A HEARTBEAT STAT ──────────────────────────────────
+// The SSE heartbeat is 15s, and "your council reply appears within fifteen
+// seconds" is not a live mirror — the reader flips tabs in one. fs.watch is
+// event-driven, costs one handle per sessions DIRECTORY (not per session), and
+// still does zero work at rest. The DIRECTORY is watched rather than the file
+// because botference saves a session by writing a temp file and renaming it
+// over the old one: a watch on the file itself follows the replaced inode and
+// goes deaf after the first save. Events are filtered to the one basename,
+// debounced, and answered with a stat — a spurious event costs one syscall.
+//
+// ── NOTHING RUNS AT REST ───────────────────────────────────────────────────
+// Watchers exist only while (a) at least one client is connected and (b) at
+// least one page a client has recently read is standing in a council session.
+// The last tab closing closes them; `persistent:false` means one can never
+// hold the process open.
+//
+// ── AND NEVER FROM OUR OWN WRITES ──────────────────────────────────────────
+// The bridge this companion spawns is botference, and it saves the same file
+// on every turn. `refillMirror` refuses while a turn for that page is in
+// flight or queued (`pageBusy`), so a turn's own saves never rewrite the chat
+// it is answering into; the save that lands after turn-end is picked up on the
+// next event or read, when it is simply the truth like any other.
+const SESSION_DEBOUNCE_MS = 300;
+// How long a page stays "a tab is standing here" after its record was last
+// read. Every drawer re-reads on load and on every `page` broadcast, so this
+// is generous; a tab idle past it goes stale until its next read, which
+// refills. Bounded so a long session cannot accumulate watchers.
+const STANDING_TTL_MS = 10 * 60 * 1000;
+const STANDING_MAX = 40;
+const standing = new Map();          // page url → {file, at}
+const sessionWatchers = new Map();   // sessions dir → fs.FSWatcher
+let touchTimer = null;
+const touched = new Set();
+
+function noteStanding(url, art, sid) {
+  const file = workspace.sessionFile(art.root, art.project_id, sid);
+  if (!file) return;
+  standing.delete(url);
+  standing.set(url, { file, at: Date.now() });
+  while (standing.size > STANDING_MAX) standing.delete(standing.keys().next().value);
+  syncWatchers();
+}
+
+const anyClients = () => sseClients.size > 0 || wsClients.size > 0;
+
+function wantedDirs() {
+  const dirs = new Set();
+  const now = Date.now();
+  for (const [url, s] of [...standing]) {
+    if (now - s.at > STANDING_TTL_MS) { standing.delete(url); continue; }
+    dirs.add(path.dirname(s.file));
+  }
+  return dirs;
+}
+
+function syncWatchers() {
+  const wanted = anyClients() ? wantedDirs() : new Set();
+  for (const [dir, w] of [...sessionWatchers]) {
+    if (wanted.has(dir)) continue;
+    try { w.close(); } catch { /* already gone */ }
+    sessionWatchers.delete(dir);
+  }
+  for (const dir of wanted) {
+    if (sessionWatchers.has(dir)) continue;
+    let w = null;
+    try {
+      w = fs.watch(dir, { persistent: false }, (_ev, name) => onSessionTouch(dir, name));
+    } catch { continue; }   // an unreadable directory simply is not watched
+    w.on('error', () => { try { w.close(); } catch { } sessionWatchers.delete(dir); });
+    sessionWatchers.set(dir, w);
+  }
+}
+
+function onSessionTouch(dir, name) {
+  // no filename (some platforms) means "something in here" — take the whole
+  // directory as touched and let the mtime comparison decide
+  touched.add(name ? path.join(dir, String(name)) : dir);
+  if (touchTimer) return;
+  touchTimer = setTimeout(() => {
+    touchTimer = null;
+    const hits = new Set(touched);
+    touched.clear();
+    for (const [url, s] of [...standing]) {
+      if (!hits.has(s.file) && !hits.has(path.dirname(s.file))) continue;
+      const page = store.readPage(url);
+      if (!page || !page.session_id) { standing.delete(url); continue; }
+      const art = artifactOf(url);
+      if (!art || !art.confirmed) continue;
+      // `page` is the existing re-render signal: every drawer refetches the
+      // record and draws the new tail, keeping its drafts and its scroll
+      if (refillMirror(page, art)) broadcast({ type: 'page', url: page.url });
+    }
+    syncWatchers();
+  }, SESSION_DEBOUNCE_MS);
+  if (typeof touchTimer.unref === 'function') touchTimer.unref();
 }
 
 function onChatEvent(ev) {
@@ -380,10 +543,30 @@ function guestRefusal(me) {
   return null;
 }
 
+// Page chat on a CONFIRMED project artifact page is not "a chat about a web
+// page" — it is a council chat, the same session the TUI is driving, and the
+// council's rule for plain text is that it goes to the room. So an untagged
+// message here is routed @all, decided in the one place that knows the page is
+// an artifact at all.
+//
+// Deliberately narrow. Comment THREADS keep the Discuss rule everywhere,
+// artifact pages included: a highlight with an untagged note under it is a
+// note to yourself and summons nobody. So does page chat on every ordinary
+// page. And an UNCONFIRMED root is excluded — the reader has not yet said the
+// folder is theirs, and an untagged sentence must not be the thing that first
+// asks them to.
+function untaggedGoesToAll(page, target, text) {
+  if (target !== store.PAGE_CHAT || hasMention(text)) return false;
+  const art = artifactOf(page.url);
+  return !!(art && art.confirmed);
+}
+
 // an @-mention in any message — first comment or tenth reply — is the only
-// thing that summons the bots
+// thing that summons the bots, except on a project artifact's page chat
+// (untaggedGoesToAll)
 function summon(page, target, text, extras = {}, me = { owner: true }) {
-  if (!hasMention(text)) return {};
+  const untaggedAll = untaggedGoesToAll(page, target, text);
+  if (!hasMention(text) && !untaggedAll) return {};
   if (NO_AGENTS) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: AGENTS_OFF_ERROR });
     return { queued: false, reason: AGENTS_OFF_REASON };
@@ -404,6 +587,9 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   const thread = target === store.PAGE_CHAT ? null : store.findThread(page, target);
   const { position, wait } = c.submit({
     url: page.url, target, text, title: page.title,
+    // no tag on an artifact's page chat: the envelope gets the @all prefix the
+    // reader did not have to type (chat.mjs routeOf)
+    ...(untaggedAll ? { untaggedAll: true } : {}),
     // on a shared page the bots are answering a room, not one reader: name
     // whoever is asking, unless it is the owner (whose annotator never did)
     asker: me.owner ? '' : me.handle,
@@ -864,11 +1050,18 @@ export function handler(req, res) {
         page.page_chat = session.msgs;
         // so the drawer can say "the last N of TOTAL messages" over the tail
         page.session_total = session.total;
+        // where the mirror now stands: the session file's mtime. Everything
+        // that reads this page afterwards compares against it and refills when
+        // the council has written since (refillMirror).
+        page.session_sync = workspace.sessionMtime(art.root, art.project_id, session.session_id);
+        noteStanding(page.url, art, session.session_id);
       } else {
         page.session_id = null;
         page.session_title = '';
         page.page_chat = [];
         page.session_total = 0;
+        page.session_sync = 0;
+        standing.delete(page.url);
       }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
@@ -944,7 +1137,9 @@ export function handler(req, res) {
   if (req.method === 'GET' && url === '/page') {
     const u = queryUrl(req.url);
     if (!u) return fail(res, 400, 'url required');
-    const page = store.readPage(u);
+    // a project artifact's mirror of a council chat is brought level with the
+    // session file first, if the council has written since it was last read
+    const page = freshenMirror(store.readPage(u));
     return page
       ? res.writeHead(200, JSON_HEAD).end(JSON.stringify(page))
       : ok(res, { page: null });
@@ -953,7 +1148,10 @@ export function handler(req, res) {
     sseOpen(res);
     res.write(`data: ${JSON.stringify({ type: 'hello' })}\n\n`);
     sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
+    // a connected tab is what buys a session watcher; the last one to leave
+    // closes them (syncWatchers)
+    syncWatchers();
+    req.on('close', () => { sseClients.delete(res); syncWatchers(); });
     return;
   }
   // --- the article itself, for a reader who never visited the page -------
@@ -1449,7 +1647,8 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     onOpen(ws) {
       ws.send(JSON.stringify({ type: 'hello' }));
       wsClients.add(ws);
-      ws.onclose = () => wsClients.delete(ws);
+      syncWatchers();
+      ws.onclose = () => { wsClients.delete(ws); syncWatchers(); };
     },
   });
   // Ctrl-C / launcher stop: run the exit hooks (lock file) and take the

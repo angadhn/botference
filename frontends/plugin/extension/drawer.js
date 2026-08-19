@@ -172,6 +172,13 @@
   }
 
   const HINT = '@claude, @codex or @all to bring in the bots';
+  // …except on a project artifact's page chat, which IS a council chat: the
+  // council's own rule is that plain text goes to the room, and the companion
+  // routes an untagged message there (server.mjs untaggedGoesToAll). The line
+  // has to say so, or the reader types a sentence expecting a note and gets
+  // two bots. Threads on the same page keep the ordinary rule and the ordinary
+  // hint — the difference is real, so it is stated where it applies.
+  const COUNCIL_HINT = 'plain text goes to @all — or tag one bot';
   // ⧉ is the same overlap glyph the council's copy button draws as an SVG.
   // A glyph and not a word: the drawer's message controls are a 24px row in
   // the corner of a 420px column, and "copy" would not fit beside ✎ and ✕.
@@ -1589,13 +1596,13 @@
     // one exception is a brand-new thread, where a second send before the
     // server has minted an id would create a second thread for the same
     // passage — that button waits.
-    function composerHtml(target, label, extra) {
+    function composerHtml(target, label, extra, hint) {
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
       return `<div class="composer${draft.trim() ? ' has-draft' : ''}" data-target="${esc(target)}">
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
-        <div class="crow"><span class="hint">${esc(HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
+        <div class="crow"><span class="hint">${esc(hint || HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
       </div>`;
     }
 
@@ -2198,6 +2205,9 @@
         D.el.chat.innerHTML = offlineHtml() + confirmRootHtml();
         return;
       }
+      // page chat on a confirmed artifact is the project's council chat, where
+      // an untagged message is the room's, not a note
+      const councilChat = !!(D.project && D.project.confirmed);
       const msgs = (D.page && D.page.page_chat) || [];
       // A restored council chat opens on its tail, not its whole history.
       // Say so, in numbers, and hand over a link to the complete chat in the
@@ -2215,12 +2225,12 @@
       }
       const body = restnote + msgsHtml(PAGE_TARGET, msgs) + outboxHtml(PAGE_TARGET) + streamsHtml(PAGE_TARGET);
       const empty = D.project
-        ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — mention a bot to get an answer. It files with the project\u2019s other chats.</div>`
+        ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — plain text goes to both bots, or tag one. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
       D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         ${body ? `<div class="thread">${body}</div>` : empty}
         ${statusHtml(PAGE_TARGET)}
-        ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026')}
+        ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '')}
       </div>`;
     }
 

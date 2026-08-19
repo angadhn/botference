@@ -1045,6 +1045,280 @@ console.log('\ncompanion — Phase 2: writes and the reload');
   events.close();
 }
 
+// ── The mirror stays level with the council ───────────────────────────────
+// A project artifact page standing in a council session shows a MIRROR of it,
+// and the SAME session is driven from the TUI and the council web UI by a
+// different bridge. So the companion has to notice when somebody else has
+// written: on read (every drawer asks GET /page constantly) and, while a tab
+// is connected, from a watcher on the sessions directory.
+console.log('\ncompanion — the mirror stays level with the council');
+
+{
+  const root = council('mirror', {
+    sessions: [
+      { id: 'sess-mirror', project: 'spaceship-engineering', title: 'Radiator sizing',
+        updated: '2026-08-12T09:00:00Z',
+        transcript: [
+          { speaker: 'user', text: 'How big does the radiator have to be?' },
+          { speaker: 'claude', text: 'About 400 m² at 350 K.' },
+        ] },
+      { id: 'sess-other', project: 'spaceship-engineering', title: 'Something else',
+        updated: '2026-08-11T09:00:00Z',
+        transcript: [{ speaker: 'user', text: 'Unrelated.' }] },
+    ],
+  });
+  const a = artifact(root, 'spaceship-engineering');
+  const sessionFile = path.join(root, 'work', 'sessions', 'sess-mirror.json');
+
+  // What the TUI (or the council web UI) does behind this companion's back:
+  // append to the transcript and save. Nothing here goes near the companion.
+  async function councilTurn(...pairs) {
+    await sleep(20);                     // a distinguishable mtime, always
+    const payload = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+    for (const [speaker, text] of pairs) payload.transcript.push({ speaker, text });
+    payload.updated_at = new Date().toISOString();
+    fs.writeFileSync(sessionFile, JSON.stringify(payload));
+  }
+
+  const workspaceRoot = tmp('mirror-companion');
+  const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const { base } = await startServer({
+    root: workspaceRoot,
+    env: {
+      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+      MOCK_BRIDGE_LOG: logFile,
+      // long enough that a turn is demonstrably still IN FLIGHT while the
+      // council writes underneath it
+      MOCK_TURN_DELAY_MS: '1200',
+    },
+  });
+  function listen(b) {
+    const seen = [];
+    const req = http.request(b + '/events', { method: 'GET' }, res => {
+      let buf = '';
+      res.on('data', c => {
+        buf += c;
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+          const m = /^data: (.*)$/m.exec(frame);
+          if (!m) continue;
+          try { seen.push(JSON.parse(m[1])); } catch { }
+        }
+      });
+    });
+    req.end();
+    return { seen, close: () => req.destroy(), of: t => seen.filter(e => e.type === t) };
+  }
+  const readPage = async () => (await GET(base, '/page?url=' + enc(a.url))).json;
+  const texts = p => (p.page_chat || []).map(m => m.text);
+
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: a.url, title: 'Artifact', site: 'spaceship-engineering' });
+  await POST(base, '/project-chat', { url: a.url, sid: 'sess-mirror' });
+
+  await test('opening a chat records where the mirror stands', async () => {
+    const page = await readPage();
+    assert.equal(page.session_id, 'sess-mirror');
+    assert.ok(Number(page.session_sync) > 0, 'the session file\'s mtime is the sync mark');
+    assert.equal(page.session_total, 2);
+  });
+
+  await test('a turn made in the COUNCIL reaches the mirror on the next read', async () => {
+    await councilTurn(['user', 'And at 320 K?'], ['codex', 'Roughly 700 m².']);
+    const page = await readPage();
+    assert.deepEqual(texts(page), [
+      'How big does the radiator have to be?', 'About 400 m² at 350 K.',
+      'And at 320 K?', 'Roughly 700 m².',
+    ]);
+    assert.equal(page.session_total, 4, 'the count the drawer prints moves with it');
+    assert.ok(page.page_chat.every(m => m.restored),
+      'the same restored semantics /project-chat uses — no edit, no delete, no invented time');
+  });
+
+  await test('…and reading again changes nothing and says nothing', async () => {
+    const before = await readPage();
+    const events = listen(base);
+    await sleep(150);
+    const after = await readPage();
+    await sleep(400);
+    assert.equal(after.session_sync, before.session_sync, 'the mark did not move');
+    assert.deepEqual(texts(after), texts(before));
+    assert.equal(events.of('page').length, 0, 'a refill that is not needed broadcasts nothing');
+    events.close();
+  });
+
+  await test('an OPEN drawer is told, without being asked', async () => {
+    const events = listen(base);
+    await waitFor(() => events.of('hello').length > 0, 'the sse hello');
+    // the watcher exists only because a client is connected and a page it read
+    // is standing in this session
+    await readPage();
+    await sleep(120);
+    await councilTurn(['user', 'What drives the panel count?'], ['claude', 'The assembly schedule.']);
+    await waitFor(() => events.of('page').some(e => e.url === a.url), 'the page re-render signal');
+    const page = await readPage();
+    assert.ok(texts(page).includes('The assembly schedule.'), 'and the new tail is there');
+    assert.equal(page.session_total, 6);
+    events.close();
+  });
+
+  await test('another chat in the same folder is not this page\'s news', async () => {
+    const events = listen(base);
+    await waitFor(() => events.of('hello').length > 0, 'the sse hello');
+    await readPage();
+    await sleep(120);
+    const other = path.join(root, 'work', 'sessions', 'sess-other.json');
+    const payload = JSON.parse(fs.readFileSync(other, 'utf8'));
+    payload.transcript.push({ speaker: 'claude', text: 'A conversation nobody is looking at.' });
+    fs.writeFileSync(other, JSON.stringify(payload));
+    await sleep(700);
+    assert.equal(events.of('page').length, 0,
+      'the whole directory is watched, so the filter has to be the file');
+    events.close();
+  });
+
+  await test('a turn IN FLIGHT owns the chat: the refill waits for it', async () => {
+    // the council writes FIRST, so a refill is genuinely due…
+    await councilTurn(['user', 'And the truss?'], ['claude', 'Sized by the radiator.']);
+    // …and then the reader sends from the drawer, which is what defers it
+    const r = await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: '@claude and the mass?' });
+    assert.equal(r.json.queued, true);
+    const mid = await readPage();
+    assert.ok(!texts(mid).includes('Sized by the radiator.'),
+      'nothing rewrote the conversation a turn is answering into');
+    assert.ok(texts(mid).includes('@claude and the mass?'), 'and the reader\'s own words are still there');
+    await waitFor(async () => {
+      const p = await readPage();
+      return (p.page_chat || []).some(m => m.author === 'claude' && /MOCK claude reply/.test(m.text));
+    }, 'the bot reply to land');
+  });
+
+  await test('…and once it is over, the file is the truth again', async () => {
+    const page = await waitFor(async () => {
+      const p = await readPage();
+      return texts(p).includes('Sized by the radiator.') ? p : null;
+    }, 'the deferred refill');
+    // the honesty rule: what the file holds is restored, whoever typed it
+    assert.ok(page.page_chat.filter(m => /Sized by the radiator/.test(m.text)).every(m => m.restored));
+    // …and what the file CANNOT have seen — this companion stamped it after
+    // the file's own mtime — is kept rather than deleted
+    assert.ok(texts(page).includes('@claude and the mass?'),
+      'a message newer than the file survives the refill');
+    assert.ok(texts(page).some(t => /MOCK claude reply/.test(t)));
+    const kept = page.page_chat.filter(m => !m.restored);
+    assert.ok(kept.length >= 2 && kept.every(m => Number(page.session_sync) < Date.parse(m.ts)),
+      'and only the ones the session file cannot hold');
+  });
+
+  await test('a fresh chat clears the mark with the mirror', async () => {
+    await POST(base, '/project-chat', { url: a.url, new: true });
+    const page = await readPage();
+    assert.deepEqual(page.page_chat, []);
+    assert.equal(page.session_sync, 0);
+    assert.equal(page.session_total, 0);
+  });
+
+  await test('an ordinary page has no mirror and is never refilled', async () => {
+    const u = 'https://example.test/an-article';
+    await POST(base, '/page', { url: u, title: 'An article', site: 'example.test' });
+    await POST(base, '/reply', { url: u, thread_id: '__page__', text: 'a note to myself' });
+    const page = (await GET(base, '/page?url=' + enc(u))).json;
+    assert.equal(page.session_sync, undefined, 'nothing about sessions was invented for it');
+    assert.deepEqual(page.page_chat.map(m => m.text), ['a note to myself']);
+  });
+}
+
+// ── Plain text on an artifact's page chat goes to the room ────────────────
+// Everywhere else in Discuss, no mention means a note and no bots. An
+// artifact's Page chat is a COUNCIL chat, and the council's rule is that plain
+// text is addressed to everyone — so on those pages, and only there, an
+// untagged page-chat message is routed @all by the companion.
+console.log('\ncompanion — untagged page chat on an artifact goes to @all');
+
+{
+  const root = council('untagged');
+  const a = artifact(root, 'spaceship-engineering');
+  const unconfirmedRoot = council('untagged-unconfirmed');
+  const ua = artifact(unconfirmedRoot, 'spaceship-engineering');
+  const workspaceRoot = tmp('untagged-companion');
+  const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const { base } = await startServer({
+    root: workspaceRoot,
+    env: {
+      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+      MOCK_BRIDGE_LOG: logFile,
+    },
+  });
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: a.url, title: 'Artifact', site: 'spaceship-engineering' });
+
+  await test('an untagged page-chat message reaches the bridge as @all', async () => {
+    fs.writeFileSync(logFile, '');
+    const r = await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: 'and at 320 K?' });
+    assert.equal(r.json.queued, true, 'the room was summoned without a tag');
+    await waitFor(() => inputs(logFile).some(t => /and at 320 K\?/.test(t)), 'the turn');
+    const turn = inputs(logFile).find(t => /and at 320 K\?/.test(t));
+    assert.ok(turn.startsWith('@all '), `the turn is addressed to the room — got ${JSON.stringify(turn.slice(0, 40))}`);
+    // and the reader's own words are unchanged: the prefix is the envelope's,
+    // never something typed into the message on their behalf
+    assert.ok(/asked about this page:\nand at 320 K\?/.test(turn));
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.equal(page.page_chat[0].text, 'and at 320 K?');
+  });
+
+  await test('…and both bots answer it', async () => {
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      const who = new Set((page.page_chat || []).map(m => m.author));
+      return who.has('claude') && who.has('codex');
+    }, 'a reply from each');
+  });
+
+  await test('a tagged message on the same page is still that bot\'s alone', async () => {
+    fs.writeFileSync(logFile, '');
+    await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: '@codex only you' });
+    await waitFor(() => inputs(logFile).some(t => /only you/.test(t)), 'the turn');
+    const turn = inputs(logFile).find(t => /only you/.test(t));
+    assert.ok(turn.startsWith('@codex '), `still strict routing — got ${JSON.stringify(turn.slice(0, 40))}`);
+  });
+
+  await test('an untagged COMMENT THREAD on the same page still summons nobody', async () => {
+    fs.writeFileSync(logFile, '');
+    const r = await POST(base, '/thread', {
+      url: a.url, quote: 'the truss, not the hull', msg: { text: 'check this later' },
+    });
+    assert.equal(r.status, 200);
+    assert.ok(!r.json.queued, 'a note under a highlight is a note, artifact page or not');
+    await sleep(400);
+    assert.equal(inputs(logFile).length, 0, 'and no turn was sent');
+    // …and a reply into that thread, equally
+    await POST(base, '/reply', { url: a.url, thread_id: r.json.thread.id, text: 'still thinking' });
+    await sleep(400);
+    assert.equal(inputs(logFile).length, 0);
+  });
+
+  await test('an untagged page chat on an ORDINARY page still summons nobody', async () => {
+    fs.writeFileSync(logFile, '');
+    const u = 'https://example.test/some-article';
+    await POST(base, '/page', { url: u, title: 'Some article', site: 'example.test' });
+    const r = await POST(base, '/reply', { url: u, thread_id: '__page__', text: 'a thought for later' });
+    assert.ok(!r.json.queued);
+    await sleep(400);
+    assert.equal(inputs(logFile).length, 0);
+  });
+
+  await test('an untagged message on an UNCONFIRMED root summons nobody either', async () => {
+    fs.writeFileSync(logFile, '');
+    await POST(base, '/page', { url: ua.url, title: 'Artifact', site: 'spaceship-engineering' });
+    const r = await POST(base, '/reply', { url: ua.url, thread_id: '__page__', text: 'is this thing on?' });
+    assert.ok(!r.json.queued, 'an untagged sentence must not be what asks for the folder');
+    assert.equal(r.json.reason, undefined, 'and it is not refused — it is simply a note');
+    await sleep(400);
+    assert.equal(inputs(logFile).length, 0);
+  });
+}
+
 for (const p of spawned) { try { p.kill(); } catch { } }
 await sleep(150);
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }

@@ -68,10 +68,20 @@ export function routePrefix(text) {
   return `@${[...tags][0]} `;
 }
 
-// which agents a turn engages — the same rule routePrefix applies, reused so
+// Page chat on a PROJECT ARTIFACT page is a council chat, and the council's
+// own rule is that plain text goes to the room. So a turn may be marked
+// `untaggedAll`, which supplies the prefix an untagged message would otherwise
+// not have. Nothing else in Discuss carries this: a comment thread with no
+// mention is still a note to yourself, everywhere, including on these pages.
+// (The decision is the companion's — server.mjs, where the artifact is known —
+// and this is only the plumbing that carries it into the envelope.)
+export const routeOf = (text, untaggedAll = false) =>
+  routePrefix(text) || (untaggedAll ? '@all ' : '');
+
+// which agents a turn engages — the same rule routeOf applies, reused so
 // the drawer can spin only the agent(s) actually working
-export function routedAgents(text) {
-  const p = routePrefix(text);
+export function routedAgents(text, untaggedAll = false) {
+  const p = routeOf(text, untaggedAll);
   return p === '@claude ' ? ['claude'] : p === '@codex ' ? ['codex'] : ['claude', 'codex'];
 }
 
@@ -169,17 +179,21 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 // /resume's replayed history is uneven and a bridge restart drops it whole).
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageNumber, summary, project }) {
+  snapshotPath, pageNumber, summary, project, untaggedAll }) {
+  // the route this turn carries: what the reader tagged, or — on a project
+  // artifact's page chat — the room, because that is what plain text means in
+  // a council (routeOf)
+  const route = routeOf(text, untaggedAll);
   // filing a resolved thread: no page context, no verbosity line, no "your
   // reply is posted into the thread" — none of that is true of this turn
   if (summary) {
-    return routePrefix(text) + summaryPrompt({ title, url, quote, history, pageNumber });
+    return route + summaryPrompt({ title, url, quote, history, pageNumber });
   }
   if (library) {
     const prior = history && history.length
       ? `Earlier in this conversation:\n${historyLines(history)}\n\n` : '';
     const who = asker ? String(asker) : 'The user';
-    return routePrefix(text)
+    return route
       + `${libraryPrompt(library)}\n---\n`
       + `${who} asked:\n${prior}${text}\n\nReply in this turn.\n${verbosityLine(verbosity)}`;
   }
@@ -251,7 +265,7 @@ export function envelope({ url, title, target, text, quote, history,
       + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
-  return routePrefix(text) + ctx + body + doc;
+  return route + ctx + body + doc;
 }
 
 // --- .docx comment digest -----------------------------------------------
@@ -497,7 +511,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     current = null; queue.length = 0;
     for (const job of stranded) {
       chat(job, { kind: 'error', error: error || 'bridge stopped' });
-      chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text) });
+      chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll) });
     }
   }
 
@@ -811,6 +825,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         articleChanged: !!(job.articleChanged && job.articleText),
         docxDigest: job.docxDigest, asker: job.asker,
         summary: !!job.summary,
+        untaggedAll: !!job.untaggedAll,
         snapshotPath, pageNumber: job.pageNumber || 0,
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
@@ -901,7 +916,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     if (!ready || current || !queue.length || !available) return;
     const job = queue.shift();
     // the drawer spins only the agents this turn actually engages
-    const agents = job.control ? [] : routedAgents(job.text);
+    const agents = job.control ? [] : routedAgents(job.text, job.untaggedAll);
     current = { job, agents, steps: planSteps(job), i: 0, capturing: false };
     chat(job, { kind: 'turn-start', agents });
     sendStep();
@@ -959,6 +974,12 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     writeRoot: () => writeRoot,
     queueLength: () => queue.length + (current ? 1 : 0),
     currentUrl: () => (current ? current.job.url : null),
+    // whether THIS page has a turn in flight or waiting. server.mjs asks
+    // before it refills a project artifact's mirror from the session file on
+    // disk: a turn in flight owns the page chat, and rewriting it underneath
+    // one would race the reply that is about to land in it.
+    busyFor: (u) => !!u && ((current && current.job.url === u)
+      || queue.some(j => j && j.url === u)),
     stop() { if (proc) { const p = proc; proc = null; available = false; try { p.kill(); } catch { } } },
   };
 }

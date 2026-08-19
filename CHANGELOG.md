@@ -2,6 +2,40 @@
 
 ## 2026-08-19
 
+- **Discuss: an artifact page's chat stops going stale.** Page chat on a
+  project artifact mirrors a real council session — and that session is
+  also driven from the TUI and from the council's own web UI, by a
+  different bridge writing the same file. Turns made there never reached
+  the mirror: you talked in the council, came back to the artifact tab,
+  and saw a conversation that stopped an hour ago. Now the companion
+  keeps a sync mark on the page record (the session file's mtime) and
+  refills the tail from disk whenever the two disagree — on every read,
+  and, while a tab is connected, from an `fs.watch` on the sessions
+  directory, so an open drawer catches up without a reload. Nothing runs
+  at rest: no client connected, no watchers.
+
+  After a refill the **session file is the truth** — a message the drawer
+  wrote becomes a restored entry like everything else. The exceptions are
+  a turn still in flight (the refill waits for it rather than racing the
+  reply about to land) and anything this companion stamped *after* the
+  file's own mtime, which the file cannot hold and which is therefore
+  kept. Half-typed drafts survive the re-render, as they survive every
+  other one.
+
+  Caveat, stated rather than solved: two bridges over one session works
+  **sequentially**. Typing on both sides at the same moment is out of
+  scope.
+
+- **Discuss: plain text in an artifact's page chat goes to @all.**
+  Everywhere else in Discuss an untagged message is a note and summons
+  nobody, deliberately. But an artifact's Page chat *is* a council chat,
+  and the council's rule is that plain text is addressed to the room —
+  so on those pages, and only there, an untagged page-chat message is
+  routed `@all` (companion-side, where the artifact is known) and the
+  composer says so: *plain text goes to @all — or tag one bot*. Comment
+  threads keep the old rule everywhere, artifact pages included, as does
+  page chat on every ordinary page and on an unconfirmed council root.
+
 - **Council: Word documents attach too.** `.docx`/`.doc` join images,
   PDFs and spreadsheets in both attachment paths. The web server sniffs
   content as ever — a docx is a zip with `word/` entries, a legacy .doc

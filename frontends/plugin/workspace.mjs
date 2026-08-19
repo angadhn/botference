@@ -509,6 +509,23 @@ function sessionPath(root, projectId, sid) {
   return '';
 }
 
+// The session record's own file, for a caller that needs to WATCH it rather
+// than read it (server.mjs keeps the drawer's mirror level with the council).
+// '' when there is no such session — the same silence sessionTail answers with.
+export function sessionFile(root, projectId, sid) {
+  return sessionPath(root, projectId, sid);
+}
+
+// When that file was last written, in whole milliseconds, or 0. This is the
+// whole of the freshness test: the council (TUI or council-web) saves the
+// session it is driving, and a page record whose sync mark disagrees with this
+// number is a mirror of a conversation that has moved on.
+export function sessionMtime(root, projectId, sid) {
+  const file = sessionPath(root, projectId, sid);
+  if (!file) return 0;
+  try { return Math.round(fs.statSync(file).mtimeMs); } catch { return 0; }
+}
+
 // The envelope chat.mjs wraps a page-chat question in, taken back off. A chat
 // started from the drawer stores what the BOTS were sent — page banner,
 // instructions, verbosity line — and replaying that to the reader as their own
