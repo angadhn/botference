@@ -286,7 +286,13 @@ def recommendations_note() -> str:
         "line. The chat renders those as tickable checkboxes. Keep "
         "explanation in the prose around the list, not inside the items, "
         "and do not use task lists for things you are about to do yourself "
-        "or for plain statements of fact."
+        "or for plain statements of fact.\n"
+        "MAINTAIN one list, never fork it: when the tasks change, re-issue "
+        "the COMPLETE updated list (the chat pins the newest one). Carry "
+        "every open item forward; tick items `- [x]` yourself when the "
+        "conversation shows they are done — do not wait for the user to "
+        "book-keep. Drop an item only when it has become irrelevant, and "
+        "say in prose why it left the list."
     )
 
 
