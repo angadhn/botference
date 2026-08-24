@@ -74,6 +74,34 @@ export function routePrefix(text) {
   return `@${[...tags][0]} `;
 }
 
+// THE STICKY ADDRESS OF A COMMENT THREAD.
+//
+// A thread is a conversation with somebody. Tagging @claude in the first
+// comment and then having the second message — "and the second half?" — summon
+// nobody at all is the tag rule read literally and the reader's intent read not
+// at all: they were mid-sentence with one bot, and Discuss turned the next
+// sentence into a note to self. So a thread REMEMBERS who the reader last
+// addressed, and an untagged message there goes to them.
+//
+// The address is the reader's, never a bot's: a bot writing "@codex, over to
+// you" is narration, not a hand-off the reader asked for, and a `tools` line is
+// narration twice over. Only the LAST human message counts — a thread that
+// started at @claude and moved to @codex three messages ago is a thread with
+// @codex in it — and it counts by what it SAID (the tag in its words) or, when
+// the reader addressed it with a composer pill instead of typing, by the
+// `route` the message was stamped with (store.appendMsg). A pill set to Note
+// stamps nothing, which is how the reader ends a conversation and goes back to
+// writing notes.
+//
+// '' = nobody, and nobody is still a perfectly good address for a thread the
+// reader has only ever written notes in.
+export function stickyRoute(msgs) {
+  const said = ((msgs) || []).filter(m => m && m.kind !== 'tools' && !isBotAuthor(m.author));
+  const last = said[said.length - 1];
+  if (!last) return '';
+  return routePrefix(last.text) || String(last.route || '');
+}
+
 // Page chat on a PROJECT ARTIFACT page is a council chat, and the council's
 // own rule is that plain text goes to the room. So a turn may be marked
 // `untaggedAll`, which supplies the prefix an untagged message would otherwise
@@ -91,13 +119,19 @@ export function routePrefix(text) {
 // quote an "@claude" they typed weeks ago at one thread. That old tag is not
 // the address of this turn — the whole review is the room's business — so a
 // phrase inside a quotation must not be allowed to route it.
-export const routeOf = (text, untaggedAll = false) =>
-  (untaggedAll ? '@all ' : '') || routePrefix(text);
+//
+// `routeHint` is the THIRD register and the weakest of them: a comment thread's
+// sticky address (server.mjs stickyRoute), or the pill the reader clicked in
+// the composer instead of typing a tag. It only ever fills in for a message
+// that tagged nobody — an @-mention typed into this very message is still the
+// last word on where it goes, because that is the sentence the reader wrote.
+export const routeOf = (text, untaggedAll = false, routeHint = '') =>
+  (untaggedAll ? '@all ' : '') || routePrefix(text) || String(routeHint || '');
 
 // which agents a turn engages — the same rule routeOf applies, reused so
 // the drawer can spin only the agent(s) actually working
-export function routedAgents(text, untaggedAll = false) {
-  const p = routeOf(text, untaggedAll);
+export function routedAgents(text, untaggedAll = false, routeHint = '') {
+  const p = routeOf(text, untaggedAll, routeHint);
   return p === '@claude ' ? ['claude'] : p === '@codex ' ? ['codex'] : ['claude', 'codex'];
 }
 
@@ -195,11 +229,11 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 // /resume's replayed history is uneven and a bridge restart drops it whole).
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageNumber, summary, project, untaggedAll }) {
+  snapshotPath, pageNumber, summary, project, untaggedAll, routeHint }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
-  const route = routeOf(text, untaggedAll);
+  const route = routeOf(text, untaggedAll, routeHint);
   // filing a resolved thread: no page context, no verbosity line, no "your
   // reply is posted into the thread" — none of that is true of this turn
   if (summary) {
@@ -538,7 +572,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     current = null; queue.length = 0;
     for (const job of stranded) {
       chat(job, { kind: 'error', error: error || 'bridge stopped' });
-      chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll) });
+      chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint) });
     }
   }
 
@@ -853,6 +887,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         docxDigest: job.docxDigest, asker: job.asker,
         summary: !!job.summary,
         untaggedAll: !!job.untaggedAll,
+        // the thread's sticky address, when the reader's words named nobody
+        routeHint: job.routeHint || '',
         snapshotPath, pageNumber: job.pageNumber || 0,
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
@@ -943,7 +979,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     if (!ready || current || !queue.length || !available) return;
     const job = queue.shift();
     // the drawer spins only the agents this turn actually engages
-    const agents = job.control ? [] : routedAgents(job.text, job.untaggedAll);
+    const agents = job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint);
     current = { job, agents, steps: planSteps(job), i: 0, capturing: false };
     chat(job, { kind: 'turn-start', agents });
     sendStep();

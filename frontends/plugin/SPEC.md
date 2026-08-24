@@ -11,9 +11,13 @@ Both sides code against it. Do not change shapes unilaterally — the contract o
 ## Product behavior (settled with the user — do not redesign)
 
 - **One interface, no modes.** Highlight → floating 💬 button → comment box → save.
-  An `@claude` / `@codex` / `@all` mention anywhere in a message is the only signal that
-  summons bots. Mentions work in *any* message, including later replies in an existing
+  An `@claude` / `@codex` / `@all` mention anywhere in a message summons bots.
+  Mentions work in *any* message, including later replies in an existing
   thread (a personal thread becomes a bot chat the moment a reply tags a bot).
+  A mention was once the ONLY such signal; it is now the first of three, and
+  still the one that outranks the rest — see the 2026-08-19 amendment (untagged
+  page chat on a project artifact goes to `@all`) and the 2026-08-24 one (a
+  comment thread remembers who it is talking to, and its composer's pill row).
 - **In the page: only highlights** (subtle yellow marks). All conversation UI lives in a
   **right-side drawer** (shadow DOM, ~380px) with two tabs: **Comments** (stack of
   anchored threads, page order) and **Page chat** (one general thread about the page).
@@ -2094,6 +2098,12 @@ the file, the companion only reads it, and last writer wins.
 
 #### 2. Untagged page chat on an artifact goes to `@all`
 
+> **Superseded in part** by "a thread remembers who it is talking to"
+> (2026-08-24): "everywhere else, no mention means a note" now holds for page
+> chat and for a thread nobody has ever addressed — a thread the reader HAS
+> addressed keeps summoning whoever they last wrote to. The rule stated here for
+> page chat, and its deliberate narrowness, are unchanged.
+
 Everywhere else in Discuss no mention means a note and no bots — deliberate,
 and kept. But the council's own rule is that plain text is addressed to the
 room, and this IS a council chat. So on a **confirmed project artifact page**,
@@ -3167,7 +3177,155 @@ the reader's switch takes it off and puts it back, and ✓ files it sage.
   the project are still reported by the census as "N files changed" and nothing
   more — they are not what the tab is showing.
 
+### Amendment (2026-08-24, shipped): a thread remembers who it is talking to
+
+The tag rule — *an @-mention is the only thing that summons a bot* — was read
+literally and the reader's intent not at all. Tag `@claude` under a passage, ask
+the follow-up without retyping the tag, and the follow-up became a note to self:
+a dead message in a live conversation, and the most-complained-about thing about
+comment threads. A thread is a conversation with somebody. It now says so.
+
+#### The sticky address (`chat.stickyRoute`)
+
+A thread's address is the LAST message the reader wrote in it, read two ways:
+the tag in its words (`routePrefix`), or — where a pill said it instead of a tag
+— the `route` the companion stamped on the message when it was written. Bot
+messages are not read (a bot writing "@codex, over to you" is narration, not the
+reader's address) and neither is a `tools` line. An earlier tag never wins.
+`''` is a real answer and means nobody, which is what a thread the reader has
+only ever taken notes in still is.
+
+`workspace.reviewRoute` was rewritten to CALL it rather than restate it, so a
+send-review round and an untagged reply can never disagree about whose thread it
+is — and a thread addressed by clicking a pill is a codex thread in a round too,
+though the word "@codex" was never typed in it.
+
+#### Precedence, stated once (`server.mjs addressOf`)
+
+1. an **@-mention in the words** — the sentence the reader just wrote
+2. the **composer pill on the wire** (`route` on `/thread` and `/reply`)
+3. the **thread's sticky address**
+4. **nobody** — a note, exactly as Discuss began
+
+A tag beats a pill because the tag is *in* the message and the pill is beside
+it. `none` is a real choice and not an absent one: it is how a reader steps out
+of a conversation and writes a plain note under a passage they were discussing,
+and it unsticks the thread for the next message too.
+
+**Comment threads only.** Page chat is untouched: its untagged rule is the one
+`untaggedGoesToAll` states (the room on a project artifact, nobody anywhere
+else), a `route` on the wire cannot talk it into a second one, and the composer
+there grows no pills.
+
+The resolved address rides the turn as `routeHint`, the third and weakest
+register of `chat.routeOf` — `untaggedAll`/`forceAll` first, then the text's own
+tag, then the hint. The reader's words are never rewritten: the prefix is the
+envelope's, as it always was. A message that summons this way carries the page
+context and any `.docx` digest exactly as a tagged one does (`mentionContext`,
+`docxDigestOf` — a summoning message needs the page in front of the bot however
+it got addressed). And `store.appendMsg`/`addThread` stamp `route` on the
+message, absent on a bot's and absent on a note: the field only ever records an
+address, and it is what makes a pill stick with nothing to read in the text.
+
+#### The pill row
+
+Above a thread composer, folding with the Send row and for the same reason (a
+column of idle threads must not cost a line each): `Note · Claude · Codex · All`,
+the current address lit in the drawer's accent. Bot names come from the live
+roster (`agentRoster`), not from this file. Clicking one aims the next message
+and leaves the draft and the caret where they were; typing a tag lights that bot
+as it is typed (`syncRoutes`, repainted in place — re-rendering a composer under
+a caret loses the caret); sending settles the row on where the message actually
+went, so the next untagged reply goes where the reader can already see it will.
+A brand-new thread's composer carries the row too, defaulted to Note, which is
+Discuss's original rule drawn instead of assumed.
+
+The phone reading room has the same row over the same rule (`reader.js`,
+`views.mjs` styling), sending the same `route` field. The no-script form
+composer sends none — and needs none, because the sticky address is decided
+companion-side for any client that says nothing.
+
+#### Testing
+
+`companion.test.mjs` — `stickyRoute` and `routeOf` as pure functions (an empty
+thread, the last human tag winning, an earlier one not, both-tagged = the room,
+a bot's tag and a `tools` line claiming nothing, a pill-stamped message counting
+and its words still outranking its stamp, a hint filling in only for an untagged
+message) and a real thread against the mock bridge: the opening `@claude`, the
+untagged follow-up reaching claude, a new tag re-aiming it, a bot's reply not
+re-aiming it, `Note` summoning nobody AND unsticking the thread, a pill routing
+a message with no tag in it and sticking, a tag beating the pill beside it, a
+pill on the first comment, a thread nobody ever addressed staying a notebook,
+page chat untouched (both directions), and a nonsense route ignored rather than
+obeyed. Harness `?selftest=1` drives the row in the DOM: every thread composer
+carries one, the four pills in order, Note lit on a thread whose last word
+tagged nobody, a typed tag lighting that bot and only that bot, clearing it
+handing the row back to the thread, a click aiming the next message with the
+draft surviving, and page chat with no row at all. `?routes=1` is the screenshot
+pose.
+
+### Amendment (2026-08-24, shipped): a single-page app moved the reader
+
+**The bug.** One reader's comment on a Medium article was filed against a
+*different* Medium article they had been reading ten minutes earlier. Not
+`normUrl` (the two slugs hash differently) and not the companion (every write
+route resolves the page from the url on the wire). The extension: `URL_NOW` was
+a `const`, resolved once at injection, on the reasoning that "a real navigation
+reloads the content script". True of a link; false of an SPA. Medium, Substack
+and their like swap one article for the next with `history.pushState` — the
+document is never torn down, the content script is never re-injected — so every
+url this tab put on the wire afterwards named an article that had left the
+screen. The quiet half of the same bug: `refresh()` reads `headline()` live, so
+the OLD record silently acquired the NEW article's title, and `snapshotNow()`
+wrote the new article's text over the old article's snapshot.
+
+**The invariant now enforced:** a message is filed under the document the reader
+is looking at when they send it.
+
+- Identity is **re-derivable**, not frozen: `readCanonical` / `identityFor` /
+  `rebindIdentity` run the live address through the very same funnel that
+  decided it at load — the canonical link re-read (an SPA rewrites it on the way
+  past), `Adapters.canonicalPageUrl` applied again, `normUrl` applied again. No
+  site is special-cased. `IDENT_HREF`, `URL_NOW`, `CANONICAL_HREF` and the three
+  per-page storage keys became `let`; `__bfp.url`/`identHref`/`canonical` became
+  getters.
+- **The section-splinter case is unharmed, and that is the point.** A route
+  change that resolves to the identity already held returns false and changes
+  nothing — `/post-slug-section-3` still collapses onto `/post-slug`. Only a
+  genuinely different document rebinds. Where an ADAPTER or a project artifact
+  owns the identity the address bar never was the identity, so a route change
+  there means nothing and is ignored outright.
+- **When it does move**, the tab stops being the old page's: `forgetPage()` (the
+  reset that already existed for "you deleted the page you are standing on",
+  extracted rather than written twice) unpaints, drops the record, re-arms the
+  first-turn context and the snapshot; the storage keys move; `hello` re-keys
+  the tab in the worker so the bots' replies are delivered to the right page;
+  and the new page is loaded as a fresh injection would have loaded it — dormant
+  unless the companion says it is annotated, because activation is still not an
+  act.
+- **Three detectors and a gate.** `history.pushState`/`replaceState` wrapped
+  (narrowly, never swallowing the site's own call), `popstate`, and a `<head>`
+  MutationObserver as the last resort for a router that does neither — all
+  coalesced into one deferred check, because a framework rewrites the address
+  first and the document a moment later. Then the gate that makes it a promise
+  rather than a race: `ensureRegistered()` — which every write goes through
+  first — re-checks before the url goes on the wire, and `refresh()` re-checks
+  before it can post a title.
+
+**Testing.** Harness `?canon=1&selftest=canon` now covers both directions: the
+splinter pushState still moving nothing (unchanged), and then a route change to
+a DIFFERENT document — canonical rewritten, path pushed, exactly as Medium does
+it — moving the identity, saying hello about it, re-reading the record for the
+document now on screen, and filing the next message under it and never under the
+one the reader has left.
+
+**The data.** The one misfiled record was repaired by hand: the thread moved to
+the correct page record, the emptied record and its index row removed. Its
+council session was left on disk rather than deleted.
+
 ## Out of scope for v1 (do not build)
 
-Firefox packaging, hosted/multi-user mode, settings UI, SPA mutation observers,
-annotation sharing.
+Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
+(SPA navigation was on this list and is now handled — see the 2026-08-24
+amendment; what stays out of scope is a mutation observer over the ARTICLE, not
+knowing which article one is.)

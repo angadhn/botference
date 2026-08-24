@@ -28,6 +28,16 @@
   var busy = {};                 // target -> a live wait/working note
   var AGENTS = { claude: 1, codex: 1 };
   var MENTION = /@(claude|codex|all)\b/i;
+  // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the pill row over the reply box,
+  // the phone's half of the drawer's own. Same rule, same words on the wire
+  // (`route` on /thread and /reply), and the same reason: a thread is a
+  // conversation with somebody, and once the reader has addressed one, retyping
+  // "@claude" every turn — or watching the turn become a note when they forget
+  // — is the thing that made threads tiring. Unset here means "ask the thread"
+  // (stickyRouteOf below), which is also what the companion decides on its own
+  // for any client that sends no route at all.
+  var ROUTES = { none: 'Note', claude: 'Claude', codex: 'Codex', all: 'All' };
+  var picked = {};               // target -> a pill the reader clicked
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -170,8 +180,50 @@
     for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
     return null;
   }
-  function composerHtml(placeholder) {
-    return '<form class="composer" id="bfp-form"><textarea name="text" placeholder="'
+  // The tag a message's own words carry, as a pill name: the strict rule the
+  // companion routes by (chat.routePrefix) — one bot named is that bot's, @all
+  // or both named is the room's, nothing named is nothing.
+  function routeWordOf(text) {
+    var found = String(text || '').match(/@(claude|codex|all)\b/gi) || [];
+    var tags = [];
+    for (var i = 0; i < found.length; i++) {
+      var h = found[i].slice(1).toLowerCase();
+      if (tags.indexOf(h) === -1) tags.push(h);
+    }
+    if (!tags.length) return '';
+    return (tags.indexOf('all') >= 0 || tags.length > 1) ? 'all' : tags[0];
+  }
+  // A thread's settled address: the LAST message the reader wrote in it, by
+  // what it said or by the `route` the companion stamped on it when a pill said
+  // it instead. Bot messages and `tools` narration are not the reader talking.
+  // (chat.stickyRoute, on the phone.)
+  function stickyRouteOf(msgs) {
+    for (var i = (msgs || []).length - 1; i >= 0; i--) {
+      var m = msgs[i];
+      if (!m || m.kind === 'tools' || AGENTS[String(m.author || '').toLowerCase()]) continue;
+      return routeWordOf(m.text) || String(m.route || '').replace(/^@/, '').trim() || 'none';
+    }
+    return 'none';
+  }
+  function routeNow(target, msgs) {
+    return picked[target] || stickyRouteOf(msgs);
+  }
+  function routesHtml(target, msgs) {
+    var now = routeNow(target, msgs);
+    var html = '<div class="routes" role="group" aria-label="who this message is for">';
+    for (var k in ROUTES) {
+      if (!Object.prototype.hasOwnProperty.call(ROUTES, k)) continue;
+      html += '<button type="button" class="rpill' + (k === now ? ' on' : '')
+        + '" data-route="' + k + '" aria-pressed="' + (k === now) + '">' + ROUTES[k] + '</button>';
+    }
+    return html + '</div>';
+  }
+  // `msgs` present = a comment thread, which is where the pills belong; page
+  // chat has a routing rule of its own and gets the composer it always had.
+  function composerHtml(placeholder, target, msgs) {
+    return '<form class="composer" id="bfp-form">'
+      + (msgs ? routesHtml(target, msgs) : '')
+      + '<textarea name="text" placeholder="'
       + esc(placeholder) + '" aria-label="' + esc(placeholder) + '"></textarea>'
       + '<div class="row"><button type="submit">send</button>'
       + '<p class="hint">@claude, @codex or @all to bring in the bots</p></div></form>';
@@ -187,7 +239,8 @@
     var html = '', label = '', target = open.id;
     if (open.kind === 'new') {
       label = 'new comment';
-      html = '<blockquote>' + esc(open.anchor.quote) + '</blockquote>' + composerHtml('what about this?…');
+      html = '<blockquote>' + esc(open.anchor.quote) + '</blockquote>'
+        + composerHtml('what about this?…', 'new', []);
       target = 'new';
     } else if (open.kind === 'page') {
       label = 'page chat';
@@ -205,14 +258,31 @@
         // a filed thread leads with what it settled, exactly as its card does
         // in the drawer and in the comments view
         + (t.resolved && t.summary ? '<p class="digest">' + esc(t.summary) + '</p>' : '')
-        + (t.msgs || []).map(msgHtml).join('') + composerHtml('reply…');
+        + (t.msgs || []).map(msgHtml).join('') + composerHtml('reply…', t.id, t.msgs || []);
     }
     if (busy[target]) html += '<div class="chip">' + esc(busy[target]) + '</div>';
     sheetHead.textContent = label;
     sheetBody.innerHTML = html;
     sheet.classList.add('open');
     var form = document.getElementById('bfp-form');
-    if (form) form.addEventListener('submit', onSend);
+    if (form) {
+      form.addEventListener('submit', onSend);
+      // clicking a pill only says where the next message goes: the draft in the
+      // box (and the caret in it) survive, so the row is repainted in place
+      form.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest && e.target.closest('.rpill');
+        if (!b) return;
+        e.preventDefault();
+        picked[open.kind === 'new' ? 'new' : open.id] = b.dataset.route;
+        var row = b.parentNode;
+        var all = row.querySelectorAll('.rpill');
+        for (var i = 0; i < all.length; i++) {
+          var on = all[i] === b;
+          all[i].classList.toggle('on', on);
+          all[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+      });
+    }
   }
 
   function onSend(e) {
@@ -222,16 +292,25 @@
     if (!text) return;
     var mode = open.kind;
     var target = mode === 'new' ? 'new' : (mode === 'page' ? '__page__' : open.id);
+    // Where this one goes: a tag in the words, else the pill, else the thread's
+    // own address. Page chat sends no route at all — its rule is elsewhere.
+    var t0 = (mode === 'new' || mode === 'page') ? null : threadById(open.id);
+    var route = mode === 'page' ? ''
+      : (routeWordOf(text) || routeNow(target, (t0 && t0.msgs) || []));
     ta.value = '';
-    if (MENTION.test(text)) busy[target] = waitLabel();
+    // a message with a bot's name on it is a message a bot is about to answer,
+    // however that name got there
+    if (MENTION.test(text) || (route && route !== 'none')) busy[target] = waitLabel();
+    if (route) picked[target] = route;
     render();
     var req = mode === 'new'
       ? post('/thread', {
         url: D.url, quote: open.anchor.quote, prefix: open.anchor.prefix,
         suffix: open.anchor.suffix, page: open.anchor.page || undefined,
-        msg: { text: text },
+        msg: { text: text }, route: route || undefined,
       })
-      : post('/reply', { url: D.url, thread_id: target, text: text });
+      : post('/reply', { url: D.url, thread_id: target, text: text,
+        route: route || undefined });
     req.then(function (r) {
       if (r.status !== 200 || !r.json.ok) {
         busy[target] = (r.json && r.json.error) || 'could not send that';
@@ -242,7 +321,12 @@
       else if (r.json.reason) busy[target] = r.json.reason;
       else delete busy[target];
       // the new thread's real id is the server's, not ours
-      if (mode === 'new' && r.json.thread) { open = { kind: 'thread', id: r.json.thread.id }; }
+      if (mode === 'new' && r.json.thread) {
+        // the address the reader picked for the first comment is the thread's
+        if (picked.new) picked[r.json.thread.id] = picked.new;
+        delete picked.new;
+        open = { kind: 'thread', id: r.json.thread.id };
+      }
       refetch();
     }).catch(function () {
       busy[target] = 'could not reach the companion';

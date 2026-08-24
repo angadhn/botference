@@ -28,7 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
-import { createChat, hasMention, priorMsgs, commentsDigest } from './chat.mjs';
+import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { exportPage, exportMode } from './export.mjs';
 import { createHosted, CORS_HEADERS, isLocalDirect } from './hosted.mjs';
 import { pageView, pagesView, articleView } from './views.mjs';
@@ -646,9 +646,36 @@ function untaggedGoesToAll(page, target, text) {
   return !!(art && art.confirmed);
 }
 
-// an @-mention in any message — first comment or tenth reply — is the only
-// thing that summons the bots, except on a project artifact's page chat
-// (untaggedGoesToAll)
+// WHO THIS MESSAGE IS FOR — the whole of it, in one place, in precedence order.
+//
+//   1. an @-mention in the words          the sentence the reader just wrote
+//   2. the composer pill on the wire      what they clicked instead of typing
+//   3. the thread's sticky address        who they were already talking to
+//   4. nobody                             a note, exactly as Discuss began
+//
+// A tag beats a pill because the tag is in the message and the pill is beside
+// it: if the two disagree the reader changed their mind mid-sentence, and the
+// sentence is the later word. The pill beats the sticky address for the same
+// reason — it is a choice made for THIS message — and `none` is a real choice,
+// not an absent one, which is how a reader steps out of a conversation and
+// writes a plain note under a passage they had been discussing.
+//
+// COMMENT THREADS ONLY. Page chat is untouched by any of this: its untagged
+// rule is the one `untaggedGoesToAll` states (the room on a project artifact,
+// nobody anywhere else) and a sticky address there would quietly rewrite it.
+const PILL_ROUTE = { claude: '@claude ', codex: '@codex ', all: '@all ', none: '' };
+function addressOf(target, text, pill, msgs) {
+  if (target === store.PAGE_CHAT) return '';
+  const tagged = routePrefix(text);
+  if (tagged) return tagged;
+  const p = String(pill || '').trim().toLowerCase().replace(/^@/, '');
+  if (p && Object.prototype.hasOwnProperty.call(PILL_ROUTE, p)) return PILL_ROUTE[p];
+  return stickyRoute(msgs);
+}
+
+// an @-mention in any message — first comment or tenth reply — summons the
+// bots, and so does a thread's sticky address or a composer pill (addressOf),
+// and so does a project artifact's page chat (untaggedGoesToAll)
 // `extras.forceAll` is the send-review turn saying "this one is the room's,
 // whatever the text looks like": its body quotes the reader's own margin
 // comments, and an "@claude" typed at one thread weeks ago is not the address
@@ -658,7 +685,11 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   const { forceAll, ...rest } = extras;
   extras = rest;
   const untaggedAll = !!forceAll || untaggedGoesToAll(page, target, text);
-  if (!hasMention(text) && !untaggedAll) return {};
+  // the thread's own address, resolved by the caller and carried through
+  // `extras` into the job, where chat.routeOf turns it into the envelope's
+  // prefix for a message that never typed one
+  const routeHint = String(extras.routeHint || '');
+  if (!hasMention(text) && !untaggedAll && !routeHint) return {};
   if (NO_AGENTS) {
     broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: AGENTS_OFF_ERROR });
     return { queued: false, reason: AGENTS_OFF_REASON };
@@ -702,11 +733,13 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
 // wants the bots to see what everyone else already said in its margins). It is
 // read for this turn only: the digest goes in the envelope and nowhere else.
 // Returns null when the request has already been refused.
-function docxDigestOf(res, data, text) {
+function docxDigestOf(res, data, text, route = '') {
   if (!data.docx_b64) return '';
   const buf = Buffer.from(String(data.docx_b64), 'base64');
   if (buf.length > DOCX_MAX) { fail(res, 413, 'document too large — 8MB max'); return null; }
-  return hasMention(text) ? commentsDigest(buf) : '';
+  // a message that summons nobody has nobody to hand the margins to — and a
+  // sticky-addressed message summons somebody without saying so in its words
+  return (hasMention(text) || route) ? commentsDigest(buf) : '';
 }
 const contextExtras = (data, docxDigest) => ({
   articleText: data.article_text,
@@ -1415,7 +1448,10 @@ export function handler(req, res) {
       if (!text.trim()) return fail(res, 400, 'empty comment');
       const me = authorOf(req, res);
       if (!me) return;
-      const docxDigest = docxDigestOf(res, data, text);
+      // a brand-new thread has no history to be sticky about: its address is
+      // whatever this first comment tagged, or the pill the composer sent
+      const route = addressOf('new', text, data.route, []);
+      const docxDigest = docxDigestOf(res, data, text, route);
       if (docxDigest === null) return; // 413: nothing is saved, nothing is queued
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
@@ -1427,11 +1463,13 @@ export function handler(req, res) {
         // documents with pages (a web PDF) say which one the passage came off;
         // everything else omits it and nothing downstream requires it
         text, author: me.handle, index: data.index, page_number: data.page,
+        // stamped so the next untagged reply here knows who is being talked to
+        route,
       });
       dedupe.remember(thread);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { thread, ...summon(page, thread.id, text, contextExtras(data, docxDigest), me) });
+      ok(res, { thread, ...summon(page, thread.id, text, { ...contextExtras(data, docxDigest), routeHint: route }, me) });
     });
   }
   if (req.method === 'POST' && url === '/reply') {
@@ -1440,11 +1478,14 @@ export function handler(req, res) {
       if (!text.trim()) return fail(res, 400, 'empty reply');
       const me = authorOf(req, res);
       if (!me) return;
-      const docxDigest = docxDigestOf(res, data, text);
-      if (docxDigest === null) return;
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
+      // read the thread BEFORE this message joins it: the sticky address is who
+      // the reader was talking to up to now, and appendMsg is one line below
+      const route = addressOf(target, text, data.route, store.msgsOf(page, target));
+      const docxDigest = docxDigestOf(res, data, text, route);
+      if (docxDigest === null) return;
       const dedupe = dedupeCheck([store.pageKey(page.url), target, me.handle, text.trim()]);
       const anchor = target === store.PAGE_CHAT ? '' : target;
       if (dedupe.hit) {
@@ -1452,12 +1493,12 @@ export function handler(req, res) {
           ? seeOther(res, backTo(data, page, anchor))
           : ok(res, { msg: dedupe.hit, deduped: true });
       }
-      const msg = store.appendMsg(page, target, { author: me.handle, text });
+      const msg = store.appendMsg(page, target, { author: me.handle, text, route });
       if (!msg) return fail(res, 404, 'unknown thread');
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      const summoned = summon(page, target, text, contextExtras(data, docxDigest), me);
+      const summoned = summon(page, target, text, { ...contextExtras(data, docxDigest), routeHint: route }, me);
       // the reading room posted a form: back to the page, carrying any refusal
       if (data._form) return seeOther(res, backTo(data, page, anchor, summoned.reason));
       ok(res, { msg, ...summoned });

@@ -693,14 +693,20 @@ const pageNumber = n => {
   return Number.isInteger(v) && v > 0 && v < 1e6 ? v : 0;
 };
 
-export function addThread(page, { quote, prefix, suffix, text, author, index, page_number }) {
+// `route` is where the FIRST message of the thread was addressed — '@claude ',
+// '@codex ', '@all ' or nothing at all. It is stamped here rather than derived
+// from the words later because a reader may now address a message with a pill
+// instead of an @-mention, and a pill leaves no trace in the text. See
+// server.mjs stickyRoute: this field is what makes the next untagged reply in
+// the thread still know who it is talking to.
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
     prefix: String(prefix || '').slice(-32),
     suffix: String(suffix || '').slice(0, 32),
     orphaned: false,
-    msgs: [{ author, ts: nowIso(), text: String(text || '') }],
+    msgs: [{ author, ts: nowIso(), text: String(text || ''), ...(route ? { route: String(route) } : {}) }],
   };
   const p = pageNumber(page_number);
   if (p) thread.page = p;
@@ -736,10 +742,15 @@ export function setCheckbox(text, index, checked) {
 // answer, so it is written once here rather than as a third copy of the regex.
 export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
 
-export function appendMsg(page, threadId, { author, text, ts, kind }) {
+export function appendMsg(page, threadId, { author, text, ts, kind, route }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
   const msg = { author, ts: ts || nowIso(), text: String(text || '') };
+  // who this message was addressed to, when the reader addressed it with a
+  // composer pill rather than an @-mention (addThread says the same thing for
+  // a thread's opening comment). Absent on everything a bot writes, and absent
+  // on a note addressed to nobody — the field only ever records an address.
+  if (route) msg.route = String(route);
   if (kind) msg.kind = String(kind); // "tools" — a bot's tool-activity summary
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written

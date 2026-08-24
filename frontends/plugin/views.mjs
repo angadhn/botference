@@ -86,6 +86,16 @@ details.more>summary::before { content:"▸ "; display:inline-block; transition:
 details.more[open]>summary::before { content:"▾ " }
 details.more pre { margin:.2rem 0 0 .6rem; padding-left:.6rem; border-left:2px solid var(--line) }
 form.composer { margin:.9rem 0 0; display:flex; flex-direction:column; gap:.5rem }
+/* The pill row over a thread's reply box (reader.js): who the next message is
+   for, as a label you can click. Flat and small — the default button on this
+   page is a filled accent block, and four of those over a textarea would look
+   like four ways to send. */
+.routes { display:flex; flex-wrap:wrap; gap:.3rem }
+.rpill { padding:.25rem .6rem; font-size:.72rem; border-radius:999px;
+  background:transparent; color:var(--muted); border:1px solid var(--line) }
+.rpill:hover { background:transparent; color:var(--fg) }
+.rpill.on, .rpill.on:hover { color:var(--accent); font-weight:600;
+  border-color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent) }
 textarea { width:100%; min-height:4.2rem; resize:vertical; padding:.55rem .7rem;
   font:inherit; font-size:.92rem; color:var(--fg); background:var(--bg);
   border:1px solid var(--line); border-radius:8px }

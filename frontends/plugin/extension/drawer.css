@@ -1340,6 +1340,31 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .composer .send:hover { background: var(--accent-hover); color: #fff; border-color: var(--accent-hover) }
 .composer .cancel { flex: none }
 
+/* The pill row: who the next message in this thread is for. It folds with the
+   Send row and for the same reason — a column of idle threads must not cost a
+   line each — so it appears exactly when the reader is writing, which is the
+   moment the answer matters. Small, flat and quiet: this is a label that
+   happens to be clickable, not a toolbar, and it sits ABOVE the box so it
+   reads as a heading on the message rather than a control beside it. */
+.composer .routes { display: none; flex-wrap: wrap; gap: 4px; margin-bottom: 6px }
+.composer:focus-within .routes,
+.composer.has-draft .routes,
+.composer[data-target="__new__"] .routes { display: flex }
+.composer .rpill {
+  font: 11px/1 var(--sans); letter-spacing: .01em;
+  padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--card-line); background: transparent; color: var(--muted);
+  cursor: pointer;
+}
+.composer .rpill:hover { color: var(--fg); border-color: var(--line) }
+/* the chosen one wears the drawer's own accent, the same wash the @-menu's
+   selected row wears — one highlight idiom, not two */
+.composer .rpill.on {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  font-weight: 600;
+}
+
 /* ── status ────────────────────────────────────────────────────────────── */
 .status-chip { font: 12px/1.4 var(--sans); color: var(--muted); margin-top: 7px;
   display: flex; align-items: center; gap: 6px }

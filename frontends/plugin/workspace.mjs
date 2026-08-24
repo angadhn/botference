@@ -37,7 +37,7 @@ import { readConfig, saveConfig } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
 // and two copies of that rule could disagree about who a thread belongs to
-import { routePrefix, isBotAuthor } from './chat.mjs';
+import { stickyRoute } from './chat.mjs';
 
 const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
@@ -676,16 +676,16 @@ export const openThreads = page => ((page && page.threads) || [])
 // Who a per-thread turn is addressed to.
 //
 // @all by default: a review of a draft is the room's business. The one exception
-// is a thread whose LAST HUMAN message tags exactly one bot — there the reader
-// has already chosen who they are talking to in this thread, and a round that
-// broadened it back out to the room would overrule them and spend a second
-// agent's turn doing it. Bot messages are not read for this (a bot answering
-// "@codex, over to you" is not the reader's address) and neither is a `tools`
-// line, which is narration.
+// is a thread the reader has already addressed to ONE bot — there they have
+// chosen who they are talking to in this thread, and a round that broadened it
+// back out to the room would overrule them and spend a second agent's turn
+// doing it. That question — who is this thread's reader talking to — is
+// `chat.stickyRoute`, the same answer an untagged reply in the thread is routed
+// by, so a round and a reply can never disagree about it. (Which also means the
+// composer's pills count: a thread addressed by clicking Codex is a codex
+// thread whether or not the word "@codex" was ever typed in it.)
 export function reviewRoute(t) {
-  const said = ((t && t.msgs) || []).filter(m => m && m.kind !== 'tools' && !isBotAuthor(m.author));
-  const last = said[said.length - 1];
-  const p = routePrefix(last && last.text);
+  const p = stickyRoute((t && t.msgs) || []);
   return p === '@claude ' || p === '@codex ' ? p.trim() : '@all';
 }
 

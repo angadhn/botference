@@ -216,28 +216,45 @@
   // stores it on the record so the pages list can be filtered by it.
   const PAGE_KIND = (SITE && SITE.kind) || 'article';
 
-  // ---- which page this is, decided ONCE ----------------------------------
-  // Resolved at load and never revisited, because a document's identity does
-  // not change while it is open. A site that rewrites its path with
-  // history.pushState (a URL per section of one article) must not turn one
-  // reading into several records, and the way to guarantee that is to have
-  // nothing left that reads `location` after this line. A real navigation
-  // reloads the content script, which is exactly when this should be redecided.
+  // ---- which page this is -------------------------------------------------
+  // Decided at load, and RE-DECIDED on a client-side navigation — see
+  // rebindIdentity() far below. This used to be a one-shot const on the
+  // reasoning that "a real navigation reloads the content script", which is
+  // true of a link and false of a single-page app: Medium, Substack and their
+  // like swap one article for the next with history.pushState, the document is
+  // never torn down, this script is never re-injected, and an identity frozen
+  // at load is then the PREVIOUS article's — which is how a comment gets filed
+  // under the piece the reader was reading ten minutes ago.
+  //
+  // What is NOT re-decided is the site: an SPA route change stays on the site
+  // it started on, so the adapter, its capabilities, the page kind and the
+  // hostname are all still true. And where an ADAPTER or a project artifact
+  // owns the identity, the address bar was never the identity in the first
+  // place, so nothing about a route change there means anything.
+  //
+  // The one thing that must not become several records is the opposite case: a
+  // site that rewrites its path per SECTION of one article. That is what
+  // `Adapters.canonicalPageUrl` is for, and it is applied to the new address
+  // exactly as it was to the first one — so /post-slug-section-3 still
+  // collapses onto /post-slug and only a genuinely different document rebinds.
   //
   // The document's own `<link rel="canonical">` wins where it is safe to
   // believe (adapters.js: same origin, never the site root, and only ever a
   // parent whose slug the address bar has extended) — that is what merges
   // /post-slug-section-3 back into /post-slug. A site adapter owns its own
   // identity rules (Google Docs), so canonical is not consulted there.
-  const CANONICAL_HREF = (() => {
+  // Read afresh every time identity is decided: an SPA rewrites its canonical
+  // link on the way past, and reading the old one back would defeat the point.
+  function readCanonical(href) {
     if (SITE || !Adapters || !Adapters.canonicalPageUrl) return '';
     let el = null;
     try { el = document.querySelector('link[rel~="canonical"]'); } catch { el = null; }
     // .href resolves relative values against the document; the attribute is the
     // fallback for a harness that builds the element by hand
     const raw = el ? (el.href || el.getAttribute('href') || '') : '';
-    return Adapters.canonicalPageUrl(HREF, raw) || '';
-  })();
+    return Adapters.canonicalPageUrl(href, raw) || '';
+  }
+  let CANONICAL_HREF = readCanonical(HREF);
   // Everything the extension sends — hello, /page, /thread, /reply, /snapshot,
   // the routing key on every background message — comes from these two and
   // nothing else.
@@ -256,9 +273,17 @@
   // two ways. Everything downstream (hello, /page, /thread, /reply, the
   // worker's routing table) already comes from this line and nothing else, so
   // the council-web tab and the file: tab address one record.
-  const IDENT_HREF = (PROJECT && PROJECT.ident_href)
+  // The address bar, live. HREF is where this script was injected and stays
+  // that, because the adapter and the project lookup were decided from it; this
+  // is what the reader is looking at NOW, which after a pushState is not the
+  // same thing. (The harness pins its own address with __BFP_HREF and may move
+  // it, exactly as a browser moves location.href.)
+  const liveHref = () => (typeof window.__BFP_HREF === 'string' && window.__BFP_HREF) || location.href;
+  const identityFor = href => (PROJECT && PROJECT.ident_href)
+    || (SITE && SITE.identityHref) || readCanonical(href) || href;
+  let IDENT_HREF = (PROJECT && PROJECT.ident_href)
     || (SITE && SITE.identityHref) || CANONICAL_HREF || HREF;
-  const URL_NOW = normUrl(IDENT_HREF);
+  let URL_NOW = normUrl(IDENT_HREF);
   // …and NOTHING is ever filed under the extension's own address. That is not a
   // page: it moves with the extension id, it is nobody's link, and a record
   // under it would be found again by nobody. It can only happen where an
@@ -339,7 +364,9 @@
   // this page's identity, so it holds across reloads and applies to nothing
   // else. Unknown until storage answers — and unknown means the DEFAULT, which
   // is that Discuss keeps the margin: that is the whole point of installing it.
-  const PAGE_COMMENTS_KEY = 'bfp:page-comments:' + URL_NOW;
+  // `let`, not `const`: these are keyed by the identity, and the identity moves
+  // when the reader does (rebindIdentity)
+  let PAGE_COMMENTS_KEY = 'bfp:page-comments:' + URL_NOW;
   // true = the reader asked for the page's own commenting back on this page
   let pageOwnsMargin = false;
   // The single question everything else asks: is Discuss's margin commenting
@@ -383,7 +410,7 @@
   // answer is per page, because "show me the edits" is a thing about the draft
   // in front of them and not a mood.
   let trackChanges = true;
-  const TRACK_KEY = 'bfp:track-changes:' + URL_NOW;
+  let TRACK_KEY = 'bfp:track-changes:' + URL_NOW;
   // in-flight /reanchor ids: a repaint storm must not post the same durable
   // re-anchor a dozen times
   const reanchoring = Object.create(null);
@@ -859,8 +886,11 @@
   //
   // The hash is returned rather than stored: it is only committed once the
   // POST it travelled on actually succeeded (see the two call sites).
-  async function mentionContext(text) {
-    if (!MENTION.test(text)) return null;
+  // `route` is the composer's pill (or the thread's sticky address): a message
+  // with no @-mention in it that is going to a bot anyway. It summons, so it
+  // needs the page in front of the bot exactly as a tagged message does.
+  async function mentionContext(text, route) {
+    if (!MENTION.test(text) && !(route && route !== 'none')) return null;
     const out = {};
     const t = await articleText();
     if (t) {
@@ -1281,12 +1311,24 @@
   // its real title, site, kind and file name) before the action lands. On an
   // already-registered page it is free.
   async function ensureRegistered() {
+    // THE LAST GATE ON THE INVARIANT. Every write — a new thread, a reply, a
+    // page-chat message, an export — comes through here first, so this is the
+    // one place that can promise the url about to go on the wire is the
+    // document in front of the reader. The listeners above should have caught
+    // the navigation a quarter of a second after it happened; a router that
+    // sneaks past all three of them still cannot sneak past a send.
+    rebindIdentity();
     if (registered) return { ok: true };
     const r = await postPage();
     if (r && r.ok) registered = true;
     return r || { ok: false, error: 'the companion did not answer' };
   }
   async function refresh() {
+    // The DOM changing under us is the SPA's own tell, and refresh is what the
+    // page-mutation watcher calls. Without this, the title read fresh from the
+    // NEW article would be posted over the OLD article's record — the quiet
+    // half of the same bug, and the one that renames a page you never touched.
+    rebindIdentity();
     reanchorAll();
     if (!active) return null;
     // an unregistered page posts NOTHING — the title travels with the act that
@@ -1298,6 +1340,126 @@
       return loadPage();
     }
     return PAGE;
+  }
+
+  // EVERYTHING THIS TAB BELIEVES ABOUT THE PAGE IT IS ON, PUT DOWN.
+  //
+  // Two callers, one meaning. Deleting the page you are standing on leaves
+  // every highlight a mark with no thread behind it, and the record must not
+  // resurrect on the next visit — only on the next ACT. A single-page app
+  // swapping one article for the next means the same thing about a different
+  // page: what is painted belongs to a document that is no longer on screen.
+  // Unpainted here rather than on the next refetch, because the drawer's own
+  // reset cannot reach into the page.
+  function forgetPage() {
+    for (const t of (PAGE && PAGE.threads) || []) Anchor.unpaint(t.id);
+    for (const id of Anchor.paintedIds()) Anchor.unpaint(id);
+    pendingSel = null;
+    locs = {};
+    orphans = {};
+    tracks = {};
+    PAGE = { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
+    // the conversation is gone (or was never this page's), so the first-turn
+    // context is armed again
+    pageHasSession = false;
+    sentArticleText = false;
+    lastContextHash = null;
+    // …and so is the record itself, and its snapshot: the next act sends a
+    // fresh one rather than writing this document's text over another's
+    registered = false;
+    lastSnapHash = null;
+    lastPostedTitle = '';
+    if (drawer) { drawer.setPage(PAGE); drawer.setOrphans({}); }
+    bg({ t: 'badge', count: 0 });
+  }
+
+  // ---- a single-page app moved the reader ----------------------------------
+  // THE INVARIANT: a message is filed under the document the reader is looking
+  // at when they send it. On the ordinary web that is free — a link tears the
+  // document down and this script is injected again into the next one. On an
+  // SPA it is not free at all: `history.pushState` swaps the article without
+  // reloading anything, and every url this tab puts on the wire afterwards is
+  // the url of an article that left the screen.
+  //
+  // So the identity is re-decided, through the very same funnel that decided it
+  // at load — the canonical link re-read, `Adapters.canonicalPageUrl` applied
+  // again, normUrl applied again — and NOTHING here special-cases a site. A
+  // route change that resolves to the identity we already hold (a section
+  // anchor, a query the site added, a canonical that still points at this
+  // article) changes nothing and returns false; that is the case this must not
+  // break, and it is the case the old `const` was written to protect.
+  //
+  // When it IS a different document, this tab stops being the old page's: what
+  // is painted is unpainted, the record is dropped, the per-page storage keys
+  // move, and `hello` re-keys the tab in the worker so the bots' replies are
+  // delivered to the page they belong to. Then the new page is loaded exactly
+  // as a fresh injection would have loaded it — dormant unless the companion
+  // says it is annotated, because activation is still not an act.
+  //
+  // Returns whether the identity actually moved, which is what the harness
+  // asserts on.
+  function rebindIdentity() {
+    // where an adapter or a project artifact owns the identity, the address bar
+    // never was the identity, so a route change says nothing about it
+    if (PROJECT || SITE) return false;
+    const href = liveHref();
+    const ident = identityFor(href);
+    if (!ident || /^(?:chrome|moz)-extension:/i.test(ident)) return false;
+    const next = normUrl(ident);
+    if (!next || next === URL_NOW) return false;
+    CANONICAL_HREF = readCanonical(href);
+    IDENT_HREF = ident;
+    URL_NOW = next;
+    PAGE_COMMENTS_KEY = 'bfp:page-comments:' + URL_NOW;
+    TRACK_KEY = 'bfp:track-changes:' + URL_NOW;
+    AUTOOPEN_KEY = 'bfp-autoopen:' + URL_NOW;
+    forgetPage();
+    // the reader's per-page switches are this page's, not the last one's
+    trackChanges = true;
+    loadTrackChanges();
+    bg({ t: 'hello', url: IDENT_HREF }).then(r => {
+      if (!r || !r.ok) return;
+      // already awake: stay awake, and re-anchor against the new record
+      if (active) { loadPage().then(() => connSocket(!!r.connected)); return; }
+      if (r.known) activate(false).then(() => connSocket(!!r.connected));
+    });
+    return true;
+  }
+
+  // pushState and replaceState are the only two ways an SPA can change the
+  // address without an event of its own, so they are wrapped — narrowly, and
+  // never swallowing the site's own call. popstate covers Back and Forward.
+  // Everything is deferred a tick: a framework's router rewrites the address
+  // first and the document (and its canonical link) a moment later, and reading
+  // the identity between the two would read half a navigation.
+  function watchSpaNavigation() {
+    let pending = 0;
+    const later = () => {
+      clearTimeout(pending);
+      pending = setTimeout(() => { try { rebindIdentity(); } catch { /* never the page's problem */ } }, 250);
+    };
+    try {
+      const h = window.history;
+      for (const name of ['pushState', 'replaceState']) {
+        const orig = h[name];
+        if (typeof orig !== 'function') continue;
+        h[name] = function (...args) {
+          const out = orig.apply(this, args);
+          later();
+          return out;
+        };
+      }
+    } catch { /* a page that will not be wrapped still gets popstate */ }
+    window.addEventListener('popstate', later);
+    // …and a last resort for a router that does neither: the title changing
+    // under us is the loudest signal an article has been replaced.
+    try {
+      const head = document.querySelector('head');
+      if (head && window.MutationObserver) {
+        const mo = new MutationObserver(() => { if (liveHref() !== IDENT_HREF) later(); });
+        mo.observe(head, { childList: true, subtree: true });
+      }
+    } catch { /* the two listeners above are the load-bearing half */ }
   }
 
   async function activate(openTab) {
@@ -1528,7 +1690,7 @@
 
       onSelect: () => commitSelection(),
 
-      onSave: async ({ quote, prefix, suffix, text }) => {
+      onSave: async ({ quote, prefix, suffix, text, route }) => {
         // The act that earns the record. Order matters on the first one:
         // record, then snapshot, then the message — so a mention's turn is
         // planned against a page whose full text is already on disk.
@@ -1536,7 +1698,7 @@
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
         if (wasNew) await snapshotNow();
-        const body = { url: URL_NOW, quote, prefix, suffix, msg: { text } };
+        const body = { url: URL_NOW, quote, prefix, suffix, msg: { text }, ...(route ? { route } : {}) };
         // page order is the extension's knowledge, not the server's: tell it
         // where in the stack this thread belongs (companion honours `index`)
         if (pendingSel) body.index = pageOrderIndex(pendingSel.start);
@@ -1546,7 +1708,7 @@
         if (pendingSel && pendingSel.page > 0) body.page = pendingSel.page;
         // an empty answer is NOT sent as an empty field: no article_text at
         // all, and the flag stays down so the next mention tries again
-        const ctx = await mentionContext(text);
+        const ctx = await mentionContext(text, route);
         applyContext(body, ctx);
         const r = await api('POST', '/thread', body);
         if (!r.ok) return failure(r);
@@ -1591,15 +1753,15 @@
       // client's own guard. It is a SUCCESS, and the msg it echoes is the
       // existing one: the `ts` check below is what keeps it from being appended
       // a second time.
-      onReply: async (threadId, text) => {
+      onReply: async (threadId, text, route) => {
         // the first-ever message on a page can be a page-chat question: the
         // same record-then-snapshot-then-message order as onSave
         const wasNew = !registered;
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
         if (wasNew) await snapshotNow();
-        const body = { url: URL_NOW, thread_id: threadId, text };
-        const ctx = await mentionContext(text);
+        const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}) };
+        const ctx = await mentionContext(text, route);
         applyContext(body, ctx);
         const r = await api('POST', '/reply', body);
         if (!r.ok) return failure(r);
@@ -1864,25 +2026,7 @@
         const r = await api('POST', '/delete-page', { url, delete_session: true });
         if (!r.ok) return failure(r);
         const mine = normUrl(url) === URL_NOW;
-        if (mine) {
-          for (const t of (PAGE && PAGE.threads) || []) Anchor.unpaint(t.id);
-          for (const id of Anchor.paintedIds()) Anchor.unpaint(id);
-          pendingSel = null;
-          locs = {};
-          orphans = {};
-          PAGE = { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
-          // the conversation is gone, so the first-turn context is armed again
-          pageHasSession = false;
-          sentArticleText = false;
-          lastContextHash = null;
-          // …and so is the record itself: a deleted page must not resurrect
-          // on the next visit, only on the next ACT (and its snapshot went
-          // with the record, so the next act sends a fresh one)
-          registered = false;
-          lastSnapHash = null;
-          if (drawer) { drawer.setPage(PAGE); drawer.setOrphans({}); }
-          bg({ t: 'badge', count: 0 });
-        }
+        if (mine) forgetPage();
         return { ok: true, session_deleted: !!(r.data && r.data.session_deleted), current: mine };
       },
 
@@ -2204,7 +2348,7 @@
   // normUrl, which means the user asked for this page's drawer even though
   // they have not clicked anything here. Consume it (delete first, so a crash
   // between here and open() cannot leave the flag armed forever) and open.
-  const AUTOOPEN_KEY = 'bfp-autoopen:' + URL_NOW;
+  let AUTOOPEN_KEY = 'bfp-autoopen:' + URL_NOW;
   function consumeAutoOpen() {
     if (!extensionAlive()) { GUARD.lose(); return; }
     try {
@@ -2266,6 +2410,7 @@
   }
 
   function boot() {
+    watchSpaNavigation();
     consumeAutoOpen();
     loadPageComments();
     loadTrackChanges();
@@ -2336,7 +2481,12 @@
     },
     // the page identity this document settled on at load, and whether the
     // document's own canonical link is what decided it
-    url: URL_NOW, identHref: IDENT_HREF, canonical: CANONICAL_HREF,
+    // getters, because a single-page app moves all three under the reader
+    get url() { return URL_NOW; },
+    get identHref() { return IDENT_HREF; },
+    get canonical() { return CANONICAL_HREF; },
+    // the SPA rebind, driven directly by test/harness.html
+    rebindIdentity,
     // the council project behind this page, or null — what decides that a
     // file: document is a page at all (see the gate at the top)
     get project() { return PROJECT; },

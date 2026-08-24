@@ -1904,6 +1904,230 @@ async function main() {
     shared.proc.kill();
   });
 
+  // --- a thread remembers who it is talking to ---------------------------
+  // The complaint this answers: tag @claude in the first comment, ask the
+  // follow-up without retyping the tag, and the follow-up used to become a
+  // note to self. A thread now has an ADDRESS — chat.stickyRoute — and an
+  // untagged message in it goes there. Its own server, because these assert on
+  // what reached the bridge.
+  {
+    const chat = await import(path.join(PLUGIN_DIR, 'chat.mjs'));
+
+    await test('stickyRoute: an empty thread is addressed to nobody', () => {
+      assert.equal(chat.stickyRoute([]), '');
+      assert.equal(chat.stickyRoute(undefined), '');
+      assert.equal(chat.stickyRoute([{ author: 'angadh', text: 'a note' }]), '');
+    });
+
+    await test('stickyRoute: the reader\'s last tag is the address', () => {
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: '@claude what is this?' },
+        { author: 'claude', text: 'a truss' },
+      ]), '@claude ');
+      // an EARLIER tag never wins: the last word is the address
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: '@claude what is this?' },
+        { author: 'angadh', text: '@codex you have a look' },
+      ]), '@codex ');
+      // both tagged, or @all, is the room
+      assert.equal(chat.stickyRoute([{ author: 'a', text: '@claude @codex both' }]), '@all ');
+    });
+
+    await test('stickyRoute: a bot\'s tag and a tools line claim nothing', () => {
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: '@claude take this' },
+        { author: 'claude', text: '@codex, over to you' },
+      ]), '@claude ', 'a hand-off a bot invented is not the reader\'s address');
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: '@codex take this' },
+        { author: 'codex', kind: 'tools', text: 'Read @claude/notes.md' },
+      ]), '@codex ');
+    });
+
+    await test('stickyRoute: a message addressed by a PILL counts, having no tag to read', () => {
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: 'a plain question', route: '@codex ' },
+      ]), '@codex ');
+      // the words still outrank the stamp on the same message
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: '@claude actually you', route: '@codex ' },
+      ]), '@claude ');
+      // and Note — a message stamped with nothing — ends the conversation
+      assert.equal(chat.stickyRoute([
+        { author: 'angadh', text: '@claude take this' },
+        { author: 'angadh', text: 'just a note now' },
+      ]), '', 'a message with neither tag nor stamp is addressed to nobody');
+    });
+
+    await test('routeOf: a hint only ever fills in for a message that tagged nobody', () => {
+      assert.equal(chat.routeOf('a plain question', false, '@codex '), '@codex ');
+      assert.equal(chat.routeOf('@claude a tagged one', false, '@codex '), '@claude ',
+        'the sentence the reader wrote is the later word');
+      assert.equal(chat.routeOf('a plain question', true, '@codex '), '@all ',
+        'and forceAll/untaggedAll still outranks both');
+      assert.deepEqual(chat.routedAgents('a plain question', false, '@codex '), ['codex']);
+    });
+
+    const stickyRoot = tmpRoot('sticky');
+    const stickyLog = path.join(stickyRoot, 'bridge-log.jsonl');
+    const sticky = await startServer({
+      root: stickyRoot,
+      env: {
+        PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+        MOCK_BRIDGE_LOG: stickyLog, MOCK_TURN_DELAY_MS: '80', PLUGIN_SID_WAIT_MS: '400',
+      },
+    });
+    const SU = 'https://ledger.test/2026/sticky-threads';
+    await POST(sticky.base, '/page', { url: SU, title: 'Sticky threads', site: 'ledger.test' });
+    const sent = () => inputs(stickyLog);
+    const turnFor = async needle => {
+      await waitFor(() => sent().some(t => t.includes(needle)), `the turn saying ${needle}`);
+      return sent().find(t => t.includes(needle));
+    };
+
+    let stickyThread = null;
+    await test('a thread opened with @claude summons claude, as it always did', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/thread', {
+        url: SU, quote: 'the truss, not the hull', msg: { text: '@claude why the truss?' },
+      });
+      assert.equal(r.json.queued, true);
+      stickyThread = r.json.thread.id;
+      assert.ok((await turnFor('why the truss?')).startsWith('@claude '));
+    });
+
+    await test('…and the UNTAGGED follow-up in that thread goes to claude too', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: stickyThread, text: 'and the second half?' });
+      assert.equal(r.json.queued, true, 'the follow-up is not a note to self');
+      const turn = await turnFor('and the second half?');
+      assert.ok(turn.startsWith('@claude '), `the thread\'s address held — got ${JSON.stringify(turn.slice(0, 40))}`);
+      // the reader's own words are untouched: the prefix is the envelope's
+      assert.ok(/and the second half\?/.test(turn));
+    });
+
+    await test('a new tag re-aims the thread, and the next untagged message follows it', async () => {
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply',
+        { url: SU, thread_id: stickyThread, text: '@codex your turn on this' });
+      assert.ok((await turnFor('your turn on this')).startsWith('@codex '));
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply', { url: SU, thread_id: stickyThread, text: 'and after that?' });
+      const turn = await turnFor('and after that?');
+      assert.ok(turn.startsWith('@codex '), `the last word is the address — got ${JSON.stringify(turn.slice(0, 40))}`);
+    });
+
+    await test('a bot answering in the thread never re-aims it', async () => {
+      fs.writeFileSync(stickyLog, '');
+      await waitFor(async () => {
+        const p = (await GET(sticky.base, `/page?url=${encodeURIComponent(SU)}`)).json;
+        const t = (p.threads || []).find(x => x.id === stickyThread);
+        return (t.msgs || []).some(m => m.author === 'codex');
+      }, 'codex to have replied in the thread');
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply', { url: SU, thread_id: stickyThread, text: 'one more thing' });
+      assert.ok((await turnFor('one more thing')).startsWith('@codex '));
+    });
+
+    await test('the Note pill sends to nobody, and unsticks the thread', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: stickyThread, text: 'remember to check the source', route: 'none' });
+      assert.equal(r.status, 200);
+      assert.ok(!r.json.queued, 'Note is a real choice, and it summons nobody');
+      await sleep(300);
+      assert.equal(sent().length, 0, 'and no turn was sent');
+      // …and the thread's address is now nobody, so the NEXT untagged message
+      // is a note too: this is how a reader steps out of a conversation
+      const again = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: stickyThread, text: 'and check the other one' });
+      assert.ok(!again.json.queued);
+      await sleep(300);
+      assert.equal(sent().length, 0);
+    });
+
+    await test('a pill addresses a message with no tag in it, and sticks', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: stickyThread, text: 'what about the mass budget?', route: 'claude' });
+      assert.equal(r.json.queued, true);
+      const turn = await turnFor('what about the mass budget?');
+      assert.ok(turn.startsWith('@claude '), 'the pill routed it');
+      assert.ok(!/@claude what about/.test(turn), 'and nothing was typed into the reader\'s words');
+      // the record remembers where it went, which is what makes it stick
+      const p = (await GET(sticky.base, `/page?url=${encodeURIComponent(SU)}`)).json;
+      const t = (p.threads || []).find(x => x.id === stickyThread);
+      const mine = (t.msgs || []).filter(m => m.text === 'what about the mass budget?');
+      assert.equal(mine.length, 1);
+      assert.equal(mine[0].route, '@claude ');
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply', { url: SU, thread_id: stickyThread, text: 'in kilos, please' });
+      assert.ok((await turnFor('in kilos, please')).startsWith('@claude '));
+    });
+
+    await test('a tag in the words beats the pill beside them', async () => {
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply',
+        { url: SU, thread_id: stickyThread, text: '@codex on second thoughts', route: 'claude' });
+      const turn = await turnFor('on second thoughts');
+      assert.ok(turn.startsWith('@codex '), `the sentence is the later word — got ${JSON.stringify(turn.slice(0, 40))}`);
+    });
+
+    await test('a pill on the FIRST comment opens the thread already addressed', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/thread', {
+        url: SU, quote: 'the second stage', msg: { text: 'is this figure right?' }, route: 'codex',
+      });
+      assert.equal(r.json.queued, true, 'a pill summons without a tag');
+      assert.ok((await turnFor('is this figure right?')).startsWith('@codex '));
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply', { url: SU, thread_id: r.json.thread.id, text: 'and the units?' });
+      assert.ok((await turnFor('and the units?')).startsWith('@codex '));
+    });
+
+    await test('a thread nobody ever addressed is still a notebook', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/thread', {
+        url: SU, quote: 'the hull', msg: { text: 'check this later' },
+      });
+      assert.ok(!r.json.queued);
+      await POST(sticky.base, '/reply', { url: SU, thread_id: r.json.thread.id, text: 'still thinking' });
+      await sleep(300);
+      assert.equal(sent().length, 0, 'no tag, no pill, no history: no bots');
+    });
+
+    await test('PAGE CHAT is untouched by any of it', async () => {
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply', { url: SU, thread_id: '__page__', text: '@claude a page question' });
+      assert.ok((await turnFor('a page question')).startsWith('@claude '));
+      fs.writeFileSync(stickyLog, '');
+      // an ordinary page's page chat has no sticky address and never grows one
+      const r = await POST(sticky.base, '/reply', { url: SU, thread_id: '__page__', text: 'and a plain one' });
+      assert.ok(!r.json.queued, 'page chat keeps its own rule');
+      await sleep(300);
+      assert.equal(sent().length, 0);
+      // …and a route on the wire cannot talk it into one
+      const forced = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: '__page__', text: 'nor this one', route: 'claude' });
+      assert.ok(!forced.json.queued);
+      await sleep(300);
+      assert.equal(sent().length, 0);
+    });
+
+    await test('a nonsense route on the wire is ignored, not obeyed', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/thread', {
+        url: SU, quote: 'the fairing', msg: { text: 'a thought' }, route: 'gpt5',
+      });
+      assert.ok(!r.json.queued, 'an unknown pill addresses nobody');
+      await sleep(300);
+      assert.equal(sent().length, 0);
+    });
+
+    sticky.proc.kill();
+  }
+
   // --- the double-click guard -------------------------------------------
   // Its own server: these tests assert on what reached the bridge, and the
   // main instance's log is a fixture for the choreography tests above.

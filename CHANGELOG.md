@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## 2026-08-24
+
+- **Discuss: a comment thread remembers who it is talking to.** Tag `@claude`
+  under a passage and the follow-up used to summon nobody at all — an untagged
+  reply was a note to self, so every back-and-forth message meant retyping the
+  tag or watching the question die on the page. A thread now has an **address**:
+  once you have written to a bot in it, untagged replies keep going to that bot,
+  until you say otherwise. Tagging someone else in a later message re-aims the
+  thread, and a bot writing "@codex, over to you" never does — the address is
+  yours.
+
+  And it is now something you can see and click rather than type: a small
+  **`Note · Claude · Codex · All`** row sits over the reply box, lit on whoever
+  the next message is for. Click one to aim it without an @-mention; type a tag
+  and the row follows what you typed; **Note** sends to nobody, which is also how
+  you step back out of a conversation and go back to taking notes. Both on the
+  Mac and on the phone. Page chat is unchanged — plain text there means what it
+  always meant.
+
+- **Discuss: comments no longer land on the article you were reading before.**
+  On a site that swaps articles without reloading the page — Medium, Substack
+  and most modern publishers — the extension kept the identity it was given when
+  the tab first opened, so a comment made on the second article could be filed
+  against the first one, and the first one could quietly acquire the second's
+  title. The extension now notices a client-side navigation, re-decides which
+  document it is on, and re-checks once more before any message goes out. A
+  site that merely rewrites its path per section of one article still counts as
+  one article, exactly as before. One misfiled conversation was moved back to
+  the page it belongs to.
+
 ## 2026-08-20
 
 - **Default reasoning effort is now medium for both bots.** New council chats

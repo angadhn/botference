@@ -47,6 +47,8 @@
                      replies" control is on screen instead)
     ?pages=1         open the Pages view — the plugin's own list of every
                      annotated page (screenshot state)
+    ?routes=1        the pill row over a comment thread's composer — who the
+                     next message is for, with Claude picked (screenshot state)
     ?mention=1       the @-menu held open over the page-chat composer, with
                      half a handle typed (screenshot state)
     ?gdocs=1         pretend to be a Google Doc: the url, the " - Google Docs"
@@ -2328,6 +2330,56 @@ async function selftest() {
   await sleep(80);
   d.open('comments');
   check('re-opening restores the chosen width', pw() === want && htmlEl.style.marginRight === want + 'px');
+
+  // ---- the pill row: who the next message in this thread is for ----------
+  // A thread is a conversation with somebody, and the row says with whom. The
+  // second thread's last human message ("Agreed. Flagging it for the desk.")
+  // tags nobody, so the thread is addressed to nobody and Note is lit — the
+  // Discuss default, drawn instead of assumed.
+  {
+    const tagged = RECORD.threads[1].id;
+    const card = S.querySelector('.card[data-thread="' + tagged + '"]');
+    const row = card && card.querySelector('.composer .routes');
+    const names = row ? [...row.querySelectorAll('.rpill')].map(b => b.dataset.route) : [];
+    check('every thread composer carries a pill row',
+      [...S.querySelectorAll('.pane[data-pane="comments"] .card .composer')]
+        .every(c => !!c.querySelector('.routes')));
+    check('\u2026offering Note, both bots and the room',
+      names.join(',') === 'none,claude,codex,all');
+    const lit = () => [...row.querySelectorAll('.rpill.on')].map(b => b.dataset.route).join(',');
+    check('a thread whose last word tagged nobody is lit at Note', lit() === 'none');
+    // typing a tag is still the last word, and the row says so as it is typed
+    const box = card.querySelector('.composer textarea');
+    box.value = '@codex and the timeline?';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(40);
+    check('typing a tag lights that bot at once', lit() === 'codex');
+    check('\u2026and it is the pill that says so, not two of them',
+      row.querySelectorAll('.rpill.on').length === 1 &&
+      row.querySelector('.rpill.on').getAttribute('aria-pressed') === 'true');
+    box.value = '';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(40);
+    check('clearing the tag hands the row back to the thread', lit() === 'none');
+    // …and clicking one is the whole point: an address without typing
+    card.querySelector('.rpill[data-route="claude"]').click();
+    await sleep(60);
+    const row2 = S.querySelector('.card[data-thread="' + tagged + '"] .composer .routes');
+    check('clicking a pill aims the next message',
+      [...row2.querySelectorAll('.rpill.on')].map(b => b.dataset.route).join(',') === 'claude');
+    check('\u2026and the draft in the box survived the click',
+      S.querySelector('.card[data-thread="' + tagged + '"] .composer textarea').value === '');
+    card.querySelector('.rpill[data-route="none"]').click();
+    await sleep(60);
+  }
+  // Page chat has a routing rule of its own (untaggedGoesToAll) and must not
+  // grow a second, contradictory one.
+  d.open('chat');
+  await sleep(60);
+  check('page chat has no pill row',
+    !S.querySelector('.pane[data-pane="chat"] .composer .routes'));
+  d.open('comments');
+  await sleep(60);
 
   // over-wide drags are clamped to half the viewport (never cover the article)
   grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: window.innerWidth - want }));
@@ -4954,6 +5006,40 @@ async function selftestCanonical() {
     !threadUrls.concat(replyUrls, helloUrls, routeUrls).some(u => String(u).includes('-appendix-d')));
   history.replaceState({}, '', splinter);
 
+  // ---- …and the SPA case the other way round ------------------------------
+  // Everything above is the identity REFUSING to move: a section splinter is
+  // the same document. This is the opposite and it is the bug that put a
+  // reader's comment on the wrong Medium article — a single-page app swapping
+  // one piece for the NEXT one, with no reload, no re-injection, and (until
+  // this fix) an identity frozen at whatever was on screen when the tab
+  // opened. The site does exactly what Medium does: rewrites the canonical
+  // link, then pushes a new path.
+  const other = new URL('/test/second-article', location.href).href;
+  document.querySelector('link[rel~="canonical"]').setAttribute('href', '/test/second-article');
+  history.pushState({}, '', '/test/second-article-and-its-slug');
+  await sleep(500);   // the listeners settle a quarter-second after the router
+  check('a route change to a DIFFERENT document moves the identity',
+    window.__bfp.url === other);
+  check('\u2026and says hello about it, so the bots\u2019 replies follow the reader',
+    helloUrls[helloUrls.length - 1] === other);
+  // (the mock answers GET /page with the same record for every url, so the
+  // marks come straight back — what is worth asserting is that the tab went
+  // and ASKED, for the new document and not the one it has left)
+  check('\u2026and the record is re-read for the document now on screen',
+    apiCalls.some(c => c.path === '/page?url=' + encodeURIComponent(other)));
+
+  const before2 = replyUrls.length;
+  d.open('chat');
+  const chat2 = await until(() => S.querySelector('.pane[data-pane="chat"] .composer textarea'));
+  chat2.value = 'this belongs to the second article';
+  chat2.dispatchEvent(new Event('input', { bubbles: true }));
+  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  await until(() => replyUrls.length > before2 ? true : null);
+  check('a message sent afterwards is filed under the article on screen',
+    replyUrls[replyUrls.length - 1] === other);
+  check('\u2026and never under the one the reader has left',
+    !replyUrls.slice(before2).some(u => u === CANON_PARENT));
+
   const bad = out.filter(l => l[0] === '✗');
   logQuiet = true;
   const el = document.getElementById('h-log');
@@ -6948,6 +7034,24 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     }
     // the @-menu, held open for a screenshot: half a handle typed, the list
     // showing whoever can be summoned
+    // ?routes=1 — the pill row, on screen. A thread composer with a draft in
+    // it, which is exactly when the row appears and exactly when the reader
+    // needs to know where the words are about to go.
+    if (Q.get('routes') === '1') {
+      setTimeout(() => {
+        d.open('comments');
+        const card = d.shadow.querySelector('.pane[data-pane="comments"] .card');
+        const ta = card && card.querySelector('.composer textarea');
+        if (!ta) return log('routes: no thread composer');
+        const pill = card.querySelector('.rpill[data-route="claude"]');
+        if (pill) pill.click();
+        const box = d.shadow.querySelector('.pane[data-pane="comments"] .card .composer textarea');
+        box.focus();
+        box.value = 'and what does that do to the second half?';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        log('routes: the pill row over a thread composer (screenshot state)');
+      }, 300);
+    }
     if (Q.get('mention') === '1') {
       setTimeout(() => {
         d.open('chat');

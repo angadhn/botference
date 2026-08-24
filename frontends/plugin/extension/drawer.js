@@ -51,9 +51,11 @@
 //   {ok:false, error:'…'}         the pending message stays on screen with a
 //                                 retry and a discard
 //
-//   onSave({quote,prefix,suffix,text})  new anchored thread committed
+//   onSave({quote,prefix,suffix,text,route})  new anchored thread committed
 //   onCancelNew()                       the pending new-thread card dismissed
-//   onReply(threadId, text)             threadId '__page__' = page chat
+//   onReply(threadId, text, route)      threadId '__page__' = page chat
+//     `route` (threads only) is the composer pill: 'none'|'claude'|'codex'|
+//     'all' — who this message is for when its words tag nobody
 //   onEdit(threadId, ts, text)
 //   onDelete(threadId, ts|null)         null ts = delete the whole thread
 //   onResolve(threadId, resolved)       file a thread / put it back →
@@ -210,6 +212,30 @@
   // two bots. Threads on the same page keep the ordinary rule and the ordinary
   // hint — the difference is real, so it is stated where it applies.
   const COUNCIL_HINT = 'plain text goes to @all — or tag one bot';
+  // THE PILL ROW, and the rule it draws.
+  //
+  // A thread is a conversation with somebody: once the reader has tagged a bot
+  // in one, the next message is almost always for the same bot — and having to
+  // retype "@claude" every turn (or watch the turn become a note to self when
+  // they forget) is the single most-complained-about thing about threads. So a
+  // thread remembers its address, the pills SAY what it is, and clicking one
+  // changes it without typing.
+  //
+  // `none` is a first-class pill and not an absence: a note under a passage you
+  // have been discussing is a real thing to want, and it is how the reader
+  // steps out of a conversation. It is also the default of a thread nobody has
+  // ever addressed, which is Discuss's original rule, unmoved.
+  //
+  // Threads only. Page chat's routing is a different rule with a different
+  // reason (server.mjs untaggedGoesToAll) and two pill rows disagreeing about
+  // what plain text means would be worse than no pills at all.
+  const ROUTE_LABEL = { none: 'Note', all: 'All' };
+  const routeLabel = h => ROUTE_LABEL[h] || (h.charAt(0).toUpperCase() + h.slice(1));
+  const ROUTE_TIP = {
+    none: 'a note in this thread — no bot is summoned',
+    all: 'both bots answer this thread',
+  };
+  const routeTip = h => ROUTE_TIP[h] || `@${h} answers this thread — and untagged replies keep going to @${h}`;
   // ⧉ is the same overlap glyph the council's copy button draws as an SVG.
   // A glyph and not a word: the drawer's message controls are a 24px row in
   // the corner of a 420px column, and "copy" would not fit beside ✎ and ✕.
@@ -1136,6 +1162,13 @@
       exportOpen: false,
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
+      // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the composer's pill row.
+      // target -> 'none'|'claude'|'codex'|'all', set by clicking a pill and by
+      // sending a message that typed a tag. UNSET is the normal state and does
+      // not mean "nobody": it means the thread's own sticky address answers
+      // (stickyRouteOf), which is what makes a reopened drawer show the same
+      // pill lit that the reader left lit.
+      routes: {},
       // OPTIMISTIC SEND (round 5). A message the user has committed to but the
       // companion has not confirmed lives here, not in the composer: it is
       // rendered as a real (dimmed, spinner-bearing) message in its thread the
@@ -1723,14 +1756,97 @@
     // one exception is a brand-new thread, where a second send before the
     // server has minted an id would create a second thread for the same
     // passage — that button waits.
-    function composerHtml(target, label, extra, hint) {
+    function composerHtml(target, label, extra, hint, pills) {
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
       return `<div class="composer${draft.trim() ? ' has-draft' : ''}" data-target="${esc(target)}">
+        ${pills ? routesHtml(target) : ''}
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
         <div class="crow"><span class="hint">${esc(hint || HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
       </div>`;
+    }
+
+    // ---- the pill row -------------------------------------------------------
+    // A thread's SETTLED address: who the reader last wrote to here. The rule is
+    // the companion's (chat.stickyRoute) and this is the second copy of it —
+    // deliberately, as normUrl and tagHue are duplicated across this boundary,
+    // because the pill has to be lit before any round trip and a lit pill that
+    // the server then disagreed with would be a lie. test/tags.test.mjs's
+    // pattern applies: the copies are asserted against each other in the tests.
+    //
+    // Only the reader's own messages count (a bot writing "@codex, over to you"
+    // is not an instruction from the reader), `tools` narration counts for
+    // nothing, and a message says where it went either in its words or in the
+    // `route` the companion stamped on it when a pill said it instead.
+    function stickyRouteOf(target) {
+      const msgs = realMsgs(target);
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m || m.kind === 'tools' || isBot(m.author)) continue;
+        return routeWordOf(m.text) || String(m.route || '').trim().replace(/^@/, '') || 'none';
+      }
+      return 'none';
+    }
+    // the tag a message's own words carry, as a pill name — the same strict
+    // rule the companion routes by (chat.routePrefix): one bot named is that
+    // bot's, @all or both named is the room's, nothing named is nothing
+    function routeWordOf(text) {
+      const found = String(text || '').match(/@(claude|codex|all)\b/gi) || [];
+      const tags = [];
+      for (const f of found) {
+        const h = f.slice(1).toLowerCase();
+        if (tags.indexOf(h) === -1) tags.push(h);
+      }
+      if (!tags.length) return '';
+      return (tags.indexOf('all') >= 0 || tags.length > 1) ? 'all' : tags[0];
+    }
+    // What the NEXT message in this composer will do: the pill the reader
+    // clicked, else the thread's sticky address — overruled live by a tag
+    // actually typed into the box, because that is the message that will be
+    // sent and the row must not claim otherwise while it is being written.
+    function routeNow(target) {
+      const typed = routeWordOf(D.drafts[target] || '');
+      if (typed) return typed;
+      return D.routes[target] || stickyRouteOf(target);
+    }
+    function routesHtml(target) {
+      const now = routeNow(target);
+      const pills = ['none'].concat(agentRoster(), ['all']);
+      return `<div class="routes" role="group" aria-label="who this message is for">`
+        + pills.map(h => `<button class="rpill${h === now ? ' on' : ''}" type="button"
+            data-act="route" data-target="${esc(target)}" data-route="${esc(h)}"
+            aria-pressed="${h === now}" title="${esc(routeTip(h))}">${esc(routeLabel(h))}</button>`).join('')
+        + `</div>`;
+    }
+    // Typing "@codex" into the box must light Codex the moment it is typed —
+    // the row is a promise about the next send, and a stale promise beside a
+    // half-typed tag is exactly the confusion the pills exist to end. Repainted
+    // in place rather than through render(), because re-rendering a composer
+    // under a caret is how you lose the caret.
+    function syncRoutes(ta) {
+      const box = ta && ta.closest && ta.closest('.composer');
+      const row = box && box.querySelector('.routes');
+      if (!row) return;
+      const target = box.getAttribute('data-target');
+      const typed = routeWordOf(ta.value);
+      const now = typed || D.routes[target] || stickyRouteOf(target);
+      row.querySelectorAll('.rpill').forEach(b => {
+        const on = b.dataset.route === now;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    // Clicking a pill is not a send: it sets where the next message goes and
+    // repaints the row, leaving the draft (and the caret) exactly where it was.
+    function pickRoute(target, route) {
+      if (!target || !route) return;
+      harvestDrafts();
+      D.routes[target] = route;
+      render();
+      const box = composerBox(target);
+      if (box) box.focus();
     }
 
     // ---- the @-menu ---------------------------------------------------------
@@ -2063,7 +2179,7 @@
         ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
-        ${composerHtml(t.id, 'Reply…')}
+        ${composerHtml(t.id, 'Reply…', '', '', true)}
       </div>`;
     }
 
@@ -2100,7 +2216,7 @@
         </div>
         ${open ? `<div class="thread">${msgsHtml(t.id, t.msgs)}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
           ${statusHtml(t.id)}
-          ${composerHtml(t.id, 'Reply — replying reopens this thread…')}` : ''}
+          ${composerHtml(t.id, 'Reply — replying reopens this thread…', '', '', true)}` : ''}
       </div>`;
     }
 
@@ -2111,7 +2227,7 @@
         <div class="quote" title="the passage you selected">“${esc(p.quote)}”</div>
         ${out ? `<div class="thread">${out}</div>` : ''}
         ${composerHtml('__new__', 'Comment on this passage…',
-          '<button class="cancel" data-act="cancel-new" type="button">Cancel</button>')}
+          '<button class="cancel" data-act="cancel-new" type="button">Cancel</button>', '', true)}
         ${statusHtml('__new__')}
       </div>`;
     }
@@ -3842,6 +3958,7 @@
           }
           return;
         }
+        if (act === 'route') { pickRoute(target, btn.dataset.route); return; }
         if (act === 'send') { doSend(target); return; }
         if (act === 'send-retry') { retrySend(target, btn.dataset.out); return; }
         if (act === 'send-discard') { discardSend(target, btn.dataset.out); return; }
@@ -3918,6 +4035,7 @@
           // a draft holds its composer open (the Send row) even after blur
           ta.closest('.composer').classList.toggle('has-draft', !!ta.value.trim());
           syncMention(ta);
+          syncRoutes(ta);
         }
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
@@ -4127,7 +4245,13 @@
         if (!text) return;
         const btn = D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .send');
         if (btn) btn.disabled = true;          // released by the render below
-        deliver(target, queueSend(target, text));
+        // Where this one goes, decided while the words are still here: a tag in
+        // the text, else the pill, else the thread's sticky address. Sending
+        // also SETTLES the row — a message that typed "@codex" leaves Codex lit,
+        // so the next untagged reply goes where the reader can see it will.
+        const route = routeNow(target);
+        D.routes[target] = route;
+        deliver(target, queueSend(target, text, route));
       } finally {
         delete D.sendLock[target];
       }
@@ -4135,10 +4259,13 @@
 
     // The synchronous half: the message becomes a pending message, the composer
     // is emptied, the last error line goes.
-    function queueSend(target, text) {
+    function queueSend(target, text, route) {
       const list = D.outbox[target] || (D.outbox[target] = []);
       const twins = list.filter(e => e.text === text).length;
-      const entry = { id: 'o-' + (++outSeq), text, state: 'sending', error: '',
+      // `route` rides the entry rather than being recomputed on delivery: a
+      // retry minutes later must go where the message was addressed when it was
+      // written, not where the pill happens to point by then.
+      const entry = { id: 'o-' + (++outSeq), text, route: route || '', state: 'sending', error: '',
                       seen: countSame(target, text) + twins };
       list.push(entry);
       closeMention();   // the message has gone; there is nothing left to complete
@@ -4172,12 +4299,12 @@
       let res;
       try {
         res = target === '__new__'
-          ? await cb('onSave')({ ...D.pending, text: entry.text })
+          ? await cb('onSave')({ ...D.pending, text: entry.text, route: entry.route })
           // the library is a page chat on a page nobody is standing on, so the
           // send says WHICH page rather than letting content.js assume this one
           : target === LIBRARY_TARGET
             ? await cb('onLibraryReply')(entry.text)
-            : await cb('onReply')(target, entry.text);
+            : await cb('onReply')(target, entry.text, entry.route);
       } catch (e) {
         res = { ok: false, error: String((e && e.message) || e) };
       }
@@ -4202,6 +4329,10 @@
         D.pending = null;
         // the spotlight follows the thread the composer just became
         if (D.focused === '__new__') D.focused = newId;
+        // …and so does the pill row: the address the reader picked for the
+        // first comment is this thread's address now
+        if (newId && D.routes.__new__) D.routes[newId] = D.routes.__new__;
+        delete D.routes.__new__;
       }
       const key = target === '__new__' ? newId : target;
       // The companion took the message but will not summon the bots for this
