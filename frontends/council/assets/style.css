@@ -107,6 +107,20 @@ body.side-collapsed #side { margin-left: -272px }
   color: var(--fg) }
 .new-opts button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent-hover) }
+/* "File in:" dropdown under the New/chat button — same inline-panel manner
+   as #new-project-form: no modal, no prompt(), just the choice */
+#new-chat-menu { margin: -.55rem 1rem .8rem }
+.new-menu { display: flex; flex-direction: column; border: 1px solid var(--accent);
+  border-radius: 10px; overflow: hidden; background: var(--card) }
+.new-menu-lede { padding: .35rem .6rem; color: var(--muted);
+  font: 700 .64rem var(--sans); text-transform: uppercase; letter-spacing: .08em }
+.new-menu button { border: 0; background: none; text-align: left; padding: .4rem .6rem;
+  color: var(--fg); font: 500 .8rem var(--sans); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis }
+.new-menu button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-hover) }
+.new-menu button.plain { border-top: 1px solid var(--card-line); color: var(--muted) }
+.sess-new { color: var(--accent) }
 #new-project-form { margin: -.55rem 1rem .8rem }
 #new-project-form:not([hidden]) { display: flex; gap: .4rem }
 #new-project-form input { flex: 1; min-width: 0; padding: .45rem .6rem; border-radius: 8px;

@@ -18,10 +18,13 @@
   <div class="new-split" role="group" aria-label="create">
     <span class="new-lede" aria-hidden="true">＋<b>New</b></span>
     <div class="new-opts">
-      <button id="new-chat" aria-label="new chat">chat</button>
+      <button id="new-chat" aria-label="new chat" aria-haspopup="true" aria-expanded="false">chat</button>
       <button id="new-project" aria-label="new project">project</button>
     </div>
   </div>
+  <!-- "File in: <project> / just a chat" — asked up front, before the chat
+       exists, so nothing has to guess where it belongs later -->
+  <div id="new-chat-menu" hidden></div>
   <form id="new-project-form" hidden>
     <input id="new-project-title" type="text" autocomplete="off"
       enterkeyhint="done" placeholder="Project title…" aria-label="new project title">

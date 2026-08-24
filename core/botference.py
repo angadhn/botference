@@ -1246,7 +1246,28 @@ class Botference:
         self.paths = paths or BotferencePaths.resolve()
         self.session_store = SessionStore(self.paths)
         self.project_store = ProjectStore(self.paths.project_root)
+        # Two different questions, deliberately two different fields:
+        #
+        #   active_project_id — the LENS. Which project's plan/checkpoint
+        #       files this room writes to, which project the panel highlights,
+        #       what /resume is scoped to. Moves as you browse.
+        #   session_project_id — the FILING. Which project THIS chat belongs
+        #       to. Set once, by an explicit act (/file, /project assign,
+        #       /project open, filed-at-creation), and never inferred again.
+        #
+        # They used to be one field, and _persist_session stamped the lens
+        # into the payload on every save. That meant whatever project happened
+        # to be active when a save fired silently re-filed the chat — chats
+        # hopped projects behind the user's back, and a stale tab holding an
+        # old lens could re-file a chat it wasn't even showing. Saving must
+        # never be an act of filing; that is the whole point of the split.
         self.active_project_id: str = ""
+        self.session_project_id: str = ""
+        # "Inbox" said out loud rather than by omission — /project clear, or
+        # /new --inbox. The first-message "where should this go?" prompt is
+        # for chats nobody has decided about; re-asking someone who just
+        # answered is how a helpful nudge turns into nagging.
+        self._inbox_by_choice: bool = False
         self.session_id = str(uuid.uuid4())
         self.created_at = iso_now()
         self.updated_at = self.created_at
@@ -1817,7 +1838,8 @@ class Botference:
             "task": self.task,
             "mode": self.mode.value,
             "lead": self.lead,
-            "project_id": self.active_project_id,
+            # The chat's own filing, never the browsing lens (see __init__).
+            "project_id": self.session_project_id,
             "route": self.router.current_route,
             "router_had_first_turn": self.router._had_first_turn,
             "observe": self.observe,
@@ -1882,7 +1904,7 @@ class Botference:
             not self.transcript.entries
             and not self._models_initialized
             and not self.custom_title
-            and not self.active_project_id
+            and not self.session_project_id
         ):
             return
         try:
@@ -1895,9 +1917,13 @@ class Botference:
                 self.updated_at = iso_now()
                 self._persisted_activity = activity
             self.session_store.save(self.session_id, self._session_payload())
-            if self.active_project_id:
+            # Re-assert the chat's OWN filing only. Using the active project
+            # here is what let a save re-file a chat into whatever the user
+            # happened to be browsing; an unfiled chat stays unfiled no matter
+            # which project is open.
+            if self.session_project_id:
                 self.project_store.associate_session(
-                    self.active_project_id, self.session_id
+                    self.session_project_id, self.session_id
                 )
         except OSError as exc:
             log.warning("Failed to persist botference session %s: %s", self.session_id, exc)
@@ -2004,8 +2030,13 @@ class Botference:
             self.task = str(payload.get("task", self.task))
             self.lead = str(payload.get("lead", "auto"))
             # Opening a chat carries you into its project — that is what makes
-            # "click any chat in any project and it just works" true.
-            self.active_project_id = self._restored_project_id(payload)
+            # "click any chat in any project and it just works" true. The
+            # filing comes along unchanged: this is also the migration path
+            # for chats saved before the split, whose membership the session
+            # index (not the payload) records.
+            self.session_project_id = self._restored_project_id(payload)
+            self.active_project_id = self.session_project_id
+            self._inbox_by_choice = False
             self.observe = bool(payload.get("observe", self.observe))
             self._set_claude_subagents(bool(payload.get("claude_subagents")))
             self.router.current_route = str(payload.get("route", "@all"))
@@ -2472,7 +2503,11 @@ class Botference:
             return
 
         if parsed.kind is InputKind.NEW:
-            self._start_new_chat(parsed.body, ui)
+            title, filing, error = self._parse_new_args(parsed.body)
+            if error:
+                self._add_room_entry(ui, "system", error)
+                return
+            self._start_new_chat(title, ui, filing=filing)
             return
 
         if parsed.kind is InputKind.FILE:
@@ -2552,6 +2587,7 @@ class Botference:
         self._add_room_entry(ui, "system", "\n".join([
             "Chat lifecycle:",
             "  /new [title]        — Start a fresh chat here (current one is saved)",
+            "                        /new --project <id> files it there; --inbox leaves it unfiled",
             "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
             "  /file [<project-id>] — File this chat under a project, which becomes active"
             " (picker without args; alias /add-to-project)",
@@ -2673,7 +2709,11 @@ class Botference:
         action = parts[0].lower()
         value = parts[1].strip() if len(parts) > 1 else ""
         if action == "clear":
+            # Unfiling is as explicit as filing: clear both the filing and
+            # the lens, so the chat really lands back in Inbox.
+            self.session_project_id = ""
             self.active_project_id = ""
+            self._inbox_by_choice = True
             self._persist_session()
             # The payload now says Inbox, and an empty payload project_id
             # falls back to the session index — so a leftover association
@@ -2738,13 +2778,13 @@ class Botference:
     def _activate_project(self, project: ProjectInfo, ui: UIPort) -> None:
         """Make *project* this chat's project — the only way that sticks.
 
-        A chat's project IS its bridge's active project at save time:
-        ``_persist_session`` stamps ``active_project_id`` into the payload
-        (authoritative for membership) and re-associates the session index
-        after every turn. So filing the chat you are sitting in has to move
-        the active context too, otherwise the next save quietly undoes it.
-        Every "file the current chat" path funnels through here.
+        This is one of the few places allowed to write ``session_project_id``:
+        filing is an explicit act, and every "file the current chat" path
+        funnels through here. The lens moves with it, because filing the chat
+        you are sitting in and then being left looking at some other project's
+        plan files would be nonsense.
         """
+        self.session_project_id = project.id
         self.active_project_id = project.id
         self._persist_session()
         self.project_store.associate_session(project.id, self.session_id)
@@ -2782,9 +2822,11 @@ class Botference:
         self.project_store.set_status(project.id, status, title=project.title)
         if status != "active" and self.active_project_id == project.id:
             # Don't leave the room pointed at a project the user just filed
-            # away — fall back to Inbox/global scope.
+            # away — fall back to Inbox/global scope. Only the lens moves:
+            # archiving explicitly promises the chats stay put, so the
+            # filing (session_project_id) is left alone and unarchiving
+            # brings this chat back with the rest of them.
             self.active_project_id = ""
-            self._persist_session()
         self._sync_project_ui(ui)
         if status == "active":
             self._add_room_entry(
@@ -2855,9 +2897,8 @@ class Botference:
             return
 
         if session_id == self.session_id:
-            # Filing the chat you are in = moving its working context. Any
-            # other treatment is a no-op: the next save re-stamps the payload
-            # (and the index) from active_project_id.
+            # Filing the chat you are in = moving its working context too;
+            # _activate_project writes the filing and the lens together.
             self._activate_project(project, ui)
             self._add_room_entry(
                 ui, "system",
@@ -2919,8 +2960,11 @@ class Botference:
 
         UIs that implement ``request_choice`` get an arrow-key picker;
         others get a passive system note with ready-to-copy commands.
+
+        Gated on the chat's own filing, not the lens: a chat you never filed
+        is an Inbox chat even if you happen to be browsing a project.
         """
-        if self.active_project_id:
+        if self.session_project_id or self._inbox_by_choice:
             return
         user_turns = sum(1 for e in self.transcript.entries
                          if e.speaker == "user")
@@ -4846,11 +4890,50 @@ class Botference:
 
     # ── chat lifecycle: /new, /file, /delete ──────────────
 
-    def _start_new_chat(self, title: str, ui: UIPort) -> None:
+    _NEW_USAGE = (
+        "Usage: /new [title]\n"
+        "       /new --project <project-id> [title]   file it in a project\n"
+        "       /new --inbox [title]                  leave it unfiled"
+    )
+
+    def _parse_new_args(self, body: str) -> tuple[str, str | None, str]:
+        """Split ``/new`` arguments into (title, filing, error).
+
+        ``filing`` is the project id to file the new chat under, ``""`` for a
+        deliberate Inbox chat, or ``None`` for "no preference stated" (the
+        chat inherits the project you are sitting in, as /new always has).
+        The distinction matters: the council web's new-chat dropdown makes
+        the user say which one they mean up front, and "just a chat" has to
+        survive being clicked while a project is open.
+        """
+        raw = body.strip()
+        if raw.startswith("--inbox"):
+            return raw[len("--inbox"):].strip(), "", ""
+        if raw.startswith("--project"):
+            rest = raw[len("--project"):].strip()
+            if not rest:
+                return "", None, self._NEW_USAGE
+            parts = rest.split(None, 1)
+            project = self.project_store.get(parts[0])
+            if not project:
+                return "", None, (
+                    f"No project matched '{parts[0]}'.\n\n"
+                    "Run /projects to list available projects."
+                )
+            return (parts[1].strip() if len(parts) > 1 else ""), project.id, ""
+        return raw, None, ""
+
+    def _start_new_chat(
+        self, title: str, ui: UIPort, *, filing: str | None = None,
+    ) -> None:
         """Persist the current chat and start a fresh one in place.
 
-        The active project context is kept — a new chat inside a project
-        stays in that project. Both model sessions start clean.
+        *filing* is the new chat's project: a project id files it there, ``""``
+        forces Inbox, and ``None`` inherits the project you are sitting in.
+        Creation is the one moment where inheriting the lens is honest — the
+        user is standing inside a project when they ask for a new chat — but
+        it is written into ``session_project_id`` once, here, and never
+        re-derived on later saves. Both model sessions start clean.
         """
         old_label = self._session_title()
         had_content = bool(self.transcript.entries)
@@ -4860,6 +4943,18 @@ class Botference:
         self.created_at = iso_now()
         self.updated_at = self.created_at
         self.custom_title = _clean_session_title(title) if title.strip() else ""
+        # Stamp the filing exactly once (see the docstring). A named project
+        # also moves the lens, so the new chat opens with that project's files
+        # and plan already in context — the whole point of "+ new chat" inside
+        # a project row.
+        if filing is None:
+            self.session_project_id = self.active_project_id
+            self._inbox_by_choice = False
+        else:
+            self.session_project_id = filing
+            self.active_project_id = filing
+            # --inbox is an answer, not a shrug (see _inbox_by_choice)
+            self._inbox_by_choice = filing == ""
         self.transcript = Transcript()
         # (entry count, title) at last persist — persists that change neither
         # leave updated_at alone (see _persist_session)
@@ -4891,6 +4986,13 @@ class Botference:
         note = "Started a new chat"
         if self.custom_title:
             note += f": {self.custom_title}"
+        # Say where it landed, so "file in project / just a chat" is a
+        # decision the user can see the result of instead of guessing.
+        filed = self._active_project() if self.session_project_id else None
+        if filed:
+            note += f" in {filed.title}"
+        elif filing == "":
+            note += " in Inbox"
         if had_content:
             note += f". The previous chat ({old_label}) is saved — /resume brings it back."
         else:

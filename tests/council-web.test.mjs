@@ -2303,3 +2303,160 @@ test('tasks panel: collapsing it is remembered',
   assert.equal(doc.getElementById('tasks-body').hasAttribute('hidden'), true);
   assert.equal(doc.getElementById('tasks-sec').hasAttribute('hidden'), false, 'the section itself stays');
 });
+
+// ------------------------------------------------- UI: filing a chat
+
+// A chat's project used to be decided by whatever the sidebar happened to be
+// pointing at when the chat next saved. Now every filing is something the
+// user said out loud, and these three affordances are where they say it.
+
+// only the room traffic: the harness records every fetch, and boot chatter
+// (heartbeats, attachment probes) is not what these tests are about
+const sent = posts => posts.filter(p => p.url === '/input').map(p => p.body.text);
+
+const FILING_PROJECTS = {
+  type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+  inbox_sessions: [],
+  projects: [
+    { id: 'p1', title: 'Demo project', active: true, session_count: 1,
+      sessions: [{ session_id: 'abc12345', title: 'First chat', updated_at: '2026-08-24T00:00:00Z', active: false }] },
+    { id: 'p2', title: 'Other project', active: false, session_count: 0, sessions: [] },
+  ],
+};
+
+test('filing: every project row carries its own "+ new chat", filed there from birth',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle(FILING_PROJECTS);
+  // p1 is the active project, so it is the one expanded on arrival
+  const row = doc.querySelector('.proj[data-pid="p1"] [data-act="proj-new-chat"]');
+  assert.ok(row, 'the expanded project offers a new chat of its own');
+  row.click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(sent(posts), ['/new --project p1'],
+    'the new chat names its project up front — no post-hoc filing');
+  // archived projects are a resting place, not somewhere you start work
+  C.handle({
+    ...FILING_PROJECTS,
+    projects: [{ id: 'p9', title: 'Done with', status: 'archived', sessions: [] }],
+  });
+  doc.querySelector('[data-act="toggle-arch"]').click();
+  doc.querySelector('.proj[data-pid="p9"] [data-act="toggle"]').click();
+  assert.equal(doc.querySelector('.proj[data-pid="p9"] [data-act="proj-new-chat"]'), null);
+});
+
+test('filing: the top New/chat button asks "file in?" before the chat exists',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle(FILING_PROJECTS);
+  const menu = doc.getElementById('new-chat-menu');
+  assert.equal(menu.hasAttribute('hidden'), true, 'closed until asked for');
+
+  doc.getElementById('new-chat').click();
+  assert.equal(menu.hasAttribute('hidden'), false, 'one click opens the choice');
+  assert.deepEqual(sent(posts), [], 'and starts nothing yet');
+  assert.match(menu.textContent, /File in:/);
+  assert.match(menu.textContent, /Demo project/);
+  assert.match(menu.textContent, /Other project/);
+  assert.match(menu.textContent, /just a chat/);
+
+  menu.querySelector('[data-act="new-in"][data-pid="p2"]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(sent(posts), ['/new --project p2']);
+  assert.equal(menu.hasAttribute('hidden'), true, 'the menu closes behind the choice');
+
+  // "just a chat" has to survive being clicked while a project is open —
+  // that is the case the old inherit-the-lens behaviour got wrong
+  doc.getElementById('new-chat').click();
+  menu.querySelector('[data-act="new-inbox"]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(sent(posts), ['/new --project p2', '/new --inbox']);
+});
+
+test('filing: with no projects at all, New/chat is still just one click',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'projects', projects: [], inbox_sessions: [], inbox_session_count: 0 });
+  doc.getElementById('new-chat').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(doc.getElementById('new-chat-menu').hasAttribute('hidden'), true);
+  assert.deepEqual(sent(posts), ['/new']);
+});
+
+test('filing: an unfiled chat is asked where it goes BEFORE the first message',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done', count: 0 });
+  C.handle({ ...FILING_PROJECTS, projects: FILING_PROJECTS.projects, inbox_sessions: [] });
+  const input = doc.getElementById('input');
+  input.value = 'plot me a rocket';
+  input.dispatchEvent(new w.Event('input'));
+  doc.getElementById('send').click();
+  await new Promise(r => setTimeout(r, 10));
+
+  const card = doc.querySelector('.msg.card.filing');
+  assert.ok(card, 'the question arrives with the message still unsent');
+  assert.deepEqual(sent(posts), [], 'nothing went out yet');
+  assert.equal(input.value, 'plot me a rocket', 'the message is held, not eaten');
+  assert.match(card.textContent, /Demo project/);
+  assert.match(card.textContent, /Just a chat/);
+
+  card.querySelector('button[data-pid="p1"]').click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(sent(posts), ['/file p1', 'plot me a rocket'],
+    'filed first, then the message it was holding');
+  assert.equal(input.value, '', 'and the composer is clear');
+});
+
+test('filing: "just a chat" sends the message and the room stops asking',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done', count: 0 });
+  C.handle(FILING_PROJECTS);
+  const input = doc.getElementById('input');
+  const send = text => {
+    input.value = text;
+    input.dispatchEvent(new w.Event('input'));
+    doc.getElementById('send').click();
+  };
+  send('a loose thought');
+  await new Promise(r => setTimeout(r, 10));
+  doc.querySelector('.msg.card.filing button[data-pid=""]').click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(sent(posts), ['/project clear', 'a loose thought'],
+    'Inbox said out loud, so the controller does not ask again after the message');
+
+  // asked once per chat, never again mid-conversation
+  C.handle({ type: 'user_echo', text: 'a loose thought' });
+  posts.length = 0;
+  send('and another');
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(doc.querySelectorAll('.msg.card.filing').length, 1, 'no second interrogation');
+  assert.deepEqual(sent(posts), ['and another']);
+});
+
+test('filing: a chat that already lives in a project is never asked',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done', count: 0 });
+  C.handle({
+    ...FILING_PROJECTS,
+    projects: [{
+      id: 'p1', title: 'Demo project', active: true, session_count: 1,
+      sessions: [{ session_id: 'abc12345', title: 'First chat', updated_at: '2026-08-24T00:00:00Z', active: true }],
+    }],
+  });
+  const input = doc.getElementById('input');
+  input.value = 'carry on';
+  input.dispatchEvent(new w.Event('input'));
+  doc.getElementById('send').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(doc.querySelector('.msg.card.filing'), null);
+  assert.deepEqual(sent(posts), ['carry on']);
+});

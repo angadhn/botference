@@ -14,6 +14,7 @@
   const els = {
     side: $('side'), backdrop: $('backdrop'), burger: $('burger'), sideClose: $('side-close'),
     newChat: $('new-chat'), newProject: $('new-project'),
+    newChatMenu: $('new-chat-menu'),
     newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
     projects: $('projects'), theme: $('theme-toggle'),
     conn: $('st-conn'), stCtx: $('st-ctx'),
@@ -170,6 +171,10 @@
     lastActivePid: null,       // active project at the last 'projects' event
     menuSid: null,         // chat row whose ⋯ actions menu is open
     archOpen: false,       // "Archived" projects section expanded?
+    // has this chat already been asked where it should be filed? Set by the
+    // new-chat dropdown (the user answered up front) and by the first-send
+    // picker, cleared when we land in a different chat.
+    filingAsked: false,
     inServerReplay: true,  // between (re)connect and the server's replay_done boundary
     replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
@@ -1658,6 +1663,13 @@
     // chats first, project-level commands under them
     for (const s of pr.sessions || []) html += chatRow(s);
     if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
+    // "+ new chat" lives INSIDE the project, because that is the only place
+    // the intent is unambiguous: the chat is filed here from birth and opens
+    // with this project's files and plan already in context. Expanding a
+    // project used to be purely visual — this is the row's one real verb.
+    if (!archived) {
+      html += `<button class="sess sess-cmd sess-new" data-act="proj-new-chat" data-pid="${pid}">＋ new chat</button>`;
+    }
     html += archived
       ? `<button class="sess sess-cmd" data-act="proj-unarchive" data-pid="${pid}">↩ unarchive project</button>`
       : `<button class="sess sess-cmd" data-act="proj-archive" data-pid="${pid}">⊘ archive project</button>`;
@@ -1728,6 +1740,10 @@
     // sidebar affordances send the equivalent slash command — one code path
     if (act === 'inbox') sendInput('/resume');
     if (act === 'resume') switchTo(b.dataset.sid);
+    if (act === 'proj-new-chat') {
+      snapshotCurrent();
+      sendInput('/new --project ' + b.dataset.pid);
+    }
     if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
     if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
     if (act === 'archive') {
@@ -1746,7 +1762,55 @@
   document.addEventListener('click', e => {
     if (state.menuSid && !e.target.closest('.sess-row')) { state.menuSid = null; renderProjects(); }
   });
-  els.newChat.addEventListener('click', () => { snapshotCurrent(); sendInput('/new'); closeSide(); });
+  // New chat, up front: "file in <project> / just a chat". Asking BEFORE the
+  // chat exists is the whole point — a chat's project used to be decided by
+  // whatever the sidebar happened to be pointing at, which is exactly how
+  // chats ended up in the wrong place. With no projects to choose from there
+  // is nothing to ask, so the button stays a plain /new.
+  function newChatMenu() {
+    const live = ((state.projects && state.projects.projects) || [])
+      .filter(pr => (pr.status || 'active') === 'active');
+    if (!live.length) return '';
+    const rows = live.map(pr =>
+      `<button role="menuitem" data-act="new-in" data-pid="${esc(pr.id)}">${esc(pr.title || pr.id)}</button>`
+    ).join('');
+    return `<div class="new-menu" role="menu">
+      <div class="new-menu-lede">File in:</div>${rows}
+      <button role="menuitem" class="plain" data-act="new-inbox">just a chat</button>
+    </div>`;
+  }
+  function showNewChatMenu(on) {
+    els.newChatMenu.innerHTML = on ? newChatMenu() : '';
+    els.newChatMenu.hidden = !on || !els.newChatMenu.innerHTML;
+    els.newChat.setAttribute('aria-expanded', String(!els.newChatMenu.hidden));
+  }
+  function startNewChat(command) {
+    showNewChatMenu(false);
+    // The user just answered "where does this go?" — don't ask again at
+    // first send. That applies to "just a chat" too: choosing Inbox is an
+    // answer, not an absence of one.
+    state.filingAsked = true;
+    snapshotCurrent();
+    sendInput(command);
+    closeSide();
+  }
+  els.newChat.addEventListener('click', () => {
+    if (!els.newChatMenu.hidden) { showNewChatMenu(false); return; }
+    showNewChatMenu(true);
+    // no projects yet → nothing to file into, so don't make the user click
+    // through an empty menu to get the chat they asked for
+    if (els.newChatMenu.hidden) startNewChat('/new');
+  });
+  els.newChatMenu.addEventListener('click', e => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    if (b.dataset.act === 'new-in') startNewChat('/new --project ' + b.dataset.pid);
+    if (b.dataset.act === 'new-inbox') startNewChat('/new --inbox');
+  });
+  // a tap anywhere else closes it, like the row menus above
+  document.addEventListener('click', e => {
+    if (!els.newChatMenu.hidden && !e.target.closest('.new-split, #new-chat-menu')) showNewChatMenu(false);
+  });
 
   // new project: an inline title field (no modal, no prompt()) that sends
   // the same /project create the TUI takes
@@ -1794,6 +1858,7 @@
     if (!sid) return;
     if (sid === state.currentSid && !state.pendingSwitch) return; // already live: nothing to do
     snapshotCurrent();
+    state.filingAsked = false;   // a different chat, a different question
     state.pendingSwitch = sid;
     syncHash(sid);                          // reflect the target chat in the URL now
     const cached = cacheGet(sid);
@@ -2102,11 +2167,69 @@
       submit();
     }
   });
+  // ── "where should this go?", asked before the first message ──
+  // The controller asks the same question, but only AFTER the first message
+  // has landed, which reads as an interruption of work already underway.
+  // Asking at the moment of sending — with the message still sitting in the
+  // composer — makes it a decision about the chat you are about to start.
+  function chatIsFiled() {
+    const p = state.projects;
+    if (!p || !state.currentSid) return false;
+    return (p.projects || []).some(pr =>
+      (pr.sessions || []).some(s => s.session_id === state.currentSid));
+  }
+  function needsFilingChoice() {
+    if (state.filingAsked || chatIsFiled()) return false;
+    // nothing to file into, nothing to ask
+    const live = ((state.projects && state.projects.projects) || [])
+      .filter(pr => (pr.status || 'active') === 'active');
+    if (!live.length) return false;
+    // only on the FIRST message: mid-conversation the question is noise, and
+    // /file is still there for anyone who changes their mind
+    return !els.transcript.querySelector('.msg.user');
+  }
+  function filingCard() {
+    const live = ((state.projects && state.projects.projects) || [])
+      .filter(pr => (pr.status || 'active') === 'active');
+    settleCard();
+    const wasPinned = pinned();
+    const div = document.createElement('div');
+    div.className = 'msg card filing';
+    div.innerHTML = `<div class="card-title">where should this go?</div>
+      <div class="card-prompt">Your message is still in the box — pick a home for this chat and it goes out right after.</div>
+      <div class="opts">${live.map(pr =>
+        `<button data-pid="${esc(pr.id)}">File under ${esc(pr.title || pr.id)}</button>`
+      ).join('')}
+      <button data-pid="">Just a chat (Inbox)</button></div>`;
+    div.addEventListener('click', async e => {
+      const b = e.target.closest('button[data-pid]');
+      if (!b || div.classList.contains('answered')) return;
+      const pid = b.dataset.pid;
+      state.filingAsked = true;
+      liveCard = div;
+      settleCard(pid ? `filed under ${b.textContent.replace(/^File under /, '')}`
+                     : 'staying in Inbox');
+      // /project clear on an already-unfiled chat is a no-op filing-wise, but
+      // it is how the room hears "Inbox is deliberate" and stops asking.
+      await sendInput(pid ? '/file ' + pid : '/project clear');
+      submit();
+    });
+    container().appendChild(div);
+    liveCard = div;
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+  }
+
   function submit() {
     const text = els.input.value.trim();
     const ready = state.atts.filter(a => a.status === 'ok');
     if (!text && !ready.length) return;
     if (state.atts.some(a => a.status === 'up')) { toast('still uploading…'); return; }
+    // slash commands are control traffic — never gated on filing
+    if (!text.startsWith('/') && needsFilingChoice()) {
+      state.filingAsked = true;   // ask once, whatever happens next
+      filingCard();
+      return;
+    }
     // never send into a void: if this turn targets an out-of-credits agent,
     // surface the warning + switch affordance and hold the message (a slash
     // command like /model is control traffic, never gated)

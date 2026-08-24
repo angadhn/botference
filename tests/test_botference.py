@@ -2109,6 +2109,170 @@ class TestBotferenceProjects:
         assert ui.statuses[-1].project == "CareerSwitch"
         assert any("Project context set" in text for _, text in ui.room_entries)
 
+    async def test_persist_never_refiles_a_chat_into_the_active_project(
+        self, tmp_path
+    ):
+        # THE filing bug: saving used to stamp whatever project was active
+        # into the payload, so a chat filed under one project (or filed
+        # nowhere at all) silently hopped into whichever project the room
+        # happened to be looking at when the next save fired.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        (tmp_path / "projects" / "spaceship-engineering").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/project open CareerSwitch", ui)
+        assert c.session_project_id == "CareerSwitch"
+
+        # The lens moves without any act of filing — a stale tab, a panel
+        # refresh, anything that touches active_project_id directly.
+        c.active_project_id = "spaceship-engineering"
+        c.custom_title = "career packet"
+        c._persist_session()
+
+        saved = json.loads(
+            (c.paths.session_dir / f"{c.session_id}.json").read_text("utf-8")
+        )
+        assert saved["project_id"] == "CareerSwitch"
+        assert c.project_store.session_index_map()[c.session_id] == "CareerSwitch"
+
+    async def test_persist_leaves_an_unfiled_chat_in_inbox(self, tmp_path):
+        # Same bug from the other side: browsing a project must not adopt
+        # the Inbox chat you are typing in.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+
+        c.active_project_id = "CareerSwitch"  # lens only
+        c.custom_title = "loose thought"
+        c._persist_session()
+
+        saved = json.loads(
+            (c.paths.session_dir / f"{c.session_id}.json").read_text("utf-8")
+        )
+        assert saved["project_id"] == ""
+        assert c.session_id not in c.project_store.session_index_map()
+
+    async def test_resume_keeps_a_chats_filing_when_another_project_is_open(
+        self, tmp_path
+    ):
+        # Open a project, then open a chat that lives somewhere else, then
+        # let it save. It stays where it was filed.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        (tmp_path / "projects" / "spaceship-engineering").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("ship-1", {
+            "session_id": "ship-1",
+            "created_at": "2026-05-02T00:00:00Z",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "ship paper",
+            "project_id": "spaceship-engineering",
+            "transcript": [{"speaker": "user", "text": "ship paper"}],
+        })
+
+        await c.handle_input("/project open CareerSwitch", ui)
+        await c.handle_input("/resume ship-1", ui)
+        c.active_project_id = "CareerSwitch"  # a stale lens from another tab
+        c._persist_session()
+
+        saved = json.loads(
+            (c.paths.session_dir / "ship-1.json").read_text("utf-8")
+        )
+        assert saved["project_id"] == "spaceship-engineering"
+
+    async def test_legacy_chat_keeps_its_indexed_project_on_resave(
+        self, tmp_path
+    ):
+        # Migration: a chat saved before payloads carried project_id is
+        # listed by session-index.json. Resuming and re-saving it must
+        # write that same project back, not Inbox and not the lens.
+        (tmp_path / "projects" / "spaceship-engineering").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        (c.paths.session_dir / "legacy-1.json").write_text(json.dumps({
+            "session_id": "legacy-1",
+            "updated_at": "2026-05-02T00:00:00Z",
+            "title": "legacy chat",
+            "transcript": [{"speaker": "user", "text": "legacy chat"}],
+        }), encoding="utf-8")
+        (tmp_path / "projects" / "session-index.json").write_text(json.dumps({
+            "version": 1,
+            "sessions": [
+                {"session_id": "legacy-1", "project": "spaceship-engineering"},
+            ],
+        }), encoding="utf-8")
+
+        await c.handle_input("/resume legacy-1", ui)
+        assert c.session_project_id == "spaceship-engineering"
+        c._persist_session()
+
+        saved = json.loads(
+            (c.paths.session_dir / "legacy-1.json").read_text("utf-8")
+        )
+        assert saved["project_id"] == "spaceship-engineering"
+
+    async def test_new_project_files_the_new_chat_and_moves_the_lens(
+        self, tmp_path
+    ):
+        # "+ new chat" inside a project row: filed there from birth, with
+        # that project's plan files already in context.
+        project = tmp_path / "projects" / "CareerSwitch"
+        project.mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+
+        await c.handle_input("/new --project CareerSwitch career packet", ui)
+
+        assert c.session_project_id == "CareerSwitch"
+        assert c.active_project_id == "CareerSwitch"
+        assert c.custom_title == "career packet"
+        assert c._plan_path == project / "implementation-plan.md"
+        saved = json.loads(
+            (c.paths.session_dir / f"{c.session_id}.json").read_text("utf-8")
+        )
+        assert saved["project_id"] == "CareerSwitch"
+
+    async def test_new_inbox_stays_unfiled_inside_an_open_project(self, tmp_path):
+        # "just a chat" has to survive being chosen while a project is open.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project open CareerSwitch", ui)
+
+        await c.handle_input("/new --inbox loose thought", ui)
+
+        assert c.session_project_id == ""
+        assert c.custom_title == "loose thought"
+
+    async def test_plain_new_inherits_the_project_you_are_standing_in(
+        self, tmp_path
+    ):
+        # Unchanged /new behaviour: no flag means "same project as this one".
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project open CareerSwitch", ui)
+
+        await c.handle_input("/new follow-up", ui)
+
+        assert c.session_project_id == "CareerSwitch"
+
+    async def test_new_project_rejects_an_unknown_project(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        before = c.session_id
+
+        await c.handle_input("/new --project nope", ui)
+
+        assert c.session_id == before  # no chat was started
+        assert any("No project matched 'nope'" in text
+                   for _, text in ui.room_entries)
+
+    async def test_archiving_a_project_keeps_the_chat_filed_there(self, tmp_path):
+        # Archiving promises "its folder and chats are untouched" — only the
+        # lens falls back to Inbox.
+        (tmp_path / "projects" / "CareerSwitch").mkdir(parents=True)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project open CareerSwitch", ui)
+
+        await c.handle_input("/project archive CareerSwitch", ui)
+
+        assert c.active_project_id == ""
+        assert c.session_project_id == "CareerSwitch"
+
     async def test_planning_paths_follow_active_project(self, tmp_path):
         project = tmp_path / "projects" / "alpha-project"
         project.mkdir(parents=True)
@@ -5973,13 +6137,26 @@ class TestProjectSuggestion:
 
         assert len(ui.choice_requests) == 1
 
-    async def test_active_project_suppresses_picker(self, tmp_path):
+    async def test_filed_chat_suppresses_picker(self, tmp_path):
+        # A chat that already has a home is not asked where it lives. The
+        # gate is the chat's own filing, not the lens: /project open files
+        # the chat you are sitting in, which is what sets both.
         _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
-        c.active_project_id = "spaceship-engineering"
+        await c.handle_input("/project open spaceship-engineering", ui)
         await c.handle_input("@claude spaceship plans", ui)
 
         assert ui.choice_requests == []
+
+    async def test_browsing_a_project_does_not_suppress_the_picker(self, tmp_path):
+        # Merely looking at a project is not filing. An unfiled chat still
+        # gets asked where it belongs — otherwise the lens quietly decides.
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.active_project_id = "spaceship-engineering"  # lens only, no filing
+        await c.handle_input("@claude spaceship plans", ui)
+
+        assert ui.choice_requests
 
     async def test_ui_without_picker_gets_text_note(self, tmp_path):
         _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")

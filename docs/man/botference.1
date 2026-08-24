@@ -341,6 +341,11 @@ file under a project, name, switch, or delete chats (picker-driven).
 \fB/resume\fR reaches a saved chat in any project, not just the active
 one; opening a chat makes that chat's project the active context, and
 \fB/file\fR likewise makes the project you filed into the active one.
+A chat remembers its own project: filing is an explicit act
+(\fB/file\fR, \fB/project assign\fR, \fB/project open\fR, or
+\fB/new --project <id>\fR at creation), and saving a chat while a
+different project is open never re-files it. \fB/new --inbox\fR starts a
+deliberately unfiled chat even from inside a project.
 .TP
 .B /archive [<id-prefix>|list] , /unarchive [<id-prefix>]
 Archive a saved chat instead of deleting it: the session JSON moves from
