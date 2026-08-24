@@ -9,7 +9,9 @@ mock adapters and UI.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import sys
 import os
 import subprocess
@@ -5639,7 +5641,7 @@ class TestBootstrapFromHandoff:
         claude.send = fail_second_send
         await c.handle_input("/relay @claude", ui)
 
-        live_file = work_dir / "handoff-claude.md"
+        live_file = work_dir / "scratch" / c.session_id / "handoff-claude.md"
         assert live_file.exists(), "failure should preserve a diagnostic handoff"
         assert "claude" not in c._models_initialized
 
@@ -5665,7 +5667,7 @@ class TestBootstrapFromHandoff:
         claude.send = fail_second_send
         await c.handle_input("/relay @claude", ui)
 
-        live_file = work_dir / "handoff-claude.md"
+        live_file = work_dir / "scratch" / c.session_id / "handoff-claude.md"
         assert live_file.exists()
 
         claude.send = original_send
@@ -7025,3 +7027,394 @@ class TestInterruptedStart:
         await c.handle_input("@codex again", ui)
         assert len(codex.send_calls) == 2
         assert codex.resume_calls == []
+
+
+# ── parallel turns: session-keyed scratch, stale-write guard, set_status ──
+#
+# Since 2026-08-24 the Discuss plugin runs a POOL of bridge children against
+# one workspace and one project (plugin SPEC.md §7). These are the controller
+# halves of that: nothing a chat writes for itself lands where another chat
+# writes, a writer that would delete somebody's turn says so, and the last
+# unlocked read-modify-write in project_store got its flock.
+
+
+class TestSessionKeyedScratch:
+    def test_two_chats_keep_separate_live_handoffs(self, tmp_path):
+        from session_store import StaleSessionWrite  # noqa: F401  (import check)
+
+        a, _, _, _ = _make_botference(tmp_path=tmp_path)
+        b, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert a.session_id != b.session_id
+
+        a._pending_relay_handoffs["claude"] = "handoff for A\n"
+        b._pending_relay_handoffs["claude"] = "handoff for B\n"
+        a._persist_failed_relay_handoff("claude")
+        b._persist_failed_relay_handoff("claude")
+
+        assert a._live_handoff_path("claude") != b._live_handoff_path("claude")
+        assert a._live_handoff_path("claude").read_text() == "handoff for A\n"
+        assert b._live_handoff_path("claude").read_text() == "handoff for B\n"
+
+    def test_clearing_a_handoff_also_removes_the_legacy_root_copy(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        legacy = c.paths.handoff_live_file("claude")  # what the old build wrote
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("pre-upgrade handoff\n", encoding="utf-8")
+        c._pending_relay_handoffs["claude"] = "fresh\n"
+        c._persist_failed_relay_handoff("claude")
+        assert legacy.exists(), "the legacy artifact survives until the relay lands"
+
+        c._clear_live_handoff("claude")
+        assert not legacy.exists()
+        assert not c._live_handoff_path("claude").exists()
+
+    def test_legacy_file_is_read_as_a_fallback(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        candidates = c.paths.handoff_live_candidates("claude", c.session_id)
+        assert candidates[0] == c._live_handoff_path("claude")
+        assert candidates[-1] == c.paths.handoff_live_file("claude")
+
+    def test_two_chats_in_one_scope_keep_their_own_plan(self, tmp_path):
+        # The clobber the SPEC describes: both chats write the SAME canonical
+        # implementation-plan.md. The shared deliverable is last-writer-wins
+        # (that is what a shared deliverable means), but neither chat's own
+        # copy — the one its /finalize reads back — is lost.
+        a, _, _, _ = _make_botference(tmp_path=tmp_path)
+        b, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert a._plan_path == b._plan_path
+
+        a._write_planning_file(a._plan_path, "**Thread:** alpha\n\nPlan A\n")
+        b._write_planning_file(b._plan_path, "**Thread:** beta\n\nPlan B\n")
+
+        assert "Plan B" in b._plan_path.read_text(encoding="utf-8")
+        assert "Plan A" in a._read_planning_file(a._plan_path)
+        assert "Plan B" in b._read_planning_file(b._plan_path)
+        assert a._current_plan_text().strip().endswith("Plan A")
+        assert a._thread_slug() == "alpha"
+        assert b._thread_slug() == "beta"
+
+    def test_a_hand_edited_canonical_plan_still_wins(self, tmp_path):
+        # The mirror only takes over when the owner sidecar names ANOTHER
+        # chat. A human editing the plan this chat wrote is still the plan.
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c._write_planning_file(c._plan_path, "Plan from the bots\n")
+        assert c._planning_mirror(c._plan_path).is_file()
+        c._plan_path.write_text("Plan the human typed\n", encoding="utf-8")
+        assert "Plan the human typed" in c._read_planning_file(c._plan_path)
+
+    def test_a_plan_with_no_owner_sidecar_reads_as_it_always_did(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c._write_planning_file(c._plan_path, "Plan from the bots\n")
+        c._planning_owner_file(c._plan_path).unlink()  # written before upgrade
+        c._plan_path.write_text("Whatever is on disk\n", encoding="utf-8")
+        assert "Whatever is on disk" in c._read_planning_file(c._plan_path)
+
+    def test_mirror_is_scoped_per_project(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        (tmp_path / "projects" / "alpha").mkdir(parents=True)
+        inbox_mirror = c._planning_mirror(c._plan_path)
+        c.active_project_id = "alpha"
+        project_mirror = c._planning_mirror(c._plan_path)
+        assert inbox_mirror != project_mirror
+        assert project_mirror.parent.name == "alpha"
+
+
+class TestStaleSessionWriteGuard:
+    def _stores(self, tmp_path):
+        from session_store import SessionStore
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        return c, c.session_store, SessionStore(c.paths)
+
+    def _bump(self, path):
+        stat = path.stat()
+        os.utime(path, (stat.st_atime + 2, stat.st_mtime + 2))
+
+    def test_a_stale_writer_is_refused_instead_of_losing_a_turn(self, tmp_path):
+        from session_store import StaleSessionWrite
+        c, store_a, store_b = self._stores(tmp_path)
+        payload = _chat_payload("shared", "", "one")
+        store_a.save("shared", payload)
+
+        # B resumes the same chat and answers a turn.
+        longer = dict(payload)
+        longer["transcript"] = payload["transcript"] + [
+            {"speaker": "claude", "text": "an answer nobody would see go"},
+        ]
+        store_b.save("shared", longer)
+        self._bump(c.paths.session_state_file("shared"))
+
+        # A now persists ITS copy, which predates B's turn.
+        with pytest.raises(StaleSessionWrite) as excinfo:
+            store_a.save("shared", payload)
+        assert excinfo.value.ours == 1
+        assert excinfo.value.theirs == 2
+        on_disk = json.loads(
+            c.paths.session_state_file("shared").read_text(encoding="utf-8"))
+        assert len(on_disk["transcript"]) == 2, "B's turn survived"
+
+    def test_the_single_writer_case_is_untouched(self, tmp_path):
+        c, store_a, _ = self._stores(tmp_path)
+        payload = _chat_payload("solo", "", "one")
+        for count in range(1, 6):
+            payload = dict(payload)
+            payload["transcript"] = [
+                {"speaker": "user", "text": f"turn {i}"} for i in range(count)
+            ]
+            store_a.save("solo", payload)  # never raises
+        on_disk = json.loads(
+            c.paths.session_state_file("solo").read_text(encoding="utf-8"))
+        assert len(on_disk["transcript"]) == 5
+
+    def test_an_equal_or_shorter_file_is_not_stale(self, tmp_path):
+        # A rename, a /project stamp, or a prune leaves the file no longer
+        # ahead of us. Those must not start failing.
+        c, store_a, store_b = self._stores(tmp_path)
+        payload = _chat_payload("shared", "", "one")
+        store_a.save("shared", payload)
+        store_b.set_project("shared", "alpha")
+        self._bump(c.paths.session_state_file("shared"))
+        store_a.save("shared", payload)  # no raise
+        on_disk = json.loads(
+            c.paths.session_state_file("shared").read_text(encoding="utf-8"))
+        assert on_disk["project_id"] == ""
+
+    def test_a_fresh_process_that_loads_first_may_save(self, tmp_path):
+        from session_store import SessionStore
+        c, store_a, _ = self._stores(tmp_path)
+        payload = _chat_payload("shared", "", "one")
+        payload["transcript"] = [{"speaker": "user", "text": "one"}]
+        store_a.save("shared", payload)
+
+        fresh = SessionStore(c.paths)  # a newly spawned bridge process
+        loaded = fresh.load("shared")
+        loaded["transcript"] = loaded["transcript"] + [
+            {"speaker": "claude", "text": "two"},
+        ]
+        fresh.save("shared", loaded)  # no raise: it read before it wrote
+        on_disk = json.loads(
+            c.paths.session_state_file("shared").read_text(encoding="utf-8"))
+        assert len(on_disk["transcript"]) == 2
+
+    def test_the_controller_reports_a_refused_save_rather_than_crashing(
+        self, tmp_path, caplog,
+    ):
+        from session_store import SessionStore
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.transcript.add("user", "hello")
+        c._persist_session()
+
+        other = SessionStore(c.paths)
+        ahead = c._session_payload()
+        ahead["transcript"] = ahead["transcript"] + [
+            {"speaker": "claude", "text": "another process answered"},
+            {"speaker": "user", "text": "and again"},
+            {"speaker": "codex", "text": "and again"},
+        ]
+        other.save(c.session_id, ahead)
+        self._bump(c.paths.session_state_file(c.session_id))
+
+        c.transcript.add("user", "second")
+        with caplog.at_level(logging.ERROR, logger="botference"):
+            c._persist_session()  # must not raise
+        assert any("refusing to overwrite session" in r.getMessage()
+                   for r in caplog.records)
+        on_disk = json.loads(
+            c.paths.session_state_file(c.session_id).read_text(encoding="utf-8"))
+        assert any(e.get("text") == "another process answered"
+                   for e in on_disk["transcript"])
+        crash_log = c.paths.session_crash_log
+        assert crash_log.is_file()
+        assert "StaleSessionWrite" in crash_log.read_text(encoding="utf-8")
+
+
+class TestProjectStatusLocking:
+    def test_set_status_takes_the_portfolio_lock(self, tmp_path, monkeypatch):
+        import project_store as ps
+        taken: list[str] = []
+        real_lock = ps.file_lock
+
+        @contextlib.contextmanager
+        def recording_lock(path):
+            taken.append(path.name)
+            with real_lock(path):
+                yield
+
+        monkeypatch.setattr(ps, "file_lock", recording_lock)
+        ProjectStore(tmp_path).set_status("alpha", "archived", title="Alpha")
+        assert taken == ["portfolio.json"]
+
+    def test_concurrent_status_flips_never_lose_a_row(self, tmp_path):
+        # Unlocked, this read-modify-write dropped whichever row landed
+        # between another writer's read and its write.
+        import threading
+
+        store = ProjectStore(tmp_path)
+        (tmp_path / "projects").mkdir(parents=True, exist_ok=True)
+        errors: list[BaseException] = []
+
+        def flip(index: int) -> None:
+            try:
+                store.set_status(f"project-{index}", "archived",
+                                 title=f"Project {index}")
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=flip, args=(i,)) for i in range(24)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        assert not errors, errors
+        data = json.loads(
+            (tmp_path / "projects" / "portfolio.json").read_text(encoding="utf-8"))
+        ids = {row["id"] for row in data["projects"]}
+        assert ids == {f"project-{i}" for i in range(24)}
+        assert all(row["status"] == "archived" for row in data["projects"])
+
+
+# ── projects/<id>/TASKS.md: the project's own standing list ──────────────
+#
+# Not a chat's checklist (that one lives in the transcript and is re-issued
+# whole). This is a file the bots extend, tick and prune across every chat in
+# the project, and both tasks panels show it read-only.
+
+
+class TestProjectTasksParsing:
+    def test_a_bot_written_file_parses_down_to_items(self):
+        from project_store import ProjectTask, parse_tasks_md
+        items = parse_tasks_md(
+            "# Tasks\n"
+            "\n"
+            "Prose the panels ignore, including why an item left the list.\n"
+            "- [ ] Pull the dataset\n"
+            "* [x] Rebuild the deflator\n"
+            "+ [X] Redraw figure 3\n"
+            "   - [ ]   Re-run   the   regression   \n"
+            "- [ ] Pull the dataset\n"
+            "- a plain bullet\n"
+            "- [ ]\n"
+            "- [] an empty box is an open item\n"
+            "| a | table |\n"
+        )
+        assert items == [
+            ProjectTask("Pull the dataset", False),
+            ProjectTask("Rebuild the deflator", True),
+            ProjectTask("Redraw figure 3", True),
+            ProjectTask("Re-run the regression", False),
+            ProjectTask("an empty box is an open item", False),
+        ]
+
+    def test_junk_in_nothing_out(self):
+        from project_store import parse_tasks_md
+        for junk in ("", "   ", "not a list at all", "- [ ] \n", "\x00\x01"):
+            assert parse_tasks_md(junk) == []
+
+    def test_a_runaway_file_is_bounded(self):
+        from project_store import TASKS_MAX_ITEMS, TASKS_MAX_TEXT, parse_tasks_md
+        many = "\n".join(f"- [ ] item {i}" for i in range(500))
+        assert len(parse_tasks_md(many)) == TASKS_MAX_ITEMS
+        long_item = parse_tasks_md("- [ ] " + "x" * 1000)[0]
+        assert len(long_item.text) == TASKS_MAX_TEXT
+        assert long_item.text.endswith("\u2026")
+
+    def test_reading_the_file_shrugs_at_everything_missing(self, tmp_path):
+        from project_store import ProjectTask, read_project_tasks
+        assert read_project_tasks(tmp_path / "nope") == []
+        project = tmp_path / "alpha"
+        project.mkdir()
+        assert read_project_tasks(project) == []
+        (project / "TASKS.md").write_text(
+            "# Tasks\n\n- [x] Fuel it\n- [ ] Light it\n", encoding="utf-8")
+        assert read_project_tasks(project) == [
+            ProjectTask("Fuel it", True), ProjectTask("Light it", False),
+        ]
+
+    def test_an_oversized_file_is_refused_rather_than_parsed(self, tmp_path):
+        from project_store import TASKS_MAX_BYTES, read_project_tasks
+        project = tmp_path / "alpha"
+        project.mkdir()
+        (project / "TASKS.md").write_text(
+            "- [ ] a\n" + ("x" * (TASKS_MAX_BYTES + 10)), encoding="utf-8")
+        assert read_project_tasks(project) == []
+
+    def test_a_directory_where_the_file_should_be_is_not_a_crash(self, tmp_path):
+        from project_store import read_project_tasks
+        project = tmp_path / "alpha"
+        (project / "TASKS.md").mkdir(parents=True)
+        assert read_project_tasks(project) == []
+
+    def test_the_store_reads_it_by_project_id(self, tmp_path):
+        from project_store import ProjectTask
+        (tmp_path / "projects" / "alpha").mkdir(parents=True)
+        (tmp_path / "projects" / "alpha" / "TASKS.md").write_text(
+            "- [ ] Ship it\n", encoding="utf-8")
+        store = ProjectStore(tmp_path)
+        assert store.tasks("alpha") == [ProjectTask("Ship it", False)]
+        assert store.tasks("no-such-project") == []
+        assert store.tasks("") == []
+
+
+class TestProjectTasksInThePanel:
+    def _project(self, tmp_path, project_id="alpha", tasks_md=None):
+        root = tmp_path / "projects" / project_id
+        root.mkdir(parents=True, exist_ok=True)
+        if tasks_md is not None:
+            (root / "TASKS.md").write_text(tasks_md, encoding="utf-8")
+        return root
+
+    def test_the_snapshot_carries_each_project_s_own_list(self, tmp_path):
+        self._project(tmp_path, "alpha", "- [x] Draw it\n- [ ] Test it\n")
+        self._project(tmp_path, "beta", "- [ ] Something else\n")
+        self._project(tmp_path, "gamma")  # keeps no list at all
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        by_id = {p.project_id: p for p in c.project_panel_snapshot().projects}
+        assert [(t.text, t.done) for t in by_id["alpha"].tasks] == [
+            ("Draw it", True), ("Test it", False),
+        ]
+        assert [t.text for t in by_id["beta"].tasks] == ["Something else"]
+        assert by_id["gamma"].tasks == ()
+
+    def test_the_bridge_omits_the_key_when_there_is_no_list(self, tmp_path):
+        import botference_ink_bridge as bridge_mod
+        self._project(tmp_path, "alpha", "- [ ] Ship it\n")
+        self._project(tmp_path, "gamma")
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        emitted: list[dict] = []
+        bridge = bridge_mod.InkBridge(c.paths)
+        original = bridge_mod.emit
+        bridge_mod.emit = emitted.append
+        try:
+            bridge.set_projects(c.project_panel_snapshot())
+        finally:
+            bridge_mod.emit = original
+        rows = {p["id"]: p for p in emitted[0]["projects"]}
+        assert rows["alpha"]["tasks"] == [{"text": "Ship it", "done": False}]
+        assert "tasks" not in rows["gamma"], (
+            "a missing key, not an empty section"
+        )
+
+
+class TestProjectTasksPrompt:
+    def test_the_rules_are_extend_tick_prune_and_never_wholesale(self):
+        from room_prompts import project_tasks_note
+        note = project_tasks_note("Alpha", "projects/alpha/TASKS.md")
+        assert "projects/alpha/TASKS.md" in note
+        assert "Alpha" in note
+        for word in ("EXTEND", "TICK", "PRUNE"):
+            assert word in note
+        assert "NEVER rewrite the file wholesale" in note
+
+    def test_an_inbox_chat_is_told_nothing_about_a_project_list(self, tmp_path):
+        (tmp_path / "projects" / "alpha").mkdir(parents=True)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert c._project_tasks_note() == ""
+        assert "TASKS.md" not in c._build_initial_prompt("claude")
+
+    def test_a_project_chat_is_told_where_the_list_lives(self, tmp_path):
+        (tmp_path / "projects" / "alpha").mkdir(parents=True)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c.active_project_id = "alpha"
+        note = c._project_tasks_note()
+        assert "projects/alpha/TASKS.md" in note
+        assert "--- Project task list ---" in c._build_initial_prompt("claude")

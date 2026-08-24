@@ -16,8 +16,22 @@ them before Python runs). Otherwise falls back to directory detection.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+
+_UNSAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def sanitize_component(value: str) -> str:
+    """Reduce an arbitrary id to one safe path component.
+
+    Session ids are UUIDs today, but they arrive from a JSON payload that a
+    previous process wrote, so they are not trusted to be free of separators.
+    """
+    cleaned = _UNSAFE_COMPONENT.sub("-", str(value).strip()).strip("-.")
+    return cleaned[:120] or "unknown-session"
 
 
 @dataclass(frozen=True)
@@ -31,11 +45,55 @@ class BotferencePaths:
     build_dir: Path
     archive_dir: Path
 
+    # -- Per-session scratch --
+
+    def session_scratch_dir(self, session_id: str = "") -> Path:
+        """Scratch root for ONE chat: work/scratch/<session_id>/.
+
+        Several controller processes share one work dir (the Ink TUI, one
+        web-council bridge per open chat, and — since 2026-08-24 — a pool of
+        plugin bridge children). Everything under here belongs to a single
+        chat, so two of them writing at the same moment cannot overwrite each
+        other. An empty session id degrades to the old root-scoped layout.
+        """
+        if not str(session_id).strip():
+            return self.work_dir
+        return self.work_dir / "scratch" / sanitize_component(session_id)
+
+    def scratch_file(
+        self, name: str, session_id: str = "", *, scope: str = "",
+    ) -> Path:
+        """A named scratch file for one chat, optionally under a scope slug.
+
+        `scope` separates the same filename in two planning scopes (a project
+        vs. Inbox) within one chat, which can switch scopes with /project.
+        """
+        base = self.session_scratch_dir(session_id)
+        if session_id and scope:
+            base = base / sanitize_component(scope)
+        return base / name
+
     # -- Relay handoff paths --
 
-    def handoff_live_file(self, model: str) -> Path:
-        """Live handoff file for a model: work/handoff-claude.md etc."""
-        return self.work_dir / f"handoff-{model}.md"
+    def handoff_live_file(self, model: str, session_id: str = "") -> Path:
+        """Live handoff file for a model.
+
+        Session-keyed (`work/scratch/<sid>/handoff-claude.md`) when a session
+        id is supplied; otherwise the legacy `work/handoff-claude.md`, which
+        is still read as a fallback so a chat resumed across the upgrade
+        keeps the handoff its previous process left behind.
+        """
+        return self.session_scratch_dir(session_id) / f"handoff-{model}.md"
+
+    def handoff_live_candidates(
+        self, model: str, session_id: str = "",
+    ) -> list[Path]:
+        """Read order for a live handoff: session-keyed first, legacy second."""
+        paths = [self.handoff_live_file(model, session_id)]
+        legacy = self.handoff_live_file(model)
+        if legacy not in paths:
+            paths.append(legacy)
+        return paths
 
     @property
     def handoff_history_dir(self) -> Path:

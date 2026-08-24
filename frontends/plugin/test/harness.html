@@ -190,6 +190,10 @@
                      and holds the round mid-flight on the Comments tab — one
                      thread's turn streaming, the rest queued (screenshot state).
                      `&selftest=1` runs the project-page assertions.
+                     `&ptasks=0` gives the project no TASKS.md, so the
+                     project-tasks card is absent (the other screenshot
+                     state is the default: the card, read-only, above the
+                     page's own tasks card).
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -376,7 +380,14 @@ const WS_ROOT = '/Users/reader/MySiteFromObsidianVault/botference';
 const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
   project_title: 'Spaceship Engineering', rel: 'projects/spaceship-engineering/index.html',
   path: WS_ROOT + '/projects/spaceship-engineering/index.html',
-  confirmed: Q.get('unconfirmed') !== '1' };
+  confirmed: Q.get('unconfirmed') !== '1',
+  // projects/<id>/TASKS.md, already parsed by the companion (the drawer never
+  // parses markdown for it). `?ptasks=0` is the project that keeps no list.
+  ...(Q.get('ptasks') === '0' ? {} : { tasks: [
+    { text: 'Size the radiator for the transit hab', done: true },
+    { text: 'Re-run the burn with the new mass budget', done: false },
+    { text: 'Write up the nozzle trade study', done: false },
+  ] }) };
 // every chat the project already has, newest first — what GET
 // /project-sessions answers and the archive list draws
 const WS_SESSIONS = [
@@ -6723,6 +6734,50 @@ async function selftestWorkspace() {
   check('a project artifact page attaches at all', !!d && d.isOpen !== undefined);
   check('content.js knows which project it is in',
     (window.__bfp.project || {}).project_id === 'spaceship-engineering');
+
+  // ---- the PROJECT's own task list -------------------------------------
+  // Not this page's checklist and not derived from any message: a file in the
+  // project (projects/<id>/TASKS.md) that the bots extend, tick and prune
+  // across every chat in it. Read-only here — nothing in the drawer owns it.
+  {
+    d.open('chat');
+    await sleep(60);
+    const pcard = () => S.querySelector('.pane[data-pane="chat"] .tasks.ptasks');
+    const pitems = () => [...(pcard() ? pcard().querySelectorAll('li.md-task') : [])];
+    if (Q.get('ptasks') === '0') {
+      check('a project with no TASKS.md has no project-tasks card', !pcard());
+    } else {
+      check('the project\u2019s TASKS.md becomes a card of its own', !!pcard());
+      check('\u2026at the very top of the pane, above the page\u2019s own conversation',
+        S.querySelector('.pane[data-pane="chat"]').firstElementChild === pcard());
+      check('\u2026holding every item, in the file\u2019s order',
+        pitems().length === 3 && /Size the radiator/.test(pitems()[0].textContent)
+        && /nozzle trade study/.test(pitems()[2].textContent));
+      check('\u2026with the ticked one struck through', pitems()[0].classList.contains('done'));
+      check('\u2026and a count of what is done', /1\/3/.test(
+        (pcard().querySelector('.tcount') || {}).textContent || ''));
+      check('the boxes are READ-ONLY \u2014 the drawer does not own that file',
+        [...pcard().querySelectorAll('.md-tick')].every(b => b.disabled));
+      check('\u2026and it says whose list it is, and where it lives',
+        /Spaceship Engineering/.test(pcard().textContent)
+        && /TASKS\.md/.test(pcard().textContent));
+      // it is on BOTH panes, like every other card pinned to the top
+      d.open('comments'); await sleep(40);
+      check('\u2026and it is in the comments pane too',
+        !!S.querySelector('.pane[data-pane="comments"] .tasks.ptasks'));
+      // the fold is a reading position, session only, like the others
+      const fold = S.querySelector('.pane[data-pane="comments"] .tasks.ptasks .taskfold');
+      fold.click(); await sleep(40);
+      const folded = S.querySelector('.pane[data-pane="comments"] .tasks.ptasks');
+      check('folding it away hides the list and keeps the header',
+        !!folded && folded.classList.contains('folded')
+        && folded.querySelector('.taskbody').hidden);
+      folded.querySelector('.taskfold').click(); await sleep(40);
+      check('\u2026and it comes back',
+        !S.querySelector('.pane[data-pane="comments"] .tasks.ptasks').querySelector('.taskbody').hidden);
+      d.open('chat'); await sleep(40);
+    }
+  }
 
   // ---- the council-web view is the SAME page --------------------------
   // Reached at `/files/<rel>` on a trusted origin rather than at its file:

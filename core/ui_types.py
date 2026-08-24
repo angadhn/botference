@@ -55,6 +55,14 @@ class ProjectPanelSession:
 
 
 @dataclass(frozen=True)
+class ProjectPanelTask:
+    """One line of a project's curated projects/<id>/TASKS.md."""
+
+    text: str
+    done: bool = False
+
+
+@dataclass(frozen=True)
 class ProjectPanelProject:
     project_id: str
     title: str
@@ -63,6 +71,7 @@ class ProjectPanelProject:
     active: bool = False
     session_count: int = 0
     sessions: tuple[ProjectPanelSession, ...] = ()
+    tasks: tuple[ProjectPanelTask, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -165,10 +165,35 @@ class SessionMetadata:
 _METADATA_INDEX_NAME = ".metadata-index.json"
 
 
+class StaleSessionWrite(RuntimeError):
+    """A save would have overwritten a session file a newer writer changed.
+
+    Raised only when the copy on disk is demonstrably AHEAD of the payload
+    being written (more transcript entries), which is the one shape of the
+    race that loses a whole turn. Everything else — an equal or shorter file,
+    an unreadable one, a first write — proceeds, because the single-writer
+    case must stay exactly as fast and as quiet as it was.
+    """
+
+    def __init__(self, session_id: str, ours: int, theirs: int):
+        self.session_id = session_id
+        self.ours = ours
+        self.theirs = theirs
+        super().__init__(
+            f"refusing to overwrite session {session_id}: the file on disk has "
+            f"{theirs} transcript entries, this writer has {ours}. Another "
+            f"process saved it after we last read it."
+        )
+
+
 class SessionStore:
     def __init__(self, paths: BotferencePaths):
         self.paths = paths
         self._metadata_cache: dict[str, SessionMetadata] | None = None
+        # session_id -> the mtime of the file as this process last left it
+        # (written by save/set_project, or observed by load). A file whose
+        # mtime no longer matches has moved under us; see _check_not_stale.
+        self._seen_mtime: dict[str, float] = {}
         # The panel hydrates on a worker thread while the controller saves on
         # the event loop thread, so cache mutation and index writes are guarded.
         self._lock = threading.RLock()
@@ -177,9 +202,53 @@ class SessionStore:
     def _metadata_index_path(self) -> Path:
         return self.paths.session_dir / _METADATA_INDEX_NAME
 
-    def save(self, session_id: str, payload: dict[str, Any]) -> None:
+    def _check_not_stale(
+        self, session_id: str, path: Path, payload: dict[str, Any],
+    ) -> None:
+        """Raise StaleSessionWrite if *path* moved under us and is ahead.
+
+        The session file is rewritten whole on every persisted turn, so two
+        writers on one session id silently lose a turn: A resumes S, B saves
+        S, A writes its stale copy back. Nothing enforces "one writer per
+        session" in Python — the plugin pool holds it in Node (SPEC §5) and
+        the council web UI holds it by having one bridge per chat. This is
+        the belt: the writer that would destroy work notices and says so,
+        rather than the loss being invisible.
+
+        Deliberately NOT a lock. The single-writer path costs one extra stat
+        per save and never blocks.
+        """
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._seen_mtime.pop(session_id, None)
+            return  # no file yet (or unreadable): nothing to lose
+        if self._seen_mtime.get(session_id) == mtime:
+            return  # exactly as we left it
+        try:
+            on_disk = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return  # unparseable: our payload is strictly better than junk
+        if not isinstance(on_disk, dict):
+            return
+        theirs = _entry_count(on_disk)
+        ours = _entry_count(payload)
+        if theirs > ours:
+            raise StaleSessionWrite(session_id, ours, theirs)
+        # Their copy is not ahead of ours (a re-save, a rename, a set_project
+        # stamp, or our own first write): adopt the mtime and carry on.
+        self._seen_mtime[session_id] = mtime
+
+    def save(
+        self, session_id: str, payload: dict[str, Any], *, force: bool = False,
+    ) -> None:
+        """Persist a session. Raises StaleSessionWrite when a newer writer
+        has a longer transcript on disk, unless *force* is set."""
         path = self.paths.session_state_file(session_id)
+        if not force:
+            self._check_not_stale(session_id, path, payload)
         mtime = atomic_write_json(path, payload)
+        self._seen_mtime[session_id] = mtime
         self._publish_metadata_row(session_id, payload, mtime)
 
     def set_project(
@@ -224,6 +293,7 @@ class SessionStore:
         except (OSError, RuntimeError, ValueError):
             indexed = False
         if indexed:
+            self._seen_mtime[session_id] = mtime
             self._publish_metadata_row(session_id, payload, mtime)
         return True
 
@@ -258,7 +328,14 @@ class SessionStore:
 
     def load(self, session_id: str) -> dict[str, Any]:
         path = self.paths.session_state_file(session_id)
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Reading is how a writer becomes current: the next save compares
+        # against the state we just took a copy of.
+        try:
+            self._seen_mtime[session_id] = path.stat().st_mtime
+        except OSError:
+            pass
+        return payload
 
     def load_from_path(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -275,6 +352,7 @@ class SessionStore:
         another process has since moved (delete and archive both funnel
         through this).
         """
+        self._seen_mtime.pop(session_id, None)
         with self._lock:
             if self._metadata_cache is not None:
                 self._metadata_cache.pop(session_id, None)

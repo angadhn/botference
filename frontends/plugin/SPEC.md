@@ -3689,23 +3689,51 @@ lane picked up by a fresh child after a reap sees the whole transcript.
   case no child owns the file and the companion removes it itself. Sharper than
   what it replaced, not looser.
 
-#### 7. The honest gap
+#### 7. The gap this opened, and how it was closed (2026-08-25)
 
 Every child in the pool works in the same root and files under the same project
 ("Plugin pages"). The session index and the project index are both `flock`'d
-and safe. The controller's **per-project scratch files are not**: `work/handoff-
-<model>.md` above all, plus `implementation-plan.md` and `checkpoint.md`, are
-scoped to the planning root rather than to a session, so two children relaying
-at the same moment can overwrite each other's handoff. It is rare (a relay
-needs a context ceiling and these turns are short) and it costs a relay rather
-than a transcript.
+and safe. The controller's **per-project scratch files were not**:
+`work/handoff-<model>.md` above all, plus `implementation-plan.md` and
+`checkpoint.md`, were scoped to the planning root rather than to a session, so
+two children relaying at the same moment could overwrite each other's handoff.
+It was rare (a relay needs a context ceiling and these turns are short) and it
+cost a relay rather than a transcript. This amendment shipped with that
+recorded as designed-not-built; the controller side landed the next day, and
+all three parts are now **built**:
 
-**Designed, not built:** the fix belongs in the controller — scratch paths
-keyed by session id, and an mtime check in `SessionStore.save` that refuses a
-write over a newer file. `ProjectStore.set_status` is also the one unlocked
-read-modify-write in an otherwise locked module. None of that is on the plugin's
-side of the line and none of it is made worse by a bounded pool, so it is
-recorded here rather than half-done.
+- **Per-session scratch.** `BotferencePaths.session_scratch_dir(sid)` roots
+  everything one chat writes for itself at `work/scratch/<session-id>/`.
+  `handoff-<model>.md` moved there outright — it is pure scratch, nothing
+  outside the relay reads it — and `handoff_live_candidates()` still lists the
+  old root-scoped path second, so a chat resumed across the upgrade finds the
+  artifact its previous process left and `_clear_live_handoff()` removes both.
+- **The plan and the checkpoint kept their canonical paths**, because they are
+  deliverables and not scratch: the artifacts panel lists them, `/project
+  build-plan` copies them, and the planner's tool allowlist names them by
+  path. Each chat now also writes a mirror under its own scratch dir, plus a
+  `.<name>.owner` sidecar naming the last writer. A read takes the canonical
+  file whenever this chat owns it — so a hand-edited plan is still the plan —
+  and falls back to the chat's own mirror only when the sidecar names somebody
+  else, which is exactly the concurrent-write case. Losing the race on the
+  shared file therefore no longer feeds a stranger's plan into your
+  `/finalize`, and never destroys your own copy.
+- **`SessionStore.save` has a stale-write guard.** The store remembers the
+  mtime it last wrote or read per session id; a save whose file has moved
+  since re-reads it and raises `StaleSessionWrite` **only** when the copy on
+  disk has MORE transcript entries than the payload being written — the one
+  shape of the race that loses a whole turn. Equal, shorter, unparseable, or
+  first writes all proceed, so the single-writer case costs one `stat` and
+  never blocks. `_persist_session` catches it, logs an error and appends to
+  the crash log rather than crashing or writing anyway. It is a belt: the
+  invariant is still held in Node (§5), and this is not a locking framework.
+- **`ProjectStore.set_status`** now takes the same `file_lock` on
+  `portfolio.json` as `_upsert_portfolio_entry` and `associate_session`.
+
+Covered by `tests/test_paths.py::TestSessionScratchPaths` and, in
+`tests/test_botference.py`, `TestSessionKeyedScratch`,
+`TestStaleSessionWriteGuard` and `TestProjectStatusLocking` (19 tests; pytest
+709 → 728).
 
 #### 8. Configuration
 
@@ -3757,6 +3785,71 @@ another runs.
 that is deliberate: almost every test in it is about what a single child is
 told and in what order, read off one shared log. It therefore remains the proof
 that the degenerate case still is what it was.
+
+### Amendment (2026-08-25, shipped): the project's own task list
+
+The drawer has had a tasks card since the checklist work: the newest checklist
+in THIS page's conversation, derived from the record, pinned at the top of both
+panes. It belongs to one conversation, and the bots are told to re-issue it
+whole every time it changes.
+
+There is a second kind of list that card cannot be. A project accumulates work
+across many conversations, and the thing that survives them is a file:
+`projects/<id>/TASKS.md`. The bots curate it — **extend, tick, prune, and never
+rewrite wholesale** — because another chat's items live in it and a wholesale
+rewrite deletes them where nobody can put them back. Those rules are in
+`core/room_prompts.py::project_tasks_note()`, added with this amendment (only
+the in-chat checklist rules existed before), and the controller adds the note
+only when a project is open, naming that project's real path.
+
+#### What the plugin does with it
+
+`workspace.projectTasks(root, id)` reads and parses the file — a deliberate
+mirror of `parse_tasks_md` in `core/project_store.py`, same bounds (256 KB,
+200 items, 300 characters a line) and same tolerance, because two parsers that
+disagree about a file are worse than one. It is bot-written markdown, so
+anything that is not unambiguously a task line is skipped: prose, headings,
+tables, plain bullets, an empty item. `-`, `*` and `+` all count; `[x]`, `[X]`
+and a bare `[]` all count; a duplicated item counts once.
+
+`GET /project-page` carries the result as `artifact.tasks`, and **only on a
+confirmed root** — an unconfirmed root is a folder the reader has not yet said
+belongs to them, and reading its files into the drawer would answer that
+question on their behalf. A project with no list gets no key at all, so the
+drawer sees an absent section rather than an empty one.
+
+The drawer renders it as `.tasks.ptasks`, above the page's own tasks card in
+both panes, drawn one step quieter (dashed edge, muted accent instead of an
+author's colour, because no author wrote this one). Its boxes are **disabled**:
+nothing in the browser owns that file, and a tick would mean the companion
+rewriting somebody else's markdown. The fold is session state like every other
+reading position here.
+
+`fillTasks()` was fixed on the way past. It walked `.tasks` and rebuilt every
+card it found from the page's newest message — which, once a second card
+existed, painted this page's checklist into the project's card and left it
+claiming to have come from `TASKS.md`. It now walks `.tasks:not(.ptasks)`.
+Caught by looking at a screenshot; the two cards were byte-identical and no
+test would have said a word.
+
+The council web UI grew the same section from the same file, fed by the
+`projects` event (`ProjectPanelProject.tasks`) rather than by an endpoint of
+its own. Those are the two tasks panels this list appears in; the Ink TUI has
+a projects pane and no tasks panel, so there was nothing there to add it to.
+
+#### Testing
+
+`test/workspace.test.mjs` (120 → 126): the parser against a deliberately
+horrible file, junk in / nothing out, the two bounds, `projectTasks` over a
+real fixture root (missing file, missing project, a DIRECTORY where the file
+should be), and on the wire — an unconfirmed root's list never leaving disk, a
+confirmed project's list arriving with the page, following the project rather
+than the page, and disappearing when the file is deleted.
+
+Harness `?workspace=1&selftest=1` gained the card's assertions (its items, the
+struck-through tick, the count, the disabled boxes, the project name and the
+file name, both panes, the fold); `?workspace=1&ptasks=0` is the project that
+keeps no list, and asserts the card is absent.
 
 ## Out of scope for v1 (do not build)
 

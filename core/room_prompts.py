@@ -296,6 +296,40 @@ def recommendations_note() -> str:
     )
 
 
+def project_tasks_note(project_title: str, tasks_path: str) -> str:
+    """Rules for the durable per-project task list, projects/<id>/TASKS.md.
+
+    Distinct from recommendations_note(): that one is the in-chat checklist,
+    which belongs to ONE conversation and is re-issued whole each time. This
+    file outlives every chat in the project and is read by every chat in it,
+    so it is edited in place — extend, tick, prune — and never rewritten
+    wholesale. A wholesale rewrite by one chat silently deletes what another
+    chat added, and both tasks panels show this file read-only, so the user
+    has no way to put it back.
+    """
+    return (
+        "--- Project task list ---\n"
+        f"`{tasks_path}` is the standing task list for {project_title}. It "
+        "belongs to the PROJECT, not to this chat: every chat in the project "
+        "reads it, and the task panels show it to the user.\n"
+        "Read it before you plan anything, and keep it current. You may do "
+        "exactly three things to it:\n"
+        "- EXTEND: append new `- [ ] ` items at the end for work this "
+        "conversation has established needs doing.\n"
+        "- TICK: change an item's `- [ ]` to `- [x]` when the work is "
+        "genuinely done.\n"
+        "- PRUNE: delete an item that has become irrelevant — and say in the "
+        "chat why it left.\n"
+        "NEVER rewrite the file wholesale, reorder it, reword items you did "
+        "not write, or replace it with your own version of the list: another "
+        "chat's items live there and rewriting deletes them silently. One "
+        "item per line, a single imperative sentence, no nesting. Prose "
+        "outside the list is fine and is ignored by the panels. If the file "
+        "does not exist and the project needs a list, create it with a `# "
+        "Tasks` heading and go from there."
+    )
+
+
 def claude_style_contract() -> str:
     """Standing brevity contract for Claude's REAL system prompt.
 

@@ -361,6 +361,18 @@ class InkBridge:
                         }
                         for session in project.sessions
                     ],
+                    # projects/<id>/TASKS.md, the project's standing list.
+                    # Omitted entirely when the project has none, so a
+                    # frontend sees a missing key rather than an empty
+                    # section (and the payload does not grow for the
+                    # projects that never keep one).
+                    **(
+                        {"tasks": [
+                            {"text": task.text, "done": task.done}
+                            for task in project.tasks
+                        ]}
+                        if project.tasks else {}
+                    ),
                 }
                 for project in state.projects
             ],

@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## 2026-08-25
+
+- **A project now has a task list of its own, and the bots keep it.** The
+  checklist in a chat belongs to that chat and scrolls away with it. A project's
+  work does not — so `projects/<id>/TASKS.md` is a standing list the bots read
+  before they plan and keep current afterwards: they add items, tick them off
+  when the work is genuinely done, and drop the ones that stopped mattering
+  (saying why). They are told never to rewrite it wholesale, because everyone
+  else's items live in it too. It shows up in both task panels — the council
+  web panel and the Discuss drawer's card, above whatever the current
+  conversation is working through — read-only in both, since the file is the
+  bots' to keep and yours to edit. A project with no list simply has no section.
+  Write it by hand if you like; they will pick it up.
+
+- **Two chats working at once no longer write over each other's notes.** Now
+  that the bots answer several pages side by side, two chats could be mid-turn
+  in the same folder at the same instant — and the scratch files the controller
+  keeps for a chat (the handoff it writes when an agent hands its context on,
+  and its working copies of the implementation plan and checkpoint) were shared
+  by everything in that folder, so the second writer's copy was simply the one
+  that survived. Each chat now keeps its own under `work/scratch/<chat>/`. The
+  plan and the checkpoint stay exactly where they were on disk, because you and
+  the rest of the app open them there; each chat just also keeps a private copy,
+  and reads it back instead of a stranger's if another chat has taken the shared
+  file over. A plan you edited by hand is still the plan. Handoffs left by a
+  previous version are still found.
+
+- **A chat can no longer lose a whole exchange to a second window.** If two
+  processes had the same chat open, the slower one used to write its older copy
+  back over the newer, and the missing exchange left no trace anywhere. The save
+  now notices that the file grew under it, refuses, and says so in the log and
+  the crash log rather than deleting an answer silently.
+
+- **Archiving a project can no longer drop a project someone else just made.**
+  `set_status` was the last read-modify-write in the project store without the
+  lock its neighbours take.
+
 ## 2026-08-24
 
 - **Discuss: the bots answer several pages at once.** A turn on one page used to

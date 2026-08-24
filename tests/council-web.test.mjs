@@ -2304,6 +2304,115 @@ test('tasks panel: collapsing it is remembered',
   assert.equal(doc.getElementById('tasks-sec').hasAttribute('hidden'), false, 'the section itself stays');
 });
 
+// ------------------------------------------- project tasks panel (TASKS.md)
+
+// The other kind of list: a file in the project that outlives every chat in
+// it. The controller parses projects/<id>/TASKS.md and ships it on the
+// `projects` event; the panel only paints it, read-only.
+
+const PT = (tasks, extra = {}) => ({
+  type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+  inbox_sessions: [],
+  projects: [
+    { id: 'p1', title: 'Demo project', active: true, session_count: 0,
+      sessions: [], ...(tasks === null ? {} : { tasks }), ...extra },
+    { id: 'p2', title: 'Other project', active: false, session_count: 0,
+      sessions: [], tasks: [{ text: 'Not this one', done: false }] },
+  ],
+});
+const pItems = doc => [...doc.querySelectorAll('#ptasks-body li.md-task .md-tasktext')]
+  .map(s => s.textContent.trim());
+
+test('project tasks: the active project\'s TASKS.md, and only the active one\'s',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const sec = doc.getElementById('ptasks-sec');
+  assert.equal(sec.hasAttribute('hidden'), true, 'no projects event yet: no section');
+  // same trap as #tasks-sec: display:flex outranks the UA's [hidden] rule
+  assert.match(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'style.css'), 'utf8'),
+    /#ptasks-sec\[hidden\][^{]*\{[^}]*display:\s*none/,
+    'hidden must actually be invisible');
+
+  C.handle(PT([
+    { text: 'Pull the dataset', done: true },
+    { text: 'Rebuild the deflator', done: false },
+    { text: 'Redraw figure 3', done: false },
+  ]));
+  assert.equal(sec.hasAttribute('hidden'), false, 'a project list raises the section');
+  assert.deepEqual(pItems(doc),
+    ['Pull the dataset', 'Rebuild the deflator', 'Redraw figure 3']);
+  assert.ok(!pItems(doc).includes('Not this one'), 'another project\'s list stays out');
+  assert.match(doc.getElementById('ptasks-meta').textContent,
+    /Demo project · 1\/3 done · TASKS\.md · read-only/);
+  const boxes = [...doc.querySelectorAll('#ptasks-body input.md-tick')];
+  assert.deepEqual(boxes.map(b => b.checked), [true, false, false]);
+  assert.ok(boxes.every(b => b.disabled), 'the panel does not own that file');
+  assert.equal(doc.querySelector('#ptasks-body li.md-task').classList.contains('done'), true);
+});
+
+test('project tasks: a project with no list has no section, and losing it puts it away',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle(PT([{ text: 'Ship it', done: false }]));
+  assert.equal(doc.getElementById('ptasks-sec').hasAttribute('hidden'), false);
+  // the key is omitted entirely for a project that keeps no list
+  C.handle(PT(null));
+  assert.equal(doc.getElementById('ptasks-sec').hasAttribute('hidden'), true);
+  assert.deepEqual(pItems(doc), []);
+  // and an empty array is the same thing
+  C.handle(PT([{ text: 'Back again', done: false }]));
+  C.handle(PT([]));
+  assert.equal(doc.getElementById('ptasks-sec').hasAttribute('hidden'), true);
+});
+
+test('project tasks: bot-written junk is dropped, never painted',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  C.handle(PT([
+    null,
+    'a bare string',
+    { done: true },
+    { text: '   ' },
+    { text: 'The only real one' },
+    { text: '<img src=x onerror=alert(1)>', done: 'yes' },
+  ]));
+  assert.deepEqual(pItems(doc), ['The only real one', '<img src=x onerror=alert(1)>']);
+  assert.equal(doc.querySelectorAll('#ptasks-body img').length, 0, 'text, not markup');
+  // `done: 'yes'` is truthy, and that is all the panel claims to know
+  assert.match(doc.getElementById('ptasks-meta').textContent, /1\/2 done/);
+  // a `tasks` that is not an array at all must not throw
+  C.handle(PT('nonsense'));
+  assert.equal(doc.getElementById('ptasks-sec').hasAttribute('hidden'), true);
+});
+
+test('project tasks: collapsing it is remembered, and the empty state knows about it',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'replay_done' });
+  const none = doc.getElementById('tasks-none');
+  w.localStorage.setItem('council-ap-view', 'tasks');
+  C.handle(PT([{ text: 'Ship it', done: false }]));
+  assert.equal(none.hasAttribute('hidden'), true,
+    'a project list is something in the tasks view, so it is not empty');
+
+  const fold = doc.getElementById('ptasks-fold');
+  assert.equal(fold.getAttribute('aria-expanded'), 'true');
+  fold.click();
+  assert.equal(fold.getAttribute('aria-expanded'), 'false');
+  assert.equal(doc.getElementById('ptasks-body').hasAttribute('hidden'), true);
+  assert.equal(w.localStorage.getItem('council-ptasks-fold'), 'closed');
+  C.handle(PT([{ text: 'Ship it', done: true }]));
+  assert.equal(doc.getElementById('ptasks-body').hasAttribute('hidden'), true,
+    'a revised list respects the choice instead of springing open');
+  assert.equal(doc.getElementById('ptasks-sec').hasAttribute('hidden'), false);
+
+  C.handle(PT(null));
+  assert.equal(none.hasAttribute('hidden'), false, 'nothing anywhere: the empty state');
+});
+
 // ------------------------------------------------- UI: filing a chat
 
 // A chat's project used to be decided by whatever the sidebar happened to be

@@ -39,12 +39,18 @@ from cli_adapters import (
     planner_write_roots_for_env,
 )
 from paths import BotferencePaths
-from project_store import ProjectInfo, ProjectStore
+from project_store import (
+    TASKS_FILE_NAME,
+    ProjectInfo,
+    ProjectStore,
+    read_project_tasks,
+)
 from user_settings import load_user_settings, save_user_setting
 from ui_types import (
     ProjectPanelProject,
     ProjectPanelSession,
     ProjectPanelState,
+    ProjectPanelTask,
     RoomMode,
     StatusSnapshot,
 )
@@ -60,6 +66,7 @@ from room_prompts import (
     free_form_turn_status,
     reviewer_preamble,
     revision_from_plan_preamble,
+    project_tasks_note,
     recommendations_note,
     room_preamble,
     project_skill_context,
@@ -72,6 +79,7 @@ from render_blocks import parse_render_blocks
 from session_store import (
     SessionStore,
     SessionSummary,
+    StaleSessionWrite,
     _display_title,
     append_crash_log,
     iso_now,
@@ -1356,6 +1364,106 @@ class Botference:
     def _checkpoint_path(self) -> Path:
         return self._planning_scope_root() / "checkpoint.md"
 
+    # ── per-session scratch ──────────────────────────────────────────
+    #
+    # Every controller process in one workspace used to share these files:
+    # work/handoff-<model>.md always, and implementation-plan.md /
+    # checkpoint.md whenever two chats sat in the same planning scope. Since
+    # the plugin runs a pool of bridge children (SPEC §7), two chats can be
+    # mid-turn at the same instant, and the second writer's copy was simply
+    # the one that survived.
+    #
+    # The scheme: everything a chat writes for itself lives under
+    # work/scratch/<session-id>/. The handoff is PURE scratch and moves there
+    # outright (the old root-scoped file is still read as a fallback, and
+    # cleaned up once we have written our own). The plan and the checkpoint
+    # are also DELIVERABLES — the artifacts panel lists them, /project
+    # build-plan copies them, and the planner's tool allowlist names them by
+    # path — so they keep their canonical location and gain a session-keyed
+    # mirror beside it. Writes go to both; reads take whichever is newer, so
+    # a concurrent chat's write can no longer feed a foreign plan into this
+    # chat's /finalize, and a human editing the canonical file still wins.
+
+    def _scratch_scope_slug(self) -> str:
+        project = self._active_project()
+        return project.id if project else "_global"
+
+    def _planning_mirror(self, path: Path) -> Path:
+        return self.paths.scratch_file(
+            path.name, self.session_id, scope=self._scratch_scope_slug(),
+        )
+
+    @staticmethod
+    def _planning_owner_file(path: Path) -> Path:
+        """Sidecar naming the chat that last wrote the canonical file."""
+        return path.with_name(f".{path.name}.owner")
+
+    def _planning_owner(self, path: Path) -> str:
+        try:
+            return self._planning_owner_file(path).read_text(
+                encoding="utf-8",
+            ).strip()
+        except OSError:
+            return ""
+
+    def _read_planning_file(self, path: Path) -> str:
+        """Read a planning deliverable — this chat's copy of it.
+
+        The canonical file wins whenever this chat was the last to write it,
+        which keeps a hand-edited implementation-plan.md authoritative exactly
+        as it always was. It loses only when the owner sidecar names ANOTHER
+        chat: that is the concurrent-write case, and reading a stranger's plan
+        into this chat's /finalize is the bug. Then we read the mirror, which
+        is this chat's own last write and nobody else's.
+        """
+        mirror = self._planning_mirror(path)
+        if not mirror.is_file():
+            return self._read_work_file(path)
+        if not path.is_file():
+            return self._read_work_file(mirror)
+        owner = self._planning_owner(path)
+        if owner and owner != self.session_id:
+            return self._read_work_file(mirror)
+        return self._read_work_file(path)
+
+    def _write_planning_file(self, path: Path, text: str) -> None:
+        """Write a planning deliverable to this chat's mirror AND to the
+        canonical path. The mirror goes first, so losing the race on the
+        shared file still leaves this chat's own copy intact."""
+        try:
+            self._write_work_file(self._planning_mirror(path), text)
+        except OSError as exc:
+            log.warning("Could not write planning mirror for %s: %s", path.name, exc)
+        self._write_work_file(path, text)
+        try:
+            self._planning_owner_file(path).write_text(
+                self.session_id + "\n", encoding="utf-8",
+            )
+        except OSError:
+            pass  # ownership is an optimisation, never a precondition
+
+    def _project_tasks_note(self) -> str:
+        """Rules for projects/<id>/TASKS.md — only when a project is open.
+
+        There is no project-level list without a project, and the note names
+        a real path, so an Inbox chat is told nothing about it.
+        """
+        project = self._active_project()
+        if not project:
+            return ""
+        return project_tasks_note(
+            project.title,
+            self._relative_project_path(project.root / TASKS_FILE_NAME),
+        )
+
+    def _live_handoff_path(self, model: str) -> Path:
+        return self.paths.handoff_live_file(model, self.session_id)
+
+    def _clear_live_handoff(self, model: str) -> None:
+        """Remove this chat's live handoff artifact, legacy copy included."""
+        for path in self.paths.handoff_live_candidates(model, self.session_id):
+            path.unlink(missing_ok=True)
+
     @property
     def _archive_root(self) -> Path:
         env_dir = os.environ.get("BOTFERENCE_ARCHIVE_DIR")
@@ -1706,6 +1814,13 @@ class Botference:
                 active=is_active,
                 session_count=session_count,
                 sessions=panel_sessions,
+                # projects/<id>/TASKS.md — one small file per project, read
+                # on the same sweep that already reads PROJECT.md for the
+                # title. Missing or unparseable is simply an empty list.
+                tasks=tuple(
+                    ProjectPanelTask(text=task.text, done=task.done)
+                    for task in read_project_tasks(project.root)
+                ),
             ))
         return ProjectPanelState(
             projects=tuple(panel_projects),
@@ -1916,7 +2031,21 @@ class Botference:
             if activity != self._persisted_activity:
                 self.updated_at = iso_now()
                 self._persisted_activity = activity
-            self.session_store.save(self.session_id, self._session_payload())
+            try:
+                self.session_store.save(self.session_id, self._session_payload())
+            except StaleSessionWrite as stale:
+                # Another process saved this chat after we last read it, and
+                # its copy is longer than ours. Writing would delete a turn
+                # nobody would ever see go. Say so loudly (log + crash log)
+                # and leave the newer file alone; /resume re-reads from disk.
+                log.error("%s", stale)
+                append_crash_log(
+                    self.paths,
+                    location="_persist_session",
+                    session_id=self.session_id,
+                    exc=stale,
+                )
+                return
             # Re-assert the chat's OWN filing only. Using the active project
             # here is what let a save re-file a chat into whatever the user
             # happened to be browsing; an unfiled chat stays unfiled no matter
@@ -2344,11 +2473,14 @@ class Botference:
         return any(token in stripped for token in placeholders)
 
     def _current_plan_text(self) -> str:
-        text = self._read_work_file(self._plan_path)
+        text = self._read_planning_file(self._plan_path)
         return "" if self._looks_like_template(text) else text
 
     def _thread_slug(self) -> str:
-        candidates = [self._current_plan_text(), self._read_work_file(self._checkpoint_path)]
+        candidates = [
+            self._current_plan_text(),
+            self._read_planning_file(self._checkpoint_path),
+        ]
         for text in candidates:
             if not text:
                 continue
@@ -3571,8 +3703,7 @@ class Botference:
 
         # Relay bootstrap is in-process only. Clear any prior failure artifact,
         # then keep the handoff in memory for the immediate restart attempt.
-        live_path = self.paths.handoff_live_file(model)
-        live_path.unlink(missing_ok=True)
+        self._clear_live_handoff(model)
         self._pending_relay_handoffs[model] = handoff_doc
 
         restarted = await self._ensure_initialized(model, ui)
@@ -3700,7 +3831,7 @@ class Botference:
             )
             self.set_relay_boundary(model)
             self._teardown_model_session(model, ui)
-            self.paths.handoff_live_file(model).unlink(missing_ok=True)
+            self._clear_live_handoff(model)
             self._pending_relay_handoffs[model] = doc
 
         results = await asyncio.gather(
@@ -3746,7 +3877,7 @@ class Botference:
         handoff_doc = self._pending_relay_handoffs.get(model)
         if not handoff_doc:
             return
-        live_path = self.paths.handoff_live_file(model)
+        live_path = self._live_handoff_path(model)
         live_path.parent.mkdir(parents=True, exist_ok=True)
         live_path.write_text(handoff_doc, encoding="utf-8")
 
@@ -3817,7 +3948,7 @@ class Botference:
 
         if handoff_doc:
             self._pending_relay_handoffs.pop(model, None)
-            self.paths.handoff_live_file(model).unlink(missing_ok=True)
+            self._clear_live_handoff(model)
 
         self._persist_session()
         return resp
@@ -4566,6 +4697,9 @@ class Botference:
             parts.append(agents_note)
         parts.append(deliverables_note())
         parts.append(recommendations_note())
+        tasks_note = self._project_tasks_note()
+        if tasks_note:
+            parts.append(tasks_note)
         skill_context = project_skill_context(
             model,
             [self.paths.project_root, self.paths.botference_home],
@@ -5473,7 +5607,7 @@ class Botference:
         self.transcript.add(lead, resp.text, resp.tool_summaries)
         self._persist_session()
         self.transcript.mark_seen(lead)
-        self._write_work_file(self._plan_path, plan_text)
+        self._write_planning_file(self._plan_path, plan_text)
         self._add_room_entry(
             ui, "system",
             f"Updated {self._planning_display_path(self._plan_path)}",
@@ -5539,7 +5673,7 @@ class Botference:
             self.transcript.add(lead, final_resp.text, final_resp.tool_summaries)
             self._persist_session()
             self.transcript.mark_seen(lead)
-            self._write_work_file(self._plan_path, final_plan)
+            self._write_planning_file(self._plan_path, final_plan)
             self._add_room_entry(
                 ui, "system",
                 f"Updated {self._planning_display_path(self._plan_path)}",
@@ -5569,7 +5703,7 @@ class Botference:
         self.transcript.add(lead, checkpoint_resp.text, checkpoint_resp.tool_summaries)
         self._persist_session()
         self.transcript.mark_seen(lead)
-        self._write_work_file(self._checkpoint_path, checkpoint_text)
+        self._write_planning_file(self._checkpoint_path, checkpoint_text)
         self._add_room_entry(
             ui, "system",
             f"Updated {self._planning_display_path(self._checkpoint_path)}",

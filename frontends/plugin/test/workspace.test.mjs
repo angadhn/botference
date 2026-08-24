@@ -578,6 +578,64 @@ await test('a drawer envelope is taken back off the reader\'s own words', async 
     'just a question I typed in the TUI');
 });
 
+console.log('\nworkspace — projects/<id>/TASKS.md');
+
+await test('a bot-written TASKS.md parses down to items, junk and all', async () => {
+  const items = ws.parseTasksMd([
+    '# Tasks',
+    '',
+    'Prose the panels ignore, including why an item left the list.',
+    '- [ ] Pull the dataset',
+    '* [x] Rebuild the deflator',
+    '+ [X] Redraw figure 3',
+    '   - [ ]   Re-run   the   regression   ',
+    '- [ ] Pull the dataset',
+    '- a plain bullet',
+    '- [ ]',
+    '- [] an empty box is an open item, not junk',
+    '| a | table |',
+  ].join('\n'));
+  assert.deepEqual(items, [
+    { text: 'Pull the dataset', done: false },
+    { text: 'Rebuild the deflator', done: true },
+    { text: 'Redraw figure 3', done: true },
+    { text: 'Re-run the regression', done: false },
+    { text: 'an empty box is an open item, not junk', done: false },
+  ]);
+});
+
+await test('junk in, nothing out — never a throw', async () => {
+  for (const junk of [null, undefined, '', 'not a list at all', '- [ ] \n', ' ']) {
+    assert.ok(Array.isArray(ws.parseTasksMd(junk)), String(junk));
+  }
+  assert.deepEqual(ws.parseTasksMd('not a list at all'), []);
+});
+
+await test('a runaway file is bounded, in items and in line length', async () => {
+  const many = Array.from({ length: 500 }, (_, i) => `- [ ] item ${i}`).join('\n');
+  assert.equal(ws.parseTasksMd(many).length, 200);
+  const long = ws.parseTasksMd('- [ ] ' + 'x'.repeat(1000))[0];
+  assert.equal(long.text.length, 300);
+  assert.ok(long.text.endsWith('…'));
+});
+
+await test('projectTasks reads the project file, and shrugs at a missing one', async () => {
+  const root = council('tasksfile');
+  assert.deepEqual(ws.projectTasks(root, 'spaceship-engineering'), []);
+  fs.writeFileSync(
+    path.join(root, 'projects', 'spaceship-engineering', 'TASKS.md'),
+    '# Tasks\n\n- [x] Fuel the thing\n- [ ] Light it\n', 'utf8');
+  assert.deepEqual(ws.projectTasks(root, 'spaceship-engineering'), [
+    { text: 'Fuel the thing', done: true },
+    { text: 'Light it', done: false },
+  ]);
+  assert.deepEqual(ws.projectTasks(root, 'no-such-project'), []);
+  assert.deepEqual(ws.projectTasks('', 'spaceship-engineering'), []);
+  const d = council('tasksdir');
+  fs.mkdirSync(path.join(d, 'projects', 'spaceship-engineering', 'TASKS.md'));
+  assert.deepEqual(ws.projectTasks(d, 'spaceship-engineering'), []);
+});
+
 console.log('\ncompanion — the project-page endpoints');
 
 {
@@ -650,6 +708,42 @@ console.log('\ncompanion — the project-page endpoints');
     assert.equal(r.json.state, 'yes');
     const p = await GET(base, '/project-page?url=' + enc(a.url));
     assert.equal(p.json.artifact.confirmed, true);
+  });
+
+  // ---- the project's own task list on the page payload ------------------
+  await test('an unconfirmed root TASKS.md is never read into the drawer', async () => {
+    // The root above is confirmed, so prove the gate on a DIFFERENT,
+    // still-unanswered council rather than by un-confirming this one.
+    const shy = council('tasks-unconfirmed');
+    const sa = artifact(shy, 'spaceship-engineering', 'doc.html');
+    fs.writeFileSync(path.join(shy, 'projects', 'spaceship-engineering', 'TASKS.md'),
+      '- [ ] Secret plans\n', 'utf8');
+    const r = await GET(base, '/project-page?url=' + enc(sa.url));
+    assert.equal(r.json.artifact.confirmed, false);
+    assert.equal(r.json.artifact.tasks, undefined,
+      'a folder the reader has not claimed is not read from');
+  });
+
+  await test('a confirmed project ships its TASKS.md with the page', async () => {
+    const file = path.join(root, 'projects', 'spaceship-engineering', 'TASKS.md');
+    const before = await GET(base, '/project-page?url=' + enc(a.url));
+    assert.equal(before.json.artifact.tasks, undefined,
+      'no list: a missing key, not an empty section');
+    fs.writeFileSync(file,
+      '# Tasks\n\nWhat this project still owes.\n\n- [x] Draw the nozzle\n- [ ] Test-fire it\n',
+      'utf8');
+    const after = await GET(base, '/project-page?url=' + enc(a.url));
+    assert.deepEqual(after.json.artifact.tasks, [
+      { text: 'Draw the nozzle', done: true },
+      { text: 'Test-fire it', done: false },
+    ]);
+    // it is the project's list, so it follows the project and not the page
+    const b2 = artifact(root, 'spaceship-engineering', 'second.html');
+    const other2 = await GET(base, '/project-page?url=' + enc(b2.url));
+    assert.deepEqual(other2.json.artifact.tasks, after.json.artifact.tasks);
+    fs.rmSync(file);
+    const gone = await GET(base, '/project-page?url=' + enc(a.url));
+    assert.equal(gone.json.artifact.tasks, undefined, 'delete the file, lose the section');
   });
 
   // ---- the same artifact through the council's web UI ------------------

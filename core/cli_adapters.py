@@ -329,10 +329,12 @@ def plan_allowed_tools_for_work_dir(
 
     if work_dir_path == project_root_path:
         return base_tools + [
+            "Edit(/TASKS.md)",
             "Edit(/checkpoint.md)",
             "Edit(/implementation-plan.md)",
             "Edit(/implementation-plan-*.md)",
             "Edit(/inbox.md)",
+            "Write(/TASKS.md)",
             "Write(/checkpoint.md)",
             "Write(/implementation-plan.md)",
             "Write(/implementation-plan-*.md)",

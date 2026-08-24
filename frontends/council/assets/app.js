@@ -24,6 +24,8 @@
     billing: $('billing'),
     tasksSec: $('tasks-sec'), tasksBody: $('tasks-body'),
     tasksMeta: $('tasks-meta'), tasksFold: $('tasks-fold'), tasksJump: $('tasks-jump'),
+    ptasksSec: $('ptasks-sec'), ptasksBody: $('ptasks-body'),
+    ptasksMeta: $('ptasks-meta'), ptasksFold: $('ptasks-fold'),
     presendWarn: $('presend-warn'),
     avatars: $('avatars'), banner: $('noauth-banner'), bannerX: $('noauth-x'),
     chat: $('chat'), transcript: $('transcript'), empty: $('empty'), jump: $('jump'),
@@ -1188,6 +1190,79 @@
   // ordinals, so the panel's boxes address exactly the same tick records; the
   // checked state is copied from the (already tick-applied) source and then the
   // store is laid over it, so both agree by construction.
+  // ── the project's own list: projects/<id>/TASKS.md ───────────────────────
+  // Everything above this line is derived from the transcript and belongs to
+  // ONE chat. This is the other kind of list: a file on disk that outlives
+  // every chat in the project, which the bots extend, tick and prune (and are
+  // told never to rewrite wholesale, because another chat's items live in it).
+  // It arrives on the `projects` event as `tasks: [{text, done}]`, already
+  // parsed by the controller — the panel never parses markdown for it.
+  //
+  // READ-ONLY, deliberately: the browser does not own that file, and a tick
+  // here would have to round-trip a rewrite of somebody else's markdown. The
+  // boxes are disabled and the meta line says where the list lives.
+  const PTASK_FOLD_KEY = 'council-ptasks-fold';
+  let ptasks = { title: '', items: [] };
+  function applyPTaskFold() {
+    if (!els.ptasksFold) return;
+    let open = true;
+    try { open = localStorage.getItem(PTASK_FOLD_KEY) !== 'closed'; } catch { }
+    els.ptasksSec.classList.toggle('folded', !open);
+    els.ptasksFold.setAttribute('aria-expanded', String(open));
+    els.ptasksFold.title = open ? 'collapse the project list' : 'expand the project list';
+    els.ptasksBody.hidden = !open;
+    els.ptasksMeta.hidden = !open;
+  }
+  // Defensive by contract: TASKS.md is bot-written, so anything that is not a
+  // usable {text} object is dropped rather than painted as an empty row.
+  function noteProjectTasks(ev) {
+    let found = { title: '', items: [] };
+    for (const pr of (ev && ev.projects) || []) {
+      if (!pr || !pr.active) continue;
+      const items = Array.isArray(pr.tasks) ? pr.tasks : [];
+      found = {
+        title: String(pr.title || pr.id || ''),
+        items: items
+          .filter(t => t && typeof t === 'object' && String(t.text || '').trim())
+          .map(t => ({ text: String(t.text).trim(), done: !!t.done })),
+      };
+      break;
+    }
+    ptasks = found;
+    renderProjectTasks();
+  }
+  function renderProjectTasks() {
+    if (!els.ptasksSec) return;
+    if (!ptasks.items.length) {
+      els.ptasksSec.hidden = true;
+      els.ptasksBody.textContent = '';
+      els.ptasksMeta.textContent = '';
+      syncApView();
+      return;
+    }
+    const done = ptasks.items.filter(t => t.done).length;
+    els.ptasksBody.innerHTML =
+      `<ul class="md-tasklist ptasklist">${ptasks.items.map(t =>
+        `<li class="md-task${t.done ? ' done' : ''}">` +
+        `<input type="checkbox" class="md-tick" disabled${t.done ? ' checked' : ''}` +
+        ` aria-label="${t.done ? 'done' : 'not done'}">` +
+        `<span class="md-tasktext">${esc(t.text)}</span></li>`).join('')}</ul>`;
+    els.ptasksMeta.textContent =
+      [ptasks.title, `${done}/${ptasks.items.length} done`, 'TASKS.md · read-only']
+        .filter(Boolean).join(' · ');
+    els.ptasksSec.hidden = false;
+    applyPTaskFold();
+    syncApView();
+  }
+  if (els.ptasksFold) {
+    els.ptasksFold.addEventListener('click', () => {
+      let open = true;
+      try { open = localStorage.getItem(PTASK_FOLD_KEY) !== 'closed'; } catch { }
+      try { localStorage.setItem(PTASK_FOLD_KEY, open ? 'closed' : 'open'); } catch { }
+      applyPTaskFold();
+    });
+  }
+
   // ── panel views: one pill, two contents (tasks | agents) ─────────────────
   // Both lived in one long scroll and neither read well for it. The choice is
   // remembered; the tasks view owns its own empty state ("no task list yet")
@@ -1204,8 +1279,12 @@
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
     }
+    // the empty state belongs to the whole tasks view: a project list with
+    // no chat list of its own is still a tasks view with something in it.
     const none = document.getElementById('tasks-none');
-    if (none) none.hidden = !(v === 'tasks' && els.tasksSec && els.tasksSec.hidden);
+    const bare = (!els.tasksSec || els.tasksSec.hidden)
+      && (!els.ptasksSec || els.ptasksSec.hidden);
+    if (none) none.hidden = !(v === 'tasks' && bare);
   }
   document.querySelectorAll('.ap-viewpill [data-apview]').forEach(b =>
     b.addEventListener('click', () => {
@@ -2374,6 +2453,7 @@
         // currentSid null for unfiled chats (phantom "chat not found")
         for (const s of ev.inbox_sessions || []) if (s.active) active = s.session_id;
         state.currentSid = active;
+        noteProjectTasks(ev);
         autoOpenActiveProject(ev);
         renderProjects();
         // honor a deep-linked #/chat/<id> once, when the session list first
@@ -2577,6 +2657,7 @@
     noteAgentTurn, exhaustReason, modelsFor, effortsFor,
     laneEvent, hashSid, syncHash, routeHash, chatParam,
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
+    projectTasks: () => ptasks,
     renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
   };
 })();

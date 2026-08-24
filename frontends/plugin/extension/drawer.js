@@ -1213,6 +1213,13 @@
       // only, like every other reading position in here.
       tasks: null,
       tasksOpen: true,
+      // ---- the PROJECT's own list ----------------------------------------
+      // Not derived and not this page's: projects/<id>/TASKS.md, parsed by
+      // the companion and delivered on `project.tasks`. It outlives every
+      // conversation in the project — the bots extend, tick and prune it —
+      // and it is READ-ONLY here, because nothing in this drawer owns that
+      // file and a tick would mean rewriting somebody else's markdown.
+      ptasksOpen: true,
       // ---- resolved threads ---------------------------------------------
       // The main list is what still needs the reader; everything they have
       // marked handled drops into one collapsed section at the bottom. Both
@@ -2453,6 +2460,38 @@
       return t.length > n ? t.slice(0, n - 1) + '…' : t;
     };
 
+    // The project's standing list, above the page's own card on a project
+    // artifact page. Text only — no markdown, no ticking, no source jump:
+    // this list has no message behind it, it has a file behind it.
+    const projectTasks = () => {
+      const p = D.project;
+      if (!p || !p.confirmed || !Array.isArray(p.tasks)) return [];
+      return p.tasks
+        .filter(t => t && typeof t === 'object' && String(t.text || '').trim())
+        .map(t => ({ text: String(t.text).trim(), done: !!t.done }));
+    };
+
+    function projectTaskCardHtml() {
+      const items = projectTasks();
+      if (!items.length) return '';
+      const open = D.ptasksOpen;
+      const done = items.filter(t => t.done).length;
+      const name = (D.project && (D.project.project_title || D.project.project_id)) || '';
+      const hide = open ? '' : ' hidden';
+      return `<div class="tasks ptasks ro${open ? '' : ' folded'}">
+        <div class="taskhead">
+          <button class="taskfold" data-act="ptasks-fold" type="button" aria-expanded="${open ? 'true' : 'false'}"
+            title="${open ? 'fold the project list away' : 'show the project list'}">
+            <span class="tcaret" aria-hidden="true">${open ? '▾' : '▸'}</span>Project tasks<span class="tcount">${done}/${items.length}</span></button>
+        </div>
+        <div class="taskbody"${hide}><ul class="md-tasklist">${items.map(t =>
+          `<li class="md-task${t.done ? ' done' : ''}"><input type="checkbox" class="md-tick" disabled${
+            t.done ? ' checked' : ''} aria-label="${t.done ? 'done' : 'not done'}"><span class="md-tasktext">${
+            esc(t.text)}</span></li>`).join('')}</ul></div>
+        <div class="tasknote"${hide}>${esc(name)} · TASKS.md — the bots keep it; read-only here</div>
+      </div>`;
+    }
+
     // The shell only. The list itself is DOM, built by fillTasks() from the
     // message text — markdown never travels as an HTML string in here.
     function taskCardHtml() {
@@ -2487,7 +2526,11 @@
       const msg = taskMsg();
       if (!D.mounted || !s || !msg) return;
       const text = splitEnvelopes(String(msg.text == null ? '' : msg.text)).text;
-      D.shadow.querySelectorAll('.tasks').forEach(sec => {
+      // …the PAGE's cards only. The project's card (.ptasks) is built whole
+      // by projectTaskCardHtml() from a file, not from a message, and used to
+      // be overwritten here with this page's list — two identical cards, one
+      // of them lying about where it came from.
+      D.shadow.querySelectorAll('.tasks:not(.ptasks)').forEach(sec => {
         const body = sec.querySelector('.taskbody');
         if (!body) return;
         body.textContent = '';
@@ -2549,7 +2592,8 @@
       const open = live.filter(t => !isAddressed(t));
       const ready = live.filter(isAddressed);
       const done = threads.filter(isResolved);
-      let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + taskCardHtml();
+      let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml()
+        + projectTaskCardHtml() + taskCardHtml();
       html += D.pending ? pendingHtml() : '';
       // "select any text and hit 💬" is a lie where selection does nothing —
       // the note above has already said what to do instead. Same on a page
@@ -2751,7 +2795,8 @@
       const empty = D.project
         ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — plain text goes to both bots, or tag one. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml()
+        + projectTaskCardHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         ${body ? `<div class="thread">${body}</div>` : empty}
         ${statusHtml(PAGE_TARGET)}
         ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '')}
@@ -4076,6 +4121,7 @@
         // the tasks card: its fold is a reading position (session only, like
         // every other one here), and ↑ source is the way back to the message
         if (act === 'tasks-fold') { D.tasksOpen = !D.tasksOpen; render(); return; }
+        if (act === 'ptasks-fold') { D.ptasksOpen = !D.ptasksOpen; render(); return; }
         if (act === 'tasks-jump') { jumpToTasks(); return; }
         if (act === 'interrupt') { doInterrupt(btn); return; }
         if (act === 'retry') { cb('onReconnect')(); return; }

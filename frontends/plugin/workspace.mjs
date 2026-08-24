@@ -129,6 +129,50 @@ export function projectTitle(root, id) {
   return id;
 }
 
+// ── projects/<id>/TASKS.md — the project's standing list ────────────────
+//
+// The other kind of checklist. The drawer's tasks card shows the newest list
+// in THIS page's conversation; this one is a file in the project that outlives
+// every conversation in it, which the bots extend, tick and prune (and are
+// told never to rewrite wholesale, because another chat's items live there).
+//
+// Bot-written markdown, so the parser tolerates everything: prose, headings,
+// `-`/`*`/`+` bullets, `[x]`/`[X]`, indentation, a file that is not a list at
+// all. Anything it cannot read is skipped. Deliberately mirrors
+// core/project_store.py's parse_tasks_md — same shape, same bounds — so the
+// council panel and this one never disagree about what the file says.
+const TASKS_MAX_BYTES = 256 * 1024;
+const TASKS_MAX_ITEMS = 200;
+const TASKS_MAX_TEXT = 300;
+const TASK_LINE = /^[ \t]*[-*+][ \t]+\[[ \t]*([xX ]?)[ \t]*\][ \t]+(.*\S.*)$/;
+
+export function parseTasksMd(text) {
+  const out = [];
+  const seen = new Set();
+  for (const line of String(text == null ? '' : text).split(/\r?\n/)) {
+    const m = TASK_LINE.exec(line);
+    if (!m) continue;
+    let body = m[2].replace(/\s+/g, ' ').trim();
+    if (!body) continue;
+    if (body.length > TASKS_MAX_TEXT) body = body.slice(0, TASKS_MAX_TEXT - 1).trimEnd() + '…';
+    const key = body.toLowerCase();
+    if (seen.has(key)) continue;      // a bot that pasted the list twice
+    seen.add(key);
+    out.push({ text: body, done: m[1].trim().toLowerCase() === 'x' });
+    if (out.length >= TASKS_MAX_ITEMS) break;
+  }
+  return out;
+}
+
+export function projectTasks(root, id) {
+  if (!root || !id) return [];
+  const file = path.join(root, 'projects', id, 'TASKS.md');
+  try {
+    if (fs.statSync(file).size > TASKS_MAX_BYTES) return [];
+    return parseTasksMd(fs.readFileSync(file, 'utf8'));
+  } catch { return []; }
+}
+
 // Which project a path is in, by the rule the brief fixes: directly under
 // `<root>/projects/<id>/`, and that folder still exists. A project deleted out
 // from under an old artifact is not a project any more, and the page goes back

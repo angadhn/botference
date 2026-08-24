@@ -1193,6 +1193,17 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   margin: 6px 0 0; font: 11px/1.4 var(--sans); color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* The PROJECT's list sits above the page's own, and is drawn one step quieter
+   so the two are never mistaken for each other: a dashed edge and the muted
+   accent instead of an author's colour, because no author wrote this one. */
+.tasks.ptasks {
+  border-style: dashed;
+  border-left: 3px dashed var(--muted);
+}
+.tasks.ptasks .taskfold .tcount {
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
 /* ↑ source landed: the message itself, marked for a moment, so the eye finds it
    among its neighbours instead of the reader having to re-read the thread */
 .reply.tasksrc {

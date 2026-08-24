@@ -169,6 +169,60 @@ class TestHandoffPaths:
         assert p.session_crash_log == tmp_path / "work" / "sessions" / "crash.log"
 
 
+class TestSessionScratchPaths:
+    """Per-session scratch: two chats in one work dir cannot collide."""
+
+    def _paths(self, tmp_path):
+        (tmp_path / "work").mkdir(exist_ok=True)
+        return BotferencePaths.resolve(
+            botference_home=tmp_path, project_root=tmp_path,
+        )
+
+    def test_two_sessions_get_distinct_handoff_files(self, tmp_path):
+        p = self._paths(tmp_path)
+        one = p.handoff_live_file("claude", "aaa-111")
+        two = p.handoff_live_file("claude", "bbb-222")
+        assert one != two
+        assert one == tmp_path / "work" / "scratch" / "aaa-111" / "handoff-claude.md"
+        assert two == tmp_path / "work" / "scratch" / "bbb-222" / "handoff-claude.md"
+
+    def test_no_session_id_is_the_legacy_root_scoped_path(self, tmp_path):
+        p = self._paths(tmp_path)
+        assert p.handoff_live_file("claude") == tmp_path / "work" / "handoff-claude.md"
+        assert p.handoff_live_file("claude", "") == p.handoff_live_file("claude")
+        assert p.session_scratch_dir("") == p.work_dir
+
+    def test_legacy_file_is_still_a_read_candidate(self, tmp_path):
+        p = self._paths(tmp_path)
+        candidates = p.handoff_live_candidates("codex", "aaa-111")
+        assert candidates == [
+            tmp_path / "work" / "scratch" / "aaa-111" / "handoff-codex.md",
+            tmp_path / "work" / "handoff-codex.md",
+        ]
+        # No session id: one candidate, not the same path listed twice.
+        assert p.handoff_live_candidates("codex") == [
+            tmp_path / "work" / "handoff-codex.md",
+        ]
+
+    def test_scratch_file_separates_planning_scopes(self, tmp_path):
+        p = self._paths(tmp_path)
+        scratch = tmp_path / "work" / "scratch" / "aaa-111"
+        assert p.scratch_file(
+            "implementation-plan.md", "aaa-111", scope="alpha",
+        ) == scratch / "alpha" / "implementation-plan.md"
+        assert p.scratch_file(
+            "implementation-plan.md", "aaa-111", scope="_global",
+        ) == scratch / "_global" / "implementation-plan.md"
+
+    def test_session_id_is_reduced_to_one_safe_component(self, tmp_path):
+        p = self._paths(tmp_path)
+        # The id arrives from a JSON payload another process wrote.
+        evil = p.session_scratch_dir("../../etc/passwd")
+        assert evil.parent == tmp_path / "work" / "scratch"
+        assert ".." not in evil.name
+        assert p.session_scratch_dir("   ") == p.work_dir
+
+
 class TestWorkPrefix:
     def test_work_prefix_with_project_dir(self, tmp_path):
         (tmp_path / "botference" / "build").mkdir(parents=True)

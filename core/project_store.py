@@ -35,6 +35,74 @@ class ProjectInfo:
         return self.root / "sessions"
 
 
+# ── projects/<id>/TASKS.md ────────────────────────────────────────────
+#
+# A project's standing task list, curated by the bots: they append items,
+# tick them off and prune dead ones, and the panels show it read-only.
+# It is BOT-WRITTEN MARKDOWN, so the parser tolerates junk absolutely:
+# prose, headings, nested indentation, `*` and `-` and `+` bullets, `[X]`
+# and `[x]`, stray blank checkboxes, and a file that is not a list at all.
+# Anything it cannot read is skipped rather than failing the panel.
+
+TASKS_FILE_NAME = "TASKS.md"
+# A curated list, not a log. Both bounds are defensive: a runaway bot
+# rewriting this file must not be able to stall a panel refresh.
+TASKS_MAX_BYTES = 256 * 1024
+TASKS_MAX_ITEMS = 200
+TASKS_MAX_TEXT = 300
+
+_TASK_LINE = re.compile(
+    r"^[ \t]*[-*+][ \t]+\[[ \t]*([xX ]?)[ \t]*\][ \t]+(.*\S.*)$",
+)
+
+
+@dataclass(frozen=True)
+class ProjectTask:
+    text: str
+    done: bool = False
+
+
+def parse_tasks_md(text: str) -> list[ProjectTask]:
+    """Pull the checklist items out of a TASKS.md body.
+
+    Only lines that are unambiguously markdown task items count. Everything
+    else in the file — a title, a paragraph explaining why an item left the
+    list, a table — is ignored, which is what lets the bots write prose
+    around the list without breaking the panel.
+    """
+    tasks: list[ProjectTask] = []
+    seen: set[str] = set()
+    for line in str(text).splitlines():
+        match = _TASK_LINE.match(line)
+        if not match:
+            continue
+        body = " ".join(match.group(2).split()).strip()
+        if not body:
+            continue
+        if len(body) > TASKS_MAX_TEXT:
+            body = body[:TASKS_MAX_TEXT - 1].rstrip() + "…"
+        key = body.casefold()
+        if key in seen:  # a bot that pasted the list twice
+            continue
+        seen.add(key)
+        tasks.append(ProjectTask(text=body, done=match.group(1).strip().lower() == "x"))
+        if len(tasks) >= TASKS_MAX_ITEMS:
+            break
+    return tasks
+
+
+def read_project_tasks(project_root: Path) -> list[ProjectTask]:
+    """Read projects/<id>/TASKS.md. Missing, unreadable or oversized → []."""
+    path = Path(project_root) / TASKS_FILE_NAME
+    try:
+        if path.stat().st_size > TASKS_MAX_BYTES:
+            return []
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return []
+    return parse_tasks_md(text)
+
+
 def _title_from_slug(slug: str) -> str:
     parts = re.split(r"[-_]+", slug)
     return " ".join(part[:1].upper() + part[1:] for part in parts if part)
@@ -180,6 +248,13 @@ class ProjectStore:
             p.title.lower(),
         ))
 
+    def tasks(self, project_id: str) -> list[ProjectTask]:
+        """The project's curated task list, or [] when it has none."""
+        project_id = str(project_id).strip()
+        if not project_id:
+            return []
+        return read_project_tasks(self.projects_root / project_id)
+
     def get(self, project_id_or_title: str) -> ProjectInfo | None:
         query = project_id_or_title.strip().lower()
         if not query:
@@ -260,33 +335,39 @@ class ProjectStore:
         if not project_id:
             return False
         path = self.projects_root / "portfolio.json"
-        data = _load_json(path)
-        raw_projects = data.get("projects")
-        if not isinstance(raw_projects, list):
-            raw_projects = []
-        found = False
-        projects: list[Any] = []
-        for raw in raw_projects:
-            if (
-                isinstance(raw, dict)
-                and str(raw.get("id") or raw.get("slug") or "").strip() == project_id
-            ):
-                entry = dict(raw)
-                entry["status"] = status
-                projects.append(entry)
-                found = True
-            else:
-                projects.append(raw)
-        if not found:
-            projects.append({
-                "id": project_id,
-                "title": title or _title_from_slug(project_id),
-                "status": status,
-                "root": f"projects/{project_id}",
-            })
-        data["version"] = data.get("version", 1)
-        data["projects"] = projects
-        self._write_json(path, data)
+        # portfolio.json is shared state, and this was the one unlocked
+        # read-modify-write left in the module: archiving a project while
+        # another process created one dropped the new project's row on the
+        # floor (or resurrected an archived one). Same discipline as
+        # _upsert_portfolio_entry and associate_session.
+        with file_lock(path):
+            data = _load_json(path)
+            raw_projects = data.get("projects")
+            if not isinstance(raw_projects, list):
+                raw_projects = []
+            found = False
+            projects: list[Any] = []
+            for raw in raw_projects:
+                if (
+                    isinstance(raw, dict)
+                    and str(raw.get("id") or raw.get("slug") or "").strip() == project_id
+                ):
+                    entry = dict(raw)
+                    entry["status"] = status
+                    projects.append(entry)
+                    found = True
+                else:
+                    projects.append(raw)
+            if not found:
+                projects.append({
+                    "id": project_id,
+                    "title": title or _title_from_slug(project_id),
+                    "status": status,
+                    "root": f"projects/{project_id}",
+                })
+            data["version"] = data.get("version", 1)
+            data["projects"] = projects
+            self._write_json(path, data)
         return True
 
     def associate_session(self, project_id: str, session_id: str) -> None:

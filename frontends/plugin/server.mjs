@@ -1252,6 +1252,16 @@ export function handler(req, res) {
         council_web: String(store.readConfig().council_web || 'http://localhost:4187'),
         confirmed: art.confirmed,
         declined: art.declined,
+        // projects/<id>/TASKS.md: the project's own standing list, parsed
+        // here so the drawer never parses markdown for it. Omitted when the
+        // project keeps none — a missing key, not an empty section. Only on
+        // a CONFIRMED root: an unconfirmed one is a folder the reader has
+        // not yet said belongs to them, and reading its files into the
+        // drawer would answer that question for them.
+        ...(art.confirmed
+          ? (t => (t.length ? { tasks: t } : {}))(
+              workspace.projectTasks(art.root, art.project_id))
+          : {}),
       },
     });
   }

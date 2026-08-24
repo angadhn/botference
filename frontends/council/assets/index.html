@@ -116,6 +116,18 @@
          live from the transcript (no stored copy, no protocol change). A revised
          list replaces this one — there is only ever the current state here.
          Ticks are the same localStorage records as the transcript's. -->
+    <!-- the PROJECT's standing list: projects/<id>/TASKS.md, curated by the
+         bots across every chat in the project (they append, tick and prune it
+         — never rewrite it wholesale). Read-only here: it is not this chat's
+         list to edit, and nothing in the browser owns that file. -->
+    <section id="ptasks-sec" hidden>
+      <div class="ap-label tasks-head">
+        <button id="ptasks-fold" class="chip-label" aria-expanded="true" aria-controls="ptasks-body"
+          title="collapse the project list">project<span class="fold-ic" aria-hidden="true">▾</span></button>
+      </div>
+      <div id="ptasks-body"></div>
+      <div id="ptasks-meta"></div>
+    </section>
     <section id="tasks-sec" hidden>
       <div class="ap-label tasks-head">
         <button id="tasks-fold" class="chip-label" aria-expanded="true" aria-controls="tasks-body"
