@@ -37,6 +37,7 @@ import * as run from './run.mjs';
 import * as keys from '../shared/keys.mjs';
 import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
+import * as collateral from './collateral.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // The article view's scripts. anchor.js is the extension's own file, served
@@ -259,13 +260,85 @@ const turnScans = new Map();     // page url → {dir, before}
 const lastChanges = new Map();   // page url → the event payload
 const CHANGES_KEEP = 50;
 
+// The artifact's own bytes, or '' — capped, and a read that fails is simply no
+// snapshot, which costs the turn its collateral threads and nothing else.
+function artifactSnapshot(art) {
+  try {
+    const st = fs.statSync(art.path);
+    if (!st.isFile() || st.size > collateral.SNAPSHOT_MAX) return '';
+    return fs.readFileSync(art.path, 'utf8');
+  } catch { return ''; }
+}
+
 function noteTurnStart(url) {
   const art = url ? artifactOf(url) : null;
   if (!art || !art.confirmed || !art.project_dir) return;
-  turnScans.set(url, { dir: art.project_dir, before: workspace.scanProject(art.project_dir) });
+  turnScans.set(url, {
+    dir: art.project_dir,
+    before: workspace.scanProject(art.project_dir),
+    // …and the document itself, which is the half the census cannot give:
+    // mtime and size say THAT the page moved, never what moved in it
+    // (collateral.mjs)
+    text: artifactSnapshot(art),
+    at: new Date().toISOString(),
+  });
 }
 
-function reportProjectChanges(url) {
+// ---- the edits nobody commented on ---------------------------------------
+// The backstop. A bot asked to fix one passage often has to follow the change
+// out into the rest of the draft — a cross-reference, a paragraph that now
+// contradicts itself — and that is wanted. What is not wanted is it landing
+// SILENTLY: there is no thread at that spot, so nothing narrates it, and the
+// reloaded tab shows the new sentence looking exactly like prose nobody
+// touched.
+//
+// So the turn's before/after text is diffed (collateral.regionsFrom) and every
+// changed region no thread already covers becomes a thread of its own, written
+// with the same three fields the track-changes machinery already runs on:
+// `quote` = what stands there now, `prior_quote` = what it replaced,
+// `addressed` = the amber "ready for review" state. The extension needs no
+// change at all — content.js paints from those three and asks no questions
+// about who wrote them.
+//
+// `auto: true` is the only new field, and it exists for the dedupe to read: it
+// is what tells a later turn "this thread is the machine's, not the reader's",
+// which is the difference between suppressing a second change to the same
+// passage and reporting it. Nothing renders differently on it.
+//
+// Send review is already right about these and needs no rule: an auto-thread is
+// `addressed`, and `workspace.openThreads` excludes addressed threads because a
+// bot has had its go and it is the reader's turn to look — which is exactly
+// what this is.
+function reportCollateral(page, seen, art, ev) {
+  if (!page || !seen || !seen.text) return 0;
+  const after = artifactSnapshot(art);
+  if (!after) return 0;
+  const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
+  const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
+  const author = store.isAgentAuthor(agents[0]) ? agents[0] : 'claude';
+  let made = 0;
+  try {
+    const plan = collateral.collateral(seen.text, after, page, { since: seen.at, who });
+    for (const t of plan.threads) {
+      const thread = store.addThread(page, {
+        quote: t.quote, prefix: t.prefix, suffix: t.suffix, text: t.text, author,
+      });
+      thread.auto = true;
+      if (t.summary) thread.auto_summary = true;
+      if (t.prior_quote) thread.prior_quote = t.prior_quote;
+      // the amber middle state, straight away: a bot has been here and it is the
+      // reader's turn to look, which is what this thread IS
+      store.setAddressed(thread, true, author);
+      made++;
+    }
+  } catch { return 0; }   // a diff that throws must never cost the turn its reload
+  return made;
+}
+
+
+
+function reportProjectChanges(ev) {
+  const url = ev && ev.url;
   const seen = url ? turnScans.get(url) : null;
   if (!seen) return;
   turnScans.delete(url);
@@ -289,6 +362,18 @@ function reportProjectChanges(url) {
     files: changed.slice(0, workspace.CHANGED_LIST_MAX),
     at: new Date().toISOString(),
   };
+  // …and, where the page ITSELF moved, what moved in it that nobody had left a
+  // comment on. Before the reload event, so the tab that comes back is already
+  // carrying the threads (the record is saved here; `project-files` makes the
+  // tab refetch it).
+  if (payload.page_changed) {
+    const page = store.readPage(url);
+    if (page && reportCollateral(page, seen, art, ev)) {
+      store.savePage(page);
+      payload.collateral = true;
+      broadcast({ type: 'page', url });
+    }
+  }
   lastChanges.set(url, payload);
   if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
   broadcast(payload);
@@ -464,7 +549,7 @@ function onChatEvent(ev) {
     broadcast(ev);
     // after the turn-end, always: the drawer stops spinning first and only
     // then hears that the file moved
-    reportProjectChanges(ev.url);
+    reportProjectChanges(ev);
     return;
   }
   if (ev.type === 'chat' && ev.kind === 'reply') {

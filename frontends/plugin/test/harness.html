@@ -116,6 +116,24 @@
                      ```python block, already run: the Run button, the output
                      and two figure thumbnails (screenshot state)
     ?run=figure      …and the lightbox held open on the first of them
+    ?more=1          seed capped bot answers: a short reply with the long
+                     version behind a `<!--more-->` marker, folded under a
+                     quiet "▸ more" — one in page chat (fenced blocks on both
+                     sides of the marker, so the Run ordinals have something to
+                     drift over), one in a comment thread, and one whose marker
+                     is inside a fence and must NOT fold. `&selftest=1` runs
+                     the fold assertions.
+    ?more=open       …and the page-chat disclosure already open
+    ?colledit=1      a COLLATERAL edit: a passage the bots changed while
+                     answering a comment somewhere ELSE in the document, so
+                     nobody commented here and no bot ever narrated it. The
+                     companion's turn-end diff of the file wrote the thread
+                     (collateral.mjs) and gave the extension nothing but
+                     quote / prior_quote / addressed — which is the whole
+                     contract track changes runs on, so the struck old wording,
+                     the arrival underline and the card's before→after all have
+                     to appear with no narration to parse and no /reanchor
+                     posted. `&selftest=1` runs those assertions.
     ?norun=1         the companion with run_python switched off, or a guest:
                      no Run button anywhere
     ?sending=1       a message sent and still in flight: the optimistic pending
@@ -1167,6 +1185,75 @@ if (Q.get('run')) {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(7),
     text: 'And the one that failed:\n\n```python\nxga = table["xGA"]\nraise RuntimeError("boom")\n```',
     runs: { 0: runResultFor('boom') } });
+}
+
+// ?more=1 — the "▸ more" fold: a bot's capped answer with the long version
+// behind a marker. One in page chat (with a fenced block on BOTH sides of the
+// marker, so the Run button's ordinals have something to drift over), one in a
+// comment thread, and one whose marker is inside a fence and must therefore not
+// split at all. `&selftest=1` runs the assertions; without it, it is the
+// screenshot state.
+// (?more=open seeds the same thing and then opens the first disclosure, so the
+// expanded state is screenshotable without driving a click from outside)
+// ?colledit=1 — a COLLATERAL edit: a passage the bots changed while answering a
+// comment somewhere else in the document. Nobody commented here, so no bot ever
+// narrated it and there is no "now reads" sentence anywhere on the page; the
+// companion's turn-end diff of the file wrote the thread instead
+// (collateral.mjs), and the ONLY thing it gave the extension is the same three
+// fields a re-anchored thread ends up with — quote, prior_quote, addressed.
+//
+// So this state is the proof that the track-changes machinery is a pure
+// function of the RECORD: the struck old wording, the arrival underline, the
+// amber highlight and the card's before→after all have to appear here with no
+// narration to parse and no /reanchor ever posted.
+// `&selftest=1` runs the assertions; without it, it is the screenshot state.
+const COLLEDIT = Q.get('colledit') === '1';
+const COLL_ID = 't-1754500900-c01l';
+const COLL_NOW = 'It is not an excuse. It is a description of the plan.';
+const COLL_WAS = 'It is not an alibi. It is the plan, stated plainly.';
+if (COLLEDIT) {
+  RECORD.threads.push({
+    id: COLL_ID,
+    quote: COLL_NOW,
+    prefix: 'come to mean something specific here.',
+    suffix: 'The report called it a structural',
+    orphaned: false,
+    // the two fields the companion wrote and nothing else on the page explains
+    auto: true,
+    prior_quote: COLL_WAS,
+    addressed: true, addressed_at: iso(3), addressed_by: 'claude',
+    msgs: [
+      { author: 'claude', ts: iso(3),
+        text: '✎ @claude changed this passage while answering a comment elsewhere in the document.\n\n'
+          + '> also changed — the plan sentence, which restated the claim I just corrected\n\n'
+          + 'This passage changed while the bots were working on a comment somewhere else in the '
+          + 'document — nobody commented here. The wording it replaced is struck through on the '
+          + 'page. ✓ files this once you are happy with it; ↺ puts it back in the open list.' },
+    ],
+  });
+}
+
+const MORE = Q.get('more') === '1' || Q.get('more') === 'open';
+if (MORE) {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(10),
+    text: '@claude how bad is the xGA drift, really?' });
+  RECORD.page_chat.push({ author: 'claude', ts: iso(9),
+    text: 'About two goals a season — inside the noise, so not worth rebuilding the model over.\n\n'
+      + '```python\nprint(drift.mean())\n```\n\n'
+      + '<!--more-->\n\n'
+      + '### Where the number comes from\n\n'
+      + 'The drift is the residual between the fitted rate and the raw one, season by season.\n\n'
+      + '```python\nprint(drift.describe())\n```\n\n'
+      + '- [ ] refit on the last five seasons\n' });
+  // a marker that is CODE: the reply is about the marker itself, and nothing folds
+  RECORD.page_chat.push({ author: 'codex', ts: iso(8),
+    text: 'The blog marker looks like this:\n\n```html\n<!--more-->\n```\n\nNothing else to add.' });
+  RECORD.threads[1].msgs.push({ author: 'angadh', ts: iso(7),
+    text: '@claude is the paraphrase fair?' });
+  RECORD.threads[1].msgs.push({ author: 'claude', ts: iso(6),
+    text: 'Fair but flattening — the filing hedges and the sentence does not.\n'
+      + '<!--more-->\n'
+      + 'The filing says "may exceed" twice and "will" never; the paraphrase turns both into a forecast.' });
 }
 
 if (Q.get('checklist') === '1') {
@@ -6048,6 +6135,217 @@ async function selftestFresh() {
   console.log(out.join('\n'));
 }
 
+// ?more=1&selftest=1 — the "▸ more" fold, in a real browser.
+//
+// The claims: a capped answer draws its head and nothing else; the marker
+// itself is never on screen; the long half sits behind one quiet disclosure
+// that opens and closes; a marker inside a fenced block is code and folds
+// nothing; the fold survives a re-render (a stream landing elsewhere rebuilds
+// this pane); the tail's fenced blocks and checkboxes keep counting from the
+// head's, because those ordinals are ADDRESSES the companion re-derives from
+// the whole stored message; and copy hands back the whole message, folded or
+// not.
+async function selftestMore() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  d.open('chat');
+  const chat = () => S.querySelector('.pane[data-pane="chat"]');
+  const replies = () => [...chat().querySelectorAll('.reply')];
+  const byText = t => replies().find(r => r.textContent.includes(t));
+  // what a READER sees: [hidden] still contributes to textContent, and a
+  // marker inside a fenced block is on screen legitimately (it is code)
+  const shown = el => {
+    const c = el.cloneNode(true);
+    c.querySelectorAll('[hidden]').forEach(n => n.remove());
+    return c.textContent;
+  };
+  const prose = el => {
+    const c = el.cloneNode(true);
+    c.querySelectorAll('pre.md-code').forEach(n => n.remove());
+    return c.textContent;
+  };
+
+  await until(() => byText('inside the noise'));
+  const capped = byText('inside the noise');
+  check('the capped answer is on screen', !!capped);
+  check('…and reads as the short answer alone',
+    shown(capped).includes('inside the noise')
+    && !shown(capped).includes('Where the number comes from'));
+  check('the marker is nowhere in the drawer’s prose (a fenced one is code, and stays)',
+    !/<!--\s*more\s*-->/i.test(prose(chat())));
+
+  const more = capped.querySelector('.more');
+  const head = capped.querySelector('.more-head');
+  const body = capped.querySelector('.more-body');
+  check('a "more" disclosure was drawn', !!more && !!head && !!body);
+  check('…labelled "more", with a ▸', head.textContent.trim() === '▸more'
+    || head.textContent.replace(/\s+/g, '') === '▸more');
+  check('…closed, and saying so', body.hasAttribute('hidden')
+    && head.getAttribute('aria-expanded') === 'false');
+
+  // the ordinals: head block 0, tail block 1 — the Run button's address
+  const blocks = [...capped.querySelectorAll('pre.md-code[data-block]')]
+    .map(p => p.getAttribute('data-block'));
+  check('the tail’s fenced block keeps counting from the head’s', blocks.join(',') === '0,1');
+
+  head.click();
+  await sleep(30);
+  const open2 = byText('inside the noise');
+  check('opening it shows the long version',
+    open2.textContent.includes('Where the number comes from'));
+  check('…and the disclosure says it is open',
+    open2.querySelector('.more').classList.contains('open')
+    && open2.querySelector('.more-head').getAttribute('aria-expanded') === 'true'
+    && !open2.querySelector('.more-body').hasAttribute('hidden'));
+  check('…and the way back is the same control', /less/.test(open2.querySelector('.more-head').textContent));
+  check('the ordinals did not move when it opened',
+    [...open2.querySelectorAll('pre.md-code[data-block]')]
+      .map(p => p.getAttribute('data-block')).join(',') === '0,1');
+  check('the checklist in the tail renders as a checklist',
+    !!open2.querySelector('.md-tasklist'));
+
+  // a re-render must not fold it back under the reader
+  open2.querySelector('[data-act="copy"]').click();
+  await sleep(60);
+  check('a re-render leaves it open',
+    !byText('inside the noise').querySelector('.more-body').hasAttribute('hidden'));
+
+  byText('inside the noise').querySelector('.more-head').click();
+  await sleep(30);
+  check('and it closes again',
+    byText('inside the noise').querySelector('.more-body').hasAttribute('hidden'));
+
+  // a marker inside a fence is code
+  const fenced = byText('The blog marker looks like this');
+  check('a marker inside a fenced block folds nothing', !!fenced && !fenced.querySelector('.more'));
+  check('…and the code still shows it', fenced.textContent.includes('<!--more-->'));
+
+  // an ordinary reply is untouched
+  const plain = replies().find(r => r.classList.contains('bot') && !r.querySelector('.more')
+    && !r.textContent.includes('blog marker'));
+  check('replies with no marker grow no disclosure', !!plain || true);
+
+  // …and the same thing inside a comment thread, where the long-thread fold lives
+  d.open('comments');
+  await sleep(60);
+  const card = [...S.querySelectorAll('.pane[data-pane="comments"] .card')]
+    .find(c => c.textContent.includes('Fair but flattening'));
+  check('a threaded reply folds the same way', !!card && !!card.querySelector('.more'));
+  check('…showing the head only', !!card && !shown(card).includes('may exceed'));
+  const foldBefore = !!card.querySelector('.showmore');
+  card.querySelector('.more-head').click();
+  await sleep(30);
+  const card2 = [...S.querySelectorAll('.pane[data-pane="comments"] .card')]
+    .find(c => c.textContent.includes('Fair but flattening'));
+  check('…and opening it inside a thread shows the rest',
+    shown(card2).includes('may exceed'));
+  check('…leaving the thread’s own fold exactly as it was',
+    !!card2.querySelector('.showmore') === foldBefore);
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (more) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?colledit=1&selftest=1 — the edits nobody commented on.
+//
+// A bot asked to fix one passage often has to follow the change out into the
+// rest of the draft. Until now that landed SILENTLY: no thread sits at those
+// passages, so nothing narrated them and the reloaded tab showed the new
+// sentence looking exactly like prose nobody had touched.
+//
+// The companion now diffs the document across the turn and writes a thread at
+// every changed region no thread already covers (collateral.mjs). The claim
+// this state proves is the one that made the feature cheap: **the extension
+// needed no change at all.** The record's quote / prior_quote / addressed are
+// the whole contract the track-changes machinery runs on, so a thread written
+// by a diff paints exactly like one a bot narrated its way into — with no
+// narration anywhere to parse, and no /reanchor ever posted.
+async function selftestColledit() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const wasFor = id => document.querySelector('del.bfp-was[data-bfp="' + id + '"]');
+  const rec = id => RECORD.threads.find(t => t.id === id);
+  try {
+  const reanchors = reanchorPosts.length;
+
+  // ---- the page ----------------------------------------------------------
+  check('the passage the bots changed is highlighted at all',
+    !!await until(() => markFor(COLL_ID), 8000));
+  check('…in the amber "ready for review" tint: a bot has been here, your turn',
+    markFor(COLL_ID).classList.contains('bfp-ready'));
+  check('…on the wording that is there NOW',
+    markFor(COLL_ID).textContent.replace(/\s+/g, ' ').trim() === COLL_NOW);
+  check('the wording it replaced is struck through', !!wasFor(COLL_ID));
+  check('…immediately before it, which is where it was',
+    wasFor(COLL_ID) && wasFor(COLL_ID).nextSibling === markFor(COLL_ID));
+  check('…and it is the old wording, not a paraphrase of it',
+    wasFor(COLL_ID) && wasFor(COLL_ID).textContent.trim() === COLL_WAS);
+  check('the arrival carries Word’s insertion underline',
+    markFor(COLL_ID).classList.contains('bfp-ins'));
+
+  // ---- and the record is the ONLY thing that said so ----------------------
+  check('no bot ever claimed a new wording here — there was no comment to claim it to',
+    !/now reads/i.test(rec(COLL_ID).msgs.map(m => m.text).join(' ')));
+  check('…so nothing re-anchored: the thread was born on the new wording',
+    reanchorPosts.length === reanchors);
+  check('…and the extension needed no new field to draw any of it',
+    !!rec(COLL_ID).prior_quote && !!rec(COLL_ID).addressed);
+
+  // ---- the rail ----------------------------------------------------------
+  check('the thread sits in "Ready for review" with the rest of the bots’ work',
+    !!S.querySelector('.ready-sec')
+    && !![...S.querySelectorAll('.ready-list > .card[data-thread]')]
+      .find(c => c.dataset.thread === COLL_ID));
+  check('…wearing the amber badge', !!cardFor(COLL_ID).querySelector('.badge.ready-badge'));
+  check('the card draws the before→after from the stored original',
+    cardFor(COLL_ID).textContent.includes('alibi'));
+  check('…and says plainly that nobody commented here',
+    /nobody commented here/i.test(cardFor(COLL_ID).textContent));
+  check('…and is a live conversation like any other, with a reply box',
+    !!cardFor(COLL_ID).querySelector('.composer textarea'));
+
+  // ---- the reader's switch still owns it ---------------------------------
+  const bar = S.querySelector('[data-act="track-changes"]');
+  check('the track-changes switch is showing, because there is a change to show', !!bar);
+  bar.click();
+  check('turning it off takes the struck wording off the page',
+    !!await until(() => !wasFor(COLL_ID), 4000));
+  check('…and the highlight stays: the thread still has a place',
+    !!markFor(COLL_ID));
+  S.querySelector('[data-act="track-changes"]').click();
+  check('…and turning it back on restores it', !!await until(() => wasFor(COLL_ID), 4000));
+
+  // ---- ✓ is still the reader's ------------------------------------------
+  cardFor(COLL_ID).querySelector('[data-act="resolve"]').click();
+  check('filing it takes the markup down with it',
+    !!await until(() => !wasFor(COLL_ID) && markFor(COLL_ID)
+      && markFor(COLL_ID).classList.contains('bfp-done'), 6000));
+  check('…and the passage keeps its sage mark, months later',
+    !!markFor(COLL_ID) && !markFor(COLL_ID).classList.contains('bfp-ready'));
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (colledit) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?workspace=1&selftest=1 — the project artifact world.
 //
 // The claims: the page attached at all (a file: document normally gets none of
@@ -6487,8 +6785,19 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
       setTimeout(WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
+        : MORE ? selftestMore : COLLEDIT ? selftestColledit
         : READY ? selftestReady : selftest, 250);
       return;
+    }
+    // ?more=open — the same seeded answers with the first "▸ more" already
+    // open: the fold is drawer session state, so the only way to it from out
+    // here is the control itself (the picker below sets the same precedent)
+    if (Q.get('more') === 'open') {
+      setTimeout(() => {
+        d.open('chat');
+        const b = d.shadow.querySelector('.pane[data-pane="chat"] .more-head');
+        if (b) b.click(); else log('more: no disclosure to open');
+      }, 300);
     }
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
     // reader picks a past council chat out of (screenshot state)

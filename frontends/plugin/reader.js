@@ -34,6 +34,40 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+  // The "▸ more" marker, byte for byte as the drawer and the companion carry
+  // it (extension/drawer.js, ../more.mjs): a bot leads with the capped answer
+  // and puts the rest after one `<!--more-->` line. Pinned by test/more.test.mjs.
+
+  // ⟦more⟧ begin — byte-identical in extension/drawer.js and reader.js
+  var MORE_MARK = /^[ \t]*<!--[ \t]*more[ \t]*-->[ \t]*$/i;
+  function splitMore(raw) {
+    var s = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n');
+    if (s.indexOf('<!--') === -1) return { head: s, more: '' };
+    var lines = s.split('\n');
+    var fence = '', at = -1, tail = [];
+    for (var i = 0; i < lines.length; i++) {
+      var f = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(lines[i]);
+      if (f) {
+        if (!fence) fence = f[1];
+        else if (f[1].charAt(0) === fence.charAt(0) && f[1].length >= fence.length) fence = '';
+      } else if (!fence && MORE_MARK.test(lines[i])) {
+        if (at < 0) at = i;
+        continue;
+      }
+      if (at >= 0) tail.push(lines[i]);
+    }
+    if (at < 0) return { head: s, more: '' };
+    var head = lines.slice(0, at).join('\n').replace(/\s+$/, '');
+    var more = tail.join('\n').replace(/^\s+/, '').replace(/\s+$/, '');
+    if (!head) return { head: more, more: '' };
+    return { head: head, more: more };
+  }
+  function stripMore(raw) {
+    var p = splitMore(raw);
+    return p.more ? p.head + '\n\n' + p.more : p.head;
+  }
+  // ⟦more⟧ end
+
   function post(path, body) {
     return fetch(path, {
       method: 'POST', credentials: 'same-origin',
@@ -95,8 +129,16 @@
         + esc(m.text) + '</pre></details>';
     }
     var cls = AGENTS[m.author] ? ' ' + m.author : '';
+    // a capped answer keeps its long half behind a <details>, exactly as the
+    // server-rendered page view draws it (views.mjs msgHtml) — same marker,
+    // same shape, so a thread reads the same whichever way it is opened
+    var cut = splitMore(m.text);
+    var body = cut.more
+      ? '<pre>' + esc(cut.head) + '</pre>'
+        + '<details class="more"><summary>more</summary><pre>' + esc(cut.more) + '</pre></details>'
+      : '<pre>' + esc(m.text) + '</pre>';
     return '<div class="msg' + cls + '"><div class="by"><b>' + esc(m.author) + '</b></div>'
-      + '<pre>' + esc(m.text) + '</pre>' + runsHtml(m) + '</div>';
+      + body + runsHtml(m) + '</div>';
   }
 
   // the lightbox: a plot at thumbnail size is a picture of a plot, not a plot

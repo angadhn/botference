@@ -707,7 +707,10 @@ export function reviewPreamble(sent, omitted = 0) {
     + `write) and say what you changed; where it calls for no change, answer it. Each of those `
     + `turns is posted into that comment's own thread, so reply to the comment in front of you and `
     + `nothing else. Where a change rewrites the passage a comment quotes, quote the new wording `
-    + `back verbatim — "done — this passage now reads: “…”".\n\n`
+    + `back verbatim — "done — this passage now reads: “…”" — and where it also changed the draft `
+    + `SOMEWHERE ELSE (a cross-reference, a paragraph that now contradicts itself: follow the change `
+    + `out, that is wanted), add one line per place: "also changed — this passage now reads: “…”". `
+    + `A comment thread is opened at each of those passages so I can review it like any other.\n\n`
     + `Nothing is resolved by any of this — I file the threads myself once I am satisfied.`;
 }
 
@@ -738,7 +741,9 @@ function reviewTurn(t, n, total) {
       + `comment. Work this point through: where it calls for a change, MAKE the change (the `
       + `draft's files are yours to edit — the write rules on this turn say where) and say what `
       + `you changed; where it does not, answer it. If your change rewrites the passage quoted `
-      + `above, quote the new wording back verbatim — "done — this passage now reads: “…”".`
+      + `above, quote the new wording back verbatim — "done — this passage now reads: “…”"; if it `
+      + `also touched the draft elsewhere, add one line per place — "also changed — this passage `
+      + `now reads: “…”".`
       + `${orph}${cut}`,
   };
 }

@@ -1257,6 +1257,28 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 }
 .tools-body[hidden] { display: none }
 
+/* ── "▸ more": the long half of a capped answer ────────────────────────── */
+/* Same disclosure grammar as the tools row above — a quiet 12px line the eye
+   can skip — but what it opens is PROSE, not process, so the body is the
+   ordinary message typeface with a rail beside it rather than a mono block,
+   and nothing about it is scrolled or capped: the reader asked for it. */
+.more { margin: 4px 0 2px }
+.more-head {
+  display: flex; align-items: center; gap: 6px; text-align: left;
+  border: 0; background: none; border-radius: 6px; padding: 3px 5px; min-height: 24px;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+}
+.more-head:hover { color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent) }
+.more-head .caret { flex: none; font-size: 10px; line-height: 1;
+  transition: transform .15s ease }
+.more.open .more-head .caret { transform: rotate(90deg) }
+.more-body {
+  margin: 2px 0 0 10px; padding-left: 9px;
+  border-left: 2px solid var(--card-line);
+}
+.more-body[hidden] { display: none }
+
 /* ── a message sent but not yet confirmed (optimistic send) ─────────────── */
 /* It is a real message card, one shade quieter: the point is that the thread
    already reads correctly. The dashed rail is the same "not settled yet"

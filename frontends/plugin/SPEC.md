@@ -44,9 +44,14 @@ frontends/plugin/
                              the project's chat archive   (companion agent)
   export.mjs               ← Obsidian export            (companion agent)
   run.mjs                  ← running a python code block (companion agent)
+  more.mjs                 ← the `<!--more-->` marker: canonical splitMore/stripMore,
+                             copied byte-for-byte into drawer.js and reader.js (companion agent)
+  collateral.mjs           ← the edits nobody commented on: the turn-end diff of the
+                             review document, its regions, dedupe and caps (companion agent)
   bridge-system-prompt.md  ← bot role file              (companion agent)
   test/
     companion.test.mjs     ← endpoint tests w/ mock bridge (companion agent)
+    collateral.test.mjs    ← the collateral-edit diff, dedupe and caps (companion agent)
     workspace.test.mjs     ← project artifact pages, end to end (companion agent)
     fixtures/article.html  ← sample static article, served at /test-page (companion agent)
     harness.html           ← loads extension JS with chrome-API + companion mocks for visual QA (extension agent)
@@ -314,6 +319,10 @@ tags: [web-annotation]
   envelope inside a fenced code block stays put (fence ordinals are the Run
   button's address) and a footer coming off never takes a checkbox line with
   it (tick ordinals are the companion's address).
+- `test/more.test.mjs`: node script over the `<!--more-->` marker — the parser, the
+  three byte-identical copies (more.mjs / drawer.js / reader.js), and the export
+  keeping BOTH halves. The load-bearing negative is the same one envelope.test.mjs
+  guards: a marker inside a fenced code block is code and must not split.
 - `test/harness.html`: standalone page embedding the fixture article + extension
   scripts with a `chrome` shim + scripted fake companion responses, so the full drawer
   UI renders without installing the extension (used for screenshot QA).
@@ -2846,6 +2855,317 @@ landing IN the threads, the flip to ready and the section that grows from it,
 the markers cleared by the turns that answered them, and nothing filed.
 `?workspace=1&round=1` is the mid-round screenshot pose (the queue held, the
 first thread's turn frozen mid-stream).
+
+### Amendment (2026-08-19, shipped): "▸ more" — a capped answer keeps its long half
+
+Every turn ends with a length instruction and the bots obey it, which is right
+for a margin note and wrong for the question that genuinely has a long answer:
+the choice was a wall of text or an amputated one. So a reply may now carry
+BOTH — the capped answer, and the long version folded behind one disclosure the
+reader opens. Nothing about the cap changes; what changes is what happens when
+the cap is not enough.
+
+**The marker.** One line, alone on its line, spelled exactly:
+
+```
+<!--more-->
+```
+
+Inner spaces and case are tolerated (`<!--  MORE  -->`), as is leading
+indentation, because models retype it. Anything else on the line makes it
+prose, not a marker. It was chosen over `⟨more⟩` and friends because it is
+inert in every markdown renderer there is, every model already knows it from a
+decade of blog engines, and nobody types it by accident.
+
+- **A marker inside a fenced code block is CODE.** The same rule
+  `splitEnvelopes` obeys and for the same reason: fence ordinals are the Run
+  button's address, and a reply *about* the marker (a fenced `<!--more-->`)
+  must render as what it is.
+- **The first unfenced marker splits; later ones are dropped** from the tail
+  rather than splitting again — one message, one fold.
+- **A marker with nothing after it, or nothing before it, folds nothing.** The
+  reply is the reply; an empty half is never drawn, and a bot that put
+  everything below the marker still gets read.
+- **Nothing is ever discarded.** `splitMore(text) → {head, more}` and
+  `stripMore(text)` (head + tail, seam closed, every marker gone) are the two
+  entry points; the STORED text keeps the marker exactly as written, as it
+  keeps its markdown.
+
+**Where the parser lives.** `more.mjs` (the companion) is canonical;
+`extension/drawer.js` and `reader.js` carry byte-identical copies between
+`⟦more⟧ begin`/`⟦more⟧ end` sentinels — the extension cannot import from the
+server and the phone's script has no build step, the same duplication `normUrl`
+and `tagHue` carry. `views.mjs` re-exports the companion's copy rather than
+owning a fourth. `test/more.test.mjs` pins the three source blocks to the same
+text (dedented — indentation is the only licensed difference) and the two
+callable ones to the same answers.
+
+**The prompt side.** `bridge-system-prompt.md` rule 1 gains the escape hatch:
+lead with the capped answer, then the marker, then the long version. The head
+must stand alone as a complete answer ("the short version is X", never "see
+below"); most replies carry no marker at all; a checklist stays in the HEAD
+(the drawer pins the newest one, and a folded checklist is a hidden one). The
+same sentence rides on EVERY turn as part of `chat.mjs`'s `verbosityLine` —
+a resumed session's system prompt is not something a turn can rely on, which is
+why the write rule and the snapshot path ride there too.
+
+**The drawer.** `replyHtml` splits the message and draws the head as the whole
+reply, with a `.more` disclosure under it in the same grammar as the tools row
+above: a 12px muted `▸ more` button, `aria-expanded`, and a `.more-body` that
+holds the tail's own markdown behind a rail. Both directions (`more` / `less`),
+unlike the thread fold — a reader who opened the long half of one answer is
+reading it, not committing to it. State is `D.moreOpen[target|ts|more]`,
+session-only, and it survives a re-render exactly as `D.toolsOpen` does.
+
+- **The ordinals continue across the seam.** One message drawn as two fragments
+  would otherwise restart both counters at zero, and both are ADDRESSES the
+  companion re-derives from the whole stored message (`run.mjs codeBlocks`,
+  the tick walk in `store.mjs`) — the tail's Run button would run the head's
+  code. `renderMarkdown(src, carry)` takes a second argument that keeps
+  `codeSeq`/`taskSeq` going, and the tail's slot is marked `data-md-cont`.
+  The marker line itself is neither a fence nor a checkbox, so removing it
+  cannot move an ordinal.
+- **Copy hands back the message**, both halves, folded or not (`copyFlavours`
+  now walks every `.ctext.md` in the reply rather than the first).
+- **A live stream shows the whole answer with the seam stripped** — mid-turn
+  there is no settled message to key a fold on, and a marker appearing and then
+  vanishing in the preview is worse than no marker at all.
+- **It composes with the long-thread fold** without touching it: the fold works
+  on units, and a folded unit is not drawn at all.
+
+**Everywhere else the text is read.** `views.mjs` (the reading room) and
+`reader.js` (the phone) draw the same split as a `<details class="more">` —
+no script, which is the reading room's rule. **The Obsidian export takes
+`stripMore`**: the vault gets the WHOLE answer with the marker gone, never the
+truncated head — a note that quietly dropped the half the reader asked to see
+would be the worst failure this feature has.
+
+**Tests.** `test/more.test.mjs` (57 assertions: the parser, the fence
+negatives, the three copies, the reading room, the note, and the prompt lines).
+Harness `?more=1&selftest=1` drives the fold in the DOM — head alone, no marker
+in the prose, the disclosure opening and closing, the ordinals not moving, the
+fold surviving a re-render, a fenced marker folding nothing, and the same
+inside a comment thread with the thread's own fold untouched. `?more=1` /
+`?more=open` are the screenshot states.
+
+### Amendment (2026-08-19, shipped): collateral edits — the changes nobody commented on
+
+Track changes showed the reader what a bot's change did **to the passage a
+comment was anchored to**. Everything else it did was invisible.
+
+That gap is not an edge case, it is the normal shape of an edit. Fix the
+sentence a comment is about and the cross-reference two sections down is now
+wrong; tighten a claim and the paragraph that restates it disagrees with
+itself. Following the change out is **right, and wanted**. But there is no
+thread at those passages, so nothing narrates them, nothing anchors to them,
+and the tab reloads with the new sentence sitting in the prose looking exactly
+like prose nobody has touched. The one edit the reader never asked for is the
+one they are never shown, and nothing is there to approve.
+
+Two layers, and the order matters: the prompt supplies the reason, **the file
+supplies the truth**, and where they disagree the file wins.
+
+#### 0. First: what ↺ actually is (a correction to the brief)
+
+Worth stating plainly, because it is easy to assume otherwise from the
+track-changes amendment above: **there is no revert-the-text path in Discuss,
+and there never has been.** The two buttons on a ready thread are `✓` resolve
+and `↺` **reopen / "not done"** — opinions about a *thread*, written to
+`/resolve` and `/addressed`. Neither writes a byte of the document. The
+struck-through old wording is display-only markup (`del.bfp-was`), inserted by
+`content.js` and shut out of the text index, the snapshot and the article text
+by four separate doors. `grep -n revert` over `server.mjs`, `store.mjs` and
+`workspace.mjs` returns nothing.
+
+So the auto-threads below **accept by being resolved** — the new text is
+already in the file; ✓ is the reader saying they have looked. `↺` puts the
+thread back in the open list, where the reader can tell the bots to put it
+back, which is the remedy that exists today.
+
+**If a real revert is ever built**, this feature is the one that makes it
+cheap, and the shape is already determined by the record:
+
+> `POST /revert {url, thread_id}`, owner-only (it edits the document, so it
+> takes `/reanchor`'s gate and not `/resolve`'s). The companion resolves the
+> page to a project artifact, refuses unless the root is confirmed, reads the
+> file, and replaces the FIRST occurrence of the fold-normalized `thread.quote`
+> with `thread.prior_quote` — refusing outright on zero matches or more than
+> one, because a revert that guesses is a corruption. Then `savePage`,
+> `broadcast('project-files')`, and the thread is resolved with a note saying
+> it was reverted.
+>
+> The one thing it needs from the record is `prior_quote`, and **an auto-thread
+> supplies it by construction** — it is written from the diff, so the "was" half
+> is the file's own previous bytes rather than a sentence a bot typed. No
+> special case, no second code path: a narrated thread and an auto-thread are
+> the same three fields. The reason it is not built here is scope — a companion
+> that edits the artifact is a new kind of writer in this system (locking,
+> concurrent bot writes, a conflict story), and that is its own amendment.
+
+#### 1. Layer (a): the bot says so — `also changed`
+
+`bridge-system-prompt.md` gains **rule 5b**, beside rule 5's `now reads`:
+
+```
+also changed — this passage now reads: "…"
+```
+
+One line per collateral edit, AFTER the rule-5 line and never before it (
+`store.newWording` reads the *first* match in a message, and a claim about
+somewhere else must not be able to move the answering thread's own anchor).
+A clause saying *why* is encouraged. The same sentence rides `chat.envelope`'s
+write rules — which are on **every** turn on these pages, not just the first —
+and the review round's preamble and per-comment turns (`workspace.reviewPreamble`,
+`reviewTurn`), because a resumed session's replayed history is uneven and the
+only thing a turn can rely on carrying is the turn.
+
+The prompt explicitly tells bots that **opening threads on work they were asked
+to do is expected** — it is the receipt, not clutter.
+
+**These lines do not create threads.** A bot's sentence is not evidence about a
+file. What they do is give the thread the *diff* created its **reason**: matched
+by the wording they quote, the bot's own line becomes the auto-thread's first
+message. A line quoting a wording the diff cannot find is dropped.
+
+#### 2. Layer (b): the backstop — the file is the witness
+
+`collateral.mjs` (new, pure, node-side). The census that already runs at the
+turn boundary (`workspace.scanProject`) records mtime and size — enough to say
+THAT the artifact moved, nothing about what moved in it. So `noteTurnStart` now
+also keeps **the artifact's own bytes** (`SNAPSHOT_MAX` 4MB; a read that fails
+is simply no snapshot and costs the turn its collateral threads and nothing
+else) and the turn-start timestamp. At turn-end, where `page_changed` is true,
+the before/after are diffed and every changed region no thread already covers
+becomes a thread.
+
+**The text the diff runs over is the text the PAGE carries** — `docBlocks`
+splits on the same block-level tags `Anchor.buildTextIndex` separates on, folds
+inline tags away, decodes entities, and drops script/style/doctype. A quote
+synthesized from anything else would anchor to nothing. This is deliberately a
+second implementation of a browser rule rather than a shared one (the companion
+has no DOM and cannot borrow `anchor.js`'s walk), and it is kept honest the only
+way that works: the harness drives a real page and asserts the synthesized quote
+locates in it.
+
+**Granularity.** Block-level LCS after a common head/tail trim, so a one-sentence
+edit in a long draft diffs over a handful of blocks. Then:
+
+| case | anchor (`quote`) | `prior_quote` |
+| --- | --- | --- |
+| `edit`, one block ↔ one block | the words that actually moved — shared head and tail are trimmed off at WORD granularity and become prefix/suffix, grown back out to `MIN_QUOTE` (24) so a three-word quote cannot anchor to forty places | the words they replaced |
+| `edit`, multi-block | the whole changed run | the whole run it replaced |
+| `insert` | the new text | *(empty — nothing left, so the page draws no strike-through; the thread still anchors and still turns amber)* |
+| `delete` | **the surviving block that now follows the hole** (or precedes it, at the end of a document) | the departed wording — so the page strikes the deleted sentence through immediately before the paragraph that outlived it, which is where it was |
+| a sentence deleted from INSIDE a paragraph | the whole surviving paragraph | the whole original — there is no shorter thing on the page to point at |
+
+**Adjacent changed blocks merge into one region** — a bot that rewrote two
+paragraphs in a row made one change there. Blocks with so much as one untouched
+block between them are **never** merged: that would swallow prose nobody touched
+into the quote and highlight a sentence that had not changed. Quotes past
+`QUOTE_MAX` (1000) are clipped at a word boundary, which keeps them an exact
+substring and therefore still locatable.
+
+#### 3. What the extension had to change: nothing
+
+This is the whole reason the feature is cheap, and it is worth stating as the
+claim it is. `content.js`'s paint loop reads
+**`t.addressed && !t.resolved && t.prior_quote`** off the record and asks no
+questions about who wrote them or whether a bot ever said a word. So an
+auto-thread — `quote` = what stands there now, `prior_quote` = what it replaced,
+`addressed` set — paints struck-old-then-green-new on the page, sorts into
+"Ready for review", clicks through to its card and files with ✓, through the
+machinery that was already there. Written with `store.addThread` +
+`store.setAddressed`; **no new endpoint, no new storage, no new event** (the
+`project-files` payload gains `collateral: true`, and a `page` event is
+broadcast so the tab refetches the record).
+
+One field is new on the record — **`auto: true`** — and it exists for §4 to
+read. Nothing renders differently on it. `auto_summary: true` marks the capped
+note. Plugin-less visitors and the Obsidian export see an ordinary thread.
+
+The one drawer change is two words wide: `rewriteHtml` took its "now" half from
+the bot's narration, which an auto-thread does not have, so it now reads
+`newWordingOf(t) || (t.auto ? t.quote : '')` — the thread was *born* anchored to
+the new wording, so the quote IS the now.
+
+#### 4. Dedupe — the rule that decides whether this helps or doubles everything
+
+A change a bot **narrated** into the thread it was answering is already on its
+way to being shown; an auto-thread at the same spot would be two cards and two
+highlights fighting over one paragraph. The test is coverage of the **new** text
+(fold-normalized containment either way, with a 16-character floor):
+
+- **`newWording(t)`** for any thread — the narrated case. Caught *before* the
+  extension has re-anchored anything, because the census runs at turn-end in the
+  companion with no browser involved; that is the only reason the two paths can
+  never race.
+- **`t.quote`** for any thread — something is already anchored exactly there
+  (the reader's own comment, or an auto-thread from an earlier turn that has not
+  moved).
+- one exception on the **old** text: a **non-auto**, unresolved, `addressed`
+  thread whose quote is the wording that just left — the narrated case where the
+  bot forgot to narrate. The change belongs to the reader's thread and they are
+  already looking at it.
+
+**The old text is otherwise deliberately not part of the test**, and this is the
+subtle one: an auto-thread created last turn carries the old wording as its
+quote, so matching on it would suppress the thread announcing that the passage
+changed **again**. The reader would be shown one change and silently given two.
+`!t.auto` on the exception above is what keeps that case open.
+
+Layer (a) cannot double layer (b) either, because layer (a) never creates a
+thread — it only supplies text to the one the diff creates.
+
+#### 5. The cap
+
+A backstop that spams the rail is worse than none: the reader stops reading the
+rail and the one change they needed goes down with the rest. Past
+`REGIONS_MAX` = 6 fresh regions, or where the changed blocks cover more than
+half the document, or where the two versions are too far apart to diff at all
+(`LCS_CELLS`), the turn gets **one summary thread** — anchored to the first
+region so it clicks through somewhere real, saying how many passages moved and
+listing up to 20 of them by their opening words. Never a silent drop.
+
+#### 6. Send review
+
+**Needs no new rule.** An auto-thread is `addressed`, and `workspace.openThreads`
+already excludes addressed threads because a bot has had its go and it is the
+reader's turn to look — which is exactly what an auto-thread is. `↺` "not done"
+puts it back in the round, like any other ready thread.
+
+#### Testing
+
+`test/collateral.test.mjs` (75 assertions): the block extraction; granularity
+(the words that moved, adjacent merge, no merge across untouched prose, insert,
+delete, inner deletion, grow-back, clip); every dedupe branch **including the
+second-change-to-an-auto-thread case that must NOT be suppressed**; the
+`also changed` parse (that it takes the second quote and not rule 5's, that
+`store.newWording` still reads rule 5's, that a human typing it claims nothing,
+that a claim from before this turn is not this turn's, that an unconfirmable
+claim attaches to nothing); both caps; and the composed record — `addressed`,
+attributed, `prior_quote`, `auto`, 32-char context, and out of `openThreads`.
+
+Harness **`?colledit=1&selftest=1`** (21 assertions) is the claim of §3 in a
+real DOM: a thread written by a diff, with **no narration anywhere on the page
+to parse**, produces the amber highlight on the new wording, the struck old
+wording immediately before it, the arrival underline, the card's before→after,
+and the "nobody commented here" text — with `/reanchor` never posted once. Then
+the reader's switch takes it off and puts it back, and ✓ files it sage.
+`?colledit=1` alone is the screenshot state.
+
+#### Known limits (deliberate, documented rather than fixed)
+
+- **Attribution on `@all` turns.** The diff cannot tell which of two bots wrote
+  which line, so the thread is authored by the first agent on the turn and its
+  text says "the bots".
+- **A trailing deletion** anchors to the *preceding* block, so its struck
+  wording renders before that block rather than after it.
+- **A `delete` region's card diff** reads as "departed wording → surviving
+  paragraph", which is a replacement it was not. The page markup is right; the
+  card's word-diff is approximate.
+- **Only the artifact's own file** is diffed. Other files the bots changed in
+  the project are still reported by the census as "N files changed" and nothing
+  more — they are not what the tab is showing.
 
 ## Out of scope for v1 (do not build)
 

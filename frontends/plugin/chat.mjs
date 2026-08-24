@@ -41,9 +41,15 @@ export const EFFORT_DEFAULTS = { claude: 'high', codex: null };
 // at the end of every envelope: the system prompt defers to it.
 // numeric caps, not just "crisp": models hold a hard word count far better
 // than a vibe, and Claude in particular drifts past adjective-only limits
+// …and every one of them ends with the same escape hatch: the cap is on what
+// the reader SEES first, not on what may be said. A `<!--more-->` line folds
+// the rest behind a "▸ more" the reader opens, so a capped answer never has to
+// be a truncated one. The line rides on every turn because a resumed session's
+// system prompt is not something a turn can rely on.
+const MORE_LINE = ' If there is genuinely more worth saying, keep the capped answer complete, then put a line containing exactly <!--more--> and write the long version after it — the reader gets it behind a "▸ more" they can open.';
 const VERBOSITY_LINE = {
-  short: 'Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.',
-  long: 'Reply conversationally: at most 4-5 sentences, 120 words max — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.',
+  short: 'Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.' + MORE_LINE,
+  long: 'Reply conversationally: at most 4-5 sentences, 120 words max — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.' + MORE_LINE,
 };
 export const verbosityLine = v => VERBOSITY_LINE[v] || VERBOSITY_LINE.short;
 // how long to wait for the `projects` event that names the live session
@@ -243,6 +249,17 @@ export function envelope({ url, title, target, text, quote, history,
       + 'folder and nothing outside it. Writes anywhere else on this machine are '
       + 'refused by the sandbox, so do not attempt them; edit the artifact in place '
       + 'when the reader asks for a change, and say what you changed.\n'
+      // …and the OTHER half of "say what you changed", which is the half that
+      // used to go missing. A change that ripples out — a cross-reference, a
+      // paragraph that now contradicts itself — is right to make and had
+      // nowhere to be reported: no comment sits at that passage, so nothing
+      // narrated it and the reader got the edit invisibly. One line per place,
+      // in the phrasing the companion parses (bridge-system-prompt rule 5b).
+      + 'If your change also touched the document somewhere else, add one line per place: '
+      + '`also changed — this passage now reads: "…"`, with the full new wording. A comment '
+      + 'thread is opened at each of those passages so the reader can review the change; '
+      + 'the document is diffed across your turn either way, so an edit you do not mention '
+      + 'still gets its thread — without your reason on it.\n'
     : '';
   const standing = `${snap}${writes}`;
   const ctx = first

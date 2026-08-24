@@ -13,6 +13,8 @@ import { escHtml } from './hosted.mjs';
 // the library's reserved identity and the page-chat target, from the one place
 // that defines them rather than as literals repeated down here
 import { LIBRARY_URL, PAGE_CHAT, PAGE_KINDS, inferKind, tagsOf, displayTitle } from './store.mjs';
+// the capped-answer marker, from the one place that defines it
+import { splitMore } from './more.mjs';
 
 const AGENTS = new Set(['claude', 'codex']);
 
@@ -77,6 +79,12 @@ blockquote { margin:0 0 .8rem; padding:.35rem 0 .35rem .8rem; background:var(--q
 .msg pre { margin:.15rem 0 0; font:inherit; white-space:pre-wrap; overflow-wrap:anywhere }
 details.tools { margin:.5rem 0 .5rem .7rem; font-size:.8rem; color:var(--muted) }
 details.tools pre { white-space:pre-wrap; font-size:.78rem }
+details.more { margin:.15rem 0 .35rem }
+details.more>summary { font-size:.8rem; color:var(--muted); cursor:pointer; list-style:none }
+details.more>summary::-webkit-details-marker { display:none }
+details.more>summary::before { content:"▸ "; display:inline-block; transition:transform .15s ease }
+details.more[open]>summary::before { content:"▾ " }
+details.more pre { margin:.2rem 0 0 .6rem; padding-left:.6rem; border-left:2px solid var(--line) }
 form.composer { margin:.9rem 0 0; display:flex; flex-direction:column; gap:.5rem }
 textarea { width:100%; min-height:4.2rem; resize:vertical; padding:.55rem .7rem;
   font:inherit; font-size:.92rem; color:var(--fg); background:var(--bg);
@@ -194,6 +202,8 @@ const liveScript = url => `<script>
 // owner's own machine, and that is not a thing to hand to the room. Figures are
 // served by /run-figure under the same owner-only gate, and are links as well
 // as pictures so a tap gets the readable size with no script on this page.
+export { splitMore };
+
 export function runsHtml(m, ctx) {
   if (!ctx || !ctx.owner || !m || !m.runs || typeof m.runs !== 'object') return '';
   const out = [];
@@ -223,8 +233,16 @@ function msgHtml(m, ctx) {
     return `<details class="tools"><summary>${escHtml(author)} explored</summary>`
       + `<pre>${escHtml(m.text)}</pre></details>`;
   }
+  // A capped answer with a longer version behind it: the head reads as the
+  // whole reply and the tail sits under a <details> — no script needed, which
+  // is the reading room's whole rule. The marker itself is never shown.
+  const cut = splitMore(m.text);
+  const body = cut.more
+    ? `<pre>${escHtml(cut.head)}</pre>`
+      + `<details class="more"><summary>more</summary><pre>${escHtml(cut.more)}</pre></details>`
+    : `<pre>${escHtml(m.text)}</pre>`;
   return `<div class="msg${cls}"><div class="by"><b>${escHtml(author)}</b> · ${escHtml(shortTime(m.ts))}</div>`
-    + `<pre>${escHtml(m.text)}</pre>${runsHtml(m, ctx)}</div>`;
+    + `${body}${runsHtml(m, ctx)}</div>`;
 }
 
 // One composer shape for both kinds of thread. Plain form POST to the JSON

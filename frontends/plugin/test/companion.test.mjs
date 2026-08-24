@@ -18,6 +18,14 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
+// The reader's length instruction, verbatim (chat.mjs VERBOSITY_LINE): the last
+// line of every turn. It carries the escape hatch too — a capped answer may keep
+// its long half behind a <!--more--> marker rather than come out truncated.
+const MORE_LINE = ' If there is genuinely more worth saying, keep the capped answer complete, then put a line containing exactly <!--more--> and write the long version after it — the reader gets it behind a "▸ more" they can open.';
+const LEN_SHORT = 'Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.' + MORE_LINE;
+const LEN_LONG = 'Reply conversationally: at most 4-5 sentences, 120 words max — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.' + MORE_LINE;
+
+
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(TEST, '..');
 const SERVER = path.join(PLUGIN, 'server.mjs');
@@ -432,9 +440,7 @@ async function main() {
     assert.ok(turn.includes('Earlier in this thread:\nangadh: This is the whole argument of the piece.'),
       'thread history above the new message');
     assert.ok(turn.includes('and wrote:\n@claude does that hold outside peak season?'));
-    assert.ok(turn.endsWith('comment thread.\nReply like a human in a chat: '
-      + '2-3 crisp sentences, 60 words max, no essay structure, no filler'
-      + ' — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.'),
+    assert.ok(turn.endsWith('comment thread.\n' + LEN_SHORT),
       'the turn ends with the reader\'s length instruction');
   });
 
@@ -1699,7 +1705,7 @@ async function main() {
     await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude at length please' });
     const long = await waitFor(() => inputs(logFile).slice(from)
       .find(t => t.startsWith('@claude ')), 'the long turn');
-    assert.ok(long.endsWith('Reply conversationally: at most 4-5 sentences, 120 words max — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.'));
+    assert.ok(long.endsWith(LEN_LONG));
     assert.ok(!long.includes('crisp sentences'), 'one length instruction, never two');
 
     assert.equal((await POST(base, '/verbosity', { level: 'short' })).json.verbosity, 'short');
@@ -1707,7 +1713,7 @@ async function main() {
     await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude briefly then' });
     const short = await waitFor(() => inputs(logFile).slice(from)
       .find(t => t.startsWith('@claude ')), 'the short turn');
-    assert.ok(short.endsWith('Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.'));
+    assert.ok(short.endsWith(LEN_SHORT));
     const bad = await POST(base, '/verbosity', { level: 'epic' });
     assert.equal(bad.status, 400);
     assert.equal(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).verbosity, 'short', 'a refusal changes nothing');
@@ -1747,7 +1753,7 @@ async function main() {
       '…including what a resolved thread means, so the archive is not read as all-open');
     assert.ok(/Never write, create or edit a file here/.test(turn), 'reads only, said in the turn itself');
     assert.ok(!turn.includes('[web page:'), 'no page context, because there is no page');
-    assert.ok(turn.endsWith('Reply like a human in a chat: 2-3 crisp sentences, 60 words max, no essay structure, no filler — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.'),
+    assert.ok(turn.endsWith(LEN_SHORT),
       "the reader's length instruction still has the last word");
 
     const page = await waitFor(async () => {

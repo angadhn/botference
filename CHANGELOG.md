@@ -9,6 +9,23 @@
 
 ## 2026-08-19
 
+- **Discuss: "▸ more" — a capped answer keeps its long half.** Replies in
+  comment threads and page chat are capped short by design, which was wrong for
+  the question that genuinely has a long answer. A bot can now put a
+  `<!--more-->` line after the capped answer and write the long version below
+  it; the reader sees the short answer with a "▸ more" disclosure that unfolds
+  the rest. A marker inside a fenced code block is code, not a marker, and the
+  Obsidian export keeps both halves.
+
+- **Discuss: collateral edits — the changes nobody commented on.** When a bot's
+  edit ripples beyond the passage a comment was anchored to (a cross-reference,
+  a paragraph that now contradicts itself), those edits used to land invisibly.
+  The companion now snapshots the artifact at turn-start, diffs it at turn-end,
+  and opens a comment thread at every changed region no existing thread covers —
+  so every edit gets the same before→after card and review flow as the ones you
+  asked for. Bots are also told to narrate them ("also changed — this passage
+  now reads: …") so the reason rides along.
+
 - **Discuss: "send review" now answers in the comments.** The button used to
   hand your whole margin review to the bots as ONE chat message, and the answer
   came back as one essay in page chat — nothing attached to the comment it was

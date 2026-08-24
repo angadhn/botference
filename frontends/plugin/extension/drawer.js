@@ -589,14 +589,19 @@
   // drift between the two over a language tag.
   let codeSeq = 0;
 
-  function renderMarkdown(src) {
+  // `carry` renders a CONTINUATION of the message just rendered: the tick and
+  // fence counters keep going instead of restarting at zero. The "▸ more" fold
+  // draws one message as two fragments, and both ordinals are ADDRESSES the
+  // companion re-derives from the whole stored message (run.mjs codeBlocks,
+  // store.mjs's tick walk) — restart them and the second half's Run button
+  // runs the first half's code.
+  function renderMarkdown(src, carry) {
     const frag = document.createDocumentFragment();
     // math first, always: the parser below must never see a `_`, a `*` or a
     // `\\` that belonged to a formula
     const held = protectMath(String(src == null ? '' : src).replace(/\r\n?/g, '\n'));
     const lines = held.text.split('\n');
-    taskSeq = 0;
-    codeSeq = 0;
+    if (!carry) { taskSeq = 0; codeSeq = 0; }
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
@@ -792,6 +797,47 @@
     return { text: envs.length ? out.trim() : out, envs: envs.filter(Boolean) };
   }
 
+  // ── "▸ more": the long half of a capped answer ──────────────────────────
+  // A bot leads with the short answer and puts the rest after one marker line,
+  // `<!--more-->` (bridge-system-prompt rule 1). The drawer shows the head and
+  // folds the tail behind a disclosure exactly like the tools row above.
+  // A marker inside a fenced block is code, not a marker — the same rule
+  // splitEnvelopes obeys, and for the same reason.
+  //
+  // This parser is duplicated, byte for byte, in ../more.mjs (the companion,
+  // for the Obsidian export) and in reader.js (the phone) — the extension can
+  // import from neither. test/more.test.mjs pins the three copies together.
+
+  // ⟦more⟧ begin — byte-identical in extension/drawer.js and reader.js
+  var MORE_MARK = /^[ \t]*<!--[ \t]*more[ \t]*-->[ \t]*$/i;
+  function splitMore(raw) {
+    var s = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n');
+    if (s.indexOf('<!--') === -1) return { head: s, more: '' };
+    var lines = s.split('\n');
+    var fence = '', at = -1, tail = [];
+    for (var i = 0; i < lines.length; i++) {
+      var f = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(lines[i]);
+      if (f) {
+        if (!fence) fence = f[1];
+        else if (f[1].charAt(0) === fence.charAt(0) && f[1].length >= fence.length) fence = '';
+      } else if (!fence && MORE_MARK.test(lines[i])) {
+        if (at < 0) at = i;
+        continue;
+      }
+      if (at >= 0) tail.push(lines[i]);
+    }
+    if (at < 0) return { head: s, more: '' };
+    var head = lines.slice(0, at).join('\n').replace(/\s+$/, '');
+    var more = tail.join('\n').replace(/^\s+/, '').replace(/\s+$/, '');
+    if (!head) return { head: more, more: '' };
+    return { head: head, more: more };
+  }
+  function stripMore(raw) {
+    var p = splitMore(raw);
+    return p.more ? p.head + '\n\n' + p.more : p.head;
+  }
+  // ⟦more⟧ end
+
   // The renderers below build HTML strings; markdown must not. Each bot reply
   // parks its text in this slot map and gets an empty <div data-md="…">, which
   // render() fills from the DOM side once the string has landed.
@@ -829,7 +875,7 @@
       if (text == null) return;
       const split = splitEnvelopes(text);
       el.textContent = '';
-      el.appendChild(renderMarkdown(split.text));
+      el.appendChild(renderMarkdown(split.text, el.hasAttribute('data-md-cont')));
       // what the copy button hands back: what was WRITTEN, not what was drawn
       el.setAttribute('data-raw', split.text);
       if (split.envs.length) el.insertAdjacentElement('afterend', envRow(split.envs));
@@ -1104,6 +1150,7 @@
       // confirmation survives a render() landing on top of it
       copied: null,
       toolsOpen: {},       // tool-activity disclosure key -> expanded
+      moreOpen: {},        // "▸ more" disclosure key (target|ts|more) -> expanded
       // ---- running a ```python block (setCanRun / onRun) ----------------
       // The button exists only where the companion says it does: owner, and
       // not switched off in config.json. Guests never see it and would be
@@ -1480,7 +1527,22 @@
       // textContent (never an HTML string), and only http/https urls become
       // anchors. What is STORED stays the raw markdown; only the rendering
       // changes, which is why the editor reads msg.text and not this DOM.
-      const body = `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`;
+      // A capped answer with a longer version behind it (bridge-system-prompt
+      // rule 1) arrives as one message with one `<!--more-->` line in it. The
+      // head reads as the whole reply; the tail folds behind the same quiet
+      // disclosure the tools row uses, and the reader's choice is remembered
+      // per message for the session, like every other fold here.
+      const cut = splitMore(r.text);
+      const mkey = target + '|' + r.ts + '|more';
+      const mopen = !!D.moreOpen[mkey];
+      const body = cut.more
+        ? `<div class="ctext md" data-md="${esc(mdSlot(cut.head))}"></div>` +
+          `<div class="more${mopen ? ' open' : ''}" data-more="${esc(mkey)}">` +
+          `<button class="more-head" data-act="more" data-key="${esc(mkey)}" type="button" aria-expanded="${mopen}">` +
+          `<span class="caret">▸</span><span class="more-label">${mopen ? 'less' : 'more'}</span></button>` +
+          `<div class="more-body"${mopen ? '' : ' hidden'}>` +
+          `<div class="ctext md" data-md-cont="1" data-md="${esc(mdSlot(cut.more))}"></div></div></div>`
+        : `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`;
       // the agent's own class carries its typeface (drawer.css --font-claude /
       // --font-codex); the colour rides the same rule through speakerColor
       const who = agentOf(r.author);
@@ -1580,7 +1642,10 @@
         // the room footer is being typed in front of the reader on a live
         // stream: hold it back here too, or a finished answer visibly grows a
         // set of JSON braces and then loses them again
-        const text = splitEnvelopes(s.text).text;
+        // …and the "▸ more" marker with it: mid-stream there is nothing to
+        // fold yet (the fold needs a settled message to key its state on), so
+        // the preview shows the whole answer and simply does not show the seam
+        const text = stripMore(splitEnvelopes(s.text).text);
         return `<div class="reply bot streaming${who ? ' ' + who : ''}" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
           <span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">writing…</span></span>
           <pre class="stream-text">${esc(text)}</pre></div>`;
@@ -1940,7 +2005,19 @@
     // no shared words, a passage too long to diff — the two are simply stacked
     // and labelled, which says the same thing and can never mislead.
     function rewriteHtml(t) {
-      const now = newWordingOf(t);
+      // Normally the "now" half is what a bot SAID the passage now reads: the
+      // thread was anchored to the old wording and the sentence is the only
+      // thing that knows where the change landed.
+      //
+      // A thread the companion's turn-end diff wrote (`auto`) inherits none of
+      // that and needs none of it: there was no comment at that passage, so no
+      // bot ever narrated it — the thread was BORN anchored to the new wording,
+      // with `prior_quote` carrying what it replaced. So the quote itself is
+      // the "now", and the card draws the same before→after the page is already
+      // drawing. (An auto-thread on an INSERTION has no prior_quote, `was`
+      // falls back to the quote, and the guard below correctly draws nothing:
+      // text that arrived where there was none has no before half.)
+      const now = newWordingOf(t) || (t.auto ? String(t.quote || '') : '');
       if (!now) return '';
       // `prior_quote` is the wording the thread was ANCHORED to before the
       // page re-anchored it onto the rewrite. Once that has happened `quote`
@@ -3770,6 +3847,9 @@
         if (act === 'send-discard') { discardSend(target, btn.dataset.out); return; }
         if (act === 'cancel-new') { cancelNew(); return; }
         if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
+        // both ways, unlike the thread fold: a reader who opened the long half
+        // of one answer is reading it, not committing to it
+        if (act === 'more') { const k = btn.dataset.key; D.moreOpen[k] = !D.moreOpen[k]; render(); return; }
         if (act === 'run') { doRun(btn); return; }
         if (act === 'run-stop') { doRunStop(btn); return; }
         if (act === 'run-more') {
@@ -4183,14 +4263,22 @@
     // textarea of the drawer's own, inside the shadow root. The host page's
     // DOM is never touched, and neither is its clipboard handling.
     function copyFlavours(reply) {
-      const ct = reply.querySelector('.ctext.md');
-      if (!ct) return null;
-      // the Run bar and whatever the last run printed are chrome the drawer
-      // drew, not words anybody wrote: they do not travel
-      const clone = ct.cloneNode(true);
-      clone.querySelectorAll('.runbox').forEach(n => n.remove());
-      const raw = ct.getAttribute('data-raw');
-      return { html: clone.innerHTML, text: raw == null ? clone.textContent : raw };
+      // Usually one block; a folded "▸ more" answer is TWO halves of the same
+      // message, and copy hands back the message — folded or not, head and
+      // tail, in the order they were written.
+      const cts = [...reply.querySelectorAll('.ctext.md')];
+      if (!cts.length) return null;
+      const html = [], text = [];
+      for (const ct of cts) {
+        // the Run bar and whatever the last run printed are chrome the drawer
+        // drew, not words anybody wrote: they do not travel
+        const clone = ct.cloneNode(true);
+        clone.querySelectorAll('.runbox').forEach(n => n.remove());
+        const raw = ct.getAttribute('data-raw');
+        html.push(clone.innerHTML);
+        text.push(raw == null ? clone.textContent : raw);
+      }
+      return { html: html.join(''), text: text.join('\n\n') };
     }
     function legacyCopy(html, text) {
       if (!D.el.panel || typeof document.execCommand !== 'function') return false;
@@ -5473,6 +5561,7 @@
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     tagHue,                                                 // test/tags.test.mjs
     splitEnvelopes, agentOf,                                // test/envelope.test.mjs
+    splitMore, stripMore, MORE_MARK,                        // test/more.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

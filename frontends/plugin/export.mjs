@@ -9,6 +9,9 @@ import { isLibrary, pageKey, runDir, displayTitle, tagsOf } from './store.mjs';
 // the same block parser the runner and the drawer use: a result is written
 // under the fence it came out of, found by line number rather than re-guessed
 import { codeBlocks } from './run.mjs';
+// a bot's capped answer keeps its long half in the note: the vault is where
+// the whole thing is meant to live, so the marker comes out and both halves stay
+import { stripMore } from './more.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -92,7 +95,7 @@ export function withRuns(text, runs, attach) {
   return lines.join('\n');
 }
 
-const bodyOf = (m, attach) => withRuns(m.text, m.runs, attach);
+const bodyOf = (m, attach) => withRuns(stripMore(m.text), m.runs, attach);
 const authored = (msgs, attach) =>
   msgs.map(m => `**${m.author}:** ${bodyOf(m, attach)}`).join('\n');
 // tool-activity summaries are process noise in a note: the drawer keeps them
