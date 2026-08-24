@@ -562,6 +562,29 @@ tunnel from its options page (URL, password, display name). Owner-only
 stays owner-only: export, page deletion, model/effort/verbosity, relay,
 interrupt.
 
+### Several pages at once
+
+A turn on one page no longer holds up another. Ask something on an
+article, then go and send a whole margin review on a draft in another
+tab: both are answered, side by side. What stays strictly in order is
+what has to — a page's own chat is one conversation, so your next
+message there waits for the answer to your last one, and everything
+belonging to one *project* takes its turn, because those pages share a
+folder the bots may write in and the record of what changed in it. A
+review round is one page's conversation across many threads, so it is
+still answered comment by comment, in page order, and its progress strip
+still counts straight while something else is being answered elsewhere.
+
+The waiting line says which wait it is: *queued behind this
+conversation…* when your own last message is still being answered,
+*queued behind another chat…* when every agent is busy with somebody
+else's page. `bridge_pool` in `.botference/plugin/config.json` sets how
+many run at once (default 3; `1` is the old one-at-a-time behaviour),
+and spare agents are retired after `bridge_idle_ms` of quiet (default 15
+minutes) so an afternoon of reading does not leave processes lying
+around. The web council has had the same arrangement for a while —
+`COUNCIL_MAX_CHATS`, one bridge per open chat.
+
 ### The library: asking about everything you have read
 
 Every page you annotate is one conversation. The **library** is the other

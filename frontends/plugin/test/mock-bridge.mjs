@@ -6,7 +6,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const LOG = process.env.MOCK_BRIDGE_LOG || '';
+// One log for the whole test, or — when several children run at once (the
+// bridge pool, pool.mjs) — one per child, named by pid. A single file cannot
+// answer "which child sent this", and that is the only question the parallel
+// suite has.
+const LOG = process.env.MOCK_LOG_DIR
+  ? path.join(process.env.MOCK_LOG_DIR, `${process.pid}.jsonl`)
+  : (process.env.MOCK_BRIDGE_LOG || '');
+if (process.env.MOCK_LOG_DIR) {
+  try { fs.mkdirSync(process.env.MOCK_LOG_DIR, { recursive: true }); } catch { }
+}
+// Session ids are the mock's own counter, which two children would both start
+// at 1 — a collision the real controller cannot have (its ids are unique) and
+// which the companion is right to refuse (pageWithSession). Stamped with the
+// pid when several children are in play, so the fixture stops manufacturing a
+// bug that does not exist.
+const SID_TAG = process.env.MOCK_LOG_DIR ? `${process.pid}-` : '';
 const DELAY = Number(process.env.MOCK_TURN_DELAY_MS || 0);
 const emit = o => process.stdout.write(JSON.stringify(o) + '\n');
 const log = o => { if (LOG) { try { fs.appendFileSync(LOG, JSON.stringify(o) + '\n'); } catch { } } };
@@ -115,7 +130,7 @@ function input(text) {
     return ready();
   }
   if (text.trim() === '/new') {
-    seq++; sid = `sess-${seq}`; touch(sid);
+    seq++; sid = `sess-${SID_TAG}${seq}`; touch(sid);
     emit({ type: 'clear_panes' });
     projects();
     return ready();
@@ -154,6 +169,10 @@ function input(text) {
   if (text.startsWith('/')) { room('system', 'ok'); return ready(); }
 
   const models = /^@all\b/.test(text) ? ['claude', 'codex'] : [/^@codex\b/.test(text) ? 'codex' : 'claude'];
+  // [mock:sleep:N] — this ONE turn takes N ms. MOCK_TURN_DELAY_MS is per
+  // process and cannot express "hold page A's turn open while page B's runs",
+  // which is the whole of what a parallelism test has to arrange.
+  const slow = /\[mock:sleep:(\d+)\]/.exec(text);
   setTimeout(() => {
     // an agent that decided to write a file mid-turn: the real bridge blocks on
     // the answer, so the companion must refuse without waiting for a timer
@@ -225,7 +244,7 @@ function input(text) {
       touch(sid).entries += 1;
       setTimeout(projects, 30);
     }
-  }, DELAY);
+  }, slow ? Number(slow[1]) : DELAY);
 }
 
 let buf = '';

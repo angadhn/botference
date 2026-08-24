@@ -81,7 +81,18 @@ export const DEFAULT_CONFIG = {
   // is the entire trust boundary, so it stays a list of exact origins with no
   // wildcards in it.
   council_web_origins: [],
+  // HOW MANY BOT TURNS MAY RUN AT ONCE on ordinary pages (pool.mjs). Each of
+  // these is a python bridge with a claude and a codex CLI under it, so the
+  // number is a resource decision and not a taste one. `1` is exactly the
+  // behaviour that shipped before the pool existed: one queue, one turn, every
+  // page waiting on every other. Project-artifact pages are unaffected — their
+  // child is per project, and always has been.
+  bridge_pool: 3,
+  // How long a child beyond the first may sit idle before it is retired. 0
+  // never retires one.
+  bridge_idle_ms: 15 * 60 * 1000,
 };
+export const BRIDGE_POOL_MAX = 8;
 export const VERBOSITY_LEVELS = ['short', 'long'];
 export const AGENTS = ['claude', 'codex'];
 
@@ -93,6 +104,10 @@ const MODEL_RE = /^[\w.-]{1,64}$/;
 const EFFORT_RE = /^[\w-]{1,32}$/;
 const OPTIONS_MAX = 64;
 const cleanPref = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
+const clampInt = (v, lo, hi, dflt) => {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt;
+};
 const cleanList = (v, re) => (Array.isArray(v)
   ? [...new Set(v.filter(x => cleanPref(x, re)))].slice(0, OPTIONS_MAX) : []);
 
@@ -179,11 +194,22 @@ export const newThreadId = () =>
 
 export function readConfig() {
   const cfg = readJson(CONFIG_FILE, null);
-  if (!cfg) { writeJson(CONFIG_FILE, DEFAULT_CONFIG); return { ...DEFAULT_CONFIG }; }
-  const merged = { ...DEFAULT_CONFIG, ...cfg };
+  // First run writes the defaults out — and then reads them back through the
+  // SAME normalization as any other config. Returning the raw defaults here
+  // (as this used to) meant an environment override was honoured on every run
+  // but the first, which is the run a test's throwaway root always is.
+  if (!cfg) writeJson(CONFIG_FILE, DEFAULT_CONFIG);
+  const merged = { ...DEFAULT_CONFIG, ...(cfg || {}) };
   // a hand-edited config must never make the envelope say something strange
   if (!VERBOSITY_LEVELS.includes(merged.verbosity)) merged.verbosity = DEFAULT_CONFIG.verbosity;
   merged.agents = normalizeAgents(merged.agents);
+  // …and a hand-edited one must never ask for forty bridge children, or for
+  // half of one. The env vars are the test escape hatch (PLUGIN_BRIDGE_CMD's
+  // precedent) and win, because a test's tmp root has no config to edit.
+  merged.bridge_pool = clampInt(process.env.PLUGIN_BRIDGE_POOL ?? merged.bridge_pool,
+    1, BRIDGE_POOL_MAX, DEFAULT_CONFIG.bridge_pool);
+  merged.bridge_idle_ms = clampInt(process.env.PLUGIN_BRIDGE_IDLE_MS ?? merged.bridge_idle_ms,
+    0, 24 * 60 * 60 * 1000, DEFAULT_CONFIG.bridge_idle_ms);
   return merged;
 }
 

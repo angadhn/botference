@@ -194,8 +194,11 @@ The `reply` event is emitted after the server appends the bot msg to the page fi
 - Lazy start on first bot turn; keep alive after. **Never send `/quit`.**
 - Test escape hatch: env `PLUGIN_BRIDGE_CMD` = JSON argv array replacing the python
   command (mirror `COUNCIL_BRIDGE_CMD`), used by companion.test.mjs with a mock bridge.
-- One turn in flight, FIFO queue across pages. `{"type":"ready"}` is the turn boundary
-  (note: one startup `ready` arrives before any turn).
+- One turn in flight per CHILD, FIFO. `{"type":"ready"}` is the turn boundary
+  (note: one startup `ready` arrives before any turn). It was one turn in flight
+  for the whole companion until the 2026-08-24 parallel-turns amendment, which
+  put several children behind a dispatcher — see it for what may overlap and
+  what may never.
 - Auto-answer `choice_request` by picking the "Stay in Inbox"-style option if present
   else index 0 misgivings-free (copy review's logic); auto-deny permissions after 120s;
   forward permission requests as a `chat`/`error`-adjacent event only if simple — v1 may
@@ -529,10 +532,10 @@ Contract deltas agreed during live testing — authoritative over the sections a
   malformed event can never freeze the stream: `onEvent` catches, counts, and
   the next event is handled normally (the failure triggers a refetch).
 - Waiting states say what they are waiting for: `chat.submit` reports
-  `wait: 'bridge_starting' | 'busy'` (absent once the turn is genuinely
-  running), which rides POST /thread and /reply beside `queued`/`position`. The
-  drawer renders "waking the agents…" / "queued behind another chat…" /
-  "queued (#N)", each with the same ◐ every other live state uses — a wait must
+  `wait: 'bridge_starting' | 'busy' | 'pool_busy'` (absent once the turn is
+  genuinely running), which rides POST /thread and /reply beside
+  `queued`/`position`. The drawer renders "waking the agents…" / "queued behind
+  this conversation…" / "queued behind another chat…" / "queued (#N)", each with the same ◐ every other live state uses — a wait must
   look alive, not stalled. An older companion sends no `wait` and still gets a
   plain, spinning "queued…".
 - @-mentions complete themselves: typing `@` at a word boundary in any composer
@@ -3525,6 +3528,235 @@ spinner, the count, the comment named and clickable, clicking it focusing that
 card, a turn boundary moving it on and renaming it, the between-turns wording,
 the done note with its count, the spinner stopping, and the dismiss.
 `?roundticker=1` and `?roundticker=done` alone are the screenshot states.
+
+### Amendment (2026-08-24, shipped): parallel turns — several conversations at once
+
+One bridge child runs ONE turn at a time. That is the bridge's protocol and not
+a choice this companion makes: `ready` is the turn boundary and there is only
+one of it. For as long as every ordinary page shared one child, that made every
+turn in the building wait for every other one — a question on a blog post
+queued behind a twelve-comment review round on a paper, and a send-review
+fan-out held the whole companion for minutes with nothing else able to speak.
+
+The fix is more children. The entire difficulty is deciding which turn may go
+to which child, and two rules answer it:
+
+1. **A lane is a conversation.** Turns in one lane are strictly serial, in
+   submission order, on ONE child. A page's chat is one session; its ordering
+   is its meaning.
+2. **Different lanes run at the same time**, up to a cap.
+
+#### 1. The lock taxonomy
+
+There are exactly two kinds of lane, and `chatFor(url)` in server.mjs is the
+whole of the decision:
+
+| page | lane | what serializes it |
+| --- | --- | --- |
+| ordinary web page (and the library) | `pg:<normalized url>` | the pool binds the lane to one child (pool.mjs) |
+| project artifact, confirmed root | the PROJECT | that project already has a child of its own: one `(root, project_id)` → one process → one FIFO |
+
+The second row is the **per-project write lock**, and nothing had to be built
+for it. It was already load-bearing before parallelism existed: Phase 2 bakes
+the one writable directory into the child's environment at spawn, so a project
+has had a child to itself since 2026-08-18. Parallelism was written to leave
+that arrangement exactly alone.
+
+An **unconfirmed** root still routes to no bridge at all, unchanged.
+
+#### 2. What this buys, and what it deliberately does not
+
+Concurrent: two ordinary pages; an ordinary page and a project; two different
+projects; an ordinary page and a review round.
+
+Serial, on purpose:
+
+- **Two turns on one page.** A page's chat is one botference session. Two
+  children driving one session id is a silent lost turn (§5), and interleaved
+  turns in one conversation are not a conversation.
+- **Two pages in one project.** They share a writable directory and a change
+  census. Everything that attributes an edit to a turn depends on this.
+- **A send-review fan-out.** The round is one conversation across many threads,
+  its turns all belong to one page, and the round ticker counts turn
+  boundaries. It is serial because it is one lane, not because a rule was added
+  for it.
+
+Both of the fragile machines are therefore safe **by construction rather than
+by care**:
+
+- the **collateral census** (`noteTurnStart` → `reportProjectChanges` →
+  `collateral.mjs`, including the orphan healing) snapshots a PROJECT DIRECTORY
+  at turn-start and diffs it at turn-end. Nothing that shares a project
+  directory can run concurrently, because a project is one child.
+- the **round ticker** (`rounds`, `{type:'round'}`, GET `/round`) counts
+  turn-start/turn-end on ONE page. Nothing that shares a page can run
+  concurrently, because a page is one lane. A turn on another page emits
+  boundaries for another url and `roundTurn` never sees it.
+
+#### 3. The pool (pool.mjs)
+
+`createPool({onEvent, max, idleMs})` presents exactly the surface one bridge
+presented — `submit`, `control`, `models`, `interrupt`, `state`,
+`queueLength`, `busyFor`, `jobs`, `stop` — so server.mjs binds it to `chat` and
+everything downstream reads as it always did. `bridge_pool: 1` is the old
+behaviour, unchanged, and is the degenerate case the whole of
+`test/companion.test.mjs` still runs on.
+
+**Choosing a child**, in order:
+
+1. the one this lane is already bound to — ordering, and §5;
+2. a child holding no lanes at all — free capacity, no sharing;
+3. a new child, if under the cap — parallelism is the point;
+4. the least encumbered child — fewest lanes, then shortest queue.
+
+**The primary** is `members[0]`. It exists from the first moment (the object,
+not the process — the child is as lazy as it ever was), it is what the model
+and effort pickers read, and it is never reaped. Retiring one is logged to
+stderr and NOT broadcast: a `bridge` event would write it into the drawer's
+footer, and housekeeping is not something the reader is waiting on.
+
+This is the arrangement the council web UI has run for a while (one bridge per
+open chat, `COUNCIL_MAX_CHATS`, idle chats parked at the cap). Discuss's lane
+is a page rather than a chat, and its cap counts children rather than chats,
+but the shape is deliberately the same one.
+
+**Reaping.** A child beyond the first that has been idle longer than
+`bridge_idle_ms` is stopped and its lanes released. The pool grows to meet a
+busy afternoon and shrinks back to yesterday's footprint when the reader stops;
+the cost of being wrong is one "waking the agents…" the next time that page
+speaks, which is a wait the drawer already knows how to say. `0` never reaps.
+
+#### 4. What the reader is told while waiting
+
+`chat.submit` reports `wait`, and it now has three values:
+
+| `wait` | the drawer says | means |
+| --- | --- | --- |
+| `bridge_starting` | waking the agents… | no child yet, or it has not booted |
+| `busy` | queued behind this conversation… | this lane's own previous turn has the floor |
+| `pool_busy` | queued behind another chat… | every child is on somebody else's lane |
+
+Only the pool can tell the last two apart, so `chat.mjs` reports `busy` for any
+warm child and `pool.submit` refines it by asking `busyFor(url)` **before** the
+push.
+
+`cold` in chat.mjs was fixed on the way past: it read `!available || !ready`,
+and `ready` is false for the whole of every turn — so a turn queued behind a
+live one said "waking the agents…" through the entire wait and `busy` was
+unreachable. It now reads `!available || !running`, which is what cold meant.
+
+#### 5. WHY A LANE NEVER MOVES OFF A LIVE CHILD
+
+The controller's session file (`<work>/sessions/<sid>.json`) is rewritten whole
+on every persisted turn — atomically, but with **no lock and no version check**
+(`core/session_store.py`). Two children driving one session id is therefore a
+silent whole-turn loss: A resumes S, B resumes S and saves, A persists its
+stale copy and B's turn is gone. Nothing in Python enforces the invariant that
+stops it; it is held in Node, and it is held here.
+
+So a lane binds on its first turn and stays bound for as long as that child
+exists. Load is balanced at binding time and **never afterwards** — the
+dispatcher will let a lane wait behind another lane on its own child while a
+different child sits idle, and that is the correct trade: the wait costs
+seconds and the migration would cost a turn, silently. A lane is released only
+when its child is gone (reaped, or exited), which is exactly the condition
+under which the old child can no longer write that session file.
+
+`/resume` re-reads from disk every time (`_resume_session`), and chat.mjs
+re-issues it whenever the bridge's active session is not this page's — so a
+lane picked up by a fresh child after a reap sees the whole transcript.
+
+#### 6. Failure modes
+
+- **A child dies mid-turn.** `chat.mjs died()` strands only ITS queue: an error
+  and a `turn-end` per dropped job, for that child's lanes alone. Other
+  children never notice. The pool releases the dead child's lanes on the
+  `{state:'exited'}` event, so the next turn re-decides where those pages go —
+  the object stays in the pool, because chat.mjs leaves a dead child
+  restartable and a restartable child is capacity, not a corpse.
+- **Stranded turns and the ticker.** A stranded turn still emits `turn-end`, so
+  a round whose child died completes rather than spinning for ever. That was
+  already true and stays true.
+- **Restart.** A companion restart still eats every queued turn. A queue in
+  memory cannot fix that and this amendment does not pretend to. What it does
+  is stop `queue: 0` from being the only thing a reader can ask: GET `/health`
+  now also returns `queues` — one row per page with anything running or waiting
+  (`{url, running, queued}`) — and `bridges: {live, max, workspace}`. "Is MY
+  page's turn the one running or the one behind?" is now answerable.
+- **`/delete <sid>`.** Deleting a page's chat must reach the child that holds
+  that session in memory, not "some running child". `pool.controlFor(url, …)`
+  routes to the lane's holder and answers false when nobody holds it — in which
+  case no child owns the file and the companion removes it itself. Sharper than
+  what it replaced, not looser.
+
+#### 7. The honest gap
+
+Every child in the pool works in the same root and files under the same project
+("Plugin pages"). The session index and the project index are both `flock`'d
+and safe. The controller's **per-project scratch files are not**: `work/handoff-
+<model>.md` above all, plus `implementation-plan.md` and `checkpoint.md`, are
+scoped to the planning root rather than to a session, so two children relaying
+at the same moment can overwrite each other's handoff. It is rare (a relay
+needs a context ceiling and these turns are short) and it costs a relay rather
+than a transcript.
+
+**Designed, not built:** the fix belongs in the controller — scratch paths
+keyed by session id, and an mtime check in `SessionStore.save` that refuses a
+write over a newer file. `ProjectStore.set_status` is also the one unlocked
+read-modify-write in an otherwise locked module. None of that is on the plugin's
+side of the line and none of it is made worse by a bounded pool, so it is
+recorded here rather than half-done.
+
+#### 8. Configuration
+
+`config.json`, both clamped and both overridable by environment (the test
+escape hatch, `PLUGIN_BRIDGE_CMD`'s precedent):
+
+- `bridge_pool` (default **3**, 1–8, env `PLUGIN_BRIDGE_POOL`) — how many
+  children the plugin's own pool may run at once. Each is a python bridge with
+  a claude and a codex CLI under it, so this is a resource decision. `1` is the
+  pre-amendment world exactly. Project-artifact pages are not counted by it:
+  their child is per project and always has been.
+- `bridge_idle_ms` (default **15 min**, env `PLUGIN_BRIDGE_IDLE_MS`) — how long
+  a child beyond the first may sit idle before it is retired. `0` never
+  retires one.
+
+`readConfig()` was fixed on the way past: its first-run branch returned the raw
+defaults without normalizing them, so an environment override was honoured on
+every run but the first — which is the run a throwaway root always is.
+
+#### Testing
+
+`test/parallel.test.mjs` (23), in two halves:
+
+- **the dispatcher on a fake bridge**, every turn boundary a method call and
+  not a timer: a lane per page, a child per lane up to the cap, two turns on
+  one page serial on one child, no migration off a live child even with an idle
+  one beside it, sharing at the cap by fewest-lanes-then-shortest-queue,
+  `bridge_pool: 1` being yesterday, a death stranding only its own lanes,
+  reaping (and never the primary, and never a busy child, and never at all at
+  `idleMs: 0`), `controlFor` reaching one child and no other, a process-wide
+  setting reaching all of them, and the clamping.
+- **a real companion with several mock children**: two pages answering at once
+  while one page never does; `/health` naming whose turn runs and whose waits;
+  a cap of one being strictly serial; a child killed with `SIGKILL` stranding
+  its page and only its page while the other still gets its answer; two pages
+  in ONE project serial and two projects concurrent; a send-review round of
+  three comments staying ordered, counting straight and landing every answer in
+  its own thread while an unrelated article page is answered in the middle of
+  it; and a collateral edit attributed to the turn that made it with an
+  unrelated page's turn running for the whole of that turn.
+
+`test/mock-bridge.mjs` grew `MOCK_LOG_DIR` (one log per child, named by pid —
+a single log cannot answer "which child sent this"), pid-stamped session ids
+under it (two children both starting their counter at 1 is a collision the real
+controller cannot have), and `[mock:sleep:N]` for holding one turn open while
+another runs.
+
+`test/companion.test.mjs` runs at `PLUGIN_BRIDGE_POOL: '1'` throughout, and
+that is deliberate: almost every test in it is about what a single child is
+told and in what order, read off one shared log. It therefore remains the proof
+that the degenerate case still is what it was.
 
 ## Out of scope for v1 (do not build)
 

@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
+import { createPool } from './pool.mjs';
 import { exportPage, exportMode } from './export.mjs';
 import { createHosted, CORS_HEADERS, isLocalDirect } from './hosted.mjs';
 import { pageView, pagesView, articleView } from './views.mjs';
@@ -120,7 +121,18 @@ function sseOpen(res) {
 // A bot reply reaches the drawer only after it is on disk: the server owns
 // persistence, chat.mjs only reports what the bots said. So a /page refetch
 // after turn-end always agrees with what streamed.
-const chat = NO_AGENTS ? null : createChat({ onEvent: onChatEvent });
+//
+// …and it is a POOL, not a child. Ordinary pages used to share one bridge and
+// therefore one queue: a question on a blog post waited out a review round on a
+// paper. pool.mjs dispatches them — one lane per page, several lanes at once,
+// strictly serial inside a lane — and presents exactly the surface a single
+// bridge presented, so everything below this line reads as it always did.
+// `bridge_pool: 1` is the old behaviour, unchanged, on purpose.
+const chat = NO_AGENTS ? null : createPool({
+  onEvent: onChatEvent,
+  max: store.readConfig().bridge_pool,
+  idleMs: store.readConfig().bridge_idle_ms,
+});
 
 // --- the workspace bridges ------------------------------------------------
 // A project-artifact page (workspace.mjs) is not filed under "Plugin pages":
@@ -191,6 +203,28 @@ function workspaceChatFor(root, projectId, projectDir) {
 // page must never reach the "Plugin pages" bridge, and an ordinary page must
 // never reach a council's.
 //
+// ── THE LOCK TAXONOMY, IN ONE PLACE ───────────────────────────────────────
+// This function IS the dispatcher's outer rule, and there are exactly two
+// answers to it:
+//
+//   an ordinary page   → the pool (pool.mjs). Lane = the page. Turns on one
+//                        page are serial; turns on different pages run at the
+//                        same time, up to `bridge_pool`.
+//   a project artifact → that project's own child. Lane = the PROJECT, because
+//                        the lane and the child are the same thing here: one
+//                        (root, project) → one process → one FIFO. That is the
+//                        per-project WRITE LOCK, and it was already load-bearing
+//                        before parallelism existed (Phase 2 bakes the writable
+//                        directory into the child's environment at spawn).
+//
+// Everything that has to be attributed to a turn hangs off that second rule.
+// The collateral census (`noteTurnStart` → `reportProjectChanges`) snapshots a
+// PROJECT DIRECTORY and diffs it at turn-end; the send-review round ticker
+// counts turn boundaries on ONE PAGE. Both are safe under parallelism for the
+// same reason and by construction rather than by care: nothing that shares a
+// project directory can run concurrently, because a project is one child, and
+// nothing that shares a page can either, because a page is one lane.
+//
 // An UNCONFIRMED root falls back to no bridge at all: the reader has not yet
 // said that directory is theirs, and spawning a child against it is precisely
 // what the confirmation exists to gate.
@@ -210,6 +244,21 @@ const allChats = () => (chat ? [chat, ...workspaceChats.values()] : []);
 const pageBusy = url => allChats().some(c => c.busyFor && c.busyFor(url));
 const anyRunning = () => allChats().some(c => c.state() === 'running');
 const totalQueue = () => allChats().reduce((n, c) => n + c.queueLength(), 0);
+// Every turn the companion is holding, grouped by the page it is for — across
+// the pool and every council child. `running` is the turn that has the floor;
+// `queued` is what is behind it in that page's lane. See GET /health.
+function queueRows() {
+  const by = new Map();
+  for (const c of allChats()) {
+    for (const j of (c.jobs ? c.jobs() : [])) {
+      if (j.control || !j.url) continue;
+      const row = by.get(j.url) || { url: j.url, running: false, queued: 0 };
+      if (j.running) row.running = true; else row.queued++;
+      by.set(j.url, row);
+    }
+  }
+  return [...by.values()];
+}
 // a setting is process-wide inside a child, so it is imposed on every child
 // that is awake; the asleep ones read the same config.json when they spawn
 const controlAll = text => { for (const c of allChats()) c.control(text); };
@@ -831,8 +880,10 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     ...extras,
   });
   // `wait` is what the drawer says while it waits: bridge_starting (the agents
-  // are being woken) or busy (another chat has the floor). Absent = the turn is
-  // already running and turn-start is about to say so.
+  // are being woken), busy (this page's own previous turn still has the floor —
+  // a lane is serial by design) or pool_busy (every child is on somebody else's
+  // lane). Absent = the turn is already running and turn-start is about to say
+  // so.
   return { queued: true, position, ...(wait ? { wait } : {}) };
 }
 
@@ -1149,6 +1200,15 @@ export function handler(req, res) {
       // own or a council's), and one queue depth across all of them
       bridge: NO_AGENTS ? 'disabled' : (anyRunning() ? 'running' : chat.state()),
       queue: chat ? totalQueue() : 0,
+      // …and, since turns run several at a time, WHOSE. A single number could
+      // answer "is the companion idle?" and never "is MY page's turn the one
+      // running or the one waiting?" — which is the question a reader about to
+      // restart the companion is actually asking. One row per page with
+      // anything in flight or queued, newest state, control turns folded out
+      // (they belong to no page).
+      queues: chat ? queueRows() : [],
+      bridges: NO_AGENTS ? null
+        : { live: chat.size(), max: chat.cap(), workspace: workspaceChats.size },
       // hosted only: a remote extension has to know its own standing before it
       // can render (or gray out) the owner's controls
       ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),
@@ -1758,9 +1818,15 @@ export function handler(req, res) {
         // reader's own workspace beside everything else that project has ever
         // said; forgetting the PAGE must not destroy it. Phase 1 leaves it
         // exactly where it is.
+        // …and with a POOL it must be the child holding THIS page's lane, not
+        // any running child: only the one that drove this session has it in
+        // memory, and only that one would rewrite the file. `controlFor`
+        // answers false when no child holds the lane, which means nobody owns
+        // the file and we may remove it ourselves — a sharper answer than
+        // "some bridge is up", not a looser one.
         const owner = chatFor(page.url);
         if (owner && owner !== chat) session_deleted = false;
-        else if (chat && chat.state() === 'running') { chat.control(`/delete ${sid}`); session_deleted = true; }
+        else if (chat && chat.controlFor(page.url, `/delete ${sid}`)) session_deleted = true;
         else session_deleted = store.deleteSessionFile(sid);
       }
       store.deletePage(page.url);

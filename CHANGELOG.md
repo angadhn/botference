@@ -2,6 +2,23 @@
 
 ## 2026-08-24
 
+- **Discuss: the bots answer several pages at once.** A turn on one page used to
+  hold up every other page in the building: a question on an article queued
+  behind a twelve-comment review round on a draft, and a *send review* fan-out
+  froze the whole companion for minutes. Turns on different pages now run side
+  by side. What stays strictly in order is what has to: a page's own chat is one
+  conversation, and everything in one project takes its turn (they share a
+  folder the bots may write in, and the record of what changed in it). A review
+  round is unchanged — it is one page's conversation across many threads, so it
+  is answered in order, and its progress strip still counts straight while
+  something else is being answered elsewhere. Waiting now says which wait it is:
+  *queued behind this conversation…* when your own last message is still being
+  answered, *queued behind another chat…* when every agent is busy with somebody
+  else. How many run at once is `bridge_pool` in `config.json` (default 3; `1`
+  is exactly the old behaviour), and spare agents are retired after
+  `bridge_idle_ms` of quiet (default 15 minutes). `GET /health` now also lists
+  which pages have a turn running and which have one waiting.
+
 - **Council: a chat stays in the project you filed it under.** Every save used
   to stamp the chat with whatever project happened to be *open* at that moment,
   so chats quietly hopped between projects — and a second tab left open on

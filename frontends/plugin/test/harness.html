@@ -945,9 +945,10 @@ let queueDepth = 0;
 // with one thread working and the rest queued, not finished — see `&round=1`)
 let HOLD_QUEUE = Q.get('queued') === '1' || Q.get('round') === '1';
 // what the companion says it is WAITING FOR when it answers {queued:true} —
-// 'bridge_starting' (the agents are being woken) or 'busy' (another chat has
-// the floor). null = an older companion that says nothing, which must still
-// produce the plain "queued…" line.
+// 'bridge_starting' (the agents are being woken), 'busy' (this conversation's
+// own previous turn still has the floor) or 'pool_busy' (every agent is on
+// somebody else's page). null = an older companion that says nothing, which
+// must still produce the plain "queued…" line.
 let WAIT_REASON = null;
 window.__bfpQueue = {
   hold(on) { HOLD_QUEUE = !!on; },
@@ -3077,8 +3078,16 @@ async function selftest() {
   window.__bfpQueue.reason('busy');
   (await until(freeChat, 8000)).value = '@claude and this one behind it';
   chatSend().click();
-  check('a turn behind another chat says that instead',
-    !!await until(() => (/queued \(#2\)|behind another chat/.test(chatStatusText()) ? true : null), 6000));
+  check('a turn behind this conversation\u2019s own last one says that instead',
+    !!await until(() => (/queued \(#2\)|behind this conversation/.test(chatStatusText()) ? true : null), 6000));
+  // …and the OTHER wait, which the single queue could never tell apart from it:
+  // every agent in the building is on somebody else's page (SPEC "parallel
+  // turns"). Position wins over both when there is a queue to count.
+  window.__bfpQueue.reason('pool_busy');
+  (await until(freeChat, 8000)).value = '@claude and one more behind that';
+  chatSend().click();
+  check('a turn waiting on a free agent says that instead again',
+    !!await until(() => (/queued \(#\d\)|behind another chat/.test(chatStatusText()) ? true : null), 6000));
   // let the held turns run: a wait that never ends is the bug above, not this one
   window.__bfpQueue.hold(false);
   window.__bfpQueue.reason(null);

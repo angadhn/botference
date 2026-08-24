@@ -995,7 +995,17 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // asked to start: a cold bridge takes ten or twenty seconds to come up,
       // and a reader watching a flat "queued…" through all of it has no way to
       // tell the difference between starting and stuck.
-      const cold = !available || !ready;
+      //
+      // COLD is "there is no child yet, or it has not finished booting" —
+      // `running` flips on the child's startup `ready` and never flips back
+      // while it lives. It used to read `!ready`, which is false for the whole
+      // of every turn: a turn queued behind a live one said "waking the
+      // agents…" through the entire wait, and the 'busy' answer below was
+      // unreachable. That was survivable while one queue held everything and
+      // it is not now — with several children running, "waking" and "queued
+      // behind somebody" are different facts and the reader is owed the true
+      // one (pool.mjs refines the second into whose turn it is behind).
+      const cold = !available || !running;
       start();
       pump();
       const started = !!(current && current.job === mine);
@@ -1037,6 +1047,18 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     writeRoot: () => writeRoot,
     queueLength: () => queue.length + (current ? 1 : 0),
     currentUrl: () => (current ? current.job.url : null),
+    // WHAT THIS CHILD IS ACTUALLY HOLDING, in order: the turn in flight, then
+    // the ones behind it. A companion restart still eats every queued turn —
+    // that has not changed and is not something a queue in memory can fix — but
+    // with several children running at once "is the queue empty?" stopped being
+    // a question one number could answer for the page the reader is on. So
+    // /health can now name them, and a reader can see that THEIR page's turn is
+    // the one running rather than the one waiting.
+    jobs: () => [
+      ...(current ? [{ url: current.job.url, target: current.job.target,
+        control: !!current.job.control, running: true }] : []),
+      ...queue.map(j => ({ url: j.url, target: j.target, control: !!j.control, running: false })),
+    ],
     // whether THIS page has a turn in flight or waiting. server.mjs asks
     // before it refills a project artifact's mirror from the session file on
     // disk: a turn in flight owns the page chat, and rewriting it underneath

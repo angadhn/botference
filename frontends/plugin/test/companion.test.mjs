@@ -69,6 +69,15 @@ function startServer({ root, args = [], env = {} }) {
     env: {
       ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
       BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
+      // ONE BRIDGE CHILD, everywhere in this file. Almost every test here is
+      // about what a single child is told and in what order — the choreography,
+      // the envelope, the sid capture — and it reads that off one shared mock
+      // log. A pool would split those lines across processes and prove nothing
+      // it was written to prove. `bridge_pool: 1` is also the exact behaviour
+      // that shipped before the pool existed, so this file remains the proof
+      // that the degenerate case still is what it was.
+      // Parallelism itself is test/parallel.test.mjs.
+      PLUGIN_BRIDGE_POOL: '1',
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -263,7 +272,9 @@ async function main() {
   await test('health reports a stopped bridge before any mention', async () => {
     const r = await GET(base, '/health');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.json, { ok: true, bridge: 'stopped', queue: 0 });
+    assert.deepEqual(r.json, { ok: true, bridge: 'stopped', queue: 0, queues: [],
+      // the pool exists from the first moment; its child does not
+      bridges: { live: 1, max: 1, workspace: 0 } });
     assert.equal(fs.existsSync(logFile), false, 'bridge must not spawn before a bot turn');
   });
 
@@ -3714,7 +3725,8 @@ async function main() {
     const realRoot = tmpRoot('real');
     const real = await startServer({ root: realRoot });
     const health = await GET(real.base, '/health');
-    assert.deepEqual(health.json, { ok: true, bridge: 'stopped', queue: 0 });
+    assert.deepEqual(health.json, { ok: true, bridge: 'stopped', queue: 0, queues: [],
+      bridges: { live: 1, max: 1, workspace: 0 } });
     // a relay with nothing running must refuse rather than spawn the bridge
     const relay = await POST(real.base, '/relay', { agent: 'claude' });
     assert.equal(relay.status, 409);

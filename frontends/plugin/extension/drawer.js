@@ -40,8 +40,10 @@
 //   {ok:true, queued, position,   normal; the bots were summoned or not.
 //    wait}                        `wait` is WHY nothing has started yet —
 //                                 'bridge_starting' (the agents are being
-//                                 woken) or 'busy' (another chat has the
-//                                 floor) — and decides the words on the
+//                                 woken), 'busy' (this conversation's own
+//                                 previous turn still has the floor) or
+//                                 'pool_busy' (every agent is on somebody
+//                                 else's page) — and decides the words on the
 //                                 spinning wait line. Absent = under way.
 //   {ok:true, reason:'…'}         saved, but the bots will NOT run for this
 //                                 sender (a guest, or --no-agents) — shown at
@@ -4307,7 +4309,13 @@
     function waitText(res) {
       if (res.wait === 'bridge_starting') return 'waking the agents…';
       if (res.position > 1) return `queued (#${res.position})`;
-      if (res.wait === 'busy') return 'queued behind another chat…';
+      // Two different waits, since turns run several at a time. 'busy' is THIS
+      // conversation still talking — a page's chat is one session and its turns
+      // are serial on purpose. 'pool_busy' is every agent in the building taken
+      // by somebody else's page, which is the wait the old single queue used to
+      // give for both and could not tell apart.
+      if (res.wait === 'busy') return 'queued behind this conversation…';
+      if (res.wait === 'pool_busy') return 'queued behind another chat…';
       return 'queued…';
     }
     const bumpTurn = target => { D.turnSeq[target] = (D.turnSeq[target] || 0) + 1; };
