@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-08-20
+
+- **Default reasoning effort is now medium for both bots.** New council chats
+  (and plugin pages) start Claude and Codex at `medium` instead of `high`;
+  `OPENAI_REASONING_EFFORT`, the per-agent effort pickers and `/effort` still
+  override per chat.
+
 ## 2026-08-19
 
 - **Discuss: "send review" now answers in the comments.** The button used to

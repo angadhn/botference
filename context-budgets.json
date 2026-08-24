@@ -1,7 +1,7 @@
 {
   "plan": {
     "model": "claude-fable-5",
-    "effort": "high",
+    "effort": "medium",
     "max_tokens": 32768
   },
   "scout": {
