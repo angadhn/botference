@@ -1703,6 +1703,49 @@ console.log('\ncompanion — POST /send-review');
     }
   });
 
+  // ---- the round ticker ------------------------------------------------
+  // Per-comment re-renders hide the round. The strip that fixes that renders a
+  // state the COMPANION owns — it built the queue and sees every turn boundary
+  // — so the round survives a refresh, a reopened drawer and a second tab.
+  // These are the transitions that state has to make.
+  await test('the round is a thing with a length, and GET /round says so', async () => {
+    const r = (await GET(base, '/round?url=' + enc(a.url))).json.round;
+    assert.ok(r, 'a round that has run is still there to be asked about');
+    assert.equal(r.type, 'round');
+    assert.equal(r.total, 2, 'one entry per comment the round was sent to');
+    assert.equal(r.url, a.url);
+    assert.ok(r.started_at, 'stamped, so a stale round can be told from a live one');
+  });
+
+  await test('…and it ENDS: every turn answered, running false, the count complete', async () => {
+    await waitFor(async () => {
+      const r = (await GET(base, '/round?url=' + enc(a.url))).json.round;
+      return r && !r.running;
+    }, 'the round finishing');
+    const r = (await GET(base, '/round?url=' + enc(a.url))).json.round;
+    assert.equal(r.answered, 2, 'both comments answered');
+    assert.equal(r.current, null, 'nothing left in flight');
+    assert.ok(r.done_at, 'and an end stamp for the "round done" note');
+  });
+
+  await test('a page nobody sent a round on has no round', async () => {
+    const other = 'https://example.test/ordinary';
+    const r = (await GET(base, '/round?url=' + enc(other))).json.round;
+    assert.equal(r, null, 'null, not an empty round — the strip stays down');
+  });
+
+  await test('the round is owner-only, like the queue of agent time it describes', async () => {
+    const h = await startServer({
+      root: tmp('round-hosted'),
+      args: ['--hosted', '--no-agents'],
+      env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' },
+    });
+    const guest = { host: 'annotations.example', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
+    const g = await GET(h.base, '/round?url=' + enc(a.url), guest);
+    assert.equal(g.status, 403);
+    h.proc.kill();
+  });
+
   await test('the threads are left OPEN — resolution stays the reader\'s click', async () => {
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
     assert.equal(page.threads.length, 2);

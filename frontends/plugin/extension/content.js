@@ -1287,7 +1287,22 @@
     // where everything else that shows a name finds out about it
     announceTitle();
     bg({ t: 'badge', count: PAGE.threads.length });
+    // …and the review round, if one is running. The strip is fed by broadcast,
+    // which by definition says nothing about what happened before this tab was
+    // listening — so a tab that woke up (or reloaded, or resynced after the
+    // socket dropped) mid-round asks. Owner-only on the companion, so a guest
+    // simply gets nothing and the strip stays down.
+    loadRound();
     return PAGE;
+  }
+
+  // Deliberately not awaited by loadPage: the round is a nicety and must never
+  // hold up the record every other thing on the page is waiting for.
+  async function loadRound() {
+    if (!drawer) return;
+    const r = await api('GET', '/round?url=' + encodeURIComponent(URL_NOW));
+    if (!drawer) return;
+    drawer.setRound((r && r.ok && r.data && r.data.round) || null);
   }
 
   // The document arrived in pieces, and the pieces are still coming.

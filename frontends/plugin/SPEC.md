@@ -3323,6 +3323,209 @@ one the reader has left.
 the correct page record, the emptied record and its index row removed. Its
 council session was left on disk rather than deleted.
 
+### Amendment (2026-08-24, shipped): the diff heals the orphan it made
+
+Track changes moves a comment onto the passage a bot's change put there — but
+only where the bot **said so**. Rule 5's `now reads: "…"` is what the page has
+to locate against, and `store.reanchorThread` refuses anything else on purpose:
+a claim is not evidence that a wording is on the page.
+
+So the silent case fell through the floor, and it is not a rare one. A bot
+rewrites the passage a reader's comment is anchored to while working on some
+*other* comment, narrates nothing into that thread, and the reader comes back to
+their own comment on their own draft **pointing at nothing**: no highlight, no
+struck old wording, a card that says `orphaned` and stops there.
+
+The information to fix it already existed. The turn-end diff
+(`collateral.mjs`) holds the departed wording and the wording that replaced it,
+and it was already matching that pair against the reader's threads — using the
+answer only to keep quiet. `coveredBy`'s third branch treated "this change
+belongs to a thread the reader is looking at" as a reason to skip the region.
+True of the card. A lie about the page.
+
+**So the diff now routes into the thread instead of past it.**
+
+#### 1. Why the file may re-anchor and a sentence may not
+
+Worth stating plainly, because it looks like a hole in the `/reanchor` gate and
+is not one:
+
+> `/reanchor` is the PAGE's door. The companion has no DOM, so a bot's claim
+> about a wording is unverifiable there and could destroy an anchor that still
+> matched perfectly — the extension has to locate it first.
+>
+> This is the FILE's door. The diff did not claim the new wording is in the
+> document; it read the document's own bytes, before and after the turn, and
+> the wording came out of the "after". There is nothing left to prove, which is
+> also why the two paths cannot race: `coveredBy` runs first, so a thread that
+> narrated its change is left to the page, every time.
+
+`store.healThread(thread, {quote, prefix, suffix, deleted})` — companion-side
+only, **not exposed over HTTP**. No client asks for this: it happens at
+turn-end, from bytes on disk, or not at all. Same three-field result the
+narrated path produces, so nothing downstream can tell the difference.
+
+#### 2. The two shapes
+
+| the change | `quote` becomes | `prior_quote` | the card |
+| --- | --- | --- | --- |
+| **rewrite** | the wording that replaced the passage | the reader's own quoted passage | the ordinary before→after, on the reader's card |
+| **delete** | the surviving block next door (the diff already computes this anchor for a delete region) | the departed passage | `this passage was deleted` — `gone` / `now on`, never a word diff |
+
+A deletion drawn as a rewrite would read as an edit that never happened —
+"the sentence that left" word-diffed against "the paragraph that outlived it" is
+a replacement nobody made. `deleted_passage` is the one new field, and the one
+thing on the card it changes.
+
+#### 3. What the extension had to change: two things, both small
+
+The paint loop is untouched — `t.addressed && !t.resolved && t.prior_quote` is
+still the whole contract, so a healed thread paints struck-old-then-green-new
+with no new code at all. What changed in `drawer.js`:
+
+- `rewriteHtml` takes its "now" from `newWordingOf(t) || (t.auto || t.healed_at
+  ? t.quote : '')` — a healed thread is in an auto-thread's position (nobody
+  narrated it, so the quote IS the now);
+- …and returns the deleted card outright when `deleted_passage` is set, before
+  any diffing is attempted.
+
+The narration the bot never wrote is appended to the thread as a real message,
+by the agent that ran the turn — which is also what flips it amber
+(`appendMsg` sets `addressed` for an agent author), so it sorts into Ready for
+review with everything else the bots did.
+
+#### 4. The rules, and why each one is load-bearing
+
+- **`!t.auto`.** An auto-thread is the machine's note, not a reader's comment.
+  A second change to that passage is news to report (a fresh thread), not a
+  rewrite of the note — the case §4 of the collateral amendment has protected
+  since it shipped, and the reason healing is scoped to threads a person wrote.
+- **`!t.resolved`.** A filed thread is closed. Healing it would drag it back
+  onto the page under a green highlight nobody asked to move.
+- **No `addressed` requirement**, unlike the old skip branch. A thread nobody
+  answered is exactly the one at risk: the bots were working elsewhere and took
+  the passage with them.
+- **One heal per thread per turn**, so two regions cannot fight over one anchor.
+- **A healed region never also spawns an auto-thread.** Two cards and two
+  highlights over one change is the failure this whole feature exists to avoid.
+- **Heals are not capped and are never replaced by the summary note.** The cap
+  exists to stop the rail filling with threads nobody asked for; a heal adds no
+  row to the rail — it repairs one that is already there — and "the document
+  changed a lot" is no reason to leave a reader's comment pointing at nothing.
+- **Both granularities are matched.** `regionsFrom` narrows a one-block edit to
+  the words that moved (right for an auto-thread: "these words changed"), so
+  each edit region also carries the un-narrowed `whole` pair. Healing matches
+  on either — a four-word narrowing can fall under the 16-character overlap
+  floor — and **anchors with `whole`**, because a reader's comment was on the
+  whole passage and shrinking their highlight to a fragment would leave the
+  card diffing a sentence against a piece of one.
+
+#### Testing
+
+`test/collateral.test.mjs` (75 → 111 assertions): the unanswered orphan healed
+rather than stepped over; a narrated rewrite left to the page; a resolved
+thread and an auto-thread both refused (and the change reported on its own
+instead); the deletion anchoring to the survivor and marked; two changed places
+where only one is a heal; the bot's `also changed` line borrowed as the reason;
+and the composed record end to end — the paint contract satisfied,
+`prior_quote` written once across two heals, idempotence, and the refusal at
+the store.
+
+Harness **`?orphanheal=1&selftest=1`** (14 assertions) and
+**`?orphanheal=delete&selftest=1`** (16) drive it in a real DOM, with the page
+itself rewritten under the thread: the highlight back on the page, the struck
+passage immediately before it, the orphan badge gone, the card's diff (or the
+deleted card, which must draw no diff), no bot narration anywhere to parse,
+**`/reanchor` never posted**, and ✓ still taking it all down. Without
+`&selftest=1` both are screenshot states.
+
+#### Known limits (deliberate)
+
+- A heal borrows the diff's anchor, so a **trailing deletion** anchors to the
+  *preceding* block — the same limit the delete auto-thread already carries.
+- Attribution on an `@all` turn is the first agent of the turn, as everywhere
+  else here: the diff cannot tell which bot wrote which line.
+
+### Amendment (2026-08-24, shipped): the review round, as one visible thing
+
+Send review fans a round out into one turn per open comment. Each of those
+turns spins its own card and re-renders it when the answer lands — which is
+right for the card and useless for the round. Twenty comments in, the reader
+had no count, no position, and no way to tell "still working" from "finished
+and quiet". The footbar could not say it either: it reports the TURN in flight,
+which is one twentieth of the thing they started.
+
+**A second, persistent line, above the footbar, that belongs to the ROUND.**
+Same rail, same type, same 34px rhythm — they are two lines of one status
+region — with an accent left edge as the only thing separating them, because a
+reader glancing down needs to know which line answers "is it still going?".
+
+#### 1. The state is the companion's, and that is the whole design
+
+`rounds` (server.mjs): page url → `{pending, quotes, total, answered, current,
+started_at, done_at}`.
+
+The companion is what HAS the round. It built the queue in `/send-review`, it
+names the threads, and it sees every turn boundary. A drawer counting turns for
+itself would be wrong the moment a tab was refreshed, reopened, or opened
+second — and would have no idea what happened while it was not listening.
+
+- `startRound` fires in `/send-review` where the queue is known, so the strip
+  can say "0 of 12" while the preamble is still going out. The preamble turn is
+  deliberately not one of the twelve: it is the round announcing itself.
+- `roundTurn(ev, 'start'|'end')` hangs off the same `turn-start`/`turn-end`
+  events the census already uses, and only for a target in `pending`.
+- The round ends when `pending` empties. That **counts a stranded turn** —
+  `chat.mjs` emits `turn-end` for every job it drops when a bridge dies — which
+  is deliberate: the strip must not spin forever because a bridge fell over.
+- Broadcast as `{type:'round', …}` on every transition, and routed by the
+  background worker to the tabs showing that page, like every other event
+  carrying a url.
+- Kept `ROUND_KEEP_MS` (5 min) past the end, so a tab that was closed for the
+  last turn comes back to the outcome rather than to silence.
+
+**`GET /round?url=`** is the other half: a tab that woke mid-round asks, and the
+strip is right on its FIRST paint instead of appearing at the next turn
+boundary. Owner-only, like everything else about a round — it describes a queue
+of the owner's agent time.
+
+#### 2. What the strip says
+
+- in flight: `◐ answering comment 4 of 12  “the quote…”  3/12`
+- between turns: `◐ 3 of 12 answered · waiting for the next turn` — because
+  claiming a comment is being answered when none is would be a small lie
+- at the end: `✓ round done — 12 of 12 answered  ✕`
+
+**Naming the comment is the point of it.** "4 of 12" alone is a progress bar,
+and a progress bar is not what a reader wants here; the quote makes it a place,
+and clicking it focuses and scrolls to that thread through the same `onJump`
+the card's own quote uses. The label never truncates and the quote gives way
+first — "answering comment 2 o…" is worse than no strip at all.
+
+The done note is dismissible. A note that cannot be put away is a note that
+eventually gets ignored.
+
+#### 3. The drawer holds none of it
+
+`D.round` is the broadcast, stored verbatim; `paintRound()` is a pure function
+of it; `setRound()` is the `/round` answer arriving. Nothing is computed,
+inferred or counted in the tab — which is exactly why a refresh, a reopen and a
+second tab all agree.
+
+#### Testing
+
+`test/workspace.test.mjs` (116 → 120): the round's shape and length over the
+wire after a real fan-out against the mock bridge; the end state (running
+false, `answered === total`, `current` null, `done_at` stamped); a page with no
+round answering `null` rather than an empty round; and the owner gate.
+
+Harness **`?roundticker=1&selftest=1`** (16 assertions): the tab ASKING for the
+round it walked in on, the strip naming the length and the position, the
+spinner, the count, the comment named and clickable, clicking it focusing that
+card, a turn boundary moving it on and renaming it, the between-turns wording,
+the done note with its count, the spinner stopping, and the dismiss.
+`?roundticker=1` and `?roundticker=done` alone are the screenshot states.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

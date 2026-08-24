@@ -891,6 +891,56 @@ export function reanchorThread(thread, anchor) {
   return { ok: true, thread, changed: true };
 }
 
+// ---- healing an orphan from the turn-end diff -----------------------------
+//
+// `reanchorThread` above is the PAGE's door: a bot claimed a new wording, the
+// extension proved it is really in the document, and only then may the anchor
+// move. That gate exists because a claim is not evidence.
+//
+// This is the FILE's door, and it is a different question. The turn-end diff
+// (collateral.mjs) reads the artifact's own bytes before and after the turn. It
+// does not claim the new wording is on the page — it is holding the page. So
+// there is nothing left to prove, and the companion may write the anchor
+// itself. That is what lets a SILENT rewrite (no `now reads` line anywhere, so
+// nothing for the extension to locate) still be healed: the thread that would
+// have orphaned re-anchors onto the wording that replaced its passage and
+// paints struck-old-then-green-new like any other tracked change.
+//
+// Deletion has no replacement to anchor to, so the caller hands over the
+// surviving block next door (the diff computes it) and sets `deleted` — the
+// only new state here, and it exists so the card can say "this passage was
+// deleted" instead of drawing a before→after that would read as a rewrite it
+// was not.
+//
+// `prior_quote` follows the same rule it does everywhere: written ONCE. A
+// passage rewritten twice still has one original, and it is the only thing in
+// the record nothing can recover.
+//
+// Not exposed over HTTP. No client asks for this — it happens at turn-end, from
+// bytes on disk, or not at all.
+export function healThread(thread, { quote, prefix, suffix, deleted } = {}) {
+  if (!thread) return { ok: false, reason: 'unknown thread' };
+  // a filed thread is closed: dragging it back onto the page under a green
+  // highlight is not a repair, it is an unasked-for reopening
+  if (thread.resolved) return { ok: false, reason: 'thread is resolved' };
+  const next = String(quote || '').trim();
+  if (!next) return { ok: false, reason: 'no quote' };
+  // idempotent, like reanchorThread: a re-run of the same turn-end is not a
+  // second rewrite, and must not overwrite prior_quote with the new wording
+  if (looseSame(thread.quote, next)) return { ok: true, thread, changed: false };
+  if (!thread.prior_quote) thread.prior_quote = thread.quote;
+  thread.quote = next;
+  if (typeof prefix === 'string') thread.prefix = prefix.slice(-32);
+  if (typeof suffix === 'string') thread.suffix = suffix.slice(0, 32);
+  if (deleted) thread.deleted_passage = true; else delete thread.deleted_passage;
+  thread.healed_at = nowIso();
+  thread.reanchored_at = thread.healed_at;
+  // the anchor came out of the file that IS the page: whatever the record said
+  // about this thread being lost is stale
+  thread.orphaned = false;
+  return { ok: true, thread, changed: true };
+}
+
 // ---- resolving a thread -------------------------------------------------
 // A page collects comments faster than anybody works through them, so a thread
 // can be marked HANDLED: it leaves the drawer's main list for a collapsed

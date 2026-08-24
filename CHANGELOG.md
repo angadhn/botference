@@ -2,6 +2,46 @@
 
 ## 2026-08-24
 
+- **Council: a chat stays in the project you filed it under.** Every save used
+  to stamp the chat with whatever project happened to be *open* at that moment,
+  so chats quietly hopped between projects — and a second tab left open on
+  another project could re-file a chat it was not even showing. A chat now
+  remembers its own project, written once when you file it (`/file`,
+  `/project assign`, `/project open`, or at creation) and never inferred again.
+  Chats filed before this keep exactly where they are listed today. Archiving a
+  project no longer unfiles the chat you are sitting in either — the promise
+  that "its chats are untouched" is now true of that one too.
+
+- **Council: you say where a new chat goes, before it exists.** Every project
+  row in the sidebar has its own **＋ new chat**, which starts a chat filed
+  there with that project's files already in context — expanding a project used
+  to be purely decorative. The top **New / chat** button now asks first:
+  *File in: <project> / just a chat*. And an unfiled chat asks **before** your
+  first message goes out — "where should this go?", with the message still in
+  the box — instead of interrupting after it has already been sent.
+  `/new --project <id>` and `/new --inbox` are the same two choices from the
+  keyboard.
+
+- **Discuss: a comment whose passage was silently rewritten is repaired, not
+  orphaned.** When a bot rewrote (or deleted) the passage one of your comments
+  was anchored to while working on a *different* comment, and said nothing
+  about it in your thread, your comment lost its place: no highlight, no struck
+  old wording, just a card marked `orphaned`. The turn-end diff already knew
+  what had replaced it — it now puts that back into **your** thread, so the
+  comment moves onto the new wording with the old one struck through before it,
+  on your own card, exactly as a narrated change does. Where the passage was
+  deleted outright, the card says so and the comment settles onto the paragraph
+  that outlived it. A change absorbed this way no longer also opens a second
+  thread about itself.
+
+- **Discuss: a review round tells you how far along it is.** Send review answers
+  each comment in its own thread, which meant the round itself — the thing you
+  started — showed up nowhere: no count, no position, no end. A strip now sits
+  above the status line for as long as a round runs: *answering comment 4 of
+  12*, naming the comment being answered and scrolling to it when you click it,
+  finishing with *round done — 12 of 12 answered*. It lives on the companion,
+  so it survives a refresh, a reopened drawer and a second tab.
+
 - **Discuss: a comment thread remembers who it is talking to.** Tag `@claude`
   under a passage and the follow-up used to summon nobody at all — an untagged
   reply was a note to self, so every back-and-forth message meant retyping the

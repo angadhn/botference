@@ -1407,6 +1407,41 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .footbar .stop { margin-left: auto; flex: none; padding: 4px 10px; font-size: 12px; min-height: 26px }
 .footbar.err { color: var(--bad) }
 
+/* The review round, above the footbar and built like it — same rail, same
+   type, same 34px rhythm — because they are two lines of the same status
+   region. The accent left edge is the one thing that separates them: the
+   footbar is the turn in flight, this is the round that outlives it, and a
+   reader glancing down needs to know which line is answering "is it still
+   going?". */
+.roundbar {
+  flex: none; padding: 8px 14px; border-top: 1px solid var(--card-line);
+  border-left: 3px solid var(--accent);
+  background: var(--rail); font: 12px/1.4 var(--sans); color: var(--fg);
+  display: flex; align-items: center; gap: 8px; min-height: 34px; overflow: hidden;
+}
+.roundbar[hidden] { display: none }
+.roundbar .spin { flex: none; display: inline-block; animation: bfp-spin 1s linear infinite; color: var(--accent) }
+/* the label never gives way — "answering comment 2 of 12" truncated to
+   "answering comment 2 o…" is worse than no strip at all. Only the quote
+   shrinks (it is the one part with a natural "…and the rest is on the page"). */
+.roundbar .rtext { flex: none; white-space: nowrap }
+/* the quote is the only elastic thing on the line: it gives way first, so the
+   count and the spinner never wrap onto a second row */
+.roundbar .rjump {
+  flex: 1 1 auto; min-width: 0; text-align: left; border: 0; background: none;
+  padding: 0; color: var(--muted); font: italic 12px/1.4 var(--serif);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.roundbar .rjump:hover { color: var(--accent); text-decoration: underline }
+.roundbar .rcount { margin-left: auto; flex: none; color: var(--muted); font-variant-numeric: tabular-nums }
+.roundbar.done { border-left-color: var(--done) }
+.roundbar.done .rtick { flex: none; color: var(--done) }
+.roundbar .rdismiss {
+  margin-left: auto; flex: none; border: 0; background: none; color: var(--muted);
+  padding: 2px 6px; font-size: 12px; min-height: 24px; cursor: pointer;
+}
+.roundbar .rdismiss:hover { color: var(--fg) }
+
 @keyframes bfp-spin { to { transform: rotate(360deg) } }
 @keyframes bfp-blink { 50% { opacity: 0 } }
 
@@ -1414,3 +1449,13 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .pane::-webkit-scrollbar, .stream-text::-webkit-scrollbar { width: 9px }
 .pane::-webkit-scrollbar-thumb, .stream-text::-webkit-scrollbar-thumb {
   background: var(--card-line); border-radius: 8px }
+
+/* A DELETED passage is not a rewrite, and the card must not read like one.
+   Its heading carries the removed tint (there is no arrival to balance it),
+   the label column widens because "now on" is wider than "was", and the
+   surviving paragraph the comment moved onto is NOT struck — it is the one
+   thing on this card that is still in the document. */
+.wasnow[data-deleted] { border-color: color-mix(in srgb, var(--bad) 35%, var(--card-line)) }
+.wasnow[data-deleted] .wnhead { color: var(--bad) }
+.wasnow[data-deleted] .wnlab { width: 42px }
+.wasnow[data-deleted] .wnrow + .wnrow .wnval { color: var(--fg); text-decoration: none }

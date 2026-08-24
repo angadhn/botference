@@ -173,7 +173,8 @@ const after3 = doc('Head paragraph stays.', 'The report called it a failure of o
 }
 {
   // the same edit, NOT narrated: the reader's own thread sits on the wording
-  // that just left and a bot answered it this turn — the change belongs there
+  // that just left and a bot answered it this turn. The change belongs to that
+  // thread — and is HEALED into it rather than merely skipped (§5 below).
   const page = { threads: [{
     id: 't1',
     quote: 'The report called it a structural failure of oversight.',
@@ -181,7 +182,9 @@ const after3 = doc('Head paragraph stays.', 'The report called it a failure of o
     msgs: [{ author: 'claude', ts: '2026-08-19T10:01:00.000Z', text: 'Fixed it.' }],
   }] };
   const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z' });
-  eq('an answered thread on the old wording covers the change', plan.threads.length, 0);
+  eq('an answered thread on the old wording spawns no second thread', plan.threads.length, 0);
+  eq('…the change is routed into it instead', plan.heals.length, 1);
+  eq('…named by id', plan.heals[0].thread_id, 't1');
 }
 {
   // …and the case that must NOT be suppressed: an auto-thread from an earlier
@@ -334,6 +337,141 @@ console.log('\nthe record content.js paints from');
   store.setAddressed(t, false);
   eq('…and "not done" puts it back in, like any other ready thread',
     ws.openThreads(page).length, 1);
+}
+
+
+// ---- 5. healing an orphan -------------------------------------------------
+//
+// The case the whole of §5 is about: a bot silently rewrites (or deletes) the
+// passage a READER's comment is anchored to and says nothing about it. There is
+// no `now reads` line, so the page has nothing to locate; the thread's quote is
+// no longer in the document and the card reads "orphaned". The diff knows what
+// replaced it, so the thread is re-anchored from the file rather than left
+// pointing at nothing — and the region that healed it must NOT also spawn an
+// auto-thread, which would be two cards for one change.
+console.log('\nhealing — the reader\'s own comment, silently rewritten');
+const QUOTE = 'The report called it a structural failure of oversight.';
+const reader = (over = {}) => ({
+  id: 't1', quote: QUOTE,
+  msgs: [{ author: 'angadh', ts: '2026-08-19T10:00:00.000Z', text: 'is "structural" fair?' }],
+  ...over,
+});
+{
+  // nobody answered the thread at all — the bots were working somewhere else
+  // and took this passage with them. The old dedupe required `addressed` and
+  // let exactly this case fall through to a stranger's auto-thread.
+  const page = { threads: [reader()] };
+  const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z', who: '@claude' });
+  eq('an unanswered orphan is healed, not stepped over', plan.heals.length, 1);
+  eq('…and spawns no auto-thread of its own', plan.threads.length, 0);
+  const h = plan.heals[0];
+  eq('the new anchor is the wording that replaced it',
+    h.quote, 'The report called it a failure of oversight by the board.');
+  check('it is not a deletion', h.deleted === false);
+  check('the note says who did it and that nothing was said here',
+    /@claude/.test(h.text) && /without saying so in this thread/.test(h.text));
+  check('…and never the phrase rule 5 owns, which would set it re-anchoring itself',
+    !/now reads/i.test(h.text));
+}
+{
+  // a bot DID narrate it: the page has proof and re-anchors itself through
+  // /reanchor. The companion must keep its hands off that thread's anchor.
+  const page = { threads: [reader({
+    addressed: true,
+    msgs: [{ author: 'claude', ts: '2026-08-19T10:01:00.000Z',
+      text: 'done — this passage now reads: "The report called it a failure of oversight by the board."' }],
+  })] };
+  const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z' });
+  eq('a narrated rewrite is left to the page', plan.heals.length, 0);
+  eq('…and still spawns nothing', plan.threads.length, 0);
+}
+{
+  // a FILED thread is closed. Healing it would drag it back onto the page
+  // under a green highlight nobody asked to move.
+  const page = { threads: [reader({ resolved: true })] };
+  const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z' });
+  eq('a resolved thread is never healed', plan.heals.length, 0);
+  eq('…and the change is reported on its own instead', plan.threads.length, 1);
+}
+{
+  // an auto-thread is the machine's note, not a reader's comment. A second
+  // change to that passage is news to report, not a rewrite of the note —
+  // the case the dedupe comment has protected since the feature shipped.
+  const page = { threads: [reader({ id: 'auto1', auto: true, addressed: true })] };
+  const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z' });
+  eq('an auto-thread is not healed', plan.heals.length, 0);
+  eq('…the second change gets its own thread', plan.threads.length, 1);
+}
+{
+  // DELETION: nothing replaced the passage, so there is nothing to re-anchor
+  // ONTO — the thread borrows the surviving block next door and is marked, so
+  // the card can say the passage was deleted rather than draw a rewrite.
+  const beforeD = doc('Head paragraph stays.', QUOTE, 'Tail paragraph stays.');
+  const afterD = doc('Head paragraph stays.', 'Tail paragraph stays.');
+  const page = { threads: [reader()] };
+  const plan = C.collateral(beforeD, afterD, page, { since: '2026-08-19T09:59:00.000Z', who: '@codex' });
+  eq('the deletion is routed into the reader\'s thread', plan.heals.length, 1);
+  const h = plan.heals[0];
+  check('marked as a deletion', h.deleted === true);
+  eq('anchored to the block that outlived it', h.quote, 'Tail paragraph stays.');
+  check('and the note says so in those words', /DELETED/.test(h.text));
+  eq('no auto-thread doubles it', plan.threads.length, 0);
+}
+{
+  // two changed places, one thread. The heal is claimed once; the other place
+  // is a change nobody commented on and gets the thread it always got.
+  const b = doc('Head paragraph stays.', QUOTE, 'Untouched prose in between.',
+    'A second untouched paragraph.', 'Tail stays.');
+  const a = doc('Head paragraph stays.', 'The report called it a failure of oversight by the board.',
+    'Untouched prose in between.', 'A second paragraph, rewritten entirely by the bots.', 'Tail stays.');
+  const page = { threads: [reader()] };
+  const plan = C.collateral(b, a, page, { since: '2026-08-19T09:59:00.000Z' });
+  eq('one heal', plan.heals.length, 1);
+  eq('…and one ordinary auto-thread for the place nobody commented on', plan.threads.length, 1);
+  check('which is the OTHER passage, not the healed one',
+    /rewritten entirely by the bots/.test(plan.threads[0].quote));
+}
+{
+  // a bot's "also changed" line elsewhere on the page explains the rewrite
+  // better than the standing text does, so the heal borrows it
+  const page = {
+    threads: [reader()],
+    page_chat: [{ author: 'claude', ts: '2026-08-19T10:01:00.000Z',
+      text: 'also changed — this passage now reads: "The report called it a failure of oversight by the board." because the claim above no longer held' }],
+  };
+  const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z' });
+  eq('still one heal', plan.heals.length, 1);
+  check('carrying the bot\'s own sentence rather than the standing text',
+    /also changed/.test(plan.heals[0].text));
+}
+{
+  // end to end against the record, which is what content.js actually paints
+  // from: `addressed && !resolved && prior_quote`
+  const page = { url: 'file:///x/index.html', threads: [reader()], page_chat: [] };
+  const plan = C.collateral(before3, after3, page, { since: '2026-08-19T09:59:00.000Z', who: '@claude' });
+  const t = page.threads[0];
+  const done = store.healThread(t, plan.heals[0]);
+  check('the heal applies', done.ok && done.changed);
+  store.appendMsg(page, t.id, { author: 'claude', text: plan.heals[0].text });
+  eq('the anchor is the new wording', t.quote, 'The report called it a failure of oversight by the board.');
+  eq('prior_quote is the reader\'s original passage', t.prior_quote, QUOTE);
+  check('no longer orphaned', t.orphaned === false);
+  check('addressed — the amber middle state, from the appended note', !!t.addressed && !t.resolved);
+  check('the paint contract content.js reads is satisfied',
+    !!(t.addressed && !t.resolved && t.prior_quote));
+  check('healed_at is stamped', typeof t.healed_at === 'string' && t.healed_at.length > 0);
+  check('it is still the READER\'S thread, never marked auto', t.auto === undefined);
+  // …and prior_quote is written ONCE: a passage rewritten twice still has one
+  // original, and it is the only thing here nothing can recover
+  store.healThread(t, { quote: 'Something else entirely, later on.' });
+  eq('a second heal leaves the original alone', t.prior_quote, QUOTE);
+  eq('…while the anchor follows the document', t.quote, 'Something else entirely, later on.');
+  // idempotence: a re-run of the same turn-end is not a second rewrite
+  const again = store.healThread(t, { quote: 'Something else entirely, later on.' });
+  check('healing to the wording already there changes nothing', again.ok && !again.changed);
+  // and a filed thread refuses at the store as well as in the plan
+  store.setResolved(t, true, 'angadh');
+  check('a resolved thread refuses to be healed', store.healThread(t, { quote: 'x y z' }).ok === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

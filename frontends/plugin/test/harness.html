@@ -136,6 +136,26 @@
                      the arrival underline and the card's before→after all have
                      to appear with no narration to parse and no /reanchor
                      posted. `&selftest=1` runs those assertions.
+    ?orphanheal=1    ORPHAN HEALING: a bot rewrote the passage the READER'S own
+                     comment was anchored to and said nothing about it, so
+                     there is no "now reads" line to locate and the thread
+                     would simply orphan. The companion's turn-end diff routed
+                     the change into that thread instead (collateral.healableBy
+                     → store.healThread), so the reader's own card carries the
+                     struck old wording and the amber highlight — with no
+                     /reanchor posted, because the file was the witness.
+    ?orphanheal=delete  …and the other half: nothing replaced the passage, so
+                     the comment sits on the surviving paragraph next door and
+                     the card says the passage was DELETED rather than drawing
+                     a rewrite that never happened. `&selftest=1` runs the
+                     assertions for either.
+    ?roundticker=1   a send-review ROUND in flight: the persistent strip above
+                     the footbar saying which comment of how many is being
+                     answered, naming it and linking to it. The state is the
+                     companion's and arrives by broadcast (and by GET /round on
+                     wake), which is what makes it survive a refresh.
+    ?roundticker=done  …and the "round done — N answered" note it ends with.
+                     `&selftest=1` drives the whole sequence.
     ?norun=1         the companion with run_python switched off, or a guest:
                      no Run button anywhere
     ?sending=1       a message sent and still in flight: the optimistic pending
@@ -1235,6 +1255,90 @@ if (COLLEDIT) {
   });
 }
 
+// ?orphanheal=1 — ORPHAN HEALING. A bot rewrote the passage a READER'S OWN
+// comment was anchored to and said nothing about it: no rule-5 "now reads"
+// sentence anywhere on the page, so there is nothing for the extension to
+// locate and the thread would simply say "orphaned". The companion's turn-end
+// diff knew what replaced it (collateral.mjs healableBy) and wrote the repair
+// straight into the reader's thread — prior_quote = what they had quoted,
+// quote = what stands there now, addressed, healed_at.
+//
+// So this pose is the claim that healing needs no new paint path: the SAME
+// three fields content.js already reads produce the struck old wording, the
+// arrival underline and the amber highlight, on the reader's own card, with
+// no /reanchor ever posted.
+//
+// ?orphanheal=delete is the other half: nothing replaced the passage, so the
+// thread borrows the surviving paragraph next door and is marked
+// `deleted_passage` — the card must say the passage was deleted rather than
+// draw a before→after that would read as a rewrite that never happened.
+const HEALMODE = Q.get('orphanheal');
+const HEAL = HEALMODE === '1' || HEALMODE === 'delete';
+const HEAL_ID = 't-1754500100-c3d4';   // the reader's own thread, thread #2
+const HEAL_WAS = 'called it a structural failure of oversight';
+const HEAL_NOW = 'called it a failure of oversight by the board';
+// the paragraph that outlived a deletion — real text on this page, and the
+// block that follows the sentence the diff removed
+const HEAL_SURVIVOR = 'It is the kind of sentence that survives a season and outlives a manager.';
+if (HEAL) {
+  const t = RECORD.threads.find(x => x.id === HEAL_ID);
+  const deleted = HEALMODE === 'delete';
+  t.prior_quote = HEAL_WAS;
+  t.quote = deleted ? HEAL_SURVIVOR : HEAL_NOW;
+  t.prefix = deleted ? 'failure of oversight,' : 'The report';
+  t.suffix = deleted ? 'and outlives a manager.' : ', which is the kind';
+  t.orphaned = false;
+  t.healed_at = iso(2);
+  t.reanchored_at = iso(2);
+  if (deleted) t.deleted_passage = true;
+  // …and the PAGE has to agree, because that is the whole claim: the healed
+  // anchor is text the document really carries now. Without this the thread
+  // would locate nothing and orphan again, which is the failure this pose
+  // exists to rule out.
+  if (deleted) {
+    rewritePassage(
+      'The report called it a structural failure of oversight, which is the kind of '
+      + 'sentence that survives a season and outlives a manager.', HEAL_SURVIVOR);
+  } else {
+    rewritePassage(HEAL_WAS, HEAL_NOW);
+  }
+  t.addressed = true; t.addressed_at = iso(2); t.addressed_by = 'claude';
+  t.msgs.push({ author: 'claude', ts: iso(2),
+    text: deleted
+      ? '✎ @claude DELETED the passage this comment is on, while working on the document — '
+        + 'nothing replaced it, and nothing was said about it here. The comment now sits on the '
+        + 'passage that follows the hole, with the deleted wording struck through before it. '
+        + '✓ files this thread; ↺ puts it back in the open list.'
+      : '✎ @claude rewrote the passage this comment is on, while working on the document, '
+        + 'without saying so in this thread. The comment has moved onto the new wording; what it '
+        + 'replaced is struck through on the page and in the card above. '
+        + '✓ files this thread; ↺ puts it back in the open list.' });
+}
+
+// ?roundticker=1 — the review round as ONE visible thing. Send review fans out
+// into a turn per comment, and each of those re-renders its own card; the
+// round itself — the thing the reader started — had no representation at all.
+// The strip renders state the COMPANION owns and broadcasts, which is what
+// makes it survive a refresh (the /round fetch above) and a second tab.
+//
+// ?roundticker=done is the end of it: the "round done — N answered" note that
+// a tab which was closed for the last turn still comes back to.
+const TICKMODE = Q.get('roundticker');
+const TICKER = TICKMODE === '1' || TICKMODE === 'done';
+let roundGets = 0;
+let ROUND = null;
+const roundEvent = over => Object.assign({
+  type: 'round', url: PAGE_URL, running: true, total: 3, answered: 1,
+  current: 't-1754500100-c3d4',
+  current_quote: 'called it a structural failure of oversight',
+  started_at: iso(4), done_at: null,
+}, over || {});
+if (TICKER) {
+  ROUND = TICKMODE === 'done'
+    ? roundEvent({ running: false, answered: 3, current: null, current_quote: '', done_at: iso(1) })
+    : roundEvent();
+}
+
 const MORE = Q.get('more') === '1' || Q.get('more') === 'open';
 if (MORE) {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(10),
@@ -1578,6 +1682,14 @@ function companion(method, path, body) {
       omitted: 0, queued: 1 + turns.length, threads: turns.map(t => t.thread_id) } };
   }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
+  // The review round in flight, as the COMPANION sees it. A tab that woke up
+  // mid-round asks here rather than waiting for the next turn boundary — which
+  // is the whole reason the round's state lives on the companion and not in
+  // the drawer.
+  if (method === 'GET' && route === '/round') {
+    roundGets++;
+    return { ok: true, status: 200, data: { round: ROUND } };
+  }
   // the library is an ordinary page record on a reserved url — the companion
   // creates it on the first message and answers {page:null} until then
   if (method === 'GET' && route === '/page' && askedUrl(path) === LIBRARY_URL) {
@@ -6340,6 +6452,157 @@ async function selftestMore() {
   console.log(out.join('\n'));
 }
 
+// ?orphanheal=1&selftest=1 — ORPHAN HEALING, in a real DOM.
+//
+// The failure it rules out: a bot rewrites the passage a READER'S comment is
+// anchored to and says nothing about it. There is no rule-5 sentence, so the
+// extension has nothing to locate, and the thread's own quote is no longer in
+// the document — the card reads "orphaned" and the reader's comment points at
+// nothing. The companion's turn-end diff knew what replaced it, so it wrote
+// the repair straight into the thread.
+//
+// What is being proved is that the repair needs NO new paint path: the same
+// `addressed && !resolved && prior_quote` contract already in content.js puts
+// the struck old wording, the arrival underline and the amber highlight on the
+// reader's own card — and no /reanchor is ever posted, because the file was
+// the witness and the page had nothing left to prove.
+async function selftestOrphanHeal() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const wasFor = id => document.querySelector('del.bfp-was[data-bfp="' + id + '"]');
+  const deleted = HEALMODE === 'delete';
+  try {
+  const reanchors = reanchorPosts.length;
+  const anchorText = deleted ? HEAL_SURVIVOR : HEAL_NOW;
+
+  check('the healed comment has a place on the page again — it is not orphaned',
+    !!await until(() => markFor(HEAL_ID), 8000));
+  check('…anchored to text the document really carries now',
+    markFor(HEAL_ID).textContent.replace(/\s+/g, ' ').trim().includes(anchorText.slice(0, 40)));
+  check('…in the amber "ready for review" tint: a bot has been here, your turn',
+    markFor(HEAL_ID).classList.contains('bfp-ready'));
+  check('the wording that left is struck through', !!wasFor(HEAL_ID));
+  check('…immediately before it, which is where it was',
+    wasFor(HEAL_ID) && wasFor(HEAL_ID).nextSibling === markFor(HEAL_ID));
+  check('…and it is the READER’S own quoted passage, kept whole',
+    wasFor(HEAL_ID) && wasFor(HEAL_ID).textContent.trim() === HEAL_WAS);
+  check('the card is not wearing the orphan badge any more',
+    !cardFor(HEAL_ID).querySelector('.orphan-badge'));
+
+  // the point of the whole design: no sentence was parsed and no anchor was
+  // asked for — the diff had already proved it
+  check('no bot claimed a new wording in this thread',
+    !/now reads/i.test((RECORD.threads.find(t => t.id === HEAL_ID).msgs || [])
+      .map(m => m.text).join(' ')));
+  check('…so the page never posted /reanchor', reanchorPosts.length === reanchors);
+
+  if (deleted) {
+    check('the card says the passage was DELETED, not that it was rewritten',
+      /this passage was deleted/i.test(cardFor(HEAL_ID).textContent));
+    check('…and never draws a before→after that would read as an edit',
+      !cardFor(HEAL_ID).querySelector('.wasnow .wndiff'));
+    check('…showing the wording that is gone',
+      cardFor(HEAL_ID).textContent.includes(HEAL_WAS));
+    check('…and naming the surviving passage it now sits on',
+      cardFor(HEAL_ID).textContent.includes(HEAL_SURVIVOR.slice(0, 30)));
+  } else {
+    check('the card draws the before→after from the reader’s own original',
+      !!cardFor(HEAL_ID).querySelector('.wasnow')
+      && cardFor(HEAL_ID).textContent.includes('structural'));
+    check('the arrival carries Word’s insertion underline',
+      markFor(HEAL_ID).classList.contains('bfp-ins'));
+  }
+  check('…and it is still a live conversation, with the reader’s reply box',
+    !!cardFor(HEAL_ID).querySelector('.composer textarea'));
+  check('the note explains itself in the reader’s own thread',
+    /without saying so in this thread|nothing was said about it here/i
+      .test(cardFor(HEAL_ID).textContent));
+
+  // ✓ is still the reader's, exactly as it is for every other ready thread
+  cardFor(HEAL_ID).querySelector('[data-act="resolve"]').click();
+  check('filing it takes the struck wording down with it',
+    !!await until(() => !wasFor(HEAL_ID) && markFor(HEAL_ID)
+      && markFor(HEAL_ID).classList.contains('bfp-done'), 6000));
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (orphanheal) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?roundticker=1&selftest=1 — the round as one visible thing.
+//
+// Send review fans out into a turn per comment, and each of those re-renders
+// its own card; nothing anywhere said how long the round was, where in it the
+// bots had got to, or that it had ended. The strip does — from state the
+// COMPANION owns, which is what makes it survive a refresh and a second tab.
+async function selftestRoundTicker() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const bar = () => S.querySelector('.roundbar');
+  try {
+  // the tab woke up mid-round, so it ASKED — nothing here was inferred from a
+  // broadcast this tab was not listening for
+  check('the tab asked the companion for the round it walked in on', roundGets > 0);
+  check('the strip is showing', !!await until(() => bar() && !bar().hidden, 8000));
+  check('…naming the round’s length and where the bots have got to',
+    /answering comment 2 of 3/.test(bar().textContent));
+  check('…with a spinner, because it is still going', !!bar().querySelector('.spin'));
+  check('…and a running count', /1\/3/.test(bar().textContent));
+  check('the comment being answered is NAMED, not just numbered',
+    /structural failure of oversight/.test(bar().textContent));
+
+  // …and it is a place: clicking it goes there
+  const jump = bar().querySelector('[data-act="round-jump"]');
+  check('the named comment is clickable', !!jump);
+  jump.click();
+  check('…and clicking it focuses that thread’s card',
+    !!await until(() => S.querySelector('.card.focused[data-thread="' + HEAL_ID + '"]'), 3000));
+
+  // the next turn boundary, as the companion reports it
+  d.onEvent(roundEvent({ answered: 2, current: 't-1754500200-e5f6',
+    current_quote: 'Aragon were relegated in April' }));
+  check('a turn boundary moves the strip on',
+    !!await until(() => /answering comment 3 of 3/.test(bar().textContent), 3000));
+  check('…and renames the comment with it',
+    /relegated in April/.test(bar().textContent));
+
+  // between turns there is nothing in flight, and the strip says what is TRUE
+  d.onEvent(roundEvent({ answered: 3, current: null, current_quote: '' }));
+  check('between turns it does not claim a comment is being answered',
+    !!await until(() => !/answering comment/.test(bar().textContent), 3000));
+  check('…it says what is true instead', /waiting for the next turn/.test(bar().textContent));
+
+  // the end
+  d.onEvent(roundEvent({ running: false, answered: 3, current: null, current_quote: '', done_at: now() }));
+  check('the round ends with a plain note', !!await until(() => /round done/.test(bar().textContent), 3000));
+  check('…saying how many were answered', /3 of 3 answered/.test(bar().textContent));
+  check('…and the spinner stops', !bar().querySelector('.spin'));
+  bar().querySelector('[data-act="round-dismiss"]').click();
+  check('…and it can be put away', !!await until(() => bar().hidden, 3000));
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (roundticker) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?colledit=1&selftest=1 — the edits nobody commented on.
 //
 // A bot asked to fix one passage often has to follow the change out into the
@@ -6872,6 +7135,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
+        : HEAL ? selftestOrphanHeal : TICKER ? selftestRoundTicker
         : READY ? selftestReady : selftest, 250);
       return;
     }

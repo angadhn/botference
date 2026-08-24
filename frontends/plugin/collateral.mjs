@@ -314,6 +314,19 @@ export function regionsFrom(beforeHtml, afterHtml) {
       old: fold(n.old),
       prefix: ctxBefore(after, h.newStart, n.prefix),
       suffix: ctxAfter(after, h.newEnd, n.suffix),
+      // The un-narrowed pair, kept beside the narrowed one because HEALING
+      // needs the other granularity. An auto-thread is announcing "these words
+      // moved", so the tight quote is right. A heal is moving a READER'S
+      // comment, which was on the whole passage — re-anchoring it to a
+      // four-word fragment would shrink their highlight and leave the card
+      // diffing a whole sentence against a fragment of one, which reads as a
+      // deletion that never happened.
+      whole: {
+        quote: clipQuote(newText),
+        old: fold(oldText),
+        prefix: ctxBefore(after, h.newStart, ''),
+        suffix: ctxAfter(after, h.newEnd, ''),
+      },
     });
   }
   // …and the other reading of "extensive": most of the document is not the
@@ -369,9 +382,97 @@ export function coveredBy(region, threads) {
     if (!t) continue;
     if (covers(newWording(t), region.quote)) return t;
     if (covers(t.quote, region.quote)) return t;
-    if (!t.auto && !t.resolved && t.addressed && region.old && covers(t.quote, region.old)) return t;
   }
   return null;
+}
+
+// ---- healing an orphan ----------------------------------------------------
+//
+// THE GAP: a bot rewrites (or deletes) the passage a READER's comment is
+// anchored to, and says nothing about it — no rule-5 `now reads` line, so the
+// page has nothing to re-anchor with. The thread's quote is not on the page any
+// more, the highlight cannot be painted, and the card says "orphaned". The
+// reader's own comment, on their own draft, pointing at nothing.
+//
+// Before this, the turn-end diff KNEW. It had the departed wording and the
+// wording that replaced it, matched the pair against the thread, and used that
+// knowledge only to keep quiet — the old third branch of `coveredBy` skipped
+// the region as "the reader is already looking at it", which was true of the
+// card and a lie about the page.
+//
+// So the diff now routes into the thread instead of past it. The pair it holds
+// is the pair `prior_quote`/`quote` are FOR:
+//
+//   rewrite — the region's old text is (or contains) the thread's quote, and
+//             something replaced it. The thread re-anchors onto the new
+//             wording with the old one as `prior_quote`, and paints struck-old-
+//             then-green-new on the READER'S OWN CARD, exactly as a narrated
+//             rewrite does. Same three fields, same paint loop, no new state.
+//   delete  — nothing replaced it. The region already carries the anchor for
+//             this case (the surviving block next door), so the thread borrows
+//             it and is marked `deleted_passage`: the card says the passage was
+//             deleted and the page strikes it through before the paragraph that
+//             outlived it.
+//
+// WHY THE FILE MAY DO THIS AND A SENTENCE MAY NOT. `/reanchor` is deliberately
+// the page's job: a bot's claim about a wording is not evidence the wording is
+// on the page, so the extension has to locate it first. A diff is not a claim.
+// The new text here came out of the file's own bytes, so "is it on the page?"
+// is not an open question — which is why this path needs no browser and cannot
+// race the browser one.
+//
+// The rules, and each is load-bearing:
+//   · `!t.auto` — an auto-thread from an earlier turn is the machine's note,
+//     not a reader's comment, and a second change to that passage is news to
+//     report (a fresh thread) rather than a rewrite of the note.
+//   · `!t.resolved` — a filed thread is closed. Re-anchoring it would drag it
+//     back onto the page under a green highlight nobody asked to move.
+//   · the region must have OLD text, and the thread's quote must be covered by
+//     it. Coverage either way, like everywhere else here: a comment on one
+//     sentence of a rewritten paragraph is about the passage that left.
+//   · one heal per thread per turn — two regions cannot fight over one anchor.
+//
+// Order matters and is the caller's: `coveredBy` runs FIRST. A thread that
+// narrated the change re-anchors from the page (which has proof), and a thread
+// already sitting on the new text needs nothing at all.
+export function healableBy(region, threads, used) {
+  if (!region || !region.old) return null;
+  // Both granularities of "what left": the narrowed words, and the whole block
+  // they sat in. A reader quoting a sentence and a diff narrowing that sentence
+  // to four words are talking about the same passage, but the four words can
+  // fall under the 16-character overlap floor and miss it.
+  const gone = [region.old, region.whole && region.whole.old].filter(Boolean);
+  for (const t of (threads || [])) {
+    if (!t || t.auto || t.resolved) continue;
+    if (used && used.has(t.id)) continue;
+    if (!t.quote || !gone.some(g => covers(t.quote, g))) continue;
+    // already where it needs to be — nothing to heal
+    if (covers(t.quote, region.quote)) continue;
+    return t;
+  }
+  return null;
+}
+
+// What the healed thread says for itself. The reader is being told something
+// happened to THEIR passage without them asking, so it says who, what and what
+// their two buttons now mean — the same contract the auto-threads spell out.
+export function healText(region, claim, who) {
+  if (claim && claim.line) {
+    return `${MARK} ${who} rewrote the passage this comment is on, without saying so in this thread.\n\n`
+      + `> ${claim.line}\n\n`
+      + 'The wording it replaced is struck through on the page and in the card above. '
+      + '✓ files this thread; ↺ puts it back in the open list.';
+  }
+  if (region.kind === 'delete') {
+    return `${MARK} ${who} DELETED the passage this comment is on, while working on the document — `
+      + 'nothing replaced it, and nothing was said about it here. The comment now sits on the '
+      + 'passage that follows the hole, with the deleted wording struck through before it. '
+      + '✓ files this thread; ↺ puts it back in the open list.';
+  }
+  return `${MARK} ${who} rewrote the passage this comment is on, while working on the document, `
+    + 'without saying so in this thread. The comment has moved onto the new wording; what it '
+    + 'replaced is struck through on the page and in the card above. '
+    + '✓ files this thread; ↺ puts it back in the open list.';
 }
 
 // ---- what the bot said it also changed ------------------------------------
@@ -463,21 +564,53 @@ export function summaryText(regions, who, why) {
     + 'Read the document itself for this one. ✓ files this note; ↺ puts it back in the open list.';
 }
 
-// The whole decision, as data: what a turn-end should add to the page record.
+// The whole decision, as data: what a turn-end should do to the page record.
 // Returns {threads:[{quote, prefix, suffix, prior_quote, text, kind, summary}],
-//          regions, skipped, extensive}. Adding them is the server's job — this
-// says WHAT, and is pure so the whole rule set is unit-testable.
+//          heals:[{thread_id, quote, prefix, suffix, deleted, text, kind}],
+//          regions, skipped, extensive}. Applying them is the server's job —
+// this says WHAT, and is pure so the whole rule set is unit-testable.
+//
+// A region is routed exactly once, and the order of the three fates is the
+// design: already-covered (nothing to do) → heals an existing orphan → gets a
+// thread of its own. A region absorbed into a reader's thread must NEVER also
+// spawn an auto-thread; that would be two cards and two highlights over one
+// change, which is the failure this whole feature exists to avoid.
 export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots' } = {}) {
   const { regions, extensive, reason } = regionsFrom(beforeHtml, afterHtml);
   const threads = (page && page.threads) || [];
   const fresh = [];
   const skipped = [];
+  const healed = [];
+  const usedThreads = new Set();
   for (const r of regions) {
     const hit = coveredBy(r, threads);
     if (hit) { skipped.push({ region: r, thread_id: hit.id }); continue; }
+    const orphan = healableBy(r, threads, usedThreads);
+    if (orphan) { usedThreads.add(orphan.id); healed.push({ thread: orphan, region: r }); continue; }
     fresh.push(r);
   }
-  if (!fresh.length) return { threads: [], regions, skipped, extensive: false };
+  // The reasons ride with the heals too: a bot that DID say "also changed"
+  // somewhere else on the page explains the rewrite better than we can.
+  const healClaims = healed.length ? claimsSince(page, since) : [];
+  const heals = healed.map(({ thread, region }) => {
+    // the whole passage, not the narrowed fragment — see `whole` in regionsFrom
+    const at = region.whole || region;
+    return {
+      thread_id: thread.id,
+      quote: at.quote,
+      prefix: at.prefix,
+      suffix: at.suffix,
+      deleted: region.kind === 'delete',
+      kind: region.kind,
+      text: healText(region, claimFor(region, healClaims), who),
+    };
+  });
+  // Heals are not capped with the fresh regions below and are never replaced by
+  // a summary note: they are repairs to comments the reader wrote by hand, and
+  // "the document changed a lot" is no reason to leave one of those pointing at
+  // nothing. The cap exists to stop the rail filling with threads nobody asked
+  // for; a heal adds no row to the rail at all.
+  if (!fresh.length) return { threads: [], heals, regions, skipped, extensive: false };
   // extensive, or simply too many to show one at a time: one note, not forty
   if (extensive || fresh.length > REGIONS_MAX) {
     const at = fresh[0];
@@ -487,7 +620,7 @@ export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots
         prior_quote: at.old || '', kind: 'summary', summary: true,
         text: summaryText(fresh, who, extensive ? reason : 'too-many'),
       }],
-      regions, skipped, extensive: true,
+      heals, regions, skipped, extensive: true,
     };
   }
   const claims = claimsSince(page, since);
@@ -497,6 +630,6 @@ export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots
       prior_quote: r.old || '', kind: r.kind, summary: false,
       text: autoText(r, claimFor(r, claims), who),
     })),
-    regions, skipped, extensive: false,
+    heals, regions, skipped, extensive: false,
   };
 }

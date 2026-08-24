@@ -1134,6 +1134,10 @@
 
     const D = {
       page: null,          // the page record from /page
+      // the review round in flight, exactly as the companion broadcasts it.
+      // Never computed here: the companion owns the queue, so a tab that was
+      // closed for half the round still comes back to the truth (see /round).
+      round: null,
       orphans: {},         // threadId -> bool (content.js's live anchoring verdict)
       streams: {},         // stream_id -> {who, target, text}
       running: {},         // target -> true while a turn is in flight
@@ -1337,6 +1341,7 @@
         chat: shadow.querySelector('.pane[data-pane="chat"]'),
         pages: shadow.querySelector('.pane[data-pane="pages"]'),
         foot: shadow.querySelector('.footbar'),
+        round: shadow.querySelector('.roundbar'),
         selbtn: shadow.querySelector('.selbtn'),
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
@@ -1386,6 +1391,10 @@
   <div class="pane" data-pane="comments"></div>
   <div class="pane" data-pane="chat" hidden></div>
   <div class="pane pages" data-pane="pages" hidden></div>
+  <!-- the review round as one visible thing, above the per-turn footbar: the
+       footbar reports the TURN in flight, this reports the round the reader
+       started, which outlives every turn in it -->
+  <div class="roundbar" role="status" aria-live="polite" hidden></div>
   <div class="footbar"></div>
 </aside>
 <div class="lightbox" role="dialog" aria-label="figure" aria-modal="true" hidden></div>`;
@@ -2133,7 +2142,27 @@
       // drawing. (An auto-thread on an INSERTION has no prior_quote, `was`
       // falls back to the quote, and the guard below correctly draws nothing:
       // text that arrived where there was none has no before half.)
-      const now = newWordingOf(t) || (t.auto ? String(t.quote || '') : '');
+      // A DELETION is not a rewrite and must not be drawn as one. There is no
+      // "now" wording — the passage is gone, and the quote the thread carries
+      // is the surviving paragraph it was re-anchored to so the comment has
+      // somewhere to stand. Word-diffing "the sentence that left" against "the
+      // paragraph that outlived it" would render as an edit that never
+      // happened, so the card says the plain thing instead.
+      if (t.deleted_passage) {
+        const gone = String(t.prior_quote || '').trim();
+        if (!gone) return '';
+        return `<div class="wasnow" data-deleted="1">`
+          + `<span class="wnhead">this passage was deleted</span>`
+          + `<div class="wnstack"><div class="wnrow"><span class="wnlab">gone</span>`
+          + `<span class="wnval"><del>${esc(gone)}</del></span></div>`
+          + `<div class="wnrow"><span class="wnlab">now on</span>`
+          + `<span class="wnval">${esc(String(t.quote || ''))}</span></div></div></div>`;
+      }
+      // A thread the turn-end diff HEALED (`healed_at`) is in the same position
+      // an auto-thread is: nobody narrated the change, so there is no sentence
+      // to parse — the quote it now carries IS the new wording, because the
+      // diff put it there out of the file's own bytes.
+      const now = newWordingOf(t) || (t.auto || t.healed_at ? String(t.quote || '') : '');
       if (!now) return '';
       // `prior_quote` is the wording the thread was ANCHORED to before the
       // page re-anchored it onto the rewrite. Once that has happened `quote`
@@ -3140,6 +3169,7 @@
       if (D.el.pages) D.el.pages.scrollTop = pTop;
       restoreMention();
       paintFoot();
+      paintRound();
     }
 
     function harvestDrafts() {
@@ -3189,6 +3219,57 @@
       D.el.conn.classList.toggle('pending', !D.connKnown);
       D.el.conn.querySelector('.ctext').textContent =
         !D.connKnown ? 'connecting…' : (D.connected ? 'connected' : 'companion offline — retry');
+    }
+
+    // ---- the review round strip -----------------------------------------
+    //
+    // Send review fans a round out into one turn per open comment, and each of
+    // those turns re-renders its own card. That is right for the card and
+    // useless for the round: twenty comments in, the reader has no count, no
+    // position, and no way to tell "still working" from "finished and quiet".
+    // The footbar cannot say it either — it reports the TURN in flight, which
+    // is one twentieth of the thing they started.
+    //
+    // So this is a second, persistent line that belongs to the ROUND. Its
+    // state is the companion's (it built the queue and sees every turn
+    // boundary) and arrives as a broadcast, which is what makes it survive a
+    // refresh, a reopened drawer, and a second tab watching the same page.
+    //
+    // Naming the comment is the point of it — "answering comment 4 of 12" with
+    // nothing else is a progress bar, and a progress bar is not what a reader
+    // wants here. The quote makes it a place, and clicking it goes there.
+    const roundQuote = q => {
+      const s = String(q || '').replace(/\s+/g, ' ').trim();
+      return s.length > 90 ? s.slice(0, 89) + '…' : s;
+    };
+    function paintRound() {
+      if (!D.mounted || !D.el.round) return;
+      const r = D.round;
+      if (!r) { D.el.round.hidden = true; D.el.round.innerHTML = ''; return; }
+      const total = Number(r.total) || 0;
+      const done = Number(r.answered) || 0;
+      if (!r.running) {
+        // the outcome, and a way to put it away: a note that cannot be
+        // dismissed is a note that eventually gets ignored
+        D.el.round.className = 'roundbar done';
+        D.el.round.innerHTML = `<span class="rtick">✓</span>`
+          + `<span class="rtext">round done — ${done} of ${total} answered</span>`
+          + `<button class="rdismiss" data-act="round-dismiss" type="button" aria-label="dismiss">✕</button>`;
+        D.el.round.hidden = false;
+        return;
+      }
+      const at = Math.min(done + 1, total);
+      const quote = roundQuote(r.current_quote);
+      // Between turns there is nothing in flight and saying "answering
+      // comment N" would be a small lie, so it says what is true instead.
+      const body = r.current
+        ? `<span class="rtext">answering comment ${at} of ${total}</span>`
+          + (quote ? `<button class="rjump" data-act="round-jump" data-target="${esc(r.current)}" type="button" title="scroll to this comment">“${esc(quote)}”</button>` : '')
+        : `<span class="rtext">${done ? `${done} of ${total} answered` : `review round — ${total} comments`} · waiting for the next turn</span>`;
+      D.el.round.className = 'roundbar';
+      D.el.round.innerHTML = `<span class="spin">◐</span>${body}`
+        + `<span class="rcount">${done}/${total}</span>`;
+      D.el.round.hidden = false;
     }
 
     function paintFoot() {
@@ -3951,6 +4032,16 @@
         if (act === 'page-del') { D.pages.confirm = btn.dataset.url; D.pages.rowErr = null; renderPages(); return; }
         if (act === 'page-del-no') { D.pages.confirm = null; renderPages(); return; }
         if (act === 'page-del-yes') { doDeletePage(btn.dataset.url); return; }
+        // the round strip: its quote is a place on the page, so it behaves
+        // like the quote on a card — scroll there and focus it. Unlike a
+        // card's quote there is no orphan/pending guard, because the thread
+        // named here is one a bot is answering right now.
+        if (act === 'round-jump') {
+          focus(target);
+          cb('onJump')(target);
+          return;
+        }
+        if (act === 'round-dismiss') { D.round = null; paintRound(); return; }
         if (act === 'jump') {
           const card = btn.closest('.card');
           if (card && !card.classList.contains('orphaned') && !card.classList.contains('pending')) {
@@ -5406,6 +5497,11 @@
     }
 
     function setOrphans(map) { D.orphans = map || {}; render(); return D; }
+    // content.js asked /round on wake (or after a socket came back) and this
+    // is the answer — the same payload the broadcast carries, so a tab that
+    // opened mid-round paints the strip right on its FIRST paint instead of
+    // staying blank until the next turn boundary.
+    function setRound(round) { D.round = round || null; paintRound(); return D; }
     // The export mode this browser used last (content.js reads it out of
     // extension storage on wake). Only preselects a row and labels the pages
     // list's own crystals — nothing exports because of it.
@@ -5514,6 +5610,10 @@
         if (D.modelsOpen) syncModels();
         return;
       }
+      // the round the reader started, as the companion sees it (server.mjs
+      // roundTurn). Straight into the strip: it is state, not history, and
+      // nothing here recomputes any of it.
+      if (ev.type === 'round') { D.round = ev; paintRound(); return; }
       if (ev.type !== 'chat') return;
       // A library event is a page chat on the reserved url; give it its own
       // target here and everything downstream — chips, streams, folding,
@@ -5630,7 +5730,7 @@
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
-      setExportMode, setOwner, setProject,
+      setExportMode, setOwner, setProject, setRound,
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the
       // switch flips in place.

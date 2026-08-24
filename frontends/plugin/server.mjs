@@ -319,6 +319,24 @@ function reportCollateral(page, seen, art, ev) {
   let made = 0;
   try {
     const plan = collateral.collateral(seen.text, after, page, { since: seen.at, who });
+    // …and FIRST, the repairs. A region whose old text was a reader's own
+    // quoted passage does not become a new thread announcing the change — it
+    // goes back into the thread that was about to orphan, which is where the
+    // reader is already looking. `collateral()` has already made sure a region
+    // cannot do both, so this loop and the next never cover the same change.
+    for (const h of plan.heals) {
+      const thread = (page.threads || []).find(t => t && t.id === h.thread_id);
+      if (!thread) continue;
+      const done = store.healThread(thread, {
+        quote: h.quote, prefix: h.prefix, suffix: h.suffix, deleted: h.deleted,
+      });
+      if (!done.ok || !done.changed) continue;
+      // the narration the bot never wrote, in the reader's own thread — and it
+      // is what flips the thread amber (appendMsg sets `addressed` for an
+      // agent author), so it sorts into "ready for review" like any answer
+      store.appendMsg(page, thread.id, { author, text: h.text });
+      made++;
+    }
     for (const t of plan.threads) {
       const thread = store.addThread(page, {
         quote: t.quote, prefix: t.prefix, suffix: t.suffix, text: t.text, author,
@@ -536,6 +554,94 @@ function onSessionTouch(dir, name) {
   if (typeof touchTimer.unref === 'function') touchTimer.unref();
 }
 
+// ---- the review round, as one visible thing ------------------------------
+//
+// A round fans out into one turn per open comment (see /send-review). Each of
+// those turns spins its own card, and the cards are scattered down a rail the
+// reader has to scroll. So the round — the thing the reader actually started —
+// had no representation anywhere: no count, no position in it, no end. Twenty
+// comments in, "is this still going?" was a question the UI could not answer.
+//
+// So the companion keeps the round, because the companion is what HAS it: it
+// built the queue, it names the threads, and it sees every turn boundary. The
+// tab renders a broadcast, and holds no round state of its own — which is what
+// makes the strip survive a refresh, a reopened drawer, and a second tab.
+//
+// The state is deliberately thin: which threads are still to come, which one is
+// in flight, how many are answered. Everything else the strip shows (the quote,
+// the link) is a lookup into the record the tab already has.
+const rounds = new Map();          // page url → round
+// A finished round's "round done — N answered" note is kept this long so a tab
+// that was closed for the last turn still comes back to the outcome rather than
+// to silence. Past that it is history, and the thread cards are the record.
+const ROUND_KEEP_MS = 5 * 60 * 1000;
+
+function roundPayload(url, r) {
+  return {
+    type: 'round', url,
+    running: !r.done_at,
+    total: r.total,
+    answered: r.answered,
+    // the thread a bot is answering RIGHT NOW, or null between turns
+    current: r.current,
+    // …and its words, so the strip can name it without a record lookup that
+    // may not have arrived yet
+    current_quote: r.current ? (r.quotes[r.current] || '') : '',
+    started_at: r.started_at,
+    done_at: r.done_at || null,
+  };
+}
+
+function broadcastRound(url) {
+  const r = rounds.get(url);
+  if (r) broadcast(roundPayload(url, r));
+}
+
+function startRound(url, page, threadIds) {
+  const quotes = {};
+  for (const id of threadIds) {
+    const t = store.findThread(page, id);
+    quotes[id] = t ? String(t.quote || '').slice(0, 160) : '';
+  }
+  rounds.set(url, {
+    pending: new Set(threadIds),
+    quotes,
+    total: threadIds.length,
+    answered: 0,
+    current: null,
+    started_at: new Date().toISOString(),
+    done_at: '',
+  });
+  // bounded, newest wins — one page's round is not a reason to hold another's
+  if (rounds.size > 20) rounds.delete(rounds.keys().next().value);
+  broadcastRound(url);
+}
+
+// A turn boundary that belongs to a live round. The preamble turn (target =
+// page chat) is deliberately NOT one of these: it is the round announcing
+// itself, and the strip already says "starting" while nothing is in flight.
+function roundTurn(ev, phase) {
+  const r = ev && ev.url ? rounds.get(ev.url) : null;
+  if (!r || r.done_at) return;
+  const id = ev.target;
+  if (!id || !r.pending.has(id)) return;
+  if (phase === 'start') { r.current = id; broadcastRound(ev.url); return; }
+  r.pending.delete(id);
+  r.answered++;
+  r.current = null;
+  // The round is over when nothing is left to answer. Note this counts a turn
+  // the bridge STRANDED (chat.mjs emits turn-end for every job it drops), which
+  // is right: the strip must not spin forever because a bridge died.
+  if (!r.pending.size) {
+    r.done_at = new Date().toISOString();
+    setTimeout(() => {
+      const still = rounds.get(ev.url);
+      if (still === r) rounds.delete(ev.url);
+    }, ROUND_KEEP_MS).unref?.();
+  }
+  broadcastRound(ev.url);
+}
+
 function onChatEvent(ev) {
   // chat.mjs knows nothing about config.json; the verbosity a tab renders
   // rides the same event as everything else in that panel
@@ -544,9 +650,10 @@ function onChatEvent(ev) {
   }
   // the turn boundary is where the census is taken; a summary job (silent by
   // construction) emits neither of these, so filing a thread never counts
-  if (ev.type === 'chat' && ev.kind === 'turn-start') noteTurnStart(ev.url);
+  if (ev.type === 'chat' && ev.kind === 'turn-start') { noteTurnStart(ev.url); roundTurn(ev, 'start'); }
   if (ev.type === 'chat' && ev.kind === 'turn-end') {
     broadcast(ev);
+    roundTurn(ev, 'end');
     // after the turn-end, always: the drawer stops spinning first and only
     // then hears that the file moved
     reportProjectChanges(ev);
@@ -1149,6 +1256,18 @@ export function handler(req, res) {
     if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
     return ok(res, { changes: lastChanges.get(store.normUrl(u)) || null });
   }
+  // The review round in flight on this page, if there is one. The broadcast is
+  // the live channel; this is what a tab that opened (or refreshed, or was
+  // asleep) mid-round asks so the strip is already right on its first paint
+  // instead of appearing at the next turn boundary. Same owner gate as the rest
+  // of the round machinery — a round is the owner's agents being spent.
+  if (req.method === 'GET' && url === '/round') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const key = u ? store.normUrl(u) : '';
+    const r = key ? rounds.get(key) : null;
+    return ok(res, { round: r ? roundPayload(key, r) : null });
+  }
   // Which chat this page is standing in. `{sid}` opens a past one, `{new:true}`
   // starts a fresh one — and both work by moving `session_id` on the page
   // record, because that field is ALREADY the whole of the resume machinery
@@ -1268,6 +1387,11 @@ export function handler(req, res) {
         const s = summon(page, t.thread_id, t.text, { quote: t.quote, history: t.history }, me);
         if (s.queued) threads.push(t.thread_id);
       }
+      // …and the round itself, as a thing with a length and a position in it.
+      // Started here rather than on the first turn boundary because THIS is
+      // where the queue is known: the strip can say "0 of 12" while the
+      // preamble is still going out.
+      if (threads.length) startRound(page.url, page, threads);
       // `queued` is the number of TURNS this round put in the queue — the
       // preamble plus one per thread — and `threads` names the threads they are
       // addressed to, which is what lets the drawer spin the right cards.
