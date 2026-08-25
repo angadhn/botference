@@ -1564,12 +1564,20 @@ const PDFANNOT = Q.get('pdfannot') === '1' || Q.get('pdfannot') === 'export';
 // the annotated copy on a document that can be written, calls through once,
 // and says what happened.
 const PDF_EXPORTS = [];
+// What the viewer's half will answer next, and how slowly. The three answers
+// are not variations on one another: a picked location, a reader who cancelled
+// the Save dialog (nothing written, nothing downloaded), and a failure. The
+// drawer has to tell them apart out loud, which is what the selftest drives.
+let PDF_EXPORT_NEXT = { ok: true, name: 'the-quiet-machine (discussed).pdf',
+                        picked: true, written: 3, orphaned: 1, already: 0 };
+let PDF_EXPORT_HOLD = null;                 // a promise the answer waits on
 if (Q.get('pdfannot') === 'export') {
   window.__BFP_PDF = {
     annots: [],
     exportAnnotated: async () => {
       PDF_EXPORTS.push(Date.now());
-      return { ok: true, name: 'the-quiet-machine (discussed).pdf', written: 3, orphaned: 1, already: 0 };
+      if (PDF_EXPORT_HOLD) await PDF_EXPORT_HOLD;
+      return PDF_EXPORT_NEXT;
     },
   };
 }
@@ -6580,15 +6588,85 @@ async function selftestPdfAnnot() {
     check('a PDF this viewer can write offers the annotated copy in the export chooser', !!row);
     check('\u2026beside the two Obsidian modes, not instead of them',
       S.querySelectorAll('[data-act="export-run"]').length === 3);
+    // ---- a save that is held open: the reader is told it is happening ----
+    // The whole complaint this pose exists to answer is a click that produced
+    // nothing visible. So: while the write is in flight there is a CARD, not
+    // just a grey line at the bottom of the panel, and a second click on the
+    // row cannot start a second one over the top of it.
+    let release;
+    PDF_EXPORT_HOLD = new Promise(r => { release = r; });
     row.click();
     await until(() => PDF_EXPORTS.length === 1);
+    const saved = () => S.querySelector('.pdfimport.pdfsaved');
+    await until(() => !!saved());
+    check('while it is being written the pane says so, in a card and not only in the footer',
+      !!saved() && /Writing the annotated copy/.test(saved().textContent)
+      && /Choose where to save it/.test(saved().textContent));
+    S.querySelector('[data-act="export"]').click();
+    await sleep(40);
+    const again = S.querySelector('[data-act="export-run"][data-mode="pdf"]');
+    if (again) again.click();
+    await sleep(60);
+    check('\u2026and a second press while it is in flight starts nothing second',
+      PDF_EXPORTS.length === 1);
+    release();
+    await until(() => PDF_EXPORTS.length === 1 && saved() && /Saved/.test(saved().textContent));
+    PDF_EXPORT_HOLD = null;
     check('pressing it writes the file exactly once', PDF_EXPORTS.length === 1);
+    check('\u2026and the card names the file and says how much of the margin went in',
+      /Saved the-quiet-machine \(discussed\)\.pdf/.test(saved().textContent)
+      && /3 comments written into the file/.test(saved().textContent)
+      && /1 could not be placed/.test(saved().textContent));
     const foot = () => S.querySelector('.footbar').textContent;
-    await until(() => /downloaded/.test(foot()));
-    check('\u2026and the footer says what landed, and what did not',
-      /the-quiet-machine \(discussed\)\.pdf/.test(foot()) && /1 not written/.test(foot()));
+    check('\u2026and the footer says the same thing, for whoever reads there',
+      /saved/.test(foot()) && /the-quiet-machine \(discussed\)\.pdf/.test(foot())
+      && /1 not written/.test(foot()));
     check('\u2026and the chooser closed behind it',
       !S.querySelector('[data-act="export-run"]'));
+    saved().querySelector('[data-act="pdf-saved-ok"]').click();
+    await sleep(40);
+    check('\u2026and the card goes when it is read', !saved());
+
+    // ---- no picker, so the browser's own downloader ----
+    PDF_EXPORT_NEXT = { ok: true, name: 'the-quiet-machine (discussed).pdf',
+                        picked: false, written: 3, orphaned: 0, already: 0 };
+    S.querySelector('[data-act="export"]').click();
+    await sleep(40);
+    S.querySelector('[data-act="export-run"][data-mode="pdf"]').click();
+    await until(() => !!saved() && /Downloaded/.test(saved().textContent));
+    check('where no Save dialog could be shown it downloads instead, and says which it did',
+      /Downloaded the-quiet-machine/.test(saved().textContent)
+      && /wherever this browser puts downloads/.test(saved().textContent));
+    saved().querySelector('[data-act="pdf-saved-ok"]').click();
+    await sleep(40);
+
+    // ---- the reader cancels the Save dialog ----
+    PDF_EXPORT_NEXT = { ok: true, cancelled: true, name: 'the-quiet-machine (discussed).pdf' };
+    const before = PDF_EXPORTS.length;
+    S.querySelector('[data-act="export"]').click();
+    await sleep(40);
+    S.querySelector('[data-act="export-run"][data-mode="pdf"]').click();
+    await until(() => /cancelled/.test(foot()));
+    check('cancelling the Save dialog is a decision: nothing is claimed to have landed',
+      !saved() && /nothing was written/.test(foot())
+      && PDF_EXPORTS.length === before + 1);
+
+    // ---- and a failure, which stays up until it is read ----
+    PDF_EXPORT_NEXT = { ok: false, error: 'could not re-read this PDF (403)' };
+    S.querySelector('[data-act="export"]').click();
+    await sleep(40);
+    S.querySelector('[data-act="export-run"][data-mode="pdf"]').click();
+    await until(() => !!saved() && /was not written/.test(saved().textContent));
+    check('a failure says so in the pane, in the bad colour, with the reason',
+      saved().classList.contains('bad')
+      && /was not written/.test(saved().textContent)
+      && /could not re-read this PDF \(403\)/.test(saved().textContent));
+    check('\u2026and the footer carries the reason too',
+      /could not re-read this PDF \(403\)/.test(foot())
+      && S.querySelector('.footbar').classList.contains('err'));
+    saved().querySelector('[data-act="pdf-saved-ok"]').click();
+    await sleep(40);
+    check('\u2026and it goes only when it is dismissed', !saved());
   }
 
   const bad = out.filter(l => l[0] === '\u2717');

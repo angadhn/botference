@@ -707,12 +707,54 @@ async function exportAnnotated() {
       ? 'every comment here came from this PDF already'
       : 'none of these comments could be placed in the file' };
   }
+  const name = Ann.exportFileName(fileName || ownName);
+  // THE DIALOG COMES FIRST — see pickSaveFile. Everything below it (half a
+  // megabyte of writer, a re-read of the original, the write itself) takes
+  // longer than the click's transient activation lasts, and a Save dialog
+  // asked for after that activation has gone is not shown at all.
+  const dest = await pickSaveFile(name);
+  if (dest.cancelled) return { ok: true, cancelled: true, name };
   const lib = await pdfLib();
   const bytes = await sourceBytes();
   const out = await Ann.writeAnnots(lib, bytes, items);
-  const name = Ann.exportFileName(fileName || ownName);
-  download(out.bytes, name);
-  return { ok: true, name, written: out.written, orphaned, already };
+  let where = name;
+  if (dest.handle) {
+    const w = await dest.handle.createWritable();
+    await w.write(out.bytes);
+    await w.close();
+    where = dest.handle.name || name;
+  } else {
+    download(out.bytes, name);
+  }
+  return { ok: true, name: where, picked: !!dest.handle,
+           written: out.written, orphaned, already };
+}
+
+// ---- where the copy goes ---------------------------------------------------
+// The reader chooses the folder. `showSaveFilePicker` is the only API that can
+// put a real Save dialog on screen from a page, and it has one hard rule: it
+// must be called while the click that asked for it is still live, which is why
+// exportAnnotated asks BEFORE it writes anything.
+//
+// Three answers, and they are not the same answer:
+//   a handle      the reader chose a place — write there, and nowhere else
+//   cancelled     the reader said no. Nothing is written and NOTHING is
+//                 downloaded behind their back: a cancel is a decision.
+//   neither       the dialog could not be shown at all (an older browser, a
+//                 policy, an activation already spent) — fall back to the
+//                 browser's own downloader, which is what this always did.
+async function pickSaveFile(name) {
+  if (typeof window.showSaveFilePicker !== 'function') return {};
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: name,
+      types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+    });
+    return { handle };
+  } catch (e) {
+    if (e && e.name === 'AbortError') return { cancelled: true };
+    return {};                       // unsupported, refused, or no activation
+  }
 }
 
 // The file's own bytes. A local PDF has been read once already (it is what its
@@ -725,7 +767,8 @@ async function sourceBytes() {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-// The browser's own downloader, from an extension page: a blob, an <a download>
+// The fallback, for when no Save dialog could be shown (pickSaveFile): the
+// browser's own downloader, from an extension page — a blob, an <a download>
 // and a click. No file is written beside the original, no path is guessed, and
 // where the copy lands is the reader's own browser setting.
 function download(bytes, name) {

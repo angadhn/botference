@@ -2,6 +2,18 @@
 
 ## 2026-08-25
 
+- **The annotated copy asks where to put itself, and says where it went.** The
+  export used to hand the file to the browser's downloader and report in a grey
+  line at the bottom of the drawer, so a click looked like nothing happening.
+  It now opens a real Save dialog, and says in the pane itself what it is
+  doing, where it landed, or why it could not — the failure staying up until it
+  is read. Cancelling the dialog cancels the export; it does not download one
+  anyway.
+
+- **The PDF selection pill wears the signs its tools are known by**: a speech
+  bubble for comment (the same 💬 the article pill has always shown, drawn) and
+  an S with the red line through it for strike.
+
 - **A second tool on a PDF: strike a passage through.** The selection pill on a
   PDF now has Adobe's pair — highlight-and-comment, and strike-through — and a
   struck passage is drawn the way Acrobat draws it: a thin red line through the

@@ -544,6 +544,13 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .pdfimport button:disabled { opacity: .6; cursor: default }
 
+/* …and the same card reporting the copy going OUT. Same construction, because
+   it is the same fact about the same document — only the edge says which way
+   it went: the accent while it is working or done, the bad colour when the
+   file was not written. */
+.pdfsaved.bad { border-color: var(--bad) }
+.pdfsaved.bad .pitext b { color: var(--bad) }
+
 /* the second heading in the export chooser: the annotated-PDF destination,
    which is not one of the two Obsidian modes and must not look like one */
 .pop-head.second { margin-top: 6px; border-top: 1px solid var(--card-line); padding-top: 6px }

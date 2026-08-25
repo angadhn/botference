@@ -1144,8 +1144,14 @@
     //   pending  of those, the ones not already imported (origin, store.mjs)
     //   canExport  this page can be written back OUT as an annotated copy
     //   dismissed  the reader said "not now" — for this tab, and no longer
+    //   out       the LAST WRITE OUT, as a card: {kind:'busy'|'ok'|'err', …}.
+    //             The export used to report only into the footbar, which is a
+    //             12px grey line at the far bottom of a panel whose top is
+    //             where the reader just clicked — so a save that worked and a
+    //             save that failed looked identical, which is to say like
+    //             nothing at all. It says so where the decision was made.
     const PDF = { total: 0, pending: 0, canExport: false, dismissed: false,
-                  busy: false, note: '', err: '' };
+                  busy: false, note: '', err: '', out: null };
 
     const D = {
       page: null,          // the page record from /page
@@ -1458,19 +1464,26 @@
     // a PDF is the one document that can carry both marks back out as real
     // annotations.
     //
-    // The icons are the standard ones: three strokes of text with a marker's
-    // band behind them, and the same three strokes with a line drawn through
-    // the middle. Drawn rather than lettered so they read at 16px and in both
-    // themes; the colours are the ink's own (amber, red) and are the only
-    // colour in the pill, which is what makes the pair legible at a glance.
-    const SEL_TEXT_SVG = '<path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h8"/>';
-    const HILITE_SVG = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-      <rect x="1" y="1.6" width="14" height="12.8" rx="2.5" fill="#f2c14e" opacity=".55"></rect>
-      <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">${SEL_TEXT_SVG}</g>
+    // Each tool wears the sign the reader already knows it by. The comment
+    // button is the speech bubble the article pill has always shown, drawn as
+    // a stroke instead of set as the 💬 emoji, so it takes the pill's own
+    // colour and sits at the same weight as its twin. The strike button is the
+    // strikethrough button out of every editor there has ever been: a letter
+    // with the line drawn through it. The S is a path, not a <text> element,
+    // because at 16px a glyph is at the mercy of whatever font the host page
+    // happens to hand us; a path is the same S everywhere.
+    //
+    // Neither sign is lettered and neither needs a caption. The only colour is
+    // the red of the strike itself — the same ink the mark is drawn in on the
+    // page — which is what tells the pair apart at a glance.
+    const COMMENT_SVG = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path d="M5.6 11.4H4.3A2.3 2.3 0 0 1 2 9.1V4.9a2.3 2.3 0 0 1 2.3-2.3h7.4A2.3 2.3 0 0 1 14 4.9v4.2a2.3 2.3 0 0 1-2.3 2.3H8.4l-2.8 2.5Z"
+        fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"></path>
     </svg>`;
     const STRIKE_SVG = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-      <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">${SEL_TEXT_SVG}</g>
-      <path d="M.8 8h14.4" fill="none" stroke="#c83030" stroke-width="2" stroke-linecap="round"></path>
+      <path d="M10.9 4.6C10.9 3.4 9.6 2.7 8 2.7 6.4 2.7 5.1 3.5 5.1 4.9c0 3.1 5.8 2 5.8 5.4 0 1.6-1.3 3-2.9 3-1.6 0-2.9-.7-2.9-2"
+        fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+      <path d="M2.2 8h11.6" fill="none" stroke="#c83030" stroke-width="2" stroke-linecap="round"></path>
     </svg>`;
     function selPillHtml() {
       if (!CAPS.strike) {
@@ -1479,7 +1492,7 @@
       }
       return `<div class="selpill twin">
   <button class="selbtn icon" type="button" data-mark="highlight"
-    title="Highlight and comment" aria-label="Highlight this passage and comment on it">${HILITE_SVG}</button>
+    title="Highlight and comment" aria-label="Highlight this passage and comment on it">${COMMENT_SVG}</button>
   <button class="selbtn icon strikebtn" type="button" data-mark="strike"
     title="Strike through — suggest this comes out" aria-label="Strike this passage through as a suggested deletion">${STRIKE_SVG}</button>
 </div>`;
@@ -2526,6 +2539,24 @@ ${selPillHtml()}
         `</span></div>`;
     };
 
+    // ── …and the same card, for the copy going the other way ──────────────
+    // An export is a file appearing somewhere on this Mac, and the reader has
+    // no way to check except to go and look. So it is reported here, in the
+    // pane, in the same shape as the offer above: what is happening while it
+    // happens, then where it landed and how much of the margin went with it —
+    // or, if it failed, why, and that stays up until it is read.
+    const pdfSavedHtml = () => {
+      const o = PDF.out;
+      if (!o) return '';
+      const bad = o.kind === 'err';
+      return `<div class="pdfimport pdfsaved${bad ? ' bad' : ''}" role="status" aria-live="polite">` +
+        `<span class="pitext"><b>${esc(o.text)}</b>${o.sub ? esc(' ' + o.sub) : ''}</span>` +
+        (o.kind === 'busy' ? '' :
+          `<span class="piacts"><button class="rebtn pino" data-act="pdf-saved-ok" type="button"
+             title="Dismiss">${bad ? 'dismiss' : 'ok'}</button></span>`) +
+        `</div>`;
+    };
+
     // Something the bots are about to answer WITHOUT — the page text a site
     // adapter could not read (content.js sets it). It belongs in Page chat
     // because that is where the user is typing the question, and it is
@@ -2823,7 +2854,7 @@ ${selPillHtml()}
       // PDF carries 7 comments" is two sentences contradicting each other.
       const pdfOffer = pdfImportHtml();
       let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml()
-        + pdfOffer + projectTaskCardHtml() + taskCardHtml() + rail;
+        + pdfOffer + pdfSavedHtml() + projectTaskCardHtml() + taskCardHtml() + rail;
       html += D.pending ? pendingHtml() : '';
       // a filter that matches nothing must say so and offer the way back —
       // "No comments yet" under a rail full of names would be a plain lie
@@ -4303,6 +4334,7 @@ ${selPillHtml()}
         }
         if (act === 'pdf-import') { doPdfImport(); return; }
         if (act === 'pdf-import-no') { PDF.dismissed = true; PDF.err = ''; render(); return; }
+        if (act === 'pdf-saved-ok') { PDF.out = null; render(); return; }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
@@ -5502,24 +5534,54 @@ ${selPillHtml()}
       render();
     }
 
+    // Writing the copy out. One at a time — the viewer opens a Save dialog on
+    // the way through and a second click while the first is still standing
+    // would ask for a second dialog over the first one — and never silent: the
+    // card above says what is happening, what landed and where, or what went
+    // wrong, and the footbar carries the same sentence for whoever reads there.
     async function doExportPdf() {
+      if (PDF.out && PDF.out.kind === 'busy') return;
+      PDF.out = { kind: 'busy', text: 'Writing the annotated copy…',
+                  sub: 'Choose where to save it.' };
       D.foot = 'writing the PDF…';
       D.footErr = false;
       paintFoot();
+      render();
       let r;
       try { r = await cb('onPdfExport')(); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
-        D.foot = (r && r.error) || 'the PDF could not be written';
+        const err = (r && r.error) || 'the PDF could not be written';
+        PDF.out = { kind: 'err', text: 'The annotated copy was not written', sub: err };
+        D.foot = err;
         D.footErr = true;
+      } else if (r.cancelled) {
+        // the reader closed the Save dialog: a decision, not a failure, and
+        // nothing was written anywhere
+        PDF.out = null;
+        D.foot = 'save cancelled — nothing was written';
+        D.footErr = false;
       } else {
         const skipped = (r.orphaned || 0) + (r.already || 0);
-        D.foot = 'downloaded ' + (r.name || 'the annotated copy')
+        const n = Number(r.written || 0);
+        PDF.out = {
+          kind: 'ok',
+          text: (r.picked ? 'Saved ' : 'Downloaded ') + (r.name || 'the annotated copy'),
+          sub: (n ? `${n} comment${n === 1 ? '' : 's'} written into the file` : '')
+            + (skipped ? `${n ? ' · ' : ''}${skipped} could not be placed` : '')
+            + (r.picked ? '' : ' — to wherever this browser puts downloads'),
+        };
+        D.foot = (r.picked ? 'saved ' : 'downloaded ') + (r.name || 'the annotated copy')
           + (skipped ? ` · ${skipped} not written` : '');
         D.footErr = false;
       }
       paintFoot();
-      setTimeout(() => { if (String(D.foot).startsWith('downloaded')) { D.foot = ''; paintFoot(); } }, 8000);
+      render();
+      // the good news goes by itself; a failure stays until it is dismissed
+      setTimeout(() => {
+        if (PDF.out && PDF.out.kind === 'ok') { PDF.out = null; render(); }
+        if (/^(saved|downloaded|save cancelled)/.test(String(D.foot))) { D.foot = ''; paintFoot(); }
+      }, 12000);
     }
 
     // Deleting a page from the library takes its bot session with it. The
@@ -6164,7 +6226,8 @@ ${selPillHtml()}
       },
       pdfAnnots: () => ({ total: PDF.total, pending: PDF.pending,
                           canExport: PDF.canExport, dismissed: PDF.dismissed,
-                          busy: PDF.busy, err: PDF.err }),
+                          busy: PDF.busy, err: PDF.err,
+                          out: PDF.out ? { ...PDF.out } : null }),
       // observable for the harness: is Discuss's margin off on this page?
       standingDown: () => standDown(),
       // …and the commenter filter: who has a pill on this page, and which of

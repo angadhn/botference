@@ -4271,11 +4271,34 @@ cap — to a process that has never seen it and whose whole contract about local
 PDFs is that it never will. And the geometry is not there either: a thread is a
 QUOTE, and the only thing on this machine that knows where those words are in
 PDF coordinates is the text layer in the viewer's tab. So **the viewer writes
-it, in memory, and hands the result to the browser's own downloader** (a blob
-and an `<a download>` from an extension page). Nothing is written beside the
-original, no path is guessed, the original is never touched, and where the copy
-lands is the reader's own browser setting. It is named `<name> (discussed).pdf`
-— an export must not be able to overwrite the file it was made from.
+it, in memory, and hands the result to the reader**. Nothing is written beside
+the original, no path is guessed, and the original is never touched. It is
+named `<name> (discussed).pdf` — an export must not be able to overwrite the
+file it was made from.
+
+**Where it lands: the reader says** (amended 2026-08-25). It used to go
+straight to the browser's own downloader — a blob and an `<a download>` from an
+extension page — which meant a click produced a file in a folder the reader had
+not chosen, with nothing on screen to say so. Now `showSaveFilePicker` puts a
+real Save dialog up. That API has one hard rule: it must be called while the
+click that asked for it is still live, and writing the file (half a megabyte of
+`pdf-lib`, a re-read of the original) takes longer than that activation lasts —
+so **the dialog comes first and the bytes are written into the handle
+afterwards**. Its three answers are three different things: a handle (write
+there and nowhere else), an `AbortError` (the reader said no — nothing written,
+and emphatically no download behind their back), or anything else (no dialog
+could be shown at all: fall back to the downloader, which is what this always
+did). Which of the two happened is reported: "Saved …" or "Downloaded …".
+
+**And it says so out loud.** Every word the export used to say landed in the
+footbar — a 12px muted line at the far bottom of a panel whose top is where the
+reader just clicked — so a save that worked, a save that failed and a click
+that did nothing at all looked identical. The export now reports in the
+comments pane, in the same card as the import offer above it (`.pdfsaved`):
+while it is writing, then where it landed and how much of the margin went with
+it, or, in the bad colour, why it did not. Good news clears itself after 12s; a
+failure stays until it is dismissed. A second press while a write is in flight
+starts nothing second — one Save dialog at a time.
 
 **Where the ink goes.** From the PAINTED HIGHLIGHT, not from a fresh text hunt:
 `anchor.js` has already decided where a thread is (including after a re-anchor,
@@ -4456,10 +4479,17 @@ them rather than as two pills sitting next to each other. The `on` class goes on
 the pill and on each tool inside it, so nothing that ever asked the BUTTON
 whether the pill was up gets a new answer.
 
-The icons are the standard pair, drawn rather than lettered so they read at
-16px in both themes: three strokes of text with a marker's amber band behind
-them, and the same three strokes with a red rule through the middle. They are
-the only colour in the pill, which is what makes the pair legible at a glance.
+The icons are the sign each tool is already known by (amended 2026-08-25): the
+speech bubble the article pill has always shown, drawn as a stroke rather than
+set as the 💬 emoji so it takes the pill's colour and matches its twin's
+weight; and the strikethrough button out of every editor there has ever been,
+an **S** with the red rule drawn through it. The S is a path, not a `<text>`
+element — at 16px a glyph is at the mercy of whatever font the host page hands
+us. Neither sign is lettered and neither carries a caption; the red rule is the
+only colour in the pill, which is what tells the pair apart at a glance.
+(They were, until this amendment, three strokes of text on a marker's amber
+band and the same strokes with a red rule through them — a pair that read as
+"highlight" and "highlight, struck" rather than as "comment" and "strike".)
 The click reports which tool by the button's own `data-mark`, through the
 existing `onSelect` callback (`onSelect(kind)`); nothing else about the
 selection path changed.
