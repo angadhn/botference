@@ -1793,6 +1793,105 @@ export function handler(req, res) {
       ok(res, { url: page.url, threads, created, appended, skipped, refusals });
     });
   }
+  // --- the comments that were already in the PDF -------------------------
+  // Same door, other system. A manuscript that has been round a supervisor
+  // arrives with Acrobat highlights and Preview sticky notes in it: real
+  // comments, by real people, with dates — and Discuss used to render that
+  // paper and say "No comments yet", which was a lie about the document on
+  // screen. The VIEWER reads them (only the viewer has the parsed document and
+  // the text layer that says which words a quad covers) and offers them to the
+  // reader; accepting posts them here.
+  //
+  // OWNER-ONLY, and for the same reason /review-comments is loopback-only:
+  // this endpoint NAMES ITS OWN AUTHORS. "adril" on an imported thread is the
+  // /T field of an annotation, not anybody who signed in, and minting comments
+  // under other people's names is exactly the power a guest must never hold.
+  //
+  // A projection, not a second write path: every annotation is filed under
+  // `origin: {system:'pdf-annot', id}` and one already there is left alone, so
+  // re-opening the paper (which the reader will do, often) offers nothing and
+  // costs nothing. Nothing here summons a bot: an imported comment is somebody
+  // else's remark, and the reader decides which of them is worth an agent —
+  // the thread is ordinary in every other way, so @claude in a reply works.
+  if (req.method === 'POST' && url === '/pdf-annotations') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      if (!data.url) return fail(res, 400, 'url required');
+      const list = Array.isArray(data.annots) ? data.annots : [];
+      if (!list.length) return fail(res, 400, 'annots required');
+      const page = store.readPage(data.url) || store.upsertPage(data);
+      const threads = {};
+      let created = 0;
+      let appended = 0;
+      let skipped = 0;
+      let changed = false;
+      for (const a of list) {
+        const origin = store.cleanOrigin({ system: 'pdf-annot', id: a && a.id });
+        // an annotation's /T is a person's name as they typed it into
+        // Acrobat's preferences ("Angadh Nanjangud"), so it goes through the
+        // same handle sanitizer every other author does; an anonymous
+        // annotation is filed under the file itself rather than under nobody
+        const author = sanitizeHandle((a && a.author) || '') || 'pdf';
+        const text = String((a && a.text) || '');
+        if (!origin || !text.trim()) { skipped++; continue; }
+        const quote = String((a && a.quote) || '').trim();
+        let target = null;
+        if (!quote) {
+          // a sticky note with no words anywhere near it — a note on a blank
+          // page, or in a margin beside a figure. Page chat is the surface for
+          // a remark about the document; an anchorless thread would be an
+          // orphan the moment it was made.
+          target = store.PAGE_CHAT;
+          const seen = (page.page_chat || []).some(m => {
+            const o = store.originOf(m);
+            return o && o.id === origin.id;
+          });
+          if (!seen) {
+            if (store.appendMsg(page, target, { author, text, ts: a.ts, origin })) {
+              created++;
+              changed = true;
+            }
+          }
+        } else {
+          let thread = store.findOrigin(page, 'pdf-annot', origin.id);
+          if (!thread) {
+            thread = store.addThread(page, {
+              quote, prefix: a.prefix, suffix: a.suffix, text, author,
+              ts: a.ts, origin, index: a.index, page_number: a.page,
+            });
+            created++;
+            changed = true;
+          }
+          target = thread.id;
+          // Acrobat's own reply chain (/IRT): each reply is a message under
+          // the comment it answers, landing once — its own origin id is what
+          // says so, exactly as the review mirror's replies do.
+          for (const r of (Array.isArray(a.replies) ? a.replies : [])) {
+            const rOrigin = store.cleanOrigin({ system: 'pdf-annot', id: r && r.id });
+            const rText = String((r && r.text) || '');
+            if (!rOrigin || !rText.trim()) { skipped++; continue; }
+            const seen = (thread.msgs || []).some(m => {
+              const o = store.originOf(m);
+              return o && o.id === rOrigin.id;
+            });
+            if (seen) continue;
+            store.appendMsg(page, target, {
+              author: sanitizeHandle((r && r.author) || '') || author,
+              text: rText, ts: r.ts, origin: rOrigin,
+            });
+            appended++;
+            changed = true;
+          }
+        }
+        if (target) threads[origin.id] = target;
+      }
+      if (changed) {
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+      }
+      ok(res, { url: page.url, threads, created, appended, skipped });
+    });
+  }
   if (req.method === 'POST' && url === '/reply') {
     return readBody(req, res, data => {
       const text = String(data.text || '');

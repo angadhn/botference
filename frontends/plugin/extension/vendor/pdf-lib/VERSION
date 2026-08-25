@@ -1,0 +1,37 @@
+pdf-lib — vendored, pinned, offline
+===================================
+
+version   1.17.1   (2021-11-06, the latest release)
+source    https://registry.npmjs.org/pdf-lib/-/pdf-lib-1.17.1.tgz
+          dist/pdf-lib.min.js, byte-for-byte
+sha256    0f9a5cad07941f0826586c94e089d89b918c46e5c17cf2d5a3c6f666e3bc694f
+licence   MIT — see LICENSE
+
+What it is for
+--------------
+Writing Discuss threads back into a COPY of a PDF as standard annotations, so
+somebody who only has Acrobat can read the conversation. pdf.js (the other
+vendored library here) reads PDFs and cannot write them; this one writes.
+
+Why this build, and not the ESM one
+-----------------------------------
+`dist/pdf-lib.min.js` is UMD, which is the only shape that serves BOTH callers
+from one file: `pdf/viewer.js` loads it as a classic script (it sets
+`window.PDFLib`) and `test/pdf-annot.test.mjs` require()s the very same file
+through createRequire. The ESM build would have needed a second copy under an
+`.mjs` name for node's extension-based module detection, and two copies of a
+library is two versions waiting to happen.
+
+Loaded ON DEMAND. `pdf/viewer.js` injects it the first time somebody exports —
+half a megabyte is not worth spending on every PDF that is merely read.
+
+Nothing is fetched at runtime: MV3 forbids remote code, and an export that
+needs the network is not an export. Checked for `eval` / `new Function` before
+vendoring (there are none — the extension page's CSP would refuse them).
+
+Upgrading
+---------
+Download the tarball for the new version, copy `dist/pdf-lib.min.js` and
+`LICENSE.md` (as LICENSE), update the version and the sha256 above, and re-run:
+    node frontends/plugin/test/pdf-annot.test.mjs
+    node frontends/plugin/test/pdf-render.test.mjs

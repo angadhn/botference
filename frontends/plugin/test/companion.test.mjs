@@ -2563,6 +2563,21 @@ async function main() {
       assert.equal(local.status, 200, 'and from this machine it is the ordinary projection');
     });
 
+    // The PDF import names its own authors too — "adril" is a /T field in
+    // somebody's file, not anybody who signed in — so it is the owner's door
+    // and nobody else's.
+    await test('importing a PDF’s own comments is the owner’s, and only the owner’s', async () => {
+      const body = { url: 'bfp-pdf://text/' + 'd'.repeat(64),
+        annots: [{ id: 'abcdef0123456789', page: 1, author: 'angadh', quote: 'x', text: 'me, honest' }] };
+      assert.equal((await POST(hb, '/pdf-annotations', body, { ...ADA, cookie: adaCookie })).status, 403,
+        'a signed-in guest');
+      assert.equal((await POST(hb, '/pdf-annotations', body,
+        { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' })).status, 403,
+      'a guest with the password');
+      assert.equal((await POST(hb, '/pdf-annotations', body, REMOTE)).status, 401,
+        'and nothing unauthenticated reaches it at all');
+    });
+
     // --- the signed name: a guest is the name in their own cookie ---------
     await test('a signed-in guest cannot rename themselves to another guest', async () => {
       const r = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: 'and who am I?' },
@@ -3918,6 +3933,134 @@ async function main() {
     assert.equal((await rcPage()).threads.length, before + 1, 'only the well-formed one was filed');
     assert.equal((await POST(base, '/review-comments', { url: REVIEW_URL, comments: [] })).status, 400);
     assert.equal((await POST(base, '/review-comments', { comments: [{ id: 'a' }] })).status, 400);
+  });
+
+  // --- the comments the PDF arrived with ---------------------------------
+  // Same store, other system. The viewer reads a manuscript's Acrobat
+  // highlights and Preview notes and offers them; accepting posts them here.
+  // Everything that makes it safe to press twice is `origin`, exactly as it is
+  // for the review mirror — so that is what these drive.
+  const PDF_URL = 'bfp-pdf://text/' + 'c'.repeat(64);
+  const A1 = '9f2b1c4d5e6f7a8b';
+  const A2 = '1a2b3c4d5e6f7081';
+  const A3 = 'ffeeddccbbaa9988';
+  const pdfPage = async () =>
+    (await GET(base, `/page?url=${encodeURIComponent(PDF_URL)}`)).json;
+  const importAnnots = (annots, extra = {}) =>
+    POST(base, '/pdf-annotations', { url: PDF_URL, title: 'adriana manuscript v4',
+      site: 'local pdf', kind: 'pdf', file_name: 'adriana-manuscript-v4.pdf', ...extra, annots });
+
+  await test('an Acrobat highlight becomes a thread, in the name of whoever wrote it', async () => {
+    const r = await importAnnots([{
+      id: A1, page: 3, author: 'adril', ts: '2026-08-20T18:06:06.000Z',
+      quote: 'deploy and commit', prefix: 'the spacecraft will ', suffix: ' to the target',
+      text: 'I agree that “deploy and commit” sounded very LLM-like.',
+      kind: 'Highlight',
+    }]);
+    assert.equal(r.status, 200);
+    assert.equal(r.json.created, 1);
+    const p = await pdfPage();
+    assert.equal(p.threads.length, 1);
+    const t = p.threads[0];
+    assert.equal(t.quote, 'deploy and commit');
+    assert.equal(t.prefix, 'the spacecraft will ');
+    assert.equal(t.page, 3, 'the page of the document, which is half of what a PDF quote means');
+    assert.deepEqual(t.origin, { system: 'pdf-annot', id: A1 });
+    assert.equal(t.msgs[0].author, 'adril', 'the annotation’s /T is the author');
+    assert.equal(t.msgs[0].ts, '2026-08-20T18:06:06.000Z', '…and its /M is the moment');
+    assert.equal(r.json.threads[A1], t.id);
+    assert.equal(p.file_name, 'adriana-manuscript-v4.pdf', 'the record is made if it did not exist');
+  });
+
+  await test('re-opening the PDF offers nothing: the same annotation is the same thread', async () => {
+    const again = await importAnnots([{
+      id: A1, page: 3, author: 'adril', ts: '2026-08-20T18:06:06.000Z',
+      quote: 'deploy and commit', text: 'I agree that “deploy and commit” sounded very LLM-like.',
+    }]);
+    assert.equal(again.json.created, 0);
+    assert.equal((await pdfPage()).threads.length, 1);
+  });
+
+  await test('Acrobat’s own reply chain lands under its parent, once', async () => {
+    const withReply = () => importAnnots([{
+      id: A1, page: 3, author: 'adril', ts: '2026-08-20T18:06:06.000Z',
+      quote: 'deploy and commit', text: 'I agree that “deploy and commit” sounded very LLM-like.',
+      replies: [{ id: A2, author: 'angadh', ts: '2026-08-21T09:00:00.000Z', text: 'Renamed it.' }],
+    }]);
+    assert.equal((await withReply()).json.appended, 1);
+    assert.equal((await withReply()).json.appended, 0, 'a reply carries its own id, and lands once');
+    const t = (await pdfPage()).threads[0];
+    assert.equal(t.msgs.length, 2);
+    assert.equal(t.msgs[1].author, 'angadh');
+    assert.deepEqual(t.msgs[1].origin, { system: 'pdf-annot', id: A2 });
+  });
+
+  await test('an edited annotation is a NEW comment, and the old thread stands', async () => {
+    // the id is a hash of what the comment IS (annots.js), so editing it in
+    // Acrobat makes a different one. The thread already here may hold a bot's
+    // answer by now, and that answer does not belong to the edited sentence.
+    const r = await importAnnots([{
+      id: A3, page: 3, author: 'adril', ts: '2026-08-22T18:06:06.000Z',
+      quote: 'deploy and commit', text: 'On reflection: “deploy and secure”.',
+    }]);
+    assert.equal(r.json.created, 1);
+    const p = await pdfPage();
+    assert.equal(p.threads.length, 2, 'two comments, because two things were said');
+    assert.equal(p.threads[0].msgs.length, 2, 'and the first one is untouched');
+  });
+
+  await test('a sticky note with nothing near it goes to page chat, not to an orphan', async () => {
+    const r = await importAnnots([{
+      id: 'aaaabbbbccccdddd', page: 18, author: 'adril', ts: '2026-08-20T19:11:32.000Z',
+      quote: '', text: 'The whole appendix needs renumbering.',
+    }]);
+    assert.equal(r.json.created, 1);
+    const p = await pdfPage();
+    const m = p.page_chat[p.page_chat.length - 1];
+    assert.equal(m.text, 'The whole appendix needs renumbering.');
+    assert.deepEqual(m.origin, { system: 'pdf-annot', id: 'aaaabbbbccccdddd' });
+    assert.equal((await importAnnots([{ id: 'aaaabbbbccccdddd', page: 18, author: 'adril',
+      quote: '', text: 'The whole appendix needs renumbering.' }])).json.created, 0,
+    'and it too lands once');
+  });
+
+  await test('an imported thread is an ORDINARY thread everywhere else', async () => {
+    const t = (await pdfPage()).threads[0];
+    const reply = await POST(base, '/reply', { url: PDF_URL, thread_id: t.id, text: 'Fixed in v5.' });
+    assert.equal(reply.status, 200);
+    const after = (await pdfPage()).threads[0];
+    const last = after.msgs[after.msgs.length - 1];
+    assert.equal(last.text, 'Fixed in v5.');
+    assert.equal(last.origin, undefined,
+      'a reply written HERE carries no origin — it is not in the file, and the export knows it');
+    const res = await POST(base, '/resolve', { url: PDF_URL, thread_id: t.id, resolved: true });
+    assert.equal(res.status, 200);
+  });
+
+  await test('nothing summons a bot: an imported comment is somebody else’s remark', async () => {
+    const before = (await pdfPage()).session_id;
+    const r = await importAnnots([{
+      id: '0011223344556677', page: 4, author: 'adril', ts: '2026-08-20T18:06:06.000Z',
+      quote: 'the tumbling target', text: '@claude is this rate plausible?',
+    }]);
+    assert.equal(r.json.created, 1);
+    assert.equal((await pdfPage()).session_id, before,
+      'an @-mention inside somebody else’s annotation does not spend a turn on import');
+  });
+
+  await test('a malformed annotation is skipped, not half-filed', async () => {
+    const before = (await pdfPage()).threads.length;
+    const junk = await importAnnots([
+      { id: '', page: 1, author: 'adril', quote: 'x', text: 'no id' },
+      { id: '!!!!', page: 1, author: 'adril', quote: 'x', text: 'an id of nothing but punctuation' },
+      { id: '9999888877776666', page: 1, author: 'adril', quote: 'x', text: '   ' },
+      { id: '5555444433332222', page: 1, author: 'adril', quote: 'x', text: 'this one is fine' },
+    ]);
+    assert.equal(junk.json.created, 1);
+    assert.equal(junk.json.skipped, 3);
+    assert.equal((await pdfPage()).threads.length, before + 1);
+    assert.equal((await POST(base, '/pdf-annotations', { url: PDF_URL, annots: [] })).status, 400);
+    assert.equal((await POST(base, '/pdf-annotations', { annots: [{ id: A1 }] })).status, 400);
   });
 
   // --- real config, no mock: the bridge must stay lazy ------------------

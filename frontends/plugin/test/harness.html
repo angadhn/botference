@@ -1155,6 +1155,7 @@ const tagPosts = [];        // every /tag-page {url, tags}
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 const openOptionsCalls = []; // …and every {t:'open-options'}, with the agent it named
 const threadUrls = [];      // the url every /thread was filed against
+const pdfAnnotPosts = [];   // every POST /pdf-annotations, as it was sent
 const threadPages = [];     // …and the page number it carried (undefined on an article)
 const pageTitles = [];      // every title POST /page was given, in order
 const pageSites = [];       // …and the site beside it (the PDF's host, not the extension's id)
@@ -1472,6 +1473,57 @@ if (COMMENTERS) {
       { author: 'mira', ts: iso(15), text: 'This is the best sentence in the piece.' },
     ] });
   if (Q.get('by')) BOOT_COMMENTER = Q.get('by');
+}
+
+// ?pdfannot=1 — THE COMMENTS THE FILE ARRIVED WITH.
+// A manuscript that has been round a supervisor: three comments written into
+// the PDF itself (Acrobat highlights, a Preview note, one reply chain), one of
+// which this page has already taken in. The drawer's job is to offer the rest,
+// once, and to stop offering them the moment they are here — which is exactly
+// what the origin marker buys and what the selftest below drives.
+const PDFANNOT = Q.get('pdfannot') === '1' || Q.get('pdfannot') === 'export';
+// ?pdfannot=export — …and the other direction. There is no PDF in the harness,
+// so the VIEWER's half is stubbed at exactly the seam content.js uses
+// (window.__BFP_PDF): what is under test out here is that the chooser offers
+// the annotated copy on a document that can be written, calls through once,
+// and says what happened.
+const PDF_EXPORTS = [];
+if (Q.get('pdfannot') === 'export') {
+  window.__BFP_PDF = {
+    annots: [],
+    exportAnnotated: async () => {
+      PDF_EXPORTS.push(Date.now());
+      return { ok: true, name: 'the-quiet-machine (discussed).pdf', written: 3, orphaned: 1, already: 0 };
+    },
+  };
+}
+const PDF_ANNOT_IMPORTED = 'aaaa1111bbbb2222';
+const PDF_ANNOT_LIST = [
+  { id: PDF_ANNOT_IMPORTED, page: 1, kind: 'Highlight', author: 'adril', ts: iso(40),
+    quote: 'It is not an excuse. It is a description of the plan.',
+    prefix: 'come to mean something specific here.', suffix: '',
+    text: 'This is the sentence I keep tripping over.', replies: [] },
+  { id: 'cccc3333dddd4444', page: 2, kind: 'StrikeOut', author: 'adril', ts: iso(38),
+    quote: 'Nobody at the club disputed it',
+    prefix: 'outlives a manager.', suffix: 'They simply kept doing',
+    text: 'Cut this — it is not supported.',
+    replies: [{ id: 'eeee5555ffff6666', author: 'angadh', ts: iso(37), text: 'Agreed, cutting.' }] },
+  { id: '7777888899990000', page: 3, kind: 'Text', author: 'mira', ts: iso(36),
+    quote: 'Nothing had gone wrong. Nothing had gone right either.',
+    prefix: 'just unconvinced.', suffix: 'The manager said afterwards',
+    text: 'A citation would help here.', replies: [] },
+];
+if (PDFANNOT) {
+  // the one already imported: an ordinary thread that happens to carry the
+  // address of the annotation it came from
+  RECORD.threads.push({
+    id: 't-1754500600-dd04',
+    quote: 'It is not an excuse. It is a description of the plan.',
+    prefix: 'come to mean something specific here.', suffix: '',
+    orphaned: false, page: 1,
+    origin: { system: 'pdf-annot', id: PDF_ANNOT_IMPORTED },
+    msgs: [{ author: 'adril', ts: iso(40), text: 'This is the sentence I keep tripping over.' }],
+  });
 }
 
 // ?handles=1 — the shape of a shared companion: a page chat several people are
@@ -1826,6 +1878,31 @@ function companion(method, path, body) {
     if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
     return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined,
                                             ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
+  }
+  // the PDF's own comments, projected in. The rule is the origin marker and
+  // nothing else: one already filed is left alone, however often it is sent.
+  if (method === 'POST' && route === '/pdf-annotations') {
+    pdfAnnotPosts.push(body);
+    let created = 0, appended = 0;
+    for (const a of body.annots || []) {
+      let t = RECORD.threads.find(x => x.origin && x.origin.system === 'pdf-annot' && x.origin.id === a.id);
+      if (!t) {
+        t = { id: 't-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+              quote: a.quote, prefix: a.prefix, suffix: a.suffix, orphaned: false,
+              origin: { system: 'pdf-annot', id: a.id },
+              msgs: [{ author: a.author, ts: a.ts, text: a.text }] };
+        if (a.page > 0) t.page = a.page;
+        RECORD.threads.push(t);
+        created++;
+      }
+      for (const r of a.replies || []) {
+        if (t.msgs.some(m => m.origin && m.origin.id === r.id)) continue;
+        t.msgs.push({ author: r.author, ts: r.ts, text: r.text, origin: { system: 'pdf-annot', id: r.id } });
+        appended++;
+      }
+    }
+    RECORD.updated_at = now();
+    return { ok: true, status: 200, data: { ok: true, created, appended, skipped: 0 } };
   }
   if (method === 'POST' && route === '/reply') {
     replyUrls.push(body.url);
@@ -6117,6 +6194,129 @@ async function selftestReviewPage() {
 // The one thing it is NOT is resolved. A bot can say "I did this"; it can
 // never close the reader's question. The ✓ is still the reader's click, and
 // "not done" is the one-click way to disagree.
+// ?pdfannot=1&selftest=1 — THE COMMENTS THE FILE ARRIVED WITH.
+//
+// A PDF that came back from a supervisor holds real comments with real names
+// on them. Discuss neither ignores them (which is what it used to do, while
+// saying "No comments yet" over a marked-up paper) nor swallows them (filing
+// somebody else's words under the reader's own record without asking is not
+// the extension's decision to make). It OFFERS them, once, and stops offering
+// the moment they are here.
+//
+// The whole of that "once" is the origin marker: content.js subtracts what the
+// record already carries from what the file carries, so nothing is remembered
+// anywhere about having offered before — reopen the paper on another machine
+// and the answer is the same.
+async function selftestPdfAnnot() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const card = () => S.querySelector('.pane[data-pane="comments"] .pdfimport');
+  const threads = () => (window.__bfp.page.threads || []).length;
+
+  check('the file carries three comments, and one of them is already here',
+    window.__bfp.pdfImport.total === 3 && window.__bfp.pdfImport.pending === 2);
+  check('the drawer is told the same numbers',
+    d.pdfAnnots().total === 3 && d.pdfAnnots().pending === 2);
+  check('a card offers the ones that are not', !!card());
+  check('\u2026and says how many, which is the pending count and not the file\u2019s',
+    /2 comments/.test(card().textContent) && /3 in the file/.test(card().textContent));
+  check('\u2026without pretending the page is empty',
+    !/No comments yet/.test(S.querySelector('.pane[data-pane="comments"]').textContent));
+  // and on a paper with no Discuss threads yet, the offer REPLACES the empty
+  // line rather than standing above a sentence that contradicts it
+  const kept = window.__bfp.page.threads.slice();
+  window.__bfp.page.threads.length = 0;
+  d.setPage(window.__bfp.page);
+  await sleep(60);
+  check('a PDF whose only comments are the file\u2019s does not also say \u201cno comments yet\u201d',
+    !!card() && !/No comments yet/.test(S.querySelector('.pane[data-pane="comments"]').textContent));
+  window.__bfp.page.threads.push(...kept);
+  d.setPage(window.__bfp.page);
+  await sleep(60);
+
+  // ---- importing ----
+  const before = threads();
+  card().querySelector('[data-act="pdf-import"]').click();
+  await until(() => pdfAnnotPosts.length === 1);
+  check('only the PENDING comments cross the wire',
+    pdfAnnotPosts[0].annots.length === 2
+      && !pdfAnnotPosts[0].annots.some(a => a.id === PDF_ANNOT_IMPORTED));
+  check('\u2026each carrying the page of the document it came off',
+    pdfAnnotPosts[0].annots.every(a => a.page > 0));
+  check('\u2026and Acrobat\u2019s own reply chain with it',
+    (pdfAnnotPosts[0].annots.find(a => a.id === 'cccc3333dddd4444').replies || []).length === 1);
+  await until(() => threads() === before + 2);
+  check('they land as ordinary threads', threads() === before + 2);
+  const made = window.__bfp.page.threads.find(t => t.origin && t.origin.id === 'cccc3333dddd4444');
+  check('\u2026in the annotation author\u2019s name, at the moment it was written',
+    made.msgs[0].author === 'adril' && made.msgs[0].text === 'Cut this \u2014 it is not supported.');
+  check('\u2026with the reply under it', made.msgs.length === 2 && made.msgs[1].author === 'angadh');
+  check('\u2026drawn as cards like any other thread',
+    !!S.querySelector('.card[data-thread="' + made.id + '"]'));
+  await until(() => !card(), 2000);
+  check('and the offer is gone, because there is nothing left to offer',
+    !card() && d.pdfAnnots().pending === 0);
+
+  // ---- re-opening the file ----
+  window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
+  await sleep(60);
+  check('re-opening the same PDF offers nothing at all',
+    !card() && window.__bfp.pdfImport.pending === 0);
+  check('\u2026and posts nothing', pdfAnnotPosts.length === 1);
+
+  // ---- an annotation EDITED in Acrobat is a new comment ----
+  const edited = PDF_ANNOT_LIST.concat([{ id: 'edited0000000001', page: 3, kind: 'Text',
+    author: 'mira', ts: iso(4), quote: 'Nothing had gone wrong. Nothing had gone right either.',
+    text: 'On reflection: two citations.', replies: [] }]);
+  window.__bfp.pdfAnnots(edited);
+  await sleep(60);
+  check('an edited comment comes back as a NEW one to import',
+    !!card() && d.pdfAnnots().pending === 1);
+  check('\u2026and the thread the old wording made is untouched',
+    !!window.__bfp.page.threads.find(t => t.origin && t.origin.id === '7777888899990000'));
+
+  // ---- not now ----
+  card().querySelector('[data-act="pdf-import-no"]').click();
+  await sleep(60);
+  check('\u201cnot now\u201d takes the card down', !card());
+  window.__bfp.pdfAnnots(edited);
+  await sleep(60);
+  check('\u2026and it stays down for this tab, however often the file says so again',
+    !card() && pdfAnnotPosts.length === 1);
+  check('nothing was written to storage about any of it',
+    !Object.keys(store).some(k => /pdf-?annot|pdfimport/i.test(k)));
+
+  // ---- the other direction, where the viewer can write the file ----
+  if (Q.get('pdfannot') === 'export') {
+    S.querySelector('[data-act="export"]').click();
+    await sleep(60);
+    const row = S.querySelector('[data-act="export-run"][data-mode="pdf"]');
+    check('a PDF this viewer can write offers the annotated copy in the export chooser', !!row);
+    check('\u2026beside the two Obsidian modes, not instead of them',
+      S.querySelectorAll('[data-act="export-run"]').length === 3);
+    row.click();
+    await until(() => PDF_EXPORTS.length === 1);
+    check('pressing it writes the file exactly once', PDF_EXPORTS.length === 1);
+    const foot = () => S.querySelector('.footbar').textContent;
+    await until(() => /downloaded/.test(foot()));
+    check('\u2026and the footer says what landed, and what did not',
+      /the-quiet-machine \(discussed\)\.pdf/.test(foot()) && /1 not written/.test(foot()));
+    check('\u2026and the chooser closed behind it',
+      !S.querySelector('[data-act="export-run"]'));
+  }
+
+  const bad = out.filter(l => l[0] === '\u2717');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (pdfannot) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  \u2014  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?commenters=1&selftest=1 — WHO IS IN THIS MARGIN.
 // A page five voices have written on: the owner's three threads, two projected
 // in from the review page's own margin (mira and devraj), a guest replying in
@@ -7473,6 +7673,10 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (window.__BFP_THEME) d.setTheme(window.__BFP_THEME);
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
     if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
+    // the file's own comments, handed to content.js exactly as pdf/viewer.js
+    // hands them over (window.__bfp.pdfAnnots) — there is no PDF here, and
+    // there does not need to be: what is under test is the offer, not the parse
+    if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
       setTimeout(WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
@@ -7480,6 +7684,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
         : HEAL ? selftestOrphanHeal : TICKER ? selftestRoundTicker
         : COMMENTERS ? selftestCommenters
+        : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration
         : READY ? selftestReady : selftest, 250);
       return;

@@ -2,6 +2,31 @@
 
 ## 2026-08-25
 
+- **A PDF's own comments are comments now — in both directions.** Open a
+  manuscript that has been round a supervisor and Discuss used to say "No
+  comments yet" over a paper covered in Acrobat highlights and Preview sticky
+  notes. It now reads them: the drawer says *"This PDF carries 7 comments"* and
+  offers to import them, and pressing the button turns each one into an
+  ordinary thread — quoted on the same words, on the same page, under the name
+  of whoever wrote it, at the moment they wrote it, with Acrobat's own replies
+  underneath. From there they are threads like any other: reply, resolve,
+  `@claude`, send review, export to Obsidian. Nothing is imported without being
+  asked for, nothing is imported twice however often you reopen the file, and a
+  comment you edit in Acrobat comes back as a new one rather than overwriting
+  the thread your bots have already answered in.
+
+  And back out: the export chooser on a PDF now offers **an annotated copy**.
+  Every thread on the page — your comments and the bots' replies — is written
+  into a copy of the file as a standard highlight with the whole conversation
+  in its popup, and downloaded. Send that to somebody who has only Acrobat and
+  they can read the discussion. The original file is never touched, never
+  uploaded and never copied anywhere: the annotated version is built in the
+  browser and lands in your Downloads folder as `<name> (discussed).pdf`.
+
+  The annotated copy is still **the same document** to Discuss — same page,
+  same chat, same highlights — because a PDF is identified here by its words,
+  and annotations are not words.
+
 - **Fixed: the drawer went missing on Medium (and any site that renders its
   whole page from a framework).** Select a passage and no comment button
   appeared; click the toolbar icon and no panel opened. Nothing was in the

@@ -1134,6 +1134,19 @@
     // in the one pane the reader came to for their comments.
     const TC = { on: opts.trackChanges !== false, threads: [] };
 
+    // THE COMMENTS THE DOCUMENT ARRIVED WITH. On a PDF opened in the plugin's
+    // own viewer, content.js reports what the FILE already carries — Acrobat
+    // highlights, Preview sticky notes, somebody else's margin — and how many
+    // of them this page has not taken in yet. Nothing here reads a PDF: this
+    // is a count, an offer and a button.
+    //
+    //   total    comments found in the file
+    //   pending  of those, the ones not already imported (origin, store.mjs)
+    //   canExport  this page can be written back OUT as an annotated copy
+    //   dismissed  the reader said "not now" — for this tab, and no longer
+    const PDF = { total: 0, pending: 0, canExport: false, dismissed: false,
+                  busy: false, note: '', err: '' };
+
     const D = {
       page: null,          // the page record from /page
       // the review round in flight, exactly as the companion broadcasts it.
@@ -2422,6 +2435,37 @@
         `${TC.on ? 'hide changes on the page' : 'show changes on the page'}</button></div>`;
     };
 
+    // ── the comments the file came with ───────────────────────────────────
+    // OFFERED, NEVER AUTOMATIC. A paper marked up by a supervisor holds
+    // somebody else's words with somebody else's name on them, and filing
+    // those into the reader's own record without asking is a decision only the
+    // reader gets to make. So: one card, one number, two buttons, at the top
+    // of the pane where the comments would be.
+    //
+    // It draws only for the OWNER (the companion refuses anybody else, and a
+    // button that produces a 403 is a worse answer than no button), only while
+    // something is genuinely un-imported, and never again in this tab once it
+    // has been answered either way.
+    const pdfImportHtml = () => {
+      if (!D.owner || PDF.dismissed || !PDF.pending) return '';
+      const n = PDF.pending;
+      const some = PDF.total !== n;
+      return `<div class="pdfimport" role="status">` +
+        `<span class="pitext"><b>This PDF carries ${n} comment${n === 1 ? '' : 's'}</b>` +
+        esc(some ? ` not yet in this margin (${PDF.total} in the file).`
+          : ' — highlights and notes written into the file itself.') +
+        esc(' Import them and they become ordinary threads: quoted, dated, in their author’s name.') +
+        `</span>` +
+        (PDF.err ? `<span class="pierr">${esc(PDF.err)}</span>` : '') +
+        `<span class="piacts">` +
+        `<button class="sdbtn" data-act="pdf-import" type="button"${PDF.busy ? ' disabled' : ''}
+           title="${esc('Bring the file’s own comments into this page as threads')}">${
+          PDF.busy ? 'importing…' : `import ${n} comment${n === 1 ? '' : 's'}`}</button>` +
+        `<button class="rebtn pino" data-act="pdf-import-no" type="button"${PDF.busy ? ' disabled' : ''}
+           title="${esc('Leave them in the file — you can import later by reopening this PDF')}">not now</button>` +
+        `</span></div>`;
+    };
+
     // Something the bots are about to answer WITHOUT — the page text a site
     // adapter could not read (content.js sets it). It belongs in Page chat
     // because that is where the user is typing the question, and it is
@@ -2714,15 +2758,19 @@
       const open = live.filter(t => !isAddressed(t));
       const ready = live.filter(isAddressed);
       const done = threads.filter(isResolved);
+      // the file's own comments, offered. Held in a variable because it also
+      // answers the empty state below: "No comments yet" directly under "this
+      // PDF carries 7 comments" is two sentences contradicting each other.
+      const pdfOffer = pdfImportHtml();
       let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml()
-        + projectTaskCardHtml() + taskCardHtml() + rail;
+        + pdfOffer + projectTaskCardHtml() + taskCardHtml() + rail;
       html += D.pending ? pendingHtml() : '';
       // a filter that matches nothing must say so and offer the way back —
       // "No comments yet" under a rail full of names would be a plain lie
       if (D.commenter && !threads.length) {
         html += `<div class="empty"><b>Nothing from ${esc(D.commenter)} here</b>`
           + `<button class="fclear" type="button" data-act="filter-by" data-by="">show everyone</button></div>`;
-      } else if (!threads.length && !D.pending && CAPS.highlights && !standDown()) {
+      } else if (!threads.length && !D.pending && !pdfOffer && CAPS.highlights && !standDown()) {
         html += `<div class="empty"><b>No comments yet</b>Select any text on the page and hit 💬.</div>`;
       } else if (!live.length && !D.pending && CAPS.highlights && !standDown()) {
         // every thread on this page is filed — say so, rather than showing the
@@ -4184,6 +4232,8 @@
           cb('onTrackChanges')(TC.on);
           return;
         }
+        if (act === 'pdf-import') { doPdfImport(); return; }
+        if (act === 'pdf-import-no') { PDF.dismissed = true; PDF.err = ''; render(); return; }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
@@ -5309,7 +5359,20 @@
         EXPORT_PICK.map(([mode, name, why]) =>
           `<button class="xrow${mode === D.exportMode ? ' on' : ''}" type="button" role="menuitem"
              data-act="export-run" data-mode="${esc(mode)}"${mode === D.exportMode ? ' aria-current="true"' : ''}>
-             <span class="xname">${esc(name)}</span><span class="xwhy">${esc(why)}</span></button>`).join('');
+             <span class="xname">${esc(name)}</span><span class="xwhy">${esc(why)}</span></button>`).join('')
+        // …and, on a PDF in the plugin's own viewer, the export that is not a
+        // note at all: a COPY OF THE PDF with this margin written into it as
+        // standard annotations. It sits here rather than behind a control of
+        // its own because "export" is the question the reader already came to
+        // this button with; what changes is where it lands. Never remembered
+        // as the crystal's mode (see pickExport) — the pages list's one-click
+        // export means Obsidian, and always did.
+        + (PDF.canExport
+          ? `<div class="pop-head second">…or into the PDF</div>` +
+            `<button class="xrow" type="button" role="menuitem" data-act="export-run" data-mode="pdf">
+               <span class="xname">Annotated copy</span>
+               <span class="xwhy">the discussion as Acrobat comments, downloaded</span></button>`
+          : '');
       D.el.exportpick.hidden = false;
     }
     function openExportPick() {
@@ -5328,11 +5391,63 @@
     // Choosing is also remembering: the next export, here or from a row in the
     // pages list, uses this until it is changed again.
     function pickExport(mode) {
+      // the annotated PDF is a different destination, not a different mode:
+      // it is not remembered, and the crystal keeps whatever Obsidian export
+      // the reader last chose
+      if (mode === 'pdf') { closeExportPick(); doExportPdf(); return; }
       D.exportMode = mode === 'comments' ? 'comments' : 'all';
       closeExportPick();
       rememberExportMode();
       if (D.view === 'pages') renderPages();   // the rows' tooltips name the mode
       doExport(D.exportMode);
+    }
+
+    // ---- the PDF's own margin, in and out ---------------------------------
+    // Both directions are content.js's work (it has the companion and the
+    // viewer); this is the button, the wait and the sentence afterwards.
+    async function doPdfImport() {
+      if (PDF.busy) return;
+      PDF.busy = true;
+      PDF.err = '';
+      render();
+      let r;
+      try { r = await cb('onPdfImport')(); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      PDF.busy = false;
+      if (!r || r.ok === false) {
+        PDF.err = (r && r.error) || 'those comments could not be imported';
+        render();
+        return;
+      }
+      // the card comes down because the count did: content.js recomputes
+      // `pending` from the record it just refetched (setPdfAnnots), and a
+      // fully imported file has nothing left to offer
+      const n = (r.created || 0) + (r.appended || 0);
+      D.foot = n ? `imported ${n} comment${n === 1 ? '' : 's'} from the PDF` : 'those comments were already here';
+      D.footErr = false;
+      paintFoot();
+      setTimeout(() => { if (String(D.foot).startsWith('imported') || String(D.foot).startsWith('those comments')) { D.foot = ''; paintFoot(); } }, 6000);
+      render();
+    }
+
+    async function doExportPdf() {
+      D.foot = 'writing the PDF…';
+      D.footErr = false;
+      paintFoot();
+      let r;
+      try { r = await cb('onPdfExport')(); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        D.foot = (r && r.error) || 'the PDF could not be written';
+        D.footErr = true;
+      } else {
+        const skipped = (r.orphaned || 0) + (r.already || 0);
+        D.foot = 'downloaded ' + (r.name || 'the annotated copy')
+          + (skipped ? ` · ${skipped} not written` : '');
+        D.footErr = false;
+      }
+      paintFoot();
+      setTimeout(() => { if (String(D.foot).startsWith('downloaded')) { D.foot = ''; paintFoot(); } }, 8000);
     }
 
     // Deleting a page from the library takes its bot session with it. The
@@ -5953,6 +6068,23 @@
         else render();
         return D;
       },
+      // What the FILE says, on a PDF: how many comments are in it, how many of
+      // those this page has not taken in, and whether this document can be
+      // written back out. content.js recomputes all three from the record on
+      // every load, so the card comes down by itself the moment the last one
+      // is imported. A `dismissed` card stays dismissed for this tab.
+      setPdfAnnots: p => {
+        Object.assign(PDF, {
+          total: Math.max(0, Number((p && p.total) || 0)),
+          pending: Math.max(0, Number((p && p.pending) || 0)),
+          canExport: !!(p && p.canExport),
+        });
+        render();
+        return D;
+      },
+      pdfAnnots: () => ({ total: PDF.total, pending: PDF.pending,
+                          canExport: PDF.canExport, dismissed: PDF.dismissed,
+                          busy: PDF.busy, err: PDF.err }),
       // observable for the harness: is Discuss's margin off on this page?
       standingDown: () => standDown(),
       // …and the commenter filter: who has a pill on this page, and which of

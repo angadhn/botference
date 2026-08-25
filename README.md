@@ -517,18 +517,40 @@ Discuss → Details → "Allow access to file URLs"**. The options page says
 so if it is off, and so does the viewer.
 
 A file on your disk is filed by *what it is* rather than *where it is*:
-Discuss identifies it by a hash of its contents. So move it, rename it
-after reading it, keep a second copy on another Mac — same page, same
-comments, every time. Edit the file and it honestly becomes a new page:
-different contents, different document; the old one keeps its comments
-under the old name. And the same paper read from the web and from your
-disk are two pages, because one is identified by its address and the
-other by its bytes. The Obsidian note names the file it came from, since
+Discuss identifies it by a hash of its **words**. So move it, rename it
+after reading it, annotate it in Acrobat, re-save it, keep a second copy
+on another Mac — same page, same comments, every time. Genuinely revise
+the document and it honestly becomes a new page; the old one keeps its
+comments under the old name. And the same paper read from the web and
+from your disk are two pages, because one is identified by its address
+and the other by its text. (A scan has no words to hash and is filed by
+its bytes instead.) The Obsidian note names the file it came from, since
 a hash tells you nothing.
 
 The file itself never leaves your machine — nothing is uploaded, copied
 or stored anywhere. What your phone reads is the text, exactly as for
 any PDF.
+
+**The comments already in the file — and the ones you write back.** A
+manuscript that has been round a supervisor arrives with comments in it:
+Acrobat highlights, Preview sticky notes, replies to replies. Discuss
+reads them. The drawer says *"This PDF carries 7 comments"* and offers
+to import them; press the button and each becomes an ordinary thread —
+on the same words, on the same page, under the name of whoever wrote it,
+at the moment they wrote it. From there they take replies, resolve,
+`@claude`, send review and export like anything else. Nothing is
+imported until you ask, nothing is imported twice however often you
+reopen the paper, and a comment somebody edits in Acrobat comes back as
+a new one rather than overwriting the thread your bots have answered in.
+
+Going the other way, the export chooser on a PDF offers **an annotated
+copy**: every thread on the page, the bots' replies included, written
+into a copy of the file as standard highlights with the conversation in
+the popup, and downloaded as `<name> (discussed).pdf`. Send it to
+somebody who has only Acrobat and they can read the whole discussion.
+Your original is never touched, and the annotated copy is still the same
+document to Discuss — same page, same chat — because annotations are not
+words.
 
 **And the pages your council writes.** When a council chat builds an HTML
 artifact inside its own project —

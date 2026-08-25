@@ -4148,6 +4148,252 @@ which assertion still PASSES unfixed: "a selection gets its pill" — the class
 toggles happily on a detached node. That is why every suite was green while the
 extension was dead on the page.
 
+## Amendment (2026-08-25, shipped): the PDF's own margin, both directions
+
+A manuscript that has been round a supervisor, a co-author and a copy editor
+comes back with the comments already IN it: Acrobat highlights, Preview sticky
+notes, an author, a date and a paragraph of popup text each. Discuss rendered
+that file beautifully and then printed **"No comments yet"** beside it — a
+statement that was false about the document on screen, and the reason the
+reader had two margins for one paper.
+
+So the comments cross, both ways:
+
+```
+the file's annotations ──POST /pdf-annotations──▶  companion   offered once,
+   (read in the VIEWER)                                        filed by origin
+
+Discuss threads ──written in the VIEWER, downloaded──▶  a COPY of the PDF
+   (bots included)                                      standard annotations
+```
+
+### Half one: import
+
+**Who reads the file.** `pdf/viewer.js`, and only it. The parsed document
+(`page.getAnnotations()`) and the text layer are both in that tab, and "which
+words are under this quad" is a question only the two of them together can
+answer. The companion never sees the file — the local-PDF amendment's promise
+that the bytes are *never uploaded, copied or stored* is kept exactly as
+written. What crosses the wire is a comment: an id, a page, an author, a
+timestamp, a quote and its prefix/suffix. The rectangles stay behind; they are
+how this side FOUND the comment, and mean nothing to a thread.
+
+**What counts as a comment.** The four text markups (Highlight, Underline,
+StrikeOut, Squiggly) and a text note (Text/FreeText) — WITH contents. A markup
+with nothing said in it is a reader's own yellow marker, not a remark to
+anybody, and is left alone. A `Popup` is the window of a comment and never a
+second copy of it; a `Link` is not a comment at all. Acrobat's reply chains
+(`/IRT`) fold into the comment they answer, so one conversation is one thread.
+
+**Quote, prefix, suffix — the same three fields a selection captures**, so an
+imported thread anchors, re-anchors and orphans exactly as a hand-made one
+does. They are computed in PDF USER SPACE: every text-layer span's client
+rectangle is converted through `viewport.convertToPdfPoint` into the space the
+QuadPoints are written in, and a span counts as under the mark when a third of
+it is covered (any touch would swallow the line above, since a highlight
+overshoots; most-of-it would drop the clipped first and last words). A sticky
+note has no quads and is pinned at a point: it takes the line it points at —
+the nearest span, with the one in its own vertical band winning a tie — and a
+note with nothing within 400pt of it (a note on a blank page) gets **no quote
+and becomes page chat**, exactly as a review page's block-level comment does.
+
+**The origin scheme, which is the whole of idempotence.** Every comment is
+filed under `origin: {system:'pdf-annot', id}` — the store's existing marker
+(2026-08-25, the unified comment store), one more entry in `ORIGIN_SYSTEMS`,
+and nothing else in the record, the drawer, the digest or the export needs to
+know it exists.
+
+The id is a **16-hex hash of what the comment IS**: its page, its rectangle
+rounded to a tenth of a point, its author and its words whitespace-folded
+(`annotKey`, `pdf/annots.js` — FNV-1a over two lanes, pure, synchronous, the
+same answer in node and in the page). Deliberately NOT the annotation's object
+number (`489R`): that is the file's address for it, and Acrobat renumbers every
+object on every save — an id that moved when the reader pressed ⌘S would
+re-offer the entire document as new, which is the exact bug the marker exists
+to prevent.
+
+Two consequences, both chosen:
+
+- **Re-opening offers nothing.** However many times the paper is saved,
+  renamed, synced to another Mac or re-downloaded, the ids are the same and
+  the companion already has them. Nothing is remembered anywhere about having
+  offered before — the answer is recomputed from the record every load, which
+  is what takes the card down the moment the last one lands.
+- **An annotation EDITED in Acrobat comes back as a NEW comment.** Its words
+  changed, so its id changed. The thread already here is left exactly as it
+  is, because by now it may hold a bot's answer and the reader's reply, and
+  neither of those belongs to the sentence that was edited. Nothing is ever
+  deleted, rewritten or merged — the same rule the review mirror follows, for
+  the same reason.
+
+**Offered, never automatic.** A card at the top of the Comments pane —
+*"This PDF carries N comments"*, **import N comments** / **not now** — and
+nothing happens until it is pressed. Filing somebody else's words, under
+somebody else's name, into the reader's own record is not a decision the
+extension gets to make. The card draws only for the OWNER (the endpoint refuses
+everybody else, and a button that produces a 403 is worse than no button), only
+while something is genuinely un-imported, and never again in that tab once it
+has been answered either way. Only the PENDING comments cross the wire: the
+companion would skip the rest anyway, but a re-import of a sixty-comment
+manuscript should not be sixty comments sent to be thrown away.
+
+**The door: `POST /pdf-annotations`.** Owner-only, for the same reason
+`/review-comments` is loopback-only — **it names its own authors**. "adril" is
+a `/T` field in somebody's file, not anybody who signed in, and minting
+comments under other people's names is precisely the power a guest must never
+hold.
+
+```
+{ url, title?, site?, kind?, file_name?,
+  annots: [ { id, page, author, ts, text, quote, prefix, suffix, kind?,
+              replies: [{id, author, ts, text}] } ] }
+→ { url, threads: {<id>: <thread_id|"__page__">}, created, appended, skipped }
+```
+
+**Nothing summons a bot.** An imported comment is somebody else's remark, and
+an `@claude` inside a supervisor's annotation was addressed to a person, not to
+this companion. The thread is ordinary in every other way, so the reader can
+reply into it with a mention and get an answer — which is the reader deciding
+which of the sixty is worth an agent, one at a time.
+
+### Half two: export — the discussion, written back into the file
+
+The person who most needs to read a Discuss thread is often the one who does
+not have Discuss. So a PDF page's threads (bot replies included) can be written
+into a **copy** of the file as standard Highlight annotations with the whole
+conversation in the popup, downloaded through the browser.
+
+**Where the bytes go: nowhere.** This was the one real design decision, and it
+went against the codebase's usual grain (the companion writes files; the
+extension cannot). Writing in the companion would have meant uploading the
+manuscript — 7 MB for the paper in hand, against the snapshot pipeline's 2 MB
+cap — to a process that has never seen it and whose whole contract about local
+PDFs is that it never will. And the geometry is not there either: a thread is a
+QUOTE, and the only thing on this machine that knows where those words are in
+PDF coordinates is the text layer in the viewer's tab. So **the viewer writes
+it, in memory, and hands the result to the browser's own downloader** (a blob
+and an `<a download>` from an extension page). Nothing is written beside the
+original, no path is guessed, the original is never touched, and where the copy
+lands is the reader's own browser setting. It is named `<name> (discussed).pdf`
+— an export must not be able to overwrite the file it was made from.
+
+**Where the ink goes.** From the PAINTED HIGHLIGHT, not from a fresh text hunt:
+`anchor.js` has already decided where a thread is (including after a re-anchor,
+including after a bot rewrote the passage), so the ink in the file lands exactly
+where the ink on screen is. Each mark's client rectangles are converted back
+through the same `convertToPdfPoint` the import uses, one quad per line, grouped
+by page — a quote across a page break is two annotations, because an annotation
+belongs to one page. A thread whose highlight is ORPHANED has no marks and is
+reported as skipped rather than guessed at.
+
+**One annotation per thread, not a reply chain.** Acrobat models a conversation
+as a parent plus `/IRT` children, and macOS Preview, Skim and every in-browser
+viewer ignore that completely — they show the parent's `/Contents` and nothing
+else. The entire point of the export is the person who does not have Discuss,
+so the format is the one every viewer renders: **one popup with the whole
+conversation in it**, each entry named and dated, the quote at the top, the
+bots' tool-narration left out. Filed threads are written in green, live ones in
+yellow, and a thread that came out of THIS FILE and has not been added to since
+is not written at all — putting the supervisor's own comment back beside itself
+is not an export.
+
+**Appearance streams are not optional.** A Highlight with no `/AP` is drawn by
+pdf.js and by Preview, and by Acrobat only sometimes — a viewer is entitled to
+render nothing for an annotation that does not say how it looks. So every
+annotation carries the appearance Acrobat itself writes: a Form XObject in a
+`/Transparency` group, `/BM /Multiply`, one filled box per quad. That blend is
+also the difference between ink over the glyphs and a block covering them. It
+is verified by rendering the written file through **macOS PDFKit** (Quick Look,
+which is Preview's own engine): the highlight paints and the words read through
+it.
+
+**The writer** is pdf-lib 1.17.1, MIT, vendored at
+`extension/vendor/pdf-lib/` the way pdf.js is — pinned, offline, with a VERSION
+file carrying the source url, the sha256 and the upgrade steps. The UMD build
+deliberately: one file serves both the viewer (a classic script, `window.PDFLib`)
+and the node test (`createRequire`), and it is injected ON DEMAND, the first
+time somebody exports — half a megabyte is not worth spending on every PDF that
+is merely read. Checked for `eval`/`new Function` before vendoring; there are
+none, and the extension page's CSP would refuse them.
+
+### THE INVARIANT, stated once and pinned twice
+
+A local PDF is identified by the SHA-256 of its extracted, normalized TEXT
+(`bfp-pdf://text/…`). **Annotations are not text.** Writing them changes every
+byte of the file and not one word of the extract, so:
+
+> the annotated copy is THE SAME PAGE — same identity, same page key, same
+> chat, same highlights — and re-opening it shows the discussion it was
+> written from.
+
+That is not a happy accident; it is why the text identity exists (the byte-hash
+identity it replaced was re-keyed by exactly this act). It is pinned at both
+levels: `pdf-annot.test.mjs` asserts that writing does not touch a single text
+operator on any page, and `pdf-render.test.mjs` asserts in a real browser that
+the annotated fixture and the plain one normalize to the same string — with the
+plain fixture's own words checked, so it cannot be two empty strings agreeing.
+Verified once by hand at full scale as well: the reader's own 18-page, 7 MB
+manuscript, annotated by this writer, comes back as
+`bfp-pdf://text/abde28e2…` both before and after.
+
+### Files
+
+```
+extension/pdf/annots.js         NEW — dates, the origin key, the geometry, the
+                                popup's text, and the writer (handed pdf-lib
+                                rather than importing it, so node tests it)
+extension/pdf/viewer.js         reads the file's annotations after the text
+                                layers land; writes the discussion back
+extension/content.js            pending = the file's ids minus the record's;
+                                the import POST and the export call
+extension/drawer.js             the offer card, and the chooser's third row
+extension/drawer.css            .pdfimport
+extension/vendor/pdf-lib/       vendored writer + LICENSE + VERSION
+store.mjs                       ORIGIN_SYSTEMS gains 'pdf-annot'
+server.mjs                      POST /pdf-annotations (owner-only)
+```
+
+### Testing
+
+`test/pdf-annot.test.mjs` (81) — the dates in every spelling a producer uses,
+which annotations are comments, the origin key's two properties (stable across
+a re-save, different after an edit), reply folding, the geometry, the popup's
+text, and then the writer FOR REAL against the two-page fixture: the
+dictionaries read back, UTF-16 contents, the appearance stream's shape, a
+thread that could not be placed reported rather than invented, and the
+invariant.
+
+`test/pdf-render.test.mjs` (31 → 61) — a fixture annotated at startup (built
+in code, so what the import is tested against is a file this repo can account
+for), rendered by REAL PDF.js in a real Chromium: three annotations arrive as
+two comments, in their authors' names and at their own moments, quoting the
+words their quads actually cover; the identity is unchanged; the round trip —
+import the comment, make the thread, paint it, ask the export what it would
+write — lands its quads back on the passage the original mark covered; and
+then the writer runs IN THE PAGE (the vendored UMD build loaded as a classic
+script) and what it wrote is re-parsed in the same tab by the vendored pdf.js:
+the supervisor's comments still there, the discussion beside them, and every
+word of the document identical.
+
+`test/companion.test.mjs` (186 → 195) — the door: an Acrobat highlight becoming
+a thread under its author's name and page, re-import creating nothing, a reply
+chain landing once, an edited annotation being a new comment beside the old
+thread, a quote-less note going to page chat, an imported thread being ordinary
+everywhere else, nothing summoning a bot, malformed annotations skipped rather
+than half-filed, and the door refused to a signed-in guest, a bearer token and
+an unauthenticated caller alike.
+
+Harness `?pdfannot=1&selftest=1` (20) — the offer, driven at the seam
+`pdf/viewer.js` uses (`window.__bfp.pdfAnnots`), with no PDF at all: the count
+is the pending one, only the pending comments cross the wire, they land as
+ordinary cards in their authors' names, the card goes when there is nothing
+left to offer, re-opening the file offers nothing and posts nothing, an edited
+annotation comes back as one, "not now" holds for the tab, and nothing is
+persisted. `?pdfannot=export&selftest=1` (25) adds the other direction over a
+stubbed viewer — the chooser's third row beside the two Obsidian modes, one
+call through, and the footer naming the file and what could not be written.
+`?pdfannot=1` is the screenshot pose.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

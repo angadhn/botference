@@ -1293,7 +1293,70 @@
     // socket dropped) mid-round asks. Owner-only on the companion, so a guest
     // simply gets nothing and the strip stays down.
     loadRound();
+    // …and how much of the FILE's own margin is still outside this record. It
+    // is recomputed from the record every load, which is what takes the import
+    // card down the moment the last annotation lands.
+    syncPdfImport();
     return PAGE;
+  }
+
+  // ---- the comments the PDF itself carried ---------------------------------
+  //
+  // pdf/viewer.js reads the file's own annotations — Acrobat highlights,
+  // Preview sticky notes, an /IRT reply chain — and calls in here with them.
+  // This file does two things with that list and nothing else: works out how
+  // many of them this page has NOT already taken in, and posts them when the
+  // reader says so.
+  //
+  // WHAT MAKES IT IDEMPOTENT is the same thing that makes the review mirror
+  // idempotent: every annotation carries an `origin` id (a hash of the page,
+  // the place, the author and the words — pdf/annots.js), the companion files
+  // threads under it, and this side subtracts what is already filed. So a
+  // paper reopened for the twentieth time offers nothing, with no state kept
+  // anywhere about having offered before.
+  let pdfAnnotList = [];
+  function pdfOriginIds() {
+    const seen = Object.create(null);
+    const take = o => { if (o && o.system === 'pdf-annot' && o.id) seen[o.id] = true; };
+    for (const t of (PAGE && PAGE.threads) || []) {
+      take(t.origin);
+      for (const m of t.msgs || []) take(m.origin);
+    }
+    for (const m of (PAGE && PAGE.page_chat) || []) take(m.origin);
+    return seen;
+  }
+  // …counting a comment as pending if EITHER it or any of its replies is not
+  // here yet: a supervisor who answered their own note after the first import
+  // has said something new, and it should be offered.
+  function pdfPending() {
+    const have = pdfOriginIds();
+    return pdfAnnotList.filter(a =>
+      !have[a.id] || (a.replies || []).some(r => r && r.id && !have[r.id]));
+  }
+  // …and the answer is only handed over when it has CHANGED. loadPage calls
+  // this every time, and an ordinary article (which is most pages, most of the
+  // time) has nothing to say here — a render per page load for a document with
+  // no annotations in it would be a cost paid by everybody for a feature only
+  // PDFs use.
+  let lastPdfSync = '0/0/0';   // the answer for an ordinary page: never sent
+  function syncPdfImport() {
+    if (!drawer) return;
+    const state = pdfAnnotList.length + '/' + pdfPending().length
+      + '/' + (window.__BFP_PDF && window.__BFP_PDF.exportAnnotated ? '1' : '0');
+    if (state === lastPdfSync) return;
+    lastPdfSync = state;
+    drawer.setPdfAnnots({
+      total: pdfAnnotList.length,
+      pending: pdfPending().length,
+      // writing back needs the viewer (it has the bytes and the geometry);
+      // an ordinary article, or a PDF in the browser's own viewer, has none
+      canExport: !!(window.__BFP_PDF && window.__BFP_PDF.exportAnnotated),
+    });
+  }
+  // the viewer's one call in
+  function pdfAnnotsArrived(list) {
+    pdfAnnotList = Array.isArray(list) ? list : [];
+    syncPdfImport();
   }
 
   // Deliberately not awaited by loadPage: the round is a nicety and must never
@@ -1923,6 +1986,50 @@
         return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode };
       },
 
+      // ---- the PDF's own comments, in ------------------------------------
+      // The reader has pressed import. Same order as every other first act on
+      // a page: the record, then the snapshot, then the words — so a bot
+      // summoned into one of these threads later reads a page whose full text
+      // is already on disk.
+      //
+      // Only what is PENDING is sent. The companion would skip the rest by
+      // itself (that is what `origin` is for), but a re-import of a
+      // sixty-comment manuscript should not be sixty comments crossing the
+      // wire to be thrown away.
+      onPdfImport: async () => {
+        const list = pdfPending();
+        if (!list.length) return { ok: true, created: 0, appended: 0 };
+        const wasNew = !registered;
+        const reg = await ensureRegistered();
+        if (!reg.ok) return failure(reg);
+        if (wasNew) await snapshotNow();
+        const r = await api('POST', '/pdf-annotations', {
+          url: URL_NOW, title: headline(), site: HOSTNAME, kind: PAGE_KIND,
+          file_name: FILE_NAME, annots: list,
+        });
+        if (!r.ok) return failure(r);
+        // the record is the truth about what landed: refetch it, which also
+        // paints the new highlights and recomputes the pending count
+        await loadPage();
+        maybeSnapshot();
+        bg({ t: 'badge', count: ((PAGE && PAGE.threads) || []).length });
+        return { ok: true, created: (r.data && r.data.created) || 0,
+                 appended: (r.data && r.data.appended) || 0,
+                 skipped: (r.data && r.data.skipped) || 0 };
+      },
+
+      // ---- …and out: the discussion, written into a copy of the PDF -------
+      // The whole job is the viewer's — it holds the bytes and the only
+      // geometry on this machine that knows where a quote is in PDF
+      // coordinates. Nothing is uploaded and nothing is written beside the
+      // original: the copy goes through the browser's own downloader.
+      onPdfExport: async () => {
+        const V = window.__BFP_PDF;
+        if (!V || !V.exportAnnotated) return { ok: false, error: 'this page is not a PDF in the Discuss viewer' };
+        try { return await V.exportAnnotated(); }
+        catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      },
+
       // ---- the pages library -------------------------------------------
       // /index is the companion's map of every page it holds a record for.
       // Fetched fresh through the proxy rather than read off the background's
@@ -2471,6 +2578,12 @@
   window.__bfp = {
     activate, loadPage, reanchorAll, refresh, headline, articleText, normUrl, hashText,
     snapshotHtml, displayTitle,
+    // pdf/viewer.js's one call in: the comments the FILE arrived with. Also
+    // the harness's way to stage them without a PDF.
+    pdfAnnots: pdfAnnotsArrived,
+    get pdfImport() {
+      return { total: pdfAnnotList.length, pending: pdfPending().length };
+    },
     // What this page is CALLED, and a subscription to it changing. pdf/viewer.js
     // draws its own top bar and has no other way to hear about a rename, which
     // arrives as an ordinary `page` event and lands in loadPage().

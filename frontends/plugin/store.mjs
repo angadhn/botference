@@ -678,7 +678,14 @@ export const findThread = (page, id) => (page.threads || []).find(t => t.id === 
 // mirrored comment is a real comment by a real person and not a footnote about
 // one. Nothing in the drawer, the export or the digest asks whether a thread
 // carries this, and every record written before it reads as native.
-export const ORIGIN_SYSTEMS = ['review'];
+// `review` — a comment written in a review page's own margin by a visitor with
+// no extension. `pdf-annot` — a comment that was already IN the PDF when the
+// reader opened it: an Acrobat highlight, a Preview sticky note, written by
+// somebody who has never heard of this companion. Both are the same shape of
+// fact ("this comment exists somewhere else, under this id"), and both are
+// idempotent for the same reason: the id is the whole of what stops one
+// comment being projected twice.
+export const ORIGIN_SYSTEMS = ['review', 'pdf-annot'];
 export function cleanOrigin(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const system = String(raw.system || '');

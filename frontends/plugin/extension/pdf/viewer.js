@@ -454,12 +454,302 @@ async function run() {
     notice('This PDF has no selectable text — it is a scan. You can read it here, ' +
            'but there is nothing to highlight and the bots cannot be given its words.');
   }
+
+  // …and last, what the file already had to say. After the text layers, always:
+  // an annotation's quote is the words under its quads, and until every page is
+  // laid out there are no words to be under anything.
+  try {
+    const found = await scanAnnots();
+    if (found.length) tellAnnots();
+  } catch (e) { console.warn('[botference] the document’s own comments did not read:', e); }
 }
 
 function escapeHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// ---- the comments the FILE arrived with ------------------------------------
+//
+// A manuscript that has been round a supervisor comes back with Acrobat
+// highlights and Preview sticky notes in it. Those are comments — with an
+// author, a date and a paragraph of popup text — and this is the only place in
+// the extension that can read them: the parsed document and the text layer are
+// both here, and "which words are under this quad" is a question only the two
+// of them together can answer.
+//
+// So the viewer does the reading and NOTHING else. It publishes what it found;
+// content.js decides whether the reader is offered them, and the companion
+// decides what is already known (`origin`, store.mjs). One direction of
+// knowledge, as with the title and the snapshot.
+let Ann = null;                     // pdf/annots.js, loaded when it is needed
+
+// Lazily, and only on a document that has something to read or write: a paper
+// with no annotations in it never loads this file, and the writer (half a
+// megabyte) is not loaded until somebody exports.
+async function ensureAnn() {
+  if (Ann) return Ann;
+  try { await loadScript('./annots.js'); } catch { return null; }
+  Ann = window.BFPPdfAnnots || null;
+  return Ann;
+}
+
+// Every text-layer span on one page, as a box in PDF USER SPACE — the space
+// QuadPoints are written in. Converting the DOM into the file's own
+// coordinates (rather than the file into the DOM's) is what keeps this
+// independent of the zoom, the device pixel ratio and the fit width: the
+// numbers compared below are the numbers Acrobat wrote.
+function spansOf(p) {
+  const out = [];
+  if (!p || !p.viewport || !p.layerDiv) return out;
+  const box = p.div.getBoundingClientRect();
+  for (const el of p.layerDiv.querySelectorAll('span')) {
+    const text = el.textContent || '';
+    if (!text.trim()) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    out.push({ text, box: pdfBox(p, box, r) });
+  }
+  return out;
+}
+// a client rectangle → [x0,y0,x1,y1] in PDF points. The y axis flips (PDF
+// counts up from the bottom of the page, the DOM down from the top), which
+// convertToPdfPoint already knows; the min/max is what keeps the box a box.
+function pdfBox(p, pageRect, r) {
+  const a = p.viewport.convertToPdfPoint(r.left - pageRect.left, r.top - pageRect.top);
+  const b = p.viewport.convertToPdfPoint(r.right - pageRect.left, r.bottom - pageRect.top);
+  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+}
+
+// The quote for one annotation: the words its quads cover, with the four spans
+// either side as prefix/suffix — the very same three fields a selection in the
+// drawer captures, so an imported thread anchors and re-anchors exactly as a
+// hand-made one does.
+function quoteFor(a, spans) {
+  const rects = (a.quads && a.quads.length) ? a.quads : [a.rect];
+  let idxs = Ann.spansUnder(spans, rects);
+  if (!idxs.length) {
+    // a sticky note (no quads at all), or a mark whose quads sit between two
+    // lines: the line it points at is the nearest span to its top-left corner
+    const i = Ann.spanNearest(spans, a.rect[0], a.rect[3]);
+    idxs = i >= 0 ? [i] : [];
+  }
+  // nothing near it at all — a note on a blank page. It has no anchor, and the
+  // companion files it as page chat rather than minting an orphan.
+  return idxs.length ? Ann.quoteFromSpans(spans, idxs) : { quote: '', prefix: '', suffix: '' };
+}
+
+// What crosses to the companion: a comment, not an annotation. The rectangles,
+// the quads and the object numbers stay here — they are how this side FOUND
+// the comment, and none of them means anything to a thread.
+function asComment(a) {
+  return {
+    id: a.id, page: a.page, author: a.author, ts: a.ts, text: a.text,
+    quote: a.quote, prefix: a.prefix, suffix: a.suffix,
+    kind: a.subtype,
+    replies: (a.replies || []).map(r => ({ id: r.id, author: r.author, ts: r.ts, text: r.text })),
+  };
+}
+
+async function scanAnnots() {
+  if (!pdfDoc) return [];
+  if (!await ensureAnn()) return [];
+  const found = [];
+  for (const p of pages) {
+    let raw;
+    try { raw = await p.page.getAnnotations({ intent: 'display' }); }
+    catch (e) { console.warn('[botference] page ' + p.n + ' annotations did not read:', e); continue; }
+    const list = (raw || []).map(x => Ann.normalizeAnnot(x, p.n)).filter(Boolean);
+    if (!list.length) continue;
+    const roots = Ann.foldReplies(list);
+    if (!roots.length) continue;
+    const spans = spansOf(p);
+    for (const a of roots) Object.assign(a, quoteFor(a, spans));
+    found.push(...roots);
+  }
+  window.__BFP_PDF_ANNOTS = found.map(asComment);
+  return window.__BFP_PDF_ANNOTS;
+}
+
+// The annotator boots after this module and may not exist yet, so the offer is
+// pushed the same way the title is: try, and try again shortly. Bounded — a
+// page with no annotator (the render test, a refused local file) must not spin.
+function tellAnnots(tries) {
+  const left = tries == null ? 20 : tries;
+  if (!window.__BFP_PDF_ANNOTS || !window.__BFP_PDF_ANNOTS.length) return;
+  try {
+    if (window.__bfp && window.__bfp.pdfAnnots) { window.__bfp.pdfAnnots(window.__BFP_PDF_ANNOTS); return; }
+  } catch (_) { /* fall through and try again */ }
+  if (left > 0) setTimeout(() => tellAnnots(left - 1), 300);
+}
+
+// ---- …and the other direction: the discussion, written back ----------------
+//
+// A copy of this file with every Discuss thread in it as a standard Highlight,
+// the whole conversation (the bots included) in its popup. The reader who gets
+// that copy needs no extension, no companion and no account — just a PDF
+// viewer, which is the entire point.
+//
+// WHY IT HAPPENS HERE, AND NOT IN THE COMPANION. Two reasons, both structural.
+// The companion has never seen this file and must not start now: a local PDF's
+// bytes are deliberately never uploaded, copied or stored (the local-PDF
+// amendment says so in those words), and uploading a 7 MB manuscript to write
+// three highlights into it would trade that for nothing. And the geometry only
+// exists here: a thread is a QUOTE, and the only thing on this machine that
+// knows where those words are in PDF coordinates is the text layer in this
+// tab. The file is written in memory and handed to the browser's own
+// downloader; nothing is written beside the original, and the original is
+// never touched.
+let PDFLibMod = null;
+async function pdfLib() {
+  if (PDFLibMod) return PDFLibMod;
+  await loadScript('../vendor/pdf-lib/pdf-lib.min.js');
+  PDFLibMod = window.PDFLib || null;
+  if (!PDFLibMod) throw new Error('the PDF writer did not load');
+  return PDFLibMod;
+}
+
+// The page box a node is painted in, and the record that goes with it.
+function pageOfNode(node) {
+  const div = node && node.closest ? node.closest('.bfp-pdf-page') : null;
+  return div ? pages.find(p => p.div === div) || null : null;
+}
+
+// A thread's highlight, as the file would draw it: one quad per line of the
+// passage, grouped by the page it is on (a quote across a page break is two
+// annotations, because an annotation belongs to exactly one page).
+//
+// The rectangles come from the PAINTED HIGHLIGHT, not from a fresh text hunt —
+// anchor.js has already decided where this thread is, including after a
+// re-anchor, so the ink in the file lands exactly where the ink on screen is.
+// A thread that is orphaned has no marks and is reported as skipped rather
+// than guessed at.
+function quadsForThread(id) {
+  const A = window.BFPAnchor;
+  const marks = (A && A.marksFor) ? A.marksFor(id) : [];
+  const byPage = new Map();
+  for (const m of marks) {
+    const p = pageOfNode(m);
+    if (!p || !p.viewport) continue;
+    const box = p.div.getBoundingClientRect();
+    for (const r of m.getClientRects()) {
+      if (r.width < 0.5 || r.height < 0.5) continue;
+      if (!byPage.has(p.n)) byPage.set(p.n, []);
+      byPage.get(p.n).push(pdfBox(p, box, r));
+    }
+  }
+  return [...byPage.entries()].map(([page, quads]) => ({ page, quads }));
+}
+
+// A thread that came out of THIS FILE and has not been added to since is
+// already in the file — writing it back would put the supervisor's own comment
+// beside itself. One that has grown (a reply, a bot's answer) is written, and
+// its popup carries the original remark at the top, where it belongs.
+function purelyImported(t) {
+  const o = t && t.origin;
+  if (!o || o.system !== 'pdf-annot') return false;
+  return (t.msgs || []).every((m, i) => i === 0 || (m && m.origin));
+}
+
+const DISCUSS_YELLOW = [1, 0.83, 0.25];
+const DISCUSS_GREEN = [0.62, 0.85, 0.62];   // …and a filed thread is not live
+
+// Threads → the annotations that would be written for them, and the tally of
+// what could not be. Separated from the writing so the round trip is
+// observable: pdf-render.test.mjs imports an annotation, makes the thread it
+// would make, and asks this for the quads it would write back — which must
+// land on the passage the original annotation covered.
+function collectItems(threads) {
+  const items = [];
+  let orphaned = 0;
+  let already = 0;
+  for (const t of threads || []) {
+    if (purelyImported(t)) { already++; continue; }
+    const groups = quadsForThread(t.id);
+    if (!groups.length) { orphaned++; continue; }
+    const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');
+    const resolved = !!t.resolved;
+    for (const g of groups) {
+      items.push({
+        page: g.page,
+        quads: g.quads,
+        contents: Ann.threadContents(t, { head: '“' + String(t.quote || '').replace(/\s+/g, ' ').trim() + '”' }),
+        // the annotation is signed by whoever opened the thread — the reply
+        // chain inside the popup names everybody else, in order
+        author: (msgs[0] && msgs[0].author) || 'Discuss',
+        ts: (msgs[msgs.length - 1] && msgs[msgs.length - 1].ts) || '',
+        created: (msgs[0] && msgs[0].ts) || '',
+        subject: 'Discuss' + (resolved ? ' · resolved' : ''),
+        color: resolved ? DISCUSS_GREEN : DISCUSS_YELLOW,
+        name: 'bfp-' + t.id,
+      });
+    }
+  }
+  return { items, orphaned, already };
+}
+
+async function exportAnnotated() {
+  if (!await ensureAnn()) return { ok: false, error: 'the annotation writer did not load' };
+  const rec = (window.__bfp && window.__bfp.page) || null;
+  const threads = ((rec && rec.threads) || []).filter(t => t && (t.msgs || []).length);
+  if (!threads.length) return { ok: false, error: 'no comments on this page to write' };
+  const { items, orphaned, already } = collectItems(threads);
+  if (!items.length) {
+    return { ok: false, error: already && !orphaned
+      ? 'every comment here came from this PDF already'
+      : 'none of these comments could be placed in the file' };
+  }
+  const lib = await pdfLib();
+  const bytes = await sourceBytes();
+  const out = await Ann.writeAnnots(lib, bytes, items);
+  const name = Ann.exportFileName(fileName || ownName);
+  download(out.bytes, name);
+  return { ok: true, name, written: out.written, orphaned, already };
+}
+
+// The file's own bytes. A local PDF has been read once already (it is what its
+// identity was computed from) and is not read again; a web PDF is fetched with
+// the reader's session, exactly as the render was.
+async function sourceBytes() {
+  if (localBytes) return new Uint8Array(localBytes);
+  const r = await fetch(SRC, { credentials: 'include' });
+  if (!r.ok) throw new Error('could not re-read this PDF (' + r.status + ')');
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+// The browser's own downloader, from an extension page: a blob, an <a download>
+// and a click. No file is written beside the original, no path is guessed, and
+// where the copy lands is the reader's own browser setting.
+function download(bytes, name) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) { /* gone already */ } }, 30000);
+}
+
+// The two doors content.js knocks on. Deliberately narrow: everything else in
+// here is this module's own business.
+window.__BFP_PDF = {
+  get annots() { return window.__BFP_PDF_ANNOTS || []; },
+  rescan: scanAnnots,
+  exportAnnotated,
+  // The export, stopped one step short of writing a file: what would be drawn,
+  // where, and what could not be. This is the seam the round-trip test uses —
+  // import an annotation, make the thread it makes, and ask for the quads that
+  // would go back in.
+  async collect(threads) {
+    if (!await ensureAnn()) return null;
+    return collectItems(threads);
+  },
+  // observable, for the render test: which library is loaded, and how many
+  // pages the document has
+  get ready() { return !!pdfDoc; },
+};
 
 // ---- boot: identity, annotator, render -------------------------------------
 //
@@ -673,6 +963,9 @@ async function publishAndInject(ident) {
   try { await loadScripts(['../vendor/katex/katex.min.js', '../anchor.js', '../drawer.js', '../content.js']); }
   catch (e) { console.warn('[botference] the annotator did not load:', (e && e.message) || e); }
   watchTitle();
+  // the scan may have finished before the annotator existed (the identity-last
+  // boot renders first), in which case this is where the offer is delivered
+  tellAnnots();
 }
 
 boot();

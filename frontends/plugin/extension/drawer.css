@@ -488,6 +488,39 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .trackbar .sdbtn:hover { border-color: var(--accent); color: var(--accent) }
 
+/* THE COMMENTS THE FILE CAME WITH — a PDF whose own annotations have not been
+   imported yet. Solid, like the standdown's non-default state and for the same
+   reason: this is a fact about the document that the pane would otherwise be
+   silent about ("No comments yet" over a paper covered in a supervisor's
+   highlights), and it carries a decision rather than a switch. It draws only
+   while there is something to decide, and goes for good once answered. */
+.pdfimport {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 9px 11px; border-radius: 8px;
+  background: var(--card); border: 1px solid var(--accent);
+  color: var(--muted); font: 12px/1.5 var(--sans);
+}
+.pdfimport .pitext { flex: 1 1 100%; min-width: 0 }
+.pdfimport .pitext b { color: var(--fg); font-weight: 600 }
+.pdfimport .pierr { flex: 1 1 100%; color: var(--bad); font-size: 11px }
+.pdfimport .piacts { display: flex; gap: 6px; margin-left: auto }
+.pdfimport .sdbtn {
+  font: 11px/1 var(--sans); padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--accent); background: transparent; color: var(--accent);
+  cursor: pointer; white-space: nowrap;
+}
+.pdfimport .sdbtn:hover:not(:disabled) { background: var(--accent); color: var(--bg) }
+.pdfimport .pino {
+  font: 11px/1 var(--sans); padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--card-line); background: transparent; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+}
+.pdfimport button:disabled { opacity: .6; cursor: default }
+
+/* the second heading in the export chooser: the annotated-PDF destination,
+   which is not one of the two Obsidian modes and must not look like one */
+.pop-head.second { margin-top: 6px; border-top: 1px solid var(--card-line); padding-top: 6px }
+
 /* the tab bar is display:flex, which outranks the UA's [hidden] rule — the
    pages view hides it outright, so restore it explicitly */
 .tabs[hidden] { display: none }
