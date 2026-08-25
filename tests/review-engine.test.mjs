@@ -1067,3 +1067,247 @@ test('presence is in-memory, coarse and symmetric; grants gate agent summons per
     }
   }, { REVIEW_PASSWORD: 'shh' }, ['--hosted']);
 });
+
+// ---------------------------------------------------- the unified comment store
+// A review page's own margin is a silo: the comments a visitor leaves there
+// are a line in `state/users/<handle>.json` and nothing else — the owner's
+// Discuss drawer cannot see them, the bots are not in them, `send review` does
+// not gather them. `review.config.json`'s `discuss` block unifies the two: the
+// margin's comments are projected into the botference companion's store, and
+// whatever is said back over there is folded into the margin's own thread
+// entries. Without that block NOTHING here runs, which is the property these
+// tests care about most: the silo has to keep working standalone.
+
+async function waitUntil(pred, what, ms = 8000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = await pred();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
+
+// a companion, as far as the review server can tell: it takes projections and
+// answers questions about the pages it holds
+function fakeCompanion() {
+  const posts = [];
+  const pages = new Map();  // url -> page record
+  const srv = http.createServer((req, res) => {
+    const [pathname, query] = String(req.url || '').split('?');
+    if (req.method === 'POST' && pathname === '/review-comments') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        const data = JSON.parse(body || '{}');
+        posts.push(data);
+        const page = pages.get(data.url) || { url: data.url, threads: [], page_chat: [] };
+        const threads = {};
+        for (const c of data.comments || []) {
+          if (!c.quote) {
+            if (!page.page_chat.some(m => m.origin && m.origin.id === c.id)) {
+              page.page_chat.push({ author: c.author, ts: c.ts, text: c.text,
+                origin: { system: 'review', id: c.id } });
+            }
+            threads[c.id] = '__page__';
+            continue;
+          }
+          let t = page.threads.find(x => x.origin && x.origin.id === c.id);
+          if (!t) {
+            t = { id: `t-${page.threads.length}`, quote: c.quote, prefix: c.prefix, suffix: c.suffix,
+              origin: { system: 'review', id: c.id },
+              msgs: [{ author: c.author, ts: c.ts, text: c.text }] };
+            page.threads.push(t);
+          }
+          threads[c.id] = t.id;
+        }
+        pages.set(data.url, page);
+        res.writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ ok: true, threads, created: 1, appended: 0, refusals: [] }));
+      });
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/page') {
+      const url = new URLSearchParams(query || '').get('url') || '';
+      const page = pages.get(url);
+      res.writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify(page || { ok: true, page: null }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  return new Promise(resolve => {
+    srv.listen(0, '127.0.0.1', () => resolve({
+      base: `http://127.0.0.1:${srv.address().port}`,
+      posts, pages,
+      // the bots answer, over there
+      say(url, originId, msg) {
+        const page = pages.get(url);
+        const t = (page.threads || []).find(x => x.origin && x.origin.id === originId);
+        if (t) t.msgs.push(msg);
+        else page.page_chat.push(msg);
+      },
+      close: () => new Promise(r => srv.close(r)),
+    }));
+  });
+}
+
+const withDiscuss = (dir, block) => {
+  const f = path.join(dir, 'review', 'review.config.json');
+  const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+  cfg.discuss = block;
+  fs.writeFileSync(f, JSON.stringify(cfg, null, 2));
+};
+
+test('unified comments: the margin projects into the companion, and its answers come back', async t => {
+  const dir = scaffold('discuss', SINGLE);
+  const companion = await fakeCompanion();
+  t.after(async () => { await companion.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  runDetect(dir);
+  installEngine(dir);
+  withDiscuss(dir, { companion: companion.base, poll_ms: 150 });
+  runBuild(dir);
+  await withServer(dir, async base => {
+    const me = (await fetch(base + '/whoami').then(r => r.json())).handle;
+    const post = (u, body) => fetch(base + u, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    // a comment in the margin, exactly as the page writes it
+    await post('/state', { decisions: {
+      'user-01-introduction-blk-3-1': { status: 'user-comment', section: '01-introduction',
+        anchor: '01-introduction-blk-3', quote: 'Opening text', comment: 'Is this the right framing?' },
+      'user-01-introduction-doc-2': { status: 'user-comment', section: '01-introduction',
+        anchor: '01-introduction-blk-0', comment: 'Structure comment, no anchor.' },
+      // …and something that is NOT a comment, which must not travel
+      'card-7': { status: 'accepted', comment: 'yes please' },
+    } });
+    const sent = await waitUntil(() => companion.posts.length ? companion.posts : null,
+      'the projection to reach the companion');
+    assert.equal(sent.length, 1, 'one page, one post');
+    assert.match(sent[0].url, /\/01-introduction\.html$/,
+      'filed under the address the visitor had in their address bar — the same key the extension uses');
+    assert.equal(sent[0].comments.length, 2, 'both comments; the accepted card is not a comment');
+    const anchored = sent[0].comments.find(c => c.id === 'user-01-introduction-blk-3-1');
+    assert.equal(anchored.author, me, 'authorship is the file the comment lives in');
+    assert.equal(anchored.quote, 'Opening text');
+    assert.equal(anchored.text, 'Is this the right framing?');
+    assert.ok(anchored.ts, 'and the moment it was written travels with it');
+    const block = sent[0].comments.find(c => c.id === 'user-01-introduction-doc-2');
+    assert.equal(block.quote, '', 'a comment on the document as a whole carries no anchor');
+
+    // an unchanged page is not re-posted on every keystroke
+    await post('/state', { decisions: {
+      'user-01-introduction-blk-3-1': { status: 'user-comment', section: '01-introduction',
+        anchor: '01-introduction-blk-3', quote: 'Opening text', comment: 'Is this the right framing?' },
+      'user-01-introduction-doc-2': { status: 'user-comment', section: '01-introduction',
+        anchor: '01-introduction-blk-0', comment: 'Structure comment, no anchor.' },
+      'card-7': { status: 'accepted', comment: 'yes please' },
+    } });
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(companion.posts.length, 1, 'nothing changed, so nothing was said');
+
+    // …and the answer over there arrives in the margin, in the shape the page
+    // already draws bot replies in
+    const url = sent[0].url;
+    companion.say(url, 'user-01-introduction-blk-3-1',
+      { author: 'claude', ts: '2026-08-25T10:00:00.000Z', text: 'It is defensible, but narrow the claim.' });
+    // opening the stream is what arms the poll
+    const es = await fetch(base + '/events');
+    const data = await waitUntil(async () => {
+      const d = await fetch(base + '/data').then(r => r.json());
+      return d.threads['user-01-introduction-blk-3-1'] ? d : null;
+    }, 'the companion answer to reach /data');
+    const back = data.threads['user-01-introduction-blk-3-1'];
+    assert.equal(back.length, 1);
+    assert.equal(back[0].author, 'claude');
+    assert.equal(back[0].text, 'It is defensible, but narrow the claim.');
+    // the visitor's own comment is NOT sent home again — a mirrored message
+    // carries `origin`, and the round trip stops at the first turn
+    assert.ok(!back.some(e => e.text === 'Is this the right framing?'));
+    es.body.cancel().catch(() => { });
+  });
+});
+
+test('unified comments: with no `discuss` block the silo is untouched — no calls, no fields', async t => {
+  const dir = scaffold('nodiscuss', SINGLE);
+  const companion = await fakeCompanion();
+  t.after(async () => { await companion.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.equal(cfg.discuss, undefined, 'detect + init never invent one');
+  await withServer(dir, async base => {
+    await fetch(base + '/state', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decisions: { 'user-a-1': { status: 'user-comment', section: '01-introduction',
+        quote: 'Opening text', comment: 'standalone' } } }) });
+    const es = await fetch(base + '/events');
+    await new Promise(r => setTimeout(r, 400));
+    assert.equal(companion.posts.length, 0, 'nothing is projected anywhere');
+    const d = await fetch(base + '/data').then(r => r.json());
+    assert.deepEqual(d.threads, {}, 'and /data is the paper\'s own threads.json, exactly as before');
+    assert.equal(Object.keys(d.users).length, 1, 'while the comment itself is saved exactly as it always was');
+    assert.ok(!fs.existsSync(path.join(dir, 'review', 'state', 'discuss-mirror.json')));
+    es.body.cancel().catch(() => { });
+  });
+});
+
+test('unified comments: collect, read-back and merge are pure and say what they mean', async () => {
+  const D = await import(path.join(ENGINE, 'discuss.mjs'));
+  // collect: every user's user-comments, grouped by the page they are on
+  const bySection = D.collect({
+    mira: {
+      'a': { status: 'user-comment', section: '01-intro', quote: 'q1', comment: 'first', ts: '2026-01-01T00:00:00Z' },
+      'b': { status: 'user-suggestion', section: '01-intro', comment: 'not a comment' },
+      'c': { status: 'user-comment', section: '02-model', quote: '', comment: 'whole-doc', ts: '2026-01-03T00:00:00Z',
+        thread: [{ ts: '2026-01-04T00:00:00Z', text: 'following up' }, { ts: '', text: 'no ts, no landing' }] },
+    },
+    devraj: {
+      'd': { status: 'user-comment', section: '01-intro', quote: 'q2', comment: 'second', ts: '2026-01-02T00:00:00Z' },
+      'e': { status: 'user-comment', section: '01-intro', comment: '   ' },
+    },
+  });
+  assert.deepEqual([...bySection.keys()].sort(), ['01-intro', '02-model']);
+  assert.deepEqual(bySection.get('01-intro').map(c => [c.id, c.author]), [['a', 'mira'], ['d', 'devraj']],
+    'oldest first, and the file a comment lives in is who wrote it');
+  assert.equal(bySection.get('02-model')[0].replies.length, 1, 'a reply with no timestamp has no identity');
+  assert.equal(bySection.get('02-model')[0].replies[0].author, 'mira');
+
+  // sectionUrl / baseOf: the identity both surfaces file under
+  assert.equal(D.sectionUrl('http://h:4177/', '01-intro'), 'http://h:4177/01-intro.html');
+  assert.equal(D.baseOf({ headers: { host: 'paper.example' } }), 'http://paper.example');
+  assert.equal(D.baseOf({ headers: { host: 'paper.example', 'x-forwarded-proto': 'https,http' } }),
+    'https://paper.example');
+  assert.equal(D.baseOf({ headers: { host: 'evil host/../x' } }), '', 'a host is a host or it is nothing');
+  assert.equal(D.baseOf({ headers: {} }), '');
+
+  // repliesFrom: everything said back, and nothing we said ourselves
+  const back = D.repliesFrom({
+    threads: [
+      { origin: { system: 'review', id: 'a' }, msgs: [
+        { author: 'mira', ts: '1', text: 'first', origin: { system: 'review', id: 'a' } },
+        { author: 'claude', ts: '2', text: 'answered' },
+        { author: 'claude', ts: '2', text: 'ran a tool', kind: 'tools' },
+        { author: 'mira', ts: '3', text: 'ok', origin: { system: 'review', id: 'a' } },
+      ] },
+      { msgs: [{ author: 'angadh', ts: '9', text: 'a native thread nobody over there knows about' }] },
+    ],
+    page_chat: [
+      { author: 'angadh', ts: '0', text: 'chatter before any mirror' },
+      { author: 'mira', ts: '1', text: 'whole-doc', origin: { system: 'review', id: 'c' } },
+      { author: 'codex', ts: '2', text: 'about the structure' },
+    ],
+  });
+  assert.deepEqual(Object.keys(back).sort(), ['a', 'c']);
+  assert.deepEqual(back.a.map(e => e.text), ['answered'], 'no tool narration, and never our own words back');
+  assert.deepEqual(back.c.map(e => e.text), ['about the structure']);
+
+  // mergeThreads: additive, deduped, chronological
+  const merged = D.mergeThreads(
+    { a: [{ author: 'claude', ts: '2', text: 'answered' }], z: [{ author: 'codex', ts: '1', text: 'own' }] },
+    { a: [{ author: 'claude', ts: '2', text: 'answered' }, { author: 'codex', ts: '3', text: 'and again' }],
+      c: [{ author: 'codex', ts: '2', text: 'about the structure' }] });
+  assert.deepEqual(merged.a.map(e => e.ts), ['2', '3'], 'the same entry twice is one entry');
+  assert.deepEqual(merged.z.map(e => e.text), ['own'], 'an id the companion knows nothing about is untouched');
+  assert.equal(merged.c.length, 1);
+  assert.deepEqual(D.mergeThreads({ a: [1] }, {}), { a: [1] });
+});

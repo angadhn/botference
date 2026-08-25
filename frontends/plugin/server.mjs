@@ -31,7 +31,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode } from './export.mjs';
-import { createHosted, CORS_HEADERS, isLocalDirect } from './hosted.mjs';
+import { createHosted, CORS_HEADERS, isLocalDirect, sanitizeHandle } from './hosted.mjs';
 import { pageView, pagesView, articleView } from './views.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
 import * as run from './run.mjs';
@@ -1186,9 +1186,14 @@ export function handler(req, res) {
     const key = url.slice(3);
     const page = store.readPageByKey(key);
     if (!page) return fail(res, 404, 'unknown page');
-    const notice = new URLSearchParams(req.url.split('?')[1] || '').get('notice') || '';
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const notice = q.get('notice') || '';
     const html = pageView({
       page, key, me: hosted.identity(req), notice, snapshot: store.hasSnapshot(key),
+      // whose threads to show — the reading room has no client state, so a
+      // margin narrowed to one commenter is a LINK, exactly as a filtered
+      // archive is
+      by: q.get('by') || '',
     });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
@@ -1664,6 +1669,128 @@ export function handler(req, res) {
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { thread, ...summon(page, thread.id, text, { ...contextExtras(data, docxDigest), routeHint: route }, me) });
+    });
+  }
+  // --- the unified comment store ----------------------------------------
+  // A review page has its own margin, and a visitor without the extension
+  // writes into it. Those comments used to stop there: a line in a JSON file
+  // beside the document, invisible to the owner's drawer, to the bots, to send
+  // review and to the export. This is the door they come through instead.
+  //
+  // WHO MAY KNOCK. The loopback, and only the loopback — the same three-part
+  // test the API keys stand behind. This endpoint names its own author, which
+  // is exactly the power a guest must never have; a caller on this machine
+  // already owns the files these threads live in, so naming one is no
+  // privilege it did not already hold. Over the tunnel it is a flat 403.
+  //
+  // WHAT IT IS. A projection, not a second write path: one POST carries every
+  // review comment on one page, the companion files each under its `origin`
+  // and does nothing at all for the ones it has already seen. Idempotent by
+  // construction, so the mirror may run as often as it likes.
+  if (req.method === 'POST' && url === '/review-comments') {
+    if (!isLocalDirect(req)) {
+      req.resume();
+      return fail(res, 403, 'the review mirror speaks to the companion on the loopback only');
+    }
+    return readBody(req, res, data => {
+      if (!data.url) return fail(res, 400, 'url required');
+      const list = Array.isArray(data.comments) ? data.comments : [];
+      if (!list.length) return fail(res, 400, 'comments required');
+      const page = store.readPage(data.url)
+        || store.upsertPage({ url: data.url, title: data.title, site: data.site });
+      const threads = {};
+      const refusals = [];
+      let created = 0;
+      let appended = 0;
+      let skipped = 0;
+      let changed = false;
+      for (const c of list) {
+        const origin = store.cleanOrigin({ system: 'review', id: c && c.id });
+        const author = sanitizeHandle(c && c.author);
+        const text = String((c && c.text) || '');
+        if (!origin || !author || !text.trim()) { skipped++; continue; }
+        const quote = String((c && c.quote) || '').trim();
+        let target = null;
+        let fresh = false;
+        if (!quote) {
+          // A comment on the document AS A WHOLE — the review engine's
+          // block-level comment, which has no selection to anchor to. Discuss
+          // already has the surface for exactly that thought, and it is page
+          // chat; inventing an anchorless thread would only mint an orphan.
+          target = store.PAGE_CHAT;
+          const seen = (page.page_chat || []).some(m => {
+            const o = store.originOf(m);
+            return o && o.id === origin.id;
+          });
+          if (!seen) {
+            const msg = store.appendMsg(page, target, { author, text, ts: c.ts, origin });
+            if (msg) { created++; fresh = true; changed = true; }
+          }
+        } else {
+          let thread = store.findOrigin(page, 'review', origin.id);
+          if (!thread) {
+            thread = store.addThread(page, {
+              quote, prefix: c.prefix, suffix: c.suffix, text, author,
+              ts: c.ts, origin,
+            });
+            created++;
+            fresh = true;
+            changed = true;
+          }
+          target = thread.id;
+          // the visitor's own replies over there, in order, each one landing
+          // once: a reply is its author and its timestamp, and the mirror may
+          // resend the lot on every keystroke
+          for (const r of (Array.isArray(c.replies) ? c.replies : [])) {
+            const rAuthor = sanitizeHandle(r && r.author) || author;
+            const rText = String((r && r.text) || '');
+            const rTs = String((r && r.ts) || '');
+            if (!rText.trim() || !rTs) continue;
+            if ((thread.msgs || []).some(m => m.ts === rTs && sanitizeHandle(m.author) === rAuthor)) continue;
+            store.appendMsg(page, target, { author: rAuthor, text: rText, ts: rTs, origin });
+            appended++;
+            changed = true;
+          }
+          // RESOLVING TRAVELS ONE WAY, AND ONCE. Filed over there is filed
+          // here — the person who wrote the comment has said they are done
+          // with it. But it is the FILING that crosses, not the state: a
+          // reader who reopens the thread here has disagreed, and a mirror
+          // that re-applied a months-old `resolved: true` on its next pass
+          // would close it again behind them, forever. `origin_filed` is the
+          // one bit that remembers we already acted, and it is cleared the
+          // moment the review record says the comment is open again — so a
+          // genuine re-file over there does file it again.
+          if (c.resolved) {
+            if (!thread.origin_filed) {
+              thread.origin_filed = true;
+              if (!store.isResolved(thread)) store.setResolved(thread, true, author);
+              changed = true;
+            }
+          } else if (thread.origin_filed) {
+            delete thread.origin_filed;
+            changed = true;
+          }
+        }
+        if (target) threads[origin.id] = target;
+        // The bots, when this paper has none of its own. A paper served with
+        // `--chat` already answers its margin mentions through its own bridge
+        // and its answers already land in the review record; summoning here as
+        // well would spend two agents to say one thing twice. Without that
+        // bridge the mention would reach nobody at all, so it reaches these.
+        // Guests are governed by grants.json exactly as they are everywhere.
+        if (fresh && data.summon && target) {
+          const me = { handle: author, owner: false };
+          const routeHint = target === store.PAGE_CHAT
+            ? '' : addressOf(target, text, '', []);
+          const r = summon(page, target, text, { routeHint }, me);
+          if (r && r.reason) refusals.push({ id: origin.id, reason: r.reason });
+        }
+      }
+      if (changed) {
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+      }
+      ok(res, { url: page.url, threads, created, appended, skipped, refusals });
     });
   }
   if (req.method === 'POST' && url === '/reply') {

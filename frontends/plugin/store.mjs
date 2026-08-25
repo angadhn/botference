@@ -663,6 +663,40 @@ export const isLibrary = u => String(u || '') === LIBRARY_URL || normUrl(u) === 
 
 export const PAGE_CHAT = '__page__';
 export const findThread = (page, id) => (page.threads || []).find(t => t.id === id) || null;
+
+// ---- comments that were written somewhere else ---------------------------
+// ONE STORE OF TRUTH PER PAGE. A comment left in a review page's own margin by
+// a visitor with no extension is PROJECTED into this record as an ordinary
+// thread, so the owner, the bots, send review, the reading room and the export
+// all see one conversation instead of two. `origin` is that comment's address
+// in the system it came from — `{system, id}`, nothing else — and it is the
+// whole of what makes the projection idempotent: the same review comment
+// mirrored a hundred times is one thread.
+//
+// It is deliberately NOT an authorship field. The author is `msgs[0].author`,
+// exactly as it is on a thread somebody dragged out in the drawer, because a
+// mirrored comment is a real comment by a real person and not a footnote about
+// one. Nothing in the drawer, the export or the digest asks whether a thread
+// carries this, and every record written before it reads as native.
+export const ORIGIN_SYSTEMS = ['review'];
+export function cleanOrigin(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const system = String(raw.system || '');
+  const id = String(raw.id == null ? '' : raw.id)
+    .replace(/[^\w.-]/g, '').slice(0, 200);
+  if (!ORIGIN_SYSTEMS.includes(system) || !id) return null;
+  return { system, id };
+}
+export const originOf = t => cleanOrigin(t && t.origin);
+export const findOrigin = (page, system, id) =>
+  (page.threads || []).find(t => {
+    const o = originOf(t);
+    return o && o.system === system && o.id === id;
+  }) || null;
+// A message the projection wrote — a reply the visitor left over there. Read
+// the other way it is the marker that says "we already know about this one",
+// which is what keeps the companion from mirroring its own mirror back.
+export const isMirrored = m => !!(m && cleanOrigin(m.origin));
 // both comment threads and the page chat are "a list of msgs" to every caller
 // that appends, edits or deletes — resolve once, here
 export function msgsOf(page, threadId) {
@@ -725,15 +759,21 @@ const pageNumber = n => {
 // instead of an @-mention, and a pill leaves no trace in the text. See
 // server.mjs stickyRoute: this field is what makes the next untagged reply in
 // the thread still know who it is talking to.
-export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route }) {
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
     prefix: String(prefix || '').slice(-32),
     suffix: String(suffix || '').slice(0, 32),
     orphaned: false,
-    msgs: [{ author, ts: nowIso(), text: String(text || ''), ...(route ? { route: String(route) } : {}) }],
+    // `ts` is the projection's only concession: a mirrored comment keeps the
+    // moment it was actually written, or the page's history would say every
+    // visitor commented the second the companion first heard about them.
+    // Everything written in Discuss itself passes nothing and is stamped now.
+    msgs: [{ author, ts: ts || nowIso(), text: String(text || ''), ...(route ? { route: String(route) } : {}) }],
   };
+  const o = cleanOrigin(origin);
+  if (o) thread.origin = o;
   const p = pageNumber(page_number);
   if (p) thread.page = p;
   // the extension knows the page order of its highlights; when it tells us
@@ -768,10 +808,14 @@ export function setCheckbox(text, index, checked) {
 // answer, so it is written once here rather than as a third copy of the regex.
 export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
 
-export function appendMsg(page, threadId, { author, text, ts, kind, route }) {
+export function appendMsg(page, threadId, { author, text, ts, kind, route, origin }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
   const msg = { author, ts: ts || nowIso(), text: String(text || '') };
+  // written over there and mirrored here (see cleanOrigin): the marker is what
+  // stops the read-back sending it straight home again
+  const o = cleanOrigin(origin);
+  if (o) msg.origin = o;
   // who this message was addressed to, when the reader addressed it with a
   // composer pill rather than an @-mention (addThread says the same thing for
   // a thread's opening comment). Absent on everything a bot writes, and absent

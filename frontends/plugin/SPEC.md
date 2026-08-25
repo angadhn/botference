@@ -3851,6 +3851,263 @@ struck-through tick, the count, the disabled boxes, the project name and the
 file name, both panes, the fold); `?workspace=1&ptasks=0` is the project that
 keeps no list, and asserts the card is absent.
 
+### Amendment (2026-08-25, shipped): one store, and the commenters in it
+
+Two halves of one idea, and the first is the reason the second exists.
+
+#### Half one: the visitor's comments come home
+
+"One margin, and it is Discuss's" (2026-08-19) settled what happens on a review
+page when the plugin is installed: Discuss keeps the margin, and the page's own
+selection pill is put away. It said, correctly, that **nobody else is affected**
+— a visitor without the extension gets the page's built-in commenting exactly
+as the page ships it.
+
+That sentence was true and the situation it described was bad. The visitor's
+comment went into `review/state/users/<handle>.json` and stopped there: a line
+in a JSON file beside the document. The owner's drawer could not see it. The
+bots were not in it. **Send review** did not gather it. The Obsidian export
+never heard about it. Meanwhile the owner, reading the same page with the
+extension, wrote into the companion's store. **Two records of one
+conversation, neither knowing the other existed** — and the person who had
+least reason to know that was the visitor, who had simply typed into the margin
+they were given.
+
+So the comments MOVE. One way, into the companion:
+
+```
+review page  ──POST /review-comments──▶  companion   every user-comment,
+                                                     under its own id
+review page  ◀───GET /page?url=───────   companion   whatever was said back,
+                                                     folded into the margin
+```
+
+**Why this direction and not the other.** The companion's record is the one
+with the bots, the send-review digest, the pages library, the round ticker and
+the export hanging off it. The review record is a file beside a document.
+Moving the small thing into the big one costs one endpoint and leaves everyone
+on both surfaces looking at the same conversation; the reverse would have meant
+teaching the drawer, the digest, the library and the export about a second
+store, and would still have left the bots on the wrong side of it.
+
+**Where it lives.** `frontends/review/discuss.mjs` — the review server's half —
+plus one endpoint here. Every byte crosses between two servers on the loopback,
+so a guest's cookie, the tunnel's CORS rules and the review page's own
+scriptless margin are all left out of it.
+
+##### The door: `POST /review-comments`
+
+**Loopback only**, the same three-part `isLocalDirect` test the API keys stand
+behind, and for a sharper reason than theirs: this endpoint **names its own
+author**, which is exactly the power a guest must never hold. A caller on this
+machine already owns the files these threads live in — naming one there is no
+privilege it did not already have. Through the tunnel it is a flat 403 whatever
+credential it carries, and unauthenticated it never reaches the route at all.
+
+One POST carries every comment on one page:
+
+```
+{ url, title?, site?, summon?,
+  comments: [ { id, author, ts, quote, prefix, suffix, text, resolved?,
+                replies: [{author, ts, text}] } ] }
+→ { url, threads: {<id>: <thread_id|"__page__">}, created, appended, skipped, refusals }
+```
+
+It is a **projection, not a second write path**, and therefore idempotent by
+construction: each comment is filed under `origin: {system:"review", id}`
+(store.mjs), and one already there is left alone. The review server re-posts a
+page whenever anything on it changes, so "already seen" is the common case and
+has to cost nothing.
+
+What crosses, and why each:
+
+```
+author     the file the comment lives in — authorship is the point of unifying
+ts         the moment it was WRITTEN, or the page's history would say every
+           visitor commented the second the companion first heard of them
+quote      the anchor. prefix/suffix ride along when the page has them
+replies    the visitor's own follow-ups, each landing once (author + ts)
+resolved   filed over there files here — see below
+```
+
+**A comment with no quote goes to page chat.** The review engine's block-level
+comment is about the document rather than a passage; Discuss already has the
+surface for exactly that thought, and minting an anchorless thread would only
+produce an orphan.
+
+**Resolving travels one way, and once.** Filed over there files the thread here
+— the person who wrote it has said they are done. Reopening here is never
+undone: `origin_filed` is the one bit that remembers we already acted, so a
+months-old `resolved: true` cannot close a thread the reader has just reopened,
+and it is cleared when the review record says the comment is open again, so a
+genuine re-file files it again. **Nothing is ever deleted.** A comment
+withdrawn over there leaves its thread standing, because that thread may by now
+hold a bot's answer and the owner's reply, and neither belongs to the person
+who withdrew the question.
+
+**The bots, once.** `summon` is set only when the paper is running WITHOUT its
+own `--chat` bridge. A paper that has one already answers its margin mentions
+there and its answers already land in the review record; summoning here as well
+would spend two agents to say one thing twice. Where it is set, `summon()` runs
+with `{handle, owner:false}` — so a guest is governed by `grants.json` exactly
+as they are in the reading room, and a refusal comes back in `refusals` for the
+mirror to relay.
+
+##### The identity, which is the whole difficulty
+
+A page's identity here is `sha1(normUrl(url))`, and the projection has to
+choose the SAME url the owner's extension chooses, or unification produces two
+records instead of one and is worse than the silo it replaced.
+
+It uses **the address the visitor had in their address bar**: the origin the
+mirroring request arrived on (`Host` + `X-Forwarded-Proto`) plus `/<section>.html`,
+which is exactly how the review server serves its pages. No synthetic scheme,
+no build change, no new question for content.js to ask — the owner reading that
+page with the extension files it under precisely that string.
+
+**The honest limit:** a paper reachable at two addresses (localhost and the
+hub's hostname) is two records, one per address, exactly as any other page
+served twice is. `discuss.base` in `review.config.json` pins one address when
+that matters. This is the same problem `ident_href` solves for a council
+artifact reached through the council's web UI, and the same answer would work
+here; it is not built, because in practice the owner and the guests of a hosted
+paper are both on the hub's hostname, and pinning is one config line.
+
+##### Coming back
+
+The other direction is a **poll, not a push**, and it lives entirely in the
+review server: every five seconds, only while somebody has the page open, it
+reads each mirrored page's record and folds every message that did not come
+from there into `mergedData().threads` under the comment's own id — the exact
+shape `state/threads.json` already uses, so the margin renders a Discuss answer
+with **no new rendering code at all**. A mirrored message carries `origin`,
+which is what stops the round trip echoing forever.
+
+`/data` is answered from that cache synchronously: a request that waited on
+another server's http would make the margin as slow as the slowest hop.
+
+##### The silo keeps working
+
+`review.config.json` grows one optional block:
+
+```json
+"discuss": { "companion": "http://127.0.0.1:4189" }
+```
+
+and **without it nothing runs** — not a fetch, not a timer, not a branch, not a
+state file. A clone with no companion, a collaborator's checkout, a static
+`site/` opened over `file://`, every paper that exists today: all keep exactly
+the commenting they have. Unification is what happens when there is a companion
+to unify with, and never a dependency on one. The companion is equally
+unbothered: `/review-comments` is a route nobody calls.
+
+#### Half two: commenter filter pills
+
+Once a margin holds the owner, several guests, the bots AND the visitors
+projected in from the review page, "what did mira say" is a question the drawer
+made you answer by scrolling. So the Comments pane grows **one pill per
+commenter present on the page**, `All` first, and pressing one shows that
+person's threads.
+
+**Derived, never maintained.** The roster is recomputed from the record on
+every render — every author of every non-`tools` message — so somebody who has
+not spoken here has no pill and somebody who just did gets one without any list
+to keep. A bot is a commenter like anybody else. Fewer than two voices is not a
+choice and draws no row, the same rule the archive's kind chips have always
+followed.
+
+**A pill wears the speaker's own colour** — `speakerColor`, the same hash that
+paints that person's messages and that card's rail — so a pill and the comments
+it finds are visibly one person. Deliberately **not** `tagHue`: that is the TAG
+hash, and painting one handle two colours on one screen is the exact bug
+`tagHue`'s byte-identical duplication exists to prevent.
+
+**Whole cards, never slices.** A thread is a person's if they said ANYTHING in
+it, so a thread the owner opened and mira replied in is in both their pills. A
+filter hides whole thread cards; half a conversation is not a conversation. The
+count on a pill is therefore a **thread** count — what pressing it will show.
+
+**It composes rather than fights.** The filter is applied ONCE, before the
+three buckets are cut, so the open list, **Ready for review** and the
+**Resolved** archive are all the same person's, their counts are counts under
+this filter, and every fold state carries on untouched. Filtering inside the
+buckets instead would have been three places to keep in step and a section
+header that lied.
+
+**The tab badge does not move.** It counts every unresolved thread on the page,
+filter or no filter: it is a workload number, not a view number, and a reader
+who has narrowed the list to one person has not finished the others.
+
+**A highlight click always wins.** `reveal(id)` already does whatever it takes
+to make a thread visible — opens the archive, unfolds the card, switches tabs —
+and a commenter filter hiding it is one more thing in the way, so it stands
+aside. A click on the page can never be swallowed by a filter.
+
+**View state, per tab, never persisted.** `D.commenter` lives beside the fold
+states and follows their rule: a reading position, not a decision. `setPage`
+clears it, because a handle in this page's margin is usually nowhere near the
+next one and a filter that survived the navigation would show an empty pane on
+a page that person has never been near. Nothing is written to
+`chrome.storage.local` and nothing is sent anywhere.
+
+**A filter that matches nothing says so** — *"Nothing from `<name>` here"* with
+**show everyone** — rather than "No comments yet" under a rail full of names,
+which would be a plain lie.
+
+##### In the reading room
+
+The same thing, as the only thing a scriptless view can be: a rail of LINKS,
+`?by=<handle>`, exactly as the archive filters by kind and tag. A margin
+narrowed to one commenter is therefore something a reader can send somebody.
+An unknown handle filters to nothing and offers the way back, rather than
+quietly showing everyone — a link that shows the whole page when it promised
+one person is the more confusing of the two failures.
+
+Deliberately **uncoloured**, unlike the drawer's pills: nothing in that view is
+coloured by author, and inventing a second per-name hash for one rail would
+paint the same handle two different colours across the two surfaces.
+
+#### Testing
+
+`companion.test.mjs` drives the door: a visitor's comment landing as a thread
+under their name, quote, prefix/suffix and original timestamp; the same comment
+mirrored twice being one thread; a reply landing once; a quote-less comment
+going to page chat and not becoming an orphan; filing travelling one way and a
+reopen surviving the next mirror pass; `summon` off by default and a mention
+being what summons when it is on; a mirrored thread being an ordinary thread
+everywhere else (a reply written here carries no `origin`, which is how the
+read-back knows to send it over); malformed comments being skipped rather than
+half-filed; and the door refusing a signed-in guest, a bearer token and the
+tunnel alike while answering the loopback. It also covers the reading room's
+`?by=` rail, its `on` state and its empty state.
+
+`tests/review-engine.test.mjs` drives the review half against a fake companion:
+the projection reaching it with the right url, authorship and shape; the
+accepted-card decisions NOT travelling (they are not comments); an unchanged
+page not being re-posted on every keystroke; a companion answer arriving in
+`/data` under the comment's own id and the visitor's own words not coming home
+again; **and a paper with no `discuss` block making no calls, growing no state
+file and answering `/data` with its own `threads.json` exactly as before.**
+`collect` / `sectionUrl` / `baseOf` / `repliesFrom` / `mergeThreads` are pure
+and unit-tested beside it.
+
+Harness `?commenters=1` is the page five voices have written on — the owner's
+threads, two projected in from a review margin, a guest replying in somebody
+else's thread, one of hers filed. `&selftest=1` asserts the row is drawn, All
+comes first, every voice has a pill, the pills carry the speaker's colour, a
+count is a thread count, pressing one narrows the pane, the tab badge does not
+move, the archive and Ready for review are filtered by the same rule, a thread
+somebody only replied in is kept whole, pressing the pill you are on clears the
+filter, a filter matching nothing says so and offers the way back, a hidden
+thread's highlight stands the filter aside, nothing is persisted, and a new
+page opens showing everyone. `?commenters=1&by=mira` is the screenshot pose.
+
+(The harness's own status bar is now PINNED to the bottom of the viewport while
+a selftest runs, and the first ✗ is printed at the FRONT of the tally. The
+article scrolls itself to a highlight on mount, which used to carry a sticky
+top bar out of frame and leave the tally — the only thing a selftest produces —
+unreadable in the one screenshot meant to carry it.)
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

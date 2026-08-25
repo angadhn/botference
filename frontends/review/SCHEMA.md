@@ -18,6 +18,7 @@ Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-spe
 | `port` | server port (`PORT` env and `--port` override) |
 | `legacy_storage_keys` | old browser-storage keys to migrate (optional) |
 | `bridge` | bot-bridge block, owned by `init-config.mjs` |
+| `discuss` | **unified comment store** (optional, off by default): `{"companion": "http://127.0.0.1:4189", "base"?: "https://paper.example", "poll_ms"?: 5000}`. See below |
 
 Figure handling at build: every `<img>` src is resolved against the repo root and each figure dir with LaTeX `\graphicspath` semantics, probing `.png/.jpg/.jpeg/.svg/.gif/.webp/.pdf` for extensionless `\includegraphics` refs. PDF-only and missing figures render as labeled placeholders instead of broken images. `tikzpicture` environments (which pandoc drops) are compiled to SVG at build time — `documentclass[tikz]{standalone}` + the paper's preamble minus page-layout packages, via `pdflatex` then `pdftocairo -svg` (or `dvisvgm --pdf`) — cached by content hash under `site/tikz/`; the wrapping figure/caption/label stay with pandoc so global numbering and refs are unaffected, and a compile failure or missing toolchain degrades to a placeholder plus a build warning, never a broken build.
 
@@ -87,6 +88,17 @@ Hosted mode has three tiers, not two. `{"<handle>": {"agents": true, "daily_cap"
 - **everyone else, and anyone over cap** — the existing `pending-mentions.json` queue, with an honest "daily cap reached (N/N)" message rather than a silent throttle.
 
 The cap is visible to the granted guest in their own sidebar ("4 of 5 agent calls left today") — it is a budget meant to teach judicious use. Revocation and cap changes are read per request, so they take effect on the very next one. **Apply, Commit, Revert, model switching and permission/choice answers stay owner-only forever; a grant never confers them.**
+
+## Unified comment store (`discuss`, opt-in — `discuss.mjs`)
+
+Without the `discuss` block **nothing in `discuss.mjs` runs**: no fetch, no timer, no branch. A clone with no companion, a collaborator's checkout, a static `site/` over `file://` — all keep the silo they have always had. This is what the block turns on:
+
+- **Forward.** After every `POST /state` write, every `user-comment` in every `users/*.json` is projected into the botference companion (`POST /review-comments`, loopback only) grouped by section page. The companion files each one under `origin: {system:"review", id:"<comment id>"}` — so the projection is idempotent and a comment mirrored a hundred times is one thread. Authorship (the file the comment lives in), the original `ts` and the `quote`/anchor cross with it; the visitor's own `thread` replies land once each, keyed by author + `ts`. A **block-level comment has no `quote`** and goes to the companion's page chat rather than minting an anchor onto nothing.
+- **The page key.** `<base>/<section>.html`, where `base` is the origin the mirroring request arrived on (`Host` + `X-Forwarded-Proto`) unless the config pins one. That is deliberately the address the visitor had in their address bar — the same key the botference extension files that page under, which is what makes the owner's drawer and the visitor's margin one record. A paper reachable at two addresses is two records unless `base` pins one.
+- **Back.** A 5s poll (only while a client is connected) reads each mirrored page and folds every message that did *not* come from here into `mergedData().threads` under the comment's own id — the exact shape `state/threads.json` already uses, so the margin renders companion answers with no new code. Mirrored messages carry `origin`, which is what stops the round trip echoing.
+- **Bots.** A paper started with `--chat` answers its own margin mentions and the projection asks for nothing; without that bridge the projection sets `summon`, and the companion applies **its** `grants.json` to the guest exactly as it does everywhere else. One mention, one answer, never two.
+- **Resolving travels one way, once.** Filed over there files the Discuss thread; reopening here is never undone (the companion remembers with `origin_filed`). Nothing is ever deleted in the companion — a withdrawn comment leaves a thread that may by then hold a bot's answer and the owner's reply.
+- **State:** `state/discuss-mirror.json` (gitignored with the rest of `state/`) holds the base, the per-section digest that suppresses no-news re-posts, and the id → thread map.
 
 ## Task console + Settings (owner-only, desktop-only)
 

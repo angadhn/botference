@@ -1231,6 +1231,13 @@
       // archive, whose whole point is to be out of the way, this section is
       // the thing the reader came back to the page to look at
       readyOpen: true,
+      // WHICH COMMENTER the Comments pane is showing — '' is everyone, which
+      // is the default and the state a page opens in. Session-only and per
+      // tab, deliberately: this is a reading position, not a decision, and a
+      // filter that silently survived a navigation would show an empty pane on
+      // a page that person has never been near. setPage clears it for exactly
+      // that reason.
+      commenter: '',
       addressing: {},        // threadId -> a "not done" round trip is in flight
       resolvedCards: {},     // threadId -> the full thread under its digest is open
       resolving: {},         // threadId -> a resolve/reopen is in flight
@@ -2584,8 +2591,70 @@
       setTimeout(() => reply.classList.remove('tasksrc'), 1600);
     }
 
+    // ---- who is in this margin ------------------------------------------
+    // A shared page collects comments from several people at once: the owner,
+    // the guests who came in through the reading room, the visitors whose
+    // review-page comments were projected in (store.mjs `origin`), and the
+    // bots. Reading down a long list looking for "what did mira say" is the
+    // one thing the drawer made you do by hand.
+    //
+    // So: one pill per commenter present, All first, and clicking one shows
+    // that person's threads. It is a VIEW and nothing else — nothing is
+    // written, nothing is sent, and the answer lives on D for this tab only
+    // (the same rule the fold states follow: reading positions, not
+    // decisions). The roster is DERIVED from the page every render, so a
+    // person who has not spoken here has no pill and a person who just did
+    // gets one without anybody maintaining a list.
+    //
+    // A pill's colour is `speakerColor` — the same hash that colours that
+    // person's messages and that card's rail, so the pill and the comments it
+    // finds are visibly the same person. (Not `tagHue`: that is the TAG hash,
+    // and painting one handle two colours on one screen is exactly the bug
+    // this is meant to prevent.)
+    function commenters(threads) {
+      const seen = new Map();
+      for (const t of threads || []) {
+        for (const m of (t.msgs || [])) {
+          // a bot narrating what it ran is not a commenter, and neither is a
+          // message with no author to speak of
+          if (!m || m.kind === 'tools' || !m.author) continue;
+          const key = String(m.author).toLowerCase();
+          if (!seen.has(key)) seen.set(key, { key, name: String(m.author), threads: new Set() });
+          seen.get(key).threads.add(t.id);
+        }
+      }
+      return [...seen.values()].map(c => ({ ...c, count: c.threads.size }));
+    }
+    // a thread is this person's if they said anything in it — the filter hides
+    // whole cards and never slices inside one, because half a conversation is
+    // not a conversation
+    const inThread = (t, key) => (t.msgs || [])
+      .some(m => m && m.kind !== 'tools' && String(m.author || '').toLowerCase() === key);
+    function commenterRail(threads) {
+      const list = commenters(threads);
+      // one voice is not a choice — the same rule the archive's kind chips use
+      if (list.length < 2 && !D.commenter) return '';
+      const pill = (key, name, n, color) =>
+        `<button class="cpill${D.commenter === key ? ' on' : ''}" type="button"
+           data-act="filter-by" data-by="${esc(key)}" aria-pressed="${D.commenter === key}"
+           ${color ? `style="--author:${color}"` : ''}
+           title="${key ? `Only threads ${esc(name)} is in` : 'Every thread on this page'}"
+           >${esc(name)}<span class="cn">${n}</span></button>`;
+      return `<div class="cfilter" role="group" aria-label="Filter by commenter">`
+        + pill('', 'All', threads.length, '')
+        + list.map(c => pill(c.key, c.name, c.count, speakerColor(c.name))).join('')
+        + `</div>`;
+    }
+
     function renderComments() {
-      const threads = (D.page && D.page.threads) || [];
+      const all = (D.page && D.page.threads) || [];
+      const rail = commenterRail(all);
+      // The filter is applied ONCE, here, before the buckets are cut — so the
+      // open list, Ready for review and the Resolved archive are all the same
+      // person's, their counts are counts under this filter, and every fold
+      // state carries on untouched. Filtering inside the buckets instead would
+      // have meant three places to keep in step and a section header that lied.
+      const threads = D.commenter ? all.filter(t => inThread(t, D.commenter)) : all;
       // three buckets, in the order a thread travels through them: still
       // waiting on somebody → answered and waiting on the reader → filed
       const live = threads.filter(t => !isResolved(t));
@@ -2593,12 +2662,14 @@
       const ready = live.filter(isAddressed);
       const done = threads.filter(isResolved);
       let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml()
-        + projectTaskCardHtml() + taskCardHtml();
+        + projectTaskCardHtml() + taskCardHtml() + rail;
       html += D.pending ? pendingHtml() : '';
-      // "select any text and hit 💬" is a lie where selection does nothing —
-      // the note above has already said what to do instead. Same on a page
-      // that owns its own margin: the stand-down note is the instruction.
-      if (!threads.length && !D.pending && CAPS.highlights && !standDown()) {
+      // a filter that matches nothing must say so and offer the way back —
+      // "No comments yet" under a rail full of names would be a plain lie
+      if (D.commenter && !threads.length) {
+        html += `<div class="empty"><b>Nothing from ${esc(D.commenter)} here</b>`
+          + `<button class="fclear" type="button" data-act="filter-by" data-by="">show everyone</button></div>`;
+      } else if (!threads.length && !D.pending && CAPS.highlights && !standDown()) {
         html += `<div class="empty"><b>No comments yet</b>Select any text on the page and hit 💬.</div>`;
       } else if (!live.length && !D.pending && CAPS.highlights && !standDown()) {
         // every thread on this page is filed — say so, rather than showing the
@@ -2642,7 +2713,10 @@
       // as they sweep down it, which is the whole point of resolving. A READY
       // thread still wants them (that is what ready means), so it counts:
       // the number is every unresolved thread, exactly as it always was.
-      D.el.cCount.textContent = String(live.length);
+      // the tab badge is a WORKLOAD number, not a view number: it counts every
+      // unresolved thread on the page, filter or no filter. A reader narrowing
+      // the list to one person has not finished the others.
+      D.el.cCount.textContent = String(((D.page && D.page.threads) || []).filter(t => !isResolved(t)).length);
     }
 
     // ---- Page chat on a project artifact page ---------------------------
@@ -4067,6 +4141,7 @@
         if (act === 'lib-clear-yes') { doLibraryClear(); return; }
         if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
         if (act === 'page-export') { doExportPage(btn.dataset.url); return; }
+        if (act === 'filter-by') { pickCommenter(btn.dataset.by || ''); return; }
         if (act === 'filter-kind') { setKindFilter(btn.dataset.kind || ''); return; }
         if (act === 'filter-tag') { toggleTagFilter(btn.dataset.tag || ''); return; }
         if (act === 'filter-clear') { setFilter('', ''); return; }
@@ -4316,8 +4391,14 @@
     // toggle over the cards already drawn.
     function reveal(id) {
       const t = id ? threadById(id) : null;
-      if (!t || !t.resolved) return false;
+      if (!t) return false;
       let changed = false;
+      // "whatever it takes to make this thread visible" — and a commenter
+      // filter hiding it is one of the things in the way. A highlight clicked
+      // on the page must always open its card, so the filter stands aside
+      // rather than swallowing the click.
+      if (D.commenter && !inThread(t, D.commenter)) { D.commenter = ''; changed = true; }
+      if (!t.resolved) return changed;
       if (!D.resolvedOpen) { D.resolvedOpen = true; changed = true; }
       if (!D.resolvedCards[id]) { D.resolvedCards[id] = true; changed = true; }
       if (D.tab !== 'comments') { D.tab = 'comments'; paintTabs(); changed = true; }
@@ -5259,6 +5340,18 @@
       rememberFilter();
       renderPages();
     }
+    // clicking the pill you are already on clears the filter, the same toggle
+    // the archive's chips have always had. Through render(), like pickRoute:
+    // it reads back every open draft first and puts the scroll, the drafts and
+    // the @-menu back afterwards, which is what keeps a filter click from
+    // costing somebody the sentence they were half way through.
+    function pickCommenter(by) {
+      const want = String(by || '').toLowerCase();
+      const next = want === D.commenter ? '' : want;
+      if (next === D.commenter) return;
+      D.commenter = next;
+      render();
+    }
     const setKindFilter = kind => setFilter(kind === D.pages.kind ? '' : kind, D.pages.tag);
     // clicking the tag you are already filtered to is how you stop filtering by
     // it — the chip is a toggle, in the rail and in a row alike
@@ -5514,6 +5607,9 @@
 
     function setPage(page) {
       D.page = page || null;
+      // a handle that was in this page's margin is usually nowhere near the
+      // next one: the filter belongs to the page it was chosen on
+      D.commenter = '';
       clearAnsweredWaits();
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';
@@ -5806,6 +5902,12 @@
       },
       // observable for the harness: is Discuss's margin off on this page?
       standingDown: () => standDown(),
+      // …and the commenter filter: who has a pill on this page, and which of
+      // them (if any) the pane is narrowed to. View state, never persisted.
+      commenters: () => commenters((D.page && D.page.threads) || [])
+        .map(c => ({ key: c.key, name: c.name, count: c.count })),
+      commenterFilter: () => D.commenter,
+      pickCommenter,
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,

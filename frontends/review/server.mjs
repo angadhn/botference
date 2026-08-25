@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { ApplyEngine } from './apply.mjs';
 import { attachWs } from './ws.mjs';
+import { createDiscuss, baseOf, mergeThreads } from './discuss.mjs';
 
 const REVIEW = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(REVIEW, '..');
@@ -313,13 +314,19 @@ function dirtySources() {
       .split('\n').filter(Boolean).map(l => l.slice(3).trim()).filter(Boolean);
   } catch { return []; }
 }
-function mergedData(req) {
+// every participant's decisions, keyed by handle — the merged view of the
+// review, and the thing the Discuss mirror projects from
+function allUsers() {
   const users = {};
   for (const f of fs.existsSync(USERS) ? fs.readdirSync(USERS) : []) {
     if (!f.endsWith('.json')) continue;
     const u = readJSON(path.join(USERS, f), null);
     if (u) users[u.handle || f.replace(/\.json$/, '')] = u.decisions || {};
   }
+  return users;
+}
+function mergedData(req) {
+  const users = allUsers();
   const owner = isOwner(req);
   const me = who(req);
   // grants: the owner sees the whole table (People panel); a guest sees ONLY
@@ -341,7 +348,11 @@ function mergedData(req) {
     owner,
     owner_handle: HANDLE, // additive (2026-07): honest guest queue labels
     users,
-    threads: readJSON(path.join(STATE, 'threads.json'), {}),
+    // The margin's thread entries: this paper's own bots, plus — when the
+    // comments have been unified into a botference companion (discuss.mjs) —
+    // whatever was said back over there, in the same shape and under the same
+    // comment id, so the page draws them without knowing the difference.
+    threads: mergeThreads(readJSON(path.join(STATE, 'threads.json'), {}), discuss.replies()),
     suggestions: readJSON(path.join(REVIEW, 'suggestions.json'), []),
     apply: applyEngine.publicLedger(),
     pending_mentions: owner ? readJSON(PENDING, []) : undefined,
@@ -355,6 +366,19 @@ function mergedData(req) {
     models: chat ? chat.modelState() : null,
   };
 }
+
+// --- the unified comment store (opt-in: review.config.json's `discuss`) ---
+// Without that block this object is inert in every direction: `enabled` is
+// false, `replies()` is an empty map, `mirror()` returns null and no timer is
+// ever armed. The silo a paper has always had is what a paper without it
+// keeps. See discuss.mjs for the whole argument.
+const discuss = createDiscuss({
+  reviewDir: REVIEW, cfg: CFG,
+  // an answer landing in the companion is news the margin should hear about
+  // without a reload, and `state` is the event the page already redraws on
+  onChange: () => fire('state'),
+});
+if (discuss.enabled) console.log(`unified comments: mirroring the margin into ${discuss.companion}`);
 
 // --- P4: apply / commit / revert (owner-only) ---
 const applyEngine = new ApplyEngine({ reviewDir: REVIEW, cfg: CFG });
@@ -583,6 +607,10 @@ function pushAll(obj) {
   for (const ws of wsClients) ws.send(json);
 }
 function broadcast(type) { pushAll({ type }); }
+// The Discuss reply poll runs only while somebody is connected: a review page
+// nobody has open is a review page with nothing to refresh, and the companion
+// should not be asked about it every five seconds forever.
+function watchersChanged() { discuss.watch(clients.size + wsClients.size); }
 // heartbeat: keeps tunnel/proxy connections warm and lets dead clients
 // surface — an SSE comment (EventSource ignores it) and a WS ping event
 function ensureHeartbeat() {
@@ -778,7 +806,8 @@ export function handler(req, res) {
     sseOpen(res);
     res.write('data: {"type":"hello"}\n\n');
     clients.add(res);
-    req.on('close', () => clients.delete(res));
+    req.on('close', () => { clients.delete(res); watchersChanged(); });
+    watchersChanged();
     ensureHeartbeat();
     return;
   }
@@ -805,6 +834,15 @@ export function handler(req, res) {
         fs.writeFileSync(file, JSON.stringify(
           { handle, updated: new Date().toISOString(), decisions: stampEdits(prev, data.decisions || {}), build: data.build || null }, null, 1));
         res.writeHead(200, JSON_HEAD).end('{"ok":true}');
+        // …and, when the comments are unified, on into the companion's store.
+        // AFTER the response, deliberately: the visitor's comment is saved the
+        // moment it is saved here, and a companion that is asleep, slow or
+        // simply not running must never be something they have to wait for.
+        // `summon` only when this paper has no bridge of its own — otherwise
+        // the same @claude would be answered twice, once on each surface.
+        discuss.mirror(allUsers(), { base: baseOf(req), summon: !chat })
+          .then(r => { if (r && r.sent.length) fire('state'); })
+          .catch(() => { });
       } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
     });
     return;
@@ -994,7 +1032,8 @@ if (process.env.REVIEW_NO_LISTEN !== '1') {
     onOpen(ws) {
       ws.send('{"type":"hello"}');
       wsClients.add(ws);
-      ws.onclose = () => wsClients.delete(ws);
+      watchersChanged();
+      ws.onclose = () => { wsClients.delete(ws); watchersChanged(); };
       ensureHeartbeat();
     },
   });

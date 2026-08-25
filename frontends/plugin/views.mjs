@@ -304,9 +304,42 @@ ${resolveForm(page, key, t)}
 ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
 </section>`;
 
-export function pageView({ page, key, me, notice, snapshot }) {
+// WHO IS IN THIS MARGIN, for a reader with no extension. The drawer's
+// commenter pills, as the only thing this scriptless view can be: a rail of
+// LINKS, `?by=<handle>`, exactly as the archive filters by kind and tag. A
+// filtered margin is therefore a link somebody can send.
+//
+// Deliberately uncoloured, unlike the drawer's pills. In the drawer a person's
+// pill wears that person's own colour because their messages already do; here
+// nothing is coloured by author, and inventing a second per-name hash for one
+// rail would paint the same handle two different colours across the two
+// surfaces — which is the bug the tag hue is duplicated byte-for-byte to avoid.
+const inThread = (t, key) => (t.msgs || [])
+  .some(m => m && m.kind !== 'tools' && String(m.author || '').toLowerCase() === key);
+export function commentersOf(threads) {
+  const seen = new Map();
+  for (const t of threads || []) {
+    for (const m of (t.msgs || [])) {
+      if (!m || m.kind === 'tools' || !m.author) continue;
+      const k = String(m.author).toLowerCase();
+      if (!seen.has(k)) seen.set(k, { key: k, name: String(m.author), threads: new Set() });
+      seen.get(k).threads.add(t.id);
+    }
+  }
+  return [...seen.values()].map(c => ({ key: c.key, name: c.name, count: c.threads.size }));
+}
+
+export function pageView({ page, key, me, notice, snapshot, by = '' }) {
   const ctx = { key, owner: !!(me && me.owner) };
-  const all = page.threads || [];
+  const everyThread = page.threads || [];
+  const who = String(by || '').toLowerCase();
+  const roster = commentersOf(everyThread);
+  // A name nobody has written under is not quietly ignored: it filters to
+  // nothing and the empty state says so, with the way back. Same answer the
+  // drawer gives — a link that shows everyone when it promised one person is
+  // the more confusing of the two failures.
+  const on = who;
+  const all = on ? everyThread.filter(t => inThread(t, on)) : everyThread;
   // the same shape as the drawer: what still wants you, then everything you
   // have dealt with, folded away under one line. <details> is the whole of the
   // interaction — this view has no script and is not getting one.
@@ -332,10 +365,17 @@ ${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${e
 ${me && me.owner ? metaEdit(page, key) : ''}
 </header>
 ${notice ? `<div class="notice">${escHtml(notice)}</div>` : ''}
-<h2>comments${all.length ? '' : ' — none yet'}</h2>
-${threads.trim() || (all.length
-  ? '<p class="empty">Every comment on this page is resolved.</p>'
-  : '<p class="empty">Nothing highlighted on this page yet.</p>')}
+<h2>comments${everyThread.length ? '' : ' — none yet'}</h2>
+${roster.length > 1 ? `<div class="rail by">`
+  + railLink(`/p/${key}`, `All (${everyThread.length})`, !on)
+  + roster.map(c => railLink(`/p/${key}?by=${encodeURIComponent(c.key)}`,
+    `${c.name} (${c.count})`, c.key === on)).join('')
+  + `</div>` : ''}
+${threads.trim() || (on
+  ? `<p class="empty">Nothing from ${escHtml(on)} on this page. <a href="/p/${escHtml(key)}">show everyone</a></p>`
+  : (all.length
+    ? '<p class="empty">Every comment on this page is resolved.</p>'
+    : '<p class="empty">Nothing highlighted on this page yet.</p>'))}
 ${resolved}
 <h2>page chat</h2>
 <section class="card">

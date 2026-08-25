@@ -264,11 +264,13 @@
   <button id="h-stream">play bot stream</button>
   <button id="h-md">play codex (markdown)</button>
   <button id="h-dark">toggle dark</button>
-  <span class="spacer"></span>
-  <!-- the running selftest, written by check() and never by the fake
+  <!-- The running selftest, written by check() and never by the fake
        companion's log() — a stalled run must still say where it got to,
-       because a screenshot is the only instrument this page has -->
+       because a screenshot is the only instrument this page has. It sits
+       BEFORE the spacer, on the left: the drawer covers the right-hand end
+       of this bar, and a tally behind the panel is a tally nobody can read. -->
   <span id="h-prog"></span>
+  <span class="spacer"></span>
   <span id="h-log">fake companion ready</span>
 </div>
 
@@ -1393,6 +1395,57 @@ if (Q.get('tasks') === '1') {
       + '- [ ] Ask the desk which version they filed\n' });
 }
 
+// which pill the pose opens with, if any (`?commenters=1&by=mira`)
+let BOOT_COMMENTER = '';
+const COMMENTERS = Q.get('commenters') === '1';
+// ?commenters=1 — the shape of a page several people have marked up: the
+// owner's three threads, plus two projected in from the review page's own
+// margin by visitors with no extension (store.mjs `origin`), plus a guest
+// replying in somebody else's thread and a filed thread of her own. That is
+// the page the commenter pills exist for — the row is derived from exactly
+// this, one pill per voice, and the archive is in the count.
+// `&by=<handle>` opens with that pill already pressed (the screenshot pose).
+if (COMMENTERS) {
+  RECORD.threads.push({
+    id: 't-1754500300-aa01',
+    quote: 'It is not an excuse. It is a description of the plan.',
+    prefix: 'come to mean something specific here.', suffix: '',
+    orphaned: false,
+    // a visitor's review-page comment, projected in
+    origin: { system: 'review', id: 'user-01-match-blk-4-1756000000000' },
+    msgs: [
+      { author: 'mira', ts: iso(30), text: 'Is "description" right? The two sentences read as a defence, not a description.',
+        origin: { system: 'review', id: 'user-01-match-blk-4-1756000000000' } },
+      { author: 'claude', ts: iso(29), text: 'It reads as a defence, yes. "It is the plan, stated plainly" would carry the same shape without the plea.' },
+    ] });
+  RECORD.threads.push({
+    id: 't-1754500400-bb02',
+    quote: 'Nobody at the club disputed it',
+    prefix: 'outlives a manager.', suffix: 'They simply kept doing',
+    orphaned: false,
+    origin: { system: 'review', id: 'user-01-match-blk-9-1756000009999' },
+    msgs: [
+      { author: 'devraj', ts: iso(26), text: 'Nobody at the club, or nobody the reporter asked? Those are different claims.',
+        origin: { system: 'review', id: 'user-01-match-blk-9-1756000009999' } },
+    ] });
+  // a guest replying in the OWNER's thread: she belongs to that thread too,
+  // which is what "a thread is this person's if they said anything in it"
+  // means, and why the counts are thread counts and not message counts
+  RECORD.threads[0].msgs.push({ author: 'mira', ts: iso(18), text: 'Agreed — it is the only line I would fight for.' });
+  // …and one of hers, filed: the archive is filtered by the same rule, so a
+  // pill's count is what pressing it will actually show
+  RECORD.threads.push({
+    id: 't-1754500500-cc03',
+    quote: 'Nothing had gone wrong. Nothing had gone right either.',
+    prefix: 'just unconvinced.', suffix: 'The manager said afterwards',
+    orphaned: false, resolved: true, resolved_at: iso(12), resolved_by: 'angadh',
+    summary: 'Kept as written — the flatness is the point.',
+    msgs: [
+      { author: 'mira', ts: iso(15), text: 'This is the best sentence in the piece.' },
+    ] });
+  if (Q.get('by')) BOOT_COMMENTER = Q.get('by');
+}
+
 // ?handles=1 — the shape of a shared companion: a page chat several people are
 // in, so the per-handle author colours are on screen at load
 if (Q.get('handles') === '1') {
@@ -2406,14 +2459,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // that is failing look identical otherwise, and `until()` spends six seconds of
 // the budget on every check that will fail anyway.
 let firstBad = '';
+// The tally is the only thing a selftest run produces, and a screenshot is the
+// only instrument this page has for reading it — so while a selftest is running
+// the bar is PINNED to the bottom of the viewport. The article scrolls itself to
+// a highlight on mount (and again on every focus), which used to carry a sticky
+// top bar out of frame and leave the tally unreadable in the one image that was
+// meant to carry it. Only in selftest mode: every screenshot pose is untouched.
+function pinBar() {
+  const bar = document.querySelector('.bar');
+  if (!bar || bar.dataset.pinned) return;
+  bar.dataset.pinned = '1';
+  bar.style.cssText += ';position:fixed;top:auto;bottom:0;left:0;right:0;z-index:2147483647';
+}
 function progress(out, name) {
   const el = document.getElementById('h-prog');
   if (!el) return;
+  pinBar();
   const last = out[out.length - 1] || '';
   if (!firstBad && last[0] === '✗') firstBad = name;
   el.style.color = firstBad ? '#b3403a' : '';
-  el.textContent = out.length + ' checks · ' + last +
-    (firstBad && firstBad !== name ? '  ||  first ✗: ' + firstBad : '');
+  el.textContent = (firstBad && firstBad !== name ? 'first ✗: ' + firstBad + '  ||  ' : '')
+    + out.length + ' checks · ' + last;
 }
 async function until(fn, ms = 6000) {
   const t0 = Date.now();
@@ -5949,6 +6015,117 @@ async function selftestReviewPage() {
 // The one thing it is NOT is resolved. A bot can say "I did this"; it can
 // never close the reader's question. The ✓ is still the reader's click, and
 // "not done" is the one-click way to disagree.
+// ?commenters=1&selftest=1 — WHO IS IN THIS MARGIN.
+// A page five voices have written on: the owner's three threads, two projected
+// in from the review page's own margin (mira and devraj), a guest replying in
+// somebody else's thread, one of hers filed, and claude answering. The pills
+// are derived from exactly that, and pressing one narrows the WHOLE pane —
+// open list, Ready for review and the archive alike — to threads that person
+// is in, without slicing a single conversation in half.
+async function selftestCommenters() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const pane = () => S.querySelector('.pane[data-pane="comments"]');
+  const cards = () => [...q('.pane[data-pane="comments"] .card')].map(c => c.dataset.thread);
+  const pill = by => S.querySelector('.cpill[data-by="' + by + '"]');
+  // idempotent: the archive fold is session state that survives a filter
+  // change, so a second "open it" must not toggle it shut
+  const openArchive = () => {
+    if (S.querySelector('.resolved-sec.open')) return;
+    const t = S.querySelector('[data-act="resolved-toggle"]');
+    if (t) t.click();
+  };
+
+  // ---- the row ----
+  const rail = S.querySelector('.pane[data-pane="comments"] .cfilter');
+  check('a commenter rail is drawn', !!rail);
+  const names = [...q('.cpill')].map(b => b.dataset.by);
+  check('All comes first, and every voice on the page has a pill',
+    names[0] === '' && ['angadh', 'mira', 'devraj', 'claude'].every(n => names.includes(n)));
+  check('a bot is a commenter like anybody else', names.includes('claude'));
+  check('the pills carry the speaker\u2019s own colour, not a second hash',
+    [...q('.cpill')].slice(1).every(b => /--author:/.test(b.getAttribute('style') || '')));
+  check('All is on by default', pill('').classList.contains('on') && d.commenterFilter() === '');
+  // counts are THREAD counts — what pressing the pill will actually show
+  const counted = Object.fromEntries(d.commenters().map(c => [c.key, c.count]));
+  check('a pill counts threads, not messages', counted.mira === 3 && counted.devraj === 1);
+  check('replying in somebody else\u2019s thread puts you in it',
+    d.commenters().find(c => c.key === 'mira').count === 3);
+  const liveBefore = S.querySelector('.tab[data-tab="comments"] .count').textContent;
+
+  // ---- pressing one ----
+  openArchive();
+  await sleep(60);
+  const everything = cards().length;
+  pill('devraj').click();
+  await sleep(80);
+  check('pressing a pill narrows the pane to that person', cards().length === 1);
+  check('\u2026and it is their thread', cards()[0] === 't-1754500400-bb02');
+  check('the pill says it is on',
+    pill('devraj').classList.contains('on') && pill('devraj').getAttribute('aria-pressed') === 'true');
+  check('the tab badge does not move \u2014 it is a workload number, not a view number',
+    S.querySelector('.tab[data-tab="comments"] .count').textContent === liveBefore);
+
+  // ---- the archive and Ready for review are the same person's ----
+  pill('mira').click();
+  await sleep(80);
+  openArchive();
+  await sleep(60);
+  check('the archive is filtered by the same rule', cards().includes('t-1754500500-cc03'));
+  check('\u2026and the resolved count is the count under this filter',
+    /Resolved 1$/.test(S.querySelector('.resolved-head').textContent.replace(/\s+/g, ' ').trim()));
+  check('a thread nobody else is in is gone', !cards().includes('t-1754500400-bb02'));
+  check('a thread she only REPLIED in is kept whole',
+    cards().includes('t-1754500000-a1b2')
+      && S.querySelectorAll('.card[data-thread="t-1754500000-a1b2"] .reply').length === 2);
+
+  // ---- toggling off ----
+  pill('mira').click();
+  await sleep(80);
+  check('pressing the pill you are on clears the filter',
+    d.commenterFilter() === '' && cards().length === everything);
+
+  // ---- nothing to show ----
+  d.pickCommenter('nobody-at-all');
+  await sleep(80);
+  check('a filter that matches nothing says so rather than \u201cno comments yet\u201d',
+    /Nothing from nobody-at-all/.test(pane().textContent));
+  const back = pane().querySelector('.fclear[data-act="filter-by"]');
+  check('\u2026and offers the way back', !!back);
+  back.click();
+  await sleep(80);
+  check('\u201cshow everyone\u201d restores the page', d.commenterFilter() === '' && cards().length === everything);
+
+  // ---- a highlight click always wins ----
+  pill('devraj').click();
+  await sleep(80);
+  check('the filter is on and mira\u2019s thread is hidden', !cards().includes('t-1754500300-aa01'));
+  d.focus('t-1754500300-aa01');
+  await sleep(120);
+  check('clicking a hidden thread\u2019s highlight stands the filter aside rather than swallowing the click',
+    d.commenterFilter() === '' && cards().includes('t-1754500300-aa01'));
+
+  // ---- it is a reading position, not a decision ----
+  pill('mira').click();
+  await sleep(60);
+  check('nothing about the filter is persisted', !('bfp:commenter' in store));
+  d.setPage(JSON.parse(JSON.stringify(RECORD)));
+  await sleep(60);
+  check('and a new page opens showing everyone', d.commenterFilter() === '');
+
+  // focus() scrolled the article to a highlight (content.js scrolls the page to
+  // the mark, and that scroll lands after the click returns); the tally lives in
+  // the bar at the top of the page, and a screenshot is this file's only
+  // instrument — so the last thing this run does is go back up.
+  await sleep(200);
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  progress(out, 'done');
+  window.__selftest = out;
+}
+
 async function selftestReady() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
@@ -7200,6 +7377,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
         : HEAL ? selftestOrphanHeal : TICKER ? selftestRoundTicker
+        : COMMENTERS ? selftestCommenters
         : READY ? selftestReady : selftest, 250);
       return;
     }
@@ -7457,6 +7635,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         }, 350);
       }, 300);
     }
+    // ?commenters=1&by=<handle> — the pose with that pill already pressed
+    if (BOOT_COMMENTER) setTimeout(() => d.pickCommenter(BOOT_COMMENTER), 250);
     if (demo === 'select') setTimeout(() => demoSelect(true), 250);
     else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);
     // on the chat tab, freeze the page-chat turn instead — that pane's chip is

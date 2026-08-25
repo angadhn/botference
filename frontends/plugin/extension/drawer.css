@@ -698,6 +698,26 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .pconfirm .yes { color: var(--bad); font-weight: 700 }
 /* a companion that refuses (a turn is running for that page) says so here */
 .prow-err { flex: 1 0 100%; padding: 0 8px 8px; font: 12px/1.45 var(--sans); color: var(--bad) }
+/* WHO IS IN THIS MARGIN. One pill per commenter on the page, All first, and
+   the pane shows that person's threads. The colour is the person's own —
+   --author is speakerColor, the same hash that paints their messages and their
+   card's rail — so the pill and what it finds are visibly one person. Quiet
+   until chosen: an unfiltered page must not look like a filtered one. */
+.cfilter { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 9px }
+.cpill {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--card-line); border-radius: 999px; background: transparent;
+  color: var(--muted); font: 12px/1.2 var(--sans); padding: 3px 9px; min-height: 22px;
+  cursor: pointer; max-width: 100%;
+}
+.cpill:hover { color: var(--fg); border-color: var(--author, var(--accent)) }
+.cpill.on {
+  color: var(--author, var(--accent)); border-color: var(--author, var(--accent));
+  background: color-mix(in srgb, var(--author, var(--accent)) 12%, transparent);
+}
+/* the count is the thread tally, not the message tally: what the pill will
+   show you if you press it */
+.cpill .cn { font-size: 12px; opacity: .6 }
 .empty { color: var(--muted); font: italic 13px/1.6 var(--sans); padding: 26px 4px; text-align: center }
 .empty b { display: block; font-style: normal; font-size: 14px; color: var(--fg); margin-bottom: 5px }
 

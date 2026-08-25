@@ -2539,6 +2539,30 @@ async function main() {
       assert.equal(refused.headers['access-control-allow-origin'], '*', 'including the 401, or the tab sees nothing');
     });
 
+    // The review mirror names its own author, which is precisely the power a
+    // guest must never hold. A caller on the bare loopback already owns the
+    // files these threads live in, so naming one there is no privilege it did
+    // not have; over the tunnel it is a flat refusal, whatever it carries.
+    await test('the review mirror is a loopback door and nothing else', async () => {
+      const body = { url: 'https://paper.example/hosted-mirror.html',
+        comments: [{ id: 'user-forged-1', author: 'angadh', quote: 'x', text: 'me, honest' }] };
+      // signed in, and still refused: the gate lets them past and this door does not
+      assert.equal((await POST(hb, '/review-comments', body,
+        { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' })).status, 403,
+      'a guest with the password');
+      assert.equal((await POST(hb, '/review-comments', body, { ...ADA, cookie: adaCookie })).status, 403,
+        'a signed-in guest');
+      // …and anything unauthenticated never reaches it at all
+      for (const [what, headers] of [
+        ['the tunnel, with nothing typed', { host: 'discuss.botference.com', 'cf-ray': 'abc-LHR' }],
+        ['a plain remote request', REMOTE],
+      ]) {
+        assert.equal((await POST(hb, '/review-comments', body, headers)).status, 401, what);
+      }
+      const local = await POST(hb, '/review-comments', body, { host: '127.0.0.1' });
+      assert.equal(local.status, 200, 'and from this machine it is the ordinary projection');
+    });
+
     // --- the signed name: a guest is the name in their own cookie ---------
     await test('a signed-in guest cannot rename themselves to another guest', async () => {
       const r = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: 'and who am I?' },
@@ -2598,6 +2622,28 @@ async function main() {
       assert.ok(!p.body.includes('<script src'), 'no build step, no external script');
       const missing = await GET(hb, `/p/${'0'.repeat(40)}`, { ...REMOTE, cookie: adaCookie, accept: 'text/html' });
       assert.equal(missing.status, 404);
+    });
+
+    // The drawer's commenter pills, as the only thing a scriptless view can be:
+    // a rail of links. A margin narrowed to one person is therefore something a
+    // reader can send somebody.
+    await test('the reading room filters the margin by commenter, with a link', async () => {
+      const read = q => GET(hb, `/p/${key}${q}`, { ...REMOTE, cookie: adaCookie, accept: 'text/html' })
+        .then(r => r.body);
+      const all = await read('');
+      assert.match(all, /class="rail by"/, 'a rail, because more than one person has written here');
+      assert.match(all, new RegExp(`href="/p/${key}\\?by=ada"`), 'one link per commenter');
+      assert.match(all, new RegExp(`href="/p/${key}"[^>]*class="on"`), 'All is the one you are on');
+
+      const mine = await read('?by=ada');
+      assert.ok(mine.includes('Agreed — and the return leg? (fixed)'), 'her thread is here');
+      assert.match(mine, new RegExp(`href="/p/${key}\\?by=ada"[^>]*class="on"`), 'and her pill says so');
+      assert.ok(all.length >= mine.length, 'a filtered margin is never the bigger one');
+
+      const nobody = await read('?by=nobody-at-all');
+      assert.ok(nobody.includes('Nothing from nobody-at-all on this page'),
+        'a filter that matches nothing says so, rather than "nothing highlighted yet"');
+      assert.match(nobody, new RegExp(`<a href="/p/${key}">show everyone</a>`), '…and offers the way back');
     });
 
     await test('a composer post from the reading room appends and redirects back', async () => {
@@ -3718,6 +3764,160 @@ async function main() {
     assert.equal(page.threads[0].msgs[0].text, '@claude thoughts?');
     es.close();
     off.proc.kill();
+  });
+
+  // --- the unified comment store ----------------------------------------
+  // A visitor with no extension comments in a review page's OWN margin. Those
+  // comments are projected into this record (POST /review-comments) so the
+  // owner, the bots, send review and the export see one conversation rather
+  // than two. The projection is a mirror and must therefore be idempotent:
+  // the review server re-posts a page whenever anything on it changes.
+  const REVIEW_URL = 'https://paper.example/01-introduction.html';
+  const RC1 = 'user-01-introduction-blk-3-1756000000000';
+  const RC2 = 'user-01-introduction-blk-9-1756000009999';
+  const RC_BLOCK = 'user-01-introduction-doc-1756000005555';
+  const rcPage = async () =>
+    (await GET(base, `/page?url=${encodeURIComponent(REVIEW_URL)}`)).json;
+  const mirror = (comments, extra = {}) =>
+    POST(base, '/review-comments', { url: REVIEW_URL, title: 'Introduction', ...extra, comments });
+
+  await test('a visitor\'s review-page comment lands as a Discuss thread, under their name', async () => {
+    const r = await mirror([{
+      id: RC1, author: 'mira', ts: '2026-08-20T09:00:00.000Z',
+      quote: 'the sleeper network never really went away',
+      prefix: 'In the last decade ', suffix: ' — the timetables say so',
+      text: 'This overstates it. The Austrian service is the exception.',
+    }]);
+    assert.equal(r.status, 200);
+    assert.equal(r.json.created, 1);
+    const p = await rcPage();
+    assert.equal(p.threads.length, 1);
+    const t = p.threads[0];
+    assert.equal(t.quote, 'the sleeper network never really went away');
+    assert.equal(t.prefix, 'In the last decade ');
+    assert.equal(t.suffix, ' — the timetables say so');
+    assert.deepEqual(t.origin, { system: 'review', id: RC1 },
+      'filed under the address it came from — that is what makes the mirror idempotent');
+    assert.equal(t.msgs.length, 1);
+    assert.equal(t.msgs[0].author, 'mira', 'authorship survives the crossing');
+    assert.equal(t.msgs[0].ts, '2026-08-20T09:00:00.000Z',
+      '…and so does the moment it was written, not the moment we heard about it');
+    assert.equal(r.json.threads[RC1], t.id, 'the mirror is told where its comment went');
+  });
+
+  await test('mirroring the same comment again is not a second comment', async () => {
+    const again = await mirror([{
+      id: RC1, author: 'mira', ts: '2026-08-20T09:00:00.000Z',
+      quote: 'the sleeper network never really went away',
+      text: 'This overstates it. The Austrian service is the exception.',
+    }]);
+    assert.equal(again.json.created, 0);
+    assert.equal(again.json.appended, 0);
+    assert.equal((await rcPage()).threads.length, 1, 'one comment, one thread, however often it is mirrored');
+  });
+
+  await test('a reply left over there lands here once, and marks the thread as theirs again', async () => {
+    const withReply = c => mirror([{ ...c, replies: [
+      { author: 'mira', ts: '2026-08-20T10:15:00.000Z', text: 'Checked the timetable — I still think so.' },
+    ] }]);
+    const c = { id: RC1, author: 'mira', ts: '2026-08-20T09:00:00.000Z',
+      quote: 'the sleeper network never really went away',
+      text: 'This overstates it. The Austrian service is the exception.' };
+    const first = await withReply(c);
+    assert.equal(first.json.appended, 1);
+    const second = await withReply(c);
+    assert.equal(second.json.appended, 0, 'a reply is its author and its timestamp: it lands once');
+    const t = (await rcPage()).threads[0];
+    assert.equal(t.msgs.length, 2);
+    assert.equal(t.msgs[1].text, 'Checked the timetable — I still think so.');
+    assert.deepEqual(t.msgs[1].origin, { system: 'review', id: RC1 },
+      'marked as mirrored, which is what stops the read-back sending it home again');
+  });
+
+  await test('a comment on the document as a whole goes to page chat, not onto an anchor', async () => {
+    const r = await mirror([{
+      id: RC_BLOCK, author: 'devraj', ts: '2026-08-20T11:00:00.000Z',
+      quote: '', text: 'Reads well overall. The structure is the thing I would change.',
+    }]);
+    assert.equal(r.json.created, 1);
+    assert.equal(r.json.threads[RC_BLOCK], '__page__');
+    const p = await rcPage();
+    assert.equal(p.threads.length, 1, 'no anchorless thread was minted — that would only be an orphan');
+    const m = p.page_chat[p.page_chat.length - 1];
+    assert.equal(m.author, 'devraj');
+    assert.deepEqual(m.origin, { system: 'review', id: RC_BLOCK });
+    const again = await mirror([{ id: RC_BLOCK, author: 'devraj', quote: '', text: 'Reads well overall.' }]);
+    assert.equal(again.json.created, 0, '…and it too lands only once');
+  });
+
+  await test('filing over there files here; reopening HERE is never undone by the mirror', async () => {
+    const c = { id: RC2, author: 'sam-w', ts: '2026-08-20T12:00:00.000Z',
+      quote: 'the timetables say so', text: 'Source for this?' };
+    await mirror([c]);
+    const id = (await rcPage()).threads.find(t => t.origin.id === RC2).id;
+    await mirror([{ ...c, resolved: true }]);
+    assert.equal((await rcPage()).threads.find(t => t.origin.id === RC2).resolved, true);
+    // the reader disagrees, here, with a click
+    await POST(base, '/resolve', { url: REVIEW_URL, thread_id: id, resolved: false });
+    await mirror([{ ...c, resolved: true }]);
+    assert.equal((await rcPage()).threads.find(t => t.origin.id === RC2).resolved, undefined,
+      'resolving travels one way: a stale review record must not close a thread the reader reopened');
+  });
+
+  await test('the projection summons only when it is asked to, and the mention is what summons', async () => {
+    const quiet = await mirror([{
+      id: 'user-quiet-1', author: 'mira', quote: 'a quiet claim',
+      text: '@claude is this right?',
+    }]);
+    assert.equal(quiet.json.created, 1);
+    assert.deepEqual(quiet.json.refusals, []);
+    const noted = await mirror([{
+      id: 'user-noted-1', author: 'mira', quote: 'a note to nobody',
+      text: 'just parking a thought here', summon: true,
+    }], { summon: true });
+    assert.equal(noted.json.created, 1);
+    const asked = await mirror([{
+      id: 'user-asked-1', author: 'mira', quote: 'the second half',
+      text: '@claude what is the source?',
+    }], { summon: true });
+    assert.equal(asked.json.created, 1);
+    const t = await waitFor(async () => {
+      const p = await rcPage();
+      const hit = p.threads.find(x => x.origin && x.origin.id === 'user-asked-1');
+      return hit && hit.msgs.length > 1 ? hit : null;
+    }, 'the bot to answer the mirrored mention');
+    assert.match(String(t.msgs[t.msgs.length - 1].author), /^claude/);
+    const p = await rcPage();
+    assert.equal(p.threads.find(x => x.origin.id === 'user-quiet-1').msgs.length, 1,
+      'a paper that runs its own bridge answers there; summoning here too would say one thing twice');
+    assert.equal(p.threads.find(x => x.origin.id === 'user-noted-1').msgs.length, 1,
+      'and a note that tags nobody summons nobody, exactly as it does in the drawer');
+  });
+
+  await test('a mirrored comment is an ordinary thread everywhere else', async () => {
+    const t = (await rcPage()).threads[0];
+    // it replies, resolves and exports like any other — nothing downstream
+    // asks whether a thread was written here or projected into here
+    const reply = await POST(base, '/reply', { url: REVIEW_URL, thread_id: t.id, text: 'Fair. Softening it.' });
+    assert.equal(reply.status, 200);
+    const after = (await rcPage()).threads[0];
+    assert.equal(after.msgs[after.msgs.length - 1].text, 'Fair. Softening it.');
+    assert.equal(after.msgs[after.msgs.length - 1].origin, undefined,
+      'a reply written HERE carries no origin — that is how the read-back knows to send it over');
+  });
+
+  await test('a projection with nothing usable in it changes nothing', async () => {
+    const before = (await rcPage()).threads.length;
+    const junk = await mirror([
+      { id: '', author: 'mira', quote: 'x', text: 'no id' },
+      { id: 'user-x', author: '', quote: 'x', text: 'no author' },
+      { id: 'user-y', author: 'mira', quote: 'x', text: '   ' },
+      { id: 'user-z', author: 'mira', quote: 'x', text: 'ok', origin: { system: 'invented' } },
+    ]);
+    assert.equal(junk.json.skipped, 3);
+    assert.equal((await rcPage()).threads.length, before + 1, 'only the well-formed one was filed');
+    assert.equal((await POST(base, '/review-comments', { url: REVIEW_URL, comments: [] })).status, 400);
+    assert.equal((await POST(base, '/review-comments', { comments: [{ id: 'a' }] })).status, 400);
   });
 
   // --- real config, no mock: the bridge must stay lazy ------------------

@@ -212,6 +212,28 @@ Two ways to bring in collaborators:
   comment) or use plain `node review/server.mjs`, then commit their
   comments back with `node review/submit.mjs --push`.
 
+**One store of comments, when you also use Discuss.** A visitor without
+the Discuss extension comments in the review page's own margin, and by
+default that comment stays there — invisible to your drawer, to the
+bots, to send review and to the Obsidian export. Add one line to
+`review/review.config.json`:
+
+```json
+"discuss": { "companion": "http://127.0.0.1:4189" }
+```
+
+and every margin comment becomes a Discuss thread on that page, under
+the name of whoever wrote it and anchored to the same words; anything
+said back — a bot's answer, your reply — comes home to the margin they
+wrote in. A comment about the document as a whole lands in that page's
+chat rather than pretending to have an anchor. The two servers talk over
+the loopback only, so nothing about your tunnel or your guests' sign-in
+changes. Add `"base": "https://<your paper's hostname>"` if the paper is
+read at more than one address and you want them treated as one page.
+**Without that block nothing changes** — a clone with no companion, a
+collaborator's checkout and a static `site/` opened from disk all keep
+the commenting they have today.
+
 Hosting several papers? `frontends/review/hub.mjs` is a stable front
 door for all of them behind ONE named cloudflared tunnel: a gated
 portal on the hub hostname lists each visitor exactly the papers their
@@ -557,7 +579,12 @@ and comment under their own handle; their @-mentions are refused
 politely unless granted in `.botference/plugin/grants.json`
 (`{"<handle>": {"agents": true, "daily_cap": 5}}`, re-read live).
 Guests without the extension get a server-rendered reading room at
-`/pages`. Remote collaborators *with* the extension point it at your
+`/pages`. Once several people have written on a page, the Comments tab
+grows a row of pills — one per person, bots included, **All** first —
+and pressing one narrows the pane to that person's threads (open list,
+"ready for review" and the resolved archive alike). The reading room has
+the same filter as links, so a margin narrowed to one person is
+something you can send. Remote collaborators *with* the extension point it at your
 tunnel from its options page (URL, password, display name). Owner-only
 stays owner-only: export, page deletion, model/effort/verbosity, relay,
 interrupt.

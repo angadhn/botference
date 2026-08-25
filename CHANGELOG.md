@@ -2,6 +2,43 @@
 
 ## 2026-08-25
 
+- **Comments left on a review page now reach your bots.** A visitor without the
+  Discuss extension writes in the review page's own margin, and until now that
+  is where their comment stayed: a line in a file beside the document, invisible
+  to your drawer, to the bots, to send review and to the export — while you,
+  reading the same page with the extension, wrote somewhere else entirely. Two
+  records of one conversation. Now they are one: turn it on with a single line
+  in `review/review.config.json` —
+
+  ```json
+  "discuss": { "companion": "http://127.0.0.1:4189" }
+  ```
+
+  — and every comment in the margin becomes a Discuss thread on that page, under
+  the name of whoever wrote it, anchored to the same words, at the time they
+  wrote it. It joins send review, the pages library and the Obsidian note like
+  any other comment. Whatever is said back — a bot's answer, your reply — comes
+  home to the review page's own margin, so the visitor sees it where they wrote.
+  A comment about the document rather than a passage lands in that page's chat
+  instead of pretending to have an anchor. Filing a comment over there files the
+  thread here; reopening it here is never undone. Nothing is ever deleted.
+  Without that config line **nothing changes at all** — a clone with no
+  companion, a collaborator's checkout, a static site opened from disk all keep
+  exactly the commenting they have today.
+
+- **Who said what, in one press.** The Comments pane now carries a row of
+  pills — one per person who has written on this page, bots included, with
+  **All** first — and pressing one narrows the pane to that person's threads:
+  the open list, "Ready for review" and the resolved archive alike, each with
+  its own count under the filter. A thread is yours if you said anything in it,
+  so a thread you only replied in comes with you and is shown whole; a filter
+  never cuts a conversation in half. Each pill wears that person's own colour,
+  the one their messages already have. Clicking a highlight on the page still
+  opens its thread, filter or no filter, and the tab's number does not move —
+  it is how much is left to do, not how much is on screen. Nothing is
+  remembered: a new page opens showing everyone. The reading room has the same
+  thing as links, so a margin narrowed to one person is something you can send.
+
 - **A project now has a task list of its own, and the bots keep it.** The
   checklist in a chat belongs to that chat and scrolls away with it. A project's
   work does not — so `projects/<id>/TASKS.md` is a standing list the bots read
