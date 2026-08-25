@@ -414,7 +414,12 @@
   // in-flight /reanchor ids: a repaint storm must not post the same durable
   // re-anchor a dozen times
   const reanchoring = Object.create(null);
-  let pendingSel = null;  // {quote,prefix,suffix,start,end} awaiting the 💬 click
+  let pendingSel = null;  // {quote,prefix,suffix,start,end,mark} awaiting the pill's click
+  // A thread's mark kind, the node-side twin of store.markOf: 'strike' where
+  // the record says so, 'highlight' for everything else — which is every
+  // thread made before the second tool existed, and every thread on an
+  // ordinary article, where there is no second tool.
+  const markOf = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
   let drawer = null;
   // The first-turn context travels once per page and the companion only ever
   // uses it on the session-creating turn (chat.mjs: `first: !sid`). Two
@@ -1001,12 +1006,12 @@
       // and one a bot has answered but the reader has not yet filed is painted
       // amber, so the same glance says which passages are waiting on them
       Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id,
-        t.resolved ? true : (t.addressed ? 'ready' : false));
+        t.resolved ? true : (t.addressed ? 'ready' : false), markOf(t));
       index = freshIndex();
     }
     // repaint the provisional highlight if a new comment is being composed
     if (pendingSel) {
-      Anchor.paintOffsets(index, pendingSel.start, pendingSel.end, '__new__');
+      Anchor.paintOffsets(index, pendingSel.start, pendingSel.end, '__new__', false, pendingSel.mark);
       index = freshIndex();
     }
 
@@ -1766,9 +1771,9 @@
       // the rest of KaTeX's stylesheet, inside the shadow root (see above)
       katexCssUrl: extUrl('vendor/katex/katex.min.css') || 'vendor/katex/katex.min.css',
 
-      onSelect: () => commitSelection(),
+      onSelect: kind => commitSelection(kind),
 
-      onSave: async ({ quote, prefix, suffix, text, route }) => {
+      onSave: async ({ quote, prefix, suffix, text, route, mark }) => {
         // The act that earns the record. Order matters on the first one:
         // record, then snapshot, then the message — so a mention's turn is
         // planned against a page whose full text is already on disk.
@@ -1776,7 +1781,10 @@
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
         if (wasNew) await snapshotNow();
-        const body = { url: URL_NOW, quote, prefix, suffix, msg: { text }, ...(route ? { route } : {}) };
+        // `mark` rides only when it is not the default, so an article's payload
+        // is byte-for-byte the one it always was
+        const body = { url: URL_NOW, quote, prefix, suffix, msg: { text },
+          ...(mark === 'strike' ? { mark } : {}), ...(route ? { route } : {}) };
         // page order is the extension's knowledge, not the server's: tell it
         // where in the stack this thread belongs (companion honours `index`)
         if (pendingSel) body.index = pageOrderIndex(pendingSel.start);
@@ -2279,9 +2287,13 @@
     if (drawer && !inOurUI(e.target)) drawer.hideSel();
   }, true);
 
-  // 💬 clicked: freeze the anchor, paint it provisionally, open the composer
-  function commitSelection() {
+  // The pill clicked: freeze the anchor, paint it provisionally, open the
+  // composer. `kind` is which of the pill's tools was pressed — 'strike' on a
+  // PDF's second button, 'highlight' everywhere else (and on every article,
+  // where the pill has only ever had the one).
+  function commitSelection(kind) {
     if (!CAPS.highlights) return;
+    const mark = (kind === 'strike' && CAPS.strike) ? 'strike' : 'highlight';
     if (standDown()) return;   // no new threads where the page owns the margin
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
@@ -2301,11 +2313,11 @@
       : 0;
 
     Anchor.unpaint('__new__');
-    pendingSel = { ...a, start, end, page };
-    Anchor.paintOffsets(index, start, end, '__new__');
+    pendingSel = { ...a, start, end, page, mark };
+    Anchor.paintOffsets(index, start, end, '__new__', false, mark);
     sel.removeAllRanges();
     drawer.hideSel();
-    drawer.beginNew(a);
+    drawer.beginNew({ ...a, mark });
   }
 
   // click a highlight → open the drawer at that thread

@@ -41,6 +41,16 @@
   // either not a comment or is the same comment counted twice.
   const MARKUP = ['Highlight', 'Underline', 'StrikeOut', 'Squiggly'];
   const NOTES = ['Text', 'FreeText'];
+  // …and which of the four is a DELETION rather than a pointer. StrikeOut is
+  // the obvious one; a Squiggly is a wavy line through the words and means the
+  // same thing to the person who drew it. Highlight and Underline both mean
+  // "look at this", which is what a highlight is. This is the node-side twin
+  // of store.markForAnnotKind and is kept in step by hand — pdf-annot.test.mjs
+  // asserts the two agree.
+  const markForKind = s => {
+    const v = String(s || '');
+    return (v === 'StrikeOut' || v === 'Squiggly') ? 'strike' : 'highlight';
+  };
   const isMarkup = s => MARKUP.indexOf(String(s || '')) >= 0;
   const isNote = s => NOTES.indexOf(String(s || '')) >= 0;
   const isImportable = s => isMarkup(s) || isNote(s);
@@ -292,7 +302,9 @@
       const who = String(m.author || 'someone');
       const when = prettyDate(m.ts);
       lines.push(who + (when ? ' · ' + when : '') + ':');
-      lines.push(String(m.text || '').replace(/\r\n?/g, '\n').trim());
+      // a strikeout filed with nothing said under it: the popup must not be a
+      // name followed by a blank, which reads as a comment that failed to save
+      lines.push(String(m.text || '').replace(/\r\n?/g, '\n').trim() || '(no note)');
       lines.push('');
     }
     while (lines.length && !lines[lines.length - 1]) lines.pop();
@@ -321,10 +333,15 @@
   // it loaded, node passes the same file through require(). Nothing here
   // imports anything.
   //
-  // items: [{ page, quads:[[x0,y0,x1,y1],…], contents, author, ts, subject, color }]
+  // items: [{ page, quads:[[x0,y0,x1,y1],…], contents, author, ts, subject,
+  //           color, subtype }]
   //   page   1-based, as everything user-facing in this codebase is
   //   quads   PDF user space, one box per line of the passage
-  //   color   [r,g,b] 0..1 — the highlight's own colour
+  //   color   [r,g,b] 0..1 — the mark's own colour
+  //   subtype 'Highlight' (the default) or 'StrikeOut' — a thread that was
+  //           struck on screen is struck in the file, as the standard
+  //           annotation every viewer already draws. Same quads, same popup,
+  //           same everything else: the only difference is what the ink does.
   //
   // WHY AN APPEARANCE STREAM. A Highlight with no /AP is drawn by pdf.js and
   // by Preview, and by Acrobat only sometimes — Acrobat is entitled to render
@@ -361,10 +378,11 @@
       const qp = [];
       for (const q of quads) qp.push(q[0], q[3], q[2], q[3], q[0], q[1], q[2], q[1]);
 
-      const apRef = appearanceStream(ctx, PDFRawStream, rect, quads, color);
+      const subtype = String(item.subtype || '') === 'StrikeOut' ? 'StrikeOut' : 'Highlight';
+      const apRef = appearanceStream(ctx, PDFRawStream, rect, quads, color, subtype);
       const dict = ctx.obj({
         Type: 'Annot',
-        Subtype: 'Highlight',
+        Subtype: subtype,
         Rect: rect.map(v => PDFNumber.of(v)),
         QuadPoints: qp.map(v => PDFNumber.of(v)),
         // text, author and date carry the whole point of the export, so they
@@ -407,13 +425,27 @@
   // Multiply blend, and one filled box per quad. Drawn in the annotation's own
   // coordinate space (BBox = Rect, no /Matrix), which is what lets a viewer
   // move the annotation without re-rendering it.
-  function appearanceStream(ctx, PDFRawStream, rect, quads, color) {
+  //
+  // A STRIKEOUT IS THE SAME STREAM WITH DIFFERENT INK. Acrobat draws one as a
+  // thin filled bar across each quad at the middle of the x-height — not a
+  // stroked line, because a stroke's width is in the page's units and a
+  // half-point line vanishes on a printed copy. So: the same one-box-per-quad
+  // shape, flattened to STRIKE_H of a point and lifted to STRIKE_AT of the
+  // quad's height, and NO Multiply blend — multiply is what makes a highlight
+  // read as ink over glyphs, and a line through them is meant to be opaque.
+  const STRIKE_AT = 0.42;   // up from the quad's baseline edge: mid x-height
+  const STRIKE_H = 1.1;     // points — Acrobat's own weight for a strikeout
+  function appearanceStream(ctx, PDFRawStream, rect, quads, color, subtype) {
+    const struck = String(subtype || '') === 'StrikeOut';
     const ops = ['/GS0 gs', color.map(v => round3(v)).join(' ') + ' rg'];
     for (const q of quads) {
-      ops.push([round3(q[0]), round3(q[1]), round3(q[2] - q[0]), round3(q[3] - q[1]), 're', 'f'].join(' '));
+      const box = struck ? strikeBar(q) : [q[0], q[1], q[2] - q[0], q[3] - q[1]];
+      ops.push([round3(box[0]), round3(box[1]), round3(box[2]), round3(box[3]), 're', 'f'].join(' '));
     }
     const body = ops.join('\n') + '\n';
-    const gs = ctx.obj({ Type: 'ExtGState', BM: 'Multiply', CA: 1, ca: 1 });
+    const gs = struck
+      ? ctx.obj({ Type: 'ExtGState', BM: 'Normal', CA: 1, ca: 1 })
+      : ctx.obj({ Type: 'ExtGState', BM: 'Multiply', CA: 1, ca: 1 });
     const stream = PDFRawStream.of(ctx.obj({
       Type: 'XObject',
       Subtype: 'Form',
@@ -424,6 +456,15 @@
       Length: body.length,
     }), encodeAscii(body));
     return ctx.register(stream);
+  }
+  // one quad → the bar drawn through it, as [x, y, width, height] in the same
+  // user space the quad is in. Pure, so the geometry is testable without a PDF.
+  function strikeBar(q) {
+    const h = Math.max(0, Number(q[3]) - Number(q[1]));
+    // a bar can never be thicker than the line it strikes, however small the
+    // type; below that it is a proportion of the quad
+    const t = Math.min(STRIKE_H, Math.max(0.4, h * 0.09));
+    return [Number(q[0]), Number(q[1]) + h * STRIKE_AT - t / 2, Number(q[2]) - Number(q[0]), t];
   }
   const round3 = n => Math.round(Number(n) * 1000) / 1000;
   function encodeAscii(s) {
@@ -438,7 +479,7 @@
     hash16, annotKey, normalizeAnnot, quadRects, foldReplies,
     spansUnder, spanNearest, quoteFromSpans, overlap, COVERED, QUOTE_MAX,
     threadContents, prettyDate, exportFileName,
-    writeAnnots, normColor,
+    writeAnnots, normColor, strikeBar, STRIKE_AT, STRIKE_H, markForKind,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPPdfAnnots = api;

@@ -552,6 +552,27 @@ Your original is never touched, and the annotated copy is still the same
 document to Discuss — same page, same chat — because annotations are not
 words.
 
+**Striking a passage through.** On a PDF the selection pill has two tools
+rather than one — Adobe's pair. The first is the comment button you know.
+The second strikes the passage through: a thin red line through the
+middle of the words, the way Acrobat draws it, with the words left
+perfectly readable underneath. It needs no note — the line has already
+said "this should come out", so Send files it with the box empty — but
+type one if you want to say why. From there it is an ordinary thread:
+reply, `@claude`, resolve, and the line turns amber and then sage on the
+page as the thread moves along, exactly as a highlight's wash does.
+
+Strikeouts travel both ways through the file: a `/StrikeOut` already in
+the manuscript arrives struck, and the annotated copy writes yours back
+out as real strikeout annotations in red, which Acrobat and Preview draw
+— so whoever you send it to sees the deletion you meant. The reading
+room quotes a struck passage struck, and the Obsidian note wraps it in
+`~~` with *suggested deletion* beside the page number.
+
+This is PDFs only, on purpose: a strikeout is a suggested edit to a
+draft, and a news article is not a draft. The pill on an ordinary page is
+the single comment button it has always been.
+
 **And the pages your council writes.** When a council chat builds an HTML
 artifact inside its own project —
 `…/botference/projects/spaceship-engineering/index.html` — opening that

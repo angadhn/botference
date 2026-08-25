@@ -252,8 +252,11 @@
       label = t.resolved ? 'resolved comment' : 'comment';
       // a quote off a PDF carries its page: the same attribution the export
       // writes, in the same words
-      html = '<blockquote>' + esc(t.quote)
+      // …and whether it was struck through: a suggested deletion and a passage
+      // merely pointed at are different remarks, so the sheet says which
+      html = '<blockquote' + (t.mark === 'strike' ? ' class="struck"' : '') + '>' + esc(t.quote)
         + (t.page > 0 ? '<cite> — p. ' + esc(String(t.page)) + '</cite>' : '') + '</blockquote>'
+        + (t.mark === 'strike' ? '<span class="struck-note">a suggested deletion — this passage is struck through in the document</span>' : '')
         + (t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : '')
         // a filed thread leads with what it settled, exactly as its card does
         // in the drawer and in the comments view

@@ -2,6 +2,32 @@
 
 ## 2026-08-25
 
+- **A second tool on a PDF: strike a passage through.** The selection pill on a
+  PDF now has Adobe's pair — highlight-and-comment, and strike-through — and a
+  struck passage is drawn the way Acrobat draws it: a thin red line through the
+  middle of the words, not a coloured block over them. The words stay
+  perfectly readable, because the point of striking them is that somebody has
+  to be able to read what you want removed.
+
+  A strikeout **needs no note**. The line through the sentence has already
+  said "this should come out", so Send files it with the box empty; type
+  something if you want to say why. Either way it is an ordinary thread from
+  then on: reply into it, `@claude` it, resolve it, and it turns amber and then
+  sage on the page exactly as a highlight does — the line keeps the colour, so
+  a page read at arm's length still tells you which passages are waiting on
+  you.
+
+  It travels. A `/StrikeOut` already in the file arrives struck; **an annotated
+  copy** writes your struck threads back out as real strikeout annotations, in
+  red, that Acrobat and Preview draw — so the author you send the copy to sees
+  the deletion you meant rather than a yellow highlight with a note under it.
+  The reading room quotes a struck passage struck, and the Obsidian note wraps
+  it in `~~` with *suggested deletion* beside the page number.
+
+  PDFs only, deliberately: a strikeout is a suggested edit to a draft, and a
+  news article is not a draft. The pill on an ordinary page is exactly what it
+  has always been.
+
 - **A PDF's own comments are comments now — in both directions.** Open a
   manuscript that has been round a supervisor and Discuss used to say "No
   comments yet" over a paper covered in Acrobat highlights and Preview sticky

@@ -4394,6 +4394,240 @@ stubbed viewer — the chooser's third row beside the two Obsidian modes, one
 call through, and the footer naming the file and what could not be written.
 `?pdfannot=1` is the screenshot pose.
 
+## Amendment (2026-08-25, shipped): the other mark — a strikeout, Adobe's way
+
+A reader of papers does not only point at sentences. Half of what they do to a
+manuscript is say **this should come out**, and Acrobat has had the tool for
+that in its toolbar for twenty years, right beside the highlighter. Discuss had
+one tool, so every remark — "look at this", "check this number", "delete this
+paragraph" — arrived as the same yellow wash, and the document itself never
+said which was which.
+
+So a PDF's selection pill gains Adobe's second tool.
+
+### 1. What a mark is, and what it is not
+
+A thread now carries a **`mark`**: `highlight` (the default) or `strike`. It is
+not a fourth state and must never be read as one. The three background tints
+already mean three states of a THREAD — yellow open, amber ready, sage filed,
+read down a page as a progress bar — and `mark` is orthogonal to all three: it
+says what was DONE to the passage, not how far along the conversation is. A
+struck thread goes yellow → amber → sage exactly as a highlighted one does; what
+changes is that its state is carried by the colour of the LINE rather than by a
+wash.
+
+**Absent means highlight.** Nothing is written for the ordinary case
+(`store.addThread` writes the field only when it is `strike`), so every thread
+made before this existed — and every thread on an ordinary article — is
+untouched on disk and reads back exactly as it always did. `store.markOf` is the
+only thing that should ever ask, and it answers `'highlight'` for a record with
+no opinion.
+
+### 2. PDFS ONLY, and that is a decision
+
+The paint machinery would have generalised to articles nearly for free — it is
+the same `anchor.js` `<mark>` on both. It was still not done, and the reason is
+not cost:
+
+> A strikeout is a **suggested edit to a document under revision**. A PDF is
+> what gets marked up — it is a draft, it has an author waiting, and the file
+> can carry the strikeout back OUT as a standard annotation that author will
+> see. A news article on the web is not a draft, nobody is going to accept the
+> deletion, and there is nowhere for the mark to go. A second tool on that pill
+> would be a gesture with no destination.
+
+The gate is a capability, not a url test: the PDF adapter alone declares
+`capabilities.strike`, `drawer.js` draws the second button only where it is set,
+and `content.js` refuses a `strike` selection where it is not. An article's pill
+is byte-for-byte the single "💬 comment" button it has always been.
+
+### 3. The pill grows a second tool
+
+```
+article        [ 💬 comment ]              ← unchanged, and its DOM is unchanged
+PDF            [  ▤  |  ▤̶  ]              ← two icon segments in one pill
+```
+
+`.selbtn` stays what it was — the first button, the comment one, so every
+existing test that reaches for `.selbtn` still gets the tool it meant. What is
+new is the `.selpill` around it: the border, the radius and the shadow moved out
+to the container so two buttons read as **one** control with a hairline between
+them rather than as two pills sitting next to each other. The `on` class goes on
+the pill and on each tool inside it, so nothing that ever asked the BUTTON
+whether the pill was up gets a new answer.
+
+The icons are the standard pair, drawn rather than lettered so they read at
+16px in both themes: three strokes of text with a marker's amber band behind
+them, and the same three strokes with a red rule through the middle. They are
+the only colour in the pill, which is what makes the pair legible at a glance.
+The click reports which tool by the button's own `data-mark`, through the
+existing `onSelect` callback (`onSelect(kind)`); nothing else about the
+selection path changed.
+
+### 4. A LINE, NOT A WASH — and how it avoids the strike already on the page
+
+The reader asked for "the same nice strikethrough we see in Adobe", which is a
+thin rule through the middle of the words and emphatically **not** a coloured
+block over them. So a struck mark has `background-color: transparent` and draws
+its line as a **background gradient** — a 2px band at 55% of the mark's box,
+which is the middle of the x-height for the fonts a paper is set in and is the
+same 55% at every zoom. The words underneath stay black on white, undimmed.
+
+Why a gradient and not `text-decoration: line-through`? Two reasons, both about
+not colliding with something that already exists:
+
+| | |
+| --- | --- |
+| the ins-underline | Track changes marks an ARRIVED wording with `text-decoration: underline` in the accepted green. One element has one `text-decoration-color`. A struck passage that a bot then rewrote would have had to choose between the two lines, or draw both in one colour. A background is mechanically independent of a decoration, so the two markings can sit on the same mark and neither knows about the other. |
+| the font's own metric | A decoration lands on the font's strikeout position, which in a PDF text layer — spans whose font-size is a scaled glyph height — wanders. A percentage of the box does not. |
+
+And it is not the track-changes `<del>` (`bfp-was`) either, which is the OTHER
+struck thing a reader may be looking at. They are told apart on four axes at
+once, and `?pdf=1&strike=1` puts both on the same LINE of page 2 so the
+difference is a thing you can see rather than a claim in a comment:
+
+| | strikeout (`mark.bfp-hl.bfp-strike`) | the replaced wording (`del.bfp-was`) |
+| --- | --- | --- |
+| element | a `<mark>`, painted by `paintOffsets` | a `<del>`, painted by `paintWas` |
+| from | the thread's `mark` field | the thread's `prior_quote` |
+| ink | 2px saturated line, no wash | a hairline in the page's own text colour |
+| the words | full opacity — they are still the document | dimmed to .55 over a pale red wash — they are NOT part of the page |
+
+The line carries the thread's state, because the wash it replaced used to: open
+is Acrobat's own red (a thin YELLOW line on white paper is not a line, it is a
+rumour), ready keeps the amber, filed keeps the sage. Focus, which a strike
+cannot say with a darker wash because it has no wash, thickens the line to 3px
+and brings up a 12% tint of its own colour. Hover and click are identical to a
+highlight's — to the reader it is one kind of thing, a mark on a passage, and
+the click handler was already `mark.bfp-hl`.
+
+### 5. The note is optional, and the quote is the suggestion
+
+Adobe's strikeout with no popup means "delete this", and requiring a sentence to
+say so again would make the quicker of the two tools the slower one. So
+`POST /thread` waives its empty-comment refusal **for a strike and only for a
+strike** — an empty highlight still says nothing and is still a 400. The
+composer opens as it does for a highlight, with a placeholder that invites
+rather than demands and a hint saying what an empty Send will do.
+
+A thread whose first message has no words renders as the quiet line it is —
+*"the passage was struck through, with no note"* — in the drawer, and as
+`(no note)` in the PDF popup, rather than as an author's name over a blank,
+which reads as a comment that failed to save. The card badges the mark either
+way: **struck** when something was said, **suggested deletion** when nothing was.
+
+Striking a passage that was already highlighted is a second, different comment:
+the mark is part of the dedupe key, because it is part of what the act WAS.
+
+### 6. Both directions through the file
+
+**Import.** The four text markups already crossed as threads; now
+`StrikeOut` and `Squiggly` cross as `mark: 'strike'` (a squiggly is a wavy line
+through the words and means the same thing to whoever drew it), and
+`Highlight`/`Underline` stay highlights and carry no field at all. The rule has
+two copies — `Ann.markForKind` in the page, `store.markForAnnotKind` in the
+companion — and `pdf-annot.test.mjs` asserts the two agree for every subtype,
+the pattern `tags.test.mjs` set.
+
+**Export.** A struck thread is written into the annotated copy as a real
+`/StrikeOut` in Acrobat's red, not a Highlight with a note saying "delete this":
+the whole point of the export is the person who does not have Discuss, and
+red-line-through-the-words is the one mark every reader of PDFs already knows.
+Same quads, same popup, same everything else. Its appearance stream is the same
+one-box-per-quad Form XObject a highlight gets, with two differences that are
+the difference between a line and a block: each box is flattened to ~1.1pt and
+lifted to 42% of the quad's height, and the blend is **Normal** rather than
+Multiply — multiply is what makes a highlight read as ink over glyphs, and a
+line through them is meant to be opaque. A filed strikeout keeps the sage, as it
+does on the page.
+
+### 7. Downstream
+
+`mark` is inert data everywhere else, so nothing had to learn about it — but
+three surfaces show it anyway, because what was done to a passage is part of
+what the comment SAYS, and a year later the note is the only place either
+survives:
+
+- the **reading room** and the phone sheet quote a struck passage struck, with
+  one line under it saying it is a suggested deletion;
+- the **Obsidian note** wraps the quote in `~~`, which every markdown renderer
+  draws as a line through the words, with `*suggested deletion*` inside the
+  blockquote beside the page number. A note with nothing struck in it is
+  byte-for-byte the note this always wrote.
+
+The bots are NOT told which mark a thread carries (they are handed the quote and
+the conversation, as before). A struck thread with no note therefore gives an
+agent nothing to answer — which is correct, because nothing summons one: a
+strikeout files a suggestion, it does not ask a question.
+
+### Files
+
+```
+store.mjs                       THREAD_MARKS / cleanMark / markOf /
+                                markForAnnotKind; addThread takes `mark`
+server.mjs                      POST /thread takes `mark`, waives the empty
+                                refusal for a strike, and dedupes on it;
+                                POST /pdf-annotations maps the subtype
+extension/adapters.js           the PDF adapter alone: capabilities.strike
+extension/anchor.js             STRIKE_CLASS, the three line colours, the
+                                gradient, paintOffsets' 6th argument
+extension/content.js            the mark on the pending selection, on the
+                                repaint, and on the POST
+extension/drawer.js             the two-tool pill, the struck quote and its
+                                badge, the optional note, the wordless message
+extension/drawer.css            .selpill, --strike-line, .quote.struck
+extension/pdf/annots.js         markForKind, strikeBar, the StrikeOut subtype
+                                and its appearance
+extension/pdf/viewer.js         a struck thread is written as a StrikeOut in red
+views.mjs / reader.js           a struck quote in the reading room
+export.mjs                      …and in the Obsidian note
+```
+
+### Testing
+
+`pdf-annot.test.mjs` (81 → 111) — which subtypes are deletions and that the
+companion agrees about every one of them, the bar's geometry (thin, never
+thicker than the line it strikes, thinner still on 4pt type), and then the
+writer FOR REAL against the fixture: a `/StrikeOut` dictionary with a
+highlight's quads, Acrobat's red, a subject that says what it is, a `(no note)`
+popup rather than a signed blank, an appearance stream that is one thin bar and
+is NOT blended Multiply — and the default untouched, so an item that says
+nothing about its subtype is still a Highlight. Plus the store's own half:
+`cleanMark`, and an ordinary thread carrying no `mark` field at all.
+
+`companion.test.mjs` (195 → 203) — the door: a StrikeOut and a Squiggly coming
+in struck, a Highlight and an Underline coming in with no field, a thread struck
+by hand, a strikeout filed with an empty message (still signed), the same POST
+refused for a highlight, an unknown mark falling back rather than erroring, and
+the dedupe: the same words twice is one comment, but striking them is not the
+same act.
+
+`export.test.mjs` (70 → 75) — a struck quote in the Obsidian note, with and
+without a note under it, an ordinary highlight quoted exactly as it always was,
+and a note with nothing struck in it byte-for-byte unchanged.
+
+Harness `?pdf=1&strike=1&selftest=1` (39) — the pill has two tools and the first
+is still the comment one; the strike tool opens the composer, paints the
+provisional mark already struck, and Sends with an empty box; the passage is
+painted on both typeset lines, inside the text layer, with NO background colour
+and a gradient carrying the line; an ordinary highlight on the same document is
+still the yellow wash it always was; and then the collision, on one line of page
+2 — a `<del>` that is a different element, dimmed, washed, and struck by a
+text-decoration rather than a background, beside a `<mark>` that is none of
+those things. Then the filed strikeout's sage line, focus, the card's struck
+quote and its two badges, the wordless message, and a click opening the thread.
+`?pdf=1&strike=1` is the screenshot pose (scrolled to page 2);
+`&strike=pill` puts the two-tool pill up over it.
+
+Two notes for whoever runs the harness next. The tint a focus brings up is
+asserted off the INLINE declaration, not `getComputedStyle`: the mark carries
+`transition: background-color`, and under a headless render's virtual clock a
+transition never advances, so the computed value is stuck at the colour it is
+transitioning FROM. And `?hydrate=1&selftest=1` scores 8–9/11 under
+`botference see` for the same class of reason — its three `.panel.open`
+assertions read a class added in a `requestAnimationFrame` — which was verified
+against HEAD before this amendment and is not a regression from it.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

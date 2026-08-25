@@ -253,6 +253,79 @@ ok('…blended Multiply, exactly as Acrobat writes it',
   apDict.get(PDFName.of('Resources')).toString().includes('/Multiply')
   || back.context.lookup(apDict.get(PDFName.of('Resources'))).toString().includes('/Multiply'));
 
+// ---- the OTHER mark: a strikeout --------------------------------------------
+// Adobe's second tool. A thread struck on screen goes out as a real
+// /StrikeOut, which every viewer already draws — the whole point of the export
+// being the person who has no Discuss.
+eq('a StrikeOut is a deletion', A.markForKind('StrikeOut'), 'strike');
+eq('…and so is a Squiggly, which means the same thing to whoever drew it',
+  A.markForKind('Squiggly'), 'strike');
+eq('a Highlight is a pointer, not a deletion', A.markForKind('Highlight'), 'highlight');
+eq('…and so is an Underline', A.markForKind('Underline'), 'highlight');
+eq('…and anything unknown is a highlight, which is the safe reading',
+  A.markForKind('Ink'), 'highlight');
+// the node side and the companion side must not drift: two copies of one rule
+for (const k of ['Highlight', 'Underline', 'StrikeOut', 'Squiggly', 'Text', '']) {
+  eq('the companion agrees about ' + (k || 'nothing'),
+    store.markForAnnotKind(k), A.markForKind(k) === 'strike' ? 'strike' : '');
+}
+
+// the bar, as pure geometry: a thin box through the middle of the quad, never
+// thicker than the line it strikes
+const bar = A.strikeBar([72, 700, 400, 714]);
+eq('a strike bar spans the quad it strikes', [bar[0], bar[2]], [72, 328]);
+ok('…and is thin — a line, not a wash', bar[3] > 0 && bar[3] <= A.STRIKE_H, JSON.stringify(bar));
+ok('…sitting at the middle of the x-height, below the middle of the box',
+  bar[1] > 700 && bar[1] + bar[3] < 700 + 14 * 0.5, JSON.stringify(bar));
+const tiny = A.strikeBar([72, 100, 200, 104]);   // 4pt type
+ok('…and on very small type it is thinner still, never thicker than the line',
+  tiny[3] < bar[3] && tiny[3] > 0, JSON.stringify(tiny));
+
+const sOut = await A.writeAnnots(PDFLib, src, [{
+  page: 1, quads: [[72, 700, 400, 714]], subtype: 'StrikeOut',
+  contents: 'angadh · 25 Aug 2026, 09:00:\n(no note)', author: 'angadh',
+  ts: '2026-08-25T09:00:00Z', subject: 'Discuss · suggested deletion',
+  color: [0.78, 0.19, 0.19], name: 'bfp-t9',
+}]);
+eq('a struck thread is written', sOut.written, 1);
+const sBack = await PDFDocument.load(sOut.bytes);
+const sArr = sBack.getPage(0).node.Annots();
+const sa = sArr.lookup(0);
+eq('…as a StrikeOut, which is what Acrobat and Preview already draw',
+  nameOf(sa, 'Subtype'), '/StrikeOut');
+eq('…with the same quads a highlight would have had',
+  sa.get(PDFName.of('QuadPoints')).size(), 8);
+eq('…in Acrobat\u2019s own strikeout red', sa.get(PDFName.of('C')).toString(), '[ 0.78 0.19 0.19 ]');
+ok('…saying in its subject what it is', textOf(sa, 'Subj').includes('suggested deletion'));
+ok('…and a note-less strikeout does not sign a name over a blank popup',
+  textOf(sa, 'Contents').includes('(no note)'));
+const sAp = sBack.context.lookup(sa.get(PDFName.of('AP')).get(PDFName.of('N')));
+const sApText = Buffer.from(sAp.getContents()).toString('latin1');
+ok('…with an appearance of its own, so no viewer is entitled to draw nothing',
+  (sApText.match(/re\b/g) || []).length === 1, sApText);
+const sBox = sApText.match(/([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re/);
+ok('…which is a thin bar through the words, not a box over them',
+  !!sBox && Number(sBox[4]) <= A.STRIKE_H && Number(sBox[2]) > 700, sApText);
+ok('…and NOT blended Multiply: a line through the glyphs is meant to be opaque',
+  !back.context.lookup(sAp.dict.get(PDFName.of('Resources'))).toString().includes('/Multiply')
+  && sBack.context.lookup(sAp.dict.get(PDFName.of('Resources'))).toString().includes('/Normal'));
+// and the writer's default is unchanged for everything that does not ask
+eq('an item that says nothing about its subtype is still a Highlight',
+  nameOf(a1, 'Subtype'), '/Highlight');
+
+// the store's own half of the rule
+eq('a strike mark survives the store', store.cleanMark('strike'), 'strike');
+eq('…and anything else is the default, written as nothing at all',
+  [store.cleanMark('highlight'), store.cleanMark(''), store.cleanMark(null), store.cleanMark('STRIKE ')],
+  ['', '', '', 'strike']);
+const mpage = { url: 'bfp-pdf://text/' + 'b'.repeat(64), threads: [], page_chat: [] };
+const th = store.addThread(mpage, { quote: 'q', text: 't', author: 'angadh', mark: 'strike' });
+eq('…and rides the thread', th.mark, 'strike');
+eq('…and reads back as its kind', store.markOf(th), 'strike');
+const hh = store.addThread(mpage, { quote: 'q2', text: 't', author: 'angadh' });
+ok('an ordinary thread carries no mark field at all — nothing to migrate',
+  !('mark' in hh) && store.markOf(hh) === 'highlight');
+
 // ---- THE INVARIANT ---------------------------------------------------------
 // A local PDF is identified by the sha256 of its extracted TEXT. Annotations
 // are not text, so an annotated copy is THE SAME PAGE — same identity, same

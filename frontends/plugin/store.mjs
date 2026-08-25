@@ -766,7 +766,31 @@ const pageNumber = n => {
 // instead of an @-mention, and a pill leaves no trace in the text. See
 // server.mjs stickyRoute: this field is what makes the next untagged reply in
 // the thread still know who it is talking to.
-export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts }) {
+// ---- a thread's MARK, which is not its state -------------------------------
+//
+// A thread says something ABOUT a passage; the mark says what was done TO it.
+// Two, and only two: `highlight` (the yellow marker — "look at this") and
+// `strike` (a thin line through the words — "this should go"). Adobe's pair,
+// and the reason the pill on a PDF has two tools rather than one.
+//
+// ABSENT MEANS HIGHLIGHT. Nothing is written for the ordinary case, so every
+// thread made before this existed — and every thread on an ordinary article,
+// where there is no second tool — is untouched on disk and reads back exactly
+// as it always did. `markOf` is the only thing that should ever ask.
+export const THREAD_MARKS = ['highlight', 'strike'];
+export const cleanMark = m =>
+  (String(m == null ? '' : m).trim().toLowerCase() === 'strike' ? 'strike' : '');
+export const markOf = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
+// The file's own four text markups, as marks. Acrobat's StrikeOut is the
+// obvious one; a Squiggly is a wavy line through the words and means the same
+// thing to a reader — "wrong, take it out". Highlight and Underline are both
+// "look at this", which is what a highlight is.
+export const markForAnnotKind = k => {
+  const s = String(k == null ? '' : k).trim();
+  return (s === 'StrikeOut' || s === 'Squiggly') ? 'strike' : '';
+};
+
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
@@ -781,6 +805,10 @@ export function addThread(page, { quote, prefix, suffix, text, author, index, pa
   };
   const o = cleanOrigin(origin);
   if (o) thread.origin = o;
+  // written only when it is not the default, so an ordinary highlight costs
+  // nothing on disk and an old record needs no migration
+  const mk = cleanMark(mark);
+  if (mk) thread.mark = mk;
   const p = pageNumber(page_number);
   if (p) thread.page = p;
   // the extension knows the page order of its highlights; when it tells us

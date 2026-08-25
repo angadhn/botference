@@ -10,6 +10,8 @@
 //
 //   { name,                         // for logs/tests only
 //     capabilities: { highlights,   // false ⇒ no selection pill, no painting
+//                     strike,       // true ⇒ the pill gets Adobe's second tool
+//                                   //   (a strikeout). PDFs only.
 //                     textFallback,// false ⇒ '' from articleText() means "no
 //                                   //   text", never "scrape the DOM instead"
 //                     reportOrphans },// false ⇒ a lost anchor is badged here
@@ -900,7 +902,12 @@
         // …and an orphan here is a local verdict, never a report. A PDF's
         // pages arrive one at a time (and a scan's never do), so "I cannot
         // find it" means "not yet" far more often than it means "gone".
-        capabilities: { highlights: true, textFallback: false, reportOrphans: false },
+        // …and this is the one document kind with a SECOND tool. A PDF is what
+        // gets marked up — Acrobat's highlight and Acrobat's strikeout — and
+        // the file can carry both back out as real annotations. An article has
+        // nowhere to put a strikeout and nobody expecting one, so its pill
+        // keeps the single comment button it has always had.
+        capabilities: { highlights: true, strike: true, textFallback: false, reportOrphans: false },
         lastError: '',
         // what the reader is told when there is no text to send — the same
         // sentence the viewer prints over the page itself

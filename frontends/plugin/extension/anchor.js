@@ -214,6 +214,52 @@
   const INS_LINE = 'rgba(45, 145, 85, .95)';
   const WAS_BG = 'rgba(203, 68, 58, .10)';
 
+  // ---- the OTHER mark: a strikeout ----------------------------------------
+  // Adobe's second tool, and the reason a PDF's selection pill has two. A
+  // struck passage is not "look at this", it is "this should go" — a
+  // suggestion, with or without a note under it — and it is drawn the way
+  // Acrobat draws it: a thin line through the middle of the words, and NO
+  // wash. The words stay black on white, exactly as the author left them.
+  //
+  // WHY A BACKGROUND GRADIENT AND NOT `text-decoration: line-through`.
+  // Two reasons, both about not colliding with something that already exists:
+  //
+  //   · the ins-underline (INS_CLASS above) is a text-decoration, and a single
+  //     element has ONE text-decoration-color. A struck passage that a bot
+  //     then rewrites would have had to choose between the two lines, or draw
+  //     both in one colour. A gradient is a background, so the two markings
+  //     are mechanically independent and can sit on the same mark.
+  //   · a decoration lands on the font's own strikeout metric, which in a PDF
+  //     text layer (spans whose font-size is a scaled glyph height) wanders.
+  //     55% of the mark's box is the middle of the x-height for the fonts a
+  //     paper is set in, and it is the same 55% at every zoom.
+  //
+  // And it is NOT the track-changes <del> (WAS_CLASS): that is dimmed to .55
+  // over a pale red wash with a hairline in the page's own text colour, and it
+  // is a different ELEMENT, painted by a different function, from a different
+  // field of the record. This is undimmed, unwashed, and 2px of saturated ink.
+  const STRIKE_CLASS = 'bfp-strike';
+  // The line carries the thread's state, because the wash it replaced used to.
+  // Open is Acrobat's own red — a thin yellow line on white paper is not a
+  // line, it is a rumour — and ready/filed keep the amber and the sage the
+  // rest of the page reads as a progress bar.
+  const STRIKE_LINE = 'rgba(200, 48, 48, .95)';
+  const STRIKE_LINE_READY = 'rgba(214, 118, 20, .95)';
+  const STRIKE_LINE_DONE = 'rgba(72, 146, 88, .95)';
+  // …and focus, which a strike cannot say with a darker wash because it has no
+  // wash: the line thickens and the faintest tint of its own colour comes up
+  // under it, so a click still lands somewhere visible.
+  const STRIKE_FOCUS_BG = 'rgba(200, 48, 48, .12)';
+  const STRIKE_FOCUS_BG_READY = 'rgba(214, 118, 20, .14)';
+  const STRIKE_FOCUS_BG_DONE = 'rgba(72, 146, 88, .14)';
+  // where the line sits in the mark's box: the middle of the x-height, which
+  // is a little below the middle of the line box
+  const STRIKE_AT = '55%';
+  const strikeImage = (color, half) =>
+    'linear-gradient(to bottom, transparent 0, transparent calc(' + STRIKE_AT + ' - ' + half + 'px), '
+    + color + ' calc(' + STRIKE_AT + ' - ' + half + 'px), ' + color + ' calc(' + STRIKE_AT + ' + ' + half + 'px), '
+    + 'transparent calc(' + STRIKE_AT + ' + ' + half + 'px), transparent 100%)';
+
   function styleMark(mark, focused) {
     const st = mark.style;
     const cl = mark.classList;
@@ -221,10 +267,24 @@
     // was claimed about it on the way there
     const done = cl && cl.contains(DONE_CLASS);
     const ready = !done && cl && cl.contains(READY_CLASS);
-    const bg = done ? (focused ? HL_BG_DONE_FOCUS : HL_BG_DONE)
+    const struck = cl && cl.contains(STRIKE_CLASS);
+    const bg = struck
+      ? (!focused ? 'transparent'
+        : done ? STRIKE_FOCUS_BG_DONE : ready ? STRIKE_FOCUS_BG_READY : STRIKE_FOCUS_BG)
+      : done ? (focused ? HL_BG_DONE_FOCUS : HL_BG_DONE)
       : ready ? (focused ? HL_BG_READY_FOCUS : HL_BG_READY)
       : (focused ? HL_BG_FOCUS : HL_BG);
     st.setProperty('background-color', bg, 'important');
+    // the line itself, and — set both ways every time, for the same reason the
+    // ins-underline is — nothing at all where the mark is an ordinary highlight
+    if (struck) {
+      const line = done ? STRIKE_LINE_DONE : ready ? STRIKE_LINE_READY : STRIKE_LINE;
+      st.setProperty('background-image', strikeImage(line, focused ? 1.5 : 1), 'important');
+      st.setProperty('background-repeat', 'no-repeat', 'important');
+    } else {
+      st.removeProperty('background-image');
+      st.removeProperty('background-repeat');
+    }
     st.setProperty('color', 'inherit', 'important');
     st.setProperty('border-radius', '2px', 'important');
     st.setProperty('padding', '0', 'important');
@@ -391,9 +451,13 @@
   // answered and the reader has not yet filed, anything falsy for an open one.
   // (The boolean spelling is the original one and is still what most callers
   // pass, so it keeps working unchanged.)
-  function paintOffsets(index, start, end, id, state) {
-    const stateClass = state === true || state === 'done' ? ' ' + DONE_CLASS
-      : state === 'ready' ? ' ' + READY_CLASS : '';
+  // `mark` is the thread's mark kind — 'strike' for a struck passage, anything
+  // else (including nothing, which is every caller that predates it) for an
+  // ordinary highlight.
+  function paintOffsets(index, start, end, id, state, mark) {
+    const stateClass = (state === true || state === 'done' ? ' ' + DONE_CLASS
+      : state === 'ready' ? ' ' + READY_CLASS : '')
+      + (mark === 'strike' ? ' ' + STRIKE_CLASS : '');
     const parts = textNodesIn(index, start, end);
     const marks = [];
     for (const p of parts) {
@@ -571,6 +635,13 @@
     return marks.length;
   }
 
+  // Is this thread's passage struck? Read off the mark, like every other bit
+  // of a mark's state, so a repaint and the screen can never disagree.
+  const isMarkStruck = id => {
+    const m = marksFor(id)[0];
+    return !!(m && m.classList.contains(STRIKE_CLASS));
+  };
+
   function scrollTo(id) {
     const m = marksFor(id)[0];
     if (m && m.scrollIntoView) m.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -593,7 +664,8 @@
     paintWas, unpaintWas, wasFor, wasIds, markInserted,
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,
-    DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS,
+    DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS, STRIKE_CLASS,
+    STRIKE_LINE, STRIKE_LINE_READY, STRIKE_LINE_DONE, STRIKE_AT, isMarkStruck,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAnchor = api;

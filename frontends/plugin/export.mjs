@@ -34,6 +34,16 @@ const blockquote = q => String(q || '').split('\n')
 // (and everyone else) already renders as one. Articles have no pages and get
 // nothing, which is why this is a suffix rather than a second renderer.
 const attribution = t => (t && Number(t.page) > 0 ? `\n> — p. ${Number(t.page)}` : '');
+// …and WHAT WAS DONE to it. A struck passage is a suggested deletion, and the
+// note has to say so or a year later it reads as an ordinary highlight. The
+// quote itself is wrapped in `~~`, which is what every markdown renderer
+// Obsidian included draws as a line through the words — the same mark the
+// document, the drawer and the reading room all show.
+const struck = t => !!(t && t.mark === 'strike');
+const quoteBlock = t => (struck(t)
+  ? blockquote('~~' + String(t.quote || '').replace(/\n+/g, ' ').trim() + '~~')
+    + attribution(t) + '\n> *suggested deletion*'
+  : blockquote(t.quote) + attribution(t));
 
 // ---- what a code block printed --------------------------------------------
 // A run's result belongs under the block it came from, in the note as on
@@ -178,7 +188,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     `# ${displayTitle(page)}`,
   ];
   for (const t of page.threads || []) {
-    parts.push(blockquote(t.quote) + attribution(t));
+    parts.push(quoteBlock(t));
     // A thread the reader filed says so, and says what it settled — the note
     // is the thing they will re-read in a year, and "we dealt with this, and
     // here is how" is most of what a resolved thread is worth by then. Plain

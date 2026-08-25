@@ -653,6 +653,12 @@ function purelyImported(t) {
 
 const DISCUSS_YELLOW = [1, 0.83, 0.25];
 const DISCUSS_GREEN = [0.62, 0.85, 0.62];   // …and a filed thread is not live
+// A STRUCK thread goes out as a real /StrikeOut in Acrobat's own red, because
+// the person receiving the copy has no Discuss and no way of learning a house
+// convention: red-line-through-the-words is the one mark every reader of PDFs
+// already knows. A filed strikeout keeps the sage — the thread is closed, and
+// the colour says so here exactly as it does on the page.
+const DISCUSS_RED = [0.78, 0.19, 0.19];
 
 // Threads → the annotations that would be written for them, and the tally of
 // what could not be. Separated from the writing so the round trip is
@@ -669,18 +675,20 @@ function collectItems(threads) {
     if (!groups.length) { orphaned++; continue; }
     const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');
     const resolved = !!t.resolved;
+    const struck = t.mark === 'strike';
     for (const g of groups) {
       items.push({
         page: g.page,
         quads: g.quads,
+        subtype: struck ? 'StrikeOut' : 'Highlight',
         contents: Ann.threadContents(t, { head: '“' + String(t.quote || '').replace(/\s+/g, ' ').trim() + '”' }),
         // the annotation is signed by whoever opened the thread — the reply
         // chain inside the popup names everybody else, in order
         author: (msgs[0] && msgs[0].author) || 'Discuss',
         ts: (msgs[msgs.length - 1] && msgs[msgs.length - 1].ts) || '',
         created: (msgs[0] && msgs[0].ts) || '',
-        subject: 'Discuss' + (resolved ? ' · resolved' : ''),
-        color: resolved ? DISCUSS_GREEN : DISCUSS_YELLOW,
+        subject: 'Discuss' + (struck ? ' · suggested deletion' : '') + (resolved ? ' · resolved' : ''),
+        color: resolved ? DISCUSS_GREEN : (struck ? DISCUSS_RED : DISCUSS_YELLOW),
         name: 'bfp-' + t.id,
       });
     }

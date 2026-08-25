@@ -80,6 +80,15 @@
                      annotator is loaded, exactly as the real boot does, and
                      the record is filed under `bfp-pdf://text/<hex>`.
                      `&selftest=1` runs the local-PDF assertions.
+    ?pdf=1&strike=1  ADOBE'S SECOND TOOL: the same web PDF with a struck
+                     passage on page 2 — and, on the same LINE, the wording a
+                     bot's rewrite replaced, which track changes also draws
+                     struck. The two markings must be tellable apart at a
+                     glance (a thin red rule through readable words vs a
+                     dimmed, washed <del>) and must not touch each other
+                     mechanically. The screenshot state scrolls to page 2;
+                     `&strike=pill` puts the two-tool selection pill up over
+                     it; `&selftest=1` runs the strikeout assertions.
     ?reviewpage=1    the same article, wearing the review engine's own marker
                      (a docid on the body, its "💬 Comment" pill as a direct
                      child of it, and its toolbar). With the plugin installed
@@ -119,7 +128,11 @@
                      and two figure thumbnails (screenshot state)
     ?run=figure      …and the lightbox held open on the first of them
     ?more=1          seed capped bot answers: a short reply with the long
-                     version behind a `<!--more-->` marker, folded under a
+                     version behind an HTML `more` comment marker. It is
+                     deliberately NOT spelled out in this block: the sequence
+                     that closes an HTML comment closes THIS one too, and the
+                     rest of the header then renders as prose on the page.
+                     (CANNED_MORE below has the literal marker.) Folded under a
                      quiet "▸ more" — one in page chat (fenced blocks on both
                      sides of the marker, so the Run ordinals have something to
                      drift over), one in a comment thread, and one whose marker
@@ -633,6 +646,18 @@ const PDF_MODE = Q.get('pdf');
 const PDF_LOCAL = PDF_MODE === 'local';
 const PDFV = PDF_MODE === '1' || PDF_MODE === 'scan' || PDF_LOCAL;
 const PDF_SCAN = PDF_MODE === 'scan';
+// ?pdf=1&strike=1 — ADOBE'S SECOND TOOL.
+// A PDF is the one document that gets marked up rather than merely commented
+// on, so its selection pill has two: highlight-and-comment, and strike-through
+// -and-suggest. This pose puts a struck passage on the page — and puts it on
+// the SAME LINE as a track-changes rewrite, whose replaced wording is also
+// drawn struck. The two markings must be tellable apart at a glance and must
+// not touch each other mechanically, which is the whole of what the selftest
+// below is for.
+const STRIKE = PDF_MODE === '1' && (Q.get('strike') === '1' || Q.get('strike') === 'pill');
+// what the bot rewrote the passage TO, and what it replaced
+const STRIKE_WAS = 'They simply kept doing what they had been doing';
+const STRIKE_NOW = 'They carried on exactly as before';
 // ?pdf=local — a PDF on this machine. The source is a path, which is exactly
 // what CANNOT be an identity: move the file or rename it after reading and
 // every comment is stranded. And its bytes cannot be one either — Adobe
@@ -719,6 +744,20 @@ if (PDFV) {
     art.appendChild(label);
     art.appendChild(page);
   });
+  // The rewrite has ALREADY HAPPENED when the annotator boots — which is the
+  // real case: the reader comes back to a paper a bot has changed, and the old
+  // wording is nowhere in the text layer. The thread's anchor therefore fails
+  // to locate, content.js finds it again by the wording the bot claimed, and
+  // the replaced wording goes back on the page as a <del>. Done in the DOM
+  // rather than in the record so that nothing about it is faked.
+  if (STRIKE) {
+    for (const sp of art.querySelectorAll('.textLayer span')) {
+      if (sp.textContent.includes(STRIKE_WAS)) {
+        sp.textContent = sp.textContent.replace(STRIKE_WAS, STRIKE_NOW);
+        break;
+      }
+    }
+  }
 }
 
 // any uncaught error is a QA finding: put it where a screenshot will catch it
@@ -877,6 +916,42 @@ if (PDFV) {
       prefix: '', suffix: '', page: 7, orphaned: true,
       msgs: [{ author: 'angadh', ts: iso(20), text: 'What an orphan looks like on a PDF.' }] },
   ];
+  // ?strike=1 — the second tool's threads, deliberately on ONE line of page 2
+  // with a track-changes rewrite, so the screenshot answers the only question
+  // worth asking about a second struck marking: can you tell them apart?
+  if (STRIKE) {
+    RECORD.threads.push(
+      // a struck passage with a note under it, running across a typeset line
+      { id: 't-1754600300-s1a1',
+        quote: 'Nobody at the club disputed it',
+        prefix: 'outlives a manager.', suffix: 'They carried on exactly',
+        page: 2, orphaned: false, mark: 'strike',
+        msgs: [{ author: 'angadh', ts: iso(25),
+                 text: 'Cut this — nothing in the report supports it.' }] },
+      // …and one filed with NO note at all: the line through the words was the
+      // whole message, and the record is allowed to say only that
+      { id: 't-1754600400-s2b2',
+        quote: 'which is the kind of',
+        prefix: 'failure of oversight,', suffix: 'sentence that survives',
+        page: 2, orphaned: false, mark: 'strike', resolved: true,
+        resolved_at: iso(10), resolved_by: 'angadh',
+        summary: 'Struck and cut in v5.',
+        msgs: [{ author: 'angadh', ts: iso(24), text: '' }] },
+      // the track-changes thread: the passage on the page has already been
+      // rewritten, so this re-anchors onto the new wording and the wording it
+      // replaced is drawn struck immediately before it — in amber and dimmed,
+      // which is the marking the strikeout above must not be confused with
+      { id: 't-1754600500-s3c3',
+        quote: STRIKE_WAS,
+        prefix: 'disputed it.', suffix: 'one week at a time.',
+        page: 2, orphaned: false, addressed: true, addressed_by: 'claude',
+        msgs: [
+          { author: 'angadh', ts: iso(23), text: '@claude this repeats the sentence before it.' },
+          { author: 'claude', ts: iso(22),
+            text: 'Done — this passage now reads: "' + STRIKE_NOW + '"' },
+        ] },
+    );
+  }
 }
 
 const CANNED_REPLY =
@@ -1155,6 +1230,7 @@ const tagPosts = [];        // every /tag-page {url, tags}
 const openPageCalls = [];   // every {t:'open-page'} the drawer asked for
 const openOptionsCalls = []; // …and every {t:'open-options'}, with the agent it named
 const threadUrls = [];      // the url every /thread was filed against
+const threadBodies = [];    // …and the whole body, which now says which MARK it is
 const pdfAnnotPosts = [];   // every POST /pdf-annotations, as it was sent
 const threadPages = [];     // …and the page number it carried (undefined on an article)
 const pageTitles = [];      // every title POST /page was given, in order
@@ -1857,6 +1933,7 @@ function companion(method, path, body) {
   }
   if (method === 'POST' && route === '/thread') {
     threadUrls.push(body.url);
+    threadBodies.push(body);
     postedMsgs.push(captured(route, body.msg && body.msg.text, body));
     threadPages.push(body.page);
     const thread = {
@@ -1864,6 +1941,9 @@ function companion(method, path, body) {
       quote: body.quote, prefix: body.prefix, suffix: body.suffix, orphaned: false,
       msgs: [stampMsg(body.msg.text)],
     };
+    // what was DONE to the passage, which the companion writes only when it is
+    // not the default — so the record here is shaped like the record there
+    if (body.mark === 'strike') thread.mark = 'strike';
     // the companion stores a page number when the document has pages, and
     // nothing at all when it does not
     if (body.page > 0) thread.page = body.page;
@@ -2524,6 +2604,41 @@ function demoSelect(stopAtButton, fill) {
 // run on a given page, fire mouseup so the 💬 button floats, click it. `phrase`
 // has to be inside a single span — which is exactly the case a reader hits, and
 // the cross-line case is covered by the restored anchors instead.
+// Select a phrase in a page's text layer and let the pill come up — the half
+// of pdfSelect that does not press anything, so a test can look at the pill
+// itself rather than at what pressing it does.
+function pdfDrag(page, phrase) {
+  const layer = document.querySelector('[data-bfp-pdf-page="' + page + '"] .textLayer');
+  if (!layer) { log('pdf: no page ' + page); return Promise.resolve(false); }
+  let node = null;
+  (function walk(el) {
+    for (let n = el.firstChild; n && !node; n = n.nextSibling) {
+      if (n.nodeType === 3 && n.data.includes(phrase)) node = n;
+      else if (n.nodeType === 1) walk(n);
+    }
+  })(layer);
+  if (!node) { log('pdf: “' + phrase + '” is not on page ' + page); return Promise.resolve(false); }
+  const from = node.data.indexOf(phrase);
+  const r = document.createRange();
+  r.setStart(node, from);
+  r.setEnd(node, from + phrase.length);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  return new Promise(resolve => setTimeout(() => resolve(true), 300));
+}
+
+// …and the same drag answered with the pill's SECOND tool (a PDF only): the
+// strikeout, which opens the same composer with the note made optional.
+async function pdfStrike(page, phrase) {
+  if (!await pdfDrag(page, phrase)) return null;
+  const d = window.__bfp.drawer;
+  const b = d.shadow.querySelector('.selbtn.strikebtn');
+  if (!b) { log('pdf: no strike tool in the pill'); return null; }
+  b.click();
+  await sleep(200);
+  return d.shadow.querySelector('.card.pending textarea');
+}
+
 function pdfSelect(page, phrase, fill) {
   const layer = document.querySelector('[data-bfp-pdf-page="' + page + '"] .textLayer');
   if (!layer) return log('pdf: no page ' + page);
@@ -5920,6 +6035,176 @@ async function selftestPdf() {
 
 // ?pdf=local&selftest=1 — the same viewer, opened on a file from this Mac.
 //
+// ?pdf=1&strike=1&selftest=1 — ADOBE'S SECOND TOOL, ON THE PAGE.
+//
+// Two questions, and only two are worth a selftest.
+//
+//   IS IT A LINE, OR IS IT A WASH? The reader asked for "the same nice
+//   strikethrough we see in Adobe", which is a thin rule through the middle of
+//   the words and NOT a coloured block over them. So the mark's computed style
+//   is read: no background colour at all, and a background image that is a
+//   gradient with the strike colour in it.
+//   CAN YOU TELL IT FROM A TRACK-CHANGES STRIKE? The pose puts both on ONE
+//   LINE of page 2 — a struck passage and, three words later, the wording a
+//   bot's rewrite replaced, which is also drawn struck. They are different
+//   elements painted by different functions from different fields of the
+//   record, and this is where that stops being an assertion in a comment.
+async function selftestPdfStrike() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const q = sel => S.querySelectorAll(sel);
+  const A = window.BFPAnchor;
+  const cs = el => getComputedStyle(el);
+
+  // ---- the pill has two tools, and only here -----------------------------
+  await pdfDrag(1, 'Aragon opened the season with a draw');
+  const pill = S.querySelector('.selpill');
+  check('the selection pill is up', !!pill && pill.classList.contains('on'));
+  check('…and it carries two tools, not one', S.querySelectorAll('.selpill .selbtn').length === 2);
+  check('…the first of which is still the comment button every other page has',
+    S.querySelector('.selbtn').getAttribute('data-mark') === 'highlight');
+  check('…and the second says what it does', (() => {
+    const b = S.querySelector('.selbtn.strikebtn');
+    return !!b && /strike/i.test(b.getAttribute('title') || '');
+  })());
+  check('…both drawn as icons, in one pill rather than two',
+    S.querySelectorAll('.selpill .selbtn svg').length === 2
+    && cs(pill).borderRadius !== '0px');
+  check('…and the adapter is what turned the second one on',
+    (window.__bfp.site || {}).capabilities.strike === true);
+  getSelection().removeAllRanges();
+  d.hideSel();
+
+  // ---- striking a passage ------------------------------------------------
+  const before = threadBodies.length;
+  await pdfStrike(2, 'sentence that survives a season');
+  const pend = S.querySelector('.card.pending');
+  check('the strike tool opens the composer, like the other one',
+    !!pend && pend.classList.contains('struck'));
+  check('…with the passage shown struck in the card too',
+    !!pend.querySelector('.quote.struck'));
+  check('…saying what an empty Send will do', /optional/i.test(pend.textContent));
+  check('…and the provisional mark on the page is already a strike',
+    !!document.querySelector('.textLayer mark.bfp-hl.bfp-strike[data-bfp="__new__"]'));
+  // the note is optional: Send with an empty box files it
+  pend.querySelector('.composer .send').click();
+  await until(() => threadBodies.length > before, 4000);
+  const posted = threadBodies[threadBodies.length - 1];
+  check('Send with nothing typed still files it — the line IS the message',
+    threadBodies.length === before + 1 && posted.mark === 'strike');
+  check('…and the companion is told which passage, exactly as for a highlight',
+    /sentence that survives a season/.test(posted.quote || ''));
+
+  // ---- what a struck thread LOOKS like on the page ------------------------
+  const struck = [...document.querySelectorAll('mark.bfp-hl.bfp-strike[data-bfp="t-1754600300-s1a1"]')];
+  check('the struck passage is painted', struck.length > 0);
+  check('…on both typeset lines it runs across', struck.length >= 2);
+  check('…inside the text layer, over the page’s own words',
+    struck.every(m => !!m.closest('.textLayer')));
+  const one = struck[0];
+  const st = cs(one);
+  check('…as a LINE and not a wash: no background colour at all',
+    /rgba\(0, 0, 0, 0\)|transparent/.test(st.backgroundColor));
+  check('…the line itself being drawn in the mark’s own ink',
+    st.backgroundImage.includes('gradient') && st.backgroundImage.includes('200, 48, 48'));
+  check('…through the middle of the words, not along the bottom',
+    st.backgroundImage.includes(A.STRIKE_AT));
+  check('…and the words underneath are untouched — same opacity as the prose',
+    st.opacity === '1');
+  // an ordinary highlight on the same document is still a wash, unchanged
+  const plain = document.querySelector('mark.bfp-hl[data-bfp="t-1754600000-p1a2"]');
+  check('an ordinary highlight is still the yellow wash it always was',
+    !plain.classList.contains('bfp-strike')
+    && cs(plain).backgroundColor.startsWith('rgba(250, 210, 80')
+    && cs(plain).backgroundImage === 'none');
+
+  // ---- …and how it differs from the track-changes strike beside it --------
+  const del = document.querySelector('del.bfp-was[data-bfp="t-1754600500-s3c3"]');
+  check('the rewritten passage put its old wording back on the page, struck', !!del);
+  check('…on the very same line as the strikeout, which is the hard case',
+    !!del && !!one && del.closest('[data-bfp-pdf-page]') === one.closest('[data-bfp-pdf-page]'));
+  check('…and it is a different ELEMENT entirely — a <del>, not a mark',
+    del.tagName === 'DEL' && !del.classList.contains('bfp-hl'));
+  check('…dimmed, which the strikeout never is',
+    Number(cs(del).opacity) < 1 && cs(one).opacity === '1');
+  check('…washed, which the strikeout never is',
+    !/rgba\(0, 0, 0, 0\)/.test(cs(del).backgroundColor));
+  check('…and struck by a text-decoration, so the two markings cannot collide',
+    cs(del).textDecorationLine.includes('line-through')
+    && !cs(one).textDecorationLine.includes('line-through'));
+  const ins = document.querySelector('mark.bfp-hl.bfp-ins[data-bfp="t-1754600500-s3c3"]');
+  check('the wording that arrived is underlined in the accepted green, as before',
+    !!ins && cs(ins).textDecorationLine.includes('underline'));
+  check('…and is amber, because its thread is ready for review',
+    !!ins && cs(ins).backgroundColor.startsWith('rgba(246, 173, 85'));
+
+  // ---- state still reads off the page ------------------------------------
+  // (re-queried, never cached: a repaint replaces the <mark> element, and a
+  // detached node answers every style question with an empty string)
+  const markOf = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const filed = markOf('t-1754600400-s2b2');
+  check('a FILED strikeout is still a strikeout, in the filed colour',
+    !!filed && filed.classList.contains('bfp-strike') && filed.classList.contains('bfp-done')
+    && cs(filed).backgroundImage.includes('72, 146, 88'));
+  check('…and still no wash', !!filed && /rgba\(0, 0, 0, 0\)/.test(cs(filed).backgroundColor));
+  A.setFocus('t-1754600300-s1a1', true);
+  await sleep(180);
+  const foc = markOf('t-1754600300-s1a1');
+  // The TINT is read off the inline declaration, not off getComputedStyle: the
+  // mark carries `transition: background-color`, and under a headless render's
+  // virtual clock a transition never advances, so the computed value is stuck
+  // at the colour it is transitioning FROM. The line has no transition and is
+  // read computed, as everything else here is.
+  check('focusing a strikeout brings up the faintest tint of its own colour',
+    !!foc && foc.style.backgroundColor.replace(/\s/g, '') === 'rgba(200,48,48,0.12)'
+    && foc.style.getPropertyPriority('background-color') === 'important');
+  check('…and thickens the line, which is the part that has to carry at a glance',
+    !!foc && cs(foc).backgroundImage.includes('1.5px'));
+  A.setFocus('t-1754600300-s1a1', false);
+  await sleep(40);
+  check('…and letting go puts the wash back to nothing at all',
+    markOf('t-1754600300-s1a1').style.backgroundColor === 'transparent');
+
+  // ---- the margin says the same thing as the page -------------------------
+  const card = S.querySelector('.card[data-thread="t-1754600300-s1a1"]');
+  check('the struck thread’s card quotes it struck', !!card && !!card.querySelector('.quote.struck'));
+  check('…and badges it, so the pane can be read without the page',
+    !!card && /struck/i.test((card.querySelector('.badge.strike-badge') || {}).textContent || ''));
+  // the filed one lives in the archive, which is shut until it is asked for
+  S.querySelector('[data-act="resolved-toggle"]').click();
+  await sleep(110);
+  const fcard = () => S.querySelector('.card[data-thread="t-1754600400-s2b2"]');
+  check('…and a filed strikeout is quoted struck in the archive too',
+    !!fcard() && !!fcard().querySelector('.quote.struck'));
+  check('…its badge naming it a suggested deletion, because nothing was said under it',
+    /suggested deletion/i.test((fcard().querySelector('.badge.strike-badge') || {}).textContent || ''));
+  S.querySelector('[data-act="resolved-card"][data-target="t-1754600400-s2b2"]').click();
+  await sleep(110);
+  check('a strikeout filed with no note says so rather than showing an empty bubble',
+    /struck through, with no note/.test(fcard().textContent));
+
+  // ---- clicking either marking opens its thread ---------------------------
+  one.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(160);
+  check('clicking a strikeout opens its thread, exactly as a highlight does',
+    !!S.querySelector('.card.focused[data-thread="t-1754600300-s1a1"]'));
+
+  // (what gets WRITTEN BACK into the file is pinned where the writing happens
+  // — pdf-annot.test.mjs reads a real StrikeOut out of a real PDF — because
+  // there is no PDF in this harness to write into.)
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (pdf-strike) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // Everything the web-PDF selftest asserts is true here too and is not repeated;
 // what is asserted here is the one thing that differs, which is also the one
 // thing that could quietly ruin the feature: WHAT THE PAGE IS.
@@ -7679,7 +7964,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
       setTimeout(WORKSPACE ? selftestWorkspace
-        : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal : PDFV ? selftestPdf
+        : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
+        : STRIKE ? selftestPdfStrike : PDFV ? selftestPdf
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
         : HEAL ? selftestOrphanHeal : TICKER ? selftestRoundTicker
@@ -7745,6 +8031,17 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // becomes ready because a BOT replied into it, so the only route to the
     // pose from out here is to have one do exactly that: tag it, let the turn
     // run, and the section builds itself.
+    // ?pdf=1&strike=1 — the screenshot pose. The struck passage and the
+    // track-changes rewrite are both on page 2, so page 2 is what the shot has
+    // to be OF: a harness that renders its own documentation above the PDF
+    // would otherwise photograph the documentation.
+    if (STRIKE && Q.get('selftest') !== '1') {
+      setTimeout(() => {
+        // &strike=pill — the same page with the SELECTION PILL up, which is the
+        // other half of the feature and cannot be photographed without a drag
+        if (Q.get('strike') === 'pill') pdfDrag(2, 'sentence that survives a season');
+      }, 900);
+    }
     if (READY) {
       setTimeout(() => {
         const first = d.shadow.querySelector('.pane[data-pane="comments"] > .card[data-thread]');

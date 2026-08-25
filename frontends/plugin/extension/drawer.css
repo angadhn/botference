@@ -29,6 +29,13 @@
      the same arc, so the three read as one progression rather than three
      unrelated colours. */
   --ready: rgba(246, 173, 85, 0.42); --ready-line: rgba(214, 138, 40, 0.85);
+  /* THE OTHER MARK. Not a fourth state — a strikeout is a different thing done
+     to a passage, not a further stage of a highlight — so it is the one colour
+     here that is off the yellow→amber→sage arc entirely: Acrobat's own
+     strikeout red, which is what a reader of papers already reads as "take
+     this out". Distinct from --bad (#b3403a, an error) by being warmer and
+     used only as a LINE, never as a wash. */
+  --strike-line: rgba(200, 48, 48, 0.95);
   --rev: rgba(46, 160, 67, 0.16); --rev-line: rgba(46, 160, 67, 0.55);
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -74,6 +81,7 @@
     --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
     --done: rgba(120, 180, 130, 0.30); --done-line: rgba(126, 196, 134, 0.75);
     --ready: rgba(214, 148, 66, 0.30); --ready-line: rgba(233, 168, 84, 0.75);
+    --strike-line: rgba(232, 96, 88, 0.95);
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
     --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
@@ -88,6 +96,7 @@
   --hl: rgba(217, 151, 87, 0.3); --hl-active: rgba(217, 151, 87, 0.55);
   --done: rgba(120, 180, 130, 0.30); --done-line: rgba(126, 196, 134, 0.75);
   --ready: rgba(214, 148, 66, 0.30); --ready-line: rgba(233, 168, 84, 0.75);
+  --strike-line: rgba(232, 96, 88, 0.95);
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
   --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
@@ -129,18 +138,36 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 button[disabled] { opacity: .45; cursor: default }
 button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 
-/* ── floating selection button ─────────────────────────────────────────── */
-.selbtn {
+/* ── floating selection pill ───────────────────────────────────────────────
+ * One pill, one or two tools in it. An article has the single "💬 comment"
+ * button it has always had, so the pill wearing the border and the shadow
+ * instead of the button changes nothing anybody can see. A PDF has Adobe's
+ * pair — highlight and strikeout — as two icon segments divided by a hairline,
+ * which is why the chrome moved out to the container: two buttons each with
+ * their own border and their own shadow would read as two pills. */
+.selpill {
   position: fixed; pointer-events: auto; z-index: 2;
-  display: none; align-items: center; gap: 6px;
-  font: 13px/1.2 var(--sans); padding: 7px 14px; min-height: 32px;
+  display: none; align-items: stretch;
   background: var(--card); color: var(--fg);
   border: 1px solid var(--card-line); border-radius: 999px;
   box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.selpill.on { display: inline-flex }
+.selbtn {
+  position: static; display: none; align-items: center; gap: 6px;
+  font: 13px/1.2 var(--sans); padding: 7px 14px; min-height: 32px;
+  background: transparent; color: inherit;
+  border: 0; border-radius: 999px; box-shadow: none;
 }
 .selbtn.on { display: inline-flex }
-.selbtn:hover { border-color: var(--accent); color: var(--accent) }
+.selbtn:hover { background: var(--card-line); color: var(--accent); border-color: transparent }
 .selbtn .glyph { font-size: 15px; line-height: 1 }
+/* the icon pair: square-ish hit areas, a hairline between them, and the SVG's
+ * own ink (amber band, red line) the only colour in either */
+.selpill.twin .selbtn { padding: 7px 11px }
+.selpill.twin .selbtn + .selbtn { box-shadow: inset 1px 0 0 var(--card-line) }
+.selbtn svg { display: block }
 
 /* ── panel ─────────────────────────────────────────────────────────────── */
 .panel {
@@ -833,6 +860,24 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .quote:hover { color: var(--fg); background: color-mix(in srgb, var(--hl) 45%, transparent) }
+/* A STRUCK passage, quoted. The same thin red line the page draws through it,
+   here through the words in the card — the margin and the document have to
+   agree about what was done to the passage. The rail beside it goes red too,
+   because a struck quote read at arm's length is the one row in the pane you
+   should be able to pick out without reading it. */
+.quote.struck {
+  text-decoration: line-through; text-decoration-thickness: 1.5px;
+  text-decoration-color: var(--strike-line);
+  border-left-color: var(--strike-line);
+}
+.quote.struck:hover { background: color-mix(in srgb, var(--strike-line) 10%, transparent) }
+.badge.strike-badge {
+  color: var(--strike-line);
+  border: 1px solid color-mix(in srgb, var(--strike-line) 40%, transparent);
+  background: color-mix(in srgb, var(--strike-line) 8%, transparent);
+}
+/* a strikeout filed with nothing said under it: the mark WAS the message */
+.ctext.wordless { font: italic 13px/1.6 var(--serif); color: var(--muted) }
 .card.orphaned .quote { border-left-color: var(--card-line); cursor: default; text-decoration: line-through }
 .card.orphaned .quote:hover { background: none; color: var(--muted) }
 

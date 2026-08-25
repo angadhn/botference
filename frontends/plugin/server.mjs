@@ -1644,7 +1644,12 @@ export function handler(req, res) {
       const text = String((data.msg && data.msg.text) || '');
       if (!data.url) return fail(res, 400, 'url required');
       if (!data.quote) return fail(res, 400, 'quote required');
-      if (!text.trim()) return fail(res, 400, 'empty comment');
+      // A STRUCK PASSAGE IS ALREADY A STATEMENT. Adobe's strikeout with no
+      // popup means "delete this", and requiring a sentence to say so again
+      // would make the quicker of the two tools the slower one. Every other
+      // thread still needs words: an empty highlight says nothing at all.
+      const mark = store.cleanMark(data.mark);
+      if (!text.trim() && mark !== 'strike') return fail(res, 400, 'empty comment');
       const me = authorOf(req, res);
       if (!me) return;
       // a brand-new thread has no history to be sticky about: its address is
@@ -1655,10 +1660,12 @@ export function handler(req, res) {
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
       // same person, same words, same highlight, seconds apart: one comment
-      const dedupe = dedupeCheck([store.pageKey(page.url), 'thread', me.handle, data.quote, text.trim()]);
+      // …and the mark is part of what makes it the same comment: striking a
+      // passage you had already highlighted is a second, different act
+      const dedupe = dedupeCheck([store.pageKey(page.url), 'thread', me.handle, data.quote, text.trim(), mark]);
       if (dedupe.hit) return ok(res, { thread: dedupe.hit, deduped: true });
       const thread = store.addThread(page, {
-        quote: data.quote, prefix: data.prefix, suffix: data.suffix,
+        quote: data.quote, prefix: data.prefix, suffix: data.suffix, mark,
         // documents with pages (a web PDF) say which one the passage came off;
         // everything else omits it and nothing downstream requires it
         text, author: me.handle, index: data.index, page_number: data.page,
@@ -1858,6 +1865,10 @@ export function handler(req, res) {
             thread = store.addThread(page, {
               quote, prefix: a.prefix, suffix: a.suffix, text, author,
               ts: a.ts, origin, index: a.index, page_number: a.page,
+              // the file already said what was done to the passage: a
+              // StrikeOut (or a Squiggly) comes in struck, and stays struck
+              // when the discussion is written back out
+              mark: store.markForAnnotKind(a && a.kind),
             });
             created++;
             changed = true;

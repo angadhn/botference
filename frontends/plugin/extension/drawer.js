@@ -1108,7 +1108,7 @@
     // Site capabilities (content.js's adapter). Only `highlights` so far, and
     // everything that reads it is one branch — the shape is here so the next
     // adapter can turn something else off without a redesign.
-    const CAPS = Object.assign({ highlights: true }, opts.capabilities || {});
+    const CAPS = Object.assign({ highlights: true, strike: false }, opts.capabilities || {});
     const NOHL = 'highlights aren’t supported on this site — use Page chat';
 
     // A page that carries its own margin commenting (content.js's
@@ -1424,6 +1424,7 @@
         pages: shadow.querySelector('.pane[data-pane="pages"]'),
         foot: shadow.querySelector('.footbar'),
         round: shadow.querySelector('.roundbar'),
+        selpill: shadow.querySelector('.selpill'),
         selbtn: shadow.querySelector('.selbtn'),
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
@@ -1449,9 +1450,44 @@
       return D;
     }
 
+    // ---- the selection pill's tools -----------------------------------------
+    // On an ordinary article the pill is what it has always been: one button
+    // saying "comment". On a PDF it is Adobe's pair, as two icons in one pill —
+    // highlight-and-comment, and strike-through-and-suggest — because that is
+    // the idiom every reader of papers already has in their hands, and because
+    // a PDF is the one document that can carry both marks back out as real
+    // annotations.
+    //
+    // The icons are the standard ones: three strokes of text with a marker's
+    // band behind them, and the same three strokes with a line drawn through
+    // the middle. Drawn rather than lettered so they read at 16px and in both
+    // themes; the colours are the ink's own (amber, red) and are the only
+    // colour in the pill, which is what makes the pair legible at a glance.
+    const SEL_TEXT_SVG = '<path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h8"/>';
+    const HILITE_SVG = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <rect x="1" y="1.6" width="14" height="12.8" rx="2.5" fill="#f2c14e" opacity=".55"></rect>
+      <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">${SEL_TEXT_SVG}</g>
+    </svg>`;
+    const STRIKE_SVG = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">${SEL_TEXT_SVG}</g>
+      <path d="M.8 8h14.4" fill="none" stroke="#c83030" stroke-width="2" stroke-linecap="round"></path>
+    </svg>`;
+    function selPillHtml() {
+      if (!CAPS.strike) {
+        return `<div class="selpill"><button class="selbtn" type="button"
+          title="Comment on this selection"><span class="glyph">💬</span>comment</button></div>`;
+      }
+      return `<div class="selpill twin">
+  <button class="selbtn icon" type="button" data-mark="highlight"
+    title="Highlight and comment" aria-label="Highlight this passage and comment on it">${HILITE_SVG}</button>
+  <button class="selbtn icon strikebtn" type="button" data-mark="strike"
+    title="Strike through — suggest this comes out" aria-label="Strike this passage through as a suggested deletion">${STRIKE_SVG}</button>
+</div>`;
+    }
+
     function shell() {
       return `
-<button class="selbtn" type="button" title="Comment on this selection"><span class="glyph">💬</span>comment</button>
+${selPillHtml()}
 <aside class="panel" role="complementary" aria-label="Botference Discuss">
   <div class="grip" title="Drag to resize · double-click to reset" role="separator" aria-orientation="vertical"></div>
   <div class="hdr">
@@ -1666,6 +1702,11 @@
           `<span class="caret">▸</span><span class="more-label">${mopen ? 'less' : 'more'}</span></button>` +
           `<div class="more-body"${mopen ? '' : ' hidden'}>` +
           `<div class="ctext md" data-md-cont="1" data-md="${esc(mdSlot(cut.more))}"></div></div></div>`
+        // A message with no words is a strikeout filed without a note — the
+        // mark on the page WAS the message. Rendered as the quiet line it is
+        // rather than as an empty bubble, which would read as a bug.
+        : !String(r.text || '').trim()
+          ? `<div class="ctext wordless">the passage was struck through, with no note</div>`
         : `<div class="ctext md" data-md="${esc(mdSlot(r.text))}"></div>`;
       // the agent's own class carries its typeface (drawer.css --font-claude /
       // --font-codex); the colour rides the same rule through speakerColor
@@ -2111,8 +2152,18 @@
     // `extra` rides INSIDE the quote, flowing after the closing curly quote the
     // way the orphan badge always has — a badge in the row beside it would take
     // a flex share and squeeze a three-line quote down to a column.
+    // A STRUCK thread's quote is struck in the card too, and says so. The page
+    // and the margin have to agree about what was done to the passage — a card
+    // that quoted a deletion as if it were a highlight would leave the reader
+    // wondering which of the two they were looking at.
+    const isStruck = t => !!(t && t.mark === 'strike');
+    const strikeBadge = t => (isStruck(t)
+      ? `<span class="badge strike-badge" title="${esc('this passage is struck through — a suggested deletion')}">${
+        (t.msgs || []).some(m => m && m.kind !== 'tools' && String(m.text || '').trim())
+          ? 'struck' : 'suggested deletion'}</span>`
+      : '');
     const quoteHtml = (t, orph, extra) =>
-      `<div class="quote" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : 'scroll to this highlight'}">“${esc(t.quote)}”${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}${extra || ''}</div>`;
+      `<div class="quote${isStruck(t) ? ' struck' : ''}" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : (isStruck(t) ? 'scroll to this strikeout' : 'scroll to this highlight')}">“${esc(t.quote)}”${strikeBadge(t)}${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}${extra || ''}</div>`;
 
     // The resolve control. One click, no confirm, no menu, no dialog: the
     // reader is triaging a page with forty threads on it and the whole value
@@ -2334,11 +2385,20 @@
     function pendingHtml() {
       const p = D.pending;
       const out = outboxHtml('__new__');
-      return `<div class="card pending${D.focused === '__new__' ? ' focused' : ''}" data-thread="__new__" style="--author:${MY_COLOR}">
-        <div class="quote" title="the passage you selected">“${esc(p.quote)}”</div>
+      // A STRIKE NEEDS NO WORDS. The line through the passage has already said
+      // "this should come out"; the box under it is for saying why, and Send
+      // files the suggestion whether or not anything was typed. So the
+      // placeholder invites rather than demands, and the hint says what an
+      // empty Send will do — otherwise the reader cannot know it is allowed.
+      const struck = p && p.mark === 'strike';
+      return `<div class="card pending${struck ? ' struck' : ''}${D.focused === '__new__' ? ' focused' : ''}" data-thread="__new__" style="--author:${MY_COLOR}">
+        <div class="quote${struck ? ' struck' : ''}" title="${struck ? 'the passage you struck through' : 'the passage you selected'}">“${esc(p.quote)}”${
+          struck ? '<span class="badge strike-badge">suggested deletion</span>' : ''}</div>
         ${out ? `<div class="thread">${out}</div>` : ''}
-        ${composerHtml('__new__', 'Comment on this passage…',
-          '<button class="cancel" data-act="cancel-new" type="button">Cancel</button>', '', true)}
+        ${composerHtml('__new__',
+          struck ? 'Why it should go — optional…' : 'Comment on this passage…',
+          '<button class="cancel" data-act="cancel-new" type="button">Cancel</button>',
+          struck ? 'Send files the strikeout — a note is optional' : '', true)}
         ${statusHtml('__new__')}
       </div>`;
     }
@@ -4138,8 +4198,17 @@
 
     // ---- events ---------------------------------------------------------
     function wireEvents() {
-      D.el.selbtn.addEventListener('mousedown', e => e.preventDefault());
-      D.el.selbtn.addEventListener('click', e => { e.preventDefault(); cb('onSelect')(); });
+      // One listener on the pill, whichever of its tools is in it: the mousedown
+      // guard has to cover the whole thing (a mousedown anywhere in the pill
+      // would otherwise collapse the very selection the click is about), and
+      // the click reports WHICH tool by the button's own `data-mark`.
+      D.el.selpill.addEventListener('mousedown', e => e.preventDefault());
+      D.el.selpill.addEventListener('click', e => {
+        const b = e.target && e.target.closest && e.target.closest('.selbtn');
+        if (!b) return;
+        e.preventDefault();
+        cb('onSelect')(b.getAttribute('data-mark') || 'highlight');
+      });
 
       // resize handle
       D.el.grip.addEventListener('mousedown', beginDrag);
@@ -4571,7 +4640,10 @@
       try {
         harvestDrafts();
         const text = (D.drafts[target] || '').trim();
-        if (!text) return;
+        // …except a strikeout being filed, whose quote IS the message. Every
+        // other empty Send is a slip of the hand and does nothing, as before.
+        const bare = !text && target === '__new__' && D.pending && D.pending.mark === 'strike';
+        if (!text && !bare) return;
         const btn = D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .send');
         if (btn) btn.disabled = true;          // released by the render below
         // Where this one goes, decided while the words are still here: a tag in
@@ -5878,13 +5950,21 @@
       mount();
       if (!CAPS.highlights) return D;   // no pill where nothing can be marked
       if (standDown()) return D;        // …nor beside the page's own pill
-      const b = D.el.selbtn;
+      const b = D.el.selpill;
       b.style.left = Math.max(8, Math.min(x, window.innerWidth - 110)) + 'px';
       b.style.top = Math.max(8, Math.min(y, window.innerHeight - 40)) + 'px';
       b.classList.add('on');
+      // …and on each tool inside it, so anything that has ever asked the
+      // BUTTON whether the pill is up still gets the right answer
+      for (const t of b.querySelectorAll('.selbtn')) t.classList.add('on');
       return D;
     }
-    function hideSel() { if (D.mounted) D.el.selbtn.classList.remove('on'); return D; }
+    function hideSel() {
+      if (!D.mounted) return D;
+      D.el.selpill.classList.remove('on');
+      for (const t of D.el.selpill.querySelectorAll('.selbtn')) t.classList.remove('on');
+      return D;
+    }
 
     // ---- companion events -----------------------------------------------
     // One event must never be able to take the drawer down with it. Everything

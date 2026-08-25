@@ -307,6 +307,29 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
     filed.includes('the flow is unstable above Re 4000') && filed.includes('The whole result.'), filed);
   ok('a note with nothing resolved is byte-for-byte what it always was',
     !/Resolved/.test(renderNote(paper(), CFG, NOW, 'all')));
+
+  // ---- a struck passage travels as a struck passage ------------------------
+  // What was DONE to the passage is part of what the comment says: a deletion
+  // suggested and a passage merely pointed at are different remarks, and a
+  // year later the note is the only place either survives.
+  const struck = renderNote(paper({
+    threads: [
+      { quote: 'the spacecraft will deploy and commit', mark: 'strike', page: 4,
+        msgs: [{ author: 'angadh', ts: '1', text: 'Reads as marketing.' }] },
+      { quote: 'the flow is unstable above Re 4000', mark: 'strike', msgs: [] },
+      { quote: 'a passage merely pointed at',
+        msgs: [{ author: 'angadh', ts: '1', text: 'Keep.' }] },
+    ],
+  }), CFG, NOW, 'all');
+  ok('a struck quote is struck in the note, in markdown every renderer draws',
+    struck.includes('> ~~the spacecraft will deploy and commit~~'), struck);
+  ok('…and says what it is', /~~\n> — p\. 4\n> \*suggested deletion\*/.test(struck), struck);
+  ok('…even with nothing said under it — the mark WAS the message',
+    struck.includes('> ~~the flow is unstable above Re 4000~~'), struck);
+  ok('…while an ordinary highlight is quoted exactly as it always was',
+    struck.includes('> a passage merely pointed at') && !struck.includes('~~a passage'), struck);
+  ok('a note with nothing struck in it is byte-for-byte what it always was',
+    !renderNote(paper(), CFG, NOW, 'all').includes('~~'));
 }
 
 console.log(`\nexport: ${pass} passed, ${fail} failed`);

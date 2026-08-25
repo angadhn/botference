@@ -45,6 +45,9 @@ const STYLE = `
   /* the resolved tint — anchor.js's HL_BG_DONE, so a green highlight in the
      article view and a filed card in the comments view are the same fact */
   --done:rgba(141,199,146,.42); --done-line:rgba(96,158,108,.85);
+  /* the strikeout's own red — off the highlight arc on purpose: a strikeout is
+     a different act, not a further state (drawer.css --strike-line) */
+  --strike-line:rgba(200,48,48,.95);
   /* tag chips: the hue is the tag's own (--th, from tagHue below); the theme
      owns saturation/lightness so every hue clears contrast on both schemes */
   --tag-fg-l:30%; --tag-bg-l:93%; --tag-line-l:72% }
@@ -52,6 +55,7 @@ const STYLE = `
   :root { --bg:#1a1712; --fg:#e8dfd1; --muted:#9c917e; --card:#241f18;
     --line:rgba(217,119,87,.24); --accent-hover:#e8896d; --quote:#1f1b15;
     --done:rgba(120,180,130,.30); --done-line:rgba(126,196,134,.75);
+    --strike-line:rgba(232,96,88,.95);
     --tag-fg-l:80%; --tag-bg-l:20%; --tag-line-l:36% }
 }
 * { box-sizing:border-box }
@@ -118,6 +122,14 @@ details.resolved-sec > summary:hover { color:var(--fg) }
 .card.resolved { background:color-mix(in srgb, var(--done) 45%, var(--card));
   border-color:var(--done-line) }
 .card.resolved blockquote { border-left-color:var(--done-line) }
+/* A STRUCK passage, in the room the phone reads. The mark is part of what the
+   comment SAYS — a deletion suggested and a passage merely pointed at are not
+   the same remark — so it travels, and it travels as the same thin red line
+   the drawer and the PDF draw. */
+blockquote.struck { text-decoration:line-through; text-decoration-color:var(--strike-line);
+  text-decoration-thickness:1.5px; border-left-color:var(--strike-line) }
+blockquote.struck cite { text-decoration:none }
+.struck-note { display:block; margin:-.4rem 0 .7rem; font-size:.78rem; color:var(--strike-line) }
 .digest { margin:0 0 .7rem; font-size:.9rem; overflow-wrap:anywhere }
 form.resolve { display:inline-block; margin:.6rem 0 0 }
 form.resolve button { background:none; color:var(--muted); border:1px solid var(--line);
@@ -297,7 +309,7 @@ const resolveForm = (page, key, t) => `<form class="resolve" method="POST" actio
 </form>`;
 
 const threadCard = (page, key, ctx, t, i) => `<section class="card${t.resolved ? ' resolved' : ''}" id="${escHtml(t.id)}">
-<blockquote>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
+<blockquote${t.mark === 'strike' ? ' class="struck"' : ''}>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.mark === 'strike' ? '<span class="struck-note">a suggested deletion — this passage is struck through in the document</span>' : ''}${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
 ${t.resolved && t.summary ? `<p class="digest">${escHtml(t.summary)}</p>` : ''}
 ${(t.msgs || []).map(m => msgHtml(m, ctx)).join('\n')}
 ${resolveForm(page, key, t)}

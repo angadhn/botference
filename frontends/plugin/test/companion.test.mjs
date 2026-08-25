@@ -4048,6 +4048,82 @@ async function main() {
       'an @-mention inside somebody else’s annotation does not spend a turn on import');
   });
 
+  // --- the mark: what was DONE to the passage ---------------------------
+  // Adobe's two tools. A highlight says "look at this"; a strikeout says "this
+  // should go". The file already knows which — /StrikeOut and /Squiggly are
+  // deletions — and Discuss keeps the distinction rather than flattening every
+  // markup into one yellow thread.
+  await test('a StrikeOut in the file comes in struck', async () => {
+    const r = await importAnnots([{
+      id: 'abcd0000abcd0001', page: 5, author: 'adril', ts: '2026-08-20T18:06:06.000Z',
+      quote: 'Nobody at the club disputed it', text: 'Cut this — it is not supported.',
+      kind: 'StrikeOut',
+    }]);
+    assert.equal(r.json.created, 1);
+    const t = (await pdfPage()).threads.find(x => x.origin && x.origin.id === 'abcd0000abcd0001');
+    assert.equal(t.mark, 'strike');
+  });
+
+  await test('…and a Squiggly, which means the same thing to whoever drew it', async () => {
+    await importAnnots([{ id: 'abcd0000abcd0002', page: 5, author: 'adril',
+      quote: 'one week at a time', text: 'garbled', kind: 'Squiggly' }]);
+    const t = (await pdfPage()).threads.find(x => x.origin && x.origin.id === 'abcd0000abcd0002');
+    assert.equal(t.mark, 'strike');
+  });
+
+  await test('a Highlight and an Underline stay highlights, and carry no mark at all', async () => {
+    await importAnnots([{ id: 'abcd0000abcd0003', page: 5, author: 'adril',
+      quote: 'structural failure of oversight', text: 'look at this', kind: 'Underline' }]);
+    const p = await pdfPage();
+    const t = p.threads.find(x => x.origin && x.origin.id === 'abcd0000abcd0003');
+    assert.equal(t.mark, undefined, 'nothing is written for the default — nothing to migrate');
+    const first = p.threads.find(x => x.origin && x.origin.id === A1);
+    assert.equal(first.mark, undefined, 'and the Highlight imported before any of this existed still reads back');
+  });
+
+  await test('a thread struck by hand is struck in the record', async () => {
+    const r = await POST(base, '/thread', { url: PDF_URL, quote: 'the tumbling target',
+      prefix: '', suffix: '', mark: 'strike', msg: { text: 'This sentence should come out.' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.thread.mark, 'strike');
+    const t = (await pdfPage()).threads.find(x => x.id === r.json.thread.id);
+    assert.equal(t.mark, 'strike');
+  });
+
+  await test('a strikeout needs no words: the line through the passage IS the message', async () => {
+    const r = await POST(base, '/thread', { url: PDF_URL, quote: 'kept doing what they had been doing',
+      mark: 'strike', msg: { text: '' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.thread.mark, 'strike');
+    assert.equal(r.json.thread.msgs[0].text, '');
+    assert.equal(r.json.thread.msgs[0].author, 'angadh', 'and it is still signed');
+  });
+
+  await test('…while an empty HIGHLIGHT still says nothing and is still refused', async () => {
+    assert.equal((await POST(base, '/thread',
+      { url: PDF_URL, quote: 'the tumbling target', msg: { text: '   ' } })).status, 400);
+    assert.equal((await POST(base, '/thread',
+      { url: PDF_URL, quote: 'the tumbling target', mark: 'highlight', msg: { text: '' } })).status, 400);
+  });
+
+  await test('an unknown mark is a highlight, not an error', async () => {
+    const r = await POST(base, '/thread', { url: PDF_URL, quote: 'a rate plausible enough',
+      mark: 'wavy', msg: { text: 'ordinary comment' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.thread.mark, undefined);
+  });
+
+  await test('striking a passage you had already highlighted is a second, different comment', async () => {
+    const body = { url: PDF_URL, quote: 'the same passage twice', msg: { text: 'same words' } };
+    const a = await POST(base, '/thread', body);
+    const b = await POST(base, '/thread', body);
+    assert.equal(b.json.deduped, true, 'same act, seconds apart, is one comment');
+    const c = await POST(base, '/thread', { ...body, mark: 'strike' });
+    assert.ok(!c.json.deduped, 'but striking it is not the same act');
+    assert.notEqual(c.json.thread.id, a.json.thread.id);
+    assert.equal(c.json.thread.mark, 'strike');
+  });
+
   await test('a malformed annotation is skipped, not half-filed', async () => {
     const before = (await pdfPage()).threads.length;
     const junk = await importAnnots([
