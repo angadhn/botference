@@ -2,6 +2,12 @@
 
 ## 2026-08-25
 
+- **Fixed: the annotated copy could not be written for a local PDF at all.**
+  "Cannot perform Construct on a detached ArrayBuffer" — the file's bytes are
+  read once at boot and handed to the renderer, which takes them for keeps, so
+  the export was writing from a buffer that no longer existed. It reads the
+  file again now. Only local PDFs were affected; one off a website was fine.
+
 - **The annotated copy asks where to put itself, and says where it went.** The
   export used to hand the file to the browser's downloader and report in a grey
   line at the bottom of the drawer, so a click looked like nothing happening.

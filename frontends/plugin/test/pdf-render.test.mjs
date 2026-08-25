@@ -140,11 +140,20 @@ const origin = 'http://127.0.0.1:' + server.address().port;
 
 // ---- headless Chromium, driven over CDP ------------------------------------
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-pdf-render-'));
+// somewhere on disk that is not this repo, for the file: half of the export
+// section at the end — a local PDF has to be a real file at a real path
+const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-local-pdf-'));
 const DEBUG_PORT = 9222 + Math.floor(Math.random() * 900);
 const chrome = spawn(chromePath, [
   // deliberately the OLD headless: --headless=new hangs in sandboxed shells
   '--headless', '--disable-gpu', '--no-sandbox', '--no-first-run',
   '--disable-extensions', '--disable-background-networking',
+  // the export section below drives the viewer on a real file: url, which is
+  // the only way to take the LOCAL boot branch (bytes read, hashed, handed to
+  // PDF.js). Without this a file: page cannot read the pdf beside it, cannot
+  // load its own module graph, and the branch is never entered. Test-only, on
+  // a throwaway profile.
+  '--allow-file-access-from-files',
   '--remote-debugging-port=' + DEBUG_PORT,
   '--user-data-dir=' + profile,
   'about:blank',
@@ -155,6 +164,7 @@ const cleanup = () => {
   try { chrome.kill(); } catch { /* already gone */ }
   try { server.close(); } catch { /* already closed */ }
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* it is a temp dir */ }
+  try { fs.rmSync(localDir, { recursive: true, force: true }); } catch { /* likewise */ }
 };
 process.on('exit', cleanup);
 
@@ -525,6 +535,174 @@ if (ann && ann.ready) {
   eq('THE INVARIANT again, at the bytes: the words of the document did not move',
     wrote && wrote.after.words, wrote && wrote.before.words);
 }
+
+// ---- THE EXPORT, END TO END, THROUGH THE VIEWER'S OWN DOOR -----------------
+//
+// Everything above builds the writer's input by hand — `fetch('/annotated.pdf')`
+// in the page — which is a fine test of the WRITER and no test at all of where
+// the bytes come from. That gap shipped a bug: `exportAnnotated()` dies on
+// every LOCAL pdf with "Cannot perform Construct on a detached ArrayBuffer".
+//
+// The mechanism is worth writing down, because nothing about it is visible to
+// a DOM-shape assertion. A local file is read once at boot (its bytes are its
+// identity) and handed to `getDocument({data})`. pdf.js posts that data to its
+// worker AS A TRANSFERABLE — literally `sendWithPromise("GetDocRequest", …,
+// [r.buffer])` in the vendored build — which DETACHES the ArrayBuffer on this
+// side. The export then built a second `Uint8Array` over the corpse. The web
+// path never had the bug (PDF.js is given a url, not bytes), which is exactly
+// why an http-only test stayed green through it.
+//
+// So this runs the real `exportAnnotated()` — real PDF.js, real pdf-lib, real
+// `sourceBytes()` — on BOTH kinds of document, and gates ONLY the Save dialog,
+// because a file picker is the one thing headless Chrome cannot answer. What
+// it captures is then re-parsed in the same tab: bytes that came from a
+// detached or truncated buffer do not become a readable PDF.
+//
+// The local half needs `--allow-file-access-from-files` (above) and a real
+// file: url, since a file read from an http page is blocked by the browser and
+// the LOCAL branch would never be taken.
+const localPdf = path.join(localDir, 'the-quiet-machine.pdf');
+fs.writeFileSync(localPdf, ANNOTATED);
+
+// Stage a thread over a real quote, paint it the way the annotator paints
+// every thread, stub the picker, and press the button.
+const exportProbe = quote => `(async () => {
+  const An = window.BFPAnchor, P = window.__BFP_PDF;
+  if (!An || !P) return { err: 'the annotator did not load on this page' };
+  const idx = An.buildTextIndex(document.body);
+  const at = idx.raw.indexOf(${JSON.stringify(quote)});
+  if (at < 0) return { err: 'the fixture text is not where it should be' };
+  An.paintOffsets(idx, at, at + ${JSON.stringify(quote)}.length, 't-export');
+  // content.js does not publish window.__bfp on a page with no extension
+  // behind it, so the record it would have held is staged at the same seam
+  // exportAnnotated reads it from — and nowhere else is stubbed.
+  window.__bfp = { page: { threads: [{
+    id: 't-export', quote: ${JSON.stringify(quote)}, mark: 'strike',
+    msgs: [{ author: 'angadh', ts: '2026-08-25T12:00:00Z', text: 'This should come out.' }],
+  }] } };
+  let captured = null, asked = null;
+  window.showSaveFilePicker = async o => {
+    asked = o;
+    return { name: o.suggestedName,
+             createWritable: async () => ({ write: b => { captured = b; }, close: async () => {} }) };
+  };
+  let r;
+  try { r = await P.exportAnnotated(); }
+  catch (e) { return { err: 'export threw: ' + ((e && e.message) || e) }; }
+  if (!r || r.ok === false) return { r, err: 'export refused: ' + (r && r.error) };
+  // …and the proof that the bytes were live and whole: read the copy back with
+  // the same vendored pdf.js, in this tab.
+  const pdfjs = await import('/*PDFJS*/');
+  pdfjs.GlobalWorkerOptions.workerSrc = '/*WORKER*/';
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(captured), isEvalSupported: false }).promise;
+  const comments = [], words = [];
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n);
+    for (const a of await page.getAnnotations({ intent: 'display' })) {
+      const t = (a.contentsObj && a.contentsObj.str) || '';
+      if (t) comments.push({ page: n, author: (a.titleObj || {}).str || '', text: t, subtype: a.subtype });
+    }
+    words.push((await page.getTextContent()).items.map(i => i.str).join(''));
+  }
+  return { r, suggested: asked && asked.suggestedName, bytes: captured ? captured.byteLength : 0,
+           pages: doc.numPages, comments, words: words.join('\\n') };
+})()`;
+
+const QUOTE = 'walk back to the tram stop';
+for (const kind of ['web', 'local']) {
+  const base = kind === 'local'
+    ? 'file://' + path.join(ROOT, 'extension/pdf/viewer.html')
+    : origin + '/extension/pdf/viewer.html';
+  const docSrc = kind === 'local' ? 'file://' + localPdf : origin + '/annotated.pdf';
+  const pdfjsUrl = kind === 'local'
+    ? 'file://' + path.join(ROOT, 'extension/vendor/pdfjs/build/pdf.min.mjs')
+    : '/extension/vendor/pdfjs/build/pdf.min.mjs';
+  const workerUrl = kind === 'local'
+    ? 'file://' + path.join(ROOT, 'extension/vendor/pdfjs/build/pdf.worker.min.mjs')
+    : '/extension/vendor/pdfjs/build/pdf.worker.min.mjs';
+  await send('Page.navigate', { url: base + '?src=' + encodeURIComponent(docSrc) });
+
+  let up = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(500);
+    up = await evaluate(`(() => ({
+      spans: document.querySelectorAll('.textLayer span').length,
+      chain: !!(window.BFPAnchor && window.__BFP_PDF),
+      ident: window.__BFP_PDF_IDENT || '',
+      notice: (document.getElementById('notice') || {}).hidden === false
+        ? document.getElementById('notice').textContent.slice(0, 120) : '',
+    }))()`);
+    if (up && (up.spans > 0 || up.notice)) break;
+  }
+  ok('[' + kind + '] the viewer renders it and the annotator is up',
+    !!(up && up.spans > 0 && up.chain), JSON.stringify(up));
+  // the local boot is the one that reads bytes, hashes them and mints a
+  // text identity — if it fell back to anything else the branch under test
+  // was never taken and the assertions below would be worthless
+  if (kind === 'local') {
+    ok('[local] …by the LOCAL boot, which is the branch that reads the bytes',
+      !!(up && /^bfp-pdf:\/\/text\//.test(up.ident)), JSON.stringify(up && up.ident));
+  }
+
+  if (up && up.spans > 0) {
+    const out = await evaluate(exportProbe(QUOTE)
+      .replace('/*PDFJS*/', pdfjsUrl).replace('/*WORKER*/', workerUrl));
+    ok('[' + kind + '] the export runs to the end and writes the copy',
+      !!(out && !out.err && out.r && out.r.ok === true), JSON.stringify(out && (out.err || out.r)));
+    if (out && !out.err) {
+      ok('[' + kind + '] …into the place the reader picked, not the downloads folder',
+        out.r.picked === true, JSON.stringify(out.r));
+      ok('[' + kind + '] …named so it cannot overwrite the file it was made from',
+        / \(discussed\)\.pdf$/.test(String(out.suggested || '')), String(out.suggested));
+      ok('[' + kind + '] …carrying the thread that was on screen', out.r.written === 1,
+        JSON.stringify(out.r));
+      // THE ASSERTION THIS SECTION EXISTS FOR: a copy built from detached or
+      // half-read source bytes is not a PDF, and does not still contain the
+      // document it was made from.
+      eq('[' + kind + '] …and the copy re-parses as the whole document', out.pages, 2);
+      ok('[' + kind + '] …with the supervisor’s own comments still in it',
+        out.comments.some(c => c.author === 'adril' && /right image here/.test(c.text)),
+        JSON.stringify(out.comments));
+      ok('[' + kind + '] …the new one beside them, struck as a suggested deletion',
+        out.comments.some(c => /This should come out\./.test(c.text) && c.subtype === 'StrikeOut'),
+        JSON.stringify(out.comments));
+      ok('[' + kind + '] …and not a word of the document changed',
+        out.words.includes(QUOTE) && out.words.includes('structural failure of oversight'));
+    }
+  }
+}
+
+// ---- and the reader who says no --------------------------------------------
+// A cancelled Save dialog must write nothing and download nothing. It is the
+// branch where an over-helpful fallback would quietly put a file somewhere the
+// reader had just declined to put it.
+const cancelled = await evaluate(`(async () => {
+  const P = window.__BFP_PDF;
+  let downloads = 0;
+  const realCreate = document.createElement.bind(document);
+  document.createElement = tag => {
+    const el = realCreate(tag);
+    if (String(tag).toLowerCase() === 'a') {
+      const realClick = el.click.bind(el);
+      el.click = () => { if (el.hasAttribute('download')) downloads++; else realClick(); };
+    }
+    return el;
+  };
+  window.showSaveFilePicker = async () => {
+    const e = new Error('The user aborted a request.');
+    e.name = 'AbortError';
+    throw e;
+  };
+  let r;
+  try { r = await P.exportAnnotated(); }
+  catch (e) { return { err: 'export threw: ' + ((e && e.message) || e) }; }
+  document.createElement = realCreate;
+  return { r, downloads };
+})()`);
+ok('cancelling the Save dialog is a decision, not a failure',
+  !!(cancelled && cancelled.r && cancelled.r.ok === true && cancelled.r.cancelled === true),
+  JSON.stringify(cancelled));
+eq('…and nothing is downloaded behind the reader’s back', cancelled && cancelled.downloads, 0);
 
 try { ws.close(); } catch { /* closing anyway */ }
 cleanup();

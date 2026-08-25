@@ -81,7 +81,11 @@ const noticeEl = $('notice');
 // url the same way or the record and the render disagree.
 let SRC = null;                   // the document's own address: http(s) or file:
 let LOCAL = false;                // …and file: is the one that needs hashing
-let localBytes = null;            // the bytes, read once, hashed and rendered
+// The bytes of a local file, held ONLY between reading them and handing them to
+// PDF.js — see run(), which lets go of them in the same breath. Never read this
+// after the render has started: it is a detached buffer by then, and reading it
+// throws. Anything that wants the file's bytes later asks sourceBytes().
+let localBytes = null;
 
 function notice(html) {
   noticeEl.innerHTML = html;
@@ -389,12 +393,26 @@ async function buildTextLayer(p) {
 // ---- the whole document ----------------------------------------------------
 async function run() {
   if (!SRC) return;
+  // A local file has already been read, whole, so that its bytes could be
+  // hashed into an identity: it is handed straight to PDF.js rather than
+  // fetched a second time. A web PDF keeps the url, so PDF.js can range-request
+  // a 300-page paper instead of waiting for all of it.
+  //
+  // GIVING THEM AWAY IS GIVING THEM UP. `data` goes to the PDF.js worker as a
+  // TRANSFERABLE — pdf.js posts `data.buffer` in the transfer list — which
+  // DETACHES the ArrayBuffer on this side the moment the render starts. Every
+  // later reader of it gets "Cannot perform Construct on a detached
+  // ArrayBuffer", which is exactly how the annotated-copy export died on every
+  // local PDF: it built a second Uint8Array over the corpse. So the reference
+  // is dropped here, deliberately and in the same breath as the hand-over,
+  // rather than left lying about looking usable. The export re-reads the file
+  // (sourceBytes), which costs nothing until somebody actually exports —
+  // keeping a private copy alive instead would double the memory of every
+  // local PDF for the whole session, for a button most readers never press.
+  const data = localBytes ? new Uint8Array(localBytes) : null;
+  localBytes = null;
   const task = getDocument({
-    // A local file has already been read, whole, so that its bytes could be
-    // hashed into an identity: it is handed straight to PDF.js rather than
-    // fetched a second time. A web PDF keeps the url, so PDF.js can range-request
-    // a 300-page paper instead of waiting for all of it.
-    ...(localBytes ? { data: new Uint8Array(localBytes) } : { url: SRC }),
+    ...(data ? { data } : { url: SRC }),
     // the reader's own session: a paper behind a library login is the common
     // case, and the extension has host permissions, so CORS is not in the way
     withCredentials: true,
@@ -757,11 +775,27 @@ async function pickSaveFile(name) {
   }
 }
 
-// The file's own bytes. A local PDF has been read once already (it is what its
-// identity was computed from) and is not read again; a web PDF is fetched with
-// the reader's session, exactly as the render was.
+// The file's own bytes, FRESH, every time. Both kinds of document are read
+// again rather than remembered: the local one because the render consumed the
+// copy that was read at boot (run(), and the detached-buffer note there), the
+// web one because it was never held in the first place — PDF.js was given the
+// url so it could range-request a long paper.
+//
+// Reading the file again also means reading it as it is NOW. If it has been
+// re-saved under the reader since the tab opened, the copy is written over
+// today's bytes rather than over a snapshot from an hour ago — which is the
+// right direction to be wrong in, and the tab would have to be reloaded for
+// the margin to still be pointing at the right words either way.
 async function sourceBytes() {
-  if (localBytes) return new Uint8Array(localBytes);
+  if (LOCAL) {
+    const got = await readLocalFile(SRC);
+    if (!got.ok) {
+      throw new Error(got.empty
+        ? 'this file is empty, or it could not be read again'
+        : 'this file could not be read again — has it moved, or been renamed?');
+    }
+    return new Uint8Array(got.bytes);
+  }
   const r = await fetch(SRC, { credentials: 'include' });
   if (!r.ok) throw new Error('could not re-read this PDF (' + r.status + ')');
   return new Uint8Array(await r.arrayBuffer());

@@ -968,6 +968,13 @@ Contract deltas agreed during live testing — authoritative over the sections a
     does: PDF.js parses in a **worker**, whose clock virtual time does not
     advance, so the document promise never resolves and the page dumps empty.
     A real clock, a real wait. It skips itself where no Chromium exists.
+    It also runs **the annotated-copy export end to end** (amended 2026-08-25)
+    — real PDF.js, real `pdf-lib`, the viewer's own `exportAnnotated()`, on a
+    web PDF *and* on a real `file:` one — gating only the Save dialog, which is
+    the one thing headless Chrome cannot answer, and re-parsing the copy it
+    captured. The local half is why the browser is launched with
+    `--allow-file-access-from-files`: a `file:` document is the only way to
+    take the LOCAL boot branch, and that branch is where the bytes are read.
 
 - **Running a code block** (`run.mjs`, `POST /run`). Any fenced ```` ```python ````
   (or `py`/`python3`) block in ANY message — a person's or a bot's, in a comment
@@ -4299,6 +4306,21 @@ while it is writing, then where it landed and how much of the margin went with
 it, or, in the bad colour, why it did not. Good news clears itself after 12s; a
 failure stays until it is dismissed. A second press while a write is in flight
 starts nothing second — one Save dialog at a time.
+
+**Where the bytes come from: the file, again, every time** (amended
+2026-08-25). The export used to reuse the copy of a local PDF that was read at
+boot, and it could not: `getDocument({data})` posts that buffer to the PDF.js
+worker **as a transferable** (`sendWithPromise("GetDocRequest", …, [r.buffer])`
+in the vendored build), which detaches it here. Building a second `Uint8Array`
+over it throws *"Cannot perform Construct on a detached ArrayBuffer"* — which
+is how this died on every local PDF, and only on local ones, because a web PDF
+is given to PDF.js as a url and never as bytes. So `run()` now **drops the
+reference in the same breath as the hand-over**, and `sourceBytes()` reads the
+document again — XHR for a `file:`, `fetch` for the web. Re-reading also means
+writing over the file as it is now rather than as it was an hour ago, and it
+costs nothing until somebody actually exports; keeping a private copy alive
+instead would double the memory of every local PDF for a button most readers
+never press.
 
 **Where the ink goes.** From the PAINTED HIGHLIGHT, not from a fresh text hunt:
 `anchor.js` has already decided where a thread is (including after a re-anchor,
