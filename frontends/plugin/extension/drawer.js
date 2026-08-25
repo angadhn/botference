@@ -1305,10 +1305,63 @@
       // opened — after which d.open('comments') threw "not a function".
       opened: false,
     };
+    // the observer that puts the host back when the page takes it away — one
+    // per drawer, installed with the first attach (see watchDetach below)
+    let detachWatch = null, detachRoot = null;
 
     // ---- mount ----------------------------------------------------------
+    // ATTACHING THE HOST, AND KEEPING IT ATTACHED.
+    //
+    // The host is a child of the PAGE's <html>, which means the page can take
+    // it away. Most of the web never does. A site that renders its whole
+    // document from a framework does it as a matter of course: Medium's React
+    // hydrates <html> itself, and hydration deletes every child of the element
+    // it owns that the framework did not put there. About half a second after
+    // boot the drawer is simply gone from the document — while every reference
+    // in this closure is still live and every method still "works". The pill
+    // is positioned, the panel is opened, the comments render, all of it into
+    // a tree nobody can see. No error is thrown, nothing is logged, and for
+    // the life of that tab there is no pill on a selection and no panel behind
+    // the toolbar icon.
+    //
+    // So the host is put back, in two places, because there are two ways to
+    // notice. Below: "already mounted" is narrowed to "still attached", which
+    // is what makes the next gesture — a selection, a click on the icon —
+    // repair it. And in watchDetach(): a drawer that is ON SCREEN when the
+    // page hydrates has no next gesture to wait for, so its removal is
+    // observed and undone on the spot. Either way the SAME host goes back: the
+    // shadow root, its listeners and the conversation in it are untouched, and
+    // re-mounting would have thrown all three away.
+    function attach(host) {
+      (document.documentElement || document.body).appendChild(host);
+      watchDetach(host);
+    }
+    // A framework hydrates once, so one re-attach is the whole story in
+    // practice; the counter is there so that a page which genuinely insists on
+    // removing this element wins rather than spinning against us forever.
+    let reattaches = 0;
+    const REATTACH_MAX = 20;
+    function watchDetach(host) {
+      const root = document.documentElement || document.body;
+      // re-armed whenever the element being watched is not the one the host
+      // now hangs from — a framework that swaps <html> wholesale would
+      // otherwise leave this observing a node no longer in the document
+      if (!window.MutationObserver || !root || detachRoot === root) return;
+      try {
+        if (detachWatch) detachWatch.disconnect();
+        detachWatch = new MutationObserver(() => {
+          if (host.isConnected || reattaches >= REATTACH_MAX) return;
+          reattaches++;
+          (document.documentElement || document.body).appendChild(host);
+        });
+        detachWatch.observe(root, { childList: true });
+        detachRoot = root;
+      } catch { /* the lazy repair in mount() is the load-bearing half */ }
+    }
     function mount() {
-      if (D.mounted) return D;
+      if (D.mounted && D.host && D.host.isConnected) return D;
+      // mounted, and taken off the page by the page: put it back as it was
+      if (D.mounted && D.host) { attach(D.host); return D; }
       const host = document.createElement('div');
       host.id = 'bfp-root';
       // the host lives in the page's tree, so its own critical geometry is
@@ -1342,7 +1395,7 @@
       wrap.innerHTML = shell();
       while (wrap.firstChild) shadow.appendChild(wrap.firstChild);
 
-      (document.documentElement || document.body).appendChild(host);
+      attach(host);
 
       D.host = host; D.shadow = shadow; D.mounted = true;
       D.el = {

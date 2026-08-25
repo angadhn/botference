@@ -2,6 +2,18 @@
 
 ## 2026-08-25
 
+- **Fixed: the drawer went missing on Medium (and any site that renders its
+  whole page from a framework).** Select a passage and no comment button
+  appeared; click the toolbar icon and no panel opened. Nothing was in the
+  console, because nothing was wrong with the drawer — the *page* had thrown it
+  away. Medium's React hydrates the whole document, and hydration deletes every
+  element in `<html>` that React did not put there, Discuss's drawer included,
+  about half a second after it mounts. Every button went on working perfectly,
+  into a piece of the document that was no longer in the document. Now the
+  drawer notices and puts itself back: the same drawer, with the same
+  conversation open in it, whether it was on screen at the time or is being
+  asked for by the next selection.
+
 - **Comments left on a review page now reach your bots.** A visitor without the
   Discuss extension writes in the review page's own margin, and until now that
   is where their comment stayed: a line in a file beside the document, invisible

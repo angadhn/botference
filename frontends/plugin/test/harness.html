@@ -126,6 +126,12 @@
                      is inside a fence and must NOT fold. `&selftest=1` runs
                      the fold assertions.
     ?more=open       …and the page-chat disclosure already open
+    ?hydrate=1       the page DELETES the drawer: a site that renders its whole
+                     document from a framework (Medium) hydrates <html> and
+                     removes every child of it the framework did not put there,
+                     #bfp-root included. `&selftest=1` asserts the drawer comes
+                     back — same host, same conversation — and that a selection
+                     and the toolbar icon still work afterwards.
     ?colledit=1      a COLLATERAL edit: a passage the bots changed while
                      answering a comment somewhere ELSE in the document, so
                      nobody commented here and no bot ever narrated it. The
@@ -1393,6 +1399,28 @@ if (Q.get('tasks') === '1') {
       + '- [x] Pull the report itself\n'
       + '- [ ] Find the sentence the paraphrase came from\n'
       + '- [ ] Ask the desk which version they filed\n' });
+}
+
+// ?hydrate=1 — THE PAGE TAKES THE DRAWER OFF THE PAGE.
+//
+// Everything else in this harness assumes the site leaves our host alone,
+// which is what the ordinary web does. A site that renders its whole document
+// from a framework does not: Medium's React hydrates <html> itself, and
+// hydration deletes every child of <html> the framework did not put there —
+// including #bfp-root, about half a second after the content script mounted
+// it. Nothing throws. Every drawer method goes on "working", into a tree that
+// is no longer in the document, and the reader gets no pill on a selection and
+// no panel behind the toolbar icon for the life of the tab.
+//
+// This flag does exactly that one thing — `documentElement.removeChild(host)`,
+// which is hydration's whole effect on us — so the repair can be asserted
+// instead of taken on trust. The assertions are in selftestHydration().
+const HYDRATE = Q.get('hydrate') === '1';
+// what a full-document hydration does to us, in one line
+function evictDrawerHost() {
+  const host = document.getElementById('bfp-root');
+  if (host && host.parentNode) host.parentNode.removeChild(host);
+  return !!host;
 }
 
 // which pill the pose opens with, if any (`?commenters=1&by=mira`)
@@ -5249,6 +5277,80 @@ async function selftestCanonical() {
   console.log(out.join('\n'));
 }
 
+// ?hydrate=1&selftest=1 — the drawer survives the page deleting it.
+//
+// The regression this exists for: on Medium the pill stopped appearing on a
+// selection and the toolbar icon stopped opening the panel, with a clean
+// console and every node suite green. Nothing was broken in the drawer at all
+// — the PAGE had removed #bfp-root from <html> during React's hydration of the
+// whole document, half a second after boot, and `mount()`'s `if (D.mounted)
+// return` meant the drawer never noticed: it went on painting into a detached
+// tree for the life of the tab.
+//
+// So this pose does hydration's one relevant act (evictDrawerHost) and asserts
+// the outcome the reader cares about: the drawer comes back, it is the SAME
+// drawer with the same conversation in it, and a selection made afterwards
+// still gets a pill that is really on the page — laid out, with a width.
+async function selftestHydration() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? '✓ ' : '✗ ') + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const inDoc = () => document.querySelectorAll('#bfp-root').length;
+  const cards = () => S.querySelectorAll('.pane[data-pane="comments"] .card').length;
+
+  check('the drawer is on the page to begin with', inDoc() === 1 && d.host.isConnected);
+  check('…open, with the page’s threads in it', S.querySelector('.panel.open') && cards() > 0);
+  const host0 = d.host, threads0 = cards();
+
+  // ---- the page hydrates over us, with the drawer ON SCREEN ---------------
+  check('the page really did evict the host', evictDrawerHost() && inDoc() === 0);
+  await sleep(60);
+  check('…and it is back on the page without anyone asking', inDoc() === 1);
+  check('…the same host, not a second one built over the first',
+    d.host === host0 && host0.isConnected && inDoc() === 1);
+  check('…so the conversation in it survived the eviction', cards() === threads0);
+  check('…and the panel is still open, which is where the reader left it',
+    !!S.querySelector('.panel.open'));
+
+  // ---- and again, this time with a selection as the next thing to happen --
+  // This is the reported symptom exactly: text selected on a page that has
+  // just deleted the drawer, and a pill that has to appear anyway.
+  evictDrawerHost();
+  d.close();
+  const p = [...document.querySelectorAll('article p')].find(el => el.textContent.includes('found a rhythm'));
+  const t = [...p.childNodes].find(n => n.nodeType === 3 && n.data.includes('found a rhythm'));
+  const r = document.createRange();
+  r.setStart(t, t.data.indexOf('By the hour mark'));
+  r.setEnd(t, t.data.indexOf('found a rhythm') + 'found a rhythm'.length);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await sleep(300);
+  const btn = S.querySelector('.selbtn');
+  const box = btn ? btn.getBoundingClientRect() : { width: 0, height: 0 };
+  check('a selection made afterwards still gets its pill',
+    !!btn && btn.classList.contains('on'));
+  check('…and the pill is really ON the page, laid out, not in a detached tree',
+    inDoc() === 1 && box.width > 0 && box.height > 0);
+
+  // ---- …and the toolbar icon, the other half of the report ----------------
+  evictDrawerHost();
+  d.open('comments');
+  await sleep(60);
+  check('the icon opens the panel on a page that has just deleted it',
+    inDoc() === 1 && !!S.querySelector('.panel.open') && cards() === threads0);
+  check('nothing threw on the way through any of it', window.__bfpErrors.length === 0);
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (hydration) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?gdocs=1&selftest=1 — the site-adapter world instead of the article one.
 // Everything the capability switch is supposed to turn off, plus proof that
 // the document's real text (which only exists behind the user's session)
@@ -7378,6 +7480,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
         : HEAL ? selftestOrphanHeal : TICKER ? selftestRoundTicker
         : COMMENTERS ? selftestCommenters
+        : HYDRATE ? selftestHydration
         : READY ? selftestReady : selftest, 250);
       return;
     }

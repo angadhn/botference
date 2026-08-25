@@ -4108,6 +4108,46 @@ article scrolls itself to a highlight on mount, which used to carry a sticky
 top bar out of frame and leave the tally — the only thing a selftest produces —
 unreadable in the one screenshot meant to carry it.)
 
+## Amendment (2026-08-25) — the host is the page's to delete, so mounting is not once
+
+`<div id="bfp-root">` is a child of the PAGE's `<html>`, which means the page
+can take it away, and a site that renders its whole document from a framework
+does exactly that: **React hydrating `<html>` removes every child of it that
+React did not put there** — the drawer host included, roughly half a second
+after the content script appends it. Medium is the case in hand.
+
+Nothing throws when that happens. `D.mounted` is still true, `D.host` and
+`D.shadow` are still live, every method still runs — into a subtree that is no
+longer in the document. The user-visible result is the whole extension
+apparently dead on that page: no pill on a selection, no panel behind the
+toolbar icon, for the life of the tab, with a clean console.
+
+So the contract is now:
+
+- `mount()` means **attached**, not *ever attached*. `if (D.mounted) return` is
+  narrowed to `if (D.mounted && D.host.isConnected) return`, and a host that was
+  evicted is re-appended. Every UI entry point already funnels through `mount()`
+  (`open()`, `showSel()`), which is what makes the reader's next gesture repair
+  it.
+- A drawer already ON SCREEN has no next gesture to wait for, so eviction is
+  also **observed**: a `MutationObserver` on `documentElement`'s children
+  re-appends the host when it is removed (bounded to 20 repairs, so a page that
+  genuinely insists on removing the element wins rather than spinning against
+  us; re-armed if `<html>` itself is replaced).
+- The **same host** goes back, never a rebuilt one: the shadow root, its
+  listeners and the conversation in it are untouched. Re-mounting would discard
+  all three.
+
+**Testing.** Harness `?hydrate=1&selftest=1` (11 assertions) does hydration's
+one relevant act — `documentElement.removeChild(host)` — three times over: with
+the drawer open (it comes back on its own, same host, same threads, still
+open), before a selection (the pill appears *and has layout geometry*, which is
+what a detached tree cannot fake), and before a toolbar-icon open. Without the
+fix it scores 7/11; the four failures are precisely the reported symptoms. Note
+which assertion still PASSES unfixed: "a selection gets its pill" — the class
+toggles happily on a detached node. That is why every suite was green while the
+extension was dead on the page.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
