@@ -265,6 +265,12 @@
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
     openProjects: new Set(),   // expanded projects (any project, active or not)
+    // Which projects have their read-only contents panel open, and what the
+    // folder listing came back as. Per tab, never persisted, and fetched once
+    // — the panel payload carries the chats, and the FOLDER is deliberately
+    // not in it (see /project-contents in server.mjs).
+    openContents: new Set(),
+    contents: {},              // pid -> {loading, err, files:[…]}
     lastActivePid: null,       // active project at the last 'projects' event
     menuSid: null,         // chat row whose ⋯ actions menu is open
     archOpen: false,       // "Archived" projects section expanded?
@@ -1815,9 +1821,26 @@
     }
     state.lastActivePid = pid;
   }
-  // one chat row: the row itself resumes; ⋯ opens archive/delete, both of
-  // which are plain slash commands (the controller owns the confirm step)
-  function chatRow(s) {
+  // one chat row: the row itself resumes; ⋯ opens the row menu, all of whose
+  // items are plain slash commands (the controller owns any confirm step).
+  //
+  // THREE WAYS TO GET A CHAT OUT OF A LIST, and they are deliberately not one
+  // thing behind one word. In order of how much they cost you:
+  //
+  //   Remove from project  the chat is untouched; only its FILING goes, so it
+  //                        lands in Inbox and /file puts it wherever you meant.
+  //                        No confirm: it is reversible in one click.
+  //   Archive              the chat drops out of every list; every byte of it
+  //                        survives under archive/sessions/. /unarchive undoes
+  //                        it. No confirm, for the same reason.
+  //   Delete…              the chat ceases to exist. The controller answers
+  //                        with a confirm card in the transcript.
+  //
+  // The safe one is offered first and the destructive one last, because the
+  // commonest reason to want a chat out of a project's list is that it was
+  // filed in the wrong project — and deleting a chat over that is a loss with
+  // no cause.
+  function chatRow(s, pid) {
     const sid = esc(s.session_id);
     const open = state.menuSid === s.session_id;
     return `<div class="sess-row${open ? ' menu-open' : ''}">
@@ -1826,10 +1849,76 @@
       <button class="row-more" data-act="menu" data-sid="${sid}" aria-haspopup="true"
         aria-expanded="${open}" aria-label="actions for ${esc(s.title || s.session_id.slice(0, 8))}">⋯</button>
       ${open ? `<div class="row-menu" role="menu">
+        ${pid ? `<button role="menuitem" data-act="unfile" data-sid="${sid}">Remove from project</button>` : ''}
         <button role="menuitem" data-act="archive" data-sid="${sid}">Archive</button>
         <button role="menuitem" class="danger" data-act="delete" data-sid="${sid}">Delete…</button>
       </div>` : ''}
     </div>`;
+  }
+
+  // ---- what is actually in a project ------------------------------------
+  // The chats are already in the panel payload; the FILES are not, and must
+  // not be — that payload is recomputed after every turn and pushed to every
+  // tab. So the folder is fetched once, when somebody opens the panel, and
+  // kept until the tab is reloaded. Read-only: nothing here opens, edits or
+  // deletes a file.
+  const KB = 1024;
+  function humanBytes(n) {
+    const v = Number(n) || 0;
+    if (v < KB) return `${v} B`;
+    if (v < KB * KB) return `${(v / KB).toFixed(1)} KB`;
+    if (v < KB * KB * KB) return `${(v / (KB * KB)).toFixed(1)} MB`;
+    return `${(v / (KB * KB * KB)).toFixed(1)} GB`;
+  }
+  async function loadContents(pid) {
+    const c = state.contents[pid] || (state.contents[pid] = {});
+    if (c.loading || c.files) return;
+    c.loading = true;
+    c.err = '';
+    renderProjects();
+    try {
+      const r = await fetch('/project-contents?id=' + encodeURIComponent(pid),
+        { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      c.files = Array.isArray(d.files) ? d.files : [];
+    } catch (e) {
+      c.err = (e && e.message) || 'could not read the folder';
+    }
+    c.loading = false;
+    renderProjects();
+  }
+  function contentsHtml(pr) {
+    const c = state.contents[pr.id] || {};
+    const chats = pr.sessions || [];
+    const total = pr.session_count ?? chats.length;
+    let html = `<div class="pcon">
+      <div class="pcon-head">Chats<span class="count">${total}</span></div>`;
+    html += chats.length
+      ? chats.map(s => `<div class="pcon-row"><span class="pcon-name">${
+          esc(s.title || s.session_id.slice(0, 8))}</span><span class="when">${
+          relTime(s.updated_at)}</span></div>`).join('')
+      : '<div class="empty-note">no chats yet</div>';
+    if (total > chats.length) {
+      html += `<div class="empty-note">…and ${total - chats.length} more</div>`;
+    }
+    html += `<div class="pcon-head">Files<span class="count">${
+      c.files ? c.files.length : ''}</span></div>`;
+    if (c.loading) html += '<div class="empty-note">reading the folder…</div>';
+    else if (c.err) html += `<div class="empty-note err">${esc(c.err)}</div>`;
+    else if (c.files && !c.files.length) html += '<div class="empty-note">empty</div>';
+    else if (c.files) {
+      html += c.files.map(f => `<div class="pcon-row" style="--d:${Number(f.depth) || 0}">
+        <span class="pcon-name${f.dir ? ' dir' : ''}">${esc(f.name)}${
+          f.dir ? (f.truncated ? '/…' : '/') : ''}</span>
+        <span class="when">${f.dir ? '' : humanBytes(f.size)}</span></div>`).join('');
+    }
+    if (pr.github) {
+      html += `<div class="pcon-head">GitHub</div>
+        <div class="pcon-row"><a class="pcon-name link" href="${esc(pr.github)}"
+          target="_blank" rel="noopener">${esc(pr.github)}</a></div>`;
+    }
+    return html + '</div>';
   }
   function projectBlock(pr, { archived = false } = {}) {
     // Purely user-driven: autoOpenActiveProject() seeds openProjects when you
@@ -1842,15 +1931,39 @@
         <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
       <div class="proj-sessions">`;
     // No "make active project" row: opening any chat here does that for you.
-    // chats first, project-level commands under them
-    for (const s of pr.sessions || []) html += chatRow(s);
+    // The CHATS scroll in their own box; the project's own verbs sit below it,
+    // where a long chat list can never push them off the bottom of the panel.
+    // A scroll box CLIPS what overflows it, and the ⋯ row menu is an absolutely
+    // positioned popover inside one of these rows: with the box scrolling, the
+    // menu's last item ("Delete…") was cut in half. So while a menu is open in
+    // THIS project, the box stops scrolling and shows everything. The list
+    // re-renders on every menu toggle anyway, so there is nothing to preserve.
+    const menuHere = (pr.sessions || []).some(x => x.session_id === state.menuSid);
+    html += `<div class="proj-chats${menuHere ? ' menu-open' : ''}">`;
+    for (const s of pr.sessions || []) html += chatRow(s, pr.id);
     if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
+    html += '</div>';
     // "+ new chat" lives INSIDE the project, because that is the only place
     // the intent is unambiguous: the chat is filed here from birth and opens
     // with this project's files and plan already in context. Expanding a
     // project used to be purely visual — this is the row's one real verb.
     if (!archived) {
       html += `<button class="sess sess-cmd sess-new" data-act="proj-new-chat" data-pid="${pid}">＋ new chat</button>`;
+    }
+    // What is in here — chats and the folder itself, read-only. Its own row
+    // rather than always-on, because the folder costs a request to read and
+    // most of the time the reader wants a chat, not an inventory.
+    const conOpen = state.openContents.has(pr.id);
+    html += `<button class="sess sess-cmd" data-act="proj-contents" data-pid="${pid}"
+      aria-expanded="${conOpen}">${conOpen ? '▾' : '▸'} contents</button>`;
+    if (conOpen) html += contentsHtml(pr);
+    // Publishing the folder to a NEW PRIVATE GitHub repo. Never one click: the
+    // controller answers with a confirm card in the transcript naming the repo
+    // it is about to create, exactly as Delete… does — creating a repo under
+    // somebody's account is not undoable from here.
+    if (!archived) {
+      html += `<button class="sess sess-cmd" data-act="proj-github" data-pid="${pid}">${
+        pr.github ? '⇪ push to GitHub' : '⇪ publish to GitHub…'}</button>`;
     }
     html += archived
       ? `<button class="sess sess-cmd" data-act="proj-unarchive" data-pid="${pid}">↩ unarchive project</button>`
@@ -1914,6 +2027,13 @@
       return;
     }
     if (act === 'toggle-arch') { state.archOpen = !state.archOpen; renderProjects(); return; }
+    if (act === 'proj-contents') {
+      const pid = b.dataset.pid;
+      if (state.openContents.has(pid)) state.openContents.delete(pid);
+      else { state.openContents.add(pid); loadContents(pid); }
+      renderProjects();
+      return;
+    }
     if (act === 'menu') {
       state.menuSid = state.menuSid === b.dataset.sid ? null : b.dataset.sid;
       renderProjects();
@@ -1926,8 +2046,20 @@
       snapshotCurrent();
       sendInput('/new --project ' + b.dataset.pid);
     }
+    if (act === 'proj-github') {
+      // the controller preflights gh, then asks — the sidebar gets out of the
+      // way instead of confirming twice (same rule as Delete…)
+      sendInput('/project github ' + b.dataset.pid);
+      toast('confirm the repo name in the chat');
+    }
     if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
     if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
+    if (act === 'unfile') {
+      // the chat itself is untouched — only its filing goes, and /file puts it
+      // back, so there is nothing here to confirm
+      sendInput('/project unfile ' + b.dataset.sid);
+      toast('moved to Inbox — /file puts it in a project');
+    }
     if (act === 'archive') {
       sendInput('/archive ' + b.dataset.sid);
       toast('archiving — /unarchive brings it back');

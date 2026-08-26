@@ -7,6 +7,7 @@ import {
   nextSelectableRow,
   projectRowCommand,
   relativeTime,
+  PANEL_SESSIONS_MAX,
   type ProjectPanelStateData,
   type ProjectRow,
 } from "./projects.js";
@@ -291,5 +292,39 @@ describe("projectRowCommand", () => {
     const rows = buildProjectRows(activeProject);
     const nextRow = rows[2]!;
     assert.equal(projectRowCommand(nextRow), null);
+  });
+});
+
+describe("the panel no longer truncates a busy project at eight chats", () => {
+  // Eight was a UI number pretending to be a payload number: it matched a cap
+  // the controller applied, and between them a project with a dozen chats
+  // could not show you the older ones. App.tsx windows the row list to the
+  // pane height and scrolls it, so this pane never needed a bound of its own.
+  const busy = (n: number): ProjectPanelStateData => ({
+    active_project_id: "p",
+    inbox_session_count: 0,
+    projects: [{
+      id: "p", title: "Busy", status: "active", next_action: "", active: true,
+      session_count: n,
+      sessions: Array.from({ length: n }, (_, i) => ({
+        session_id: `s${i}`,
+        title: `chat ${i}`,
+        updated_at: `2026-08-${String((i % 28) + 1).padStart(2, "0")}T00:00:00Z`,
+        active: false,
+      })),
+    }],
+  });
+
+  it("lists all twenty chats of a twenty-chat project", () => {
+    const rows = buildProjectRows(busy(20));
+    assert.equal(rows.filter(r => r.kind === "session").length, 20);
+  });
+
+  it("still bounds a pathological one", () => {
+    const rows = buildProjectRows(busy(PANEL_SESSIONS_MAX + 50));
+    assert.equal(
+      rows.filter(r => r.kind === "session").length,
+      PANEL_SESSIONS_MAX,
+    );
   });
 });

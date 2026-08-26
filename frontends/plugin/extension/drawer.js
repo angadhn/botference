@@ -1104,6 +1104,14 @@
       `<path d="${d}" stroke="var(--mark-${name})" stroke-width="2"/>`).join('') +
     '</svg>';
   const PAGES_SVG = BRAID_SVG;
+  // A folder with a tab: "file this somewhere". Deliberately not a pin or a
+  // star — filing a page under a project is putting it WITH other things,
+  // not marking it.
+  const FILEIN_SVG =
+    '<svg class="pico" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M1.8 4.2a1 1 0 0 1 1-1h3.2l1.4 1.6h4.8a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/>' +
+    '<path d="M8 7.4v4M6 9.4h4"/></svg>';
 
   function create(opts) {
     opts = opts || {};
@@ -1200,6 +1208,15 @@
       // across sessions by content.js (setExportMode) and changed by choosing
       exportMode: 'all',
       exportOpen: false,
+      // The council projects this page is filed under, and the roster the
+      // picker lists. `filed` is the authority (it comes back from every
+      // POST); `list` is fetched once per open and kept. `declined` holds the
+      // ts of any bot suggestion the reader said no to — per tab, never
+      // persisted, exactly like the commenter filter: saying no to a
+      // suggestion is not a fact about the page.
+      projects: { list: null, filed: [], loading: false, err: '', busy: '',
+                  declined: [] },
+      projOpen: false,
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the composer's pill row.
@@ -1489,6 +1506,8 @@
         selbtn: shadow.querySelector('.selbtn'),
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
+        projpick: shadow.querySelector('.popover.projpick'),
+        filein: shadow.querySelector('.hdr .iconbtn.filein'),
         light: shadow.querySelector('.lightbox'),
         grip: shadow.querySelector('.grip'),
       };
@@ -1503,6 +1522,7 @@
       applyWidth(D.width);
       wireEvents();
       paintProject();
+      paintFiled();
       paintTabs();
       restoreTab();
       restoreWidth();
@@ -1564,6 +1584,7 @@ ${selPillHtml()}
     <div class="meta"><span class="site"></span><span class="proj" hidden></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
     <div class="acts">
       <button class="iconbtn pages" data-act="pages" type="button" title="All annotated pages" aria-label="All annotated pages" aria-pressed="false">${PAGES_SVG}</button>
+      <button class="iconbtn filein" data-act="filein" type="button" title="File in a council project" aria-label="File in a council project" hidden>${FILEIN_SVG}</button>
       <button class="iconbtn" data-act="models" type="button" title="Models" aria-label="Models">⚙</button>
       <button class="iconbtn obsidian" data-act="export" type="button" title="Export to Obsidian" aria-label="Export to Obsidian">${OBSIDIAN_SVG}</button>
       <button class="iconbtn" data-act="close" type="button" title="Close (Esc)">✕</button>
@@ -1571,6 +1592,7 @@ ${selPillHtml()}
   </div>
   <div class="popover models" role="dialog" aria-label="Models" hidden></div>
   <div class="popover exportpick" role="menu" aria-label="Export to Obsidian" hidden></div>
+  <div class="popover projpick" role="menu" aria-label="File in a council project" hidden></div>
   <nav class="tabs">
     <button class="tab on" data-tab="comments" type="button">Comments<span class="count">0</span></button>
     <button class="tab" data-tab="chat" type="button">Page chat</button>
@@ -1810,7 +1832,8 @@ ${selPillHtml()}
       const who = agentOf(r.author);
       return `<div class="reply${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}${own ? ' restored' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}"${own ? ' data-restored="1"' : ''} style="--author:${speakerColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
-        ${body}${acts}</div>`;
+        ${body}${acts}${
+          D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}</div>`;
     }
 
     // Tool activity (msg.kind === 'tools') is process detail, not an answer: a
@@ -4523,6 +4546,7 @@ ${selPillHtml()}
         }
         // …and so does anything that is not the export chooser or its button
         if (D.exportOpen && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
+        if (D.projOpen && !(btn && /^(filein|proj-file)$/.test(btn.dataset.act || ''))) closeProjPick();
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
           if (card && card.dataset.thread !== PAGE_TARGET) focus(card.dataset.thread);
@@ -4562,6 +4586,21 @@ ${selPillHtml()}
         if (act === 'pdf-import-no') { PDF.dismissed = true; PDF.err = ''; render(); return; }
         if (act === 'pdf-saved-ok') { PDF.out = null; render(); return; }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
+        if (act === 'filein') { if (D.projOpen) closeProjPick(); else openProjPick(); return; }
+        if (act === 'proj-file') {
+          fileInProject(btn.dataset.root, btn.dataset.pid, !btn.dataset.on);
+          return;
+        }
+        // the bot's suggestion, answered. Yes files it; no puts the chip away
+        // for this tab and is not remembered anywhere else — the reader may
+        // change their mind on the next reply.
+        if (act === 'file-yes') { fileInProject(btn.dataset.root, btn.dataset.pid, true); return; }
+        if (act === 'file-no') {
+          const row = btn.closest && btn.closest('[data-ts]');
+          if (row && row.dataset.ts) D.projects.declined.push(row.dataset.ts);
+          render();
+          return;
+        }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
@@ -4786,6 +4825,7 @@ ${selPillHtml()}
           // drawer itself
           if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
           if (D.light) closeLight();
+          else if (D.projOpen) closeProjPick();
           else if (D.exportOpen) closeExportPick();
           else if (D.modelsOpen) closeModels();
           else close();
@@ -5819,6 +5859,140 @@ ${selPillHtml()}
       doExport(D.exportMode);
     }
 
+    // ---- filing this page in a council project ---------------------------
+    //
+    // The motivating case: the reader is marking up the second draft of a
+    // manuscript, and everything said about the FIRST draft is in a council
+    // project — chats the bots could read but have never been given a reason
+    // to. Filing the page there is the reason.
+    //
+    // Two ways in, and they end in the same POST. The reader opens this
+    // picker; or a bot, on a page filed nowhere, ends its reply saying where
+    // it thinks the page belongs, and that becomes a chip with a button on it
+    // (fileChipHtml). Bots never file anything. The reader always clicks.
+    function paintProjPick() {
+      if (!D.mounted || !D.el.projpick) return;
+      const P = D.projects;
+      const filed = new Set((P.filed || []).map(f => `${f.root}\u0000${f.id}`));
+      let body;
+      if (P.loading) body = '<div class="pop-note">reading your council…</div>';
+      else if (P.err) body = `<div class="pop-note err">${esc(P.err)}</div>`;
+      else if (!(P.list || []).length) {
+        // Not an error, and worth saying properly: the roster is drawn from
+        // council roots the reader has already vouched for, and a reader who
+        // has never opened a project artifact page has vouched for none.
+        body = '<div class="pop-note">No council projects yet. Open a file from '
+          + 'your council\u2019s <code>projects/</code> folder once and say yes '
+          + 'to the card, and its projects appear here.</div>';
+      } else {
+        body = P.list.map(pr => {
+          const key = `${pr.root}\u0000${pr.id}`;
+          const on = filed.has(key);
+          const chats = (pr.chats || []).map(c => c.title).filter(Boolean);
+          // the peek: enough to tell two similarly-named projects apart
+          // without opening either
+          const peek = [
+            chats.length ? chats.join(' · ') : '',
+            (pr.files || []).length ? (pr.files || []).join('  ') : '',
+          ].filter(Boolean).join('\n');
+          return `<button class="xrow projrow${on ? ' on' : ''}" type="button" role="menuitemcheckbox"
+             aria-checked="${on ? 'true' : 'false'}"
+             ${D.projects.busy === key ? 'disabled' : ''}
+             data-act="proj-file" data-root="${esc(pr.root)}" data-pid="${esc(pr.id)}"
+             data-on="${on ? '1' : ''}">
+             <span class="xname">${on ? '\u2713 ' : ''}${esc(pr.title)}${
+               pr.status !== 'active' ? ' <span class="parch">archived</span>' : ''}</span>
+             <span class="xwhy">${esc(peek || pr.next_action || pr.id)}</span></button>`;
+        }).join('');
+      }
+      D.el.projpick.innerHTML =
+        '<div class="pop-head">File this page in\u2026</div>'
+        + body
+        + '<div class="pop-note foot">Filing is a read: the bots get what these '
+        + 'projects already know. Nothing here is moved or written.</div>';
+      D.el.projpick.hidden = false;
+    }
+    async function openProjPick() {
+      if (!D.mounted) return;
+      closeModels(); closeExportPick();
+      D.projOpen = true;
+      D.projects.loading = !D.projects.list;
+      D.projects.err = '';
+      paintProjPick();
+      if (typeof document !== 'undefined') document.addEventListener('mousedown', onProjDown, true);
+      try {
+        const r = await cb('onProjects')();
+        D.projects.list = (r && r.projects) || [];
+        D.projects.filed = (r && r.filed) || [];
+      } catch (e) {
+        D.projects.err = (e && e.message) || 'could not read your council';
+      }
+      D.projects.loading = false;
+      if (D.projOpen) paintProjPick();
+    }
+    function closeProjPick() {
+      D.projOpen = false;
+      if (D.mounted && D.el.projpick) { D.el.projpick.hidden = true; D.el.projpick.innerHTML = ''; }
+      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onProjDown, true);
+    }
+    const onProjDown = e => { if (!D.host || !D.host.contains(e.target)) closeProjPick(); };
+
+    // The one mutation, shared by the picker and the bot's chip. Attaching is
+    // a toggle in the picker and always an attach from a chip — a chip is an
+    // offer, and clicking it means yes.
+    async function fileInProject(root, id, attach) {
+      const key = `${root}\u0000${id}`;
+      D.projects.busy = key;
+      D.projects.err = '';
+      if (D.projOpen) paintProjPick();
+      try {
+        const r = await cb('onFileProject')(root, id, attach);
+        D.projects.filed = (r && r.filed) || [];
+      } catch (e) {
+        D.projects.err = (e && e.message) || 'could not file this page';
+      }
+      D.projects.busy = '';
+      if (D.projOpen) paintProjPick();
+      paintFiled();
+      render();
+    }
+
+    // The header line: which projects this page is filed under. Same slot the
+    // project-artifact page uses for "part of project X", because it is the
+    // same sentence about the same kind of belonging.
+    function paintFiled() {
+      if (!D.mounted || !D.el.filein) return;
+      D.el.filein.hidden = !D.owner;
+      const n = (D.projects.filed || []).length;
+      D.el.filein.classList.toggle('on', n > 0);
+      D.el.filein.title = n
+        ? `Filed in ${(D.projects.filed || []).map(f => f.id).join(', ')}`
+        : 'File in a council project';
+    }
+
+    // A bot's suggestion, as a chip under its reply. One step, inline, like
+    // every other confirm in this drawer: the sentence is the whole of the
+    // warning and the button is the whole of the act.
+    function fileChipHtml(msg) {
+      const f = msg && msg.file_in;
+      if (!f || !f.id) return '';
+      const key = `${f.root}\u0000${f.id}`;
+      const filed = (D.projects.filed || []).some(x => x.root === f.root && x.id === f.id);
+      if (filed) {
+        return `<div class="filechip done">Filed in ${esc(f.title || f.id)}.</div>`;
+      }
+      return `<div class="filechip">
+        <span class="fcw">This looks like it belongs in <b>${esc(f.title || f.id)}</b>${
+          f.why ? ` \u2014 ${esc(f.why)}` : ''}</span>
+        <span class="fcacts">
+          <button class="rebtn" type="button" data-act="file-yes"
+            data-root="${esc(f.root)}" data-pid="${esc(f.id)}"
+            ${D.projects.busy === key ? 'disabled' : ''}>File it</button>
+          <button class="rebtn no" type="button" data-act="file-no">No</button>
+        </span>
+      </div>`;
+    }
+
     // ---- the PDF's own margin, in and out ---------------------------------
     // Both directions are content.js's work (it has the companion and the
     // viewer); this is the button, the wait and the sentence afterwards.
@@ -6230,6 +6404,12 @@ ${selPillHtml()}
       // a handle that was in this page's margin is usually nowhere near the
       // next one: the filter belongs to the page it was chosen on
       D.commenter = '';
+      // The page record is the authority on where this page is filed, and it
+      // arrives on every refresh — so the ticks in the picker and the "filed
+      // in X" on a bot's chip stay right without a second request. `declined`
+      // is a view state and goes with the page, like the commenter filter.
+      D.projects.filed = (page && Array.isArray(page.projects)) ? page.projects : [];
+      D.projects.declined = [];
       clearAnsweredWaits();
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';
@@ -6237,6 +6417,7 @@ ${selPillHtml()}
         D.el.title.title = title;
         D.el.site.textContent = (page && page.site) || opts.hostname || '';
         paintProject();
+        paintFiled();
       }
       render();
       return D;
@@ -6293,6 +6474,10 @@ ${selPillHtml()}
       if (v === D.owner) return D;
       D.owner = v;
       if (!v) closeRowEditors(true);
+      // filing a page under a council project is the OWNER's act — the route
+      // is owner-only, and a guest is not shown a control they cannot use
+      if (!v) closeProjPick();
+      paintFiled();
       if (D.view === 'pages') renderPages();
       return D;
     }

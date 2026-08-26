@@ -39,6 +39,7 @@ from cli_adapters import (
     planner_write_roots_for_env,
 )
 from paths import BotferencePaths
+from project_github import preflight, publish_project, slugify_repo_name
 from project_store import (
     TASKS_FILE_NAME,
     ProjectInfo,
@@ -251,7 +252,8 @@ _TARGETED_COMMANDS = (
 # /project subcommands, surfaced to autocomplete as scoped completions
 _PROJECT_SUBCOMMANDS = (
     "open", "clear", "current", "create", "create-from-chat",
-    "assign", "archive", "unarchive", "activate-build",
+    "assign", "unfile", "contents", "github",
+    "archive", "unarchive", "activate-build",
 )
 
 # Known effort levels (passed through to the underlying CLI)
@@ -452,7 +454,43 @@ _REPLAY_MAX_ENTRIES = 2_000
 
 # How many recent chats the project panel lists per project (every project,
 # not just the active one — the sidebar browses any project without switching).
-PANEL_SESSION_LIMIT = 8
+#
+# This was 8, and 8 was a UI number pretending to be a payload number: the
+# sidebar looked tidy, but a project with a dozen chats simply could not show
+# you the older ones, and /resume from the web could not confirm a chat that
+# had fallen off the shortlist (hence the active-session append below). The
+# real constraint is that this whole snapshot is recomputed after every turn
+# and broadcast to every attached tab, so it wants a bound — just a bound set
+# by bytes rather than by taste. A row is ~100 bytes of JSON; 100 rows per
+# project keeps a normal workspace's snapshot comfortably under ~100 KB while
+# being, for any personal workspace, effectively no limit at all. The
+# frontends scroll their own lists.
+#
+# BOTFERENCE_PANEL_SESSION_LIMIT overrides it; 0 (or negative) means truly
+# unlimited, for anyone who would rather pay the bytes.
+def _panel_session_limit_from_env(raw: str | None) -> int:
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 100
+    return value if value > 0 else 0
+
+
+PANEL_SESSION_LIMIT = _panel_session_limit_from_env(
+    os.environ.get("BOTFERENCE_PANEL_SESSION_LIMIT")
+)
+
+
+def _human_bytes(size: int) -> str:
+    """1536 -> '1.5 KB'. For listings a person reads, not for arithmetic."""
+    value = float(max(0, int(size)))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"  # pragma: no cover - loop always returns
 
 
 def _take_tail_within_budget(blocks: list[str], max_chars: int) -> tuple[list[str], int]:
@@ -1675,7 +1713,7 @@ class Botference:
                 updated_at=updated_at,
                 active=session_id == self.session_id,
             ))
-            if len(sessions) >= PANEL_SESSION_LIMIT:
+            if PANEL_SESSION_LIMIT and len(sessions) >= PANEL_SESSION_LIMIT:
                 break
         # The active chat must always be visible even when it falls off the
         # recency shortlist: web frontends confirm a /resume by finding the
@@ -1821,6 +1859,7 @@ class Botference:
                     ProjectPanelTask(text=task.text, done=task.done)
                     for task in read_project_tasks(project.root)
                 ),
+                github=project.github,
             ))
         return ProjectPanelState(
             projects=tuple(panel_projects),
@@ -2565,7 +2604,7 @@ class Botference:
             return
 
         if parsed.kind is InputKind.PROJECT:
-            self._handle_project_cmd(parsed.body, ui)
+            await self._handle_project_cmd(parsed.body, ui)
             return
 
         if parsed.kind is InputKind.STATUS:
@@ -2737,6 +2776,14 @@ class Botference:
             "  /project assign [<session-id-prefix>] <project-id>",
             "                     — File this chat (the project becomes active) or a saved one"
             " (you stay where you are)",
+            "  /project unfile [<session-id-prefix>]",
+            "                     — Take a chat out of its project (back to Inbox;"
+            " nothing is deleted)",
+            "  /project contents [<project-id>]",
+            "                     — What is in a project: its chats and its folder (read-only)",
+            "  /project github [<project-id>] [<repo-name>]",
+            "                     — Push the project folder to a NEW PRIVATE GitHub repo"
+            " (asks first; uses your gh login)",
             "  /project archive <id> | /project unarchive <id>",
             "                     — Tuck a project away (nothing is deleted) or bring it back",
             "",
@@ -2814,7 +2861,7 @@ class Botference:
         ])
         self._add_room_entry(ui, "system", "\n".join(lines))
 
-    def _handle_project_cmd(self, arg: str, ui: UIPort) -> None:
+    async def _handle_project_cmd(self, arg: str, ui: UIPort) -> None:
         raw = arg.strip()
         if not raw or raw == "current":
             project = self._active_project()
@@ -2863,6 +2910,18 @@ class Botference:
 
         if action == "assign":
             self._assign_session_to_project(value, ui)
+            return
+
+        if action == "unfile":
+            self._unfile_session(value, ui)
+            return
+
+        if action == "contents":
+            self._show_project_contents(value, ui)
+            return
+
+        if action == "github":
+            await self._publish_project_to_github(value, ui)
             return
 
         if action in ("archive", "unarchive"):
@@ -3056,6 +3115,216 @@ class Botference:
             f"Filed {session_label} under {project.title} ({project.id}). "
             "The active context is unchanged — use /project open "
             f"{project.id} to switch to it.",
+        )
+
+    def _unfile_session(self, arg: str, ui: UIPort) -> None:
+        """Take a chat out of its project without deleting anything.
+
+        Usage: /project unfile                        (this chat)
+               /project unfile <session-id-prefix>    (a saved chat)
+
+        The reversible half of the sidebar's "remove from this project": the
+        chat, its transcript and its title are untouched — only the filing
+        goes, so it lands back in Inbox and /file puts it wherever you meant.
+        Deleting a chat because it was filed in the wrong place is the mistake
+        this exists to make unnecessary.
+        """
+        query = arg.strip()
+        if not query or self.session_id.startswith(query):
+            # This chat: identical to /project clear, and says so.
+            self.session_project_id = ""
+            self.active_project_id = ""
+            self._inbox_by_choice = True
+            self._persist_session()
+            self.project_store.dissociate_session(self.session_id)
+            self._sync_project_ui(ui)
+            self._show_room_notice(
+                ui, "system",
+                "Took this chat out of its project. It is in Inbox now — "
+                "nothing was deleted.",
+            )
+            return
+
+        summaries = self.session_store.list_summaries(limit=200)
+        matches = [s for s in summaries if s.session_id.startswith(query)]
+        if not matches:
+            self._add_room_entry(
+                ui, "system",
+                f"No saved chat matched '{query}'. /resume lists them.",
+            )
+            return
+        if len(matches) > 1:
+            self._add_room_entry(
+                ui, "system",
+                f"'{query}' is ambiguous ({len(matches)} chats). "
+                "Use a longer prefix.",
+            )
+            return
+        target = matches[0]
+        label = target.title or target.session_id[:8]
+        self.project_store.dissociate_session(target.session_id)
+        # The payload wins over the session index wherever membership is
+        # resolved, so an empty project_id has to be stamped on disk too —
+        # otherwise the next panel sweep reads the old filing straight back.
+        self.session_store.set_project(
+            target.session_id, "",
+            path=Path(target.source_path) if target.source_path else None,
+        )
+        self._sync_project_ui(ui)
+        self._add_room_entry(
+            ui, "system",
+            f"Took “{label}” out of its project — it is in Inbox now. "
+            "Nothing was deleted.",
+        )
+
+    def _show_project_contents(self, arg: str, ui: UIPort) -> None:
+        """Print what is actually inside projects/<id>/ — files and chats.
+
+        Read-only, and shallow on purpose (see ProjectStore.contents). The
+        council web sidebar renders the same two lists as a panel; this is
+        the same answer for anyone at a terminal.
+        """
+        query = arg.strip()
+        project = (
+            self.project_store.get(query) if query else self._active_project()
+        )
+        if not project:
+            self._add_room_entry(
+                ui, "system",
+                f"No project matched '{query}'." if query else
+                "No project is open. Usage: /project contents <project-id>",
+            )
+            return
+
+        snapshot = self.project_panel_snapshot()
+        row = next(
+            (p for p in snapshot.projects if p.project_id == project.id), None,
+        )
+        lines = [f"{project.title} ({project.id}) — projects/{project.id}/"]
+        if project.github:
+            lines.append(f"GitHub: {project.github}")
+
+        chats = list(row.sessions) if row else []
+        total = row.session_count if row else 0
+        lines.append("")
+        lines.append(f"Chats ({total}):")
+        if not chats:
+            lines.append("  (none yet)")
+        for session in chats:
+            when = (session.updated_at or "")[:10]
+            mark = " ←" if session.active else ""
+            lines.append(
+                f"  {session.title or session.session_id[:8]}"
+                f"  {when}  {session.session_id[:8]}{mark}"
+            )
+        if total > len(chats):
+            lines.append(f"  … and {total - len(chats)} more")
+
+        files = self.project_store.contents(project.id)
+        lines.append("")
+        lines.append(f"Files ({len(files)}):")
+        if not files:
+            lines.append("  (empty)")
+        for entry in files:
+            indent = "  " + ("  " * entry.depth)
+            if entry.is_dir:
+                suffix = "/…" if entry.truncated else "/"
+                lines.append(f"{indent}{entry.name}{suffix}")
+            else:
+                lines.append(f"{indent}{entry.name}  {_human_bytes(entry.size)}")
+        self._add_room_entry(ui, "system", "\n".join(lines))
+
+    async def _publish_project_to_github(self, arg: str, ui: UIPort) -> None:
+        """Push a project's folder to a NEW PRIVATE GitHub repo. Confirm-gated.
+
+        Usage: /project github [<project-id>] [<repo-name>]
+
+        Never one click: creating a repo under someone's GitHub account is
+        not undoable from here, so a UI that can ask is made to ask, and a UI
+        that cannot ask is refused rather than guessed at. gh's own auth does
+        the talking — Botference never handles a token.
+        """
+        parts = arg.split()
+        project = None
+        repo_name = ""
+        if parts:
+            project = self.project_store.get(parts[0])
+            if project is not None:
+                repo_name = parts[1] if len(parts) > 1 else ""
+            else:
+                # A single unmatched word is a name for the open project,
+                # not a typo'd project id — /project github my-notes.
+                project = self._active_project()
+                repo_name = parts[0] if len(parts) == 1 else ""
+                if project is None or len(parts) > 1:
+                    self._add_room_entry(
+                        ui, "system",
+                        f"No project matched '{parts[0]}'. "
+                        "Run /projects to list available projects.",
+                    )
+                    return
+        else:
+            project = self._active_project()
+        if project is None:
+            self._add_room_entry(
+                ui, "system",
+                "No project is open. Usage: /project github <project-id>",
+            )
+            return
+
+        if project.github:
+            self._add_room_entry(
+                ui, "system",
+                f"{project.title} already has a repo: {project.github}\n"
+                "Pushing again will just update it.",
+            )
+
+        name = slugify_repo_name(repo_name or project.title, fallback=project.id)
+        ready = preflight(cwd=project.root)
+        if not ready.ok:
+            self._add_room_entry(ui, "system", ready.error)
+            return
+
+        request_choice = getattr(ui, "request_choice", None)
+        if request_choice is None:
+            self._add_room_entry(
+                ui, "system",
+                "Creating a GitHub repo needs a confirmation this interface "
+                "cannot ask for. Run /project github from the TUI or the "
+                "council web UI.",
+            )
+            return
+        confirm = await request_choice(
+            f"Push projects/{project.id}/ to a NEW PRIVATE GitHub repo "
+            f"called “{name}”?",
+            [f"Create {name} (private)", "Cancel"],
+        )
+        if confirm != 0:
+            self._add_room_entry(ui, "system", "Not published.")
+            return
+
+        self._add_room_entry(
+            ui, "system", f"Publishing {project.title} to GitHub as {name}…",
+        )
+        outcome = await asyncio.to_thread(
+            publish_project, project.root, name,
+        )
+        if not outcome.ok:
+            self._add_room_entry(ui, "system", outcome.error)
+            return
+        if outcome.url:
+            self.project_store.set_github(
+                project.id, outcome.url, title=project.title,
+            )
+        self._sync_project_ui(ui)
+        verb = (
+            "Created a private repo and pushed"
+            if outcome.action == "created"
+            else "Pushed to the repo it already had"
+        )
+        self._add_room_entry(
+            ui, "system",
+            f"{verb}: {outcome.url or '(no URL reported)'}",
         )
 
     _SUGGESTION_STOPWORDS = frozenset({

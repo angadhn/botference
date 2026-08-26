@@ -2125,6 +2125,29 @@
                  reason: d.reason };
       },
 
+      // ---- filing THIS page under a council project ----------------------
+      // Different from everything above it: this page is not a project
+      // artifact and never becomes one. It stays where it is, on its own
+      // lane, with no write scope — filing is a READ, and what it changes is
+      // what the bots are told before they answer.
+      onProjects: async () => {
+        const r = await api('GET', '/projects?url=' + encodeURIComponent(URL_NOW));
+        if (!r.ok) throw new Error(failure(r).error);
+        const d = r.data || {};
+        return { projects: d.projects || [], filed: d.filed || [] };
+      },
+      onFileProject: async (root, id, attach) => {
+        // the record has to exist before it can be filed — a page the reader
+        // has never commented on is a shell the companion has not been asked
+        // to make yet
+        await ensureRegistered();
+        const r = await api('POST', '/page-projects',
+          { url: URL_NOW, root, id, attach: attach !== false });
+        if (!r.ok) throw new Error(failure(r).error);
+        await loadPage();
+        return { filed: (r.data && r.data.filed) || [] };
+      },
+
       // ---- the library --------------------------------------------------
       // One conversation about the whole archive, on a reserved url no tab can
       // ever be showing (store.mjs owns the definition). It is an ordinary page

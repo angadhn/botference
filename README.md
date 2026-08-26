@@ -32,9 +32,12 @@ default planner UI:
 ![Ink UI — council panel with status line](docs/images/ink-ui.png)
 
 The Projects panel lists `Inbox` plus every folder under `projects/`. The
-controller sends the 8 most recent resumable chats for **every** project;
-the Ink panel expands the active one (the web sidebar lets you expand any of
-them). Pane controls in Ink:
+controller sends the recent resumable chats for **every** project — up to
+`BOTFERENCE_PANEL_SESSION_LIMIT` (default 100; `0` means no limit at all), a
+bound on the size of a snapshot that is broadcast after every turn rather than
+on how many chats you are allowed to see; the web sidebar scrolls a long list.
+The Ink panel expands the active project (the web sidebar lets you expand any
+of them). Pane controls in Ink:
 
 | Key | Action |
 |-----|--------|
@@ -371,17 +374,29 @@ The sidebar drives housekeeping without leaving the browser, and every
 affordance sends the same slash command the TUI takes — one code path:
 
 - Every project header is a chevron toggle — active, inactive or archived
-  — and lists that project's 8 most recent chats. Tapping a chat opens it
+  — and lists that project's recent chats, scrolling once there are many.
+  Tapping a chat opens it
   and makes its project the active context; there is no separate
   "activate this project" step. The project you land in auto-expands, and
   a project you collapse by hand stays collapsed.
 - **New** is a split control — `＋ New` with `chat` / `project` stacked
   beside it. `chat` runs `/new`; `project` opens an inline title field
   and sends `/project create <title>`.
-- Each chat row has a **⋯** menu with **Archive** (`/archive <id>` —
-  reversible) and **Delete…** (`/delete <id>`, whose confirmation is the
+- Each chat row has a **⋯** menu offering three different-sized ways out of
+  a list, safest first: **Remove from project** (`/project unfile <id>` —
+  the chat is untouched, only its filing goes, so it lands in Inbox),
+  **Archive** (`/archive <id>` — it leaves every listing, every byte
+  survives) and **Delete…** (`/delete <id>`, whose confirmation is the
   controller's own choice card in the transcript, so nothing is
   confirmed twice).
+- Each project block offers **▸ contents** — a read-only look at what is in
+  the project: its chats, and a shallow listing of `projects/<id>/` with
+  sizes. The folder is fetched when you open the panel, not carried in the
+  per-turn snapshot.
+- **⇪ publish to GitHub…** (`/project github <id>`) makes the project folder
+  a git repo and pushes it to a **new private** GitHub repo through your own
+  `gh` login. Confirm-gated in the transcript, never one click; the resulting
+  URL is remembered and shown under the contents panel.
 - Each project block offers **⊘ archive project**
   (`/project archive <id>`); archived projects collapse into an
   **Archived** section at the bottom of the sidebar, closed by default,
@@ -599,6 +614,24 @@ Deleting the page never deletes the project's chat.
 
 Discuss annotates nothing else on your disk: a local page that is
 neither a PDF nor a project artifact is left completely alone.
+
+**File a page in a project.** The other half of that: an ordinary page —
+the arXiv PDF of somebody's second draft, say — can be **filed** under one
+or more council projects, and then every turn on it carries what those
+projects already know: their chat titles, their `TASKS.md`, their files,
+and the actual words of their two most recent conversations. That is the
+point of it. The bots reading draft two arrive knowing what was said about
+draft one, instead of you retyping last round's objections into this
+round's margin.
+
+Filing is a **read, not a move**. The page stays where it is, keeps its own
+chat, and gains no permission to write anything anywhere; unfiling is one
+click and leaves no trace. The folder button in the drawer header lists your
+projects with a peek at each one's recent chats and files, and ticks the ones
+this page is already in. And on a page filed nowhere, the bots are told the
+project names and may **suggest** one — "this looks like it belongs in
+Adriana's paper" — which the drawer draws as a chip with a **File it**
+button on it. Bots never file anything; you press the button.
 
 **Message formatting.** Every message renders markdown — yours and the
 bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX

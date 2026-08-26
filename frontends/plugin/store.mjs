@@ -451,6 +451,10 @@ export function savePage(page) {
     // omitted rather than empty: most pages have none, and the index is read
     // on every list draw
     ...(tags.length ? { tags } : {}),
+    // the council projects this page is filed under, by id — omitted like
+    // tags are, because most pages are filed under none
+    ...(projectsOf(page).length
+      ? { projects: projectsOf(page).map(p => p.id) } : {}),
     updated_at: page.updated_at,
   };
   writeJson(INDEX_FILE, idx);
@@ -616,6 +620,79 @@ export function tagPage(url, tags) {
   const page = readPage(url);
   if (!page) return null;
   page.tags = normalizeTags(tags);
+  return savePage(page);
+}
+
+// --- filing a page under council projects ---------------------------------
+//
+// A page ATTACHED to a project is not the same thing as a project artifact
+// page. An artifact LIVES in `projects/<id>/`: the path is its identity, the
+// project is its lane, and the bots may write into that folder. A manuscript
+// PDF sitting in the reader's Downloads lives nowhere near the council, and
+// attaching it says one thing only: *when you talk about this page, you know
+// what was said in this project.* Context, not custody.
+//
+// That is why the shape is a LIST and not a field. The motivating case is a
+// second draft of a paper whose first draft was discussed elsewhere; the same
+// PDF may sensibly belong to "Adriana's paper" and to "Journal submissions"
+// at once, and there is no single project to hand a lane to even if we wanted
+// to (see SPEC, "a lane never moves off a live child"). So the lane, the
+// bridge and the write scope of an attached page are exactly what they were
+// before it was attached, and only the envelope changes.
+//
+// Store convention (see `mark`, `tags`, `page`): the field is written only
+// when it is not the default, so a page that was never filed costs nothing on
+// disk and no record needs migrating.
+export const ATTACH_MAX = 6;
+
+const cleanRoot = r => String(r == null ? '' : r).trim();
+const cleanProjectId = i => String(i == null ? '' : i).trim();
+
+/** Every project this page is filed under, oldest attachment first. */
+export function projectsOf(page) {
+  const raw = page && page.projects;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const root = cleanRoot(entry.root);
+    const id = cleanProjectId(entry.id);
+    if (!root || !id) continue;
+    const key = `${root} ${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ root, id, at: String(entry.at || '') });
+    if (out.length >= ATTACH_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * Attach or detach one project. Returns the saved page, or null if unknown.
+ *
+ * Idempotent in both directions: attaching twice keeps the first attachment
+ * (and its date), detaching something that was never attached is a no-op that
+ * still answers with the page, so the drawer can render one result either way.
+ */
+export function filePageInProject(url, { root, id, attach = true }) {
+  const page = readPage(url);
+  if (!page) return null;
+  const wantRoot = cleanRoot(root);
+  const wantId = cleanProjectId(id);
+  if (!wantRoot || !wantId) return page;
+  const current = projectsOf(page);
+  const without = current.filter(p => !(p.root === wantRoot && p.id === wantId));
+  let next;
+  if (!attach) {
+    next = without;
+  } else if (without.length === current.length) {
+    next = current.concat([{ root: wantRoot, id: wantId, at: nowIso() }]);
+  } else {
+    next = current;                       // already there; leave the date alone
+  }
+  if (next.length) page.projects = next.slice(0, ATTACH_MAX);
+  else delete page.projects;              // back to costing nothing on disk
   return savePage(page);
 }
 
@@ -843,7 +920,9 @@ export function setCheckbox(text, index, checked) {
 // answer, so it is written once here rather than as a third copy of the regex.
 export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
 
-export function appendMsg(page, threadId, { author, text, ts, kind, route, origin }) {
+export function appendMsg(page, threadId, {
+  author, text, ts, kind, route, origin, file_in,
+}) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
   const msg = { author, ts: ts || nowIso(), text: String(text || '') };
@@ -857,6 +936,17 @@ export function appendMsg(page, threadId, { author, text, ts, kind, route, origi
   // on a note addressed to nobody — the field only ever records an address.
   if (route) msg.route = String(route);
   if (kind) msg.kind = String(kind); // "tools" — a bot's tool-activity summary
+  // A bot's suggestion about where this PAGE belongs (server.mjs lifts it off
+  // the reply's last line). A field, not a new kind of message: a client that
+  // has never heard of it renders exactly the reply it always rendered. It is
+  // an OFFER and nothing more — the page is not filed until the reader clicks
+  // the button the drawer draws from it.
+  if (file_in && file_in.id && file_in.root) {
+    msg.file_in = {
+      root: String(file_in.root), id: String(file_in.id),
+      title: String(file_in.title || file_in.id), why: String(file_in.why || ''),
+    };
+  }
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written
   // into — the reader replying, or a bot's answer landing — is a live thread

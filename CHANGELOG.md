@@ -56,6 +56,80 @@
   control is now one named failure rather than the end of a run, and
   `?pdf=scan&selftest=1` has a small pose of its own instead of falling through
   to fifty assertions about a text layer it does not have.
+- **A page can be filed in a council project, and then it knows what that
+  project knows.** The case this is for: you are marking up the second draft
+  of somebody's manuscript, and everything anyone said about the *first* draft
+  is in a project — in chats Discuss could read and had never had any reason
+  to open, because that PDF is a different page, made of different bytes, on a
+  different day. The bots answering on draft two had no idea draft one had
+  ever been discussed, and you were left retyping last round's objections into
+  this round's margin.
+
+  There is a folder button in the drawer header now. It lists your projects
+  with a peek at each — their recent chat titles, the files in their folder —
+  so two similarly-named ones can be told apart without opening either, and
+  ticks the ones this page is already in. File the page, and every turn on it
+  carries a digest of what those projects hold: the chat titles, `TASKS.md`,
+  the file list, and **the actual words** of the two most recent
+  conversations. Titles alone would tell the bots that a conversation
+  happened; the point is what was decided in it.
+
+  **Filing is a read, not a move.** The page stays exactly where it is, keeps
+  its own chat and its own queue, and gains no permission to write anything
+  anywhere — that is the difference between a page *filed in* a project and a
+  page that *is* one of the project's own files. It can be filed in several at
+  once (the three most recent talk, and the page says how many did not fit),
+  and unfiling is one click that leaves nothing behind.
+
+- **…and the bots may say where a page belongs — but they may not put it
+  there.** On a page filed nowhere, the turn carries the names of your
+  projects, and a bot that thinks this page clearly belongs with one of them
+  ends its reply saying so. Discuss lifts that line out of the words and draws
+  it under the reply as a chip: *"This looks like it belongs in Adriana's
+  paper — the same manuscript, one draft on"*, with **File it** and **No**.
+  Nothing is filed until you press it. A bot that invents a project name is
+  ignored rather than given a button that files a page nowhere.
+
+- **A project's contents, in the sidebar.** Every project block in the council
+  web UI has a **contents** row now: its chats with dates, and a shallow
+  listing of `projects/<id>/` with sizes — top level plus one level inside
+  each folder, so a project holding a checked-out repo cannot turn the sidebar
+  into a file browser. Read-only, and fetched when you open it rather than
+  carried in the snapshot that goes out after every turn. `/project contents
+  [<id>]` prints the same two lists at a terminal.
+
+- **A project's folder can be pushed to a new private GitHub repo.** ⇪ publish
+  to GitHub… in the sidebar, or `/project github [<id>] [<name>]`. It checks
+  that `gh` is installed and logged in *before* asking anything, then names
+  the repo it is about to create and waits for a yes — creating a repository
+  under someone's account is not undoable from here, so it is never one click,
+  and an interface that cannot ask is refused rather than guessed at. The name
+  defaults to a slug of the project title. A folder that is already a git repo
+  is not re-initialised, and one that already has an `origin` is **pushed to**
+  rather than given a second repo it did not ask for. Your own `gh` login does
+  the talking; Botference never handles a token. The resulting URL is
+  remembered and shown under the contents panel.
+
+- **Three different-sized ways to get a chat out of a project's list, and they
+  are no longer one word.** The ⋯ menu on a chat row now offers **Remove from
+  project** first — the chat, its transcript and its title are untouched, only
+  the filing goes, so it lands back in Inbox and `/file` puts it where you
+  meant. Then **Archive** (it leaves every listing; every byte survives), then
+  **Delete…**. The commonest reason to want a chat out of a project is that it
+  was filed in the wrong project, and losing the chat over that is a loss with
+  no cause. Also `/project unfile [<session-id-prefix>]` at a terminal.
+
+- **The 8-chat limit on the project panel is gone.** Eight was a UI number
+  pretending to be a payload number: the sidebar looked tidy, and a project
+  with a dozen chats simply could not show you the older ones — a chat that
+  fell off the shortlist could not even be confirmed by `/resume` from the
+  web, which is why the active chat had to be bolted back on. The real
+  constraint is that the whole snapshot is recomputed after every turn and
+  broadcast to every open tab, so it wants a bound set by bytes rather than by
+  taste: it is 100 now (`BOTFERENCE_PANEL_SESSION_LIMIT`, and `0` means no
+  limit at all), which for any personal workspace is no limit at all. The
+  sidebar scrolls a long list instead of truncating it, and a project's own
+  buttons sit below the scroller where a long list cannot push them away.
 
 ## 2026-08-25
 

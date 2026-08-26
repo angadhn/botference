@@ -29,6 +29,9 @@ class ProjectInfo:
     priority: int | None = None
     next_action: str = ""
     session_ids: tuple[str, ...] = ()
+    #: Browsable URL of the private GitHub repo this folder was pushed to,
+    #: or "" when it has never been published. Written by set_github().
+    github: str = ""
 
     @property
     def session_dir(self) -> Path:
@@ -101,6 +104,68 @@ def read_project_tasks(project_root: Path) -> list[ProjectTask]:
     except (OSError, ValueError):
         return []
     return parse_tasks_md(text)
+
+
+# ── projects/<id>/ contents ───────────────────────────────────────────
+#
+# Read-only listing behind the project contents view. Same defensive
+# posture as TASKS.md: a project folder is a place a person (or a bot)
+# drops files, so it may contain a checked-out repo, a venv, or a
+# thousand PDFs — none of which may be allowed to stall a panel refresh.
+
+CONTENTS_MAX_DEPTH = 1        # top level, plus one level inside each folder
+CONTENTS_MAX_ENTRIES = 400
+
+
+@dataclass(frozen=True)
+class ProjectFile:
+    """One row of the project contents view."""
+
+    #: Path relative to projects/<id>/, posix-style.
+    path: str
+    name: str
+    is_dir: bool = False
+    size: int = 0
+    modified: float = 0.0
+    depth: int = 0
+    #: True when a directory's children were not walked (depth cap).
+    truncated: bool = False
+
+
+def _walk_shallow(root: Path, here: Path, *, depth: int) -> list[ProjectFile]:
+    out: list[ProjectFile] = []
+    try:
+        children = sorted(
+            here.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
+    except OSError:
+        return out
+    for child in children:
+        if child.name.startswith(".") or child.name in _SKIP_DIRS:
+            continue
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+        is_dir = child.is_dir()
+        rel = child.relative_to(root).as_posix()
+        deeper = depth < CONTENTS_MAX_DEPTH
+        out.append(ProjectFile(
+            path=rel,
+            name=child.name,
+            is_dir=is_dir,
+            size=0 if is_dir else int(stat.st_size),
+            modified=float(stat.st_mtime),
+            depth=depth,
+            truncated=is_dir and not deeper,
+        ))
+        if len(out) >= CONTENTS_MAX_ENTRIES:
+            return out[:CONTENTS_MAX_ENTRIES]
+        if is_dir and deeper:
+            out.extend(_walk_shallow(root, child, depth=depth + 1))
+            if len(out) >= CONTENTS_MAX_ENTRIES:
+                return out[:CONTENTS_MAX_ENTRIES]
+    return out
 
 
 def _title_from_slug(slug: str) -> str:
@@ -239,6 +304,7 @@ class ProjectStore:
                 priority=priority,
                 next_action=next_action,
                 session_ids=tuple(session_index.get(project_id, [])),
+                github=str(meta.get("github") or "").strip(),
             ))
 
         return sorted(projects, key=lambda p: (
@@ -254,6 +320,24 @@ class ProjectStore:
         if not project_id:
             return []
         return read_project_tasks(self.projects_root / project_id)
+
+    def contents(self, project_id: str) -> list[ProjectFile]:
+        """A shallow listing of projects/<id>/ — what is actually in there.
+
+        Deliberately SHALLOW (top level plus one level inside each folder,
+        `CONTENTS_MAX_DEPTH`): the point is "what is in this project", not a
+        file browser, and a project folder that happens to contain a cloned
+        repo or a node_modules must not be able to stall a panel refresh.
+        Entries are capped at `CONTENTS_MAX_ENTRIES` and sorted folders-first
+        then by name, which is how a person reads a directory.
+        """
+        project_id = str(project_id).strip()
+        if not project_id:
+            return []
+        root = self.projects_root / project_id
+        if not root.is_dir():
+            return []
+        return _walk_shallow(root, root, depth=0)
 
     def get(self, project_id_or_title: str) -> ProjectInfo | None:
         query = project_id_or_title.strip().lower()
@@ -330,8 +414,37 @@ class ProjectStore:
         Returns False when the project id is empty; a filesystem-discovered
         project with no portfolio row yet gets one written for it.
         """
-        project_id = project_id.strip()
         status = status.strip() or "active"
+        return self._patch_portfolio_entry(
+            project_id, {"status": status}, title=title, default_status=status,
+        )
+
+    def set_github(self, project_id: str, url: str, *, title: str = "") -> bool:
+        """Remember which private GitHub repo this project was pushed to.
+
+        Only the ``github`` field in projects/portfolio.json changes — the
+        folder and its git remote are the real state; this is the copy the
+        panels read so a published project can show its link without shelling
+        out to git on every refresh. Passing "" forgets the link.
+        """
+        return self._patch_portfolio_entry(
+            project_id, {"github": str(url or "").strip()}, title=title,
+        )
+
+    def _patch_portfolio_entry(
+        self,
+        project_id: str,
+        patch: dict[str, Any],
+        *,
+        title: str = "",
+        default_status: str = "active",
+    ) -> bool:
+        """Merge *patch* into one project's portfolio.json row, under lock.
+
+        Returns False when the project id is empty; a filesystem-discovered
+        project with no portfolio row yet gets one written for it.
+        """
+        project_id = project_id.strip()
         if not project_id:
             return False
         path = self.projects_root / "portfolio.json"
@@ -353,7 +466,7 @@ class ProjectStore:
                     and str(raw.get("id") or raw.get("slug") or "").strip() == project_id
                 ):
                     entry = dict(raw)
-                    entry["status"] = status
+                    entry.update(patch)
                     projects.append(entry)
                     found = True
                 else:
@@ -362,8 +475,9 @@ class ProjectStore:
                 projects.append({
                     "id": project_id,
                     "title": title or _title_from_slug(project_id),
-                    "status": status,
+                    "status": default_status,
                     "root": f"projects/{project_id}",
+                    **patch,
                 })
             data["version"] = data.get("version", 1)
             data["projects"] = projects

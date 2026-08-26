@@ -354,6 +354,34 @@ leaving every listing while staying on disk. /unarchive moves it back and
 never overwrites a live chat of the same id. Both open a picker with no
 argument; /archive list shows what is already archived.
 .TP
+.B /project unfile [<session-id-prefix>]
+Take a chat out of its project without deleting anything: the transcript,
+the title and the file all stay exactly as they were, and only the filing
+goes, so the chat lands back in Inbox and \fB/file\fR puts it wherever
+you meant. With no argument it acts on the chat you are in (identical to
+\fB/project clear\fR); with a session-id prefix it acts on a saved one,
+rewriting that chat's \fIproject_id\fR on disk as well as the index.
+The web council sidebar offers it as "Remove from project" in a chat
+row's actions menu, above Archive and Delete.
+.TP
+.B /project contents [<project-id>]
+What is actually in a project, read-only: its chats (title, date, id) and
+a shallow listing of \fIprojects/<id>/\fR with sizes \(em top level plus
+one level inside each folder, and a folder it did not walk into is marked
+with a trailing ellipsis. Defaults to the open project. The same two
+lists appear behind "contents" in the web council sidebar.
+.TP
+.B /project github [<project-id>] [<repo-name>]
+Make the project's folder a git repo and push it to a \fBnew private
+GitHub repo\fR, using your own \fBgh\fR login \(em Botference never
+handles a token. Confirm-gated: it checks that gh is installed and logged
+in, then names the repo it is about to create and asks; an interface that
+cannot ask is refused rather than guessed at. The name defaults to a slug
+of the project title. A folder that is already a repo is not
+re-initialised, and one that already has an \fIorigin\fR is pushed to
+rather than given a second repo. The resulting URL is remembered in
+\fIprojects/portfolio.json\fR and shown in the panels.
+.TP
 .B /project archive <id> , /project unarchive <id>
 Tuck a project away or bring it back. Only the \fIstatus\fR field in
 \fIprojects/portfolio.json\fR changes \(em the folder and its chats are

@@ -72,6 +72,9 @@ class ProjectPanelProject:
     session_count: int = 0
     sessions: tuple[ProjectPanelSession, ...] = ()
     tasks: tuple[ProjectPanelTask, ...] = ()
+    #: Browsable URL of the private GitHub repo this project was pushed to,
+    #: or "" when it has never been published (see /project github).
+    github: str = ""
 
 
 @dataclass(frozen=True)

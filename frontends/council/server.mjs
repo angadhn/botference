@@ -204,6 +204,45 @@ const bridges = new Map(); // bridge id -> Bridge
 let nextBridgeSeq = 1;
 let primaryId = null;      // the bridge sid-less connections attach to
 
+// projects/<id>/ as a list a person reads: top level, plus one level inside
+// each folder, and no further. The cap and the depth are the same defensive
+// bounds core/project_store.py's contents() uses, and for the same reason —
+// a project folder is somewhere files get dropped, so it may hold a checked-out
+// repo or a thousand PDFs, and neither may be allowed to stall a panel.
+const CONTENTS_MAX_DEPTH = 1;
+const CONTENTS_MAX_ENTRIES = 400;
+const CONTENTS_SKIP = new Set(['__pycache__', 'node_modules']);
+
+function projectContents(dir, { root = dir, depth = 0, out = [] } = {}) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  entries.sort((a, b) => (a.isDirectory() === b.isDirectory() ? 0 : a.isDirectory() ? -1 : 1)
+    || a.name.localeCompare(b.name));
+  for (const e of entries) {
+    if (e.name.startsWith('.') || CONTENTS_SKIP.has(e.name)) continue;
+    const abs = path.join(dir, e.name);
+    let st = null;
+    try { st = fs.statSync(abs); } catch { continue; }
+    const isDir = e.isDirectory();
+    const deeper = depth < CONTENTS_MAX_DEPTH;
+    out.push({
+      path: path.relative(root, abs).split(path.sep).join('/'),
+      name: e.name,
+      dir: isDir,
+      size: isDir ? 0 : st.size,
+      modified: st.mtimeMs,
+      depth,
+      truncated: isDir && !deeper,
+    });
+    if (out.length >= CONTENTS_MAX_ENTRIES) return out.slice(0, CONTENTS_MAX_ENTRIES);
+    if (isDir && deeper) {
+      projectContents(abs, { root, depth: depth + 1, out });
+      if (out.length >= CONTENTS_MAX_ENTRIES) return out.slice(0, CONTENTS_MAX_ENTRIES);
+    }
+  }
+  return out;
+}
+
 // The projects snapshot is WORKSPACE state, not per-chat state: every bridge
 // derives it from the same session files on disk, so the freshest snapshot
 // from ANY bridge supersedes what every tab shows. It is pinned globally
@@ -725,6 +764,30 @@ export function handler(req, res) {
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel) ||
         rel.split(path.sep).some(seg => seg.startsWith('.'))) { res.writeHead(403).end(); return; }
     serveFile(res, file);
+    return;
+  }
+  // What is actually IN a project: its folder, read-only, shallow.
+  //
+  // Deliberately NOT part of the projects snapshot. That snapshot is
+  // recomputed after every turn and broadcast to every attached tab, so
+  // everything in it is paid for by every turn of every chat; a directory
+  // listing nobody has asked to see is exactly the wrong thing to put there.
+  // This is a request, made when a reader opens the contents panel.
+  //
+  // Same refusals as /files/: a dot-segment or an escape is 403, so the
+  // listing can never name .botference, .git, or anything outside the
+  // project folder it was asked about.
+  if (req.method === 'GET' && url === '/project-contents') {
+    // `url` is the path alone (the query was split off at the top of handler)
+    const id = String(new URL(req.url, 'http://x').searchParams.get('id') || '');
+    if (!id || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || id.includes('..')) {
+      res.writeHead(400).end(); return;
+    }
+    const dir = path.resolve(ROOT, 'projects', id);
+    const rel = path.relative(path.join(ROOT, 'projects'), dir);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) { res.writeHead(403).end(); return; }
+    res.writeHead(200, JSON_HEAD)
+      .end(JSON.stringify({ ok: true, id, files: projectContents(dir) }));
     return;
   }
   if (req.method === 'GET' && url.startsWith('/uploads/')) {

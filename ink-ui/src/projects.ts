@@ -1,3 +1,15 @@
+// How many of the active project's chats the panel lists.
+//
+// This used to be 8, matching a cap the controller applied to the payload —
+// two numbers saying the same wrong thing, and between them a project with a
+// dozen chats simply could not show you the older ones. The controller's bound
+// is now on bytes rather than on taste, and this pane has never needed a bound
+// of its own: App.tsx windows the row list to the height of the pane and
+// scrolls it with the selection, and typing filters it. So this is only a
+// backstop against a pathological project, high enough never to be the thing
+// standing between the reader and a chat they can see the count of.
+export const PANEL_SESSIONS_MAX = 200;
+
 export interface ProjectPanelSessionData {
   session_id: string;
   title: string;
@@ -95,7 +107,7 @@ export function buildProjectRows(
       // (ISO-8601 strings compare lexicographically; undated sink last).
       const visibleSessions = [...project.sessions]
         .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""))
-        .slice(0, 8);
+        .slice(0, PANEL_SESSIONS_MAX);
       if (visibleSessions.length === 0) {
         rows.push({
           kind: "empty",
