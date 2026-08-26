@@ -938,6 +938,133 @@ export function parseStrikeSuggestion(text) {
   return found;
 }
 
+// ---- the OTHER marks on the same passage -----------------------------------
+//
+// The bug this closes, reported on a real manuscript: a sentence carrying three
+// marks — two struck, one still being discussed — and the bot answering the
+// third one proposes a replacement that swallows the words the other two
+// already cover. It is not disobedience. The turn it was given said what THIS
+// thread quotes and nothing whatever about the rest of the sentence, so the
+// model rewrote the sentence it could see, which is the only sentence it had.
+//
+// So the turn now carries the neighbours: the other threads whose quotes sit on
+// or beside this one, each with its KIND (a strikeout is a suggested deletion
+// already agreed; a highlight is a conversation) and its state (open or filed),
+// nearest first. The bot is not asked to do anything about them — quite the
+// opposite: knowing they exist is what lets it keep its hands off their text.
+//
+// NEAR, defined so that it can be computed here and tested without a browser:
+//
+//   · same anchor page (a PDF thread stores its page; 0 means unpaged), and
+//   · in the page's snapshot text, the two spans OVERLAP or lie within
+//     NEARBY_CHARS of each other — a couple of sentences, not a section.
+//
+// Where there is no snapshot, or a quote no longer matches the text under it (a
+// rewritten passage, an orphan), the fallback is the anchors themselves: a
+// neighbour counts when its quote falls inside this thread's prefix+quote+suffix
+// window or vice versa. That is a 32-character horizon rather than 240, so it
+// under-reports rather than inventing neighbours that are not there.
+export const NEARBY_MAX = 6;             // neighbours listed on one turn
+export const NEARBY_QUOTE_MAX = 160;     // chars of each neighbour's quote
+export const NEARBY_LIST_MAX = 1200;     // chars of the list itself
+export const NEARBY_CHARS = 240;         // how far away is still "beside it"
+
+const fold = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+
+// One page of a PDF snapshot as plain text (`snapshotPdfText` folds the whole
+// document; a paged thread only wants its own page, or a quote that also occurs
+// on page 4 would drag page 4's marks into a turn about page 7). Page 0 — an
+// article, an unpaged thread — is the whole snapshot.
+export function snapshotPageText(html, n) {
+  const s = String(html || '');
+  if (!(Number(n) > 0)) return snapshotPdfText(s);
+  const re = /<section\b[^>]*>([\s\S]*?)<\/section>/gi;
+  let m;
+  while ((m = re.exec(s))) {
+    const head = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(m[1]);
+    const num = head ? Number((/(\d+)/.exec(head[1]) || [])[1]) : NaN;
+    if (num === Number(n)) return snapshotPdfText(m[1]);
+  }
+  return '';
+}
+
+// Where a thread's quote sits in that text. Prefix first: a short quote ("the
+// model") occurs a dozen times on a page, and the 32 characters before it are
+// exactly what the anchor kept in order to tell those dozen apart.
+function locateQuote(text, t) {
+  const q = fold(t && t.quote);
+  if (!q || !text) return -1;
+  const pre = fold(t && t.prefix);
+  if (pre) {
+    const i = text.indexOf(pre + q);
+    if (i >= 0) return i + pre.length;
+    const j = text.indexOf(`${pre} ${q}`);
+    if (j >= 0) return j + pre.length + 1;
+  }
+  return text.indexOf(q);
+}
+
+const nearbyKindOf = t => {
+  const kind = markOf(t) === 'strike'
+    ? (t && t.from_thread ? 'strikeout, minted from a discussion' : 'strikeout — a suggested deletion')
+    : 'highlight';
+  return `${kind}; ${t && t.resolved ? 'filed' : 'open'}`;
+};
+
+// [{ thread, dist }], nearest first. Pure: `text` is the page text to measure
+// in, and '' is a perfectly good answer (the fallback takes over).
+export function nearbyMarks(page, thread, text = '') {
+  const mine = fold(thread && thread.quote);
+  if (!mine) return [];
+  const pageNo = Number(thread.page) || 0;
+  const at = locateQuote(text, thread);
+  const myEnd = at >= 0 ? at + mine.length : -1;
+  const myWindow = fold(`${thread.prefix || ''} ${thread.quote} ${thread.suffix || ''}`);
+  const out = [];
+  for (const t of (page && page.threads) || []) {
+    if (!t || t === thread || t.id === thread.id) continue;
+    if ((Number(t.page) || 0) !== pageNo) continue;
+    const q = fold(t.quote);
+    if (!q) continue;
+    let dist = null;
+    if (at >= 0) {
+      const i = locateQuote(text, t);
+      if (i >= 0) {
+        dist = i >= myEnd ? i - myEnd
+          : (i + q.length <= at ? at - (i + q.length) : 0);   // 0 = they overlap
+      }
+    }
+    if (dist === null) {
+      const win = fold(`${t.prefix || ''} ${t.quote} ${t.suffix || ''}`);
+      if (myWindow.includes(q) || win.includes(mine)) dist = 0; else continue;
+    }
+    if (dist > NEARBY_CHARS) continue;
+    out.push({ thread: t, dist });
+  }
+  return out.sort((a, b) => a.dist - b.dist);
+}
+
+// …and the block, as it rides the turn (server.mjs summon → chat.mjs envelope).
+// The list is capped and the closing sentence is appended AFTER the cap, so the
+// one line that matters most can never be the line that gets clipped off.
+export function nearbyMarksBlock(page, thread, text = '') {
+  const near = nearbyMarks(page, thread, text);
+  if (!near.length) return '';
+  const shown = near.slice(0, NEARBY_MAX);
+  const list = shown
+    .map(({ thread: t }) => `- ${nearbyKindOf(t)}: "${fold(t.quote).slice(0, NEARBY_QUOTE_MAX)}"`)
+    .join('\n')
+    .slice(0, NEARBY_LIST_MAX);
+  const more = near.length - shown.length;
+  return 'OTHER MARKS ON THIS SAME PASSAGE. Yours is not the only mark here — these '
+    + 'other comment threads sit on or beside the passage you were given, nearest first, '
+    + 'and the words each one quotes are already covered by its own mark:\n'
+    + `${list}\n`
+    + (more ? `(…and ${more} more nearby, not listed.)\n` : '')
+    + 'Leave their text alone: do not restate it, re-cover it, or fold it into a wording '
+    + 'of your own. A suggestion that swallowed one of them would apply the same edit twice.\n';
+}
+
 export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark, from_thread, from_msg }) {
   const thread = {
     id: newThreadId(),

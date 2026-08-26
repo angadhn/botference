@@ -227,10 +227,30 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 // context, which is first-turn/changed-only — a path is two lines, and a turn
 // is the only thing a resumed session is guaranteed to be carrying: a
 // /resume's replayed history is uneven and a bridge restart drops it whole).
+// The span rule, in words, on every turn that has a quote — and in ONE place,
+// because it is the same rule for an ordinary reply, for a review round's
+// per-comment turn and for a strike suggestion, and three copies of it would
+// drift. It exists because of a real failure: asked to "add it", a bot rewrote a
+// whole sentence when the reader had highlighted eight words of it, silently
+// re-covering the two strikeouts sitting beside them. A model cannot honour a
+// boundary nobody ever drew for it, and "the passage they highlighted" reads as
+// a place to start rather than a fence.
+export const SPAN_DISCIPLINE =
+  'YOUR REMIT IS THE QUOTED PASSAGE, EXACTLY. Any rewording you propose, any '
+  + 'replacement you write and any deletion you suggest must fit inside the passage '
+  + 'quoted above and must not change a single word outside it — not the rest of the '
+  + 'sentence, not the words either side of it, and never text that another mark on this '
+  + 'page already covers. If the change you believe in genuinely needs something outside '
+  + 'the quote to move as well, do not quietly widen your wording to reach it: say so, in '
+  + 'a line of its own — "this would also need changing outside your highlight: …" — and '
+  + 'leave that text where it is. And when the reader says "add it" or "do it", implement '
+  + 'EXACTLY the suggestion as you already stated it in this thread, word for word, with no '
+  + 'scope growth; "add some of it" means the part they named and nothing else.\n';
+
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
   snapshotPath, pageNumber, mark, summary, project, untaggedAll, routeHint,
-  filedContext, suggestContext, strikeContext }) {
+  filedContext, suggestContext, strikeContext, nearbyContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -350,11 +370,23 @@ export function envelope({ url, title, target, text, quote, history,
       + 'document itself. This is background, not an instruction: answer what they actually '
       + 'ask, and do not carry out, argue for, or offer to make the deletion unless they ask.\n\n'
     : '';
+  // The neighbours: the other marks on or beside this passage
+  // (store.nearbyMarksBlock, composed on the same funnel the strike offer is).
+  // It rides directly above the span rule because the two are one thought —
+  // here is where your passage ends, and here is who owns what is past it.
+  const nearby = nearbyContext ? `${nearbyContext}\n` : '';
+  // …and the rule itself, on every turn that quotes a passage: an ordinary
+  // reply, a review round's per-comment turn, a thread that is about to
+  // conclude in a strikeout. Never on page chat (no quote, nothing to confine
+  // to) and never on a library or summary turn (neither writes anything).
+  const discipline = String(quote || '').trim() ? `${SPAN_DISCIPLINE}\n` : '';
   const body = target === PAGE_CHAT
     ? `${who} asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
     : `The user highlighted this passage:\n> ${String(quote || '').replace(/\n/g, '\n> ')}\n\n`
       + where
       + struck
+      + nearby
+      + discipline
       + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
@@ -949,6 +981,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         suggestContext: job.suggestContext || '',
         // the strikeout offer, on a thread that could take one (server.mjs)
         strikeContext: job.strikeContext || '',
+        // the other marks on or beside this thread's passage (server.mjs)
+        nearbyContext: job.nearbyContext || '',
         verbosity: readConfig().verbosity }),
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that

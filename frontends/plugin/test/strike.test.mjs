@@ -178,6 +178,135 @@ await test('…and a REASONLESS suggestion is no suggestion at all', () => {
   assert.equal(store.parseStrikeSuggestion('nothing here'), null);
 });
 
+console.log('\nstrike — the OTHER marks in the same sentence');
+
+// One sentence, three marks: two struck, one still being discussed. This is the
+// shape that produced the bug — the bot answering the third one rewrote the
+// whole sentence, swallowing the words the other two already cover, because the
+// whole sentence was the only thing its turn ever showed it.
+const SENTENCE =
+  'The long-term simulations of the tumbling debris were run for one hundred orbits, '
+  + 'and in every case, as we shall see below, the attitude motion decayed.';
+const FILLER = 'Section four repeats this argument at greater length and adds nothing to it, '
+  + 'which is why the referee asked for it to be cut down to a paragraph or removed. '
+  + 'The appendix carries the derivation in full and is the only place it appears. ';
+const FAR = 'A separate claim, far away in the same page, about the thermal model.';
+const P3 = `${SENTENCE} ${FILLER}${FAR}`;
+const SNAPSHOT = `<section><h2>Page 3</h2><p>${P3}</p></section>`
+  + '<section><h2>Page 4</h2><p>Page four says nothing about the tumbling debris at all.</p></section>';
+
+const mkThread = (id, quote, extra = {}) => ({
+  id, quote, prefix: '', suffix: '', orphaned: false, page: 3,
+  msgs: [{ author: 'angadh', ts: '2026-08-26T09:00:00.000Z', text: 'hm' }],
+  ...extra,
+});
+const A = mkThread('t-a', 'of the tumbling debris', { mark: 'strike' });
+const B = mkThread('t-b', 'as we shall see below,', { mark: 'strike', from_thread: 't-x' });
+const C = mkThread('t-c', 'the attitude motion decayed');
+const FART = mkThread('t-far', 'about the thermal model');
+const OTHER_PAGE = mkThread('t-p4', 'the tumbling debris', { page: 4, mark: 'strike' });
+const FIXTURE = { url: 'x', threads: [A, B, C, FART, OTHER_PAGE] };
+const text3 = () => store.snapshotPageText(SNAPSHOT, 3);
+
+await test('the snapshot is measured a PAGE at a time', () => {
+  const t = store.snapshotPageText(SNAPSHOT, 3);
+  assert.match(t, /^The long-term simulations/);
+  assert.ok(!/Page four says/.test(t), 'page 4 is a different page and a different sentence');
+  assert.match(store.snapshotPageText(SNAPSHOT, 4), /^Page four says/);
+  assert.equal(store.snapshotPageText(SNAPSHOT, 9), '', 'a page with no section measures nothing');
+});
+
+await test('an open thread sees the two strikeouts standing beside it', () => {
+  const near = store.nearbyMarks(FIXTURE, C, text3());
+  assert.deepEqual(near.map(n => n.thread.id), ['t-b', 't-a'], 'nearest first');
+  const block = store.nearbyMarksBlock(FIXTURE, C, text3());
+  assert.match(block, /OTHER MARKS ON THIS SAME PASSAGE/);
+  assert.match(block, /strikeout — a suggested deletion; open: "of the tumbling debris"/);
+  assert.match(block, /strikeout, minted from a discussion; open: "as we shall see below,"/);
+  assert.ok(!/thermal model/.test(block), 'a mark further down the page is not "beside" this one');
+  assert.ok(!/^- highlight/m.test(block), 'and the only highlight here is this thread itself');
+});
+
+await test('…and never a mark on another page, however alike the words', () => {
+  const near = store.nearbyMarks(FIXTURE, C, text3());
+  assert.ok(!near.some(n => n.thread.id === 't-p4'),
+    'page 4 quotes the same phrase and has nothing to do with this sentence');
+});
+
+await test('a filed neighbour says so, and an overlap measures zero', () => {
+  const inner = mkThread('t-inner', 'tumbling debris', { resolved: true });
+  const page = { url: 'x', threads: [A, inner] };
+  const near = store.nearbyMarks(page, A, text3());
+  assert.equal(near[0].dist, 0, 'it sits inside A’s own span');
+  assert.match(store.nearbyMarksBlock(page, A, text3()), /highlight; filed: "tumbling debris"/);
+});
+
+await test('with no snapshot at all it falls back to the anchors, and under-reports', () => {
+  const a = mkThread('t-1', 'the tumbling debris', { prefix: 'simulations of ', suffix: ' were run' });
+  const b = mkThread('t-2', 'were run', { mark: 'strike' });
+  const far = mkThread('t-3', 'the thermal model');
+  const page = { url: 'x', threads: [a, b, far] };
+  const near = store.nearbyMarks(page, a, '');
+  assert.deepEqual(near.map(n => n.thread.id), ['t-2'],
+    'the 32-character window catches the neighbour it touches and claims no more');
+});
+
+await test('the block is capped, nearest first, and says what it left out', () => {
+  const long = 'x'.repeat(400);
+  const many = Array.from({ length: 9 }, (_, i) => mkThread(`t-${i}`, `${long} ${i}`));
+  const me = mkThread('t-me', SENTENCE);
+  // no snapshot → the fallback, and every one of them overlaps `me`'s window
+  const page = { url: 'x', threads: [me, ...many.map(t => ({ ...t, prefix: '', suffix: SENTENCE }))] };
+  const block = store.nearbyMarksBlock(page, me, '');
+  assert.equal((block.match(/^- /gm) || []).length, store.NEARBY_MAX, 'six neighbours, no more');
+  assert.match(block, /\(…and 3 more nearby, not listed\.\)/);
+  for (const line of block.match(/^- .*$/gm) || []) {
+    assert.ok(line.length <= store.NEARBY_QUOTE_MAX + 80, 'each quote is clipped');
+  }
+  assert.match(block, /apply the same edit twice\.\n$/,
+    'the closing instruction is appended after the cap, so it can never be the part clipped off');
+});
+
+await test('a passage standing alone carries no block at all', () => {
+  assert.equal(store.nearbyMarksBlock({ url: 'x', threads: [C] }, C, text3()), '');
+  assert.equal(store.nearbyMarksBlock(FIXTURE, mkThread('t-none', ''), text3()), '',
+    'and neither does a thread with no quote to be beside');
+});
+
+console.log('\nstrike — the span rule');
+
+{
+  const chat = await import(path.join(PLUGIN, 'chat.mjs'));
+  const base = {
+    url: 'https://example.org/p.pdf', title: 'P', text: 'add it', history: [],
+  };
+  await test('every turn that quotes a passage carries it', () => {
+    const env = chat.envelope({ ...base, target: 't-c', quote: C.quote });
+    assert.match(env, /YOUR REMIT IS THE QUOTED PASSAGE, EXACTLY/);
+    assert.match(env, /must not change a single word outside it/);
+    assert.match(env, /this would also need changing outside your highlight/);
+    assert.match(env, /"add some of it" means the part they named/);
+  });
+  await test('…the neighbours ride directly above it', () => {
+    const env = chat.envelope({
+      ...base, target: 't-c', quote: C.quote,
+      nearbyContext: store.nearbyMarksBlock(FIXTURE, C, text3()),
+    });
+    assert.ok(env.indexOf('OTHER MARKS ON THIS SAME PASSAGE') < env.indexOf('YOUR REMIT IS'),
+      'here is where your passage ends, and here is who owns what is past it');
+  });
+  await test('…and page chat and the library carry neither', () => {
+    const chatEnv = chat.envelope({ ...base, target: store.PAGE_CHAT, quote: '' });
+    assert.ok(!/YOUR REMIT IS/.test(chatEnv), 'no quote, nothing to confine to');
+    const lib = chat.envelope({ ...base, target: store.PAGE_CHAT, library: '/tmp/x' });
+    assert.ok(!/YOUR REMIT IS/.test(lib));
+  });
+  await test('…nor does filing a resolved thread, which writes nothing', () => {
+    const env = chat.envelope({ ...base, target: 't-c', quote: C.quote, summary: true });
+    assert.ok(!/YOUR REMIT IS/.test(env), 'a summary is a note for the archive, not an edit');
+  });
+}
+
 // ---------------------------------------------------------------------------
 {
   const root = tmp('server');
@@ -442,6 +571,52 @@ await test('…and a REASONLESS suggestion is no suggestion at all', () => {
     const t = await threadOn(WEB, 'a third web sentence', 'hm');
     const r = await POST(base, '/strike-from', { url: WEB, thread_id: t.id });
     assert.equal(r.status, 409);
+  });
+
+  console.log('\nstrike — the neighbours, on a real turn');
+
+  await test('the third mark in a sentence is told about the other two', async () => {
+    const url = 'https://example.org/three-marks.pdf';
+    await POST(base, '/page', { url, title: 'Three marks', kind: 'pdf' });
+    const snap = await POST(base, '/snapshot', { url, html: SNAPSHOT });
+    assert.equal(snap.json.stored, true, 'the page text is what "near" is measured in');
+    const a = await POST(base, '/thread', { url, quote: A.quote, page: 3, msg: { text: 'cut' } });
+    await POST(base, '/mark', { url, thread_id: a.json.thread.id, mark: 'strike' });
+    const b = await POST(base, '/thread', { url, quote: B.quote, page: 3, msg: { text: 'cut' } });
+    await POST(base, '/mark', { url, thread_id: b.json.thread.id, mark: 'strike' });
+    await POST(base, '/thread', { url, quote: C.quote, page: 3,
+      msg: { text: '@claude tighten this — add it' } });
+    const env = await waitFor(() => inputs(log).find(x => /tighten this — add it/.test(x)),
+      'the envelope');
+    assert.match(env, /OTHER MARKS ON THIS SAME PASSAGE/);
+    assert.match(env, /of the tumbling debris/);
+    assert.match(env, /as we shall see below/);
+    assert.match(env, /YOUR REMIT IS THE QUOTED PASSAGE, EXACTLY/);
+  });
+
+  await test('…a passage nobody else has marked hears nothing about neighbours', async () => {
+    const t = await threadOn(PDF, 'a lonely unmarked clause', '@claude and this one?');
+    const env = await waitFor(() => inputs(log).find(x => /and this one\?/.test(x)), 'the envelope');
+    assert.ok(!/OTHER MARKS ON THIS SAME PASSAGE/.test(env), 'there are none');
+    assert.match(env, /YOUR REMIT IS THE QUOTED PASSAGE, EXACTLY/, 'the span rule rides anyway');
+    return t;
+  });
+
+  await test('…and an ARTICLE turn is the turn it always was, plus the span rule', async () => {
+    await POST(base, '/thread', { url: WEB, quote: 'a web sentence, marked',
+      msg: { text: '@claude what about here?' } });
+    const env = await waitFor(() => inputs(log).find(x => /what about here\?/.test(x)), 'the envelope');
+    assert.ok(!/OTHER MARKS ON THIS SAME PASSAGE/.test(env),
+      'a web page carries no strikeouts, so a neighbour is only ever another conversation');
+    assert.match(env, /YOUR REMIT IS THE QUOTED PASSAGE, EXACTLY/);
+  });
+
+  await test('…and PAGE CHAT, which quotes nothing, carries neither', async () => {
+    await POST(base, '/reply', { url: PDF, text: '@claude what is this paper about?' });
+    const env = await waitFor(() => inputs(log).find(x => /what is this paper about\?/.test(x)),
+      'the envelope');
+    assert.ok(!/OTHER MARKS ON THIS SAME PASSAGE/.test(env));
+    assert.ok(!/YOUR REMIT IS/.test(env));
   });
 
   console.log('\nstrike — what a converted thread looks like everywhere else');

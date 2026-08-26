@@ -5316,6 +5316,130 @@ claude and then codex had codex answering in claude's words.
 - **A struck thread cannot be filed and then re-struck.** Reopen it first; the
   refusal says so.
 
+## Amendment (2026-08-26, shipped): a mark knows what else is marked beside it
+
+Reported on a real manuscript, and it is the failure the strikeout feature made
+possible. One sentence, three marks: two passages already struck, a third still
+being discussed. The reader asks the bot in the third thread for a rewording,
+likes it, says "add it" — and what comes back rewrites the WHOLE SENTENCE,
+swallowing the words the other two marks already cover, and does not match the
+suggestion it had just made.
+
+It reads as disobedience and it is not. **The turn showed it a passage and never
+drew it a fence.** `chat.envelope` on a thread carried the thread's own quote,
+its page number, the `struck` line if this thread was struck, the strike offer,
+the conversation — and nothing whatever about any other mark on the page. The
+neighbouring strikeouts do not exist in that turn. A model asked to improve a
+sentence it has been handed will improve the sentence it has been handed; the
+words it must NOT touch are invisible to it, and "the user highlighted this
+passage" reads as where to start, not where to stop.
+
+So two things ride every thread turn now, and they are one thought.
+
+### 1. The neighbours (`store.nearbyMarksBlock`)
+
+A compact block listing the OTHER threads sitting on or beside this thread's
+quote — each with its kind, its state and its exact wording, nearest first:
+
+```
+OTHER MARKS ON THIS SAME PASSAGE. Yours is not the only mark here — these other
+comment threads sit on or beside the passage you were given, nearest first, and
+the words each one quotes are already covered by its own mark:
+- strikeout — a suggested deletion; open: "of the tumbling debris"
+- strikeout, minted from a discussion; open: "as we shall see below,"
+(…and 2 more nearby, not listed.)
+Leave their text alone: do not restate it, re-cover it, or fold it into a
+wording of your own. A suggestion that swallowed one of them would apply the
+same edit twice.
+```
+
+**NEAR, defined so it can be computed on the companion and tested without a
+browser.** A neighbour qualifies when it is on the **same anchor page** (a PDF
+thread stores its page; 0 is unpaged) and, in that page's snapshot text, its
+span **overlaps this thread's or lies within `NEARBY_CHARS` of it** — a couple
+of sentences, not a section. The snapshot is the same file the envelope already
+names, read once per turn and measured **a page at a time** (`snapshotPageText`),
+or a quote that also occurs on page 4 would drag page 4's marks into a turn
+about page 7. Quotes are located prefix-first: a short quote occurs a dozen times
+on a page and the 32 characters the anchor kept are exactly what tells those
+dozen apart.
+
+Where there is no snapshot, or a quote no longer matches the text under it (a
+rewritten passage, an orphan), the fallback is the anchors themselves — a
+neighbour counts when its quote falls inside this thread's `prefix+quote+suffix`
+window or vice versa. That is a 32-character horizon rather than 240: it
+**under-reports rather than inventing** neighbours that are not there.
+
+| cap | value | why |
+|---|---|---|
+| `NEARBY_MAX` | 6 | a list nobody reads is a list nobody obeys; what did not fit is counted out loud |
+| `NEARBY_QUOTE_MAX` | 160 | enough to recognise a passage, never enough to quote a paragraph twice |
+| `NEARBY_LIST_MAX` | 1200 | the list is clipped; the closing instruction is appended AFTER the cap, so the one line that matters most can never be the line that gets cut |
+| `NEARBY_CHARS` | 240 | "beside it" is a sentence or two either way |
+
+**PDFs only**, like the strike offer and for the same reason: an `/StrikeOut` is
+what makes a neighbour a decision rather than a conversation, and only a PDF
+carries one. An article's turn is byte-for-byte the turn it was, plus §2.
+
+### 2. The span rule (`chat.SPAN_DISCIPLINE`)
+
+Phrased **once**, in `chat.envelope`, and therefore on every turn that quotes a
+passage: an ordinary reply, a review round's per-comment turn (`/send-review`
+funnels through the same `summon`), a thread about to conclude in a strikeout.
+Never on page chat (no quote, nothing to confine to), never on a library turn,
+never on a filing summary (neither writes anything).
+
+> YOUR REMIT IS THE QUOTED PASSAGE, EXACTLY. Any rewording you propose, any
+> replacement you write and any deletion you suggest must fit inside the passage
+> quoted above and must not change a single word outside it — not the rest of the
+> sentence, not the words either side of it, and never text that another mark on
+> this page already covers. If the change you believe in genuinely needs
+> something outside the quote to move as well, do not quietly widen your wording
+> to reach it: say so, in a line of its own — "this would also need changing
+> outside your highlight: …" — and leave that text where it is. And when the
+> reader says "add it" or "do it", implement EXACTLY the suggestion as you
+> already stated it in this thread, word for word, with no scope growth; "add
+> some of it" means the part they named and nothing else.
+
+The escape hatch is the half that keeps this honest. A rule with no way out is a
+rule a model breaks quietly; **saying so out loud is a better answer than a
+silent widening**, and it lands in the thread where the reader can act on it.
+
+The neighbours ride directly above it, in that order: here is where your passage
+ends, and here is who owns what is past it.
+
+### Files
+
+```
+store.mjs                       snapshotPageText, nearbyMarks, nearbyMarksBlock
+                                and the four NEARBY_* caps
+chat.mjs                        SPAN_DISCIPLINE; envelope takes `nearbyContext`
+                                and emits both, between `struck` and the history
+server.mjs                      `nearbyContext` composed in summon, PDFs only,
+                                measured in this thread's page of the snapshot
+```
+
+**Testing.** `test/strike.test.mjs` (30 → 43): the page-at-a-time snapshot read;
+the reported fixture (one sentence, two strikeouts and an open thread) seeing
+both neighbours nearest-first with the right kinds; a mark further down the page
+excluded; the same phrase on another page excluded; a filed neighbour saying so
+and an overlap measuring zero; the no-snapshot fallback under-reporting; the caps
+with the closing instruction surviving the clip; the span rule present on a
+quote-bearing turn and absent from page chat, the library and a summary; and,
+against the live server, the whole thing arriving in a real envelope, absent on a
+lonely passage, absent on an article, absent on page chat.
+
+#### Known limits (deliberate)
+
+- **Articles get the rule and not the neighbours.** Nothing on a web page can be
+  struck, so a neighbour there is only ever another conversation.
+- **No snapshot, no distance.** The anchor fallback sees 32 characters either
+  side, so two marks in one long sentence that do not touch will not know about
+  each other until the page has been snapshotted.
+- **It is context, never a constraint.** The companion cannot check that a
+  suggestion stayed inside its span — it has no DOM and no document. This tells
+  the bot where the fence is; it does not build one.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

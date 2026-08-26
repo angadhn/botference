@@ -953,6 +953,23 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // an argument that is over). A model that is never shown this block has no
   // way of learning the convention, which is the point.
   const strikeContext = strikeable(page, thread) ? store.strikeOfferBlock() : '';
+  // ── what ELSE is marked up on this passage? ───────────────────────────
+  // The other threads whose quotes sit on or beside this one — the two
+  // strikeouts already in the sentence this comment is about. Composed here for
+  // the third time on the same funnel and for the same reason: the server holds
+  // the page record AND the snapshot, and neither the thread nor the bot can
+  // see past its own quote. Without it a bot answering the third mark in a
+  // sentence rewrites the whole sentence, because the whole sentence is the
+  // only thing it was ever shown (store.nearbyMarksBlock).
+  //
+  // PDFs only, like the strike offer: an /StrikeOut is what makes a neighbour a
+  // decision rather than a conversation, and only a PDF carries one. The
+  // snapshot is read per turn (one file, once) and only the thread's own page
+  // of it is measured in.
+  const nearbyContext = (thread && store.kindOf(page) === 'pdf')
+    ? store.nearbyMarksBlock(page, thread,
+      store.snapshotPageText(store.readSnapshot(store.pageKey(page.url)), thread.page))
+    : '';
   const { position, wait } = c.submit({
     url: page.url, target, text, title: page.title,
     // no tag on an artifact's page chat: the envelope gets the @all prefix the
@@ -974,6 +991,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     ...(filedContext ? { filedContext } : {}),
     ...(suggestContext ? { suggestContext } : {}),
     ...(strikeContext ? { strikeContext } : {}),
+    ...(nearbyContext ? { nearbyContext } : {}),
     ...extras,
   });
   // `wait` is what the drawer says while it waits: bridge_starting (the agents

@@ -2,6 +2,29 @@
 
 ## 2026-08-26
 
+- **A bot suggesting a change now knows what else is marked in the sentence —
+  and that its highlight is a fence, not a starting point.** On a paper with
+  three marks in one sentence (two already struck, one still under discussion),
+  asking the bot in the third thread for a rewording and then saying "add it"
+  came back rewriting the whole sentence: text the other two marks already
+  covered, swallowed and rewritten a second time, and not even the change it had
+  just proposed.
+
+  It was not being wilful. Its turn showed it one quoted passage and nothing at
+  all about any other mark on the page, so the only sentence it could see was
+  the whole sentence. A comment turn on a PDF now also carries the other marks
+  sitting on or beside its passage — what each one is (a strikeout is a decision
+  already taken; a highlight is a conversation), whether it is open or filed, and
+  its exact wording, nearest first.
+
+  Alongside it, on **every** comment turn: your highlight is the whole of the
+  remit. A suggested rewording or deletion must fit inside the passage you
+  highlighted and change nothing outside it; where a change genuinely needs
+  something outside it to move as well, the bot has to say so in a line of its
+  own instead of quietly widening its wording. And "add it" means exactly what
+  it already proposed in that thread, "add some of it" the part you named —
+  neither is licence to grow the change.
+
 - **A discussion can now END in a strikethrough.** You highlight a passage,
   argue about it with the bots, and between you decide the sentence should come
   out — and until now the thread stayed a yellow highlight, because which of the
