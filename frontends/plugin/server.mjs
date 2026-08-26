@@ -711,6 +711,26 @@ function onChatEvent(ev) {
   if (ev.type === 'chat' && ev.kind === 'reply') {
     const page = store.readPage(ev.url);
     if (page) {
+      // Did the bot say where this page belongs? Only on a page filed
+      // nowhere, only against a project the roster actually offered, and only
+      // ever as a BUTTON: the suggestion is lifted off the reply's last line
+      // into `msg.file_in`, the line itself is taken out of the words (it is
+      // machinery, not prose), and the reader clicks or does not. Bots never
+      // file anything — the same rule the confirmation card holds for council
+      // roots, for the same reason.
+      if (ev.msg && !store.projectsOf(page).length) {
+        const hit = workspace.parseSuggestion(
+          ev.msg.text, workspace.projectRoster({ peek: false }),
+        );
+        if (hit) {
+          ev.msg = {
+            ...ev.msg,
+            text: String(ev.msg.text).split(/\r?\n/)
+              .filter(l => l !== hit.line).join('\n').trimEnd(),
+            file_in: { root: hit.root, id: hit.id, title: hit.title, why: hit.why },
+          };
+        }
+      }
       // appendMsg also REOPENS a resolved thread: a bot answering into it is
       // new activity, and new activity is the end of resolved
       store.appendMsg(page, ev.target, ev.msg);
@@ -864,6 +884,24 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     return { queued: false, reason: UNCONFIRMED_REASON };
   }
   const thread = target === store.PAGE_CHAT ? null : store.findThread(page, target);
+  // ── the council projects this page is filed under ────────────────────
+  // Two mutually exclusive blocks, computed once per turn here because this
+  // is the one funnel every bot turn on a page goes through.
+  //
+  // FILED: a digest of what those projects already know (chat titles, the
+  // tail of the two most recent conversations, TASKS.md, the file list),
+  // capped at workspace.DIGEST_TOTAL_CHARS. This is why the feature exists:
+  // the second draft of a manuscript arrives knowing what was said about the
+  // first. It does NOT move the page's lane or open a write scope — see
+  // store.filePageInProject.
+  //
+  // UNFILED: the roster, so a bot can SUGGEST where the page belongs. Never
+  // on a project artifact page (it is already in a project, by definition of
+  // where it lives) and never on a library turn.
+  const attached = store.projectsOf(page);
+  const filedContext = attached.length ? workspace.attachedContext(attached) : '';
+  const suggestContext = (!attached.length && !artifactOf(page.url))
+    ? workspace.suggestBlock(workspace.projectRoster({ peek: false })) : '';
   const { position, wait } = c.submit({
     url: page.url, target, text, title: page.title,
     // no tag on an artifact's page chat: the envelope gets the @all prefix the
@@ -877,6 +915,8 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     // thread stores it — so the envelope can say where the reader is standing
     pageNumber: (thread && thread.page) || 0,
     history: priorMsgs(page, target),
+    ...(filedContext ? { filedContext } : {}),
+    ...(suggestContext ? { suggestContext } : {}),
     ...extras,
   });
   // `wait` is what the drawer says while it waits: bridge_starting (the agents
@@ -1268,6 +1308,52 @@ export function handler(req, res) {
               workspace.projectTasks(art.root, art.project_id))
           : {}),
       },
+    });
+  }
+  // --- filing an ordinary page under council projects -------------------
+  //
+  // The picker's roster, and the act of filing. Owner-only for the same
+  // reason /project-page is: the answer names this reader's projects and the
+  // absolute paths of their council, which is nobody's business over a
+  // tunnel.
+  //
+  // GET /projects?url= — every project in every CONFIRMED council root, with
+  // a peek (recent chat titles, top-level file names) so the reader can tell
+  // two similarly-named projects apart without opening either. `filed` names
+  // the ones this page is already attached to, so the picker draws ticks
+  // rather than having to ask a second question.
+  if (req.method === 'GET' && url === '/projects') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const page = u ? store.readPage(u) : null;
+    return ok(res, {
+      projects: workspace.projectRoster(),
+      filed: page ? store.projectsOf(page) : [],
+    });
+  }
+  // POST /page-projects {url, root, id, attach} — attach or detach one
+  // project. Attaching is a READ: it changes what the envelope carries and
+  // nothing else. The page keeps its lane, its bridge and its (absent) write
+  // scope, so nothing here can strand a session on a child that still holds
+  // it (SPEC, "a lane never moves off a live child").
+  if (req.method === 'POST' && url === '/page-projects') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const target = String(data.url || '');
+      const page = target ? store.readPage(target) : null;
+      if (!page) return fail(res, 404, 'no such page');
+      const root = workspace.realish(String(data.root || ''));
+      const id = String(data.id || '');
+      const attach = data.attach !== false;
+      // A root the reader has not vouched for is not somewhere anything gets
+      // filed — the same rule that decides whether an artifact gets a bridge.
+      if (attach && (workspace.rootState(root) !== 'yes'
+        || !workspace.listProjects(root).some(p => p.id === id))) {
+        return fail(res, 400, 'no such project in a confirmed council');
+      }
+      const saved = store.filePageInProject(page.url, { root, id, attach });
+      broadcast({ type: 'page', url: saved.url });
+      return ok(res, { url: saved.url, filed: store.projectsOf(saved) });
     });
   }
   // The one-time answer to "treat <root> as your council?". Kept in the

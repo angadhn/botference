@@ -373,6 +373,9 @@ class InkBridge:
                         ]}
                         if project.tasks else {}
                     ),
+                    # Same rule as tasks: only the projects that have been
+                    # published to GitHub carry the key.
+                    **({"github": project.github} if project.github else {}),
                 }
                 for project in state.projects
             ],

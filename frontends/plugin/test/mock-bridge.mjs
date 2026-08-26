@@ -222,9 +222,15 @@ function input(text) {
       // (bridge-system-prompt rule 5), which is what lets the page re-anchor
       // the thread onto the rewrite instead of leaving it orphaned.
       const reads = /\[mock:reads:([^\]]+)\]/.exec(text);
-      const body = reads
-        ? `Done — this passage now reads: "${reads[1]}"`
-        : `MOCK ${model} reply.`;
+      // [mock:says:…] — the whole reply, verbatim, with `\\n` for newlines.
+      // For the tests that care what a bot's WORDS are rather than that it
+      // answered: a filing suggestion has to sit on a line of its own.
+      const says = /\[mock:says:([^\]]+)\]/.exec(text);
+      const body = says
+        ? String(says[1]).split('\\n').join('\n')
+        : reads
+          ? `Done — this passage now reads: "${reads[1]}"`
+          : `MOCK ${model} reply.`;
       emit({ type: 'stream', kind: 'start', ...head });
       emit({ type: 'stream', kind: 'text_delta', ...head, text: body.slice(0, 5) });
       emit({ type: 'stream', kind: 'text_delta', ...head, text: body.slice(5) });

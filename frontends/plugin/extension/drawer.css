@@ -331,6 +331,49 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .xname { display: block; font: 600 13px/1.35 var(--sans) }
 .xwhy { display: block; font: 12px/1.4 var(--sans); color: var(--muted) }
 
+/* ── filing this page in a council project ─────────────────────────────── */
+/* Same popover, same rows: the picker is the export chooser's twin because it
+   asks the same shape of question — a short list, one click each. It differs
+   in one way only, and it is the way that matters: these rows are TOGGLES, so
+   a filed project is ticked and stays clickable to unfile. */
+.popover.projpick { min-width: 262px; max-width: 340px; padding: 9px 9px 10px }
+.popover.projpick .xwhy { white-space: pre-line; opacity: .9 }
+.projrow.on { border-color: var(--done-line) }
+.projrow.on .xname { color: var(--done-line) }
+.projrow[disabled] { opacity: .5; cursor: default }
+.parch { font: 400 11px/1 var(--sans); color: var(--muted); text-transform: uppercase }
+.pop-note { font: 12px/1.5 var(--sans); color: var(--muted); padding: 4px 3px }
+.pop-note code { font: 11px/1.4 var(--mono) }
+.pop-note.err { color: var(--bad) }
+.pop-note.foot { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 7px }
+/* the header button lights when this page is filed somewhere — the only
+   always-visible sign that it is */
+.iconbtn.filein .pico { width: 15px; height: 15px; display: block }
+.iconbtn.filein.on { color: var(--done-line) }
+
+/* A bot's suggestion, under its reply. The confirm pattern this drawer uses
+   everywhere: one step, inline, the sentence IS the warning. Never a modal,
+   and never anything that files by itself. */
+/* The sentence takes the whole width and the two buttons sit together on
+   their own line under it. Not a taste call: a 320px drawer cannot fit a
+   sentence and two buttons across, and the half-wrap ("File it" beside the
+   words, "No" orphaned below) reads as a bug. */
+.filechip {
+  display: flex; gap: 4px 8px; align-items: baseline; flex-wrap: wrap;
+  margin: 8px 0 2px; padding: 7px 9px 6px;
+  border: 1px dashed var(--line); border-radius: 8px;
+  font: 12px/1.5 var(--sans); color: var(--muted);
+}
+.filechip .fcw { flex: 1 1 100%; min-width: 0 }
+.filechip .fcacts { display: flex; gap: 12px; margin-left: auto }
+.filechip b { color: var(--fg); font-weight: 600 }
+.filechip .rebtn { opacity: 1; flex: none }
+.filechip .rebtn:not([disabled]):hover { color: var(--accent) }
+.filechip .rebtn.no { color: var(--muted) }
+.filechip.done {
+  border-style: solid; border-color: var(--done-line); color: var(--done-line);
+}
+
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }
 /* Asleep/unknown: still both agents, still legible, visibly not in play — but

@@ -645,6 +645,272 @@ export function sessionTail(root, projectId, sid, limit = TAIL_MAX) {
   };
 }
 
+// --- filing an ordinary page under a council project ----------------------
+//
+// The motivating case, stated plainly: the reader is marking up the second
+// draft of somebody's manuscript, and everything that was said about the FIRST
+// draft is in a council project — in chats this companion can read but has
+// never had any reason to open, because that PDF is a different page record
+// living in a different folder on a different day.
+//
+// Attaching the page to the project is the whole fix, and it is a READ. The
+// page keeps its own lane, its own bridge and its own (absent) write scope;
+// what changes is that the envelope now carries a digest of what the project
+// already knows. See SPEC, "a lane never moves off a live child" — a page may
+// be attached to SEVERAL projects, so there is no single lane to move it to
+// even if moving lanes were safe, which it is not.
+
+// The peek the picker shows beside each project name: enough to recognise it,
+// not enough to be a file browser.
+export const PEEK_CHATS = 4;
+export const PEEK_FILES = 6;
+// The digest that rides on every turn of an attached page.
+export const DIGEST_PROJECTS = 3;    // attached to more? the newest three talk
+export const DIGEST_CHATS = 8;       // chat titles listed per project
+export const DIGEST_TASKS = 10;
+export const DIGEST_FILES = 12;
+export const DIGEST_TAIL_CHATS = 2;  // chats whose actual words are quoted
+export const DIGEST_TAIL_MSGS = 6;   // messages quoted from each of them
+export const DIGEST_MSG_CHARS = 400;
+export const DIGEST_PROJECT_CHARS = 3000;
+export const DIGEST_TOTAL_CHARS = 6000;
+
+/**
+ * Every project in one council root: id, title, and the portfolio's own
+ * one-liner. Filesystem-first, exactly as core/project_store.py discovers
+ * them, so the picker and the council panel never disagree about what exists.
+ * Archived projects are listed last and say so; they are still filable,
+ * because "archived" is where a finished paper goes and a late referee report
+ * still belongs with it.
+ */
+export function listProjects(root) {
+  const dir = path.join(root, 'projects');
+  if (!isDir(dir)) return [];
+  const pf = readJson(path.join(dir, 'portfolio.json'), null);
+  const meta = {};
+  for (const p of (pf && Array.isArray(pf.projects) ? pf.projects : [])) {
+    if (p && p.id) meta[String(p.id)] = p;
+  }
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  for (const name of names.sort()) {
+    if (name.startsWith('.') || SCAN_SKIP_DIRS.has(name)) continue;
+    if (!isDir(path.join(dir, name))) continue;
+    const m = meta[name] || {};
+    out.push({
+      root,
+      id: name,
+      title: String(m.title || '').trim() || projectTitle(root, name),
+      status: String(m.status || 'active').trim() || 'active',
+      next_action: clip(m.next_action || '', 120),
+      github: String(m.github || '').trim(),
+    });
+  }
+  return out.sort((a, b) =>
+    (a.status !== 'active' ? 1 : 0) - (b.status !== 'active' ? 1 : 0)
+    || a.title.localeCompare(b.title));
+}
+
+/** The top-level names inside projects/<id>/, for the picker's peek. */
+export function projectFiles(root, id, limit = PEEK_FILES) {
+  const dir = path.join(root, 'projects', String(id || ''));
+  let names = [];
+  try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  return names
+    .filter(d => !d.name.startsWith('.') && !SCAN_SKIP_DIRS.has(d.name))
+    .sort((a, b) => (a.isDirectory() === b.isDirectory() ? 0 : a.isDirectory() ? -1 : 1)
+      || a.name.localeCompare(b.name))
+    .slice(0, limit)
+    .map(d => (d.isDirectory() ? `${d.name}/` : d.name));
+}
+
+/**
+ * The roster the picker lists and the bots are shown: every project in every
+ * CONFIRMED council root, with a peek at its recent chats and its files.
+ *
+ * Only confirmed roots. A root the reader has never been asked about, or has
+ * declined, is not somewhere this companion offers to file anything — the
+ * same rule that decides whether a project artifact page gets a bridge.
+ */
+export function projectRoster({ peek = true } = {}) {
+  const out = [];
+  for (const root of knownCouncilRoots()) {
+    if (rootState(root) !== 'yes') continue;
+    for (const project of listProjects(root)) {
+      out.push(peek ? {
+        ...project,
+        chats: listSessions(root, project.id, PEEK_CHATS)
+          .map(s => ({ title: s.title, updated_at: s.updated_at })),
+        files: projectFiles(root, project.id),
+      } : project);
+    }
+  }
+  return out;
+}
+
+// The digest is recomputed per turn, and a turn is not a rare event, so it is
+// cached against the newest session mtime in the project: nothing has been
+// said since that number last changed, and everything else in the digest
+// (TASKS.md, the file list) is small enough to re-read for free.
+const digestCache = new Map();
+const DIGEST_CACHE_MAX = 40;
+
+function newestSessionMtime(root, id) {
+  const rows = listSessions(root, id, 1);
+  return rows.length ? `${rows[0].session_id}:${rows[0].updated_at}` : '';
+}
+
+/**
+ * What one project knows, as plain text for the envelope.
+ *
+ * Titles and tasks first (cheap, and they are the shape of the project),
+ * then the actual words of the two most recent chats, clipped hard. The
+ * budget is per project (DIGEST_PROJECT_CHARS) and again across all of them
+ * (DIGEST_TOTAL_CHARS) — attaching a page to five projects must not be able
+ * to push the page itself out of the model's window.
+ */
+export function projectDigest(root, id, { fresh = false } = {}) {
+  const key = `${root}\0${id}`;
+  const stamp = newestSessionMtime(root, id);
+  if (!fresh) {
+    const hit = digestCache.get(key);
+    if (hit && hit.stamp === stamp) return hit.text;
+  }
+  const title = projectTitle(root, id);
+  const lines = [`### ${title} (${id}) — ${path.join(root, 'projects', id)}`];
+
+  const tasks = projectTasks(root, id).slice(0, DIGEST_TASKS);
+  if (tasks.length) {
+    lines.push('Standing tasks:');
+    for (const t of tasks) lines.push(`- [${t.done ? 'x' : ' '}] ${t.text}`);
+  }
+
+  const files = projectFiles(root, id, DIGEST_FILES);
+  if (files.length) lines.push(`Files: ${files.join(', ')}`);
+
+  const chats = listSessions(root, id, DIGEST_CHATS);
+  if (chats.length) {
+    lines.push('Chats in this project (newest first):');
+    for (const c of chats) {
+      lines.push(`- ${c.title}${c.updated_at ? ` (${c.updated_at.slice(0, 10)})` : ''}`);
+    }
+  }
+
+  for (const c of chats.slice(0, DIGEST_TAIL_CHATS)) {
+    const tail = sessionTail(root, id, c.session_id, DIGEST_TAIL_MSGS);
+    if (!tail || !tail.msgs.length) continue;
+    lines.push(`From “${tail.title}”:`);
+    for (const m of tail.msgs) {
+      lines.push(`  ${m.author}: ${clip(m.text, DIGEST_MSG_CHARS)}`);
+    }
+  }
+
+  let text = lines.join('\n');
+  if (text.length > DIGEST_PROJECT_CHARS) {
+    text = `${text.slice(0, DIGEST_PROJECT_CHARS - 1)}…`;
+  }
+  if (digestCache.size >= DIGEST_CACHE_MAX) {
+    digestCache.delete(digestCache.keys().next().value);
+  }
+  digestCache.set(key, { stamp, text });
+  return text;
+}
+
+export function forgetDigests() { digestCache.clear(); }
+
+/**
+ * The whole "filed in" context block for a page, or '' when it is filed
+ * nowhere. `attached` is the page record's own list (store.projectsOf).
+ *
+ * Attachments to roots that are no longer confirmed, or projects that no
+ * longer exist, are skipped in silence: the record keeps them (the project
+ * may come back), and the envelope simply does not claim to know something it
+ * cannot read.
+ */
+export function attachedContext(attached, { fresh = false } = {}) {
+  const rows = (Array.isArray(attached) ? attached : [])
+    .slice(-DIGEST_PROJECTS)
+    .filter(a => a && a.root && a.id
+      && rootState(a.root) === 'yes'
+      && isDir(path.join(a.root, 'projects', a.id)));
+  if (!rows.length) return '';
+  const parts = [];
+  let budget = DIGEST_TOTAL_CHARS;
+  for (const a of rows) {
+    const text = projectDigest(a.root, a.id, { fresh });
+    if (text.length > budget) break;
+    budget -= text.length;
+    parts.push(text);
+  }
+  if (!parts.length) return '';
+  const dropped = (Array.isArray(attached) ? attached.length : 0) - parts.length;
+  const head =
+    '[filed in council projects]\nThis page is filed under the project'
+    + (parts.length > 1 ? 's' : '')
+    + ' below. What was said there is context for what is said here — read it '
+    + 'before answering, and say so when you are drawing on it.'
+    + (dropped > 0
+      ? `\n(${dropped} further project${dropped > 1 ? 's' : ''} this page is `
+        + 'filed under are not shown — ask the reader if you need them.)'
+      : '');
+  return `${head}\n${parts.join('\n\n')}\n`;
+}
+
+/**
+ * The roster block an UNFILED page's turn carries, so a bot can say where the
+ * page belongs without anybody having to describe the council to it.
+ *
+ * Names and one-liners only — no chats, no files. This rides on a page that
+ * may have nothing to do with the council at all, so it has to be small
+ * enough to be worth nothing when it is worthless.
+ */
+export const SUGGEST_MARK = 'file-in:';
+export const SUGGEST_PROJECTS_MAX = 12;
+
+export function suggestBlock(roster) {
+  const rows = (Array.isArray(roster) ? roster : []).slice(0, SUGGEST_PROJECTS_MAX);
+  if (!rows.length) return '';
+  const lines = rows.map(p =>
+    `- ${p.id} — ${p.title}${p.next_action ? `; next: ${p.next_action}` : ''}`);
+  return '[this page is filed nowhere]\n'
+    + 'The reader keeps these council projects:\n'
+    + `${lines.join('\n')}\n`
+    + 'If — and only if — this page clearly belongs with one of them, END your '
+    + `reply with a line of its own reading \`${SUGGEST_MARK} <project-id> — `
+    + '<one short reason>`. The reader gets a button; you are not filing '
+    + 'anything. Say nothing at all if none of them fit, and never guess.\n';
+}
+
+/**
+ * Pull a bot's suggestion back out of its reply.
+ *
+ * Returns `{id, why, line}` or null. Only a line of its own is read, only the
+ * LAST one counts, and the id must be one the roster actually offered — a bot
+ * that invents a project name gets ignored rather than producing a button that
+ * files a page nowhere.
+ */
+export function parseSuggestion(text, roster) {
+  const known = new Map(
+    (Array.isArray(roster) ? roster : []).map(p => [String(p.id), p]),
+  );
+  const re = new RegExp(
+    `^\\s*(?:[-*>]\\s*)?${SUGGEST_MARK}\\s*([^\\s—-][^\\s]*)\\s*(?:[—:-]\\s*(.*))?$`,
+    'i',
+  );
+  let found = null;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.replace(/[`*_]/g, '').trim();
+    const m = re.exec(line);
+    if (!m) continue;
+    const id = String(m[1] || '').replace(/[.,;:]+$/, '');
+    const hit = known.get(id);
+    if (!hit) continue;
+    found = { id, root: hit.root, title: hit.title, why: clip(m[2] || '', 200), line: raw };
+  }
+  return found;
+}
+
 // --- send review: the fan-out --------------------------------------------
 // The reader has been through the draft leaving comments in the margins, the
 // way they would in Google Docs or Word. Retyping any of that into the chat is

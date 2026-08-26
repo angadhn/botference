@@ -229,7 +229,8 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 // /resume's replayed history is uneven and a bridge restart drops it whole).
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageNumber, summary, project, untaggedAll, routeHint }) {
+  snapshotPath, pageNumber, summary, project, untaggedAll, routeHint,
+  filedContext, suggestContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -295,7 +296,22 @@ export function envelope({ url, title, target, text, quote, history,
       + 'the document is diffed across your turn either way, so an edit you do not mention '
       + 'still gets its thread — without your reason on it.\n'
     : '';
-  const standing = `${snap}${writes}`;
+  // Filed under council projects (store.projectsOf → workspace.attachedContext).
+  // This rides on EVERY turn, for the same reason the snapshot path and the
+  // write rule do: the whole point of filing a manuscript under the project
+  // that discussed its previous draft is that the bots keep knowing it, and a
+  // resumed session's replayed history is uneven. It is capped hard at the
+  // workspace end (DIGEST_TOTAL_CHARS).
+  //
+  // Deliberately NOT the same thing as `artifact`: a filed page is still an
+  // ordinary page on its own lane with no write scope. Filing is a read.
+  const filed = String(filedContext || '');
+  // …and its opposite. A page filed nowhere carries the roster instead, so a
+  // bot can say where it thinks the page belongs. First turn only: it is a
+  // suggestion, not a standing instruction, and a bot that has already
+  // declined to suggest anything should not be asked again every turn.
+  const roster = first ? String(suggestContext || '') : '';
+  const standing = `${snap}${writes}${filed}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`
@@ -326,7 +342,10 @@ export function envelope({ url, title, target, text, quote, history,
       + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
-  return route + ctx + body + doc;
+  // last, and after the body: the roster is the least important thing in the
+  // turn and must never come between the reader's question and the answer
+  const where_to_file = roster ? `\n${roster}` : '';
+  return route + ctx + body + doc + where_to_file;
 }
 
 // --- .docx comment digest -----------------------------------------------
@@ -897,6 +916,12 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // reader's own council (workspace.mjs) — carrying the one directory
         // this child may write in, which is this project's folder or nothing
         project: proj ? { ...proj, write_dir: writeRoot || '' } : null,
+        // the council projects this page is FILED under (server.mjs summon):
+        // a digest of what they already know, or — filed nowhere — the roster
+        // so a bot can say where the page belongs. Computed at submit, not
+        // here: the server holds the page record and the workspace reader.
+        filedContext: job.filedContext || '',
+        suggestContext: job.suggestContext || '',
         verbosity: readConfig().verbosity }),
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that

@@ -213,6 +213,13 @@
                      project-tasks card is absent (the other screenshot
                      state is the default: the card, read-only, above the
                      page's own tasks card).
+    ?filein=1        the "File this page in…" picker, open, on an ORDINARY page
+                     (an arXiv PDF, not a project artifact): the council's
+                     projects with a peek at each one's recent chats and files,
+                     one of them already ticked. `?filein=chip` shows the other
+                     way in — a bot has ended its reply saying where it thinks
+                     the page belongs, and the drawer draws it as a confirm chip
+                     with a File it / No on it. Nothing files without the click.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -409,6 +416,26 @@ const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
     { text: 'Re-run the burn with the new mass budget', done: false },
     { text: 'Write up the nozzle trade study', done: false },
   ] }) };
+// ── filing an ORDINARY page under a council project ─────────────────────
+// Not a project artifact: a PDF of somebody's manuscript, which lives nowhere
+// near the council and never will. Filing it is a READ — the bots get what
+// the project already knows, and the page keeps its own lane.
+const FILEIN = Q.get('filein') || '';
+const FILE_ROSTER = [
+  { root: WS_ROOT, id: 'adriana-paper', title: "Adriana's paper", status: 'active',
+    next_action: 'read draft two',
+    chats: [{ title: 'Draft one, section 3' }, { title: 'The identification worry' }],
+    files: ['figures/', 'draft-one.pdf', 'referee-1.md'] },
+  { root: WS_ROOT, id: 'spaceship-engineering', title: 'Spaceship Engineering',
+    status: 'active', next_action: 'nozzle trade study',
+    chats: [{ title: 'Radiator sizing for the transit hab' }],
+    files: ['index.html', 'TASKS.md'] },
+  { root: WS_ROOT, id: 'journal-submissions', title: 'Journal submissions',
+    status: 'archived', next_action: 'pick a venue', chats: [], files: ['venues.md'] },
+];
+let fileFiled = FILEIN ? [{ root: WS_ROOT, id: 'adriana-paper', at: '2026-08-20T09:00:00Z' }] : [];
+const fileCalls = [];
+
 // every chat the project already has, newest first — what GET
 // /project-sessions answers and the archive list draws
 const WS_SESSIONS = [
@@ -851,6 +878,24 @@ const RECORD = {
 };
 // a fresh page has no history: the record the first act creates starts empty
 if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }
+// ?filein=1 — this page is already filed under one project, so the picker has
+// a tick in it and the header button is lit.
+if (FILEIN === '1') RECORD.projects = fileFiled;
+// ?filein=chip — filed NOWHERE, and a bot has just suggested somewhere. The
+// suggestion is a field on the message (store.appendMsg), never a filing: the
+// record's `projects` is absent, and stays absent until the reader clicks.
+if (FILEIN === 'chip') {
+  fileFiled = [];
+  delete RECORD.projects;
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(2), text: '@claude what is this paper arguing?' },
+    { author: 'claude', ts: iso(1),
+      text: 'That the identification strategy in section 3 rests on an instrument '
+        + 'the data cannot support — the same objection you raised on the first draft.',
+      file_in: { root: WS_ROOT, id: 'adriana-paper', title: "Adriana's paper",
+                 why: 'the same manuscript, one draft on' } },
+  ]);
+}
 
 // The project-artifact record: a local file, filed under the project that
 // wrote it, and standing in whichever council chat the reader last opened.
@@ -1833,6 +1878,19 @@ function companion(method, path, body) {
   // out loud wherever it was triggered.
   if (ownerOnly && OWNER_ROUTES.test(route)) {
     return { ok: false, status: 403, error: 'owner only' };
+  }
+  // ---- filing an ordinary page under a council project ------------------
+  if (route === '/projects') {
+    return { ok: true, status: 200, data: { ok: true, projects: FILE_ROSTER, filed: fileFiled } };
+  }
+  if (route === '/page-projects') {
+    fileCalls.push({ id: body && body.id, attach: (body || {}).attach !== false });
+    const key = x => x.root + '\u0000' + x.id;
+    const want = { root: (body || {}).root, id: (body || {}).id };
+    fileFiled = fileFiled.filter(x => key(x) !== key(want));
+    if ((body || {}).attach !== false) fileFiled = fileFiled.concat([{ ...want, at: now() }]);
+    RECORD.projects = fileFiled;
+    return { ok: true, status: 200, data: { ok: true, url: RECORD.url, filed: fileFiled } };
   }
   // ---- project artifact pages (workspace.mjs) --------------------------
   if (route === '/project-page') {
@@ -8063,6 +8121,18 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         if (b) b.click(); else log('more: no disclosure to open');
       }, 300);
     }
+    // ?filein=1 — the "File this page in…" picker, open. The state is the
+    // drawer's own, so the only way to it from out here is the button, exactly
+    // as with the archive picker below.
+    if (FILEIN === '1') {
+      setTimeout(() => {
+        const b = d.shadow.querySelector('[data-act="filein"]');
+        if (b) b.click(); else log('filein: no button (owner not set?)');
+      }, 300);
+    }
+    // ?filein=chip — the OTHER way in: a bot has said where it thinks the page
+    // belongs, and the drawer draws its last line as a confirm chip.
+    if (FILEIN === 'chip') setTimeout(() => d.open('chat'), 300);
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
     // reader picks a past council chat out of (screenshot state)
     if (WORKSPACE && Q.get('picker') === '1') {

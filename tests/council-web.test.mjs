@@ -140,6 +140,46 @@ const post = (base, url, body, headers = {}) =>
 
 // ---------------------------------------------------------------- server
 
+test('GET /project-contents lists a project folder, shallow, and refuses to leave it', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  const dir = path.join(s.root, 'projects', 'demo');
+  fs.mkdirSync(path.join(dir, 'figures'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'figures', 'raw'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'PROJECT.md'), '# Demo\n');
+  fs.writeFileSync(path.join(dir, 'figures', 'fig1.png'), 'x'.repeat(2048));
+  fs.writeFileSync(path.join(dir, '.secret'), 'no');
+  fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+
+  const r = await fetch(`${s.base}/project-contents?id=demo`);
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  const names = d.files.map(f => f.path);
+  assert.ok(names.includes('PROJECT.md'));
+  assert.ok(names.includes('figures'));
+  assert.ok(names.includes('figures/fig1.png'), 'one level inside a folder');
+  assert.ok(!names.includes('figures/raw/'), 'and no further — the walk is shallow');
+  assert.ok(!names.some(n => n.startsWith('.')), 'dotfiles are never listed');
+  assert.ok(!names.includes('node_modules'), 'nor the noise directories');
+  const fig = d.files.find(f => f.path === 'figures/fig1.png');
+  assert.equal(fig.size, 2048);
+  assert.equal(fig.depth, 1);
+  const raw = d.files.find(f => f.path === 'figures/raw');
+  assert.equal(raw.truncated, true, 'a folder it did not walk says so');
+
+  // it can only ever name a project folder — the id is not a path
+  for (const bad of ['', '..', '.hidden', 'a/b']) {
+    const bad_r = await fetch(`${s.base}/project-contents?id=${encodeURIComponent(bad)}`);
+    assert.ok(bad_r.status >= 400, `${JSON.stringify(bad)} is refused (${bad_r.status})`);
+  }
+  const http = await import('node:http');
+  const status = await new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: s.port, path: '/project-contents?id=%2e%2e%2fwork' },
+      res => { res.resume(); resolve(res.statusCode); }).on('error', reject);
+  });
+  assert.ok(status >= 400, 'an encoded escape is refused too');
+});
+
 test('local mode: boots, serves the app shell + assets, replays bridge history over SSE', async t => {
   const s = await startServer();
   t.after(s.stop);
@@ -2453,6 +2493,104 @@ test('filing: every project row carries its own "+ new chat", filed there from b
   doc.querySelector('[data-act="toggle-arch"]').click();
   doc.querySelector('.proj[data-pid="p9"] [data-act="toggle"]').click();
   assert.equal(doc.querySelector('.proj[data-pid="p9"] [data-act="proj-new-chat"]'), null);
+});
+
+test('sidebar chat row: "remove from project" unfiles it — the safe way out of a list',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  // Three ways out of a project's chat list, and they cost different amounts:
+  // unfile (reversible in one click), archive (reversible), delete (a confirm
+  // card in the transcript). The commonest reason to want a chat out of a
+  // project is that it was filed in the wrong one, and that must not cost the
+  // chat — so the safe one is offered FIRST.
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle(FILING_PROJECTS);
+  doc.querySelector('.proj[data-pid="p1"] .row-more[data-sid="abc12345"]').click();
+  const items = [...doc.querySelectorAll('.row-menu button')].map(b => b.dataset.act);
+  assert.deepEqual(items, ['unfile', 'archive', 'delete'],
+    'safest first, destructive last');
+  // the chat list scrolls, and a scroll box clips a popover: while a menu is
+  // open the box stops scrolling, or the last item is cut in half
+  assert.ok(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'),
+    'the scroller stands down while a row menu is open');
+  doc.querySelector('.row-menu [data-act="unfile"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(sent(posts), ['/project unfile abc12345'],
+    'the filing goes; the chat does not');
+  assert.equal(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'), null,
+    'and starts scrolling again once it is closed');
+});
+
+test('sidebar: a project’s contents are a request, never part of the per-turn payload',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, w, posts } = await mkHarness(t);
+  const asked = [];
+  const realFetch = w.fetch;
+  w.fetch = async (url, init) => {
+    if (String(url).startsWith('/project-contents')) {
+      asked.push(String(url));
+      return {
+        ok: true, status: 200,
+        json: async () => ({ ok: true, id: 'p1', files: [
+          { path: 'figures', name: 'figures', dir: true, size: 0, depth: 0, truncated: false },
+          { path: 'figures/fig1.png', name: 'fig1.png', dir: false, size: 2048, depth: 1 },
+          { path: 'PROJECT.md', name: 'PROJECT.md', dir: false, size: 512, depth: 0 },
+        ] }),
+      };
+    }
+    return realFetch(url, init);
+  };
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({
+    ...FILING_PROJECTS,
+    projects: [{ ...FILING_PROJECTS.projects[0], github: 'https://github.com/me/demo' },
+               FILING_PROJECTS.projects[1]],
+  });
+  assert.equal(asked.length, 0, 'nothing is read until somebody opens the panel');
+  assert.equal(doc.querySelector('.proj[data-pid="p1"] .pcon'), null);
+
+  doc.querySelector('.proj[data-pid="p1"] [data-act="proj-contents"]').click();
+  await new Promise(r => setTimeout(r, 20));
+  const pcon = doc.querySelector('.proj[data-pid="p1"] .pcon');
+  assert.ok(pcon, 'the panel opens');
+  assert.deepEqual(asked, ['/project-contents?id=p1']);
+  assert.match(pcon.textContent, /First chat/, 'the chats, off the panel payload');
+  assert.match(pcon.textContent, /figures\//, 'the folder, off the request');
+  assert.match(pcon.textContent, /fig1\.png/);
+  assert.match(pcon.textContent, /2\.0 KB/, 'with sizes a person can read');
+  assert.match(pcon.textContent, /github\.com\/me\/demo/, 'and where it was published');
+  assert.equal(doc.querySelector('.proj[data-pid="p1"] .pcon a').getAttribute('href'),
+    'https://github.com/me/demo');
+
+  // closing and re-opening does not ask twice — the listing is kept
+  doc.querySelector('.proj[data-pid="p1"] [data-act="proj-contents"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  doc.querySelector('.proj[data-pid="p1"] [data-act="proj-contents"]').click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(asked.length, 1);
+  assert.equal(sent(posts).length, 0, 'and none of it spends a turn');
+});
+
+test('sidebar: publishing a project to GitHub is confirmed in the transcript, never in the sidebar',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle(FILING_PROJECTS);
+  const b = doc.querySelector('.proj[data-pid="p1"] [data-act="proj-github"]');
+  assert.ok(b, 'an unpublished project offers to publish');
+  assert.match(b.textContent, /publish to GitHub…/, 'the ellipsis says it will ask');
+  b.click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(sent(posts), ['/project github p1'],
+    'the controller preflights gh and asks — the sidebar confirms nothing itself');
+
+  // already published: the same button, saying the true thing
+  C.handle({
+    ...FILING_PROJECTS,
+    projects: [{ ...FILING_PROJECTS.projects[0], github: 'https://github.com/me/demo' }],
+  });
+  assert.match(doc.querySelector('.proj[data-pid="p1"] [data-act="proj-github"]').textContent,
+    /push to GitHub/);
 });
 
 test('filing: the top New/chat button asks "file in?" before the chat exists',

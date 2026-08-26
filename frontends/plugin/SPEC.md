@@ -4680,6 +4680,160 @@ transitioning FROM. And `?hydrate=1&selftest=1` scores 8–9/11 under
 assertions read a class added in a `requestAnimationFrame` — which was verified
 against HEAD before this amendment and is not a regression from it.
 
+## Amendment (2026-08-26, shipped): a page filed in a council project
+
+The reader is marking up the second draft of somebody's manuscript. Everything
+that was said about the FIRST draft is in a council project, in chats this
+companion can read and has never had any reason to open — because that PDF is a
+different page record, keyed on different bytes, made on a different day. The
+bots answering on draft two have no idea draft one was ever discussed, and the
+reader is left retyping the last round's objections into the margin of this one.
+
+A page can now be **filed** under one or more council projects. Filing is a
+**READ, not custody**: the page keeps its own lane, its own bridge and its own
+(absent) write scope; what changes is that every turn on it carries a digest of
+what those projects already know.
+
+#### 1. Filed is not the same as artifact, and the difference is the whole design
+
+| | project **artifact** page | page **filed in** a project |
+|---|---|---|
+| where it lives | `projects/<id>/` — the path is its identity | anywhere; a PDF in Downloads |
+| how many projects | exactly one, by where the file is | zero or more, by the reader's say-so |
+| its lane | the project (`(root, id)` → one child) | its own (`pg:<url>`), unchanged |
+| write scope | that project's folder | **none**, unchanged |
+| how it got there | the file system | one click, reversible |
+
+**THE LANE NEVER MOVES.** A filed page is not handed the project's bridge, and
+this is not caution — it is forced. §5 of the parallel-turns amendment ("why a
+lane never moves off a live child") says a lane binds on its first turn and is
+released only when its child is gone, because two children driving one session
+id is a silent whole-turn loss. A page may be filed under SEVERAL projects, so
+there is no single lane to move it to even if moving were safe. Filing is
+therefore a pure envelope change, and the same argument is what makes it
+reversible: unfiling is `delete page.projects` and nothing else.
+
+#### 2. The record (`store.projectsOf`, `store.filePageInProject`)
+
+```json
+"projects": [{ "root": "/abs/council", "id": "adriana-paper", "at": "2026-08-26T…" }]
+```
+
+A LIST, for the reason above. Written only when it is not the default, in this
+contract's usual way (`mark`, `tags`, `page`): a page filed nowhere has no such
+key and no record needs migrating. `ATTACH_MAX = 6`. Attaching twice keeps the
+first attachment and its date; detaching something never attached answers with
+the page rather than an error, so the drawer renders one result either way. The
+index row carries `projects: ["<id>"]` on the same terms as `tags`.
+
+#### 3. The digest, and its budget (`workspace.attachedContext`)
+
+Per project, in this order: title and path, `TASKS.md`, the top-level file
+names, the chat titles newest-first, then **the actual words** of the two most
+recent chats — the tail of each, envelope-stripped, attributed. Titles alone
+would say a conversation happened; the point is what was decided in it.
+
+| bound | value | why |
+|---|---|---|
+| `DIGEST_PROJECTS` | 3 | filed under more? the three newest talk, and the block says how many did not |
+| `DIGEST_CHATS` | 8 | titles listed per project |
+| `DIGEST_TASKS` / `DIGEST_FILES` | 10 / 12 | |
+| `DIGEST_TAIL_CHATS` / `DIGEST_TAIL_MSGS` | 2 / 6 | whose words are quoted, and how many |
+| `DIGEST_MSG_CHARS` | 400 | per quoted message |
+| `DIGEST_PROJECT_CHARS` | 3000 | per project |
+| `DIGEST_TOTAL_CHARS` | 6000 | across all of them |
+
+Two budgets rather than one, deliberately: filing a page under five projects
+must not be able to push the PAGE out of the model's window. It rides on
+**every** turn, beside the snapshot path and the write rule and for the same
+reason — a resumed session's replayed history is uneven and a bridge restart
+drops it whole, so the only thing a turn can rely on carrying is the turn. It
+is cached against the newest session mtime in the project, so a turn that
+changed nothing costs one index read.
+
+An attachment whose root is no longer confirmed, or whose project has been
+deleted, is **skipped in silence**: the record keeps it (the project may come
+back) and the envelope simply does not claim to know something it cannot read.
+
+#### 4. Two ways in, and only one of them files anything
+
+**The picker.** A folder button in the header opens `.popover.projpick`, the
+export chooser's twin — because it asks the same shape of question — with one
+difference that matters: these rows are TOGGLES, so a filed project is ticked
+and stays clickable to unfile. Each row carries a **peek**: the project's
+recent chat titles and its top-level file names, so two similarly-named
+projects can be told apart without opening either. Only projects of
+**confirmed** council roots are listed, the same rule that decides whether an
+artifact page gets a bridge at all. No confirmed roots → the popover says so
+and says what to do about it, rather than being empty.
+
+**The bot.** On a page filed NOWHERE, the first turn carries the roster —
+project ids, titles and the portfolio's own one-liner, nothing else, because
+this rides on pages that have nothing to do with the council — and this
+instruction:
+
+> If — and only if — this page clearly belongs with one of them, END your reply
+> with a line of its own reading `file-in: <project-id> — <one short reason>`.
+> The reader gets a button; you are not filing anything. Say nothing at all if
+> none of them fit, and never guess.
+
+`workspace.parseSuggestion` reads it back. **Only a line of its own** counts,
+markdown around it is stripped, the LAST one wins, and the id must be one the
+roster actually offered — a bot that invents a project name gets ignored rather
+than producing a button that files a page nowhere. The line is lifted off the
+reply into `msg.file_in` and **removed from the words**: it is machinery, not
+prose. The drawer draws it as `.filechip`, the one-step inline confirm this
+drawer uses everywhere (del-thread, page-del, send-review): the sentence is the
+whole of the warning, "File it" and "No" are the whole of the act.
+
+**BOTS NEVER FILE.** The suggestion is an offer with a button on it, and the
+page is filed nowhere until the reader presses it. "No" is per tab and is not
+remembered anywhere: saying no to a suggestion is not a fact about the page.
+The roster and the digest are mutually exclusive, and neither ever appears on
+a project artifact page — it is in a project already, by where it lives.
+
+#### 5. HTTP API (owner-only, both)
+
+| | |
+|---|---|
+| `GET /projects?url=` | `{projects: [{root, id, title, status, next_action, github, chats:[{title, updated_at}], files:[…]}], filed: [{root, id, at}]}` |
+| `POST /page-projects {url, root, id, attach}` | `{url, filed}`; 400 unless the project exists in a **confirmed** council root |
+
+Owner-only for the reason `/project-page` is: the answers name this reader's
+projects and the absolute paths of their council, which is nobody's business
+over a tunnel.
+
+#### Testing
+
+`test/filing.test.mjs` (20), in four parts: the roster and the record (a
+declined root offers nothing; the peek is top level only; attaching is
+idempotent in both directions and unfiling leaves no key on disk); the digest
+(the past chats' actual words ride along; TASKS.md and the file list; the
+DIGEST_PROJECTS cap says how many it dropped and drops the OLDEST; an
+unconfirmed root and a deleted project both claim nothing); the suggestion
+(the block forbids guessing; only a roster project is read; markdown does not
+hide the line and the last one wins); and end to end against a real companion
+with mock children — the filed page's envelope carries the past chat and does
+NOT carry `[project artifact:` or a write rule, an unfiled page carries the
+roster instead, never both, and a bot's suggestion becomes `msg.file_in` with
+the line taken out of its text while `page.projects` stays absent.
+
+`test/mock-bridge.mjs` grew `[mock:says:…]` (`\n` for newlines) for the tests
+that care what a bot's WORDS are rather than that it answered.
+
+Harness poses: `?filein=1` is the picker open on an ordinary page with one
+project already ticked; `?filein=chip` is a bot's suggestion as a confirm chip.
+Both screenshot states.
+
+#### Known limits (deliberate)
+
+- **A suggestion names a project id, not a root.** With two confirmed councils
+  holding a project of the same id, the first in roster order wins. Nobody has
+  two councils; when somebody does, the marker grows a root index.
+- **The digest is not the project.** It is a tail, not an archive: a question
+  about something said thirty chats ago will not be answered from it. The
+  bots can read the council root, and the digest names the paths.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

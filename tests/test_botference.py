@@ -2480,7 +2480,14 @@ class TestBotferenceProjects:
         assert ship.sessions[0].title == "ship talk"
         assert ship.sessions[0].updated_at == "2026-05-03T00:00:00Z"
 
-    async def test_project_panel_shortlist_is_capped_per_project(self, tmp_path):
+    async def test_project_panel_shortlist_is_capped_per_project(
+        self, tmp_path, monkeypatch,
+    ):
+        # The cap is a payload bound, not a UI taste: it is deliberately
+        # large now (see PANEL_SESSION_LIMIT), so this proves the mechanism
+        # with the limit patched down rather than baking a number in.
+        import botference as bf
+        monkeypatch.setattr(bf, "PANEL_SESSION_LIMIT", 8)
         (tmp_path / "projects" / "alpha-project").mkdir(parents=True)
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
         for i in range(12):
@@ -2651,12 +2658,17 @@ class TestBotferenceProjects:
         # inflate Inbox — we filter entry_count < 1 sessions.
         assert snapshot.inbox_session_count == 0
 
-    async def test_panel_always_lists_the_active_session(self, tmp_path):
+    async def test_panel_always_lists_the_active_session(self, tmp_path, monkeypatch):
         # The active chat must survive the recency shortlist: web frontends
         # confirm a /resume by finding the active flag in the panel rows, so
         # an active session older than the newest PANEL_SESSION_LIMIT chats
         # must still be listed (and flagged) rather than truncated away.
+        #
+        # The limit is patched down rather than taken as-is: the shipped
+        # value is deliberately large (see PANEL_SESSION_LIMIT), and this
+        # test is about the append, not about the number.
         import botference as bf
+        monkeypatch.setattr(bf, "PANEL_SESSION_LIMIT", 8)
         project = tmp_path / "projects" / "plugin-pages"
         project.mkdir(parents=True)
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
@@ -7418,3 +7430,189 @@ class TestProjectTasksPrompt:
         note = c._project_tasks_note()
         assert "projects/alpha/TASKS.md" in note
         assert "--- Project task list ---" in c._build_initial_prompt("claude")
+
+
+@pytest.mark.asyncio
+class TestProjectContentsAndUnfiling:
+    """/project contents, /project unfile — reading a project, and the safe
+    way a chat gets out of one."""
+
+    def _project(self, tmp_path, pid="alpha"):
+        root = tmp_path / "projects" / pid
+        root.mkdir(parents=True)
+        return root
+
+    async def test_contents_lists_the_chats_and_the_folder(self, tmp_path):
+        root = self._project(tmp_path)
+        (root / "PROJECT.md").write_text("# Alpha\n", encoding="utf-8")
+        (root / "figures").mkdir()
+        (root / "figures" / "fig1.png").write_bytes(b"x" * 2048)
+        (root / "figures" / "raw").mkdir()
+        (root / ".hidden").write_text("no", encoding="utf-8")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("s1", {
+            "session_id": "s1", "project_id": "alpha", "title": "Chat one",
+            "updated_at": "2026-08-20T00:00:00Z",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+        })
+        await c._handle_project_cmd("contents alpha", ui)
+        text = ui.room_entries[-1][1]
+        assert "projects/alpha/" in text
+        assert "Chat one" in text
+        assert "PROJECT.md" in text
+        assert "2.0 KB" in text
+        assert "figures/" in text
+        assert "raw/…" in text, "a folder it did not walk into says so"
+        assert ".hidden" not in text
+
+    async def test_contents_of_an_unknown_project_says_so(self, tmp_path):
+        self._project(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c._handle_project_cmd("contents nope", ui)
+        assert "No project matched" in ui.room_entries[-1][1]
+
+    async def test_contents_shows_the_github_repo_when_there_is_one(self, tmp_path):
+        self._project(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.project_store.set_github("alpha", "https://github.com/me/alpha")
+        await c._handle_project_cmd("contents alpha", ui)
+        assert "https://github.com/me/alpha" in ui.room_entries[-1][1]
+
+    async def test_unfile_puts_this_chat_in_inbox_without_deleting_it(self, tmp_path):
+        self._project(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.transcript.add("user", "something")
+        await c._handle_project_cmd("assign alpha", ui)
+        assert c.session_project_id == "alpha"
+        await c._handle_project_cmd("unfile", ui)
+        assert c.session_project_id == ""
+        assert c.active_project_id == ""
+        assert "nothing was deleted" in ui.room_entries[-1][1]
+        # the chat itself is still there
+        assert c.session_store.load(c.session_id).get("transcript")
+
+    async def test_unfile_by_id_rewrites_the_payload_not_just_the_index(self, tmp_path):
+        self._project(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c.session_store.save("other-chat", {
+            "session_id": "other-chat", "project_id": "alpha", "title": "Elsewhere",
+            "updated_at": "2026-08-20T00:00:00Z",
+            "transcript": [{"speaker": "user", "text": "hi"}],
+        })
+        c.project_store.associate_session("alpha", "other-chat")
+        await c._handle_project_cmd("unfile other-chat", ui)
+        # the payload wins over the index everywhere membership is resolved, so
+        # BOTH have to have let go or the next sweep files it straight back
+        assert c.session_store.load("other-chat").get("project_id") == ""
+        assert c.project_store.session_index_map().get("other-chat") is None
+        row = next(p for p in c.project_panel_snapshot().projects
+                   if p.project_id == "alpha")
+        assert [s.session_id for s in row.sessions] == []
+
+    async def test_unfile_of_an_ambiguous_prefix_refuses(self, tmp_path):
+        self._project(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        for sid in ("dupe-a", "dupe-b"):
+            c.session_store.save(sid, {
+                "session_id": sid, "project_id": "alpha", "title": sid,
+                "updated_at": "2026-08-20T00:00:00Z",
+                "transcript": [{"speaker": "user", "text": "hi"}],
+            })
+        await c._handle_project_cmd("unfile dupe-", ui)
+        assert "ambiguous" in ui.room_entries[-1][1]
+
+
+def _outcome(**kw):
+    """A project_github.PublishOutcome, built without importing it everywhere."""
+    from project_github import PublishOutcome
+    return PublishOutcome(**kw)
+
+
+def _ready():
+    return _outcome(ok=True, step="ready")
+
+
+@pytest.mark.asyncio
+class TestProjectGithubCommand:
+    """/project github — confirm-gated, and gh is never actually run here."""
+
+    def _project(self, tmp_path, pid="alpha"):
+        (tmp_path / "projects" / pid).mkdir(parents=True)
+
+    async def test_it_asks_before_it_creates_and_remembers_the_url(
+        self, tmp_path, monkeypatch,
+    ):
+        import botference as bf
+        self._project(tmp_path)
+        asked = []
+        monkeypatch.setattr(bf, "preflight", lambda **kw: _ready())
+        calls = []
+
+        def fake_publish(root, name, **kw):
+            calls.append((Path(root).name, name))
+            return _outcome(ok=True, url="https://github.com/me/alpha",
+                            action="created")
+
+        monkeypatch.setattr(bf, "publish_project", fake_publish)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(0)          # "Create alpha (private)"
+        await c._handle_project_cmd("github alpha", ui)
+        assert calls == [("alpha", "Alpha")], "the repo name defaults to the title"
+        assert ui.choice_requests, "it asked first"
+        assert "NEW PRIVATE GitHub repo" in ui.choice_requests[-1][0]
+        assert "https://github.com/me/alpha" in ui.room_entries[-1][1]
+        assert c.project_store.get("alpha").github == "https://github.com/me/alpha"
+
+    async def test_cancelling_creates_nothing(self, tmp_path, monkeypatch):
+        import botference as bf
+        self._project(tmp_path)
+        monkeypatch.setattr(bf, "preflight", lambda **kw: _ready())
+        called = []
+        monkeypatch.setattr(bf, "publish_project",
+                            lambda *a, **k: called.append(1) or _outcome(ok=True))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(1)          # Cancel
+        await c._handle_project_cmd("github alpha", ui)
+        assert called == []
+        assert "Not published" in ui.room_entries[-1][1]
+
+    async def test_a_missing_gh_is_reported_before_anything_is_asked(
+        self, tmp_path, monkeypatch,
+    ):
+        import botference as bf
+        self._project(tmp_path)
+        monkeypatch.setattr(bf, "preflight", lambda **kw: _outcome(
+            ok=False, step="gh-missing",
+            error="The GitHub CLI (gh) is not installed. Install it (brew install gh)"
+                  " and run `gh auth login`."))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c._handle_project_cmd("github alpha", ui)
+        assert ui.choice_requests == [], "nothing to confirm — it cannot work"
+        assert "gh auth login" in ui.room_entries[-1][1]
+
+    async def test_a_ui_that_cannot_ask_is_refused_rather_than_guessed_at(
+        self, tmp_path, monkeypatch,
+    ):
+        import botference as bf
+        self._project(tmp_path)
+        monkeypatch.setattr(bf, "preflight", lambda **kw: _ready())
+        called = []
+        monkeypatch.setattr(bf, "publish_project",
+                            lambda *a, **k: called.append(1) or _outcome(ok=True))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        object.__setattr__(ui, "request_choice", None)
+        await c._handle_project_cmd("github alpha", ui)
+        assert called == []
+        assert "cannot ask for" in ui.room_entries[-1][1]
+
+    async def test_a_named_repo_overrides_the_default(self, tmp_path, monkeypatch):
+        import botference as bf
+        self._project(tmp_path)
+        monkeypatch.setattr(bf, "preflight", lambda **kw: _ready())
+        names = []
+        monkeypatch.setattr(bf, "publish_project", lambda root, name, **k: (
+            names.append(name) or _outcome(ok=True, url="u", action="created")))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(0)
+        await c._handle_project_cmd("github alpha adriana-draft-two", ui)
+        assert names == ["adriana-draft-two"]

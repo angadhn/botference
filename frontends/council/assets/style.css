@@ -146,6 +146,22 @@ body.side-collapsed #side { margin-left: -272px }
 .proj-head.active .name { color: var(--accent) }
 .proj-sessions { display: none; margin: 0 0 .2rem }
 .proj.open .proj-sessions { display: block }
+/* THE CHAT LIST SCROLLS rather than being cut short.
+   The controller used to send only the 8 most recent chats per project, and 8
+   was a UI number pretending to be a payload number — a project with a dozen
+   chats simply could not show you the older ones, and /resume from here could
+   not confirm one that had fallen off. The bound it really needs is on bytes,
+   and it now has a much larger one (PANEL_SESSION_LIMIT); what stops a long
+   project from swallowing the sidebar is this.
+   Scoped to the CHATS alone, deliberately: the project's own verbs and its
+   contents panel sit below this box, so a long list can never scroll them out
+   of reach or cut the contents panel in half. `dvh` because a phone's
+   collapsing address bar must not leave the box taller than the screen. */
+.proj.open .proj-chats { max-height: 42dvh; overflow-y: auto;
+  overscroll-behavior: contain }
+/* …except while a row's ⋯ menu is open in it: a scroll box clips what
+   overflows, and the menu is a popover inside one of these rows. */
+.proj.open .proj-chats.menu-open { max-height: none; overflow: visible }
 .sess { display: block; width: 100%; text-align: left; border: 0; background: none;
   border-radius: 8px; padding: .38rem .5rem .38rem 1.55rem; color: var(--fg);
   font: .8rem/1.4 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
@@ -177,6 +193,26 @@ body.side-collapsed #side { margin-left: -272px }
 .row-menu button:hover { background: color-mix(in srgb, var(--fg) 8%, transparent) }
 .row-menu button.danger { color: var(--bad) }
 .row-menu button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent) }
+/* ---- a project's contents, read-only -------------------------------------
+   Chats and the project folder itself. Indented under the row that opened it
+   and deliberately quieter than the chat rows above: this is an inventory to
+   read, not a list of things to click. */
+.pcon { margin: .1rem .3rem .4rem 1.05rem; padding: .3rem .1rem .35rem;
+  border-left: 2px solid var(--card-line) }
+.pcon-head { display: flex; align-items: baseline; gap: .4rem; padding: .25rem .5rem .15rem;
+  color: var(--muted); font: 600 .68rem var(--sans); text-transform: uppercase;
+  letter-spacing: .06em }
+.pcon-head .count { margin-left: auto; font-weight: 400; letter-spacing: 0;
+  text-transform: none }
+.pcon-row { display: flex; align-items: baseline; gap: .4rem;
+  padding: .16rem .5rem .16rem calc(.5rem + var(--d, 0) * .8rem);
+  font: .75rem/1.45 var(--sans) }
+.pcon-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pcon-name.dir { color: var(--heading); font-weight: 600 }
+.pcon-name.link { color: var(--accent) }
+.pcon-row .when { margin-left: auto; flex: none; color: var(--muted); font-size: .68rem }
+.empty-note.err { color: var(--bad) }
+
 /* archived projects: parked at the bottom, collapsed by default */
 .arch { margin-top: .9rem; border-top: 1px solid var(--card-line); padding-top: .4rem }
 .arch-head { display: flex; align-items: center; gap: .4rem; width: 100%; text-align: left;
