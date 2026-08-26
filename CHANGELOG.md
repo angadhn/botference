@@ -2,6 +2,37 @@
 
 ## 2026-08-26
 
+- **A discussion can now END in a strikethrough.** You highlight a passage,
+  argue about it with the bots, and between you decide the sentence should come
+  out — and until now the thread stayed a yellow highlight, because which of the
+  two tools you were using was decided when you selected the text and never
+  again. The only way to the red line was to delete the thread and draw the
+  strikeout over the passage a second time, losing the conversation that reached
+  the decision.
+
+  Any comment on a PDF now carries a small struck **S** beside its ✓, and one
+  click turns it into a strikethrough — your name on it, the red line on the
+  page, the whole conversation kept. The way back is the same control, drawn
+  quieter. It works on comments made long before this existed; there is nothing
+  to convert or migrate.
+
+- **…and the bots can suggest one.** When the discussion in a thread has
+  genuinely concluded that the passage should go, a bot may end its reply with a
+  suggestion, and you get a chip: **Strike it / No**. Bots never mark up your
+  document — the chip is an offer and nothing more.
+
+  **Both of them may suggest, and you pick.** Ask claude, ask codex, compare:
+  each suggestion is a chip on its own reply, in its own words, and taking one
+  uses that wording. The one you turned down does not disappear — it goes quiet
+  and says "not chosen", still showing what it had proposed.
+
+  Saying yes does **not** turn the discussion into a strikeout. It creates a
+  separate strikethrough of your own on the same passage, carrying the one-line
+  reason and none of the conversation — so you can then delete the discussion
+  and the person you send the annotated PDF to sees a clean red line with your
+  name and one sentence in the popup, with no trace of the agents. Deleting the
+  discussion leaves you looking at the strikeout it produced, not at nothing.
+
 - **Bot replies are typed out, not dropped in.** A bridge hands over text in
   chunks whose size is an accident of the tokenizer and the network — a
   sentence, then eleven characters, then a paragraph — and painting each one as

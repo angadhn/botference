@@ -545,6 +545,20 @@
     }
     return marks.length;
   }
+  // Wash ⇄ line, in place, and for exactly the reasons the two above exist: the
+  // reader has just converted a thread's mark and is watching the passage they
+  // clicked. Repainting from the record would work and would also unpaint and
+  // repaint the anchor — a flicker on the one span their eye is on — so the
+  // class is toggled and the mark restyled where it stands, keeping its focus
+  // and whatever state (ready, filed) it already had.
+  function markStruck(id, on) {
+    const marks = marksFor(id);
+    for (const mark of marks) {
+      mark.classList.toggle(STRIKE_CLASS, !!on);
+      styleMark(mark, mark.classList.contains(FOCUS_CLASS));
+    }
+    return marks.length;
+  }
   const isMarkAddressed = id => {
     const m = marksFor(id)[0];
     return !!(m && m.classList.contains(READY_CLASS) && !m.classList.contains(DONE_CLASS));
@@ -661,6 +675,7 @@
     buildTextIndex, offsetsFromRange, offsetOf, rangeFromOffsets, textNodesIn,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
     markResolved, isMarkResolved, markAddressed, isMarkAddressed,
+    markStruck,
     paintWas, unpaintWas, wasFor, wasIds, markInserted,
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,

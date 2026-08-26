@@ -69,6 +69,23 @@
 //                                       marking a thread ready is what a bot's
 //                                       reply landing in it does, server-side,
 //                                       and is never a click.
+//   onSetMark(threadId, 'strike'|'highlight')
+//                                       the mark, changed after the fact: a
+//                                       thread that was discussed into being a
+//                                       deletion becomes one, and back → {ok,
+//                                       thread}   (POST /mark)
+//   onStrikeFrom(threadId, note, fromMsg)
+//                                       a bot suggested the passage should come
+//                                       out and the reader agreed. `fromMsg` is
+//                                       the ts of the reply whose chip they
+//                                       clicked — both bots may suggest, and
+//                                       the record has to say which one was
+//                                       taken. Mints a
+//                                       SEPARATE strikeout on the same passage
+//                                       in the reader's name — this thread is
+//                                       not touched, so it can be deleted
+//                                       afterwards → {ok, thread, deduped}
+//                                       (POST /strike-from)
 //   onSummarize(threadId)               ask the agents to write a filed
 //                                       thread's paragraph again → {ok}
 //   onTick(threadId, ts, index, checked) a checkbox in a bot's markdown
@@ -1164,6 +1181,10 @@
     //             nothing at all. It says so where the decision was made.
     const PDF = { total: 0, pending: 0, canExport: false, dismissed: false,
                   busy: false, note: '', err: '', out: null };
+    // How long a freshly minted strikeout says it is fresh. Long enough to
+    // catch the eye of someone who was reading somewhere else in the column,
+    // short enough that it is gone before it becomes part of the furniture.
+    const ARRIVED_MS = 4000;
 
     const D = {
       page: null,          // the page record from /page
@@ -1292,6 +1313,20 @@
       addressing: {},        // threadId -> a "not done" round trip is in flight
       resolvedCards: {},     // threadId -> the full thread under its digest is open
       resolving: {},         // threadId -> a resolve/reopen is in flight
+      // ---- the strikeout, arrived at rather than chosen ------------------
+      // `marking` is a highlight⇄strike conversion in flight, per thread.
+      // `strikes` is the OTHER path — a bot's `strike:` suggestion:
+      //   busy      the ts of the reply whose chip is mid-flight
+      //   declined  the ts of any suggestion the reader said no to. Per tab and
+      //             never persisted, exactly like a declined filing: saying no
+      //             to a suggestion is not a fact about the page.
+      //   made      ts -> the id of the strike that chip minted, so the chip's
+      //             "view" knows where to go for the rest of the session
+      //   arrived   threadId -> true for a few seconds after a strike is minted,
+      //             which is the whole of the arrival affordance. Never scrolls
+      //             anything: arriving content does not steal the view.
+      marking: {},
+      strikes: { busy: '', declined: [], made: {}, arrived: {} },
       // ---- the council project behind a project artifact page -----------
       // Null on every ordinary page, and on those NOTHING below changes. On a
       // page the reader's own council wrote (workspace.mjs), Page chat stops
@@ -1833,7 +1868,8 @@ ${selPillHtml()}
       return `<div class="reply${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}${own ? ' restored' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}"${own ? ' data-restored="1"' : ''} style="--author:${speakerColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}${
-          D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}</div>`;
+          D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}${
+          D.strikes.declined.indexOf(String(r.ts)) < 0 ? strikeChipHtml(r, target) : ''}</div>`;
     }
 
     // Tool activity (msg.kind === 'tools') is process detail, not an answer: a
@@ -2400,6 +2436,43 @@ ${selPillHtml()}
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-notdone" data-act="not-done" data-target="${esc(t.id)}" type="button" title="not done — back to the open list, highlight back to yellow" aria-label="put this thread back in the open list">↺</button>`);
 
+    // ---- highlight ⇄ strikethrough, after the fact -------------------------
+    //
+    // THE REPORT. A passage was highlighted, discussed, and the discussion
+    // concluded it should come out — and there was no way to say so. The two
+    // tools were a choice made at the moment of selection and never again, so
+    // the only route to the red line was to delete the thread and draw the
+    // strikeout over the passage a second time, losing the argument that
+    // reached the decision.
+    //
+    // It rides the card head beside resolve and delete, because it is the same
+    // kind of thing: a one-click statement about this thread, shown on hover,
+    // with the undo one click away. The glyph is the letter with a line through
+    // it — the strikethrough button out of every editor there has ever been —
+    // and it sits in the strike's own red so it is never mistaken for the ✓.
+    //
+    // OWNER-ONLY, and only where a strikeout MEANS something: the adapter's
+    // `strike` capability, which is to say a PDF. The companion refuses the same
+    // request from the same two directions (server.mjs /mark), so this is the
+    // affordance and not the rule.
+    //
+    // THE REVERSE IS QUIETER. Both directions have to exist — the field flips
+    // both ways and a misclick must be undoable — but they are not the same
+    // weight of decision. Striking a passage is a statement about the document;
+    // un-striking it is a correction, and it is drawn as one: no red, half the
+    // opacity, and the same glyph without its line.
+    const canMark = t => CAPS.strike && D.owner && !t.resolved;
+    const markBtn = t => {
+      if (!canMark(t)) return '';
+      if (D.marking[t.id]) return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
+      return isStruck(t)
+        ? `<button class="rebtn thr-mark back" data-act="set-mark" data-target="${esc(t.id)}" data-mark="highlight" type="button" title="back to an ordinary highlight — the line comes off the passage" aria-label="back to a highlight">S</button>`
+        // the line through the glyph is CSS and not a combining character:
+        // U+0336 lands wherever the rendering font feels like putting it, and
+        // in the drawer's own face it does not land at all
+        : `<button class="rebtn thr-mark" data-act="set-mark" data-target="${esc(t.id)}" data-mark="strike" type="button" title="strike this passage through — a suggested deletion, in your name" aria-label="convert to a strikethrough">S</button>`;
+    };
+
     // ---- before → after, when a bot's change rewrote the passage -----------
     //
     // A change that rewrites the quoted passage ORPHANS the highlight: the
@@ -2529,7 +2602,11 @@ ${selPillHtml()}
       const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
       const author = threadAuthor(t);
       const ready = isAddressed(t);
-      const cls = ['card', ready ? 'ready' : '', orph ? 'orphaned' : '', D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : ''].filter(Boolean).join(' ');
+      const cls = ['card', ready ? 'ready' : '', orph ? 'orphaned' : '',
+        D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : '',
+        // a strikeout that has just been minted out of a discussion says so for
+        // a few seconds (ARRIVED_MS) and then reads like any other card
+        D.strikes.arrived[t.id] ? 'arrived' : ''].filter(Boolean).join(' ');
       const msgs = msgsHtml(t.id, t.msgs);
       // one-step inline confirm — never a browser confirm() dialog, which the
       // page's own modals and focus traps would fight with
@@ -2537,7 +2614,7 @@ ${selPillHtml()}
         ? `<div class="confirm">delete thread?
              <button class="rebtn yes" data-act="del-thread-yes" data-target="${esc(t.id)}" type="button">yes</button>
              <button class="rebtn" data-act="del-thread-no" type="button">no</button></div>`
-        : `${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
+        : `${markBtn(t)}${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
       // The badge says WHICH bot claimed it and leaves the verdict to the
       // reader — "ready for review", never "done". It rides the quote row, the
       // one line of the card that is always visible however long the thread.
@@ -4601,6 +4678,25 @@ ${selPillHtml()}
           render();
           return;
         }
+        // the mark, changed after the fact — both ways, one click each
+        if (act === 'set-mark') { doSetMark(target, btn.dataset.mark); return; }
+        // the bot's strike suggestion, answered. Yes mints a strikeout of the
+        // reader's own on the same passage and leaves this thread alone; no puts
+        // the chip away for this tab and is remembered nowhere else.
+        if (act === 'strike-yes') {
+          doStrikeFrom(target, btn.dataset.ts, btn.dataset.why);
+          return;
+        }
+        if (act === 'strike-no') {
+          const row = btn.closest && btn.closest('[data-ts]');
+          if (row && row.dataset.ts) D.strikes.declined.push(row.dataset.ts);
+          render();
+          return;
+        }
+        // …and going to look at it, which IS a deliberate arrival: the hold on
+        // the discussion ends here, because the reader has asked to be somewhere
+        // else (focusThread's own release rule does it).
+        if (act === 'strike-view') { focus(target); scrollToThread(target); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
@@ -5667,10 +5763,26 @@ ${selPillHtml()}
       if (r && r.ok === false) note(target, r.error || 'could not stop that turn', true);
     }
 
+    // Deleting a WHOLE THREAD (`ts` absent) has an heir, sometimes. The reader
+    // discussed a passage, struck it through out of that discussion, and is now
+    // throwing the discussion away — which is the point of minting the strike
+    // separately, and which would otherwise leave the focus pointing at a card
+    // that no longer exists and the reader looking at a column with nothing lit
+    // in it. The strikeout the thread produced is the natural place to land, and
+    // it is found on the RECORD (`from_thread`), so it works after a reload and
+    // in another tab, not only in the session that made it.
     async function doDelete(target, ts) {
+      const heir = !ts && target
+        ? (((D.page && D.page.threads) || []).find(t =>
+          t && t.from_thread === target && t.id !== target) || null)
+        : null;
       const r = await cb('onDelete')(target, ts || null);
-      if (r && r.ok === false) note(target, r.error || 'delete failed', true);
-      else render();
+      if (r && r.ok === false) { note(target, r.error || 'delete failed', true); return; }
+      // …and it is held, not merely focused: the column just lost a card above
+      // it and everything below has moved up, so the promise that has to be kept
+      // is that the heir is where the reader can see it.
+      if (heir && threadById(heir.id)) holdOn(heir.id);   // render() puts it in view
+      render();
     }
 
     // Resolve / reopen, OPTIMISTICALLY. The record is the authority and the
@@ -5719,6 +5831,35 @@ ${selPillHtml()}
       // the companion's own copy of the thread wins over our guess at it
       const fresh = r.thread;
       const mine = threadById(target);
+      if (fresh && mine) Object.assign(mine, fresh);
+      render();
+    }
+
+    // Highlight ⇄ strikethrough, OPTIMISTICALLY, on the same reasoning as
+    // resolve: the reader is watching the passage they clicked, and a card that
+    // changed a beat after the page did reads as a card that hesitated. The
+    // record is the authority and the round trip settles it — a refusal puts
+    // both the card and the line on the page back.
+    async function doSetMark(target, mark) {
+      const t = threadById(target);
+      if (!t || D.marking[target]) return;
+      const want = mark === 'strike';
+      const was = t.mark;
+      if (want) t.mark = 'strike'; else delete t.mark;
+      D.marking[target] = true;
+      render();
+      let r;
+      try { r = await cb('onSetMark')(target, want ? 'strike' : 'highlight'); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      delete D.marking[target];
+      if (!r || r.ok === false) {
+        const now = threadById(target);
+        if (now) { if (was) now.mark = was; else delete now.mark; }
+        note(target, (r && r.error)
+          || (want ? 'could not strike that passage through' : 'could not put that back to a highlight'), true);
+        return;   // note() renders
+      }
+      const fresh = r.thread, mine = threadById(target);
       if (fresh && mine) Object.assign(mine, fresh);
       render();
     }
@@ -5991,6 +6132,103 @@ ${selPillHtml()}
           <button class="rebtn no" type="button" data-act="file-no">No</button>
         </span>
       </div>`;
+    }
+
+    // The OTHER suggestion a bot can make, in the same shape as the filing one
+    // and for the same reason: a bot cannot mark up a document and should not be
+    // able to. It ends a reply with `strike: <reason>`, the companion lifts that
+    // line off the words into `msg.strike`, and this is the button.
+    //
+    // WHAT "STRIKE IT" DOES, and the thing worth being clear about: it does NOT
+    // convert this thread. It mints a SEPARATE strikeout on the same passage,
+    // in the reader's name, carrying the one sentence and none of the
+    // conversation — so the reader can delete this discussion afterwards and the
+    // person receiving the PDF gets a clean red line signed by a human, with no
+    // agentic chatter in the popup. The chip says so, because a button that
+    // quietly created a second comment would be a surprise.
+    // BOTH BOTS MAY SUGGEST, and the reader picks. Asking claude, then asking
+    // codex, and comparing the two answers is the ordinary way this thread gets
+    // used — so a chip belongs to a REPLY and never to a thread. Two suggestions
+    // in one conversation are two chips, side by side, each in its own bubble,
+    // each carrying its own bot's wording; there is no last-one-wins anywhere in
+    // the path (the lift is `msg.strike`, exactly as filing's is `msg.file_in`).
+    function strikeChipHtml(msg, threadId) {
+      const s = msg && msg.strike;
+      if (!s || !s.why) return '';
+      const ts = String(msg.ts || '');
+      const threads = (D.page && D.page.threads) || [];
+      // WHAT CAME OF THIS THREAD, if anything: the strike it produced, and —
+      // the reason `from_msg` exists — which reply's suggestion was the one
+      // taken. Read off the RECORD so it survives a reload and another tab,
+      // with this session's own memory of the click as the faster answer.
+      const born = threads.find(t => t && isStruck(t) && t.from_thread === threadId);
+      const mineId = D.strikes.made[ts]
+        || (born && String(born.from_msg || '') === ts ? born.id : '');
+      if (mineId) {
+        return `<div class="filechip strikechip done">Struck through, in your name.
+          <button class="rebtn" type="button" data-act="strike-view" data-target="${esc(mineId)}">view</button></div>`;
+      }
+      // …and the OTHER suggestions, once one has been taken. They retire rather
+      // than vanish: the reader chose between two proposals and is entitled to
+      // go on seeing what the one they turned down actually said. Quiet, no
+      // buttons — the question has been answered, and answering it twice would
+      // put a second red line over one passage (the door refuses that anyway).
+      if (born) {
+        return `<div class="filechip strikechip passed">
+          <span class="fcw">Not chosen — ${esc(s.why)}</span></div>`;
+      }
+      return `<div class="filechip strikechip">
+        <span class="fcw">This passage should come out — ${esc(s.why)}</span>
+        <span class="fcacts">
+          <button class="rebtn" type="button" data-act="strike-yes"
+            data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-why="${esc(s.why)}"
+            ${D.strikes.busy ? 'disabled' : ''}>Strike it</button>
+          <button class="rebtn no" type="button" data-act="strike-no">No</button>
+        </span>
+      </div>`;
+    }
+
+    // "Strike it", confirmed. The discussion is left EXACTLY as it is — this is
+    // the reader agreeing with a conclusion, not editing the conversation that
+    // reached it — and a new strikeout of theirs arrives on the same passage.
+    //
+    // WHERE THE READER IS LEFT, which the send-hold contract decides: on the
+    // discussion. That is where they are standing, it is what they were reading,
+    // and their next act is usually one of two things — keep talking, or delete
+    // this thread — both of which happen here. So the discussion is HELD (the
+    // spotlight it already had, plus the promise that it stays in view), the new
+    // card simply appears in the column with a brief arrival flash, and the chip
+    // grows a "view" for whoever does want to go and look. Arriving content
+    // never steals the scroll; that is the whole rule, and a card the reader did
+    // not ask to be taken to is arriving content however deliberate the click
+    // that caused it.
+    async function doStrikeFrom(threadId, ts, why) {
+      if (D.strikes.busy) return;
+      D.strikes.busy = ts;
+      holdOn(threadId);      // stay where they are, whatever arrives
+      render();
+      let r;
+      try { r = await cb('onStrikeFrom')(threadId, why, ts); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.strikes.busy = '';
+      if (!r || r.ok === false) {
+        note(threadId, (r && r.error) || 'the passage could not be struck through', true);
+        return;   // note() renders
+      }
+      const made = r.thread && r.thread.id;
+      if (made) {
+        D.strikes.made[ts] = made;
+        // the arrival affordance, and the whole of it: the new card says it is
+        // new for a few seconds and then stops. The red line is already on the
+        // passage — content.js repainted from the record before we got here.
+        D.strikes.arrived[made] = true;
+        setTimeout(() => {
+          if (!D.strikes.arrived[made]) return;
+          delete D.strikes.arrived[made];
+          render();
+        }, ARRIVED_MS);
+      }
+      render();
     }
 
     // ---- the PDF's own margin, in and out ---------------------------------

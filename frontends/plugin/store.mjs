@@ -867,7 +867,78 @@ export const markForAnnotKind = k => {
   return (s === 'StrikeOut' || s === 'Squiggly') ? 'strike' : '';
 };
 
-export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark }) {
+// ---- the mark, changed AFTER the fact --------------------------------------
+//
+// The reader highlighted a passage, argued about it in the thread, and decided
+// it should come out. Nothing about that decision belongs in a NEW comment: the
+// thread is already there, already signed, already anchored — the only thing
+// that was wrong about it is which of Adobe's two tools it was drawn with.
+//
+// Because the mark is a plain FIELD and absent means highlight, this is a
+// one-key write and every thread ever recorded — including every one made
+// before the mark existed — is convertible with no migration at all. Setting it
+// back to a highlight DELETES the key rather than writing "highlight", so a
+// converted-and-reverted thread is byte-for-byte the record it was.
+//
+// Returns false when nothing moved, so a caller can skip the save and the
+// broadcast: this is idempotent by construction and clicking twice is clicking
+// once.
+export function setThreadMark(thread, mark) {
+  if (!thread) return false;
+  const want = cleanMark(mark);           // '' = highlight, 'strike' = strike
+  if (want === (thread.mark === 'strike' ? 'strike' : '')) return false;
+  if (want) thread.mark = want; else delete thread.mark;
+  return true;
+}
+
+// ---- a bot SUGGESTING the strike -------------------------------------------
+//
+// The same idiom as `file-in:` (workspace.mjs SUGGEST_MARK), for the same
+// reason: a bot cannot mark up a document, and should not be able to. It can
+// only end a reply with a standalone line, which the companion lifts off the
+// words into a field, which the drawer draws as a chip, which the READER
+// clicks. Nothing happens on the bot's say-so.
+//
+// The line is `strike: <one short reason>`. It is offered ONLY on a document
+// that can carry a strikeout (a PDF), only inside a comment thread, and only on
+// a thread that is neither struck already nor filed — so a bot that has never
+// been shown the offer has no way to learn the convention and no reason to.
+export const STRIKE_MARK = 'strike:';
+const STRIKE_WHY_MAX = 200;
+
+// The invitation, as it rides the turn (server.mjs summon → chat.mjs envelope).
+// The last sentence is doing the most work: an eager model will propose a
+// deletion whenever it can think of one, and a chip on every reply is a chip
+// nobody reads.
+export const strikeOfferBlock = () =>
+  'This document takes markup, and this comment is a highlight on it. If — and '
+  + 'ONLY if — the discussion in this thread has genuinely concluded that the '
+  + 'quoted passage should come out of the document, you may END your reply with '
+  + `a line of its own reading \`${STRIKE_MARK} <one short reason>\`. The reader `
+  + 'gets a button that strikes the passage through under their own name; you are '
+  + 'not marking anything up. Use it rarely — a disagreement, a question, or a '
+  + 'passage that merely needs rewording is NOT this. Say nothing at all if in '
+  + 'doubt.\n';
+
+// …and the line, back out of the reply. A line of its own, the LAST one counts,
+// and a reason is required — a bare `strike:` is a model echoing the convention
+// rather than concluding anything, and a chip with no sentence on it gives the
+// reader nothing to agree with.
+export function parseStrikeSuggestion(text) {
+  const re = new RegExp(`^\\s*(?:[-*>]\\s*)?${STRIKE_MARK}\\s*(.+)$`, 'i');
+  let found = null;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.replace(/[`*_]/g, '').trim();
+    const m = re.exec(line);
+    if (!m) continue;
+    const why = String(m[1] || '').replace(/^[—:-]\s*/, '').trim().slice(0, STRIKE_WHY_MAX);
+    if (!why) continue;
+    found = { why, line: raw };
+  }
+  return found;
+}
+
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark, from_thread, from_msg }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
@@ -886,6 +957,23 @@ export function addThread(page, { quote, prefix, suffix, text, author, index, pa
   // nothing on disk and an old record needs no migration
   const mk = cleanMark(mark);
   if (mk) thread.mark = mk;
+  // WHERE THIS ONE CAME FROM, and nothing more. A strike minted out of a
+  // discussion (server.mjs /strike-from) remembers the thread it was decided
+  // in, so this drawer can say "struck — view" and, when the reader deletes
+  // that discussion, know which card to fall through to.
+  //
+  // A SOFT field, deliberately: nothing looks the id up expecting to find it,
+  // deleting the discussion leaves a dangling id and that is fine, and NOTHING
+  // in the export reads it. The annotation the other side receives is signed by
+  // the reader and says nothing whatever about a conversation.
+  //
+  // `from_msg` is the same note one rung finer: WHICH REPLY'S suggestion the
+  // reader took. Both bots may suggest a deletion in one thread — the reader
+  // asks each in turn and picks — so "this thread produced a strike" is not a
+  // precise enough answer for the drawer to know which chip was the one that
+  // was clicked and which were merely not chosen.
+  if (from_thread) thread.from_thread = String(from_thread);
+  if (from_msg) thread.from_msg = String(from_msg);
   const p = pageNumber(page_number);
   if (p) thread.page = p;
   // the extension knows the page order of its highlights; when it tells us
@@ -921,7 +1009,7 @@ export function setCheckbox(text, index, checked) {
 export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
 
 export function appendMsg(page, threadId, {
-  author, text, ts, kind, route, origin, file_in,
+  author, text, ts, kind, route, origin, file_in, strike,
 }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
@@ -947,6 +1035,11 @@ export function appendMsg(page, threadId, {
       title: String(file_in.title || file_in.id), why: String(file_in.why || ''),
     };
   }
+  // …and the same shape for a bot's suggestion that the QUOTED PASSAGE should
+  // come out (parseStrikeSuggestion above). An offer, a field, a chip — the
+  // document is not marked up until the reader clicks, and what the click makes
+  // is a comment of THEIRS, not an edit to this conversation.
+  if (strike && strike.why) msg.strike = { why: String(strike.why) };
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written
   // into — the reader replying, or a bot's answer landing — is a live thread

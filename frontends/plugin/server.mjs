@@ -731,6 +731,27 @@ function onChatEvent(ev) {
           };
         }
       }
+      // …and did the bot conclude the passage should come out? Same idiom,
+      // same three rules: only where the offer was actually made (strikeable —
+      // a PDF, an unstruck thread, an open one), only as a standalone line, and
+      // only ever as a BUTTON. The line is lifted off the reply's words into
+      // `msg.strike` because it is machinery and not prose, and the reader
+      // clicks or does not. Confirming it does not touch THIS thread at all: it
+      // mints a strike of the reader's own (POST /strike-from).
+      if (ev.msg && ev.target !== store.PAGE_CHAT) {
+        const th = store.findThread(page, ev.target);
+        if (strikeable(page, th)) {
+          const hit = store.parseStrikeSuggestion(ev.msg.text);
+          if (hit) {
+            ev.msg = {
+              ...ev.msg,
+              text: String(ev.msg.text).split(/\r?\n/)
+                .filter(l => l !== hit.line).join('\n').trimEnd(),
+              strike: { why: hit.why },
+            };
+          }
+        }
+      }
       // appendMsg also REOPENS a resolved thread: a bot answering into it is
       // new activity, and new activity is the end of resolved
       store.appendMsg(page, ev.target, ev.msg);
@@ -857,6 +878,27 @@ function addressOf(target, text, pill, msgs) {
 // comments, and an "@claude" typed at one thread weeks ago is not the address
 // of a review of the whole draft. Nothing else sets it, and it is stripped
 // out here rather than travelling on as a job field.
+// ---- who may be struck through, and where ---------------------------------
+//
+// A strikeout is a PDF markup. It exists because the file can carry one — an
+// /StrikeOut annotation every viewer on earth already draws — and on an ordinary
+// web page there is nothing to write it into and nothing to hand anybody. The
+// EXTENSION says the same thing from its own side (the adapter's `strike`
+// capability, which is what puts the second tool on the selection pill); this is
+// the server's own honest twin of that answer, because a door must never take a
+// client's word for what it is allowed to do. `store.kindOf` is the record's
+// own account of what the page is: what the adapter declared on the last visit,
+// or what the url says for a record written before adapters declared anything.
+//
+// Beyond the document: a thread ALREADY struck has nothing to convert, and a
+// RESOLVED thread is an argument that is over — the reader filed it, the summary
+// is written, and re-marking the passage under it would reopen a decision by
+// changing the document instead of the conversation. Reopen it first.
+const strikeable = (page, thread) => !!thread
+  && store.kindOf(page) === 'pdf'
+  && store.markOf(thread) !== 'strike'
+  && !thread.resolved;
+
 function summon(page, target, text, extras = {}, me = { owner: true }) {
   const { forceAll, ...rest } = extras;
   extras = rest;
@@ -902,6 +944,15 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   const filedContext = attached.length ? workspace.attachedContext(attached) : '';
   const suggestContext = (!attached.length && !artifactOf(page.url))
     ? workspace.suggestBlock(workspace.projectRoster({ peek: false })) : '';
+  // ── may this thread be struck through? ────────────────────────────────
+  // The offer a bot needs before it can suggest a deletion (store.mjs
+  // strikeOfferBlock). Composed here, once, on the same funnel and for the same
+  // reason the roster is: the server holds the page record, and the answer is a
+  // fact about the DOCUMENT (only a PDF carries an /StrikeOut) and about THIS
+  // thread (one already struck has nothing to suggest, and one already filed is
+  // an argument that is over). A model that is never shown this block has no
+  // way of learning the convention, which is the point.
+  const strikeContext = strikeable(page, thread) ? store.strikeOfferBlock() : '';
   const { position, wait } = c.submit({
     url: page.url, target, text, title: page.title,
     // no tag on an artifact's page chat: the envelope gets the @all prefix the
@@ -922,6 +973,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     history: priorMsgs(page, target),
     ...(filedContext ? { filedContext } : {}),
     ...(suggestContext ? { suggestContext } : {}),
+    ...(strikeContext ? { strikeContext } : {}),
     ...extras,
   });
   // `wait` is what the drawer says while it waits: bridge_starting (the agents
@@ -2322,6 +2374,134 @@ export function handler(req, res) {
         broadcast({ type: 'page', url: page.url });
       }
       ok(res, { thread: r.thread, changed: !!r.changed });
+    });
+  }
+  // ---- the mark, changed after the fact --------------------------------
+  //
+  // THE REPORT. The reader highlighted "Long-term simulations" on a manuscript,
+  // discussed it with the bots, and between them decided the passage should go.
+  // The thread stayed an amber highlight, because the two tools were a choice
+  // made at the moment of selection and never again — so the only route to the
+  // red line was to delete the thread and draw the strikeout over the passage a
+  // second time, losing the conversation that reached the decision.
+  //
+  // The mark is a FIELD, so this is a one-key write and every thread ever
+  // recorded is convertible — including the ones made before the mark existed,
+  // which have no `mark` key at all. Nothing else on the record is touched:
+  // `quote`, `prefix`, `suffix`, `prior_quote` and the whole message chain are
+  // exactly what they were, which is why the export still signs the annotation
+  // with whoever OPENED the thread and why track changes carries straight over.
+  //
+  // OWNER-ONLY, like /reanchor and unlike /resolve: this edits what the document
+  // SAYS about a passage, in the file that goes to somebody else, under the
+  // owner's name. A guest may hold an opinion about a thread; they may not draw
+  // on the manuscript.
+  //
+  // IDEMPOTENT: setting the mark it already has is a 200 with `changed: false`
+  // and no write and no broadcast. Refused on a document that cannot carry a
+  // strikeout, and refused on a FILED thread — see `strikeable`.
+  if (req.method === 'POST' && url === '/mark') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = store.findThread(page, data.thread_id);
+      if (!thread) return fail(res, 404, 'unknown thread');
+      const want = store.cleanMark(data.mark);
+      // the REVERSE — back to an ordinary highlight — is not gated on the
+      // document: undoing a mark that is already on the record must always be
+      // possible, whatever the page has since been decided to be
+      if (want === 'strike') {
+        if (store.kindOf(page) !== 'pdf') {
+          return fail(res, 409, 'a strikethrough is a PDF markup — this page cannot carry one');
+        }
+        if (thread.resolved) {
+          return fail(res, 409, 'this thread is filed — reopen it to change its markup');
+        }
+      }
+      const changed = store.setThreadMark(thread, want);
+      if (changed) {
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+      }
+      ok(res, { thread, changed });
+    });
+  }
+  // ---- …and the strike a DISCUSSION concluded --------------------------
+  //
+  // The other half, and deliberately NOT the same act. A bot suggested the
+  // passage should come out (`strike:` — store.parseStrikeSuggestion) and the
+  // reader agreed. Converting the discussion in place would put the whole
+  // conversation — the bot's name, its reasoning, the reader's questions — into
+  // the popup of the annotation that goes to the co-author. What the reader
+  // wants to hand over is a strikeout with their name on it and a sentence under
+  // it, and what they want to do with the discussion is delete it.
+  //
+  // So this MINTS a second thread: same passage, same anchor, same page number,
+  // the strike mark, authored by the OWNER, carrying at most the one short
+  // reason the suggestion named and NOT ONE WORD of the conversation. It is a
+  // wholly independent record — the discussion may be deleted the second after
+  // and this one is untouched — and the only thing connecting them is
+  // `from_thread`, which this drawer reads for a "view" link and which nothing
+  // in the export has ever heard of.
+  //
+  // Owner-only for the same reason /mark is, and it summons nobody: a decision
+  // the conversation already reached does not need another turn spent on it.
+  if (req.method === 'POST' && url === '/strike-from') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const page = pageOf(res, data);
+      if (!page) return;
+      const from = store.findThread(page, data.thread_id);
+      if (!from) return fail(res, 404, 'unknown thread');
+      if (store.kindOf(page) !== 'pdf') {
+        return fail(res, 409, 'a strikethrough is a PDF markup — this page cannot carry one');
+      }
+      // Already done. A second click — a double tap, a chip in another tab, or
+      // the reader taking the OTHER bot's suggestion after taking one — must not
+      // put a second red line over one passage. Same passage, same hand, already
+      // struck: that IS this strike, and it is handed straight back rather than
+      // refused, so a client that asks twice gets one answer and no error.
+      //
+      // The test is the QUOTE, not the thread: two suggestions inside one thread
+      // are two opinions about the SAME passage and can only ever produce one
+      // strikeout, while a suggestion about a genuinely different passage is a
+      // different anchor and mints its own. (The drawer does not offer the
+      // second click at all — a sibling chip retires to "not chosen" the moment
+      // one is taken — but the door does not rely on the drawer for that.)
+      const already = (page.threads || []).find(t =>
+        store.markOf(t) === 'strike' && t.quote === from.quote
+        && ((t.msgs || [])[0] || {}).author === me.handle);
+      if (already) return ok(res, { thread: already, deduped: true });
+      const thread = store.addThread(page, {
+        quote: from.quote, prefix: from.prefix, suffix: from.suffix,
+        page_number: from.page, mark: 'strike',
+        // The note, and the whole of it: the reason the suggestion gave, or
+        // nothing at all — in which case the strikeout speaks for itself,
+        // exactly as one drawn by hand with an empty composer does (the popup
+        // reads "(no note)" and the card reads "the passage was struck through,
+        // with no note"). The reader may edit or delete it afterwards like any
+        // comment of their own, because it IS one.
+        text: String(data.note || '').trim().slice(0, 400),
+        author: me.handle,
+        // it lands immediately after the discussion it came out of, so the
+        // reader's eye finds it where they are already looking — and page order
+        // survives the discussion being deleted, because the index is spent at
+        // insertion and never consulted again
+        index: (page.threads || []).indexOf(from) + 1,
+        from_thread: from.id,
+        // …and WHICH suggestion was taken. Both bots may propose a deletion in
+        // one thread — the reader asks each in turn and picks the wording they
+        // prefer — so the record has to say which reply's chip was the one that
+        // was clicked, or the drawer cannot tell the chosen one from the ones
+        // that were merely not chosen.
+        from_msg: String(data.from_msg || ''),
+      });
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { thread });
     });
   }
   // Ask for the paragraph again — the same job /resolve queues, on demand, for

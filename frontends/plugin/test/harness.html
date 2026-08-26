@@ -1000,6 +1000,27 @@ if (PDFV) {
       // rewritten, so this re-anchors onto the new wording and the wording it
       // replaced is drawn struck immediately before it — in amber and dimmed,
       // which is the marking the strikeout above must not be confused with
+      // A DISCUSSION THAT CONCLUDED. An ordinary highlight, argued about, with
+      // the bot's last reply carrying a `strike:` suggestion the companion has
+      // already lifted off its words (server.mjs) into `msg.strike`. This is
+      // the chip's fixture, and the thread the reader will delete once they
+      // have taken the suggestion.
+      { id: 't-1754600600-d4d4',
+        quote: 'Nothing had gone wrong',
+        prefix: 'just unconvinced.', suffix: 'Nothing had gone right either.',
+        page: 1, orphaned: false, addressed: true, addressed_by: 'claude',
+        msgs: [
+          { author: 'angadh', ts: iso(21), text: '@claude is this pulling its weight?' },
+          { author: 'claude', ts: iso(20),
+            text: 'No — the sentence after it says the same thing better.',
+            strike: { why: 'the next sentence says it better' } },
+          // …and the OTHER bot, asked the same question, proposing the same
+          // deletion in its own words. Both chips stand; the reader picks.
+          { author: 'angadh', ts: iso(19), text: '@codex what do you think?' },
+          { author: 'codex', ts: iso(18),
+            text: 'Agreed. It is a throat-clearing sentence.',
+            strike: { why: 'it is throat-clearing before the real point' } },
+        ] },
       { id: 't-1754600500-s3c3',
         quote: STRIKE_WAS,
         prefix: 'disputed it.', suffix: 'one week at a time.',
@@ -1232,7 +1253,7 @@ let guestRefuse = false;    // a guest whose @mentions the owner has not allowed
 let ownerOnly = false;      // every owner-only endpoint answers 403
 let IDENTITY = 'angadh';    // who {t:'identity'} says this browser is
 const GUEST_REASON = 'the owner hasn’t granted you bot access';
-const OWNER_ROUTES = /^\/(export|delete-page|rename-page|tag-page|model|effort|verbosity|relay|interrupt|run|run-cancel|run-figure)$/;
+const OWNER_ROUTES = /^\/(export|delete-page|rename-page|tag-page|model|effort|verbosity|relay|interrupt|run|run-cancel|run-figure|mark|strike-from)$/;
 const dedupePosts = [];     // every message the companion answered deduped:true to
 const badges = [];          // every badge count the extension asked for
 const apiCalls = [];        // every {t:'api'} path proxied through the background
@@ -1246,6 +1267,11 @@ const summarizePosts = [];  // …and every /summarize the reader asked for by h
 let resolveFail = false;    // the selftest flips this to exercise the revert
 const addressedPosts = [];  // every /addressed {thread_id, addressed} — "not done"
 let addressedFail = false;  // …and the same revert, one rung down
+// the mark, changed after the fact: every /mark {thread_id, mark} and every
+// /strike-from {thread_id, note} — the two doors to a strikethrough that was
+// arrived at rather than chosen
+const markPosts = [];
+const strikeFromPosts = [];
 // every /reanchor {thread_id, quote} — the durable half of a thread whose
 // passage a bot rewrote and the page then found again
 const reanchorPosts = [];
@@ -2421,6 +2447,51 @@ function companion(method, path, body) {
     log('re-anchored: ' + t.id);
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t, changed: true } };
+  }
+  // ---- the mark, changed after the fact --------------------------------
+  // One field, both directions, idempotent — and refused on a document that
+  // cannot carry a strikeout or on a thread that has been filed, exactly as
+  // server.mjs refuses them.
+  if (method === 'POST' && route === '/mark') {
+    markPosts.push({ thread_id: body.thread_id, mark: body.mark });
+    const t = RECORD.threads.find(x => x.id === body.thread_id);
+    if (!t) return { ok: false, status: 404, error: 'unknown thread' };
+    const want = String(body.mark || '') === 'strike' ? 'strike' : '';
+    if (want === 'strike' && t.resolved) {
+      return { ok: false, status: 409, error: 'this thread is filed — reopen it to change its markup' };
+    }
+    const changed = want !== (t.mark === 'strike' ? 'strike' : '');
+    if (want) t.mark = 'strike'; else delete t.mark;
+    RECORD.updated_at = now();
+    log((want ? 'struck: ' : 'un-struck: ') + t.id);
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true, thread: t, changed } };
+  }
+  // …and the OTHER door: a bot suggested the passage should come out and the
+  // reader agreed. A SEPARATE thread on the same passage, in the reader's name,
+  // carrying the reason and none of the conversation — so the discussion can be
+  // deleted afterwards and this one is untouched.
+  if (method === 'POST' && route === '/strike-from') {
+    strikeFromPosts.push({ thread_id: body.thread_id, note: body.note || '',
+                           from_msg: body.from_msg || '' });
+    const from = RECORD.threads.find(x => x.id === body.thread_id);
+    if (!from) return { ok: false, status: 404, error: 'unknown thread' };
+    const already = RECORD.threads.find(x =>
+      x.mark === 'strike' && x.quote === from.quote
+      && ((x.msgs || [])[0] || {}).author === IDENTITY);
+    if (already) return { ok: true, status: 200, data: { ok: true, thread: already, deduped: true } };
+    const t = {
+      id: 't-' + Math.floor(Date.now() / 1000) + '-mint' + RECORD.threads.length,
+      quote: from.quote, prefix: from.prefix, suffix: from.suffix,
+      page: from.page, orphaned: false, mark: 'strike',
+      from_thread: from.id, from_msg: String(body.from_msg || ''),
+      msgs: [{ author: IDENTITY, ts: now(), text: String(body.note || '') }],
+    };
+    RECORD.threads.splice(RECORD.threads.indexOf(from) + 1, 0, t);
+    RECORD.updated_at = now();
+    log('struck from a discussion: ' + t.id);
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+    return { ok: true, status: 200, data: { ok: true, thread: t } };
   }
   // …and the agents' paragraph landing over the top of the placeholder, later,
   // as a `page` event — never as a message in the thread
@@ -6534,6 +6605,129 @@ async function selftestPdfStrike() {
   await sleep(160);
   check('clicking a strikeout opens its thread, exactly as a highlight does',
     !!S.querySelector('.card.focused[data-thread="t-1754600300-s1a1"]'));
+
+  // ---- the mark, changed AFTER the fact -----------------------------------
+  // A passage was highlighted, discussed, and the discussion concluded it
+  // should come out. Two routes to the red line, and they are not the same act.
+  const hit0 = hitter(check);
+  // the same "a gesture at a control that is not there is worth ONE failure,
+  // not the whole run" guard, addressed by selector inside a card
+  const hit = (sel, what, root) => hit0((root || S).querySelector(sel), what);
+  const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const plainCard = cardFor('t-1754600000-p1a2');
+  check('an ordinary thread on a PDF offers the conversion',
+    !!plainCard && !!plainCard.querySelector('[data-act="set-mark"][data-mark="strike"]'));
+  check('…and a struck one offers the way back instead',
+    !!cardFor('t-1754600300-s1a1').querySelector('[data-act="set-mark"][data-mark="highlight"]'));
+  check('…which is drawn quieter than the thing it undoes, because it is a smaller decision',
+    Number(cs(cardFor('t-1754600300-s1a1').querySelector('.thr-mark')).opacity)
+      < Number(cs(plainCard.querySelector('.thr-mark')).opacity));
+  check('…and the FILED strikeout in the archive offers neither: that argument is over',
+    !fcard().querySelector('[data-act="set-mark"]'));
+
+  const marksBefore = markPosts.length;
+  if (hit('[data-act="set-mark"][data-mark="strike"]', 'the convert control', plainCard)) {
+    await until(() => markPosts.length > marksBefore, 3000);
+  }
+  await sleep(220);
+  check('converting posts the one field and nothing else',
+    markPosts.length === marksBefore + 1
+    && markPosts[markPosts.length - 1].mark === 'strike'
+    && markPosts[markPosts.length - 1].thread_id === 't-1754600000-p1a2');
+  check('…and the passage on the page is a red line a moment later',
+    !!document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="t-1754600000-p1a2"]'));
+  check('…with no wash left under it', (() => {
+    const m = document.querySelector('mark.bfp-hl[data-bfp="t-1754600000-p1a2"]');
+    return !!m && /rgba\(0, 0, 0, 0\)|transparent/.test(cs(m).backgroundColor);
+  })());
+  check('…and the card says the same thing as the page',
+    !!cardFor('t-1754600000-p1a2').querySelector('.quote.struck'));
+  check('…the conversation it was reached in being untouched',
+    /the whole paper hangs on/.test(cardFor('t-1754600000-p1a2').textContent));
+  // and back again, which must leave nothing behind
+  if (hit('[data-act="set-mark"][data-mark="highlight"]', 'the way back', cardFor('t-1754600000-p1a2'))) {
+    await until(() => markPosts.length > marksBefore + 1, 3000);
+  }
+  await sleep(220);
+  check('…and the reverse puts the yellow wash back where it was',
+    !document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="t-1754600000-p1a2"]')
+    && cs(document.querySelector('mark.bfp-hl[data-bfp="t-1754600000-p1a2"]'))
+      .backgroundColor.startsWith('rgba(250, 210, 80'));
+
+  // ---- …and the strike a BOT suggested and the reader took ----------------
+  const disc = () => cardFor('t-1754600600-d4d4');
+  // FOUR units is a folded thread (collapsePlan, COLLAPSE_AT), and the first
+  // bot's reply is in the fold — which is the drawer doing its job, not a bug,
+  // and exactly what the reader opens before choosing between two suggestions.
+  hit('[data-act="expand"]', 'the "1 earlier reply" fold', disc());
+  await sleep(120);
+  const chips = () => [...(disc() ? disc().querySelectorAll('.filechip.strikechip') : [])];
+  const chipOf = who => (disc() || document).querySelector(
+    '.reply[data-author="' + who + '"] .filechip.strikechip');
+  check('a bot’s suggestion is a chip under its reply, not a marking',
+    !!chipOf('claude') && /should come out/i.test(chipOf('claude').textContent));
+  check('…saying why, in the bot’s own words', /says it better/.test(chipOf('claude').textContent));
+  // BOTH BOTS MAY SUGGEST. The reader asked each in turn and is choosing.
+  check('…and the OTHER bot’s suggestion is a chip of its own, on its own reply',
+    chips().length === 2 && !!chipOf('codex'));
+  check('…carrying ITS wording, not the first one’s — no last-one-wins anywhere',
+    /throat-clearing/.test(chipOf('codex').textContent)
+    && !/throat-clearing/.test(chipOf('claude').textContent));
+  check('…each offering exactly two answers, one of which is no',
+    chips().every(c => c.querySelectorAll('[data-act="strike-yes"]').length === 1
+      && c.querySelectorAll('[data-act="strike-no"]').length === 1));
+  check('…and the passage is STILL a plain highlight until the reader clicks',
+    !document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="t-1754600600-d4d4"]'));
+
+  const threadsBefore = RECORD.threads.length;
+  const codexTs = (chipOf('codex').closest('[data-ts]') || {}).dataset.ts;
+  // THE READER PICKS THE SECOND ONE — codex's wording, not claude's
+  if (hit('[data-act="strike-yes"]', 'the Strike it button', chipOf('codex'))) {
+    await until(() => strikeFromPosts.length > 0, 3000);
+  }
+  await sleep(260);
+  const mint = RECORD.threads.find(t => t.from_thread === 't-1754600600-d4d4');
+  check('confirming mints a SECOND thread rather than converting the discussion',
+    RECORD.threads.length === threadsBefore + 1 && !!mint && !disc().querySelector('.quote.struck'));
+  check('…struck, on the same passage, signed by the reader and carrying only the reason',
+    !!mint && mint.mark === 'strike' && mint.quote === 'Nothing had gone wrong'
+    && mint.msgs.length === 1 && mint.msgs[0].author === IDENTITY);
+  check('…in the wording of the suggestion they actually CHOSE',
+    !!mint && /throat-clearing/.test(mint.msgs[0].text)
+    && !/says it better/.test(mint.msgs[0].text));
+  check('…and the record says which REPLY it was taken from, not merely which thread',
+    !!mint && mint.from_msg === codexTs && !!codexTs
+    && strikeFromPosts[strikeFromPosts.length - 1].from_msg === codexTs);
+  check('…and not one word of the conversation, which is the whole point',
+    !!mint && !/pulling its weight/.test(JSON.stringify(mint)));
+  check('…the red line landing on the page at once',
+    !!document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="' + mint.id + '"]'));
+  check('…the new card arriving with something to catch the eye',
+    !!cardFor(mint.id) && cardFor(mint.id).classList.contains('arrived'));
+  check('…the chosen chip settling into an answer with a way to go and look',
+    !!chipOf('codex') && chipOf('codex').classList.contains('done')
+    && !!chipOf('codex').querySelector('[data-act="strike-view"]'));
+  check('…and the one they turned down RETIRING rather than vanishing',
+    !!chipOf('claude') && chipOf('claude').classList.contains('passed')
+    && /not chosen/i.test(chipOf('claude').textContent));
+  check('…still saying what it had proposed, with nothing left to click',
+    /says it better/.test(chipOf('claude').textContent)
+    && !chipOf('claude').querySelector('[data-act="strike-yes"]'));
+  check('THE READER IS LEFT WHERE THEY WERE: arriving content never takes the scroll',
+    d.held() === 't-1754600600-d4d4' && !!disc().classList.contains('focused'));
+
+  // ---- …and then they throw the discussion away ---------------------------
+  if (hit('[data-act="del-thread"]', 'the delete control', disc())) {
+    await sleep(60);
+    hit('[data-act="del-thread-yes"]', 'the confirm', disc());
+    await until(() => !RECORD.threads.some(t => t.id === 't-1754600600-d4d4'), 3000);
+  }
+  await sleep(260);
+  check('the discussion is gone', !cardFor('t-1754600600-d4d4'));
+  check('…and the strikeout it produced is not — a wholly independent record',
+    !!cardFor(mint.id) && !!document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="' + mint.id + '"]'));
+  check('…and the focus falls through to it rather than into nothing',
+    d.held() === mint.id);
 
   // (what gets WRITTEN BACK into the file is pinned where the writing happens
   // — pdf-annot.test.mjs reads a real StrikeOut out of a real PDF — because

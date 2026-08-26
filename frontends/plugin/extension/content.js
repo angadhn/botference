@@ -1959,6 +1959,33 @@
         return { ok: true, thread: r.data && r.data.thread,
                  summarizing: !!(r.data && r.data.summarizing) };
       },
+      // Highlight ⇄ strikethrough on a thread that already exists. The reader
+      // discussed a passage and decided it should come out; the mark is a field,
+      // so this is one write and nothing else on the record moves. Repainted
+      // BEFORE the round trip for the same reason resolve is — the passage is
+      // what they are looking at — and put back on a refusal.
+      onSetMark: async (threadId, mark) => {
+        const want = mark === 'strike';
+        Anchor.markStruck(threadId, want);
+        const r = await api('POST', '/mark', { url: URL_NOW, thread_id: threadId, mark: want ? 'strike' : 'highlight' });
+        if (!r.ok) { Anchor.markStruck(threadId, !want); return failure(r); }
+        await loadPage();
+        return { ok: true, thread: r.data && r.data.thread };
+      },
+      // A bot suggested the passage should go and the reader agreed. This does
+      // NOT convert the discussion: it mints a strikeout of the reader's own on
+      // the same passage (server.mjs /strike-from), so the discussion can be
+      // deleted afterwards and the co-author receives a clean red line signed by
+      // the reader. No optimistic paint — the new thread has an id only the
+      // companion can mint, and loadPage paints it the moment it lands.
+      onStrikeFrom: async (threadId, note, fromMsg) => {
+        const r = await api('POST', '/strike-from',
+          { url: URL_NOW, thread_id: threadId, note: note || '', from_msg: fromMsg || '' });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, thread: r.data && r.data.thread,
+                 deduped: !!(r.data && r.data.deduped) };
+      },
       // "not done" — the reader's answer to a thread the bots claimed handled.
       // Only the clearing direction exists here: marking a thread ADDRESSED is
       // what a bot's reply landing in it does, server-side, and is never a

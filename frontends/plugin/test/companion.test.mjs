@@ -2448,6 +2448,10 @@ async function main() {
         ['/verbosity', { level: 'long' }],
         ['/relay', { agent: 'claude' }],
         ['/interrupt', { url: PAGE1 }],
+        // a guest may hold an opinion about a thread (/resolve, /addressed);
+        // they may not draw on the owner's manuscript
+        ['/mark', { url: PAGE1, thread_id: 't-x', mark: 'strike' }],
+        ['/strike-from', { url: PAGE1, thread_id: 't-x' }],
       ];
       for (const [route, body] of calls) {
         const r = await POST(hb, route, body, ADA);

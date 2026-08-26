@@ -5115,6 +5115,207 @@ Both screenshot states.
   about something said thirty chats ago will not be answered from it. The
   bots can read the council root, and the digest names the paths.
 
+## Amendment (2026-08-26, shipped): the strikethrough a discussion arrives at
+
+The reader opened an ordinary comment on "Long-term simulations" in a
+manuscript, argued about it with the bots, and between them decided the passage
+should come out. The thread stayed an amber highlight. There was no way to say
+so: the two tools were a choice made at the moment of SELECTION and never again,
+so the only route to the red line was to delete the thread and draw the
+strikeout over the passage a second time — losing the conversation that reached
+the decision.
+
+Two doors close that gap, and the whole design is that **they are not the same
+door**.
+
+#### 1. `POST /mark` — the reader converts the thread in front of them
+
+Owner-only, one field, both directions.
+
+```
+POST /mark { url, thread_id, mark: "strike" | "highlight" }  → { thread, changed }
+```
+
+`store.setThreadMark(thread, mark)` writes `mark: "strike"` or DELETES the key —
+absent means highlight, as it always has, so a converted-and-reverted thread is
+byte-for-byte the record it was and nothing on disk needs migrating.
+**Retroactivity is therefore inherent**: a thread written before the mark
+existed has no `mark` key, and converting it is the same one-key write
+(`strike.test.mjs`, "RETROACTIVITY").
+
+Nothing else on the record moves. `quote`, `prefix`, `suffix`, `page`,
+`prior_quote` and the entire message chain are exactly what they were — which is
+why the export still signs the annotation with whoever OPENED the thread, why
+track changes and the collateral machinery carry straight over, and why no bot is
+summoned by a conversion.
+
+**Refusals** (`server.mjs strikeable`):
+
+| | |
+|---|---|
+| not a PDF (`store.kindOf`) | 409 — a strikeout is an `/StrikeOut`, and only a PDF can carry one |
+| the thread is FILED | 409 — the argument is over; reopen it first |
+| unknown thread | 404 |
+| a guest | 403, like `/reanchor` — a guest may hold an opinion about a thread, not draw on the owner's manuscript |
+| the mark it already has | 200, `changed: false`, no write and no broadcast |
+
+The server's answer about the document is its OWN (`store.kindOf`), never the
+client's: the extension gates the affordance on the adapter's `strike`
+capability, and a door must not take a client's word for what it may do.
+**Undoing** is not gated on the document — a mark already on the record must
+always be removable, whatever the page has since been decided to be.
+
+**The affordance** is a struck `S` in the card head beside the ✓ and the ✕, on
+hover like every other per-row control, hovering to the strike's own red rather
+than the delete's. The REVERSE is deliberately quieter — a third of the opacity,
+no red, and the glyph without its line: striking a passage is a statement about
+the document, putting it back is a correction of a click. (The line through the
+glyph is CSS; U+0336 does not render in the drawer's face.)
+
+#### 2. `POST /strike-from` — a bot suggested it and the reader agreed
+
+The suggestion is the `file-in:` idiom exactly (`workspace.mjs` SUGGEST_MARK):
+
+- The turn carries an invitation, composed in `summon` and passed to
+  `chat.envelope` as `strikeContext`, only when `strikeable(page, thread)` — so a
+  model that is never shown it cannot learn the convention. It rides EVERY turn
+  of the thread, not the first: a conclusion is reached on the fourth exchange.
+- A bot may end a reply with a line of its own: `strike: <one short reason>`.
+  `store.parseStrikeSuggestion` reads it back — a line of its own, the LAST one
+  counts, a reason is required (a bare `strike:` is a model echoing the
+  convention, not concluding anything).
+- `server.mjs` lifts the line OFF the reply's words into `msg.strike = { why }`
+  and the drawer draws a chip: **Strike it / No**. Bots never mark anything up.
+
+**BOTH BOTS MAY SUGGEST, and the reader picks.** Asking claude, then asking
+codex, and comparing the two answers is the ordinary way one of these threads
+gets used — so the whole path is PER REPLY and there is no last-one-wins
+anywhere in it. The lift is `msg.strike`, exactly as filing's is `msg.file_in`;
+two suggestions in one conversation are two chips, each in its own bubble,
+each carrying its own bot's wording; and confirming one mints the strike from
+THAT reply's reason.
+
+Which one was taken is on the record as `from_msg` (the reply's `ts`), because
+"this thread produced a strike" is not a precise enough answer for the drawer.
+The chosen chip becomes `Struck through, in your name. · view`; the siblings
+**retire rather than vanish** — `Not chosen — <what it proposed>`, muted, with
+nothing left to click. The reader chose between two proposals and is entitled to
+go on seeing what the one they turned down said.
+
+**And confirming does NOT convert the discussion.** It mints a SECOND thread:
+
+```
+POST /strike-from { url, thread_id, note }  → { thread, deduped? }
+```
+
+Same quote, same prefix/suffix, same page number, `mark: "strike"`, authored by
+the OWNER with their own timestamp, carrying at most one short note — the reason
+the suggestion gave, or nothing at all, and **not one word of the conversation**.
+
+The reason is the whole feature. The reader's next act is to DELETE the
+discussion, and what the co-author receives is then a red line with a human's
+name on it and one sentence in the popup: no bot names, no reply chain, no
+agentic chatter. Converting in place would have put the entire conversation into
+that popup, because `Ann.threadContents` writes the whole thread into
+`/Contents`.
+
+The minted thread is therefore **wholly independent**. The only link is a soft
+`from_thread: <id>` on the new record, which this drawer reads for a "view" link
+and for the delete fall-through below. It may dangle, nothing looks it up
+expecting to find anything, and **nothing in the exported annotation references
+it** — `pdf/viewer.js collectItems` has never heard of the field.
+
+Idempotent by the same argument as everything else here: same passage, same
+hand, already struck → that IS this strike, handed back with `deduped: true`.
+The test is the QUOTE, not the thread: two suggestions inside one thread are two
+opinions about the SAME passage and can only ever produce one strikeout, while a
+suggestion about a genuinely different passage is a different anchor and mints
+its own. The drawer does not offer the second click at all (the siblings have
+retired), but the door does not rely on the drawer for that.
+No bot is summoned. `index` puts it beside the discussion in the record; the
+drawer then orders the column by document position, as it always has.
+
+#### 3. Where the reader is left — the send-hold contract decides
+
+Clicking "Strike it" is a deliberate gesture, so focus MAY move. It does not.
+The reader is standing in the discussion, that is what they were reading, and
+their next act is one of two things — keep talking, or delete this thread — and
+both happen there. So:
+
+- the discussion is **held** (`holdOn`): the spotlight it already had, plus the
+  promise that every render keeps it in view;
+- the new card simply appears in the column with a four-second arrival wash and
+  a red rail (`.card.arrived`), because **arriving content never takes the
+  scroll** — and a card the reader did not ask to be taken to is arriving
+  content however deliberate the click that caused it;
+- the chip settles into `Struck through, in your name. · view`, and "view" is a
+  deliberate arrival that ends the hold through `focus()`'s own release rule.
+
+**Deleting the discussion then falls through to its heir.** Without it the focus
+would point at a card that no longer exists and the reader would be looking at a
+column with nothing lit in it. The heir is found on the RECORD (`from_thread`),
+not in session memory, so it works after a reload and in another tab; it is
+HELD rather than merely focused, because the column just lost a card above it
+and everything below has moved up.
+
+### Files
+
+```
+store.mjs                       setThreadMark; STRIKE_MARK / strikeOfferBlock /
+                                parseStrikeSuggestion; addThread takes
+                                `from_thread` and `from_msg`; appendMsg carries
+                                `strike` (per MESSAGE, like `file_in`)
+server.mjs                      strikeable(); POST /mark; POST /strike-from;
+                                the reply-event lift; `strikeContext` in summon
+chat.mjs                        envelope takes `strikeContext`, after the body
+                                and before the roster
+extension/anchor.js             markStruck(id, on) — the class toggled and the
+                                mark restyled in place, like markResolved
+extension/content.js            onSetMark, onStrikeFrom
+extension/drawer.js             the card-head S̶ and its quieter reverse, the
+                                strike chip, doSetMark / doStrikeFrom, the hold
+                                on confirm and the delete fall-through
+extension/drawer.css            .rebtn.thr-mark(.back), .filechip.strikechip
+                                (.done/.passed), .card.arrived
+bridge-system-prompt.md         rule 13 — suggest rarely, only when invited
+```
+
+**Testing.** `test/strike.test.mjs` (28) is the store's primitives, both
+endpoints and every refusal, the retroactive thread, the envelope offer's three
+conditions, the suggestion lift, the mint, its independence after the discussion
+is deleted, and what `Ann.threadContents` writes for it (the owner's name, the
+reason, no bot, no discussion, no `from_thread`). `companion.test.mjs` adds
+`/mark` and `/strike-from` to the owner-only 403 list. Harness
+`?pdf=1&strike=1&selftest=1` grows from 39 to 69: the affordance on a plain
+thread, the quieter reverse on a struck one, neither on a filed one, the
+conversion and its repaint and its undo, TWO chips from two bots each with its
+own wording, taking the second one, the first retiring to "not chosen", the
+mint's independence, the arrival, the hold, and the fall-through on delete.
+Both suites drive the reader's actual scenario — ask claude, ask codex, take
+codex's — end to end.
+
+`test/mock-bridge.mjs`: `[mock:says:…]` now takes the LAST match in the turn
+rather than the first, for the reason `[mock:write]` already did — the envelope
+replays the thread's history above the new message, so a directive from two
+turns ago is still in this turn's text, and a thread where the reader asks
+claude and then codex had codex answering in claude's words.
+
+#### Known limits (deliberate)
+
+- **Two threads on one passage is two markings on one passage.** Between the
+  mint and the delete, the passage carries the discussion's amber wash and the
+  new red line at once. That is honest — it is what the record says — and it
+  resolves itself the moment the reader deletes the discussion, which is the
+  workflow the feature exists for.
+- **`from_thread` and `from_msg` may dangle**, by design. They are provenance,
+  not foreign keys — deleting the discussion is the point of the feature.
+- **A suggestion can be inside the long-thread fold.** Four units is a folded
+  thread (`collapsePlan`), so on a conversation that went back and forth the
+  first bot's chip sits behind "Show 1 earlier reply". That is the fold doing
+  its job; the reader opens it to compare the two proposals anyway.
+- **A struck thread cannot be filed and then re-struck.** Reopen it first; the
+  refusal says so.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

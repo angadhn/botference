@@ -373,6 +373,25 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .filechip.done {
   border-style: solid; border-color: var(--done-line); color: var(--done-line);
 }
+/* The other suggestion a bot can make: this passage should come out. Same chip,
+   same one-step confirm, drawn in the strike's own red — because what the
+   button makes is a red line on the document, and the colour is the shortest
+   way to say which of the two markings is being offered. Confirmed, it goes
+   solid red rather than the filing chip's green: nothing has been FILED, a
+   deletion has been suggested, and those are different states of the world. */
+.filechip.strikechip { border-color: color-mix(in srgb, var(--strike-line) 45%, var(--line)) }
+.filechip.strikechip .rebtn:not([disabled]):hover { color: var(--strike-line) }
+.filechip.strikechip.done {
+  border-style: solid; border-color: var(--strike-line); color: var(--strike-line);
+}
+/* …and the suggestion the reader did NOT take. Both bots may propose a deletion
+   in one thread; once one is taken the others have been answered, and they
+   retire rather than vanish — the reader chose between two proposals and is
+   entitled to go on seeing what the one they turned down said. Muted, no
+   border colour of its own, no buttons: a record, not an offer. */
+.filechip.strikechip.passed {
+  border-color: var(--line); color: var(--muted); opacity: .7;
+}
 
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }
@@ -970,6 +989,47 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   animation: bfp-spin 1s linear infinite }
 @keyframes bfp-spin { to { transform: rotate(360deg) } }
 @media (prefers-reduced-motion: reduce) { .rebtn.thr-res.busy { animation: none } }
+
+/* ── the mark, changed after the fact: S̶ beside the ✓ ───────────────────── */
+/* The strikethrough button out of every editor there has ever been, at the same
+   size and the same reveal-on-hover as the ✓ and the ✕ it sits with. It hovers
+   to the strike's own red rather than the delete's red, because the two are
+   different acts and the row must not suggest otherwise.
+
+   THE REVERSE IS QUIETER, deliberately. Striking a passage is a statement about
+   the document; putting it back is a correction of a click. So the undo keeps
+   the muted colour it inherits, sits at two thirds the opacity of its twin, and
+   drops the line from its own glyph — visible to anyone looking for it, invisible
+   to anyone who is not. */
+.rebtn.thr-mark {
+  font-weight: 600; letter-spacing: .02em;
+  text-decoration: line-through; text-decoration-thickness: 1.5px;
+}
+.rebtn.thr-mark:hover { color: var(--strike-line) }
+.rebtn.thr-mark.back { opacity: .34; font-weight: 500; text-decoration: none }
+.card:hover .rebtn.thr-mark.back { opacity: .66 }
+.rebtn.thr-mark.back:hover { opacity: 1; color: var(--muted) }
+.rebtn.thr-mark.busy { opacity: .85; color: var(--muted); cursor: default;
+  display: inline-flex; align-items: center; justify-content: center;
+  animation: bfp-spin 1s linear infinite }
+@media (prefers-reduced-motion: reduce) { .rebtn.thr-mark.busy { animation: none } }
+
+/* A strikeout that has JUST been minted out of a discussion. The reader is
+   still reading the discussion — the send-hold contract says arriving content
+   never takes the scroll — so the new card has to be findable without moving
+   anything: a red rail and a wash that fades out over four seconds. Nothing
+   about the card's layout changes, so nothing below it moves. */
+.card.arrived {
+  animation: bfp-arrived 4s ease-out 1;
+  box-shadow: inset 2px 0 0 var(--strike-line);
+}
+@keyframes bfp-arrived {
+  0% { background: color-mix(in srgb, var(--strike-line) 16%, transparent) }
+  100% { background: transparent }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.arrived { animation: none; background: color-mix(in srgb, var(--strike-line) 8%, transparent) }
+}
 
 /* ── before → after, where a change rewrote the passage ─────────────────── */
 /* When a bot's change rewrites the quoted passage the highlight orphans, and

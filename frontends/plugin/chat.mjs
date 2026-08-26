@@ -230,7 +230,7 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
   snapshotPath, pageNumber, mark, summary, project, untaggedAll, routeHint,
-  filedContext, suggestContext }) {
+  filedContext, suggestContext, strikeContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -358,10 +358,19 @@ export function envelope({ url, title, target, text, quote, history,
       + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
+  // The OTHER offer, and the exact opposite register from `struck` above. That
+  // one says a passage has already been crossed out and the bot should leave it
+  // alone; this one says the document CAN be marked up and gives the bot the one
+  // line it may end with if the discussion has concluded the passage should go
+  // (store.strikeOfferBlock). It rides every turn of the thread rather than the
+  // first — a conclusion is reached on the fourth exchange, not the first, and a
+  // resumed session's replayed history is uneven — and the server only composes
+  // it for a thread that could actually take the mark.
+  const strike_offer = strikeContext ? `\n${strikeContext}` : '';
   // last, and after the body: the roster is the least important thing in the
   // turn and must never come between the reader's question and the answer
   const where_to_file = roster ? `\n${roster}` : '';
-  return route + ctx + body + doc + where_to_file;
+  return route + ctx + body + doc + strike_offer + where_to_file;
 }
 
 // --- .docx comment digest -----------------------------------------------
@@ -938,6 +947,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // here: the server holds the page record and the workspace reader.
         filedContext: job.filedContext || '',
         suggestContext: job.suggestContext || '',
+        // the strikeout offer, on a thread that could take one (server.mjs)
+        strikeContext: job.strikeContext || '',
         verbosity: readConfig().verbosity }),
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that

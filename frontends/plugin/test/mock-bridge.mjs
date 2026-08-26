@@ -225,7 +225,14 @@ function input(text) {
       // [mock:says:…] — the whole reply, verbatim, with `\\n` for newlines.
       // For the tests that care what a bot's WORDS are rather than that it
       // answered: a filing suggestion has to sit on a line of its own.
-      const says = /\[mock:says:([^\]]+)\]/.exec(text);
+      //
+      // The LAST one in the turn, for the same reason [mock:write] takes the
+      // last: the envelope replays the thread's history above the new message,
+      // so a directive the reader sent two turns ago is still in this turn's
+      // text — and the first match is the oldest, not the current ask. A thread
+      // where the reader asks claude, then asks codex, would otherwise have
+      // codex answering in claude's words.
+      const says = [...String(text).matchAll(/\[mock:says:([^\]]+)\]/g)].pop();
       const body = says
         ? String(says[1]).split('\\n').join('\n')
         : reads
