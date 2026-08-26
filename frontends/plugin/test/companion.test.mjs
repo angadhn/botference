@@ -1256,6 +1256,41 @@ async function main() {
       'the locality line needs no snapshot — the thread knows its page');
   });
 
+  // A struck passage is a suggested deletion the reader drew on the document,
+  // and the turn has to carry it BOTH ways: the bot is told, and the bot is
+  // told not to act. Half of this — the telling — is the easy half; the other
+  // half is why the wording is asserted rather than merely its presence.
+  await test('a struck passage rides the envelope as context, with the hands-off instruction', async () => {
+    const url = 'https://arxiv.test/abs/2608.09999';
+    await POST(base, '/page', { url, title: 'Struck Proof', site: 'arxiv.test', kind: 'pdf' });
+    const from = inputs(logFile).length;
+    const r = await POST(base, '/thread', {
+      url, quote: 'the induction is trivial', prefix: '', suffix: '', page: 7, mark: 'strike',
+      msg: { text: '@claude why did I want this gone?' },
+    });
+    assert.equal(r.json.queued, true);
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(/has STRUCK this passage through/.test(turn), 'the turn says the passage is struck');
+    assert.ok(/suggested deletion/.test(turn), '…and what a strike means');
+    assert.ok(/background, not an instruction/.test(turn), '…and that it is context, not a request');
+    assert.ok(/do not carry out, argue for, or offer to make the deletion unless they ask/.test(turn),
+      '…in the words that stop a helpful model from doing it anyway');
+    assert.ok(turn.includes('This comment is on page 7 of the document.'),
+      'the page line it rides beside is untouched');
+  });
+
+  await test('an ordinary highlight says nothing about strikes', async () => {
+    const url = 'https://arxiv.test/abs/2608.09998';
+    await POST(base, '/page', { url, title: 'Plain Proof', site: 'arxiv.test', kind: 'pdf' });
+    const from = inputs(logFile).length;
+    await POST(base, '/thread', {
+      url, quote: 'the induction is trivial', prefix: '', suffix: '', page: 7,
+      msg: { text: '@claude is this sound?' },
+    });
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(!/STRUCK/.test(turn), 'no strike, no line — the envelope is the one it always was');
+  });
+
   // --- lazy persistence meets the envelope --------------------------------
   // Under "No record until the reader acts" the extension holds every write
   // until the first act, then lands them in one fixed order — record,

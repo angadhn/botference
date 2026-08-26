@@ -16,7 +16,7 @@
     newChat: $('new-chat'), newProject: $('new-project'),
     newChatMenu: $('new-chat-menu'),
     newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
-    projects: $('projects'), theme: $('theme-toggle'),
+    projects: $('projects'), theme: $('theme-toggle'), typing: $('typing-toggle'),
     conn: $('st-conn'), stCtx: $('st-ctx'),
     agentCards: $('agent-cards'), agentsBody: $('agents-body'),
     agentsPanel: $('agents-panel'), agentsToggle: $('agents-toggle'),
@@ -64,6 +64,101 @@
   });
   applyTheme(localStorage.getItem(THEME_KEY) || 'system');
   renderTheme();
+
+  // ── typewriter: how a live answer arrives ──────────────────────────────
+  // WHAT THIS IS NOT: artificial slowness. The bridge hands us text in chunks
+  // whose size is an accident of the model's tokenizer and the network — a
+  // sentence, then eleven characters, then nothing for a second, then a
+  // paragraph. Painted the instant each lands, an answer arrives in visible
+  // lurches. The drain smooths only what has ALREADY ARRIVED: a stream's
+  // `text` is everything received, `shown` is how much of it is on screen, and
+  // a timer walks the second toward the first.
+  //
+  // The rate is proportional to the backlog — a fraction of what is waiting,
+  // every frame — and two things fall out of that for free. A slow stream
+  // settles at a lag of a dozen characters (the backlog can only grow until a
+  // fraction of it equals the arrival rate), which reads as typing. A burst —
+  // a whole paragraph at once — drains in a few frames rather than being typed
+  // out at leisure. And the authoritative `room` event paints the final text
+  // whole (finalizeStream), so a finished answer is never held hostage.
+  const TYPING_KEY = 'council-typing';
+  const TYPE_TICK_MS = 16, TYPE_DIV = 8, TYPE_MIN = 1;
+  let typeTimer = null;
+  function reducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+    catch { return false; }
+  }
+  // A reader who has asked their OS for less motion has already answered this
+  // question; their setting is remembered but not obeyed while that holds.
+  function typingPref() {
+    try { return localStorage.getItem(TYPING_KEY) === 'instant' ? 'instant' : 'type'; }
+    catch { return 'type'; }
+  }
+  function typewriterOn() { return typingPref() === 'type' && !reducedMotion(); }
+  function shownText(s) {
+    if (!typewriterOn()) return s.text;
+    return s.text.slice(0, Math.min(s.shown == null ? s.text.length : s.shown, s.text.length));
+  }
+  function typeStep(s) {
+    const have = s.text.length, seen = Math.min(s.shown || 0, have);
+    if (seen >= have) return false;
+    s.shown = Math.min(have, seen + Math.max(TYPE_MIN, Math.ceil((have - seen) / TYPE_DIV)));
+    return true;
+  }
+  function typeDrain() {
+    const wasPinned = pinned();
+    let moved = false, behind = false;
+    for (const k of Object.keys(state.streams)) {
+      const s = state.streams[k];
+      if (!typeStep(s)) continue;
+      moved = true;
+      paint(s.el, shownText(s));
+      if (s.text.length > s.shown) behind = true;
+    }
+    if (moved) follow(wasPinned);
+    if (!behind) stopTyping();
+  }
+  function startTyping() {
+    if (typeTimer || !typewriterOn()) return;
+    typeTimer = setInterval(typeDrain, TYPE_TICK_MS);
+  }
+  function stopTyping() { if (typeTimer) { clearInterval(typeTimer); typeTimer = null; } }
+
+  const TYPE_LABEL = { type: 'typed', instant: 'instant' };
+  function renderTyping() {
+    if (!els.typing) return;
+    const forced = reducedMotion();
+    const cur = forced ? 'instant' : typingPref();
+    const tip = forced
+      ? 'your system asks for reduced motion — answers arrive instantly'
+      : 'how a live answer arrives: typed = revealed as it is written; instant = the moment it lands';
+    els.typing.innerHTML = '<div class="chip-label">typing</div>'
+      + `<div class="seg" role="group" aria-label="how answers arrive"${forced ? ' data-forced="1"' : ''}>`
+      + ['type', 'instant'].map(m =>
+        `<button class="seg-btn${m === cur ? ' on' : ''}" data-typing-opt="${m}" title="${esc(tip)}"`
+        + ` aria-label="${TYPE_LABEL[m]}" aria-pressed="${m === cur}"${forced ? ' disabled' : ''}>`
+        + `${TYPE_LABEL[m]}</button>`).join('')
+      + '</div>';
+  }
+  function setTyping(mode) {
+    const want = mode === 'instant' ? 'instant' : 'type';
+    try { localStorage.setItem(TYPING_KEY, want); } catch { /* private window: this session only */ }
+    // whatever is mid-answer catches up rather than rewinding or freezing
+    for (const k of Object.keys(state.streams)) {
+      const s = state.streams[k];
+      if (want === 'instant') { s.shown = s.text.length; paint(s.el, s.text); }
+      else if (s.shown == null) s.shown = s.text.length;
+    }
+    if (want === 'instant') stopTyping(); else startTyping();
+    renderTyping();
+  }
+  if (els.typing) {
+    els.typing.addEventListener('click', e => {
+      const b = e.target.closest('[data-typing-opt]');
+      if (b && !b.disabled) setTyping(b.dataset.typingOpt);
+    });
+    renderTyping();
+  }
 
   // ── participant brand marks (Simple Icons path data, inlined; same
   // constant the review frontend ships) ──
@@ -1489,12 +1584,16 @@
     const key = streamKey(ev);
     let s = state.streams[key];
     if (!s) {
-      s = state.streams[key] = { text: '', el: addMsg(model, '', { streaming: true }) };
+      s = state.streams[key] = { text: '', shown: 0, el: addMsg(model, '', { streaming: true }) };
     }
     const wasPinned = pinned();
     s.text += String(ev.text || '');
-    paint(s.el, s.text);
+    // in instant mode `shown` is simply kept at the end, so a reader who flips
+    // the switch mid-answer does not watch the text rewind
+    if (!typewriterOn()) s.shown = s.text.length;
+    paint(s.el, shownText(s));
     follow(wasPinned);
+    startTyping();
   }
   function finalizeStream(ev) {
     const key = `${ev.speaker}:${ev.stream_id}`;
@@ -1502,7 +1601,11 @@
     if (s) {
       const wasPinned = pinned();
       s.el.classList.remove('streaming');
+      // the whole authoritative text, at once: the answer is finished and the
+      // drain has no business holding any of it back
       paint(s.el, ev.text);
+      // (the drain stops itself on the first tick with nothing behind — never
+      // from here, where another agent may still be mid-answer)
       delete state.streams[key];
       follow(wasPinned);
       return true;
@@ -2659,5 +2762,8 @@
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
     projectTasks: () => ptasks,
     renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
+    // the typewriter: the setting, the switch, and the drain's own clock —
+    // exposed so a test can step it rather than wait on wall time
+    typingPref, setTyping, renderTyping, typeDrain, shownText,
   };
 })();

@@ -72,6 +72,10 @@
     ?pdf=scan        …and the same PDF with nothing in its text layer: a scan.
                      Nothing to select, no article text, and the reader is told
                      so rather than left dragging (screenshot state).
+                     `&selftest=1` runs the five things a scan can honestly
+                     claim about itself — it does NOT fall through to the
+                     web-PDF pose, which is fifty assertions about a text layer
+                     this document does not have.
     ?pdf=local       …and the same viewer opened on a PDF from this MACHINE:
                      the source is a file:// url, so the identity cannot be an
                      address at all — pdf/viewer.js hashes the document's
@@ -89,6 +93,12 @@
                      mechanically. The screenshot state scrolls to page 2;
                      `&strike=pill` puts the two-tool selection pill up over
                      it; `&selftest=1` runs the strikeout assertions.
+    ?sendfocus=1     the plain article, for one claim about the DRAWER: pressing
+                     Send holds that thread — spotlit and scrolled back into
+                     view on every redraw — while the bot answers into it, and
+                     releases it on the reader's next deliberate act and on
+                     nothing else. `&selftest=1` is the only way to run it;
+                     there is no screenshot state.
     ?reviewpage=1    the same article, wearing the review engine's own marker
                      (a docid on the body, its "💬 Comment" pill as a direct
                      child of it, and its toolbar). With the plugin installed
@@ -173,7 +183,11 @@
                      answered, naming it and linking to it. The state is the
                      companion's and arrives by broadcast (and by GET /round on
                      wake), which is what makes it survive a refresh.
-    ?roundticker=done  …and the "round done — N answered" note it ends with.
+    ?roundticker=done  …and the "round done — N answered" note it ends with,
+                     as a tab that was closed for the last turn finds it.
+                     `&selftest=1` runs the assertions for THAT state — it does
+                     not fall through to the in-flight pose, which is sixteen
+                     claims about a round that is still going.
                      `&selftest=1` drives the whole sequence.
     ?norun=1         the companion with run_python switched off, or a guest:
                      no Run button anywhere
@@ -1493,16 +1507,31 @@ if (Q.get('tasks') === '1') {
 // which is hydration's whole effect on us — so the repair can be asserted
 // instead of taken on trust. The assertions are in selftestHydration().
 const HYDRATE = Q.get('hydrate') === '1';
-// what a full-document hydration does to us, in one line
+// what a full-document hydration does to us, in one line — BOTH of the nodes
+// the drawer owns outside its own shadow root. The host is the visible half;
+// the KaTeX @font-face <link> in <head> is the quiet one (content.js
+// ensureMathFonts), and losing it costs no error and no missing element, only
+// every formula in the drawer falling back to the page's serif.
 function evictDrawerHost() {
   const host = document.getElementById('bfp-root');
   if (host && host.parentNode) host.parentNode.removeChild(host);
+  evictMathFonts();
   return !!host;
+}
+// …and the head link ALONE, which is what a framework re-rendering only the
+// document head does. <head>'s children are not <html>'s children, so this
+// eviction has no witness in the host observer.
+function evictMathFonts() {
+  const link = document.getElementById('bfp-katex-fonts');
+  if (link && link.parentNode) link.parentNode.removeChild(link);
+  return !!link;
 }
 
 // which pill the pose opens with, if any (`?commenters=1&by=mira`)
 let BOOT_COMMENTER = '';
 const COMMENTERS = Q.get('commenters') === '1';
+// ?sendfocus=1 — a Send keeps its thread in view (see selftestSendFocus)
+const SENDFOCUS = Q.get('sendfocus') === '1';
 // ?commenters=1 — the shape of a page several people have marked up: the
 // owner's three threads, plus two projected in from the review page's own
 // margin by visitors with no extension (store.mjs `origin`), plus a guest
@@ -2417,10 +2446,22 @@ window.__bfpWorker = {
   get ports() { return livePorts.size; },
 };
 const store = {};
-try {
-  const raw = localStorage.getItem('bfp-harness-store');
-  if (raw) Object.assign(store, JSON.parse(raw));
-} catch { /* file:// without storage — in-memory is fine */ }
+// EVERY POSE STARTS EMPTY-HANDED under selftest. The fake extension storage is
+// persisted to one localStorage key, which is per-ORIGIN and therefore shared
+// by every pose in a sweep: a run that ended on the Page chat tab, or with the
+// pages list filtered, silently handed that to the next pose, and a pose that
+// passes alone failed in the sweep for reasons nothing in it could see. A
+// human reloading a screenshot pose still gets their tab and width back; a
+// selftest is a fresh browser profile every time, which is the only way a
+// sweep means anything.
+if (Q.get('selftest')) {
+  try { localStorage.removeItem('bfp-harness-store'); } catch { /* nothing to clear */ }
+} else {
+  try {
+    const raw = localStorage.getItem('bfp-harness-store');
+    if (raw) Object.assign(store, JSON.parse(raw));
+  } catch { /* file:// without storage — in-memory is fine */ }
+}
 const persist = () => { try { localStorage.setItem('bfp-harness-store', JSON.stringify(store)); } catch {} };
 // A previous visit to docs.google.com left "comments" as this site's last tab.
 // The capability override has to beat it — that is the whole point.
@@ -2713,6 +2754,24 @@ async function until(fn, ms = 6000) {
   const t0 = Date.now();
   for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(50); }
 }
+// A pose is a script of gestures, and a gesture aimed at a control that is not
+// there is worth exactly one failed check. As a bare `x.click()` on null it is
+// worth the whole run: the pose is async and nothing catches, so the TypeError
+// becomes an unhandled rejection, fault() paints #h-log red with it, the tally
+// is never written and every later assertion — dozens of them — is simply
+// never made. A runner sees a frozen progress line and no result and cannot
+// tell a missing button from a hung page. `hitter(check)` turns that back into
+// what it is: one named failure, and the rest of the pose still to run.
+// (`until` answers null on timeout rather than throwing, so every
+// await-then-click site wants this shape.)
+function hitter(check) {
+  return (node, what) => {
+    const el = node && typeof node.click === 'function' ? node : null;
+    if (!el) { check('(pose) ' + what + ' — the control was not there to click', false); return false; }
+    el.click();
+    return true;
+  };
+}
 async function selftest() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
@@ -2837,6 +2896,14 @@ async function selftest() {
     ' pending=' + !!S.querySelector('.card.pending') +
     ' chip=' + JSON.stringify((S.querySelector('.status-chip') || {}).textContent || ''));
   check('provisional highlight re-keyed', !document.querySelector('mark.bfp-hl[data-bfp="__new__"]'));
+  // …and the Send that made it is still holding it. A brand-new thread is
+  // focused as '__new__' while the composer is open; the moment the server
+  // mints a real id the spotlight AND the hold move onto it, or the reader
+  // watches the card they just wrote in disappear into page order.
+  check('…and the Send is still holding the thread it just made',
+    !!grew && !!d.held() && d.held() !== '__new__' &&
+    !!S.querySelector('.card[data-thread="' + d.held() + '"].focused'));
+
 
   // ---- the article snapshot: what a phone will read at /a/<key> -----------
   // Annotating a page is what makes it worth being able to read elsewhere, so
@@ -5356,6 +5423,53 @@ async function selftest() {
   check('the banner clears itself when the companion comes back', !!healed);
   check('…without anybody pressing Retry', /connected/i.test(connText()));
 
+  // ---- the typewriter ----------------------------------------------------
+  // A stream event carries whatever the bridge had buffered — often a whole
+  // paragraph. The claim is NOT that the drawer is slow: it is that text
+  // already in hand is revealed at a readable pace, and that the pace is a
+  // fraction of the backlog, so a burst (and the end of an answer) catches up
+  // in a few frames rather than being typed out at leisure.
+  d.open('chat');
+  const burst = 'x'.repeat(400);
+  const stream = k => d.streamState().find(s => s.key === k) || {};
+  const pre = k => S.querySelector('.pane[data-pane="chat"] .reply[data-stream="' + k + '"] .stream-text');
+  d.setTyping('type');
+  evc({ kind: 'turn-start', agents: ['claude'] });
+  evc({ kind: 'stream', model: 'claude', stream_id: 's-type', text: burst });
+  check('a 400-character burst is held back rather than dumped on screen',
+    stream('s-type').got === 400 && stream('s-type').shown < 400);
+  check('…and the block is on screen from the first frame, empty and writing',
+    !!pre('s-type') && pre('s-type').textContent.length === stream('s-type').shown);
+  check('the drain catches up quickly — a finished answer is never held hostage',
+    !!await until(() => stream('s-type').shown === 400, 3000));
+  check('…and every character arrived, in order',
+    pre('s-type') && pre('s-type').textContent === burst);
+  evc({ kind: 'turn-end' });
+
+  d.setTyping('instant');
+  check('the setting is remembered as the reader set it', d.typing() === 'instant');
+  evc({ kind: 'turn-start', agents: ['claude'] });
+  evc({ kind: 'stream', model: 'claude', stream_id: 's-inst', text: burst });
+  check('instant is the way back: the whole chunk, the moment it lands',
+    stream('s-inst').shown === 400 && !!pre('s-inst') && pre('s-inst').textContent === burst);
+  evc({ kind: 'turn-end' });
+  d.setTyping('type');
+
+
+  // the switch itself, beside the reply-length one it is modelled on
+  d.openModels();
+  await sleep(60);
+  const tseg = [...S.querySelectorAll('.pop-typerow .tseg')];
+  check('the gear carries the switch, two positions like reply length',
+    tseg.length === 2 && tseg.map(b => b.dataset.typing).join(',') === 'type,instant');
+  check('…and it shows which one is on', tseg[0].classList.contains('on') &&
+    tseg[0].getAttribute('aria-pressed') === 'true');
+  tseg[1].click();
+  check('…and clicking the other half moves the setting', d.typing() === 'instant' &&
+    tseg[1].classList.contains('on') && !tseg[0].classList.contains('on'));
+  tseg[0].click();
+  d.closeModels();
+
   const bad = out.filter(l => l[0] === '✗');
   logQuiet = true;
   const el = document.getElementById('h-log');
@@ -5497,9 +5611,33 @@ async function selftestHydration() {
   const d = window.__bfp.drawer, S = d.shadow;
   const inDoc = () => document.querySelectorAll('#bfp-root').length;
   const cards = () => S.querySelectorAll('.pane[data-pane="comments"] .card').length;
+  const fonts = () => document.querySelectorAll('#bfp-katex-fonts').length;
+
+  // WHY "OPEN" IS NOT READ OFF `.panel.open` ALONE.
+  // open() adds that class inside a requestAnimationFrame — one frame, so the
+  // CSS transition actually runs on a first open — and a headless run under
+  // --virtual-time-budget is not guaranteed to service a frame at all. That
+  // made these three assertions a coin toss (8-9/11 was the standing score)
+  // for a reason that has nothing to do with what they are asserting. So:
+  // wait for a frame if the runner will give us one, then read what open()
+  // does SYNCHRONOUSLY — the drawer's own state, and the margin it pushes the
+  // page over by — and accept the class when the frame did arrive. Same
+  // verdict in a real browser, no coin toss headlessly.
+  const pushed = () => (document.documentElement.style.marginRight || '') !== '';
+  const frame = () => new Promise(r => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; r(); } };
+    requestAnimationFrame(fin);
+    setTimeout(fin, 60);
+  });
+  const panelOpen = async () => {
+    await frame();
+    return d.isOpen() && (!!S.querySelector('.panel.open') || pushed());
+  };
 
   check('the drawer is on the page to begin with', inDoc() === 1 && d.host.isConnected);
-  check('…open, with the page’s threads in it', S.querySelector('.panel.open') && cards() > 0);
+  check('…open, with the page’s threads in it', await panelOpen() && cards() > 0);
+  check('…and its font link is in the page’s head, where @font-face registers', fonts() === 1);
   const host0 = d.host, threads0 = cards();
 
   // ---- the page hydrates over us, with the drawer ON SCREEN ---------------
@@ -5510,7 +5648,15 @@ async function selftestHydration() {
     d.host === host0 && host0.isConnected && inDoc() === 1);
   check('…so the conversation in it survived the eviction', cards() === threads0);
   check('…and the panel is still open, which is where the reader left it',
-    !!S.querySelector('.panel.open'));
+    await panelOpen());
+  check('…and the math fonts came back with it, so formulas are still KaTeX',
+    fonts() === 1);
+
+  // ---- the head alone, which is the other way to lose the fonts ----------
+  check('the page can take the font link on its own', evictMathFonts() && fonts() === 0);
+  await sleep(60);
+  check('…and that is repaired too, without the host ever moving',
+    fonts() === 1 && inDoc() === 1 && d.host === host0);
 
   // ---- and again, this time with a selection as the next thing to happen --
   // This is the reported symptom exactly: text selected on a page that has
@@ -5537,7 +5683,7 @@ async function selftestHydration() {
   d.open('comments');
   await sleep(60);
   check('the icon opens the panel on a page that has just deleted it',
-    inDoc() === 1 && !!S.querySelector('.panel.open') && cards() === threads0);
+    inDoc() === 1 && await panelOpen() && cards() === threads0);
   check('nothing threw on the way through any of it', window.__bfpErrors.length === 0);
 
   const bad = out.filter(l => l[0] === '✗');
@@ -6035,6 +6181,139 @@ async function selftestPdf() {
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (pdf) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?sendfocus=1&selftest=1 — THE THREAD YOU JUST WROTE IN.
+//
+// Reported from a long PDF, but it is not about PDFs: press Send and the card
+// leaves you. It drops back into page order, stops looking current, and when
+// the bot answers you have to go back to the document and click the right
+// highlight to find your own conversation again.
+//
+// A Send now takes a HOLD on that thread — the focus the drawer already has,
+// plus the promise that every render puts the card back on screen. The two
+// halves worth asserting are the two halves of "until I do something else":
+// content arriving must NOT release it (a stream, a whole answer, the turn
+// ending), and a gesture MUST (a scroll of the reader's own, another thread,
+// another tab). This pose runs on the plain article fixture because the
+// mechanism is the drawer's, not the document's.
+async function selftestSendFocus() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+
+  d.open('comments');
+  await sleep(80);
+  const cpane = S.querySelector('.pane[data-pane="comments"]');
+  // every open card the pane is showing, wherever it has put them
+  const openCards = () => [...S.querySelectorAll('.pane[data-pane="comments"] .card:not(.pending):not(.resolved)')]
+    .filter(c => c.dataset.thread);
+  const cardOf = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const inView = id => {
+    const c = cardOf(id);
+    if (!c) return false;
+    const cr = c.getBoundingClientRect(), pr = cpane.getBoundingClientRect();
+    return cr.bottom > pr.top + 4 && cr.top < pr.bottom - 4;
+  };
+  const sendInto = async (id, text) => {
+    const box = cardOf(id) && cardOf(id).querySelector('.composer textarea');
+    if (!box) return false;
+    box.value = text;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    const btn = cardOf(id).querySelector('.composer .send');
+    if (!btn) return false;
+    btn.click();
+    await sleep(120);
+    return true;
+  };
+  check('the page has more than one comment to get lost among', openCards().length >= 2);
+  const holdId = openCards()[0].dataset.thread;
+  const otherId = (openCards().find(c => c.dataset.thread !== holdId) || {}).dataset.thread;
+  // park the reader at the far end of the column, then write in the FIRST card
+  cpane.scrollTop = cpane.scrollHeight;
+  await sleep(40);
+  check('the send goes through', await sendInto(holdId, 'a question I want to keep my eye on'));
+  check('the thread just written in is the one being held', d.held() === holdId);
+  check('…and it is on screen, wherever the column had been scrolled to', inView(holdId));
+  check('…and it is visibly the current one, with the rest stood down',
+    !!cardOf(holdId) && cardOf(holdId).classList.contains('focused')
+    && cpane.classList.contains('dim-others'));
+
+  // CONTENT ARRIVING IS NOT THE READER DOING SOMETHING ELSE.
+  const evh = e => d.onEvent(Object.assign({ type: 'chat', target: holdId }, e));
+  evh({ kind: 'turn-start', agents: ['claude'] });
+  evh({ kind: 'stream', model: 'claude', stream_id: 's-hold', text: 'answer. '.repeat(80) });
+  await until(() => {
+    const st = d.streamState().find(x => x.key === 's-hold');
+    return st && st.shown === st.got;
+  }, 4000);
+  check('a bot answering into it does not release the hold', d.held() === holdId);
+  check('…and the answer types itself INSIDE the view, not off the bottom of it',
+    inView(holdId));
+  evh({ kind: 'turn-end' });
+  check('…nor does the turn ending', d.held() === holdId);
+
+  // …but a gesture is.
+  cpane.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 240 }));
+  check('the reader scrolling the column releases it', d.held() === null);
+
+  check('a second send takes the hold again', await sendInto(holdId, 'and one more thing') && d.held() === holdId);
+  if (otherId) {
+    d.focus(otherId);
+    check('…and arriving at another thread releases it', d.held() === null);
+  }
+  check('…and a third send takes it once more', await sendInto(holdId, 'once more') && d.held() === holdId);
+  d.open('chat');
+  check('…and so does changing tab', d.held() === null);
+  d.open('comments');
+  await sleep(60);
+
+  const bad = out.filter(l => l[0] === '\u2717');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (sendfocus) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  \u2014  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?pdf=scan&selftest=1 — the SCANNED PDF, which is a different document.
+//
+// This used to fall through to selftestPdf, because PDFV is true for `scan`.
+// That pose is fifty assertions about anchoring inside a text layer, and a
+// scan has no text layer at all: the run scored 25/50 and every failure was
+// the harness asking the wrong document the wrong questions. The pose was and
+// is a SCREENSHOT state; what it can honestly assert about itself is four
+// things, and they are these. (The ?pdf=1 pose still covers a document that
+// LOSES its text — it strips the layers at the end and asks again — which is a
+// different path from one that never had any.)
+async function selftestPdfScan() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+
+  check('the page identity is the PDF, not the viewer', window.__bfp.url === PDF_URL);
+  check('a scan really has no text layer to anchor in',
+    [...document.querySelectorAll('.textLayer')].every(l => !l.textContent.trim()));
+  const text = await window.__bfp.articleText();
+  check('the bots are sent nothing rather than the viewer’s own chrome', text === '');
+  await until(() => S.querySelector('.ctxwarn .wtext'), 4000);
+  const warn = S.querySelector('.ctxwarn .wtext');
+  check('…and the reader is told why, where they type',
+    !!warn && /no selectable text/i.test(warn.textContent));
+  check('nothing threw on a document with nothing in it', window.__bfpErrors.length === 0);
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (pdf-scan) ' + (out.length - bad.length) + '/' + out.length +
     (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
@@ -6690,6 +6969,7 @@ async function selftestPdfAnnot() {
 async function selftestCommenters() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const hit = hitter(check);   // a click on a missing control is ONE failed check, not the end of the run
   const d = window.__bfp.drawer, S = d.shadow;
   const q = sel => S.querySelectorAll(sel);
   const pane = () => S.querySelector('.pane[data-pane="comments"]');
@@ -6724,7 +7004,7 @@ async function selftestCommenters() {
   openArchive();
   await sleep(60);
   const everything = cards().length;
-  pill('devraj').click();
+  hit(pill('devraj'), 'the devraj pill');
   await sleep(80);
   check('pressing a pill narrows the pane to that person', cards().length === 1);
   check('\u2026and it is their thread', cards()[0] === 't-1754500400-bb02');
@@ -6734,7 +7014,7 @@ async function selftestCommenters() {
     S.querySelector('.tab[data-tab="comments"] .count').textContent === liveBefore);
 
   // ---- the archive and Ready for review are the same person's ----
-  pill('mira').click();
+  hit(pill('mira'), 'the mira pill');
   await sleep(80);
   openArchive();
   await sleep(60);
@@ -6747,7 +7027,7 @@ async function selftestCommenters() {
       && S.querySelectorAll('.card[data-thread="t-1754500000-a1b2"] .reply').length === 2);
 
   // ---- toggling off ----
-  pill('mira').click();
+  hit(pill('mira'), 'the mira pill');
   await sleep(80);
   check('pressing the pill you are on clears the filter',
     d.commenterFilter() === '' && cards().length === everything);
@@ -6759,12 +7039,12 @@ async function selftestCommenters() {
     /Nothing from nobody-at-all/.test(pane().textContent));
   const back = pane().querySelector('.fclear[data-act="filter-by"]');
   check('\u2026and offers the way back', !!back);
-  back.click();
+  hit(back, 'back out of the archive');
   await sleep(80);
   check('\u201cshow everyone\u201d restores the page', d.commenterFilter() === '' && cards().length === everything);
 
   // ---- a highlight click always wins ----
-  pill('devraj').click();
+  hit(pill('devraj'), 'the devraj pill');
   await sleep(80);
   check('the filter is on and mira\u2019s thread is hidden', !cards().includes('t-1754500300-aa01'));
   d.focus('t-1754500300-aa01');
@@ -6773,7 +7053,7 @@ async function selftestCommenters() {
     d.commenterFilter() === '' && cards().includes('t-1754500300-aa01'));
 
   // ---- it is a reading position, not a decision ----
-  pill('mira').click();
+  hit(pill('mira'), 'the mira pill');
   await sleep(60);
   check('nothing about the filter is persisted', !('bfp:commenter' in store));
   d.setPage(JSON.parse(JSON.stringify(RECORD)));
@@ -6789,6 +7069,22 @@ async function selftestCommenters() {
   document.documentElement.scrollTop = 0;
   progress(out, 'done');
   window.__selftest = out;
+
+  // …and the tally, in the one place every other pose writes it. This pose
+  // used to publish its result ONLY as `window.__selftest` — invisible to
+  // --dump-dom and to any runner that greps #h-log for "SELFTEST", which made
+  // a clean pass indistinguishable from a run that never started. It is the
+  // same six lines as everywhere else, and now every pose can be read the
+  // same way.
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (commenters) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
 }
 
 async function selftestReady() {
@@ -7401,6 +7697,43 @@ async function selftestOrphanHeal() {
   console.log(out.join('\n'));
 }
 
+// ?roundticker=done&selftest=1 — THE END OF A ROUND, walked in on.
+//
+// `roundticker=done` is a different fixture from `roundticker=1`: the round
+// has FINISHED, and it exists so a tab that was closed for the last turn still
+// comes back to a note saying what happened. It used to fall through to the
+// in-flight pose, which is sixteen assertions about a round that is still
+// going, and scored 10/16 for reasons that were all "the fixture is not that
+// one". These are the things this state can claim about itself; the in-flight
+// pose still drives a round to its own ending and asserts the note there too,
+// which is where the TRANSITION is covered.
+async function selftestRoundDone() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const bar = () => S.querySelector('.roundbar');
+
+  check('a tab that missed the whole round still asks for it', roundGets > 0);
+  check('\u2026and comes back to the note', !!await until(() => bar() && !bar().hidden, 8000));
+  check('\u2026which says the round is over', !!await until(() => /round done/.test(bar().textContent), 5000));
+  check('\u2026and how many comments it answered', /3 of 3 answered/.test(bar().textContent));
+  check('nothing is spinning on a round that has stopped', !bar().querySelector('.spin'));
+  const dismiss = bar().querySelector('[data-act="round-dismiss"]');
+  check('\u2026and it can be put away', !!dismiss);
+  if (dismiss) dismiss.click();
+  check('\u2026for good', !!await until(() => bar().hidden, 3000));
+
+  const bad = out.filter(l => l[0] === '\u2717');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (roundticker-done) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  \u2014  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?roundticker=1&selftest=1 — the round as one visible thing.
 //
 // Send review fans out into a turn per comment, and each of those re-renders
@@ -7417,8 +7750,14 @@ async function selftestRoundTicker() {
   // broadcast this tab was not listening for
   check('the tab asked the companion for the round it walked in on', roundGets > 0);
   check('the strip is showing', !!await until(() => bar() && !bar().hidden, 8000));
+  // The strip becomes VISIBLE before it is necessarily FILLED: the round it is
+  // describing arrives from the companion, and on a loaded machine the two are
+  // not the same frame. Asserting the text the instant the strip appeared made
+  // this pose pass alone and fail in a sweep, taking five later assertions and
+  // a null click down with it. Wait for the condition being asserted; the rest
+  // of the block is then reading the same settled render.
   check('…naming the round’s length and where the bots have got to',
-    /answering comment 2 of 3/.test(bar().textContent));
+    !!await until(() => /answering comment 2 of 3/.test(bar().textContent), 5000));
   check('…with a spinner, because it is still going', !!bar().querySelector('.spin'));
   check('…and a running count', /1\/3/.test(bar().textContent));
   check('the comment being answered is NAMED, not just numbered',
@@ -7427,7 +7766,7 @@ async function selftestRoundTicker() {
   // …and it is a place: clicking it goes there
   const jump = bar().querySelector('[data-act="round-jump"]');
   check('the named comment is clickable', !!jump);
-  jump.click();
+  if (jump) jump.click();
   check('…and clicking it focuses that thread’s card',
     !!await until(() => S.querySelector('.card.focused[data-thread="' + HEAL_ID + '"]'), 3000));
 
@@ -7568,6 +7907,7 @@ async function selftestColledit() {
 async function selftestWorkspace() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const hit = hitter(check);   // a click on a missing control is ONE failed check, not the end of the run
   const d = window.__bfp.drawer, S = d.shadow;
   const q = sel => S.querySelectorAll(sel);
   const chat = sel => S.querySelectorAll('.pane[data-pane="chat"] ' + sel);
@@ -7590,8 +7930,17 @@ async function selftestWorkspace() {
       check('a project with no TASKS.md has no project-tasks card', !pcard());
     } else {
       check('the project\u2019s TASKS.md becomes a card of its own', !!pcard());
-      check('\u2026at the very top of the pane, above the page\u2019s own conversation',
-        S.querySelector('.pane[data-pane="chat"]').firstElementChild === pcard());
+      // "at the top" means ABOVE THE CONVERSATION, which is the claim; it has
+      // never meant firstElementChild, and reading it that way made this
+      // assertion a hostage to every row of pane chrome added since (the
+      // archive bar and the send-review row both sit above it and are not the
+      // conversation).
+      check('\u2026at the very top of the pane, above the page\u2019s own conversation', (() => {
+        const kids = [...S.querySelector('.pane[data-pane="chat"]').children];
+        const conv = kids.findIndex(e => e.classList.contains('chatpane') || e.classList.contains('thread'));
+        return pcard() && conv > -1 && kids.indexOf(pcard()) < conv
+          && kids.slice(0, kids.indexOf(pcard())).every(e => !e.classList.contains('tasks'));
+      })());
       check('\u2026holding every item, in the file\u2019s order',
         pitems().length === 3 && /Size the radiator/.test(pitems()[0].textContent)
         && /nozzle trade study/.test(pitems()[2].textContent));
@@ -7609,12 +7958,12 @@ async function selftestWorkspace() {
         !!S.querySelector('.pane[data-pane="comments"] .tasks.ptasks'));
       // the fold is a reading position, session only, like the others
       const fold = S.querySelector('.pane[data-pane="comments"] .tasks.ptasks .taskfold');
-      fold.click(); await sleep(40);
+      hit(fold, 'fold the project tasks card'); await sleep(40);
       const folded = S.querySelector('.pane[data-pane="comments"] .tasks.ptasks');
       check('folding it away hides the list and keeps the header',
         !!folded && folded.classList.contains('folded')
         && folded.querySelector('.taskbody').hidden);
-      folded.querySelector('.taskfold').click(); await sleep(40);
+      hit(folded && folded.querySelector('.taskfold'), 'unfold it again'); await sleep(40);
       check('\u2026and it comes back',
         !S.querySelector('.pane[data-pane="comments"] .tasks.ptasks').querySelector('.taskbody').hidden);
       d.open('chat'); await sleep(40);
@@ -7659,7 +8008,7 @@ async function selftestWorkspace() {
     check('\u2026and nothing else is on the tab', chat('.chatpane').length === 0);
     check('the header says the project, quietly, until it is confirmed',
       !!(S.querySelector('.hdr .proj') || { classList: { contains: () => false } }).classList.contains('unconfirmed'));
-    S.querySelector('[data-act="root-yes"]').click();
+    hit(S.querySelector('[data-act="root-yes"]'), 'answer yes to the council root');
     await until(() => !S.querySelector('.card.confirmroot'), 4000);
     check('answering yes hands the answer to the companion',
       wsRootAnswers.length === 1 && wsRootAnswers[0] === true);
@@ -7687,7 +8036,7 @@ async function selftestWorkspace() {
   check('\u2026and offers a new one', !!S.querySelector('[data-act="arch-new"]'));
   check('the composer is still there under it', chat('.composer textarea').length === 1);
 
-  S.querySelector('[data-act="arch-list"]').click();
+  hit(S.querySelector('[data-act="arch-list"]'), 'open the archive list');
   await until(() => S.querySelectorAll('.archrow').length > 0, 4000);
   const rows = [...q('.archrow')];
   check('the list is the project\u2019s own chats', rows.length === 3);
@@ -7703,7 +8052,7 @@ async function selftestWorkspace() {
   // Wait for the OPEN to settle, not for replies: under &chatopen the tail is
   // already on screen before the click, so replies-exist resolves instantly
   // while openSession is still in flight with the list open.
-  rows[0].click();
+  hit(rows && rows[0], 'open the first archived chat');
   await until(() => q('.archrow').length === 0, 6000);
   await until(() => chat('.reply').length > 0, 6000);
   check('opening a past chat renders its tail', chat('.reply').length >= 3);
@@ -7734,7 +8083,12 @@ async function selftestWorkspace() {
   // the case the card exists for. So it shows, it says whose list it is, and it
   // is READ-ONLY: ticking would mean editing a council session, and the boxes
   // say so instead of failing at the server.
-  const tcard = () => S.querySelector('.pane[data-pane="chat"] .tasks');
+  // …:not(.ptasks) because there are now TWO tasks cards on this pane — the
+  // PROJECT's TASKS.md (pinned above the conversation, tested further up) and
+  // the one this section is about, which is derived from a message in the
+  // chat. A bare `.tasks` picked up the project card, which has no ↑ source
+  // button; the pose then died on a null click and took the whole run with it.
+  const tcard = () => S.querySelector('.pane[data-pane="chat"] .tasks:not(.ptasks)');
   const tbox = () => [...(tcard() ? tcard().querySelectorAll('.md-tick') : [])];
   check('a checklist in a restored chat still reaches the tasks card',
     !!tcard() && tbox().length === 3 && /Count the panels/.test(tcard().textContent));
@@ -7745,12 +8099,12 @@ async function selftestWorkspace() {
     /from the council chat — tick it there/.test(tcard().textContent));
   check('…and every box inert', tbox().every(b => b.disabled));
   const wsTicks = tickPosts.length;
-  tbox()[1].click();
+  hit(tbox()[1], 'tick a read-only box');
   await sleep(120);
   check('…so a click on one asks the companion for nothing', tickPosts.length === wsTicks);
   check('…and nothing was ticked', !tbox()[1].checked);
   // …but finding it is still allowed: the jump unfolds the chat and marks it
-  tcard().querySelector('[data-act="tasks-jump"]').click();
+  hit(tcard() && tcard().querySelector('[data-act="tasks-jump"]'), '↑ source on the tasks card');
   check('↑ source unfolds the chat and marks the restored message',
     !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.tasksrc')) &&
     /Count the panels/.test(S.querySelector('.pane[data-pane="chat"] .thread').textContent));
@@ -7776,7 +8130,7 @@ async function selftestWorkspace() {
   const ta = S.querySelector('.pane[data-pane="chat"] .composer textarea');
   ta.value = '@claude and at 300 K?';
   ta.dispatchEvent(new Event('input', { bubbles: true }));
-  S.querySelector('.pane[data-pane="chat"] .composer .send').click();
+  hit(S.querySelector('.pane[data-pane="chat"] .composer .send'), 'send into the resumed chat');
   await until(() => chat('.reply.bot').length >= 1, 8000);
   check('a message into a resumed chat is answered',
     /MOCK|reply/i.test(S.querySelector('.pane[data-pane="chat"]').textContent));
@@ -7815,10 +8169,14 @@ async function selftestWorkspace() {
   ta3.dispatchEvent(new Event('input', { bubbles: true }));
 
   // ---- starting a fresh one ----------------------------------------------
-  S.querySelector('[data-act="arch-new"]').click();
+  hit(S.querySelector('[data-act="arch-new"]'), 'start a new chat');
   await until(() => chat('.empty').length === 1, 5000);
   check('a new chat empties the pane', chat('.reply').length === 0);
-  check('…and takes the tasks card with it: no list, no card', chat('.tasks').length === 0);
+  // …the CHAT's card. The project's TASKS.md card is not the chat's and does
+  // not go anywhere: it belongs to the project, and a new chat inside that
+  // project still has it (same :not(.ptasks) distinction as tcard() above).
+  check('…and takes the tasks card with it: no list, no card',
+    chat('.tasks:not(.ptasks)').length === 0);
   check('\u2026and says which project it will file under',
     /Spaceship Engineering/.test((S.querySelector('.pane[data-pane="chat"] .empty') || {}).textContent || ''));
   check('\u2026and the bar says so too',
@@ -7869,14 +8227,14 @@ async function selftestWorkspace() {
 
     // one step, inline — never window.confirm, which the page's own modals
     // and focus traps would fight with (the same rule del-thread follows)
-    sendBtn().click();
+    hit(sendBtn(), 'send review');
     await sleep(40);
     const conf = S.querySelector('.reviewrow.confirm');
     check('clicking it asks first, inline', !!conf);
     check('…naming the number it is about to spend agent time on',
       /send 3 open comments to the bots\?/.test((conf || {}).textContent || ''));
     check('…and nothing has been sent yet', sentReviews.length === 0);
-    S.querySelector('[data-act="review-no"]').click();
+    hit(S.querySelector('[data-act="review-no"]'), 'back out of the review');
     await sleep(40);
     check('backing out sends nothing and puts the button back',
       !S.querySelector('.reviewrow.confirm') && sentReviews.length === 0 && !!sendBtn());
@@ -7888,9 +8246,9 @@ async function selftestWorkspace() {
     RECORD.threads[1].msgs.push(stampMsg('@codex can you check the source document?'));
     d.setPage(RECORD); await sleep(40);
 
-    sendBtn().click();
+    hit(sendBtn(), 'send review');
     await sleep(40);
-    S.querySelector('[data-act="review-yes"]').click();
+    hit(S.querySelector('[data-act="review-yes"]'), 'confirm the review round');
     await until(() => reviewRounds.length === 1, 4000);
     const round = reviewRounds[0] || { turns: [] };
     const ids = RECORD.threads.map(t => t.id);
@@ -8043,10 +8401,12 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (Q.get('selftest') === '1') {
       setTimeout(WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
-        : STRIKE ? selftestPdfStrike : PDFV ? selftestPdf
+        : STRIKE ? selftestPdfStrike : PDF_SCAN ? selftestPdfScan : PDFV ? selftestPdf
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
-        : HEAL ? selftestOrphanHeal : TICKER ? selftestRoundTicker
+        : HEAL ? selftestOrphanHeal
+        : TICKMODE === 'done' ? selftestRoundDone : TICKER ? selftestRoundTicker
+        : SENDFOCUS ? selftestSendFocus
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration

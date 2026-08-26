@@ -876,6 +876,11 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     // a comment on a paged document (a PDF) already knows its page — the
     // thread stores it — so the envelope can say where the reader is standing
     pageNumber: (thread && thread.page) || 0,
+    // …and whether that highlight is a strikethrough — the reader's red line
+    // through the passage, a suggested deletion. Context for the turn, never
+    // a request (chat.mjs `struck`). Absent on every ordinary highlight, so
+    // an article's turn is byte-for-byte the one it always was.
+    mark: store.markOf(thread) === 'strike' ? 'strike' : '',
     history: priorMsgs(page, target),
     ...extras,
   });

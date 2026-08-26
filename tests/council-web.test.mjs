@@ -584,6 +584,10 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.equal(doc.getElementById('empty').hasAttribute('hidden'), true, 'empty state yields to content');
   assert.match(doc.querySelector('.msg.user .body').textContent, /hello council/);
   C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's9', model: 'claude', text: 'partial ' });
+  // a delta puts the text IN HAND; the typewriter drain is what puts it on
+  // screen (see the typewriter tests at the foot of this file). Stepping it by
+  // hand keeps this assertion about the transcript rather than about timing.
+  for (let i = 0; i < 40 && !/partial/.test(doc.querySelector('.msg.claude.streaming .body').textContent); i++) C.typeDrain();
   const streaming = doc.querySelector('.msg.claude.streaming .body');
   assert.match(streaming.textContent, /partial/);
   // the tool-run entry lands AFTER the text started streaming but must render
@@ -1271,6 +1275,10 @@ test('room-protocol envelopes never reach the prose — they render as a metadat
 
   // a half-streamed envelope is hidden while it arrives, never shown mid-JSON
   C.handle({ type: 'stream', kind: 'text_delta', model: 'claude', stream_id: 9, text: 'Done.\n\n{"status":"cont' });
+  // drained onto the screen first — the typewriter holds back what has not
+  // been revealed yet, and this assertion is about the ENVELOPE being held
+  // back, which is a different thing and has to be seen on its own
+  for (let i = 0; i < 40 && !/Done/.test(doc.querySelector('.msg.claude.streaming .body').textContent); i++) C.typeDrain();
   const live = doc.querySelector('.msg.claude.streaming .body');
   assert.equal(live.textContent.trim(), 'Done.');
   // JSON that is NOT the room footer stays exactly where the bot put it
@@ -2568,4 +2576,75 @@ test('filing: a chat that already lives in a project is never asked',
   await new Promise(r => setTimeout(r, 10));
   assert.equal(doc.querySelector('.msg.card.filing'), null);
   assert.deepEqual(sent(posts), ['carry on']);
+});
+
+// ── the typewriter ───────────────────────────────────────────────────────
+// The claim is not that the chat is slower. It is that text already in hand
+// is revealed at a readable pace instead of landing in lurches the size of
+// whatever the bridge happened to buffer — and that the pace is a FRACTION OF
+// THE BACKLOG, so a burst catches up in a few frames and the authoritative
+// final text is never held back at all.
+test('typewriter: a burst is paced, the drain catches up, and the final text lands whole',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  C.handle({ type: 'replay_done' });
+  C.setTyping('type');
+  const burst = 'x'.repeat(400);
+  C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's1', model: 'claude', text: burst });
+  const s = C.state.streams['claude:s1'];
+  const body = () => doc.querySelector('.msg.claude.streaming .body').textContent;
+  assert.equal(s.text.length, 400, 'all 400 characters are in hand');
+  assert.ok(body().length < 400, 'but the whole burst is not dumped on screen');
+  // step the drain by hand rather than waiting on wall time
+  let ticks = 0;
+  while (s.shown < 400 && ticks < 200) { C.typeDrain(); ticks++; }
+  assert.ok(ticks < 60, `the drain catches up in a few frames, not hundreds (took ${ticks})`);
+  assert.equal(body(), burst, 'and every character arrived, in order');
+  // …and the room event paints the authoritative text whole, streaming class gone
+  C.handle({ type: 'room', speaker: 'claude', stream_id: 's1', text: 'the settled answer' });
+  assert.equal(doc.querySelector('.msg.claude.streaming'), null, 'stream finalized');
+  assert.match(doc.querySelectorAll('.msg.claude .body')[0].textContent, /the settled answer/);
+});
+
+test('typewriter: instant is the way back, and it is remembered',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  C.handle({ type: 'replay_done' });
+  C.setTyping('instant');
+  assert.equal(C.typingPref(), 'instant');
+  assert.equal(w.localStorage.getItem('council-typing'), 'instant', 'the choice outlives the tab');
+  const burst = 'y'.repeat(400);
+  C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's2', model: 'claude', text: burst });
+  assert.equal(doc.querySelector('.msg.claude.streaming .body').textContent, burst,
+    'instant mode shows the whole chunk the moment it lands');
+  // the switch in the sidebar footer says which half is on
+  const on = doc.querySelector('#typing-toggle .seg-btn.on');
+  assert.equal(on.dataset.typingOpt, 'instant');
+  assert.equal(on.getAttribute('aria-pressed'), 'true');
+  // …and clicking the other half moves it back
+  doc.querySelector('#typing-toggle [data-typing-opt="type"]').click();
+  assert.equal(C.typingPref(), 'type');
+  assert.equal(doc.querySelector('#typing-toggle .seg-btn.on').dataset.typingOpt, 'type');
+});
+
+test('typewriter: a reader who asked for less motion gets instant, whatever the switch says',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  C.handle({ type: 'replay_done' });
+  w.matchMedia = q => ({ matches: /prefers-reduced-motion:\s*reduce/.test(q), media: q,
+    addEventListener() { }, removeEventListener() { }, addListener() { }, removeListener() { } });
+  C.setTyping('type');            // the reader's setting stands…
+  assert.equal(C.typingPref(), 'type');
+  const burst = 'z'.repeat(400);
+  C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's3', model: 'claude', text: burst });
+  assert.equal(doc.querySelector('.msg.claude.streaming .body').textContent, burst,
+    '…but nothing is paced while the OS asks for reduced motion');
+  C.renderTyping();
+  const seg = doc.querySelector('#typing-toggle .seg');
+  assert.equal(seg.getAttribute('data-forced'), '1', 'the switch says the choice is not live');
+  assert.equal(doc.querySelector('#typing-toggle .seg-btn.on').dataset.typingOpt, 'instant');
+  assert.ok([...seg.querySelectorAll('.seg-btn')].every(b => b.disabled), 'and stops offering it');
 });

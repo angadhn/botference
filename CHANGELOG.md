@@ -1,5 +1,62 @@
 # CHANGELOG
 
+## 2026-08-26
+
+- **Bot replies are typed out, not dropped in.** A bridge hands over text in
+  chunks whose size is an accident of the tokenizer and the network — a
+  sentence, then eleven characters, then a paragraph — and painting each one as
+  it landed made an answer arrive in lurches. Both the Discuss drawer (comment
+  threads and page chat) and the council web chat now reveal a live answer at a
+  readable pace instead.
+
+  This is not slowness: nothing is ever held back that has not already arrived,
+  and the pace is a fraction of the backlog, so a burst — or the end of an
+  answer — catches up in a few frames. A finished reply is never waiting on an
+  animation. Markdown is unaffected: the pacing happens to the text, before it
+  is rendered, so nothing is ever half-parsed on screen.
+
+  **The way back** is a two-position switch: `typed · instant`, in the drawer's
+  gear popover under the reply-length switch, and in the council's sidebar
+  footer beside the theme control. Each is remembered per surface. If your
+  system asks for reduced motion you get `instant` regardless, the switch says
+  so, and your own choice is kept underneath for when that changes.
+
+- **The comment you just wrote in stays the one you are looking at.** On a long
+  document, pressing Send used to lose you the card: it dropped back into page
+  order, stopped looking current, and when the bot answered you had to go back
+  to the document and click the right highlight to find your own conversation.
+  A Send now holds that thread — spotlit, and scrolled back into view on every
+  redraw — so the answer types itself where you are already looking.
+
+  It holds **until you do something else**, and only that: scrolling the column
+  yourself, opening another thread or highlight, or changing tab releases it.
+  Content arriving never does.
+
+- **Bots are told when a passage is struck through.** A strikeout on a PDF is a
+  suggested deletion, and a bot summoned into that thread was answering as
+  though the sentence were uncontested. The turn now says so — and says
+  explicitly that it is background, not a request: answer what was actually
+  asked, and do not carry out or argue for the deletion unless asked. Ordinary
+  highlights are unchanged.
+
+- **Fixed: maths lost its typeface on pages that hydrate.** The KaTeX font link
+  lives in the page's own `<head>` (font declarations do not register inside a
+  shadow root) and was only ever added once, so the same React hydration that
+  deletes the drawer's host deleted the fonts with it — every formula in the
+  drawer quietly fell back to the page's serif for the life of the tab. It is
+  repaired the same way the host is now, including when only the head is
+  re-rendered.
+
+- **The test harness is a thing an agent can trust again.** Three poses were
+  known-unreliable and all three were the harness's own bugs: the workspace
+  pose died on a null click (two selectors that later work had made ambiguous),
+  the commenters pose looked like it never started (it published its result
+  where no runner could read it), and the hydration pose scored 8-9/11 headless
+  (three assertions read a class set inside an animation frame). A missing
+  control is now one named failure rather than the end of a run, and
+  `?pdf=scan&selftest=1` has a small pose of its own instead of falling through
+  to fifty assertions about a text layer it does not have.
+
 ## 2026-08-25
 
 - **Fixed: the annotated copy could not be written for a local PDF at all.**

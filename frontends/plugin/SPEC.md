@@ -4675,10 +4675,291 @@ Two notes for whoever runs the harness next. The tint a focus brings up is
 asserted off the INLINE declaration, not `getComputedStyle`: the mark carries
 `transition: background-color`, and under a headless render's virtual clock a
 transition never advances, so the computed value is stuck at the colour it is
-transitioning FROM. And `?hydrate=1&selftest=1` scores 8–9/11 under
-`botference see` for the same class of reason — its three `.panel.open`
-assertions read a class added in a `requestAnimationFrame` — which was verified
-against HEAD before this amendment and is not a regression from it.
+transitioning FROM. (`?hydrate=1&selftest=1` used to score 8–9/11 under `botference see` for the
+same class of reason — its three `.panel.open` assertions read a class added in
+a `requestAnimationFrame`. Fixed on 2026-08-26; see the harness amendment
+below.)
+
+## Amendment (2026-08-26, shipped): answers are typed, not dropped
+
+A bridge hands the surface text in whatever chunks the tokenizer and the
+network happened to produce — a sentence, then eleven characters, then nothing
+for a second, then a paragraph. Painted the instant each lands, an answer
+arrives in visible lurches, and the size of the lurch is an implementation
+detail of somebody else's stack showing through.
+
+So a live answer is now **drained** onto the screen rather than dropped onto
+it. This is not artificial slowness and the distinction is the whole design:
+the drain only ever reveals text that has ALREADY ARRIVED.
+
+- Each live stream carries `text` (everything received) and `shown` (how much
+  of it is on screen). A 16ms timer walks the second toward the first.
+- The step is **a fraction of the backlog**, not a constant: `max(1,
+  ceil(backlog / 8))` characters per tick. Two things fall out of that for
+  free. A slow stream settles at a lag of about a dozen characters — the
+  backlog can only grow until an eighth of it equals the arrival rate — which
+  is what reads as typing. And a burst (a whole paragraph at once) drains in a
+  few frames rather than being typed out at leisure.
+- **A finished answer is never held hostage.** In the drawer, `stream-done`
+  switches the step to `max(12, ceil(backlog / 3))`, so the tail of an answer
+  lands in a few frames; the authoritative `reply` clears the live block
+  regardless. In council web the authoritative `room` event paints the final
+  text whole (`finalizeStream`), so the drain has nothing left to hold.
+- The timer stops itself on the first tick with nothing behind, and is started
+  by the next delta. Nothing ever holds it open.
+- Markdown is unaffected. The drawer's live block is a `<pre>` of plain text
+  (markdown arrives with the settled reply), and council web re-renders the
+  whole revealed prefix through `renderMarkdown` on every tick exactly as it
+  re-rendered the whole received text before — the pacing is applied to the
+  TEXT, before the render, so a half-revealed `**bold` is never half-parsed
+  into the DOM.
+
+**The way back, per surface, in that surface's own idiom.**
+
+- Drawer: a two-position switch in the gear popover, under the reply-length
+  one it is modelled on — `typed · instant` — stored as `bfp:typing` in
+  extension storage, the same one-key idiom as the tab, the width, the export
+  mode and the pages filter. Note the state field is `D.typeMode`, not
+  `D.typing`: the public surface is `Object.assign`'d onto `D` and carries a
+  `typing()` reader that would otherwise eat the field.
+- Council web: a `typed · instant` seg in the sidebar footer beside the theme
+  control, stored as `council-typing` in `localStorage`, following the theme
+  pattern exactly (`typingPref` / `setTyping` / `renderTyping`).
+- Flipping the switch mid-answer never rewinds or freezes the text: instant
+  jumps `shown` to the end, typed starts pacing from where the reader's eye
+  already is.
+
+**`prefers-reduced-motion: reduce` wins over both.** It is read live (not
+cached — the setting can change under a running tab), forces the instant path,
+and the switch says so: it shows `instant`, greys, and disables, while the
+reader's own choice is remembered underneath for when the OS setting goes away.
+
+**Not the reading room.** The phone/reading-room surface does not stream at
+all — it renders the answer at turn-end — and is untouched.
+
+### Testing
+
+Harness `?selftest=1` (+11) — a 400-character burst is held back rather than
+dumped, the block is on screen from the first frame with exactly `shown`
+characters in it, the drain reaches all 400 in under three seconds and in
+order, instant mode paints the whole chunk the moment it lands, and the gear's
+switch has two positions, shows which is on, and moves the setting when
+clicked.
+
+`tests/council-web.test.mjs` (+3, and two existing tests taught to drain) — the
+same burst claim with the drain STEPPED BY HAND (`C.typeDrain()`) rather than
+waited on, so the assertion is about pacing and not about wall time, plus the
+catch-up bound (under 60 ticks); instant mode and its remembered
+`council-typing`; and a stubbed `matchMedia` proving reduced motion overrides
+the reader's `type` setting and disables the switch. The two existing tests
+that asserted stream text immediately after a single delta now step the drain
+first — a delta puts text in hand, the drain puts it on screen.
+
+## Amendment (2026-08-26, shipped): the reader struck it — say so, and do nothing
+
+A thread whose anchor is a strikethrough (`thread.mark === 'strike'`, PDFs
+only) is a **suggested deletion the reader has drawn on the document**. A bot
+summoned into that thread was not told, and answered a question about a
+sentence as though the sentence were uncontested.
+
+It is told now, and told in the same register as the page number that already
+rides a PDF thread ("This comment is on page N") — one line of standing
+context between the passage and the reader's words:
+
+> The reader has STRUCK this passage through — a suggested deletion marked on
+> the document itself. This is background, not an instruction: answer what they
+> actually ask, and do not carry out, argue for, or offer to make the deletion
+> unless they ask.
+
+The second sentence is load-bearing and is asserted verbatim. Without it a
+helpful model proposes the deletion, or rewrites the passage, when all it was
+asked was what the passage means — which is worse than not knowing, because it
+spends the turn on something the reader did not request.
+
+Plumbing: `server.mjs` puts `mark` on the job beside `pageNumber` (empty for
+every ordinary highlight, so an article's turn is byte-for-byte the one it
+always was); `chat.mjs` `planSteps` passes it to `envelope`, which composes the
+`struck` line. Page chat sits on no thread and never carries it.
+
+**Testing.** `companion.test.mjs` (+2): a struck thread's turn carries the
+wording, all four clauses, beside an untouched page line; an ordinary highlight
+on the same kind of document says nothing about strikes at all.
+
+## Amendment (2026-08-26, shipped): the fonts are the drawer's to keep too
+
+Follow-up to the hydration amendment above, which named it. The drawer owns
+exactly **two** nodes outside its own shadow root: `#bfp-root`, and the KaTeX
+`@font-face` `<link>` in the page's `<head>` (`@font-face` inside a shadow root
+does not register, which is why it cannot live with the rest of the styling).
+The same hydration that deletes the host deletes the link, and `ensureMathFonts`
+only ever ran on activate — so on a hydrating page every formula in the drawer
+silently fell back to the page's serif for the life of the tab. No error, no
+missing element; just the wrong typeface.
+
+The fix hangs on the repair path that already exists:
+
+- `Drawer.create` takes `onAttach`, a hook the owner of those outside nodes
+  registers; `content.js` passes `ensureMathFonts`, which is idempotent by id.
+- `attach()` calls it — so every re-attach of the host brings the fonts back
+  with it.
+- The host observer calls it **before** its `isConnected` guard, because a page
+  can take the link and leave the host standing.
+- …and `<head>` gets an observer of its own, because removing a `<link>` from
+  `<head>` is a mutation of HEAD's children, not of `<html>`'s, and the host
+  observer never sees it. One observer, armed once, doing nothing but calling
+  an idempotent repair.
+
+**Testing.** `?hydrate=1&selftest=1` grows from 11 to 15. `evictDrawerHost()`
+now takes both nodes (which is what hydration does), plus a new `evictMathFonts()`
+for the head-only case; the pose asserts the link is there to begin with, comes
+back with the host, and comes back on its own when only it is taken.
+
+## Amendment (2026-08-26, shipped): a Send holds its thread
+
+Reported from a long PDF and not about PDFs: pressing Send loses the reader the
+card. It drops back into page order, stops looking current, and when the bot
+answers they have to go back to the document and click the right highlight to
+find their own conversation again.
+
+A Send now takes a **hold** on that thread. The hold is not a new affordance —
+it is the focus the drawer already has (the `focused` card, the pane's
+`dim-others`) plus one promise: every render puts that card back where the
+reader can see it. The bot's reply, and the typewriter draining it, therefore
+happen in view.
+
+- `doSend()` is the single choke point and takes the hold there (`holdOn`),
+  which covers replies into a thread and new threads from the selection pill
+  alike. Page chat and the library are excluded: they are single scrolling
+  conversations that already follow their own tail, and there is no card to
+  focus — pointing `focused` at one of them would dim every card and spotlight
+  nothing.
+- `holdInView()` runs at the END of `render()`, after the scrollTop restore it
+  deliberately overrides — the pane being where it was is exactly what loses
+  the card. A card that FITS lands at the top of the pane, the same landing
+  `scrollToThread` gives a highlight click, so arriving by Send and arriving by
+  click look like the same place. A card too tall to fit is shown by its TAIL,
+  because on a long thread the words just written and the answer arriving under
+  them are at the bottom and top-aligning would put both off screen.
+- The typewriter drain patches the live `<pre>` without a render, so
+  `paintStream` re-applies the hold too — otherwise the answer types its way
+  off the bottom of the pane.
+- A brand-new thread is held as `__new__` and **promoted**, not released, when
+  the server mints its id. Two places do it, because content.js focuses the new
+  id BEFORE the send's own success path runs: `focus()` promotes a `__new__`
+  hold (guarded on a send actually being in flight, so clicking a different
+  highlight mid-send still releases), and `deliver()` re-points it as well.
+
+**"Until I do something else" is the whole release rule**, and it is why every
+release hook hangs off a GESTURE rather than off a render or an event:
+
+| releases | does not release |
+| --- | --- |
+| the reader scrolling the column (wheel, touch-drag, PageUp/Down/Home/End) | a `stream` delta, a whole answer, `turn-end` |
+| focusing another thread — a card click, a highlight click | a re-render, a `page` event, the round ticker |
+| changing tab, opening the pages library, closing the drawer | the typewriter drain |
+
+A `scroll` listener cannot serve this: `holdInView` writes `scrollTop` itself
+and so does every render, so the gestures are listened for instead. Arrow keys
+inside a composer are exempt — an ArrowDown there is a caret move, not a
+scroll, and must not release the thread being typed into.
+
+**Testing.** New pose `?sendfocus=1&selftest=1` (13) on the plain article
+fixture, because the mechanism is the drawer's and not the document's: the
+reader is parked at the far end of the column and writes into the FIRST card;
+the thread is held, on screen, focused, with the rest stood down; a 640-
+character answer streams into it and neither the stream, the drain, nor
+`turn-end` releases it, and it is still in view when the drain finishes; then
+each gesture in turn releases it, with a fresh Send re-taking it between them.
+Plus one assertion in `?selftest=1` (648 → 649) that a Send on a brand-new
+thread is still holding it once the server has minted the id.
+
+## Amendment (2026-08-26): the harness is a thing an agent can trust
+
+Three poses were known-unreliable and SPEC-noted as such. All three were the
+harness's own bugs, not the product's.
+
+**`?hydrate=1&selftest=1` scored 8-9/11 under headless virtual time.** Its
+three `.panel.open` assertions read a class that `open()` adds inside a
+`requestAnimationFrame` — one frame, so the CSS transition runs on a first
+open — and a headless run under `--virtual-time-budget` is not guaranteed to
+service a frame at all. The assertions are about whether the drawer OPENED, not
+about when a transition class landed, so they now wait for a frame if the
+runner will give one (with a 60ms floor) and then read what `open()` does
+SYNCHRONOUSLY: `isOpen()`, and the `margin-right` it pushes the page over by —
+accepting the class when the frame did arrive. Same verdict in a real browser,
+no coin toss headlessly.
+
+**`?workspace=1&selftest=1` died on a null `.click()`.** Two real bugs, both
+introduced by later work that nobody re-ran this pose against:
+
+- `tcard()` selected `.pane[data-pane="chat"] .tasks` when there are now TWO
+  tasks cards on that pane — the project's `TASKS.md` card pinned above the
+  conversation, and the one derived from a message. The bare selector picked
+  the project card, which has no `↑ source` button, and the pose died on the
+  null. It is `.tasks:not(.ptasks)` now.
+- "…at the very top of the pane" was asserting `firstElementChild`, which the
+  claim never meant: the archive bar and the send-review row both sit above the
+  card and are not the conversation. It asserts what it means — the card is
+  above the conversation, and is the first tasks card in the pane.
+
+**`?commenters=1&selftest=1` "never started" headlessly.** It always ran; it
+published its result ONLY as `window.__selftest`, invisible to `--dump-dom` and
+to any runner grepping `#h-log` for `SELFTEST`, so a clean pass and a run that
+never began looked identical. It writes the same six-line tally as every other
+pose now.
+
+**A fourth, found by running the sweep properly.** `?roundticker=1&selftest=1`
+passed alone and scored 2/8 in a sweep. The strip becomes VISIBLE before it is
+necessarily FILLED — the round it describes arrives from the companion, and on
+a loaded machine those are not the same frame — and the pose asserted the
+text the instant the strip appeared. It waits for the condition it is asserting
+now, which also settles the five later assertions and the null click that were
+following it down.
+
+**And the class of failure behind two of those.** A pose is a script of
+gestures; a gesture aimed at a control that is not there is worth one failed
+check. As a bare `x.click()` on null it was worth the whole run — the pose is
+`async`, nothing catches, the TypeError becomes an unhandled rejection,
+`fault()` paints `#h-log` red with it, the tally is never written, and every
+later assertion is simply never made. `hitter(check)` turns that back into one
+named failure with the rest of the pose still to run, and the fragile poses use
+it at every click. (`until` answers null on timeout rather than throwing, which
+is why every await-then-click site wants this shape.)
+
+**Two more poses were answering the wrong questions**, found by running the
+sweep with the right flags for the first time. `?roundticker=done` is a
+DIFFERENT FIXTURE from `?roundticker=1` — the round has finished — and it fell
+through to the in-flight pose's sixteen assertions about a round that is still
+going (10/16, every failure "the fixture is not that one"). It has a pose of
+its own now. And `?selftest=canon` needs `?canon=1` with it, or the splinter
+url it is about is never set up; that one was the runner's mistake, and the
+sweep list above carries the pair.
+
+**`?pdf=scan` was not a selftest pose and did not degrade gracefully.** `PDFV`
+is true for `scan`, so `?pdf=scan&selftest=1` ran `selftestPdf` — fifty
+assertions about anchoring inside a text layer, against a document that has no
+text layer at all. It scored 25/50 and every failure was the harness asking the
+wrong document the wrong questions. It has a five-assertion pose of its own now
+(identity, no text layer, the bots are sent nothing, the reader is told why,
+nothing threw); the `?pdf=1` pose still covers a document that LOSES its text,
+which is a different path from one that never had any.
+
+**And the leak that made the sweep itself untrustworthy.** The harness's fake
+extension storage is persisted to one `localStorage` key, which is per-ORIGIN
+and therefore shared by every pose in a sweep: a run that ended on the Page
+chat tab, or with the pages list filtered, silently handed that to the next
+pose. Poses passed alone and failed in the sweep for reasons nothing in them
+could see (`?roundticker=1` was the one that showed it). Under `selftest` the
+store now starts empty, always. A human reloading a screenshot pose still gets
+their tab and width back; a selftest is a fresh profile every time, which is
+the only thing that makes a sweep mean anything.
+
+**How to run the sweep.** `file://` does not work — the harness comes up inert,
+`window.__bfp` never appears, and nothing is logged. Serve `frontends/plugin`
+over http (docroot at `frontends/plugin`, NOT at `test/`, or `../extension/*`
+is unreachable) and drive it with Playwright, waiting on `#h-log` matching
+/SELFTEST/ and reading `dataset.detail`. Every selftest pose passes headless,
+three runs in a row.
 
 ## Out of scope for v1 (do not build)
 

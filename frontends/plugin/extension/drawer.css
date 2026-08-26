@@ -398,15 +398,19 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   background: var(--bg); border: 1px solid var(--card-line); border-radius: 999px;
 }
 .pop-verb .vsep, .pop-bill .vsep { font: 12px/1 var(--sans); color: var(--muted); opacity: .55 }
-.pop-verb .vseg, .pop-bill .bseg {
+.pop-verb .tseg, .pop-verb .vseg, .pop-bill .bseg {
   border: 0; background: transparent; color: var(--muted);
   font: 12px/1.2 var(--sans); padding: 4px 10px; min-height: 24px; border-radius: 999px;
 }
-.pop-verb .vseg:hover, .pop-bill .bseg:hover { color: var(--accent); border-color: transparent }
-.pop-verb .vseg.on, .pop-bill .bseg.on {
+.pop-verb .tseg:hover, .pop-verb .vseg:hover, .pop-bill .bseg:hover { color: var(--accent); border-color: transparent }
+.pop-verb .tseg.on, .pop-verb .vseg.on, .pop-bill .bseg.on {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent); font-weight: 700;
 }
+/* the system has asked for less motion: the switch says what is happening
+   (instant) and stops pretending the reader still has the choice */
+.pop-typerow.forced { opacity: .6 }
+.pop-typerow.forced .tseg { cursor: default }
 
 /* billing: a row of its own across the agent's grid rather than a third thing
    in the picker column — two whole words and a switch do not fit beside a

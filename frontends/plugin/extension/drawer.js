@@ -258,6 +258,10 @@
   const TAB_KEY = 'bfp:lastTab';
   const WIDTH_KEY = 'bfp:width';
   const EXPORT_KEY = 'bfp:exportMode';
+  // how a live answer lands on screen: 'type' (paced, a character at a time)
+  // or 'instant' (the chunks exactly as the bridge sends them, which is what
+  // this always did). Same one-key idiom as the tab, the width and the export.
+  const TYPING_KEY = 'bfp:typing';
   // which slice of the archive the pages list is showing — the same
   // one-key-in-extension-storage idiom as the tab, the width and the export
   // mode. A reader who filters to their PDFs is usually still after their PDFs
@@ -1160,7 +1164,18 @@
       // closed for half the round still comes back to the truth (see /round).
       round: null,
       orphans: {},         // threadId -> bool (content.js's live anchoring verdict)
-      streams: {},         // stream_id -> {who, target, text}
+      // stream_id -> {who, target, text, shown, done}. `text` is everything
+      // RECEIVED; `shown` is how much of it the reader has been shown so far
+      // (see the typewriter drain). Instant mode never reads `shown`.
+      streams: {},
+      // the thread a Send is holding in view, if any (holdOn/holdInView).
+      // Never set by anything arriving — only by the reader's own Send — and
+      // cleared by the reader's next deliberate act.
+      hold: null,
+      // 'type' | 'instant' — how a live answer arrives on screen (TYPE_TIP).
+      // NOT named `typing`: the public surface is Object.assign'd onto this
+      // very object and carries a `typing()` reader, which would eat the field.
+      typeMode: 'type',
       running: {},         // target -> true while a turn is in flight
       turnAgents: {},      // target -> ['claude'|'codex'] as announced by turn-start
       liveAgents: {},      // target -> agents actually seen streaming this turn
@@ -1327,6 +1342,8 @@
     // the observer that puts the host back when the page takes it away — one
     // per drawer, installed with the first attach (see watchDetach below)
     let detachWatch = null, detachRoot = null;
+    // …and the one that puts the KaTeX font link back (see repairExternals)
+    let headWatch = null, headRoot = null;
 
     // ---- mount ----------------------------------------------------------
     // ATTACHING THE HOST, AND KEEPING IT ATTACHED.
@@ -1351,8 +1368,25 @@
     // observed and undone on the spot. Either way the SAME host goes back: the
     // shadow root, its listeners and the conversation in it are untouched, and
     // re-mounting would have thrown all three away.
+    //
+    // THE HOST IS NOT THE ONLY THING THE PAGE TAKES. The drawer also owns one
+    // node outside its shadow root: the KaTeX @font-face <link> in the page's
+    // <head> (@font-face inside a shadow root does not register, so it cannot
+    // live with the rest of the styling — see content.js ensureMathFonts). The
+    // same hydration deletes that too, and the failure is silent in a
+    // different way: nothing is missing, every formula simply falls back to
+    // the page's serif. It was only ever added on activate, so it never came
+    // back. `onAttach` is the owner of that node being told "the page has just
+    // rearranged the document — put your things back"; it is idempotent (by
+    // id) and therefore safe to call on every mutation.
+    const onAttach = typeof opts.onAttach === 'function' ? opts.onAttach : null;
+    function repairExternals() {
+      if (!onAttach) return;
+      try { onAttach(); } catch { /* the drawer is not the fonts' keeper */ }
+    }
     function attach(host) {
       (document.documentElement || document.body).appendChild(host);
+      repairExternals();
       watchDetach(host);
     }
     // A framework hydrates once, so one re-attach is the whole story in
@@ -1369,6 +1403,11 @@
       try {
         if (detachWatch) detachWatch.disconnect();
         detachWatch = new MutationObserver(() => {
+          // BEFORE the isConnected guard: a page can take the font link and
+          // leave the host alone (React re-rendering <head> only), and that
+          // eviction has no other witness. Cheap — a getElementById that
+          // returns early on every ordinary mutation.
+          repairExternals();
           if (host.isConnected || reattaches >= REATTACH_MAX) return;
           reattaches++;
           (document.documentElement || document.body).appendChild(host);
@@ -1376,6 +1415,22 @@
         detachWatch.observe(root, { childList: true });
         detachRoot = root;
       } catch { /* the lazy repair in mount() is the load-bearing half */ }
+      watchHead();
+    }
+    // …and <head> itself, for the same reason and one level down. Removing a
+    // <link> from <head> is a mutation of HEAD's children, not of <html>'s, so
+    // the observer above never sees it: a framework that re-renders only the
+    // document head takes the fonts and leaves the drawer standing. One more
+    // observer, armed once, doing nothing but calling an idempotent repair.
+    function watchHead() {
+      const head = document.head;
+      if (!onAttach || !window.MutationObserver || !head || headRoot === head) return;
+      try {
+        if (headWatch) headWatch.disconnect();
+        headWatch = new MutationObserver(repairExternals);
+        headWatch.observe(head, { childList: true });
+        headRoot = head;
+      } catch { /* attach-time repair is the load-bearing half here too */ }
     }
     function mount() {
       if (D.mounted && D.host && D.host.isConnected) return D;
@@ -1452,6 +1507,7 @@
       restoreTab();
       restoreWidth();
       restoreExportMode();
+      restoreTyping();
       restoreFilter();
       return D;
     }
@@ -1610,6 +1666,34 @@ ${selPillHtml()}
     }
     function rememberExportMode() {
       try { chrome.storage.local.set({ [EXPORT_KEY]: D.exportMode }); } catch { /* ignore */ }
+    }
+
+    // ---- how answers land, remembered -----------------------------------
+    // Same one key again. Default 'type': the paced reveal is what the drawer
+    // does now, and 'instant' is the way back for a reader who wants the text
+    // the moment the wire has it.
+    function restoreTyping() {
+      try {
+        chrome.storage.local.get(TYPING_KEY, r => setTyping(r && r[TYPING_KEY], true));
+      } catch { /* no storage (harness fallback) — 'type' */ }
+    }
+    function setTyping(mode, quiet) {
+      const want = mode === 'instant' ? 'instant' : 'type';
+      if (want === D.typeMode) return;
+      D.typeMode = want;
+      // Whatever is mid-answer catches up rather than rewinding or freezing:
+      // switching to instant shows everything received, switching to typing
+      // starts pacing from where the reader's eye already is.
+      for (const k of Object.keys(D.streams)) {
+        const s = D.streams[k];
+        if (want === 'instant') { s.shown = s.text.length; paintStream(k); }
+        else if (s.shown == null) s.shown = s.text.length;
+      }
+      if (want === 'instant') stopTyping(); else startTyping();
+      if (!quiet) { rememberTyping(); syncTyping(); }
+    }
+    function rememberTyping() {
+      try { chrome.storage.local.set({ [TYPING_KEY]: D.typeMode }); } catch { /* ignore */ }
     }
 
     // ---- which slice of the archive, remembered -------------------------
@@ -1813,6 +1897,98 @@ ${selPillHtml()}
       return out.join('');
     }
 
+    // ---- the typewriter ---------------------------------------------------
+    // WHAT THIS IS NOT: artificial slowness. The bridge hands us text in
+    // chunks whose size is an accident of the model's tokenizer and the
+    // network — a sentence, then eleven characters, then nothing for a
+    // second, then a paragraph. Painted as they land, an answer arrives in
+    // visible lurches. The drain smooths only what has ALREADY ARRIVED: `text`
+    // is everything received, `shown` is how much of it is on screen, and a
+    // timer walks the second toward the first.
+    //
+    // The rate is not a constant, it is proportional to the backlog — each
+    // tick reveals a fraction of what is waiting. Two things fall out of that
+    // for free. A slow stream settles at a lag of a dozen characters (the
+    // backlog can only grow until a fraction of it equals the arrival rate),
+    // which reads as typing. And a burst — a whole paragraph at once, or a
+    // stream that has ENDED — is drained in a few frames rather than typed out
+    // at leisure: a finished answer is never held hostage by an animation.
+    const TYPE_TICK_MS = 16;
+    const TYPE_DIV = 8;        // 1/8th of the backlog per frame while it flows
+    const TYPE_DONE_DIV = 3;   // …and a third of it once nothing more is coming
+    const TYPE_MIN = 1;
+    const TYPE_DONE_MIN = 12;
+    let typeTimer = null;
+
+    // The reader's setting is not the last word: a reader who has asked their
+    // OS for less motion has already answered this question, and gets the
+    // chunks exactly as they land. Read live rather than cached — the setting
+    // can change under a running tab.
+    function reducedMotion() {
+      try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+      catch { return false; }
+    }
+    function typewriterOn() { return D.typeMode === 'type' && !reducedMotion(); }
+
+    // The text of a stream as the reader is entitled to see it: the paced
+    // slice in typewriter mode, everything received otherwise — and in both
+    // cases with the room footer and the fold marker held back, exactly as
+    // the full render has always held them back (see below).
+    function streamBody(s) {
+      const raw = typewriterOn()
+        ? s.text.slice(0, Math.min(s.shown == null ? s.text.length : s.shown, s.text.length))
+        : s.text;
+      return stripMore(splitEnvelopes(raw).text);
+    }
+    // One stream's live <pre>, patched in place. Returns false when the block
+    // is not on screen, which is the caller's cue to rebuild (or not).
+    function paintStream(key) {
+      const s = D.streams[key];
+      if (!s) return true;
+      const pre = D.mounted && D.shadow
+        && D.shadow.querySelector('.reply[data-stream="' + cssq(key) + '"] .stream-text');
+      if (!pre) return false;
+      pre.textContent = streamBody(s);
+      // a held thread keeps its landing while the answer grows into it — the
+      // drain patches the <pre> without a render, so the hold has to be
+      // re-applied here or the text types its way off the bottom of the pane
+      if (D.hold && s.target === D.hold) { holdInView(); return true; }
+      const box = pre.closest('.pane');
+      if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 80) box.scrollTop = box.scrollHeight;
+      return true;
+    }
+    function typeStep(s) {
+      const have = s.text.length, seen = Math.min(s.shown || 0, have);
+      if (seen >= have) return false;
+      const backlog = have - seen;
+      const div = s.done ? TYPE_DONE_DIV : TYPE_DIV;
+      const min = s.done ? TYPE_DONE_MIN : TYPE_MIN;
+      s.shown = Math.min(have, seen + Math.max(min, Math.ceil(backlog / div)));
+      return true;
+    }
+    function typeDrain() {
+      let behind = false;
+      for (const k of Object.keys(D.streams)) {
+        const s = D.streams[k];
+        if (!typeStep(s)) continue;
+        // No block on screen means nobody is watching this one — a filtered
+        // card, a thread the reader is not looking at. There is nothing to
+        // pace for them, and rebuilding the whole drawer sixty times a second
+        // on a page we are a guest on to animate something invisible would be
+        // indefensible. It simply catches up; the next render shows it whole.
+        if (!paintStream(k)) { s.shown = s.text.length; continue; }
+        if (s.text.length > s.shown) behind = true;
+      }
+      if (!behind) stopTyping();
+    }
+    function startTyping() {
+      if (typeTimer || !typewriterOn()) return;
+      typeTimer = setInterval(typeDrain, TYPE_TICK_MS);
+    }
+    function stopTyping() {
+      if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
+    }
+
     function streamsHtml(target) {
       return Object.keys(D.streams).filter(k => D.streams[k].target === target).map(k => {
         const s = D.streams[k];
@@ -1823,7 +1999,7 @@ ${selPillHtml()}
         // …and the "▸ more" marker with it: mid-stream there is nothing to
         // fold yet (the fold needs a settled message to key its state on), so
         // the preview shows the whole answer and simply does not show the seam
-        const text = stripMore(splitEnvelopes(s.text).text);
+        const text = streamBody(s);
         return `<div class="reply bot streaming${who ? ' ' + who : ''}" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
           <span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">writing…</span></span>
           <pre class="stream-text">${esc(text)}</pre></div>`;
@@ -3483,6 +3659,12 @@ ${selPillHtml()}
       restoreMention();
       paintFoot();
       paintRound();
+      // AFTER the scrollTop restore above, which is what it overrides: the
+      // held thread outranks "the pane was where it was", because the pane
+      // being where it was is exactly what loses the card the reader just
+      // wrote in. Nothing else about render() changes — a drawer with no hold
+      // behaves precisely as it did.
+      holdInView();
     }
 
     function harvestDrafts() {
@@ -3725,6 +3907,10 @@ ${selPillHtml()}
     const RELAY_TIP = 'hand off to a fresh session (context reset)';
     const VERB_TIP = 'how the bots talk: short = 2-3 crisp sentences; long = at most 4-5';
     const VERB_LEVELS = ['short', 'long'];
+    const TYPE_TIP = 'how a live answer arrives: typed = revealed as it is written; '
+      + 'instant = shown the moment it lands (and always, if your system asks for less motion)';
+    const TYPE_MODES = ['type', 'instant'];
+    const TYPE_LABEL = { type: 'typed', instant: 'instant' };
 
     // The popover's switch idiom, in one place: two positions, a middle dot,
     // one of them on. Two states are a switch and not a menu — and the reply
@@ -3780,6 +3966,23 @@ ${selPillHtml()}
         cls: 'pop-verb', seg: 'vseg', act: 'verb', attr: 'data-level',
         label: 'reply length', title: VERB_TIP,
         positions: VERB_LEVELS.map(v => ({ value: v, label: v })),
+      }));
+      return row;
+    }
+
+    // The other preference in here that is not about an agent: whether a live
+    // answer is typed out or dropped in. Unlike reply length this one is the
+    // DRAWER's, not the companion's — nothing on the wire changes — so it is
+    // always there, even with the agents asleep.
+    function typingRow() {
+      const row = mk('div', 'pop-verbrow pop-typerow');
+      const label = mk('span', 'pop-verblabel');
+      label.textContent = 'typing';
+      row.appendChild(label);
+      row.appendChild(segSwitch({
+        cls: 'pop-verb pop-type', seg: 'tseg', act: 'typing', attr: 'data-typing',
+        label: 'how answers arrive', title: TYPE_TIP,
+        positions: TYPE_MODES.map(v => ({ value: v, label: TYPE_LABEL[v] })),
       }));
       return row;
     }
@@ -3876,6 +4079,7 @@ ${selPillHtml()}
       foot.appendChild(relayButton('both', 'relay both', 'both agents — ' + RELAY_TIP));
       pop.appendChild(foot);
       pop.appendChild(verbosityRow());
+      pop.appendChild(typingRow());
       pop.appendChild(keysRow());
 
       pop.appendChild(mk('div', 'pop-hint'));
@@ -3903,6 +4107,7 @@ ${selPillHtml()}
         paintGauge(group, agent, st[agent]);
       }
       syncVerbosity();
+      syncTyping();
 
       const sleep = pop.querySelector('.pop-sleep');
       sleep.textContent = SLEEP_TEXT[mode] || '';
@@ -3949,6 +4154,25 @@ ${selPillHtml()}
         const on = b.getAttribute('data-level') === v;
         b.classList.toggle('on', on);
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    // …and the drawer's own. Always shown (no companion is involved), but the
+    // switch reads 'instant' and is disabled when the system has asked for
+    // reduced motion: the setting is still whatever the reader chose, and
+    // what is HAPPENING is instant, which is what the control should say.
+    function syncTyping() {
+      const row = D.el.pop && D.el.pop.querySelector('.pop-typerow');
+      if (!row) return;
+      const forced = reducedMotion();
+      const v = forced ? 'instant' : D.typeMode;
+      row.classList.toggle('forced', forced);
+      row.querySelectorAll('.tseg').forEach(b => {
+        const on = b.getAttribute('data-typing') === v;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.disabled = forced;
+        b.title = forced ? 'your system asks for reduced motion — answers arrive instantly' : TYPE_TIP;
       });
     }
 
@@ -4305,6 +4529,7 @@ ${selPillHtml()}
           // blank space in the comments pane un-focuses: the dim lifts and no
           // card is "the" card until the reader points at one again
           else if (D.focused && e.target.closest && e.target.closest('.pane[data-pane="comments"]')) {
+            holdOff();   // pointing at nothing is still the reader pointing
             D.focused = null;
             D.el.comments.classList.remove('dim-others');
             D.shadow.querySelectorAll('.card.focused').forEach(c => c.classList.remove('focused'));
@@ -4318,6 +4543,7 @@ ${selPillHtml()}
         if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
         if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
         if (act === 'verb') { setVerbosity(btn.dataset.level); return; }
+        if (act === 'typing') { setTyping(btn.dataset.typing); return; }
         if (act === 'bill') { doBill(btn.dataset.agent, btn.dataset.bill); return; }
         if (act === 'keys') { cb('onOpenOptions')(null); return; }
         // "use the page's own commenting" / "let Discuss comment here":
@@ -4337,7 +4563,7 @@ ${selPillHtml()}
         if (act === 'pdf-saved-ok') { PDF.out = null; render(); return; }
         if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
-        if (act === 'pages') { if (D.view === 'pages') showThreads(); else showPages(); return; }
+        if (act === 'pages') { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
         if (act === 'lib-export') { doLibraryExport(); return; }
         if (act === 'lib-clear') { D.library.confirm = true; D.library.note = ''; renderLibrary(); return; }
@@ -4439,9 +4665,26 @@ ${selPillHtml()}
       D.el.tabs.addEventListener('click', e => {
         const t = e.target.closest && e.target.closest('.tab');
         if (!t || t.disabled) return;
+        holdOff();          // another tab is the reader doing something else
         D.tab = t.dataset.tab;
         paintTabs();
         rememberTab();
+      });
+
+      // THE READER'S OWN SCROLL ends the hold — and only theirs. A `scroll`
+      // listener cannot tell whose it is (holdInView writes scrollTop itself,
+      // and so does every render), so the gestures are listened for instead:
+      // a wheel, a drag on a touch screen, a Page Down. Those are the reader
+      // doing something else by definition; a stream landing is not.
+      const readerScroll = () => { if (D.hold) holdOff(); };
+      const SCROLL_KEYS = ['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'];
+      D.el.comments.addEventListener('wheel', readerScroll, { passive: true });
+      D.el.comments.addEventListener('touchmove', readerScroll, { passive: true });
+      D.el.comments.addEventListener('keydown', e => {
+        // …but not while they are typing INTO the held thread: an ArrowDown in
+        // the composer is a caret move, not a scroll, and must not release it
+        if (e.target && e.target.closest && e.target.closest('.composer')) return;
+        if (SCROLL_KEYS.indexOf(e.key) !== -1) readerScroll();
       });
 
       D.el.conn.addEventListener('click', () => { if (!D.connected) cb('onReconnect')(); });
@@ -4568,6 +4811,17 @@ ${selPillHtml()}
     // archive and unfolds that card — the reader arrives at the thread itself,
     // with its Reopen button, exactly as they would on a yellow highlight.
     function focus(id) {
+      // A '__new__' hold being pointed at a real id is the thread the composer
+      // just BECAME, not a change of subject: the server minted the id and
+      // content.js is bringing us to it, which it does BEFORE the send's own
+      // success path gets to re-point the hold. Promote it rather than release
+      // it — guarded on the send actually being in flight, so a reader who
+      // clicks a different highlight while a new comment is still going out
+      // still gets what they asked for.
+      if (D.hold === '__new__' && id && id !== '__new__' && inFlight('__new__')) D.hold = id;
+      // otherwise a deliberate arrival at another thread — a highlight click,
+      // a card click — is the reader doing something else, and ends the hold
+      else if (D.hold && id !== D.hold) holdOff();
       const revealed = reveal(id);
       if (D.focused === id) { if (revealed) render(); return; }
       D.focused = id;
@@ -4576,6 +4830,56 @@ ${selPillHtml()}
       D.el.comments.classList.toggle('dim-others', !!D.focused);
       cb('onFocus')(id);
     }
+    // ---- the thread you just wrote in stays the one you are looking at -----
+    // THE REPORT. On a long PDF the reader types a comment, presses Send, and
+    // the card leaves them: it goes back to its place in page order, loses the
+    // spotlight, and reads like every other card in the column. They have lost
+    // their bearings before the bot has even started, and when the answer does
+    // land they cannot find it again without going back to the document and
+    // clicking the right highlight.
+    //
+    // So a Send takes a HOLD on that thread. The hold is not a new affordance:
+    // it is the focus the drawer already has (the `focused` card, the pane's
+    // `dim-others`) plus one promise — that every render puts the card back
+    // where the reader can see it, for as long as the hold lasts. The bot's
+    // reply, and the typewriter draining it, therefore happen IN VIEW.
+    //
+    // It lasts "until the reader does something else", and that phrase is the
+    // whole of the release rule: a deliberate act ends it (a click on another
+    // thread or highlight, a scroll of their own, another tab, the pages
+    // library, closing the drawer), and CONTENT ARRIVING NEVER DOES. That is
+    // the distinction the reader asked for, and it is why the release hooks
+    // hang off gestures rather than off renders or events.
+    function holdOn(id) {
+      // Only a COMMENT thread. Page chat and the library are single scrolling
+      // conversations that already follow their own tail, and there is no card
+      // to focus — setting `focused` to one of them would dim every card in
+      // the comments pane and spotlight nothing.
+      if (!id || id === PAGE_TARGET || id === LIBRARY_TARGET) return;
+      D.focused = id;      // the spotlight the drawer already has
+      D.hold = id;
+    }
+    function holdOff() { D.hold = null; }
+    // Where a held card sits. A card that FITS goes to the top of the pane —
+    // the same landing scrollToThread gives a highlight click, so arriving by
+    // Send and arriving by click look like the same place. A card too tall to
+    // fit is shown by its TAIL instead: on a long thread the words the reader
+    // just wrote, and the answer arriving under them, are at the bottom of the
+    // card, and top-aligning it would put both off screen. Recomputed on every
+    // render, which is what makes it a hold rather than a one-time scroll.
+    function holdInView() {
+      if (!D.hold || !D.mounted || D.view === 'pages' || D.tab !== 'comments') return;
+      const card = D.shadow.querySelector('.card[data-thread="' + cssq(D.hold) + '"]');
+      if (!card) return;
+      const box = D.el.comments;
+      const cr = card.getBoundingClientRect(), br = box.getBoundingClientRect();
+      const top = cr.top - br.top + box.scrollTop;
+      const want = cr.height <= box.clientHeight - 16
+        ? top - 8
+        : top + cr.height - box.clientHeight + 8;
+      box.scrollTop = Math.max(0, want);
+    }
+
     // Arriving at a thread means its TOP is at the top of the pane: the
     // blockquote and the first comment are what a highlight click promises,
     // and a card taller than the pane has no useful "center". The jump is
@@ -4684,6 +4988,12 @@ ${selPillHtml()}
         // so the next untagged reply goes where the reader can see it will.
         const route = routeNow(target);
         D.routes[target] = route;
+        // …and the thread the reader just wrote in becomes the one they are
+        // looking at, and stays it while the answer arrives (holdOn). The
+        // spotlight is the focus the drawer already has; a new thread is
+        // focused as '__new__' already and is re-pointed at its real id in
+        // deliver() the moment the server mints one.
+        holdOn(target);
         deliver(target, queueSend(target, text, route));
       } finally {
         delete D.sendLock[target];
@@ -4762,6 +5072,9 @@ ${selPillHtml()}
         D.pending = null;
         // the spotlight follows the thread the composer just became
         if (D.focused === '__new__') D.focused = newId;
+        // …and the Send's hold with it: the card the reader is watching is
+        // about to be re-rendered under a real id, in page order
+        if (D.hold === '__new__') D.hold = newId;
         // …and so does the pill row: the address the reader picked for the
         // first comment is this thread's address now
         if (newId && D.routes.__new__) D.routes[newId] = D.routes.__new__;
@@ -5837,6 +6150,10 @@ ${selPillHtml()}
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
+      // being taken to another pane is the reader doing something else: the
+      // held card is not even on screen there, and coming back should be a
+      // fresh arrival rather than a spotlight they had forgotten about
+      if (tab && tab !== 'comments') holdOff();
       // being asked for a specific tab (a highlight click, a new comment) is
       // always about THIS page — leave the pages library if it is up
       if (tab) { D.tab = tab; D.view = 'threads'; paintTabs(); rememberTab(); }
@@ -5848,6 +6165,7 @@ ${selPillHtml()}
     }
     function close() {
       if (!D.mounted) return D;
+      holdOff();
       D.opened = false;
       D.el.panel.classList.remove('open');
       pushPage(false);
@@ -6096,8 +6414,13 @@ ${selPillHtml()}
           // if the turn-start that should have said so never reached us
           if (clearWaiting(target)) render();
           const key = ev.stream_id || (ev.model + ':' + target);
-          const s = D.streams[key] || (D.streams[key] = { who: ev.model || 'claude', target, text: '' });
+          const s = D.streams[key]
+            || (D.streams[key] = { who: ev.model || 'claude', target, text: '', shown: 0, done: false });
           s.text += (ev.text || '');
+          s.done = false;
+          // in instant mode `shown` is simply kept at the end, so a reader who
+          // flips the switch mid-answer does not watch the text rewind
+          if (!typewriterOn()) s.shown = s.text.length;
           // the floor has moved: redraw so the spinning ring follows it
           if (ev.model) {
             const live = D.liveAgents[target] || (D.liveAgents[target] = []);
@@ -6105,17 +6428,20 @@ ${selPillHtml()}
             if (D.speaker[target] !== ev.model) { D.speaker[target] = ev.model; render(); }
           }
           // fast path: patch the live <pre> instead of rebuilding the pane
-          const pre = D.mounted && D.shadow.querySelector('.reply[data-stream="' + cssq(key) + '"] .stream-text');
-          if (pre) {
-            pre.textContent = s.text;
-            const box = pre.closest('.pane');
-            if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 80) box.scrollTop = box.scrollHeight;
-          } else render();
+          if (!paintStream(key)) render();
+          startTyping();
           break;
         }
-        case 'stream-done':
-          // keep the text on screen; the authoritative `reply` clears it
+        case 'stream-done': {
+          // keep the text on screen; the authoritative `reply` clears it.
+          // But nothing more is coming, so whatever the drain is still holding
+          // back is drained at the fast rate — the last words of an answer are
+          // not made to wait on an effect.
+          const key = ev.stream_id || (ev.model + ':' + target);
+          const s = D.streams[key];
+          if (s) { s.done = true; startTyping(); }
           break;
+        }
         case 'reply':
           // a tool summary is not the authoritative answer — it must not tear
           // down the live stream block the real reply is still filling
@@ -6236,6 +6562,18 @@ ${selPillHtml()}
         .map(c => ({ key: c.key, name: c.name, count: c.count })),
       commenterFilter: () => D.commenter,
       pickCommenter,
+      // …and how a live answer lands: the reader's setting, and how much of
+      // each live stream is actually on screen right now (the drain's own
+      // state, which is the only way to see the effect from outside).
+      // which thread a Send is holding in view, if any (observable for the
+      // harness; the reader sees it as the spotlight that does not move)
+      held: () => D.hold,
+      typing: () => D.typeMode,
+      setTyping: m => { setTyping(m); return D; },
+      streamState: () => Object.keys(D.streams).map(k => ({
+        key: k, who: D.streams[k].who, target: D.streams[k].target,
+        got: D.streams[k].text.length, shown: Math.min(D.streams[k].shown || 0, D.streams[k].text.length),
+      })),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,

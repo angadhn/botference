@@ -193,11 +193,18 @@ body.side-collapsed #side { margin-left: -272px }
 #projects .empty-note { color: var(--muted); padding: .3rem .5rem; font-size: .76rem }
 .side-foot { padding: .7rem 1rem calc(.7rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--card-line) }
-#theme-toggle, #autorelay-toggle { display: flex; align-items: center; gap: .6rem }
-#theme-toggle .chip-label, #autorelay-toggle .chip-label { font: .66rem var(--sans);
+#theme-toggle, #autorelay-toggle, #typing-toggle { display: flex; align-items: center; gap: .6rem }
+#theme-toggle .chip-label, #autorelay-toggle .chip-label,
+#typing-toggle .chip-label { font: .66rem var(--sans);
   text-transform: uppercase; letter-spacing: .06em; color: var(--muted) }
-#autorelay-toggle .seg-btn { font: .66rem var(--sans); text-transform: uppercase;
+#autorelay-toggle .seg-btn, #typing-toggle .seg-btn { font: .66rem var(--sans); text-transform: uppercase;
   letter-spacing: .04em; padding: .28rem .55rem }
+/* the two footer switches stack, and the second one has room above it */
+#typing-toggle { margin-top: .5rem }
+/* the system has asked for less motion: the switch says what is happening
+   (instant) and stops pretending the reader still has the choice */
+#typing-toggle .seg[data-forced] { opacity: .6 }
+#typing-toggle .seg-btn[disabled] { cursor: default }
 .seg { display: inline-flex; border: 1px solid var(--card-line); border-radius: 8px;
   overflow: hidden; background: var(--card) }
 .seg-btn { display: inline-flex; align-items: center; justify-content: center;

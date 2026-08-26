@@ -1767,6 +1767,14 @@
       // archive rather than one conversation about one page
       project: PROJECT,
       theme: window.__BFP_THEME || null,
+      // Whenever the drawer (re-)attaches itself to a page that rearranged the
+      // document under it, the fonts link goes back with it. Mounting is not
+      // once — and neither is this: the same React hydration that deletes
+      // #bfp-root deletes the <link> out of <head>, and math that had been
+      // rendering in KaTeX quietly fell back to the page's serif for the life
+      // of the tab. ensureMathFonts is by-id idempotent, so this costs a
+      // lookup on the ordinary path.
+      onAttach: () => ensureMathFonts(),
       cssUrl: extUrl('drawer.css') || 'drawer.css',
       // the rest of KaTeX's stylesheet, inside the shadow root (see above)
       katexCssUrl: extUrl('vendor/katex/katex.min.css') || 'vendor/katex/katex.min.css',

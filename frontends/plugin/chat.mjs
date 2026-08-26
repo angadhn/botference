@@ -229,7 +229,7 @@ export function summaryPrompt({ title, url, quote, history, pageNumber }) {
 // /resume's replayed history is uneven and a bridge restart drops it whole).
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageNumber, summary, project, untaggedAll, routeHint }) {
+  snapshotPath, pageNumber, mark, summary, project, untaggedAll, routeHint }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -319,10 +319,26 @@ export function envelope({ url, title, target, text, quote, history,
   // "read the right part of it". Absent on page chat and unpaged threads.
   const where = pageNumber > 0
     ? `This comment is on page ${pageNumber} of the document.\n\n` : '';
+  // A struck highlight is a different KIND of highlight: the reader drew a red
+  // line through the passage (a PDF strikethrough — Adobe's own markup), which
+  // is a suggested deletion sitting on the document. The bot should know that
+  // — a question about a sentence the reader has already crossed out reads
+  // differently — and should do nothing about it. So it rides exactly where
+  // the page number rides, in the same register: one line of standing context
+  // between the passage and the reader's words, and an explicit instruction
+  // not to treat it as a request. Without that second half the model helpfully
+  // proposes the deletion, or rewrites the passage, when all it was asked was
+  // what the passage means.
+  const struck = mark === 'strike'
+    ? 'The reader has STRUCK this passage through — a suggested deletion marked on the '
+      + 'document itself. This is background, not an instruction: answer what they actually '
+      + 'ask, and do not carry out, argue for, or offer to make the deletion unless they ask.\n\n'
+    : '';
   const body = target === PAGE_CHAT
     ? `${who} asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
     : `The user highlighted this passage:\n> ${String(quote || '').replace(/\n/g, '\n> ')}\n\n`
       + where
+      + struck
       + `${prior}${wrote}\n${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
@@ -889,7 +905,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         untaggedAll: !!job.untaggedAll,
         // the thread's sticky address, when the reader's words named nobody
         routeHint: job.routeHint || '',
-        snapshotPath, pageNumber: job.pageNumber || 0,
+        snapshotPath, pageNumber: job.pageNumber || 0, mark: job.mark || '',
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
         library: isLib ? DIR : '',
