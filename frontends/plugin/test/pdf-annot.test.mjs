@@ -194,8 +194,8 @@ const items = [
     page: 2,
     quads: [[72, 600, 380, 614]],
     contents: 'mira · 25 Aug 2026, 10:00:\nSecond page, second comment.',
-    author: 'mira', ts: '2026-08-25T10:00:00Z', subject: 'Discuss · resolved',
-    color: [0.62, 0.85, 0.62], name: 'bfp-t2',
+    author: 'mira', ts: '2026-08-25T10:00:00Z', subject: 'Discuss',
+    color: [1, 0.83, 0.25], name: 'bfp-t2',
   },
   // a thread whose highlight could not be placed: no quads, nothing written
   { page: 1, quads: [], contents: 'orphan', author: 'angadh', name: 'bfp-t3' },
@@ -235,8 +235,11 @@ eq('…named, so a second export is recognisably the same annotation',
 eq('…printable and not hidden', nameOf(a1, 'F'), '4');
 ok('…and pointing back at its own page', !!a1.get(PDFName.of('P')));
 eq('page 2 gets its own', annotsOf(1).length, 1);
-eq('…filed, and drawn in the filed colour',
-  annotsOf(1)[0].get(PDFName.of('C')).toString(), '[ 0.62 0.85 0.62 ]');
+eq('…drawn in the live colour, which is the only colour a written thread has: '
+   + 'a resolved thread never reaches the writer at all (viewer.js collectItems)',
+  annotsOf(1)[0].get(PDFName.of('C')).toString(), '[ 1 0.83 0.25 ]');
+ok('…and no annotation goes out marked as filed',
+  ![...annotsOf(0), ...annotsOf(1)].some(d => /resolved/.test(textOf(d, 'Subj'))));
 
 // the appearance stream — the difference between "Acrobat draws it" and
 // "Acrobat is entitled to draw nothing"

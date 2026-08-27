@@ -670,12 +670,10 @@ function purelyImported(t) {
 }
 
 const DISCUSS_YELLOW = [1, 0.83, 0.25];
-const DISCUSS_GREEN = [0.62, 0.85, 0.62];   // …and a filed thread is not live
 // A STRUCK thread goes out as a real /StrikeOut in Acrobat's own red, because
 // the person receiving the copy has no Discuss and no way of learning a house
 // convention: red-line-through-the-words is the one mark every reader of PDFs
-// already knows. A filed strikeout keeps the sage — the thread is closed, and
-// the colour says so here exactly as it does on the page.
+// already knows.
 const DISCUSS_RED = [0.78, 0.19, 0.19];
 
 // Threads → the annotations that would be written for them, and the tally of
@@ -687,12 +685,19 @@ function collectItems(threads) {
   const items = [];
   let orphaned = 0;
   let already = 0;
+  let filed = 0;
   for (const t of threads || []) {
     if (purelyImported(t)) { already++; continue; }
+    // A RESOLVED thread is a settled argument, and the copy is for somebody
+    // else to read: they get the live marks and nothing else. Not a failure to
+    // place — never counted among the skipped — simply not a candidate, the
+    // way a comment that came out of this file already is not one.
+    // (The vault note is the opposite: see export.mjs, which keeps filed
+    //  threads because that note is the reader's own complete archive.)
+    if (t && t.resolved) { filed++; continue; }
     const groups = quadsForThread(t.id);
     if (!groups.length) { orphaned++; continue; }
     const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');
-    const resolved = !!t.resolved;
     const struck = t.mark === 'strike';
     for (const g of groups) {
       items.push({
@@ -705,13 +710,13 @@ function collectItems(threads) {
         author: (msgs[0] && msgs[0].author) || 'Discuss',
         ts: (msgs[msgs.length - 1] && msgs[msgs.length - 1].ts) || '',
         created: (msgs[0] && msgs[0].ts) || '',
-        subject: 'Discuss' + (struck ? ' · suggested deletion' : '') + (resolved ? ' · resolved' : ''),
-        color: resolved ? DISCUSS_GREEN : (struck ? DISCUSS_RED : DISCUSS_YELLOW),
+        subject: 'Discuss' + (struck ? ' · suggested deletion' : ''),
+        color: struck ? DISCUSS_RED : DISCUSS_YELLOW,
         name: 'bfp-' + t.id,
       });
     }
   }
-  return { items, orphaned, already };
+  return { items, orphaned, already, filed };
 }
 
 async function exportAnnotated() {
@@ -719,10 +724,10 @@ async function exportAnnotated() {
   const rec = (window.__bfp && window.__bfp.page) || null;
   const threads = ((rec && rec.threads) || []).filter(t => t && (t.msgs || []).length);
   if (!threads.length) return { ok: false, error: 'no comments on this page to write' };
-  const { items, orphaned, already } = collectItems(threads);
+  const { items, orphaned, already, filed } = collectItems(threads);
   if (!items.length) {
-    return { ok: false, error: already && !orphaned
-      ? 'every comment here came from this PDF already'
+    return { ok: false, error: (already || filed) && !orphaned
+      ? 'every comment here is resolved or already in the file'
       : 'none of these comments could be placed in the file' };
   }
   const name = Ann.exportFileName(fileName || ownName);
@@ -745,7 +750,7 @@ async function exportAnnotated() {
     download(out.bytes, name);
   }
   return { ok: true, name: where, picked: !!dest.handle,
-           written: out.written, orphaned, already };
+           written: out.written, orphaned, already, filed };
 }
 
 // ---- where the copy goes ---------------------------------------------------

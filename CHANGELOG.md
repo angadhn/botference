@@ -2,6 +2,17 @@
 
 ## 2026-08-27
 
+- **The annotated PDF carries only live marks.** A thread you have filed is a
+  settled argument, and the copy you send is for somebody else to read — so
+  resolved threads are no longer written into it. They are not counted as
+  failures either: the *"N comments written · M could not be placed"* line stays
+  a true sentence about anchoring, and a page where everything is filed says so
+  in plain words (*"every comment here is resolved or already in the file"*)
+  rather than opening a Save dialog for a copy identical to the original. The
+  Obsidian note is unchanged and deliberately opposite: it keeps every filed
+  thread, its *Resolved by…* line and its summary, because that note is your own
+  complete archive rather than a copy for anyone.
+
 - **Discuss remembers things for you now.** Everything you read and argue about
   with the bots is a record of having understood something once; nothing brought
   any of it back. Every comment thread now carries a small **?** beside its ✓,

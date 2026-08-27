@@ -4337,10 +4337,12 @@ viewer ignore that completely — they show the parent's `/Contents` and nothing
 else. The entire point of the export is the person who does not have Discuss,
 so the format is the one every viewer renders: **one popup with the whole
 conversation in it**, each entry named and dated, the quote at the top, the
-bots' tool-narration left out. Filed threads are written in green, live ones in
-yellow, and a thread that came out of THIS FILE and has not been added to since
-is not written at all — putting the supervisor's own comment back beside itself
-is not an export.
+bots' tool-narration left out. Everything written is written in the live yellow
+(a strikeout in red, below); two kinds of thread are not written at all —
+a thread that came out of THIS FILE and has not been added to since, because
+putting the supervisor's own comment back beside itself is not an export, and a
+**RESOLVED** thread, because a settled argument is not the reader's to re-open.
+See the 2026-08-27 amendment for the second of those.
 
 **Appearance streams are not optional.** A Highlight with no `/AP` is drawn by
 pdf.js and by Preview, and by Acrobat only sometimes — a viewer is entitled to
@@ -4590,8 +4592,8 @@ one-box-per-quad Form XObject a highlight gets, with two differences that are
 the difference between a line and a block: each box is flattened to ~1.1pt and
 lifted to 42% of the quad's height, and the blend is **Normal** rather than
 Multiply — multiply is what makes a highlight read as ink over glyphs, and a
-line through them is meant to be opaque. A filed strikeout keeps the sage, as it
-does on the page.
+line through them is meant to be opaque. A FILED strikeout is not exported at
+all — see the 2026-08-27 amendment; on the page it still keeps its sage.
 
 ### 7. Downstream
 
@@ -5746,6 +5748,83 @@ two MARKUP tools plus the question tool, which draws on nothing.
 - **One reader.** The sittings are keyed by handle and the whole vault is
   owner-only, so there is no story here for a shared companion, and there does
   not need to be: it is one person's memory.
+
+## Amendment (2026-08-27, shipped): a settled argument does not travel
+
+The annotated copy carried RESOLVED threads — green, subject `Discuss ·
+resolved`, sitting in the file beside the live ones. That is one export doing
+two jobs, and it does the second one badly.
+
+**The copy is for somebody else.** It exists for the co-author, the supervisor,
+the reader with no Discuss and no companion: a PDF they open in Preview and
+read. What they need to see is what is still ASKED. A filed thread is a
+question already answered, an argument already had, and putting it in front of
+a reader who was not in it invites them to re-open it — which is exactly what
+filing decided not to do. So: **`collectItems` drops a resolved thread**, in the
+same breath and for the same kind of reason as it drops one that came out of
+this file already.
+
+**And the vault note does the opposite, deliberately.** `export.mjs` keeps
+filed threads, writes `*Resolved by …*` and the summary under them, and hides
+nothing — because that note is not a copy for anybody, it is **the reader's own
+complete archive** of what was said about this page. Two exports, two
+audiences, two policies. `test/export.test.mjs` pins the note's half and
+`test/pdf-render.test.mjs` the copy's, so neither drifts into the other.
+
+**Three interactions, none of them accidental:**
+
+- A **purely imported** thread that is resolved was already excluded, for the
+  other reason. Order in `collectItems` is unchanged — `purelyImported` is
+  still tested first — so its tally still lands in `already`, and nothing about
+  that case moved.
+- A **GROWN imported** thread that is resolved now stays out. Its original
+  annotation is still natively in the file's bytes, so the supervisor's own
+  remark is still there for the reader; only the discussion that followed it
+  is withheld. That is unavoidable — the export writes, it does not redact —
+  and it is the right side to err on.
+- A resolved thread is **not a failure to place**. It never reaches
+  `quadsForThread`, is counted in a new `filed`, and `filed` is deliberately
+  NOT added to the drawer's `skipped`. "N comments written · M could not be
+  placed" stays a true sentence about anchoring.
+
+**When there is nothing left,** the refusal says why: *"every comment here is
+resolved or already in the file"* — the old wording blamed the anchors, which
+on a page where everything placed perfectly is a lie. No Save dialog is opened
+for a copy that would be byte-identical to the original.
+
+The green (`DISCUSS_GREEN`) and the `· resolved` subject are **deleted**, not
+left behind: no caller can reach them any more, and a dead branch that names a
+policy the code no longer has is worse than no branch.
+
+### Files
+
+```
+extension/pdf/viewer.js         collectItems: the resolved guard, the `filed`
+                                tally, DISCUSS_GREEN and the '· resolved'
+                                subject gone; exportAnnotated's refusal reworded
+```
+
+### Testing
+
+`test/pdf-render.test.mjs` (82 → 95) — the round trip gains a grown, painted,
+placeable, FILED thread: not written, not counted as unplaceable, and what it
+settled nowhere in the items. The real end-to-end export (both the web and the
+local boot) now stages a MIXED page — one live strikeout, one filed thread on
+its own passage — and re-parses the copy: the live one is there as a
+`/StrikeOut`, the settled one is nowhere in the file. And an ALL-FILED page:
+`ok:false`, the new wording, and `showSaveFilePicker` never called.
+
+`test/pdf-annot.test.mjs` (111 → 112) — the writer's second fixture item is a
+live yellow comment rather than a green one (the writer only ever sees live
+threads now), and no written annotation carries `resolved` in its `/Subj`.
+
+`test/export.test.mjs` (75 → 76) — the asymmetry pinned from the other side:
+the vault note still keeps the filed thread, its `*Resolved by …*` line and its
+summary.
+
+Harness `?pdfannot=export&selftest=1` (35 → 36) — the stubbed viewer now
+answers with `filed: 2`, and the card is asserted NOT to fold them into
+"could not be placed", in the card or in the footer.
 
 ## Out of scope for v1 (do not build)
 

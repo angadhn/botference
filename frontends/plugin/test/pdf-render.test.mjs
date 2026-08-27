@@ -445,6 +445,9 @@ if (ann && ann.ready) {
     const at = idx.raw.indexOf(c.quote);
     if (at < 0) return { err: 'the imported quote is not in the document' };
     An.paintOffsets(idx, at, at + c.quote.length, 'imported-1');
+    const at2 = idx.raw.indexOf('structural failure of oversight');
+    if (at2 < 0) return { err: 'the second passage is not in the document' };
+    An.paintOffsets(idx, at2, at2 + 'structural failure of oversight'.length, 'filed-1');
     const out = await P.collect([{
       id: 'imported-1', quote: c.quote,
       origin: { system: 'pdf-annot', id: c.id },
@@ -456,6 +459,15 @@ if (ann && ann.ready) {
       id: 'untouched-1', quote: c.quote,
       origin: { system: 'pdf-annot', id: 'deadbeefdeadbeef' },
       msgs: [{ author: c.author, ts: c.ts, text: c.text }],
+    }, {
+      // grown, placeable, painted — and FILED. The copy is for somebody else
+      // to read, and a settled argument is not theirs to re-open.
+      id: 'filed-1', quote: 'structural failure of oversight',
+      resolved: true, resolved_by: 'angadh',
+      msgs: [
+        { author: 'angadh', ts: '2026-08-25T09:00:00Z', text: 'Is oversight the word?' },
+        { author: 'claude', ts: '2026-08-25T10:00:00Z', text: 'Settled: the image stays.' },
+      ],
     }]);
     return { out, quote: c.quote };
   })()`);
@@ -464,6 +476,15 @@ if (ann && ann.ready) {
     JSON.stringify(trip));
   eq('…and one that is still only what the file already said is NOT',
     trip && trip.out && trip.out.already, 1);
+  eq('…nor is a filed one, however grown and however placeable',
+    trip && trip.out && trip.out.filed, 1);
+  ok('…and what it settled is nowhere in what would be written',
+    !(trip.out.items || []).some(i => /Settled: the image stays\./.test(i.contents || '')),
+    JSON.stringify(trip.out.items));
+  eq('…so only the live thread is a candidate at all',
+    trip && trip.out && trip.out.items.length, 1);
+  eq('…and nothing is reported as unplaceable — filing is not a failure to place',
+    trip && trip.out && trip.out.orphaned, 0);
   const item = trip && trip.out && trip.out.items[0];
   eq('…onto the page the passage is on', item && item.page, 1);
   ok('…with the whole discussion in the popup, the bot included',
@@ -566,19 +587,27 @@ fs.writeFileSync(localPdf, ANNOTATED);
 
 // Stage a thread over a real quote, paint it the way the annotator paints
 // every thread, stub the picker, and press the button.
-const exportProbe = quote => `(async () => {
+const exportProbe = (quote, quote2) => `(async () => {
   const An = window.BFPAnchor, P = window.__BFP_PDF;
   if (!An || !P) return { err: 'the annotator did not load on this page' };
   const idx = An.buildTextIndex(document.body);
   const at = idx.raw.indexOf(${JSON.stringify(quote)});
   if (at < 0) return { err: 'the fixture text is not where it should be' };
   An.paintOffsets(idx, at, at + ${JSON.stringify(quote)}.length, 't-export');
+  // A SECOND thread beside it, on its own passage, filed. A mixed page is the
+  // real case: the copy must carry the live one and only the live one.
+  const at2 = idx.raw.indexOf(${JSON.stringify(quote2)});
+  if (at2 < 0) return { err: 'the second fixture passage is not where it should be' };
+  An.paintOffsets(idx, at2, at2 + ${JSON.stringify(quote2)}.length, 't-filed');
   // content.js does not publish window.__bfp on a page with no extension
   // behind it, so the record it would have held is staged at the same seam
   // exportAnnotated reads it from — and nowhere else is stubbed.
   window.__bfp = { page: { threads: [{
     id: 't-export', quote: ${JSON.stringify(quote)}, mark: 'strike',
     msgs: [{ author: 'angadh', ts: '2026-08-25T12:00:00Z', text: 'This should come out.' }],
+  }, {
+    id: 't-filed', quote: ${JSON.stringify(quote2)}, resolved: true, resolved_by: 'angadh',
+    msgs: [{ author: 'angadh', ts: '2026-08-25T12:05:00Z', text: 'This one is settled already.' }],
   }] } };
   let captured = null, asked = null;
   window.showSaveFilePicker = async o => {
@@ -609,6 +638,7 @@ const exportProbe = quote => `(async () => {
 })()`;
 
 const QUOTE = 'walk back to the tram stop';
+const FILED_QUOTE = 'structural failure of oversight';
 for (const kind of ['web', 'local']) {
   const base = kind === 'local'
     ? 'file://' + path.join(ROOT, 'extension/pdf/viewer.html')
@@ -645,7 +675,7 @@ for (const kind of ['web', 'local']) {
   }
 
   if (up && up.spans > 0) {
-    const out = await evaluate(exportProbe(QUOTE)
+    const out = await evaluate(exportProbe(QUOTE, FILED_QUOTE)
       .replace('/*PDFJS*/', pdfjsUrl).replace('/*WORKER*/', workerUrl));
     ok('[' + kind + '] the export runs to the end and writes the copy',
       !!(out && !out.err && out.r && out.r.ok === true), JSON.stringify(out && (out.err || out.r)));
@@ -656,6 +686,11 @@ for (const kind of ['web', 'local']) {
         / \(discussed\)\.pdf$/.test(String(out.suggested || '')), String(out.suggested));
       ok('[' + kind + '] …carrying the thread that was on screen', out.r.written === 1,
         JSON.stringify(out.r));
+      // a MIXED page: one live thread, one filed. Only the live one travels.
+      ok('[' + kind + '] …and only that one — the filed thread beside it is not written',
+        out.r.filed === 1 && out.r.written === 1, JSON.stringify(out.r));
+      ok('[' + kind + '] …and is not counted as a failure to place, because it is not one',
+        (out.r.orphaned || 0) === 0, JSON.stringify(out.r));
       // THE ASSERTION THIS SECTION EXISTS FOR: a copy built from detached or
       // half-read source bytes is not a PDF, and does not still contain the
       // document it was made from.
@@ -665,6 +700,9 @@ for (const kind of ['web', 'local']) {
         JSON.stringify(out.comments));
       ok('[' + kind + '] …the new one beside them, struck as a suggested deletion',
         out.comments.some(c => /This should come out\./.test(c.text) && c.subtype === 'StrikeOut'),
+        JSON.stringify(out.comments));
+      ok('[' + kind + '] …the settled one nowhere in the copy at all',
+        !out.comments.some(c => /This one is settled already\./.test(c.text)),
         JSON.stringify(out.comments));
       ok('[' + kind + '] …and not a word of the document changed',
         out.words.includes(QUOTE) && out.words.includes('structural failure of oversight'));
@@ -703,6 +741,38 @@ ok('cancelling the Save dialog is a decision, not a failure',
   !!(cancelled && cancelled.r && cancelled.r.ok === true && cancelled.r.cancelled === true),
   JSON.stringify(cancelled));
 eq('…and nothing is downloaded behind the reader’s back', cancelled && cancelled.downloads, 0);
+
+// ---- a page where every argument is settled ---------------------------------
+// Nothing to write, and the refusal must say WHY. "None of these could be
+// placed" would be a lie: they placed perfectly, they are simply not going.
+// The Save dialog must never open either — a copy identical to the original is
+// not a copy worth asking the reader for a folder for.
+const allFiled = await evaluate(`(async () => {
+  const P = window.__BFP_PDF;
+  // the same two threads the export above wrote from, still painted where they
+  // were — filed, both of them, and nothing else has changed
+  window.__bfp = { page: { threads: [{
+    id: 't-export', quote: ${JSON.stringify(QUOTE)}, mark: 'strike', resolved: true,
+    msgs: [{ author: 'angadh', ts: '2026-08-25T12:00:00Z', text: 'This should come out.' }],
+  }, {
+    id: 't-filed', quote: ${JSON.stringify(FILED_QUOTE)}, resolved: true,
+    msgs: [{ author: 'angadh', ts: '2026-08-25T12:05:00Z', text: 'This one is settled already.' }],
+  }] } };
+  let asked = false;
+  window.showSaveFilePicker = async () => { asked = true; throw new Error('should never be reached'); };
+  let r;
+  try { r = await P.exportAnnotated(); }
+  catch (e) { return { err: 'export threw: ' + ((e && e.message) || e) }; }
+  return { r, asked };
+})()`);
+ok('a page with nothing but filed threads writes no copy',
+  !!(allFiled && allFiled.r && allFiled.r.ok === false), JSON.stringify(allFiled));
+eq('…and says why, rather than blaming the anchors',
+  allFiled && allFiled.r && allFiled.r.error,
+  'every comment here is resolved or already in the file');
+eq('…without ever opening a Save dialog for a file it was not going to write',
+  allFiled && allFiled.asked, false);
+
 
 try { ws.close(); } catch { /* closing anyway */ }
 cleanup();

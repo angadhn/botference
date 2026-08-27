@@ -307,6 +307,15 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
     filed.includes('the flow is unstable above Re 4000') && filed.includes('The whole result.'), filed);
   ok('a note with nothing resolved is byte-for-byte what it always was',
     !/Resolved/.test(renderNote(paper(), CFG, NOW, 'all')));
+  // THE ASYMMETRY, pinned so neither half drifts into the other. The annotated
+  // PDF is a copy for a co-author, and carries LIVE marks only — a filed thread
+  // is dropped there (extension/pdf/viewer.js collectItems). The vault note is
+  // the reader's own complete archive of what was said about this page, so a
+  // filed thread is exactly the thing it must keep. Two exports, two audiences,
+  // two deliberate policies.
+  ok('the vault note keeps what the annotated PDF drops — it is an archive, not a copy',
+    /\*Resolved by angadh\.\*/.test(filed) && filed.includes('It does not.')
+    && filed.includes('the flow is unstable above Re 4000'), filed);
 
   // ---- a struck passage travels as a struck passage ------------------------
   // What was DONE to the passage is part of what the comment says: a deletion
