@@ -871,6 +871,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'pdf-bypass': return pdfBypass(msg.url);
       case 'open-page': return openPage(msg.url);
+      // A page of the COMPANION's own — the quiz, and nothing else so far.
+      // Deliberately not `open-page`: that one is for annotated articles and
+      // carries the auto-open handshake with a content script. This just opens
+      // a tab, and it will only ever open one at this companion, because a
+      // content script asking the worker to open arbitrary urls is a hole.
+      case 'open-here': {
+        await configReady;
+        const path = String(msg.path || '/').replace(/^\/*/, '/');
+        if (!/^\/[A-Za-z0-9/_-]*$/.test(path)) return { ok: false, error: 'bad path' };
+        const tab = await chrome.tabs.create({ url: CFG.httpUrl(CONF.base, path), active: true });
+        return { ok: true, tabId: tab && tab.id };
+      }
       case 'open-options': return openOptions(msg.agent);
       default:
         return { ok: false, error: 'unknown message ' + JSON.stringify(msg && msg.t) };

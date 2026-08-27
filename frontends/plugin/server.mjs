@@ -32,7 +32,8 @@ import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyR
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode } from './export.mjs';
 import { createHosted, CORS_HEADERS, isLocalDirect, sanitizeHandle } from './hosted.mjs';
-import { pageView, pagesView, articleView } from './views.mjs';
+import { pageView, pagesView, articleView, quizView } from './views.mjs';
+import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
 import * as run from './run.mjs';
 import * as keys from '../shared/keys.mjs';
@@ -752,6 +753,25 @@ function onChatEvent(ev) {
           }
         }
       }
+      // …and did the bot notice the reader had not GOT something? Third use of
+      // the same idiom, same three rules (only where the offer was made, only
+      // as a standalone line, only ever as a button). Confirming it does not
+      // touch this thread either: it files a card in the vault, made from this
+      // passage and aimed at the gap the line names.
+      if (ev.msg && ev.target !== store.PAGE_CHAT) {
+        const th = store.findThread(page, ev.target);
+        if (questionable(page, th)) {
+          const hit = questions.parseQuestionSuggestion(ev.msg.text);
+          if (hit) {
+            ev.msg = {
+              ...ev.msg,
+              text: String(ev.msg.text).split(/\r?\n/)
+                .filter(l => l !== hit.line).join('\n').trimEnd(),
+              question: { why: hit.why },
+            };
+          }
+        }
+      }
       // appendMsg also REOPENS a resolved thread: a bot answering into it is
       // new activity, and new activity is the end of resolved
       store.appendMsg(page, ev.target, ev.msg);
@@ -769,6 +789,23 @@ function onChatEvent(ev) {
   // job was still in the queue, the field is simply written and left unused —
   // that is the whole cancellation story, and it means re-resolving later
   // shows the paragraph instantly instead of queueing a second job.
+  // A card job came back (chat.mjs). Its words are a fenced block and are
+  // never appended to anything: they fill in the pending row in the vault, or
+  // — when the block will not parse — mark that row FAILED with the reason on
+  // it. A malformed reply can therefore cost one visible bad row and can never
+  // corrupt the vault, which is the whole of the parsing contract.
+  if (ev.type === 'card') {
+    const vault = questions.readVault();
+    const card = ev.error
+      ? questions.failCard(vault, ev.card_id, ev.error)
+      : questions.settle(vault, ev.card_id, ev.msg && ev.msg.text, ev.msg && ev.msg.author);
+    if (card) {
+      questions.saveVault(vault);
+      broadcast({ type: 'question', url: ev.url, card_id: card.id, state: card.state,
+        ...(card.error ? { error: card.error } : {}) });
+    }
+    return;
+  }
   if (ev.type === 'summary') {
     const page = store.readPage(ev.url);
     const thread = page && store.findThread(page, ev.target);
@@ -810,6 +847,120 @@ function summarizeThread(page, thread) {
   });
   return true;
 }
+
+// ---- the question vault ---------------------------------------------------
+//
+// "This is interesting — make a question of it." One click, and a card is
+// written by a bot and filed in the vault (questions.mjs) to be asked back
+// weeks later. The reader's ONLY decision is which passage: not the format,
+// not the difficulty, not when it comes back. That is the whole product
+// argument for this feature, and it is why there is no editor, no review
+// queue and no settings anywhere in this path.
+//
+// The turn is `summarizeThread`'s twin in every structural respect — queued
+// like any other turn on the page's own lane, silent, its answer landing in a
+// RECORD rather than in the thread — with one difference: the row exists
+// BEFORE the turn is queued. A generation that never comes back is then a
+// pending card the reader can see and delete, rather than a click that did
+// nothing.
+function makeCard(page, { thread, quote, page_number, from_msg, hint, model }) {
+  const text = String(quote || (thread && thread.quote) || '').trim();
+  if (!text) return { ok: false, error: 'a question needs a passage to be about' };
+  const agent = String(model || '').toLowerCase() === 'codex' ? 'codex' : 'claude';
+  const vault = questions.readVault();
+  const card = questions.addPending(vault, {
+    model: agent,
+    source: {
+      url: page.url, page_key: store.pageKey(page.url), title: store.displayTitle(page),
+      site: page.site || '', quote: text,
+      thread_id: (thread && thread.id) || null,
+      page: Number(page_number || (thread && thread.page) || 0) || 0,
+      // provenance, for the quiz's filter chips — one bank, looked at from
+      // angles (questions.facets)
+      projects: store.projectsOf(page).map(p => p.id),
+      tags: store.tagsOf(page),
+      from_msg: from_msg || '',
+      hint: hint || '',
+    },
+  });
+  questions.saveVault(vault);
+  const done = st => {
+    broadcast({ type: 'question', url: page.url, card_id: card.id, state: st.state,
+      ...(st.error ? { error: st.error } : {}) });
+    return card;
+  };
+  if (NO_AGENTS || !chat) {
+    const v = questions.readVault();
+    const failed = questions.failCard(v, card.id, AGENTS_OFF_REASON);
+    questions.saveVault(v);
+    return { ok: true, card: failed || card, queued: false, reason: AGENTS_OFF_REASON };
+  }
+  const c = chatFor(page.url);
+  if (!c) {
+    const v = questions.readVault();
+    const failed = questions.failCard(v, card.id, UNCONFIRMED_REASON);
+    questions.saveVault(v);
+    return { ok: true, card: failed || card, queued: false, reason: UNCONFIRMED_REASON };
+  }
+  const { position } = c.submit({
+    url: page.url, target: (thread && thread.id) || store.PAGE_CHAT, title: page.title,
+    // the whole of the routing, exactly as a summary job does it: `text` is
+    // read for its @-mention and by nothing else, because a card job builds
+    // its own envelope (chat.mjs cardPrompt)
+    text: `@${agent} `,
+    card: true,
+    card_id: card.id,
+    cardHint: hint || '',
+    quote: text,
+    pageNumber: Number(page_number || (thread && thread.page) || 0) || 0,
+    // the conversation, where there was one: a card written off a thread that
+    // argued its way to the point is a better card than one written off the
+    // sentence alone, and this is where the reader's own confusion is on record
+    history: (thread && thread.msgs) || [],
+  });
+  done({ state: 'pending' });
+  return { ok: true, card, queued: true, position };
+}
+
+// ---- one sitting at the quiz ---------------------------------------------
+//
+// The ORDER of a sitting, and the one thing the schedule on disk cannot
+// express: a card answered wrong must come back BEFORE the reader stands up.
+// SM-2 makes it due this instant, which is necessary and not sufficient —
+// without a session the reader would have to start another one to meet it.
+//
+// Memory only, and deliberately. Every consequence of an answer (the interval,
+// the ease, the lapse count) is written to the vault the moment it is given, so
+// a restart costs the ORDER of the sitting in progress and nothing else: the
+// next GET simply starts a new one over the same due cards.
+const quizzes = new Map();          // who → session
+const QUIZ_TTL_MS = 6 * 60 * 60 * 1000;
+const scopeKey = s => `${s.project || ''} ${s.tag || ''}`;
+const quizWho = req => (hosted.identity(req).handle || 'owner');
+function quizSession(req) {
+  const who = quizWho(req);
+  const s = quizzes.get(who);
+  if (!s) return null;
+  if (Date.now() - s.at > QUIZ_TTL_MS) { quizzes.delete(who); return null; }
+  return s;
+}
+// where a quiz form post lands afterwards. Deliberately NOT `backTo` — that
+// one's allowlist is `/p/<key>` and widening it would widen an anti-open-
+// redirect guard for a page that needs no redirect from anywhere else.
+function quizBack(data, reveal) {
+  const q = new URLSearchParams();
+  if (data.project) q.set('project', String(data.project).slice(0, 80));
+  if (data.tag) q.set('tag', String(data.tag).slice(0, 80));
+  if (reveal) q.set('reveal', '1');
+  const s = q.toString();
+  return `/quiz${s ? `?${s}` : ''}`;
+}
+
+// May this thread offer to make a question of itself? Any page — a question is
+// about an IDEA, and ideas are not a PDF feature — but not a thread the reader
+// has already filed, and not page chat (which sits on no passage, so a card
+// made from it would have no source to link back to).
+const questionable = (page, thread) => !!thread && !thread.resolved;
 
 // A guest's mention spends the OWNER's agents on the owner's machine, so it is
 // off by default and metered when on: grants.json is hand-edited, re-read on
@@ -953,6 +1104,13 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // an argument that is over). A model that is never shown this block has no
   // way of learning the convention, which is the point.
   const strikeContext = strikeable(page, thread) ? store.strikeOfferBlock() : '';
+  // ── and may this thread offer to be remembered? ───────────────────────
+  // The bot's own trigger for the question vault. Composed on the same funnel
+  // and for the same reason as the two above: the server holds the record, and
+  // a model never shown the convention cannot use it. Unlike the strike offer
+  // this is not a PDF affair — a gap in understanding is not a property of the
+  // file format — so every page's thread turn carries it.
+  const questionContext = questionable(page, thread) ? questions.questionOfferBlock() : '';
   // ── what ELSE is marked up on this passage? ───────────────────────────
   // The other threads whose quotes sit on or beside this one — the two
   // strikeouts already in the sentence this comment is about. Composed here for
@@ -991,6 +1149,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     ...(filedContext ? { filedContext } : {}),
     ...(suggestContext ? { suggestContext } : {}),
     ...(strikeContext ? { strikeContext } : {}),
+    ...(questionContext ? { questionContext } : {}),
     ...(nearbyContext ? { nearbyContext } : {}),
     ...extras,
   });
@@ -1294,7 +1453,9 @@ export function handler(req, res) {
     const html = pagesView({ index, me: hosted.identity(req), snapshots,
       library: store.readPage(store.LIBRARY_URL),
       libraryKey: store.pageKey(store.LIBRARY_URL),
-      kind: q.get('kind') || '', tag: q.get('tag') || '' });
+      kind: q.get('kind') || '', tag: q.get('tag') || '',
+      // how many questions are waiting, for the owner's own link to the quiz
+      due: hosted.isOwner(req) ? questions.counts(questions.readVault()).due : 0 });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
   if (req.method === 'GET' && url.startsWith('/p/')) {
@@ -2521,6 +2682,127 @@ export function handler(req, res) {
       broadcast({ type: 'page', url: page.url });
       ok(res, { thread });
     });
+  }
+  // ---- the question vault ------------------------------------------------
+  //
+  // OWNER-ONLY, all of it, for the reason /project-page is: these are the
+  // reader's own memory and the record of what they keep getting wrong, which
+  // is nobody's business over a tunnel. It also spends the owner's agents.
+  //
+  // "Make a question of this." The passage is either a thread's (the card-head
+  // button, and the bot-suggestion chip) or a bare selection's (the pill's
+  // third tool, on a page with no thread on that passage at all).
+  if (req.method === 'POST' && url === '/question') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = data.thread_id ? store.findThread(page, data.thread_id) : null;
+      if (data.thread_id && !thread) return fail(res, 404, 'unknown thread');
+      const made = makeCard(page, {
+        thread,
+        quote: data.quote,
+        page_number: data.page,
+        from_msg: data.from_msg,
+        hint: data.hint,
+        model: data.model,
+      });
+      if (!made.ok) return fail(res, 400, made.error);
+      ok(res, { card: made.card, queued: !!made.queued,
+        ...(made.reason ? { reason: made.reason } : {}) });
+    });
+  }
+  // The vault itself, as JSON: the drawer reads it for its due count, and the
+  // tests read it for everything.
+  if (req.method === 'GET' && url === '/questions') {
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const vault = questions.readVault();
+    const scope = { project: q.get('project') || '', tag: q.get('tag') || '', key: q.get('key') || '' };
+    return ok(res, {
+      counts: questions.counts(vault, scope),
+      facets: questions.facets(vault),
+      due: questions.dueCards(vault, { ...scope, limit: questions.SESSION_MAX }),
+      cards: q.get('all') === '1' ? vault.cards : undefined,
+    });
+  }
+  // Answering one. The grade is the whole of the reader's input — right or
+  // wrong, one tap — and everything else (the interval, the ease, when it
+  // comes back) is SM-2's (questions.grade).
+  if (req.method === 'POST' && url === '/quiz-answer') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const vault = questions.readVault();
+      const card = questions.findCard(vault, data.id);
+      if (!card) return fail(res, 404, 'unknown card');
+      const choice = Number(data.choice);
+      if (!Number.isInteger(choice) || choice < 0 || choice >= (card.options || []).length) {
+        return fail(res, 400, 'that is not one of the options');
+      }
+      const correct = choice === card.answer;
+      questions.grade(card, correct);
+      questions.saveVault(vault);
+      const s = quizSession(req);
+      if (s) { questions.advance(s, card.id, correct); s.last = { id: card.id, choice, correct }; }
+      if (data._form) return seeOther(res, quizBack(data, true));
+      ok(res, { card, correct });
+    });
+  }
+  // "This card seems wrong." It leaves the rotation at once — a card the
+  // reader does not trust must not go on being asked — and keeps everything it
+  // had, because the whole point of the source link beside it is that a bot
+  // wrote this and bots are wrong sometimes.
+  if (req.method === 'POST' && (url === '/quiz-flag' || url === '/quiz-delete')) {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const vault = questions.readVault();
+      const done = url === '/quiz-delete'
+        ? questions.deleteCard(vault, data.id)
+        : questions.flagCard(vault, data.id, data.note);
+      if (!done) return fail(res, 404, 'unknown card');
+      questions.saveVault(vault);
+      const s = quizSession(req);
+      if (s && s.last && s.last.id === data.id) s.last = null;
+      if (data._form) return seeOther(res, quizBack(data, false));
+      ok(res, { ok: true });
+    });
+  }
+  // THE QUIZ. It lives in the reading room and not in the drawer, and that is
+  // the point: the reader reviews on a phone, on a train, away from the Mac the
+  // extension is installed on. Scriptless, like every other page here — one
+  // card, option buttons that are form posts, and the query string for state —
+  // so it works with JavaScript off and cannot get out of step with itself.
+  if (req.method === 'GET' && url === '/quiz') {
+    const me = hosted.identity(req);
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const scope = { project: q.get('project') || '', tag: q.get('tag') || '' };
+    const vault = questions.readVault();
+    let s = quizSession(req);
+    // A filter change is a new sitting, not a re-ordering of this one.
+    if (!s || s.scopeKey !== scopeKey(scope) || (!s.last && !questions.sessionCard(vault, s))) {
+      s = questions.startSession(vault, scope);
+      s.scopeKey = scopeKey(scope);
+      quizzes.set(quizWho(req), s);
+    }
+    // ?reveal=1 paints the answer the reader just gave; anything else is the
+    // next card, and asking for the next card is what clears the reveal.
+    const reveal = q.get('reveal') === '1' ? s.last : null;
+    if (!reveal) s.last = null;
+    const shown = reveal ? questions.findCard(vault, reveal.id) : questions.sessionCard(vault, s);
+    const html = quizView({
+      me,
+      card: shown,
+      // does the source page have a readable copy on this machine? then "the
+      // page" is the article view and the quote is a tap from being in context
+      read: !!(shown && store.hasSnapshot(String((shown.source || {}).page_key || ''))),
+      reveal,
+      session: { asked: s.asked, right: s.right, wrong: s.wrong, left: Math.max(0, s.queue.length - s.i) },
+      counts: questions.counts(vault, scope),
+      facets: questions.facets(vault),
+      scope,
+    });
+    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }
   // Ask for the paragraph again — the same job /resolve queues, on demand, for
   // a thread whose summary landed while the bridge was down or which has moved

@@ -5440,6 +5440,313 @@ lonely passage, absent on an article, absent on page chat.
   suggestion stayed inside its span — it has no DOM and no document. This tells
   the bot where the fence is; it does not build one.
 
+## Amendment (2026-08-27, shipped): the question vault — what you read, asked back
+
+The reader spends an afternoon on a chapter of a probability textbook and a
+Taleb transcript, argues about both with the bots, understands them, and closes
+the tab. In March they open the same chapter and it is new. Everything Discuss
+holds is a record of having understood something once; nothing in it was ever
+going to bring any of it back.
+
+So: **a small button that says "this is interesting, make a question of it"**,
+and a quiz that asks those questions back on a schedule. In the reader's own
+words, and the sentence the whole design answers to.
+
+### 1. THE READER'S ONLY DECISION IS WHICH PASSAGE
+
+This is the constitution of the feature and every other choice below is
+downstream of it.
+
+| the reader decides | nobody asks them |
+|---|---|
+| which passage becomes a question | what kind of question it is |
+| — | how it is worded |
+| — | how hard it is |
+| — | when it comes back |
+| — | which deck it goes in |
+
+There is no card editor, no approve-before-filing step, no format picker, no
+difficulty slider, no interval setting, no deck management, and **no settings
+surface of any kind** in this path. A bot writes the card; SM-2 schedules it;
+the vault is one bank. The reader was explicit that they will not sit grading
+cards Anki-style, and a feature that costs a decision per card is a feature
+that gets used for a week. The cost of that is that some cards will be bad —
+which is what the flag on every card, and the source link beside it, are for.
+
+### 2. Two ways a card is made, and only one of them is a bot's
+
+**The reader's button**, in three places, all one click:
+
+- the **card head's `?`**, beside the ✓ and the S̶ — the same kind of thing they
+  are, a one-click statement about this thread, on hover, owner-only. Not on a
+  filed thread: that argument is over, and the passage is still selectable.
+- the **selection pill's third tool**, on EVERY page. A strikeout is PDF-only
+  because an `/StrikeOut` is a thing a file can carry; a question is about an
+  IDEA and nothing about it is a property of the file format. The pill's
+  question tool makes no mark, opens no thread and paints nothing — a question
+  is a note in the reader's own memory, and drawing a highlight for one would
+  be a lie about what the page now carries.
+- the **chip under a bot's offer** (below).
+
+**The bot's offer**, which files nothing. The reader is not the only one who
+can tell that something here is worth coming back to: a bot three exchanges
+into explaining conditional probability can see that the reader has not got it
+— they asked the same thing twice — and the reader, busy understanding it, is
+the last person likely to press a button about it. So the `strike:` /
+`file-in:` idiom for the third time, deliberately identical:
+
+```
+question: <the one idea they should be able to recall>
+```
+
+`questions.parseQuestionSuggestion` reads it back — a line of its own, the LAST
+one counts, markdown stripped, a reason REQUIRED (a bare `question:` is a model
+echoing the convention, not concluding anything). `server.mjs` lifts it off the
+reply's words into `msg.question` (per MESSAGE, like `file_in` and `strike`, so
+claude offering and codex offering are two chips) and the drawer draws **File
+it / No**. The invitation (`questions.questionOfferBlock`) rides every thread
+turn of every page — a gap shows itself on the fourth exchange, not the first —
+and a model never shown it cannot use the convention. `bridge-system-prompt.md`
+rule 14 says the rest: rarely, only on a real gap, never in doubt.
+
+**BOTS NEVER FILE.** The vault stays empty until the reader clicks. "No" is per
+tab and remembered nowhere: declining an offer is not a fact about the page.
+
+### 3. The card a bot writes, and reading it back
+
+`strike:` and `file-in:` are single lines because they carry one fact. A card
+carries seven, so it is a **fenced block** — fenced for exactly the reason those
+two are line-anchored: a boundary a model cannot half-produce and a parser
+cannot half-read.
+
+````
+```question
+Q: What does the law of large numbers promise about the sample mean?
+A) it converges to the population mean as n grows
+B) it equals the population mean for any n
+C) the sample variance goes to zero
+D) the sample mean is normally distributed
+correct: A
+why: It is a statement about the limit, not about any particular sample.
+kind: mcq
+difficulty: 2
+```
+````
+
+The LAST block in the reply wins (a model that shows its working and then
+writes the card has written one card). `why:` may run over several lines;
+everything else is one line. `correct:` may be a letter, a number, or the
+option's own text — a model will write any of them and all three mean the same
+thing. `kind` is `mcq` | `truefalse` | `cloze`, inferred where absent (two
+True/False options; a `____` in the question); a true/false card written
+without its options spelled out gets them supplied, and **nothing else is ever
+invented**.
+
+**A malformed reply costs exactly one visible row and can never corrupt the
+vault.** Ten refusals are enumerated in `questions.test.mjs`; each one writes
+`state: "failed"` with the reason on the card, which the quiz reports and the
+drawer says out loud. That is the whole parsing contract.
+
+The turn itself is `summarizeThread`'s twin: queued on the page's own lane,
+**silent by construction** (no turn-start, no turn-end, nothing spins), and its
+answer leaves `chat.mjs` as `card` rather than `chat` so no listener can mistake
+a fenced block of machinery for a bot joining the conversation. The prompt is
+`chat.cardPrompt` + `CARD_SHAPE`, and it carries the thread's history: a card
+written off the argument that reached the point is a better card than one
+written off the sentence alone, and the reader's own confusion is on record
+there.
+
+**The row exists before the turn does.** `POST /question` files a `pending`
+card and answers immediately; the bot fills it in later. This is the only way a
+generation that never comes back is VISIBLE rather than a click that did
+nothing — and it is why the drawer's receipt has two stages ("a question is
+being written" → "it is in the quiz now" / "it could not be written — …").
+
+### 4. The vault (`questions.mjs`, `<ROOT>/.botference/plugin/questions.json`)
+
+One file, atomic (tmp + rename) like every other record here. A page is a
+directory because it holds snapshots and figures; a card is four short strings,
+and pages went the other way because pages are written concurrently by several
+lanes while the vault is written by the reader, one gesture at a time.
+
+```jsonc
+{ "version": 1,
+  "cards": [{
+    "id": "q-<ts>-<rand4>",
+    "state": "pending" | "live" | "failed" | "flagged",
+    "kind": "mcq" | "truefalse" | "cloze",
+    "question": "…", "options": ["…"], "answer": 0,
+    "why": "one or two sentences", "difficulty": 1|2|3,
+    "source": { "url", "page_key", "title", "site", "quote",
+                "thread_id", "page", "projects": [], "tags": [] },
+    "created_at": "ISO", "settled_at": "ISO", "model": "claude"|"codex",
+    "from_msg": "<the offer's ts>", "hint": "<the gap it named>",
+    "error": "…",                        // failed only
+    "flag": { "at": "ISO", "note": "…" },  // flagged only
+    "sched": { "due", "interval", "ease", "reps", "lapses", "last", "last_grade", "seen" }
+  }] }
+```
+
+**ONE BANK, NOT DECKS.** A card carries its provenance — the page, the council
+projects that page is filed under, the reader's own tags on it — and the quiz's
+filter chips are drawn from those and nothing else (`questions.facets`).
+Filtering is a way of LOOKING at one vault, never a second act of filing, and
+there is no gesture anywhere that puts a card somewhere. Each chip carries how
+many of that topic are due and wears a ✗ where the reader has lapsed on it,
+which is the whole of the analytics: it answers "where am I weak" for the cost
+of a count.
+
+### 5. SM-2, with the one simplification the product forces
+
+SuperMemo 2 — Anki's algorithm, twenty years of other people's evidence — with
+**a binary grade**. The reader taps an option and it is right or wrong; there
+is no hard/good/easy, because self-assessment is the step that makes review
+feel like admin.
+
+| | q | what happens |
+|---|---|---|
+| right | 4 | reps+1; interval 1 day, then 6, then `round(interval × ease)`; **ease unchanged** — q=4 is the fixed point of SM-2's own ease update, which is exactly what "you knew it" should mean |
+| wrong | 2 | reps→0, interval→0, lapses+1, ease −0.32, **due NOW** |
+
+`ease` starts at 2.5 and is floored at `EASE_MIN = 1.3`, so a card the reader
+keeps failing cannot spiral into being asked forever. A new card is due the
+moment it exists.
+
+**Due order: longest-overdue first.** A card three weeks overdue is closer to
+being forgotten than one due this morning, and a reader who reviews irregularly
+(which is every reader) should meet the oldest debt first. Ties inside one
+second: whoever has LAPSED goes first (the weaker memory), then the older card,
+so a queue is stable across reloads.
+
+**And the thing the schedule on disk cannot express: a card got wrong must come
+back before the reader stands up.** SM-2 makes it due this instant, which is
+necessary and not sufficient — they would have to start another sitting to meet
+it. So a SESSION is an order: `SESSION_MAX = 20` cards drawn from what is due,
+and a wrong answer splices the card back in `REQUEUE_GAP = 3` places later (or
+at the end, on a short queue, which is how a two-card sitting still asks it
+again). Sessions are **memory only, deliberately**: every consequence of an
+answer is written to the vault the instant it is given, so a restart costs the
+ORDER of the sitting in progress and nothing else.
+
+### 6. The quiz lives in the reading room, and that is the point
+
+`GET /quiz` is a page in the reading room, not a panel in the drawer, because
+review happens on a phone, on a train, away from the Mac the extension is
+installed on. The drawer cannot be there; this page can. The drawer's header
+therefore carries a **door** rather than a quiz — one icon, owner-only, whose
+only piece of information is how many are due, because "6 due" is the only
+thing that ever gets anybody to open it.
+
+**Scriptless, like everything else in that room.** One card; the options are
+form posts; the query string is the state. It works with JavaScript off, which
+on a train is not hypothetical. `?reveal=1` paints the answer just given (from
+the session), and asking for the next card is what clears it — so refreshing a
+reveal cannot double-grade.
+
+- **right** → a brief confirm, the options with the right one lit, `next ›`.
+- **wrong** → the same, plus the chosen option in the strike's red, the `why`,
+  and **THE SOURCE**: the passage itself with its page number, a link to the
+  page (`/a/<key>` where a readable copy exists, `/p/<key>` otherwise), a link
+  to the conversation the card came out of (`/p/<key>#<thread_id>`), the
+  original url, and which bot wrote it. That block is never optional. A bot
+  wrote this card and the reader may not believe it; being one tap from the
+  paragraph is what makes the whole thing trustworthy.
+- **"this card seems wrong"** → `POST /quiz-flag`. The card leaves the rotation
+  at once — a card the reader does not trust must not go on being asked — and
+  keeps everything it had, because phase 2 hands it back to the bots to revise.
+
+### 7. HTTP API (owner-only, all of it)
+
+Owner-only for the reason `/project-page` is: this is the reader's own memory
+and the record of what they keep getting wrong, which is nobody's business over
+a tunnel — and it spends the owner's agents.
+
+| | |
+|---|---|
+| `POST /question {url, thread_id?, quote?, page?, from_msg?, hint?}` | `{card, queued}` — files a pending row and queues the turn |
+| `GET /questions[?project=&tag=&key=&all=1]` | `{counts, facets, due[]}` |
+| `POST /quiz-answer {id, choice}` | `{card, correct}`, or 303 back to `/quiz?reveal=1` from a form |
+| `POST /quiz-flag {id, note?}` / `POST /quiz-delete {id}` | out of the rotation / gone |
+| `GET /quiz[?project=&tag=&reveal=1]` | the page |
+
+The quiz's redirects deliberately do NOT go through `backTo()`: that helper's
+allowlist is `/p/<key>` and widening an anti-open-redirect guard for a page
+that needs no redirect from anywhere else would be paying for this feature out
+of somebody else's safety.
+
+### Files
+
+```
+questions.mjs                   NEW — the vault, SM-2, the block parser, the
+                                offer convention, the session order
+chat.mjs                        CARD_SHAPE / cardPrompt; envelope takes `card`,
+                                `cardHint` and `questionContext`; a card job is
+                                silent and leaves as `card`
+server.mjs                      makeCard(); questionable(); the reply-event
+                                lift; POST /question, GET /questions,
+                                POST /quiz-answer, /quiz-flag, /quiz-delete,
+                                GET /quiz; the in-memory sittings
+store.mjs                       appendMsg carries `question` (per MESSAGE, like
+                                `strike` and `file_in`)
+views.mjs                       quizView + QUIZ_STYLE; shell takes a page's own
+                                stylesheet; the pages list links the quiz
+extension/drawer.js             the card head's `?`, the pill's third tool, the
+                                header door and its count, the offer chip, the
+                                receipt line, doMakeQuestion
+extension/drawer.css            .rebtn.thr-q, .filechip.qchip, .qnote,
+                                .iconbtn.quiz, .selpill.plus
+extension/content.js            onMakeQuestion / onQuestionCounts / onOpenQuiz;
+                                commitSelection('question') marks nothing
+extension/background.js         `open-here` — a tab at THIS companion, path
+                                allowlisted
+bridge-system-prompt.md         rule 14 — offer rarely, only when invited
+```
+
+**Testing.** `test/questions.test.mjs` (51), in five parts: the record (a
+pending row before any bot has written; a malformed reply costing one failed
+row with the good card untouched; the disk round trip leaving no tmp file); the
+block (the last one winning, three ways of writing `correct`, true/false
+without its options, and six negatives that must each produce a VISIBLE
+failure); SM-2 (1 → 6 → interval × ease with the ease unmoved, a lapse
+resetting and taking the penalty, the ease floor, due ordering, and the wrong
+card really being asked again inside the sitting); one bank seen from angles;
+and the endpoints against a live companion with mock children — capture →
+pending → the bot's block → live → due → answered wrong → rescheduled → asked
+again → flagged, a bare selection with no thread, and a bot's offer becoming
+`msg.question` with the line taken out of its words while the vault stays
+empty. `companion.test.mjs` adds the four question doors to the owner-only 403
+list, and its envelope test now asserts that the offer rides AFTER the reader's
+length instruction rather than before it.
+
+Harness poses: `?question=1&selftest=1` (21) — the card-head button, one click
+posting this thread's passage, the two-stage receipt, the header door lighting
+with its count, a bot's chip filing nothing until it is pressed and then filing
+exactly one card aimed at the gap it named, and the pill's third tool beside
+the comment button. `?question=fail&selftest=1` (5) is the outcome that must
+never be silent: a reply with no block in it says so, in the failure colour,
+with the reason. `?pdf=1&strike=1` grew two assertions: the pill now carries
+two MARKUP tools plus the question tool, which draws on nothing.
+
+#### Known limits (deliberate)
+
+- **No images on a card.** Where the source region has a picture cheaply
+  available (a PDF page render, a snapshot `<img>`) a card could carry it, and
+  the schema has room: an `image` on the card and a `figure` on the source.
+  Phase 1 does not build it — the plumbing runs from the viewer through the
+  companion to a scriptless page, and none of that is cheap enough to ride
+  along with the rest of this.
+- **A flagged card is not yet revised.** Flagging takes it out of rotation and
+  records the complaint. Phase 2 hands the card, its source and the reader's
+  note back to the bots as another silent turn, and replaces it in place.
+- **The sitting is memory-only.** A companion restart mid-quiz loses the order,
+  not the schedule: the next GET starts a fresh sitting over the same due
+  cards. A card answered is written before the response goes out.
+- **Nothing is deleted for you.** Failed rows accumulate until the reader
+  removes them; the quiz says how many there are rather than tidying them away.
+- **One reader.** The sittings are keyed by handle and the whole vault is
+  owner-only, so there is no story here for a shared companion, and there does
+  not need to be: it is one person's memory.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

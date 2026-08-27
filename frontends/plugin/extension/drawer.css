@@ -1014,6 +1014,49 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   animation: bfp-spin 1s linear infinite }
 @media (prefers-reduced-motion: reduce) { .rebtn.thr-mark.busy { animation: none } }
 
+/* ── "make a question of this" ───────────────────────────────────────────
+   The card head's third statement, beside the ✓ and the S̶. It is the quietest
+   of the three because it changes nothing anybody else will ever see: the ✓
+   files a thread, the S̶ draws on the document, this one only puts a question
+   in the reader's own memory. So it takes the accent on hover rather than the
+   strike's red, and it wears no decoration at all. */
+.rebtn.thr-q { font-weight: 700; letter-spacing: 0 }
+.rebtn.thr-q:hover { color: var(--accent) }
+.rebtn.thr-q.busy { opacity: .85; color: var(--muted); cursor: default;
+  display: inline-flex; align-items: center; justify-content: center;
+  animation: bfp-spin 1s linear infinite }
+@media (prefers-reduced-motion: reduce) { .rebtn.thr-q.busy { animation: none } }
+/* The bot's own offer, as a chip: the filing chip's shape in the accent, since
+   what it makes is neither a filing nor a mark on the page. */
+.filechip.qchip.done { border-style: solid; border-color: var(--accent); color: var(--accent) }
+/* The receipt at the top of the column. A capture is answered by an agent turn
+   that may be behind a queue, so this says what happened and then goes away —
+   it is not a progress bar and must never look like one. */
+.qnote {
+  display: flex; gap: 8px; align-items: baseline;
+  margin: 0 0 10px; padding: 7px 9px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 8px; font: 12px/1.5 var(--sans); color: var(--muted);
+}
+.qnote span { flex: 1 1 auto; min-width: 0 }
+.qnote.err { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); color: var(--bad) }
+.qnote .qx { flex: none; background: none; border: 0; color: inherit; opacity: .6;
+  font: 12px/1 var(--sans); cursor: pointer; padding: 2px 3px }
+.qnote .qx:hover { opacity: 1 }
+/* The door to the quiz, in the header. It carries one number and nothing else,
+   because "6 due" is the only thing that ever gets anybody to open it. */
+.iconbtn.quiz { font-weight: 700; position: relative }
+.iconbtn.quiz.on { color: var(--accent) }
+.iconbtn.quiz .qdue {
+  font: 9px/1 var(--sans); font-weight: 600; margin-left: 1px;
+  vertical-align: super; opacity: .9;
+}
+/* the pill's third tool, on every page: an unlettered icon beside whatever
+   else the pill is offering */
+.selpill.plus { display: inline-flex; align-items: stretch }
+.selpill.plus .selbtn + .selbtn { box-shadow: inset 1px 0 0 var(--card-line); padding: 7px 10px }
+.selbtn.qbtn:hover { color: var(--accent) }
+
 /* A strikeout that has JUST been minted out of a discussion. The reader is
    still reading the discussion — the send-hold contract says arriving content
    never takes the scroll — so the new card has to be findable without moving

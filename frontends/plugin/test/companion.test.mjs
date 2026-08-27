@@ -451,8 +451,15 @@ async function main() {
     assert.ok(turn.includes('Earlier in this thread:\nangadh: This is the whole argument of the piece.'),
       'thread history above the new message');
     assert.ok(turn.includes('and wrote:\n@claude does that hold outside peak season?'));
-    assert.ok(turn.endsWith('comment thread.\n' + LEN_SHORT),
-      'the turn ends with the reader\'s length instruction');
+    // The BODY ends with the reader's length instruction — nothing may come
+    // between their question and how long the answer should be. What follows
+    // it is the turn's offers (a strikeout where one is possible, a question
+    // for the vault, the project roster), which ride after the body precisely
+    // so they can never do that.
+    assert.ok(turn.includes('comment thread.\n' + LEN_SHORT),
+      'the body ends with the reader\'s length instruction');
+    assert.ok(turn.indexOf(LEN_SHORT) < turn.indexOf('a real gap in the reader'),
+      'and the question-vault offer rides after it, never before');
   });
 
   await test('the session id from the projects event is stored on the page', async () => {
@@ -2452,6 +2459,12 @@ async function main() {
         // they may not draw on the owner's manuscript
         ['/mark', { url: PAGE1, thread_id: 't-x', mark: 'strike' }],
         ['/strike-from', { url: PAGE1, thread_id: 't-x' }],
+        // …nor read, fill or grade the owner's own memory: the question vault
+        // is the record of what this reader keeps getting wrong
+        ['/question', { url: PAGE1, quote: 'anything' }],
+        ['/quiz-answer', { id: 'q-x', choice: 0 }],
+        ['/quiz-flag', { id: 'q-x' }],
+        ['/quiz-delete', { id: 'q-x' }],
       ];
       for (const [route, body] of calls) {
         const r = await POST(hb, route, body, ADA);

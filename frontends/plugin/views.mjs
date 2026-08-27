@@ -194,9 +194,12 @@ form.meta-edit button { padding:.3rem .8rem; font-size:.8rem }
 // and so nothing asks for /favicon.ico and gets a 404 in the log.
 export const FAVICON_LINK = '<link rel="icon" type="image/png" href="/favicon.ico">';
 
-const shell = (title, body) => `<!doctype html><html><head><meta charset="utf-8">
+// `extra` is one page's own stylesheet, appended to the shared one rather than
+// dropped into the body: a view with a look of its own (the quiz) still gets
+// the palette, the shell and the viewport from the same place as every other.
+const shell = (title, body, extra = '') => `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(title)}</title>${FAVICON_LINK}<style>${STYLE}</style></head><body>
+<title>${escHtml(title)}</title>${FAVICON_LINK}<style>${STYLE}${extra}</style></head><body>
 <main>${body}</main></body></html>`;
 
 const whoBadge = me => `<span class="who">${escHtml(me.handle || 'guest')}${me.owner ? ' · owner' : ''}`
@@ -397,6 +400,185 @@ ${composer(page.url, key, '__page__', 'ask about this page…')}
 ${liveScript(page.url)}`);
 }
 
+// --- the quiz: the question vault, asked back ------------------------------
+//
+// It lives HERE, in the reading room, and not in the drawer — which is the
+// whole point of putting it here. Review happens on a phone, on a train, away
+// from the Mac the extension is installed on; the drawer cannot be there and
+// this page can. It is scriptless like everything else in this room: one card,
+// options that are form posts, the query string for state. With JavaScript off
+// it works exactly the same, which on a train is not a hypothetical.
+//
+// THE READER'S ONLY DECISION IS WHICH PASSAGE BECAME A QUESTION. There is no
+// setting on this page and there is not going to be one: not the format (the
+// bot picks it), not the interval (SM-2 picks it), not the order (the schedule
+// picks it). The filter chips are a way of LOOKING at one bank, never a way of
+// filing anything into decks.
+const QUIZ_STYLE = `
+.qcard { background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:1.1rem 1.1rem 1rem; margin:0 0 1rem }
+.qq { font-size:1.12rem; line-height:1.45; margin:0 0 1rem; overflow-wrap:anywhere }
+/* One tap per answer, and a target big enough to hit without looking. The
+   options are the only buttons on this page that are not accent-filled: four
+   filled blocks would read as four ways to send rather than four answers. */
+form.opt { margin:0 0 .5rem }
+form.opt button, .optrow { display:flex; width:100%; text-align:left; gap:.6rem;
+  align-items:baseline; padding:.7rem .85rem; font:inherit; font-size:.95rem;
+  color:var(--fg); background:var(--card); border:1px solid var(--line);
+  border-radius:10px; cursor:pointer }
+form.opt button:hover { background:var(--quote); border-color:var(--accent) }
+.optrow { cursor:default; margin:0 0 .5rem }
+.optrow.right { border-color:var(--done-line); background:color-mix(in srgb, var(--done) 40%, var(--card)) }
+.optrow.wrong { border-color:var(--strike-line);
+  background:color-mix(in srgb, var(--strike-line) 10%, var(--card)) }
+.ol { flex:0 0 1.1rem; color:var(--muted); font-size:.8rem; font-weight:600 }
+.optrow.right .ol, .optrow.wrong .ol { color:inherit }
+.verdict { font-size:1rem; font-weight:600; margin:0 0 .7rem }
+.verdict.right { color:var(--done-line) }
+.verdict.wrong { color:var(--strike-line) }
+.why { margin:.2rem 0 1rem; font-size:.94rem; overflow-wrap:anywhere }
+/* WHERE IT CAME FROM — never optional. A bot wrote this card and the reader
+   may not believe it; the passage it was made from, and the conversation it
+   came out of, are one tap away from every answer. */
+.src { border-top:1px solid var(--line); padding-top:.8rem; margin-top:.4rem }
+.src blockquote { font-size:.86rem; margin:0 0 .5rem }
+.src .meta { color:var(--muted); font-size:.76rem; overflow-wrap:anywhere }
+.qacts { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; margin:1rem 0 0 }
+.qacts form { margin:0 }
+.qacts .flag button, .qacts .del button { background:none; color:var(--muted);
+  border:1px solid var(--line); padding:.35rem .8rem; font-size:.78rem }
+.qacts .flag button:hover, .qacts .del button:hover { color:var(--strike-line);
+  border-color:var(--strike-line); background:none }
+.qacts a.next { display:inline-block; padding:.4rem 1.1rem; border-radius:8px;
+  background:var(--accent); color:#fff; font-size:.9rem }
+.qacts a.next:hover { background:var(--accent-hover); text-decoration:none }
+.score { color:var(--muted); font-size:.78rem }
+.score b { color:var(--fg); font-weight:600 }
+.rail .n { opacity:.7 }
+.rail a.weak::after { content:" ✗" ; color:var(--strike-line); opacity:.9 }
+.qbad { border-color:var(--strike-line) }
+.qbad .meta { color:var(--strike-line) }
+`;
+
+const OPT_LETTER = ['A', 'B', 'C', 'D', 'E'];
+
+// The one line under every card, and the reason the feature can be trusted at
+// all: the page, the passage, and — where the card came out of an argument —
+// the thread that produced it.
+function sourceHtml(card, read) {
+  const s = card.source || {};
+  const key = String(s.page_key || '');
+  const where = read && key ? `/a/${key}` : (key ? `/p/${key}` : '');
+  const thread = s.thread_id ? `/p/${key}#${s.thread_id}` : '';
+  return `<div class="src">
+${s.quote ? `<blockquote>${escHtml(s.quote)}${Number(s.page) > 0 ? `<cite> — p. ${Number(s.page)}</cite>` : ''}</blockquote>` : ''}
+<p class="meta">${where ? `<a href="${escHtml(where)}">${escHtml(s.title || 'the page')}</a>` : escHtml(s.title || '')}${
+  s.site ? ` · ${escHtml(s.site)}` : ''}${thread ? ` · <a href="${escHtml(thread)}">the conversation</a>` : ''}${
+  /^https?:/i.test(String(s.url || '')) ? ` · <a href="${escHtml(s.url)}" rel="noreferrer noopener">original</a>` : ''}${
+  card.model ? ` · written by ${escHtml(card.model)}` : ''}</p>
+</div>`;
+}
+
+const scopeFields = scope => `<input type="hidden" name="project" value="${escHtml(scope.project || '')}">`
+  + `<input type="hidden" name="tag" value="${escHtml(scope.tag || '')}">`;
+
+const quizHref = (scope, extra = {}) => {
+  const q = new URLSearchParams();
+  if (scope.project) q.set('project', scope.project);
+  if (scope.tag) q.set('tag', scope.tag);
+  for (const [k, v] of Object.entries(extra)) if (v) q.set(k, v);
+  const s = q.toString();
+  return `/quiz${s ? `?${s}` : ''}`;
+};
+
+export function quizView({ me, card, reveal, session, counts, facets, scope = {}, read = false }) {
+  const sc = { project: scope.project || '', tag: scope.tag || '' };
+  // The rail: one bank, seen from an angle. Each chip carries how many of that
+  // topic are due, and wears a ✗ where the reader has lapsed on it — which is
+  // the cheapest honest answer to "where am I weak".
+  const chip = (kind, row) => {
+    const on = sc[kind] === row.id;
+    const to = quizHref(kind === 'project'
+      ? { project: on ? '' : row.id, tag: sc.tag }
+      : { project: sc.project, tag: on ? '' : row.id });
+    const cls = [on ? 'on' : '', row.lapses ? 'weak' : ''].filter(Boolean).join(' ');
+    // the ✗ is the only analytics here and it is one number: how many times
+    // this topic has been got wrong. It says where to revise deliberately.
+    const why = `${row.due} due of ${row.count}`
+      + (row.lapses ? ` · got wrong ${row.lapses} time${row.lapses === 1 ? '' : 's'}` : '');
+    return `<a href="${escHtml(to)}"${cls ? ` class="${cls}"` : ''}${on ? ' aria-current="true"' : ''}`
+      + ` title="${escHtml(why)}"${kind === 'tag' ? ` style="--th:${tagHue(row.id)}"` : ''}>${escHtml(row.id)}`
+      + `<span class="n"> ${row.due}</span></a>`;
+  };
+  const projects = (facets && facets.projects) || [];
+  const tags = (facets && facets.tags) || [];
+  const rail = (projects.length || tags.length)
+    ? `<div class="rail">${railLink(quizHref({}), `Everything (${counts.due})`, !sc.project && !sc.tag)}`
+      + projects.map(p => chip('project', p)).join('') + `</div>`
+      + (tags.length ? `<div class="rail tags">${tags.map(t => chip('tag', t)).join('')}</div>` : '')
+    : '';
+  const score = session && session.asked
+    ? `<p class="score"><b>${session.right}</b> right · <b>${session.wrong}</b> wrong · ${session.left} left in this sitting</p>`
+    : `<p class="score"><b>${counts.due}</b> due${counts.live ? ` of ${counts.live}` : ''}${
+      counts.pending ? ` · ${counts.pending} being written` : ''}${
+      counts.failed ? ` · ${counts.failed} failed` : ''}${
+      counts.flagged ? ` · ${counts.flagged} flagged` : ''}</p>`;
+
+  let body;
+  if (reveal && card) {
+    const right = !!reveal.correct;
+    body = `<section class="qcard">
+<p class="verdict ${right ? 'right' : 'wrong'}">${right ? '✓ Right' : '✗ Not quite'}</p>
+<p class="qq">${escHtml(card.question)}</p>
+${(card.options || []).map((o, i) => {
+      const cls = i === card.answer ? ' right' : (i === reveal.choice ? ' wrong' : '');
+      return `<div class="optrow${cls}"><span class="ol">${OPT_LETTER[i] || ''}</span><span>${escHtml(o)}</span></div>`;
+    }).join('\n')}
+${card.why ? `<p class="why">${escHtml(card.why)}</p>` : ''}
+${sourceHtml(card, read)}
+<div class="qacts"><a class="next" href="${escHtml(quizHref(sc))}">next ›</a>
+<form class="flag" method="POST" action="/quiz-flag">${scopeFields(sc)}
+<input type="hidden" name="id" value="${escHtml(card.id)}">
+<button>this card seems wrong</button></form></div>
+</section>`;
+  } else if (card) {
+    body = `<section class="qcard">
+<p class="qq">${escHtml(card.question)}</p>
+${(card.options || []).map((o, i) => `<form class="opt" method="POST" action="/quiz-answer">${scopeFields(sc)}
+<input type="hidden" name="id" value="${escHtml(card.id)}">
+<input type="hidden" name="choice" value="${i}">
+<button><span class="ol">${OPT_LETTER[i] || ''}</span><span>${escHtml(o)}</span></button></form>`).join('\n')}
+</section>`;
+  } else {
+    // Nothing due is the ordinary, healthy state of a vault, and it should read
+    // as one — not as an error and not as an invitation to go and make work.
+    body = `<section class="qcard"><p class="qq">${counts.due === 0 && counts.live
+      ? 'Nothing due. Everything you have filed is still fresh.'
+      : (counts.total
+        ? 'Nothing due under this filter.'
+        : 'No questions yet. Highlight something worth remembering and press ? in the drawer.')}</p>
+<p class="score">${counts.live} question${counts.live === 1 ? '' : 's'} in the vault${
+  counts.pending ? ` · ${counts.pending} being written` : ''}.</p></section>`;
+  }
+
+  // The failures, if any: a generation that went wrong is a row the reader can
+  // see and remove, never a click that silently did nothing.
+  const broken = (((counts.failed || 0) + (counts.flagged || 0)) > 0 && !reveal)
+    ? `<h2>needs attention</h2><p class="empty">${counts.failed} question${counts.failed === 1 ? '' : 's'} could not be written`
+      + `${counts.flagged ? ` and ${counts.flagged} you flagged as wrong` : ''}. They are out of the rotation.</p>`
+    : '';
+
+  return shell('Quiz', `
+<header>${whoBadge(me)}
+<h1>Quiz</h1>
+<p class="sub">what you asked to be reminded of · <a href="/pages">all annotated pages</a></p>
+</header>
+${rail}
+${score}
+${body}
+${broken}`, QUIZ_STYLE);
+}
+
 // --- the article view: the review-doc experience, for any article ---------
 // /p/<key> is the conversation; this is the PAGE, with the highlights painted
 // where they were made. The prose is the sanitized snapshot the extension
@@ -514,7 +696,7 @@ const railLink = (href, label, on, hue) =>
   `<a href="${escHtml(href)}"${on ? ' class="on" aria-current="true"' : ''}`
   + `${hue == null ? '' : ` style="--th:${hue}"`}>${escHtml(label)}</a>`;
 
-export function pagesView({ index, me, snapshots, library, libraryKey, kind = '', tag = '' }) {
+export function pagesView({ index, me, snapshots, library, libraryKey, kind = '', tag = '', due = 0 }) {
   const has = k => !!(snapshots && snapshots.has && snapshots.has(k));
   const wantKind = PAGE_KINDS.includes(String(kind)) ? String(kind) : '';
   const wantTag = String(tag || '').trim();
@@ -562,7 +744,11 @@ ${composer(LIBRARY_URL, libraryKey || '', PAGE_CHAT, 'ask about everything you�
   return shell('Botference Discuss', `
 <header>${whoBadge(me)}
 <h1>Botference Discuss</h1>
-<p class="sub">everything highlighted and discussed in this workspace</p>
+<p class="sub">everything highlighted and discussed in this workspace${
+  // The quiz is the owner's own memory, so it is advertised to nobody else —
+  // and it says how many are waiting, because "6 due" is the only thing that
+  // ever gets anybody to open it.
+  me && me.owner ? ` · <a href="/quiz">quiz${due ? ` (${due} due)` : ''} ›</a>` : ''}</p>
 </header>
 ${lib}
 <h2>pages${wantKind || wantTag ? ` — ${kept.length} of ${all.length}` : ''}</h2>

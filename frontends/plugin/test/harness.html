@@ -234,6 +234,12 @@
                      way in — a bot has ended its reply saying where it thinks
                      the page belongs, and the drawer draws it as a confirm chip
                      with a File it / No on it. Nothing files without the click.
+    ?question=1      the question vault's two doors on an ordinary article: the
+                     card head's `?`, the selection pill's third tool, and a
+                     bot's own offer as a File it / No chip. `&selftest=1` runs
+                     the vault assertions; `?question=fail` is the other
+                     outcome — a generation that came back with no block in it,
+                     which must be VISIBLE and not silent.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -447,6 +453,12 @@ const FILE_ROSTER = [
   { root: WS_ROOT, id: 'journal-submissions', title: 'Journal submissions',
     status: 'archived', next_action: 'pick a venue', chats: [], files: ['venues.md'] },
 ];
+// ── the question vault ──────────────────────────────────────────────────
+// One click makes a question; a bot writes it; the quiz asks it back weeks
+// later. Nothing here is a setting, because the reader's only decision is
+// which passage becomes a question.
+const QUESTION = Q.get('question') || '';
+const QUESTION_FAILS = QUESTION === 'fail';
 let fileFiled = FILEIN ? [{ root: WS_ROOT, id: 'adriana-paper', at: '2026-08-20T09:00:00Z' }] : [];
 const fileCalls = [];
 
@@ -911,6 +923,21 @@ if (FILEIN === 'chip') {
   ]);
 }
 
+// ?question=… — a bot has ended a reply saying the reader has not got
+// something and offering to file a question about it. The offer is a FIELD on
+// the message (store.appendMsg), never a card: the vault stays empty until the
+// reader presses File it.
+if (QUESTION) {
+  RECORD.threads[0].msgs = RECORD.threads[0].msgs.concat([
+    { author: 'angadh', ts: iso(3), text: '@claude sorry — say that again, I still do not follow.' },
+    { author: 'claude', ts: iso(2),
+      text: 'Because the tail dominates the average: one observation out of ten '
+        + 'thousand can carry more weight than the other nine thousand nine hundred '
+        + 'and ninety-nine put together.',
+      question: { why: 'why the sample mean is a poor estimator under fat tails' } },
+  ]);
+}
+
 // The project-artifact record: a local file, filed under the project that
 // wrote it, and standing in whichever council chat the reader last opened.
 // `page_chat` is the drawer's mirror of THAT chat — restored messages, read
@@ -1124,6 +1151,10 @@ let HOLD_QUEUE = Q.get('queued') === '1' || Q.get('round') === '1';
 // somebody else's page). null = an older companion that says nothing, which
 // must still produce the plain "queued…" line.
 let WAIT_REASON = null;
+// what the vault was asked for and what it holds — observable, because the
+// point of the pending row is that a click's effect is visible before the bot
+// has written anything
+window.__bfpQuestions = () => ({ posts: questionPosts, cards: questionVault });
 window.__bfpQueue = {
   hold(on) { HOLD_QUEUE = !!on; },
   reason(r) { WAIT_REASON = r || null; },
@@ -1272,6 +1303,12 @@ let addressedFail = false;  // …and the same revert, one rung down
 // arrived at rather than chosen
 const markPosts = [];
 const strikeFromPosts = [];
+// the question vault: every /question the reader (or a confirmed bot offer)
+// asked for, and the cards those made. `QUESTION_FAILS` is the selftest
+// exercising the OTHER outcome — a bot whose reply had no block in it, which
+// must be visible rather than silent.
+const questionPosts = [];
+const questionVault = [];
 // every /reanchor {thread_id, quote} — the durable half of a thread whose
 // passage a bot rewrote and the page then found again
 const reanchorPosts = [];
@@ -2492,6 +2529,38 @@ function companion(method, path, body) {
     log('struck from a discussion: ' + t.id);
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t } };
+  }
+  // ---- the question vault ----------------------------------------------
+  // A capture answers at once with a PENDING row — the click is over, the bot
+  // has not started — and the card settles into `live` (or `failed`) a moment
+  // later as a `question` event, exactly as the companion does it. That gap is
+  // the whole point of the row existing before the turn does.
+  if (method === 'POST' && route === '/question') {
+    questionPosts.push({ thread_id: body.thread_id || '', quote: body.quote || '',
+                         from_msg: body.from_msg || '', hint: body.hint || '' });
+    const t = body.thread_id ? RECORD.threads.find(x => x.id === body.thread_id) : null;
+    if (body.thread_id && !t) return { ok: false, status: 404, error: 'unknown thread' };
+    const quote = String(body.quote || (t && t.quote) || '');
+    if (!quote) return { ok: false, status: 400, error: 'a question needs a passage to be about' };
+    const card = { id: 'q-' + (questionVault.length + 1) + '-h', state: 'pending',
+                   source: { url: PAGE_URL, page_key: 'k', quote, thread_id: (t && t.id) || null } };
+    questionVault.push(card);
+    setTimeout(() => {
+      card.state = QUESTION_FAILS ? 'failed' : 'live';
+      if (QUESTION_FAILS) card.error = 'the reply had no question block in it';
+      toContent({ t: 'ws', ev: { type: 'question', url: PAGE_URL, card_id: card.id,
+                                 state: card.state, error: card.error } });
+    }, 120);
+    log('question queued: ' + card.id);
+    return { ok: true, status: 200, data: { ok: true, card, queued: true } };
+  }
+  if (method === 'GET' && route === '/questions') {
+    const due = questionVault.filter(c => c.state === 'live').length;
+    return { ok: true, status: 200,
+             data: { ok: true, counts: { total: questionVault.length, live: due, due,
+                                         pending: questionVault.filter(c => c.state === 'pending').length,
+                                         failed: questionVault.filter(c => c.state === 'failed').length,
+                                         flagged: 0 } } };
   }
   // …and the agents' paragraph landing over the top of the placeholder, later,
   // as a `page` event — never as a message in the thread
@@ -6477,15 +6546,21 @@ async function selftestPdfStrike() {
   await pdfDrag(1, 'Aragon opened the season with a draw');
   const pill = S.querySelector('.selpill');
   check('the selection pill is up', !!pill && pill.classList.contains('on'));
-  check('…and it carries two tools, not one', S.querySelectorAll('.selpill .selbtn').length === 2);
+  // Two MARKUP tools — the pair Adobe gives every reader of papers — plus the
+  // question tool, which marks nothing on the document and is on every page.
+  check('…and it carries two markup tools, not one',
+    S.querySelectorAll('.selpill .selbtn[data-mark="highlight"], .selpill .selbtn[data-mark="strike"]').length === 2);
+  check('…with the question tool beside them, which draws on nothing',
+    S.querySelectorAll('.selpill .selbtn[data-mark="question"]').length === 1);
   check('…the first of which is still the comment button every other page has',
     S.querySelector('.selbtn').getAttribute('data-mark') === 'highlight');
   check('…and the second says what it does', (() => {
     const b = S.querySelector('.selbtn.strikebtn');
     return !!b && /strike/i.test(b.getAttribute('title') || '');
   })());
-  check('…both drawn as icons, in one pill rather than two',
-    S.querySelectorAll('.selpill .selbtn svg').length === 2
+  check('…all drawn as icons, in one pill rather than three',
+    S.querySelectorAll('.selpill .selbtn svg').length
+      === S.querySelectorAll('.selpill .selbtn').length
     && cs(pill).borderRadius !== '0px');
   check('…and the adapter is what turned the second one on',
     (window.__bfp.site || {}).capabilities.strike === true);
@@ -7333,6 +7408,137 @@ async function selftestCommenters() {
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (commenters) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ── the question vault ───────────────────────────────────────────────────
+// One click makes a question. That sentence is the whole feature and every
+// assertion here is about protecting it: the reader chooses the passage and
+// nothing else, a bot may OFFER but never file, and a generation that fails is
+// something they can see rather than a button that quietly did nothing.
+async function selftestQuestion() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const card = () => S.querySelector('.pane[data-pane="comments"] .card');
+  const qnote = () => S.querySelector('.pane[data-pane="comments"] .qnote');
+
+  try {
+    d.open('comments');
+    await until(() => card(), 4000);
+
+    // ---- the door in the card head ----
+    const btn = await until(() => S.querySelector('.card .rebtn.thr-q'), 3000);
+    check('a thread carries a "make a question of this" button', !!btn);
+    check('…beside the resolve and the delete, not instead of them',
+      !!S.querySelector('.card .rebtn.thr-q') && !!S.querySelector('.card .rebtn.thr-del'));
+    check('…and it asks for nothing — no format picker, no difficulty, no dialog',
+      !S.querySelector('.card select') && !S.querySelector('.card input[type="radio"]'));
+
+    hit(btn, 'the make-a-question button');
+    const posted = await until(() => (window.__bfpQuestions().posts[0] || null), 3000);
+    check('one click posts the passage and is over', !!posted && !!posted.thread_id);
+    check('…and it is THIS thread\'s passage, not a copy of the words',
+      !!posted && posted.thread_id === card().dataset.thread);
+
+    // ---- what the reader is told, and when ----
+    const n1 = await until(() => qnote(), 3000);
+    check('the drawer says a question is being written', !!n1 && /being written/.test(n1.textContent));
+    check('…as a receipt at the top of the column, never a progress bar',
+      !!n1 && !S.querySelector('.qnote progress'));
+    const settled = await until(() => {
+      const n = qnote();
+      return n && /is in the quiz now|could not be written/.test(n.textContent) ? n : null;
+    }, 4000);
+    check('…and then what actually happened, when the card settles', !!settled);
+    check('a card that came back live says so',
+      !!settled && /is in the quiz now/.test(settled.textContent));
+
+    // the header door, and the count behind it
+    const door = S.querySelector('.hdr .iconbtn.quiz');
+    check('the header carries a door to the quiz', !!door && !door.hidden);
+    await until(() => door && door.classList.contains('on'), 3000);
+    check('…which lights and counts once something is due',
+      !!door && door.classList.contains('on')
+      && /\d/.test((door.querySelector('.qdue') || {}).textContent || ''));
+
+    // ---- the bot's own offer ----
+    const chip = await until(() => S.querySelector('.filechip.qchip'), 3000);
+    check('a bot may OFFER, as the same one-step chip as everything else', !!chip);
+    check('…saying what it thinks was not understood',
+      !!chip && /poor estimator under fat tails/.test(chip.textContent));
+    check('BOTS NEVER FILE — the offer has a button and files nothing on its own',
+      window.__bfpQuestions().posts.length === 1);
+    hit(chip && chip.querySelector('[data-act="q-yes"]'), 'the File it button');
+    const second = await until(() => window.__bfpQuestions().posts[1] || null, 3000);
+    check('confirming it files ONE card', !!second);
+    check('…aimed at the gap the bot named, not at the passage in general',
+      !!second && /poor estimator/.test(second.hint || ''));
+    check('…and the chip settles into having been filed',
+      !!(await until(() => S.querySelector('.filechip.qchip.done'), 3000)));
+
+    // ---- the pill's third tool ----
+    d.showSel(200, 200);
+    const tool = await until(() => S.querySelector('.selpill .selbtn.qbtn'), 2000);
+    check('the selection pill grows a third tool, on an ordinary article', !!tool);
+    check('…and the comment button is still there beside it',
+      !!S.querySelector('.selpill .selbtn:not(.qbtn)'));
+    d.hideSel();
+
+    // ---- a filed thread is past all this ----
+    const filed = [...S.querySelectorAll('.card')].find(c => c.classList.contains('resolved'));
+    check('a filed thread is not offered the button — that argument is over',
+      !filed || !filed.querySelector('.rebtn.thr-q'));
+
+    check('nothing threw', window.__bfpErrors.length === 0);
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (question) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// …and the other outcome, which is the one that must never be silent: the bot
+// answered and the reply had no block in it.
+async function selftestQuestionFail() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  try {
+    d.open('comments');
+    await until(() => S.querySelector('.pane[data-pane="comments"] .card'), 4000);
+    hit(await until(() => S.querySelector('.card .rebtn.thr-q'), 3000), 'the make-a-question button');
+    const note = await until(() => {
+      const n = S.querySelector('.qnote');
+      return n && /could not be written/.test(n.textContent) ? n : null;
+    }, 5000);
+    check('a generation that came back with no block SAYS SO', !!note);
+    check('…in the drawer\'s own failure colour, not as a quiet nothing',
+      !!note && note.classList.contains('err'));
+    check('…and says what was wrong with it',
+      !!note && /no question block/.test(note.textContent));
+    check('the quiz door does not light for a card that never existed',
+      !(S.querySelector('.hdr .iconbtn.quiz') || {}).classList
+      || !S.querySelector('.hdr .iconbtn.quiz').classList.contains('on'));
+    check('nothing threw', window.__bfpErrors.length === 0);
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (question-fail) ' + (out.length - bad.length) + '/' + out.length +
     (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
@@ -8659,6 +8865,9 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : HEAL ? selftestOrphanHeal
         : TICKMODE === 'done' ? selftestRoundDone : TICKER ? selftestRoundTicker
         : SENDFOCUS ? selftestSendFocus
+        // the more specific flag first, as always: ?question=fail is a
+        // DIFFERENT fixture from ?question=1 and gets its own pose
+        : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration

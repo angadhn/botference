@@ -1,5 +1,40 @@
 # CHANGELOG
 
+## 2026-08-27
+
+- **Discuss remembers things for you now.** Everything you read and argue about
+  with the bots is a record of having understood something once; nothing brought
+  any of it back. Every comment thread now carries a small **?** beside its ✓,
+  and the selection pill on any page carries one too: *this is interesting, make
+  a question of it*. One click and that is the end of your part in it — a bot
+  writes a short multiple-choice question about the idea (true/false and
+  fill-in-the-blank where the material suits them), and it goes straight into a
+  question vault. There is no card to approve, no format to choose and no
+  settings anywhere: you decide what is worth remembering, and nothing else.
+
+  The bots may **offer**, too — rarely, and only when a conversation has shown
+  you have not got something. It arrives as a *File it / No* chip under the
+  reply, in the same shape as the strike and filing suggestions. Nothing is
+  filed until you press it.
+
+- **…and asks you about them, on your phone.** A new **quiz** page in the
+  reading room (`/quiz`, linked from the pages list and from a door in the
+  drawer's header that says how many are due) shows one question at a time,
+  biggest overdue first. Tap an answer: right and it comes back later, wrong and
+  it comes back sooner — and, before it does, you get the explanation, the
+  passage it was made from, and a link to the very conversation that produced
+  it. Rescheduling is Anki's own SM-2 algorithm, so a question you keep getting
+  right disappears for months and one you keep missing is asked again before you
+  stand up.
+
+  Every card links back to its source because a bot wrote it and bots are wrong
+  sometimes; there is a *this card seems wrong* button on every one, which takes
+  it out of the rotation. The whole page works with JavaScript off.
+
+  One bank, not decks: cards remember the page, the council project it is filed
+  under and its tags, and the quiz's chips let you narrow to a topic — and show
+  which topics you have been getting wrong.
+
 ## 2026-08-26
 
 - **A bot suggesting a change now knows what else is marked in the sentence —

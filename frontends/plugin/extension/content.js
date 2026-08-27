@@ -415,6 +415,10 @@
   // re-anchor a dozen times
   const reanchoring = Object.create(null);
   let pendingSel = null;  // {quote,prefix,suffix,start,end,mark} awaiting the pill's click
+  // …and the passage the pill's QUESTION tool took, which never becomes a
+  // thread and so is never painted, never anchored and never stored: it lives
+  // exactly as long as the round trip that files the card.
+  let pendingQ = null;
   // A thread's mark kind, the node-side twin of store.markOf: 'strike' where
   // the record says so, 'highlight' for everything else — which is every
   // thread made before the second tool existed, and every thread on an
@@ -1986,6 +1990,38 @@
         return { ok: true, thread: r.data && r.data.thread,
                  deduped: !!(r.data && r.data.deduped) };
       },
+      // ---- the question vault ------------------------------------------
+      // "Make a question of this." Either a thread (the card-head ?, or a
+      // bot's own offer confirmed) or a bare selection with no thread on it at
+      // all — the pill's third tool, which is the case that has no id to send
+      // and sends the passage instead. Nothing is painted on the page: a
+      // question is not a mark on the document, it is a note in the reader's
+      // own memory, and drawing a highlight for one would be a lie about what
+      // the page now carries.
+      onMakeQuestion: async (threadId, extra) => {
+        const sel = (!threadId && pendingQ) ? pendingQ : null;
+        const r = await api('POST', '/question', {
+          url: URL_NOW,
+          ...(threadId ? { thread_id: threadId } : {}),
+          ...(sel ? { quote: sel.quote, page: sel.page } : {}),
+          ...(extra && extra.from_msg ? { from_msg: extra.from_msg } : {}),
+          ...(extra && extra.hint ? { hint: extra.hint } : {}),
+        });
+        pendingQ = null;
+        if (!r.ok) return failure(r);
+        return { ok: true, card: r.data && r.data.card,
+                 queued: !!(r.data && r.data.queued),
+                 reason: (r.data && r.data.reason) || '' };
+      },
+      onQuestionCounts: async () => {
+        const r = await api('GET', '/questions');
+        if (!r.ok) return failure(r);
+        return { ok: true, counts: (r.data && r.data.counts) || {} };
+      },
+      // The quiz is a page in the reading room, not a panel in here — the
+      // reader reviews on a phone, and this drawer cannot follow them there.
+      // So the button is a door, and this opens it.
+      onOpenQuiz: () => { bg({ t: 'open-here', path: '/quiz' }); },
       // "not done" — the reader's answer to a thread the bots claimed handled.
       // Only the clearing direction exists here: marking a thread ADDRESSED is
       // what a bot's reply landing in it does, server-side, and is never a
@@ -2351,6 +2387,28 @@
   // where the pill has only ever had the one).
   function commitSelection(kind) {
     if (!CAPS.highlights) return;
+    // THE THIRD TOOL, and the one that makes no mark. "Make a question of
+    // this" is not an annotation: nothing is written onto the document, no
+    // thread is opened and no composer appears, because the reader's part in
+    // it is over the moment they click. The passage is taken off the selection
+    // and handed to the drawer, which hands it to the companion.
+    if (kind === 'question') {
+      const s = window.getSelection();
+      if (!s || s.isCollapsed) return;
+      const idx = freshIndex();
+      const off = Anchor.offsetsFromRange(idx, s.getRangeAt(0));
+      if (off.end <= off.start) return;
+      const anchor = Anchor.buildAnchor(idx.raw, off.start, off.end);
+      if (!anchor.quote) return;
+      const pageNo = (SITE && typeof SITE.pageOf === 'function')
+        ? (() => { try { return SITE.pageOf(s.getRangeAt(0).startContainer) | 0; } catch { return 0; } })()
+        : 0;
+      pendingQ = { quote: anchor.quote, page: pageNo };
+      s.removeAllRanges();
+      drawer.hideSel();
+      drawer.makeQuestion();
+      return;
+    }
     const mark = (kind === 'strike' && CAPS.strike) ? 'strike' : 'highlight';
     if (standDown()) return;   // no new threads where the page owns the margin
     const sel = window.getSelection();

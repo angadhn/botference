@@ -688,6 +688,37 @@ minutes) so an afternoon of reading does not leave processes lying
 around. The web council has had the same arrangement for a while —
 `COUNCIL_MAX_CHATS`, one bridge per open chat.
 
+### The question vault: what you read, asked back
+
+Everything else in Discuss is a record of having understood something
+once. Beside every comment's ✓ there is now a small **?**, and the
+selection pill on any page carries one too: *this is interesting, make a
+question of it*. One click is the whole of your part in it — a bot writes
+a short question about the idea (multiple choice, or true/false, or
+fill-in-the-blank where the material suits it), and it lands in the
+vault. There is no card to approve, no format to pick, no difficulty to
+set: you choose what is worth remembering and nothing else. The bots may
+**offer** as well, rarely, when a conversation has shown you have not got
+something — a *File it / No* chip under the reply, filing nothing until
+you press it.
+
+Then open **`/quiz`** in the reading room — from the pages list, or from
+the door in the drawer's header that says how many are due. It works on a
+phone, which is the point of it living there: one question at a time,
+longest-overdue first, one tap to answer. Right and it comes back later;
+wrong and it comes back before you stand up, with the explanation, the
+passage it was made from, and a link to the conversation that produced
+it. The rescheduling is Anki's SM-2, so a question you keep getting right
+disappears for months.
+
+Every card links home because a bot wrote it, and bots are wrong
+sometimes: *this card seems wrong* takes it out of the rotation. One
+bank, not decks — a card remembers its page, the council project that
+page is filed under and its tags, and the quiz's chips narrow to a topic
+and show which topics you keep missing. The whole page works with
+JavaScript switched off. The vault is `.botference/plugin/questions.json`
+and it is owner-only end to end.
+
 ### The library: asking about everything you have read
 
 Every page you annotate is one conversation. The **library** is the other

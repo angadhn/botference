@@ -1136,7 +1136,7 @@ export function setCheckbox(text, index, checked) {
 export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
 
 export function appendMsg(page, threadId, {
-  author, text, ts, kind, route, origin, file_in, strike,
+  author, text, ts, kind, route, origin, file_in, strike, question,
 }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
@@ -1167,6 +1167,11 @@ export function appendMsg(page, threadId, {
   // document is not marked up until the reader clicks, and what the click makes
   // is a comment of THEIRS, not an edit to this conversation.
   if (strike && strike.why) msg.strike = { why: String(strike.why) };
+  // …and the third of the same shape: a bot noticing the reader has not GOT
+  // something and offering to file a revision question about it
+  // (questions.parseQuestionSuggestion). Offer, field, chip — the vault stays
+  // empty until the reader presses the button.
+  if (question && question.why) msg.question = { why: String(question.why) };
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written
   // into — the reader replying, or a bot's answer landing — is a live thread

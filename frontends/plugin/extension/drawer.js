@@ -1327,6 +1327,18 @@
       //             anything: arriving content does not steal the view.
       marking: {},
       strikes: { busy: '', declined: [], made: {}, arrived: {} },
+      // ---- the question vault -------------------------------------------
+      // "This is interesting — make a question of it." One click; a bot writes
+      // the card; it is asked back weeks later in the reading room's /quiz.
+      // The reader never edits a card and never chooses its format, so there
+      // is nothing here but the state of a click in flight:
+      //   busy      threadId (or '__sel__' for a bare selection) mid-flight
+      //   declined  the ts of any bot offer the reader said no to — per tab,
+      //             never persisted, exactly like a declined filing
+      //   made      ts -> the card id that offer produced, for the session
+      //   note      the one line the drawer says about the last capture
+      //   due       how many are waiting in the vault, for the header button
+      questions: { busy: '', declined: [], made: {}, note: null, due: 0 },
       // ---- the council project behind a project artifact page -----------
       // Null on every ordinary page, and on those NOTHING below changes. On a
       // page the reader's own council wrote (workspace.mjs), Page chat stops
@@ -1543,6 +1555,7 @@
         exportpick: shadow.querySelector('.popover.exportpick'),
         projpick: shadow.querySelector('.popover.projpick'),
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
+        quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
         light: shadow.querySelector('.lightbox'),
         grip: shadow.querySelector('.grip'),
       };
@@ -1558,6 +1571,7 @@
       wireEvents();
       paintProject();
       paintFiled();
+      paintQuiz();
       paintTabs();
       restoreTab();
       restoreWidth();
@@ -1596,16 +1610,38 @@
         fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
       <path d="M2.2 8h11.6" fill="none" stroke="#c83030" stroke-width="2" stroke-linecap="round"></path>
     </svg>`;
+    // ---- and a third tool, on every page ----------------------------------
+    //
+    // "This is interesting — make a question of it", at the moment of reading,
+    // with no thread involved at all. It belongs on the pill because that is
+    // where the reader's hand already is when they have just found the
+    // interesting sentence, and it belongs on EVERY page because a question is
+    // about an idea: nothing about it is a property of the file format, which
+    // is the argument that keeps the strike tool PDF-only.
+    //
+    // The comment button keeps its caption on an article. The question tool is
+    // an unlettered icon beside it — a second, quieter thing you may do with a
+    // selection, not a second way to comment on one — and it is drawn as the
+    // question mark the drawer already uses for it in the card head.
+    const QUESTION_SVG = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path d="M5.6 5.6a2.4 2.4 0 1 1 3.3 2.2c-.6.3-.9.8-.9 1.5v.4"
+        fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+      <circle cx="8" cy="12.4" r="1" fill="currentColor"></circle>
+    </svg>`;
+    const questionTool = () => (CAPS.questions === false ? ''
+      : `<button class="selbtn icon qbtn" type="button" data-mark="question"
+    title="Make a question of this — it comes back in the quiz" aria-label="Make a revision question from this passage">${QUESTION_SVG}</button>`);
     function selPillHtml() {
       if (!CAPS.strike) {
-        return `<div class="selpill"><button class="selbtn" type="button"
-          title="Comment on this selection"><span class="glyph">💬</span>comment</button></div>`;
+        return `<div class="selpill${questionTool() ? ' plus' : ''}"><button class="selbtn" type="button"
+          title="Comment on this selection"><span class="glyph">💬</span>comment</button>${questionTool()}</div>`;
       }
       return `<div class="selpill twin">
   <button class="selbtn icon" type="button" data-mark="highlight"
     title="Highlight and comment" aria-label="Highlight this passage and comment on it">${COMMENT_SVG}</button>
   <button class="selbtn icon strikebtn" type="button" data-mark="strike"
     title="Strike through — suggest this comes out" aria-label="Strike this passage through as a suggested deletion">${STRIKE_SVG}</button>
+  ${questionTool()}
 </div>`;
     }
 
@@ -1620,6 +1656,11 @@ ${selPillHtml()}
     <div class="acts">
       <button class="iconbtn pages" data-act="pages" type="button" title="All annotated pages" aria-label="All annotated pages" aria-pressed="false">${PAGES_SVG}</button>
       <button class="iconbtn filein" data-act="filein" type="button" title="File in a council project" aria-label="File in a council project" hidden>${FILEIN_SVG}</button>
+      <!-- the question vault, which lives in the reading room and not here: the
+           reader reviews on a phone, away from the Mac this extension is on.
+           So the button is a DOOR, and the only thing it says is how many are
+           waiting behind it. -->
+      <button class="iconbtn quiz" data-act="quiz" type="button" title="Quiz — questions you asked to be reminded of" aria-label="Open the quiz" hidden>?<span class="qdue" hidden></span></button>
       <button class="iconbtn" data-act="models" type="button" title="Models" aria-label="Models">⚙</button>
       <button class="iconbtn obsidian" data-act="export" type="button" title="Export to Obsidian" aria-label="Export to Obsidian">${OBSIDIAN_SVG}</button>
       <button class="iconbtn" data-act="close" type="button" title="Close (Esc)">✕</button>
@@ -1869,7 +1910,8 @@ ${selPillHtml()}
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}${
           D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}${
-          D.strikes.declined.indexOf(String(r.ts)) < 0 ? strikeChipHtml(r, target) : ''}</div>`;
+          D.strikes.declined.indexOf(String(r.ts)) < 0 ? strikeChipHtml(r, target) : ''}${
+          questionChipHtml(r, target)}</div>`;
     }
 
     // Tool activity (msg.kind === 'tools') is process detail, not an answer: a
@@ -2473,6 +2515,32 @@ ${selPillHtml()}
         : `<button class="rebtn thr-mark" data-act="set-mark" data-target="${esc(t.id)}" data-mark="strike" type="button" title="strike this passage through — a suggested deletion, in your name" aria-label="convert to a strikethrough">S</button>`;
     };
 
+    // ---- make a question of this ------------------------------------------
+    //
+    // THE REPORT, in the reader's own words: "while I'm reading and chatting
+    // with the bots I want a small button — this is interesting, make a
+    // question of it." Everything about this control follows from that
+    // sentence. It is small, it is where the reading is, and pressing it is
+    // the END of the reader's involvement: a bot writes the card, the vault
+    // schedules it, and the next they see of it is the quiz asking.
+    //
+    // It sits in the card head beside the ✓, the S̶ and the ✕ because it is the
+    // same kind of thing — a one-click statement about this thread, shown on
+    // hover. The glyph is a question mark, which needs no caption.
+    //
+    // Owner-only (it spends the owner's agents and fills the owner's own
+    // memory), and not on a FILED thread: a thread the reader has closed is an
+    // argument that is over, and the passage is still there to be selected if
+    // they want a question out of it after all.
+    const canQuestion = t => D.owner && !t.resolved;
+    const questionBtn = t => {
+      if (!canQuestion(t)) return '';
+      if (D.questions.busy === t.id) return `<span class="rebtn thr-q busy" aria-hidden="true">◌</span>`;
+      return `<button class="rebtn thr-q" data-act="make-q" data-target="${esc(t.id)}" type="button"`
+        + ` title="make a question of this — it goes in the vault and comes back in the quiz"`
+        + ` aria-label="make a revision question from this thread">?</button>`;
+    };
+
     // ---- before → after, when a bot's change rewrote the passage -----------
     //
     // A change that rewrites the quoted passage ORPHANS the highlight: the
@@ -2614,7 +2682,7 @@ ${selPillHtml()}
         ? `<div class="confirm">delete thread?
              <button class="rebtn yes" data-act="del-thread-yes" data-target="${esc(t.id)}" type="button">yes</button>
              <button class="rebtn" data-act="del-thread-no" type="button">no</button></div>`
-        : `${markBtn(t)}${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
+        : `${questionBtn(t)}${markBtn(t)}${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
       // The badge says WHICH bot claimed it and leaves the verdict to the
       // reader — "ready for review", never "done". It rides the quote row, the
       // one line of the card that is always visible however long the thread.
@@ -3129,7 +3197,7 @@ ${selPillHtml()}
       // answers the empty state below: "No comments yet" directly under "this
       // PDF carries 7 comments" is two sentences contradicting each other.
       const pdfOffer = pdfImportHtml();
-      let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml()
+      let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + qnoteHtml()
         + pdfOffer + pdfSavedHtml() + projectTaskCardHtml() + taskCardHtml() + rail;
       html += D.pending ? pendingHtml() : '';
       // a filter that matches nothing must say so and offer the way back —
@@ -4697,6 +4765,23 @@ ${selPillHtml()}
         // the discussion ends here, because the reader has asked to be somewhere
         // else (focusThread's own release rule does it).
         if (act === 'strike-view') { focus(target); scrollToThread(target); return; }
+        // ---- the question vault ------------------------------------------
+        // The reader's button, and the bot's offer answered. Both end in the
+        // same one call, because there is exactly one way a card is made and
+        // the reader's part in it is over the moment they click.
+        if (act === 'make-q') { doMakeQuestion(target); return; }
+        if (act === 'q-yes') {
+          doMakeQuestion(target, { from_msg: btn.dataset.ts, hint: btn.dataset.why });
+          return;
+        }
+        if (act === 'q-no') {
+          const row = btn.closest && btn.closest('[data-ts]');
+          if (row && row.dataset.ts) D.questions.declined.push(row.dataset.ts);
+          render();
+          return;
+        }
+        if (act === 'q-note-x') { D.questions.note = null; render(); return; }
+        if (act === 'quiz') { cb('onOpenQuiz')(); return; }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
@@ -6111,6 +6196,30 @@ ${selPillHtml()}
         : 'File in a council project';
     }
 
+    // The door to the quiz, and its only piece of information: how many are
+    // waiting. Owner-only, like the vault itself.
+    function paintQuiz() {
+      const el = D.el.quiz;
+      if (!D.mounted || !el) return;
+      el.hidden = !D.owner;
+      const n = Number(D.questions.due) || 0;
+      const badge = el.querySelector('.qdue');
+      if (badge) { badge.textContent = n > 99 ? '99+' : String(n); badge.hidden = !n; }
+      el.classList.toggle('on', n > 0);
+      el.title = n ? `Quiz — ${n} question${n === 1 ? '' : 's'} due` : 'Quiz — nothing due';
+    }
+    // How many are due, asked of the companion rather than counted here: the
+    // vault is global (one bank, every page) and this drawer only ever knows
+    // about one page.
+    async function refreshDue() {
+      if (!D.owner) return;
+      let r;
+      try { r = await cb('onQuestionCounts')(); } catch { r = null; }
+      if (!r || r.ok === false) return;
+      D.questions.due = (r.counts && r.counts.due) || 0;
+      paintQuiz();
+    }
+
     // A bot's suggestion, as a chip under its reply. One step, inline, like
     // every other confirm in this drawer: the sentence is the whole of the
     // warning and the button is the whole of the act.
@@ -6229,6 +6338,85 @@ ${selPillHtml()}
         }, ARRIVED_MS);
       }
       render();
+    }
+
+    // ---- "make a question of this" ----------------------------------------
+    //
+    // The whole of the reader's involvement, from either door: the card-head ?
+    // on a thread, or the chip under a bot's offer. There is no dialog, no
+    // format picker and no preview, because the reader was explicit that they
+    // do not want to sit editing cards — and because a step that asks them to
+    // approve a question they have not been asked yet is a step that would
+    // stop this being worth a click.
+    //
+    // What comes back is a PENDING card: the row exists before the bot has
+    // written anything, so a generation that never returns is something the
+    // reader can see in the quiz rather than a button that did nothing. The
+    // note below says which of the three things happened, and goes away.
+    const Q_NOTE_MS = 7000;
+    function qnote(text, err) {
+      D.questions.note = { text, err: !!err, at: Date.now() };
+      const mine = D.questions.note;
+      setTimeout(() => {
+        if (D.questions.note !== mine) return;
+        D.questions.note = null;
+        render();
+      }, Q_NOTE_MS);
+    }
+    // The one line the drawer says about a capture, at the top of the column.
+    // It is a receipt, not a status: a card is written by an agent turn that
+    // may be behind a queue, and a reader who has to WATCH that has been given
+    // a job. It says what happened and goes away.
+    function qnoteHtml() {
+      const n = D.questions.note;
+      if (!n) return '';
+      return `<div class="qnote${n.err ? ' err' : ''}"><span>${esc(n.text)}</span>
+        <button class="qx" type="button" data-act="q-note-x" aria-label="dismiss">✕</button></div>`;
+    }
+
+    async function doMakeQuestion(threadId, extra) {
+      if (D.questions.busy) return;
+      D.questions.busy = threadId || '__sel__';
+      render();
+      let r;
+      try { r = await cb('onMakeQuestion')(threadId, extra || {}); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.questions.busy = '';
+      if (!r || r.ok === false) {
+        qnote((r && r.error) || 'that question could not be filed', true);
+        render();
+        return;
+      }
+      if (extra && extra.from_msg && r.card && r.card.id) D.questions.made[extra.from_msg] = r.card.id;
+      // A capture with the agents off is not a failure of the click — the card
+      // is on the record either way — so it is reported as what it is.
+      qnote(r.queued === false
+        ? `filed, but nobody could write it — ${r.reason || 'the agents are off'}`
+        : 'a question is being written — it will be in the quiz shortly', r.queued === false);
+      render();
+    }
+
+    // A bot's own offer, as a chip under its reply — the `strike:` chip
+    // exactly, because it is the same shape of thing: machinery lifted off a
+    // reply into a one-step confirm. BOTS NEVER FILE; the vault stays empty
+    // until the reader presses the button.
+    function questionChipHtml(msg, threadId) {
+      const q = msg && msg.question;
+      if (!q || !q.why) return '';
+      const ts = String(msg.ts || '');
+      if (D.questions.declined.indexOf(ts) >= 0) return '';
+      if (D.questions.made[ts]) {
+        return `<div class="filechip qchip done">Filed — you will be asked about this.</div>`;
+      }
+      return `<div class="filechip qchip">
+        <span class="fcw">Worth remembering — ${esc(q.why)}</span>
+        <span class="fcacts">
+          <button class="rebtn" type="button" data-act="q-yes"
+            data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-why="${esc(q.why)}"
+            ${D.questions.busy ? 'disabled' : ''}>File it</button>
+          <button class="rebtn no" type="button" data-act="q-no">No</button>
+        </span>
+      </div>`;
     }
 
     // ---- the PDF's own margin, in and out ---------------------------------
@@ -6716,6 +6904,10 @@ ${selPillHtml()}
       // is owner-only, and a guest is not shown a control they cannot use
       if (!v) closeProjPick();
       paintFiled();
+      // the vault is the owner's own memory: the door appears with the answer,
+      // and the count behind it is asked for at the same moment
+      paintQuiz();
+      if (v) refreshDue();
       if (D.view === 'pages') renderPages();
       return D;
     }
@@ -6791,6 +6983,17 @@ ${selPillHtml()}
     function applyEvent(ev) {
       if (!ev) return;
       if (ev.type === 'bridge') { D.bridge = ev.error ? (ev.state + ' — ' + ev.error) : ev.state; paintFoot(); return; }
+      // A card settled in the vault. It is broadcast to every tab because the
+      // vault is global, and it is the only moment this drawer can honestly
+      // say whether the question got written — the capture click could only
+      // ever report that a turn had been queued.
+      if (ev.type === 'question') {
+        refreshDue();
+        if (ev.state === 'failed') qnote(`that question could not be written — ${ev.error || 'the reply did not parse'}`, true);
+        else if (ev.state === 'live') qnote('a question was filed — it is in the quiz now');
+        render();
+        return;
+      }
       // Model switches, context gauges and relays are broadcast to every tab;
       // this is the push channel that keeps an open popover honest. It fires on
       // meaningful change only (pct/model/relay/auto_relay — not token creep),
@@ -6997,6 +7200,12 @@ ${selPillHtml()}
         key: k, who: D.streams[k].who, target: D.streams[k].target,
         got: D.streams[k].text.length, shown: Math.min(D.streams[k].shown || 0, D.streams[k].text.length),
       })),
+      // "make a question of this" — from the pill (no thread; content.js is
+      // holding the passage) or from a card head. Observable for the harness
+      // as the note it leaves and the count on the header's door.
+      makeQuestion: (threadId, extra) => doMakeQuestion(threadId || '', extra || {}),
+      questionState: () => ({ busy: D.questions.busy, note: D.questions.note,
+                              due: D.questions.due, made: { ...D.questions.made } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
