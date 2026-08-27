@@ -899,43 +899,147 @@ export function setThreadMark(thread, mark) {
 // words into a field, which the drawer draws as a chip, which the READER
 // clicks. Nothing happens on the bot's say-so.
 //
-// The line is `strike: <one short reason>`. It is offered ONLY on a document
-// that can carry a strikeout (a PDF), only inside a comment thread, and only on
-// a thread that is neither struck already nor filed — so a bot that has never
-// been shown the offer has no way to learn the convention and no reason to.
+// The line is `strike: <the note>`. It is offered ONLY on a document that can
+// carry a strikeout (a PDF), only inside a comment thread, and only on a thread
+// that is neither struck already nor filed — so a bot that has never been shown
+// the offer has no way to learn the convention and no reason to.
 export const STRIKE_MARK = 'strike:';
-const STRIKE_WHY_MAX = 200;
+
+// How long a note may be. Generous ON PURPOSE, and the reason is the bug it
+// closes: the note is not always a reason, it is often the REPLACEMENT WORDING
+// in full, and a replacement sentence with a citation in it runs to a couple of
+// hundred characters before it has said anything. The old cap was 200 and it
+// CUT, silently, mid-word — the reader minted a strikeout whose note ended
+// "…which extends their stiff/flexibl" and was then told by the bot to paste
+// the rest in by hand, which is the exact clerical work this feature exists to
+// abolish. Nothing here truncates any more: over the cap the suggestion is
+// REFUSED at the lift, loudly, so the bot writes a shorter one (see
+// `strikeNoteFault`).
+export const STRIKE_NOTE_MAX = 1200;
 
 // The invitation, as it rides the turn (server.mjs summon → chat.mjs envelope).
-// The last sentence is doing the most work: an eager model will propose a
-// deletion whenever it can think of one, and a chip on every reply is a chip
-// nobody reads.
+//
+// Two things it has to get across, and models will fight both:
+//
+//  · RARELY. An eager model proposes a deletion whenever it can think of one,
+//    and a chip on every reply is a chip nobody reads.
+//  · THE NOTE STANDS ALONE. This is the amendment of 2026-08-27 and it comes
+//    from a real session: the bot put the whole replacement wording in its
+//    reply and made the `strike:` line a POINTER to it — "replace with the
+//    wording above naming Shan [X]". The note is copied onto the document and
+//    read by someone who has only the struck passage and that one line; the
+//    discussion it points at is the very thing the reader deletes next. So a
+//    deictic note is a note that will be meaningless within the minute, and the
+//    companion refuses it rather than minting it.
+//
+// Which is why the "one short reason" phrasing had to go: a full replacement
+// sentence is not verbose, it is the payload. Length is bounded by the note
+// cap, not by a request to be brief.
 export const strikeOfferBlock = () =>
   'This document takes markup, and this comment is a highlight on it. If — and '
   + 'ONLY if — the discussion in this thread has genuinely concluded that the '
   + 'quoted passage should come out of the document, you may END your reply with '
-  + `a line of its own reading \`${STRIKE_MARK} <one short reason>\`. The reader `
-  + 'gets a button that strikes the passage through under their own name; you are '
-  + 'not marking anything up. Use it rarely — a disagreement, a question, or a '
-  + 'passage that merely needs rewording is NOT this. Say nothing at all if in '
-  + 'doubt.\n';
+  + `a line of its own reading \`${STRIKE_MARK} <the note>\`. The reader gets a `
+  + 'button that strikes the passage through under their own name; you are not '
+  + 'marking anything up.\n'
+  + 'THE NOTE MUST STAND ON ITS OWN. It is copied onto the document, and the '
+  + 'person who reads it — a co-author, weeks from now — sees ONLY the struck '
+  + 'passage and that one line. They never see this conversation; the reader '
+  + 'deletes it as soon as the mark is made. So the note may not point at '
+  + 'anything here: not "the wording above", not "as discussed", not "my '
+  + 'earlier suggestion". A note that does is REFUSED and no button appears.\n'
+  + 'If you are proposing REPLACEMENT WORDING, the note carries that wording IN '
+  + `FULL and in quotes — \`${STRIKE_MARK} replace with: "…the complete new `
+  + 'sentence, citations and all…"` — however long that makes the line. '
+  + 'Otherwise the note is the reason itself, in one sentence. Say the whole of '
+  + `what you mean and nothing more; over ${STRIKE_NOTE_MAX} characters is `
+  + 'refused rather than cut.\n'
+  + 'Use it rarely — a disagreement or a question is NOT this. Say nothing at '
+  + 'all if in doubt.\n';
+
+// …and what the bot is told when a line of its own was thrown away, on the next
+// turn of that thread (server.mjs summon). Without it the model has no way to
+// know: the chip simply never appeared, and the reader — who watched it not
+// appear — gets told the deletion was made. Silence here is how a bot ends up
+// claiming a fix that never happened.
+export const strikeRefusedBlock = fault =>
+  'YOUR LAST `strike:` LINE WAS REFUSED — the reader never saw a button for it, '
+  + `because ${fault === 'long'
+    ? `the note ran past ${STRIKE_NOTE_MAX} characters, and this companion will `
+      + 'not cut a note in half and put half of it on a document'
+    : 'it pointed back at this discussion instead of standing on its own'}. `
+  + 'Nothing was marked up and nothing was filed. If you still mean it, write '
+  + 'the line again with the whole of what you mean inside it — the complete '
+  + 'replacement wording, in quotes — and say nothing that refers to this '
+  + 'conversation.\n';
 
 // …and the line, back out of the reply. A line of its own, the LAST one counts,
 // and a reason is required — a bare `strike:` is a model echoing the convention
 // rather than concluding anything, and a chip with no sentence on it gives the
 // reader nothing to agree with.
+//
+// The markdown a model wraps the line in is peeled off the ENDS only. It used
+// to be stripped from the whole line, which was fine for "it repeats section 2"
+// and quietly mangled a replacement sentence with an emphasised title or a
+// snippet in it.
 export function parseStrikeSuggestion(text) {
-  const re = new RegExp(`^\\s*(?:[-*>]\\s*)?${STRIKE_MARK}\\s*(.+)$`, 'i');
+  const re = new RegExp(`^${STRIKE_MARK}\\s*(.+)$`, 'i');
   let found = null;
   for (const raw of String(text || '').split(/\r?\n/)) {
-    const line = raw.replace(/[`*_]/g, '').trim();
+    const line = raw.trim().replace(/^[-*>\s]+/, '')
+      .replace(/^([`*_]+)([\s\S]*?)\1$/, '$2').trim();
     const m = re.exec(line);
     if (!m) continue;
-    const why = String(m[1] || '').replace(/^[—:-]\s*/, '').trim().slice(0, STRIKE_WHY_MAX);
+    const why = String(m[1] || '').replace(/^[—:-]\s*/, '').trim();
     if (!why) continue;
     found = { why, line: raw };
   }
   return found;
+}
+
+// ---- …and the two ways a note can be unusable ------------------------------
+//
+// DEICTIC: the note refers to something the reader of the DOCUMENT will never
+// see — this thread, this reply, the paragraph the bot wrote above the line.
+// The patterns are word-boundary and narrow on purpose. A false positive costs
+// the reader a chip they wanted, so nothing here fires on a bare "above" or a
+// bare "earlier": "the paragraph above already says this" is about the
+// DOCUMENT, is perfectly readable beside the struck passage, and passes. What
+// is caught is a referring noun (wording, version, suggestion, reply…) pointing
+// somewhere — and only when the note carries no quoted span, because a note
+// that contains the actual words is self-contained however it introduces them.
+const STRIKE_REFERENT =
+  '(?:wording|phrasing|text|version|sentence|rewrite|replacement|draft'
+  + '|suggestion|proposal|edit|revision|note|answer|reply|comment|message)';
+export const STRIKE_DEICTIC = [
+  new RegExp(`\\b(?:the|my|our|that|this)\\s+(?:\\w+\\s+){0,2}${STRIKE_REFERENT}s?`
+    + '\\s+(?:above|below|earlier|here|i\\s+(?:gave|wrote|sent|suggested|proposed))\\b', 'i'),
+  new RegExp(`\\b(?:my|our)\\s+(?:earlier|previous|last|first|original|other)\\s+`
+    + `${STRIKE_REFERENT}s?\\b`, 'i'),
+  /\bas\s+(?:discussed|agreed|noted|said|stated|explained|described|mentioned|suggested|proposed|above|below)\b/i,
+  /\bas\s+(?:i|we)\s+(?:said|noted|wrote|discussed|suggested|proposed|mentioned|explained)\b/i,
+  /\b(?:see|per|use|follow|apply|take)\s+(?:my|the|this)\s+(?:\w+\s+){0,2}(?:above|below|suggestion|wording|reply|answer|comment|thread|proposal|rewrite)\b/i,
+  /\b(?:this|the)\s+(?:thread|discussion|conversation|exchange)\b/i,
+  /\breplace\s+(?:it|this|them|the\s+\w+)?\s*with\s+(?:the|my)\s+(?:\w+\s+){0,2}(?:above|below|suggested|suggestion)\b/i,
+];
+// The words themselves, in any of the quote marks a model actually reaches for.
+// Eight characters is the floor: `"x"` is a scare quote, not a replacement.
+const STRIKE_QUOTED = /["“”«»„`][^"“”«»„`]{8,}["“”«»„`]/;
+export const strikeNoteQuotes = why => STRIKE_QUOTED.test(String(why || ''));
+
+// The one answer both faults come back through: '' (usable), 'deictic' or
+// 'long'. The offending phrase rides with the deictic one so the drawer can
+// show the reader WHAT was refused and the bot can be told the same thing.
+export function strikeNoteFault(why) {
+  const s = String(why || '');
+  if (s.length > STRIKE_NOTE_MAX) return { fault: 'long', phrase: '' };
+  if (!strikeNoteQuotes(s)) {
+    for (const re of STRIKE_DEICTIC) {
+      const m = re.exec(s);
+      if (m) return { fault: 'deictic', phrase: m[0].trim() };
+    }
+  }
+  return { fault: '', phrase: '' };
 }
 
 // ---- the OTHER marks on the same passage -----------------------------------
@@ -1166,7 +1270,19 @@ export function appendMsg(page, threadId, {
   // come out (parseStrikeSuggestion above). An offer, a field, a chip — the
   // document is not marked up until the reader clicks, and what the click makes
   // is a comment of THEIRS, not an edit to this conversation.
-  if (strike && strike.why) msg.strike = { why: String(strike.why) };
+  //
+  // …or the record that it was THROWN AWAY (`rejected`: 'deictic' — the note
+  // pointed back at the conversation the co-author will never see; 'long' — it
+  // could only have been filed by cutting it in half). That is a field too, and
+  // for the same reason the offer is: the drawer draws a quiet buttonless chip
+  // from it, and the bot is told on its next turn here. A refusal that left no
+  // trace would be indistinguishable from a suggestion never made — which is
+  // exactly how a reader ends up being told a deletion happened when it did not.
+  if (strike && strike.why) {
+    msg.strike = { why: String(strike.why) };
+    if (strike.rejected) msg.strike.rejected = String(strike.rejected);
+    if (strike.phrase) msg.strike.phrase = String(strike.phrase);
+  }
   // …and the third of the same shape: a bot noticing the reader has not GOT
   // something and offering to file a revision question about it
   // (questions.parseQuestionSuggestion). Offer, field, chip — the vault stays

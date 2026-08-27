@@ -5182,12 +5182,17 @@ The suggestion is the `file-in:` idiom exactly (`workspace.mjs` SUGGEST_MARK):
   `chat.envelope` as `strikeContext`, only when `strikeable(page, thread)` — so a
   model that is never shown it cannot learn the convention. It rides EVERY turn
   of the thread, not the first: a conclusion is reached on the fourth exchange.
-- A bot may end a reply with a line of its own: `strike: <one short reason>`.
+- A bot may end a reply with a line of its own: `strike: <the note>` (**amended
+  2026-08-27** — it was `<one short reason>`, which is what produced a note the
+  document could not use; see the amendment below).
   `store.parseStrikeSuggestion` reads it back — a line of its own, the LAST one
-  counts, a reason is required (a bare `strike:` is a model echoing the
+  counts, a note is required (a bare `strike:` is a model echoing the
   convention, not concluding anything).
 - `server.mjs` lifts the line OFF the reply's words into `msg.strike = { why }`
   and the drawer draws a chip: **Strike it / No**. Bots never mark anything up.
+  (**Amended 2026-08-27**: a note that points back at the discussion, or one
+  past `STRIKE_NOTE_MAX`, is lifted as `{ why, rejected }` and draws a chip with
+  no button at all.)
 
 **BOTH BOTS MAY SUGGEST, and the reader picks.** Asking claude, then asking
 codex, and comparing the two answers is the ordinary way one of these threads
@@ -5200,9 +5205,13 @@ THAT reply's reason.
 Which one was taken is on the record as `from_msg` (the reply's `ts`), because
 "this thread produced a strike" is not a precise enough answer for the drawer.
 The chosen chip becomes `Struck through, in your name. · view`; the siblings
-**retire rather than vanish** — `Not chosen — <what it proposed>`, muted, with
-nothing left to click. The reader chose between two proposals and is entitled to
-go on seeing what the one they turned down said.
+**retire rather than vanish** — `Not chosen — <what it proposed>`, muted.
+The reader chose between two proposals and is entitled to go on seeing what the
+one they turned down said. (**Amended 2026-08-27**: a retired chip keeps ONE
+control, `Use this note`, and confirming it rewrites the note on the strike that
+already exists. "Nothing left to click" was right while a second click could
+only have made a second red line, and wrong once the note it made could be the
+wrong one.)
 
 **And confirming does NOT convert the discussion.** It mints a SECOND thread:
 
@@ -5229,11 +5238,16 @@ it** — `pdf/viewer.js collectItems` has never heard of the field.
 
 Idempotent by the same argument as everything else here: same passage, same
 hand, already struck → that IS this strike, handed back with `deduped: true`.
-The test is the QUOTE, not the thread: two suggestions inside one thread are two
-opinions about the SAME passage and can only ever produce one strikeout, while a
-suggestion about a genuinely different passage is a different anchor and mints
-its own. The drawer does not offer the second click at all (the siblings have
-retired), but the door does not rely on the drawer for that.
+Two suggestions inside one thread are two opinions about the SAME passage and
+can only ever produce one strikeout, while a suggestion about a genuinely
+different passage is a different anchor and mints its own.
+
+> **Amended 2026-08-27.** Two corrections to the paragraph above. The match is
+> the LINK first (`from_thread`) and the quote only as a fallback — an anchor
+> that has drifted must not be allowed to mint a second line. And a confirm
+> carrying a DIFFERENT note no longer does nothing: it **rewrites the note on
+> the strike that is there** and answers `updated: true`. `deduped: true` now
+> means only what it should ever have meant — the same note, or no note, twice.
 No bot is summoned. `index` puts it beside the discussion in the record; the
 drawer then orders the column by document position, as it always has.
 
@@ -5279,7 +5293,8 @@ extension/drawer.js             the card-head S̶ and its quieter reverse, the
                                 on confirm and the delete fall-through
 extension/drawer.css            .rebtn.thr-mark(.back), .filechip.strikechip
                                 (.done/.passed), .card.arrived
-bridge-system-prompt.md         rule 13 — suggest rarely, only when invited
+bridge-system-prompt.md         rule 13 — suggest rarely, only when invited,
+                                and (2026-08-27) with a note that stands alone
 ```
 
 **Testing.** `test/strike.test.mjs` (28) is the store's primitives, both
@@ -5825,6 +5840,187 @@ summary.
 Harness `?pdfannot=export&selftest=1` (35 → 36) — the stubbed viewer now
 answers with `filed: 2`, and the card is asserted NOT to fold them into
 "could not be placed", in the card or in the footer.
+
+## Amendment (2026-08-27, shipped): a strikeout's note has to stand on its own
+
+Reported from a live session on a real manuscript, and it is three failures
+wearing one coat. The reader asked the bots for replacement wording for a
+passage and a citation to go with it. Claude wrote the whole replacement in the
+body of its reply and then made its `strike:` line a POINTER at it — "replace
+with the wording above naming Shan [X], ET-Class [9] and Figure 1". The reader
+confirmed the chip, and the strikeout was minted carrying THAT sentence.
+
+Which is useless, and useless in the exact way this feature exists to prevent.
+The minted strike carries no word of the conversation ON PURPOSE: the reader
+deletes the discussion, and what the co-author receives is a red line, a human's
+name and one note. A note that says "the wording above" points into a thread
+that no longer exists, for a reader who never had it.
+
+Then the second failure. Claude, told the note was wrong, reissued the
+suggestion with the replacement inline — and the confirm did NOTHING, because
+the door deduped on the quote and handed the existing strike back. There was no
+route, anywhere in the product, to change the note on a strikeout that had been
+minted. And the third: the note that DID get through was cut at 200 characters,
+mid-word, silently — "…which extends their stiff/flexibl" — after which the bot
+told the reader to paste the rest in by hand, which is precisely the clerical
+work this whole feature is for.
+
+None of that is model misbehaviour that better prompting alone would fix. The
+convention asked for "one short reason", the record cut at 200, and the door
+refused corrections. The bots then reported the deletion as done, because
+nothing anywhere told them otherwise.
+
+### 1. The note is the payload, not a label (`store.strikeOfferBlock`)
+
+The offer now says, firmly, the two things the failure turned on: the note is
+read by someone who has ONLY the struck passage and that line, so it may not
+refer to this conversation; and where the conclusion is a replacement, the note
+carries the replacement IN FULL, in quotes, however long that makes it. "One
+short reason" is gone — a full replacement sentence is not verbosity, it is the
+thing being filed. `bridge-system-prompt.md` rule 13 says the same in the same
+words, including the sentence that matters most for honesty: **a refused line
+means nothing was marked up, so never tell the reader a deletion was made.**
+
+### 2. The guard, and why its false-positive rate is what it is
+
+`store.strikeNoteFault(why)` answers `''`, `'deictic'` or `'long'`, with the
+offending phrase for the first.
+
+```
+STRIKE_NOTE_MAX = 1200          // generous: a replacement with a citation is long
+STRIKE_DEICTIC  = [ …7 patterns… ]
+STRIKE_QUOTED   = /["“”«»„`][^"“”«»„`]{8,}["“”«»„`]/
+```
+
+A note is deictic when a word-boundary pattern matches AND the note carries no
+quoted span. Both halves are load-bearing:
+
+- The patterns are **narrow**. A bare `above`, a bare `earlier`, a bare `below`
+  never fire: "the paragraph above already says this" is about the DOCUMENT, is
+  perfectly readable beside the struck passage, and is exactly the kind of
+  legitimate reason a bot writes. What fires is a REFERRING NOUN (wording,
+  phrasing, version, sentence, rewrite, replacement, draft, suggestion,
+  proposal, edit, revision, note, answer, reply, comment, message) pointing at
+  `above` / `below` / `earlier` / `here` / "I gave"; `my earlier <noun>`; `as
+  discussed` / `as I said` and their family; `see|per|use my|the … above`;
+  `this thread|discussion|conversation`; and `replace … with the … above`.
+- The **quoted-span escape** is what makes a false positive cheap. A note that
+  contains the actual words is self-contained however it introduces itself, so
+  `as discussed, replace with: "…"` passes. The cost of a wrong refusal is one
+  chip the reader wanted; the cost of a wrong acceptance is a useless note on a
+  document somebody else receives. The asymmetry is why the guard exists at all,
+  and the escape is why it can afford to be firm.
+
+**A refusal is VISIBLE, at both ends.** The line still comes off the reply's
+words (it is machinery), and the message keeps `strike: { why, rejected,
+phrase }`, which `store.appendMsg` now persists. The drawer draws a dashed,
+buttonless chip — *"Not filed — the note refers to this discussion ("the wording
+above"), and the co-author will only see the passage. Nothing was marked up."* —
+and the bot is told on its next turn in that thread
+(`store.strikeRefusedBlock`, composed by `server.mjs refusedStrikeNote`, LAST
+suggestion only, so a bot that fixed it is not lectured). Silence was how the
+reader ended up being told a deletion had happened.
+
+**Nothing is ever cut.** `parseStrikeSuggestion` no longer slices (and no longer
+strips markdown from the middle of the line, which used to mangle a replacement
+containing emphasis); `/strike-from` refuses a note past the cap with a 400
+rather than trimming it. A note is filed whole or not at all.
+
+### 3. A minted note is CORRECTABLE (`POST /strike-from`, amended)
+
+```
+POST /strike-from { url, thread_id, note, from_msg }
+  → { thread, deduped? }   same note, or no note        — nothing written
+  → { thread, updated? }   a DIFFERENT note             — the note is rewritten
+  → { thread }             no strike on this passage yet — minted, as before
+```
+
+Which existing strike it finds: **`from_thread` first, the quote second.** The
+link is what this discussion actually minted; the quote is a guess that goes
+wrong the moment an anchor drifts (the passage is rewritten, the discussion
+re-anchors, and quote-equality would put a second red line beside the first).
+
+Update semantics, and they are deliberately conservative: the note is rewritten
+in place (`msgs[0].text`), the OWNER and the CREATED timestamp are untouched —
+that date is the annotation's date and the export's — the message gains
+`edited`, and the thread gains `updated` (ISO, absent on every strike never
+renoted, so no record migrates). `from_msg` and `from_thread` follow the note.
+The card and the exported `/Contents` both read `msgs[0].text`, so the
+correction lands everywhere by construction.
+
+**The owner's own hand-edit was free.** The minted comment is the reader's own
+message, so `POST /edit` already took it, and the export already read it; the
+only thing needed was to verify and pin it. There is no second editing path.
+
+**The reader's route to all this** is the retired chip. Both bots may suggest;
+the one not taken now reads `Not chosen — <what it proposed>` **with a `Use this
+note` button**, and the chosen chip settles into `Note updated on the strikeout,
+in your name. · view` when a click rewrote rather than minted. Which of the two
+things happened is on the chip, never inferred.
+
+### 4. The minted card stays inert, and keeps a way home
+
+`strikeable` still excludes a thread that is already struck, so no offer rides a
+turn in the minted card, the lift never fires there, and no chip can appear on
+it. That is the enforcement of the rule the whole feature rests on: the reader
+deletes the discussion so that no bot chatter travels, and running the machinery
+on the one thread that must stay clean would put it straight back. All
+correction happens in the discussion.
+
+But the two are LINKED while the discussion lives. The chip points forward
+(`· view`); the minted card now carries the same link read backwards — a quiet
+`from a discussion · view` under the quote, rendered only while the origin is
+still on the record. This closes a real navigation dead end: the strike's paint
+sits over the discussion's highlight on the page, so clicking the passage cannot
+reach the conversation any more, and this button is the only road back. A
+RESOLVED discussion is still a discussion — filed in the archive, still jumped
+to, link unchanged. A DELETED one leaves a dangling `from_thread`, and the card
+simply drops the affordance and stands alone: soft link, never an error.
+(Click-cycling overlapping marks on the page itself — click again for the mark
+underneath — was considered and deliberately not built; the view button is the
+fix, that would be a second one.)
+
+### Files
+
+```
+store.mjs                       STRIKE_NOTE_MAX; strikeOfferBlock rewritten;
+                                strikeRefusedBlock; strikeNoteFault /
+                                STRIKE_DEICTIC / strikeNoteQuotes;
+                                parseStrikeSuggestion no longer truncates;
+                                appendMsg keeps strike.rejected / .phrase
+server.mjs                      the lift consults strikeNoteFault;
+                                refusedStrikeNote rides the next turn;
+                                /strike-from: link-first match, the update
+                                path, the over-cap 400
+chat.mjs                        (comment only — the struck turn carries no offer)
+extension/content.js            onStrikeFrom passes `updated` through
+extension/drawer.js             the refused chip; "Use this note" on a retired
+                                one; "Note updated…"; D.strikes.updated;
+                                fromDiscussionHtml
+extension/drawer.css            .strikechip.refused, .fromdisc
+bridge-system-prompt.md         rule 13 rewritten
+```
+
+**Testing.** `test/strike.test.mjs` (43 → 57): the parse keeping a 400-character
+replacement byte for byte; seven deictic notes refused and six legitimate ones
+(document-deixis, and a deictic one carrying quoted words) passing; the cap
+refusing rather than cutting; the lift recording `rejected` + `phrase` and
+marking nothing up; the refusal riding the next turn and going away after a good
+line; a full replacement intact at lift, mint, record and `Ann.threadContents`;
+double-tap and empty-note still `deduped`; a better note rewriting the note,
+keeping the owner and the created date and reaching the export; the owner's
+hand-edit through `/edit`; and the link beating the quote after a `/reanchor`.
+The envelope tests assert the new offer wording, and the already-struck one now
+also pins that a minted strike is INERT.
+
+Harness `?pdf=1&strike=1&selftest=1` (69 → 81): the fixture's third bot reply
+carries a refused suggestion, so the pose asserts a chip that is visible, says
+which words did it and has nothing to click; that the two live offers are still
+two; that the retired chip offers `Use this note`; the correction click and its
+five consequences (one red line, the new note, owner and date kept, `(edited)`
+on the card, the chip saying which thing it did, the other chip standing down);
+and the `from a discussion · view` link present while the discussion lives and
+gone — not broken — after it is deleted.
 
 ## Out of scope for v1 (do not build)
 

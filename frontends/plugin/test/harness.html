@@ -1047,6 +1047,16 @@ if (PDFV) {
           { author: 'codex', ts: iso(18),
             text: 'Agreed. It is a throat-clearing sentence.',
             strike: { why: 'it is throat-clearing before the real point' } },
+          // …and a third suggestion the companion THREW AWAY at the lift: the
+          // note pointed back at this conversation, which the reader deletes,
+          // so it would have been meaningless on the document within the
+          // minute (store.strikeNoteFault). It is a chip with nothing to
+          // click, because a refusal the reader cannot see is how a bot ends
+          // up announcing a deletion that never happened.
+          { author: 'claude', ts: iso(17),
+            text: 'Here is the replacement in full: … .',
+            strike: { why: 'replace with the wording above naming Shan and Figure 1',
+                      rejected: 'deictic', phrase: 'the wording above' } },
         ] },
       { id: 't-1754600500-s3c3',
         quote: STRIKE_WAS,
@@ -2516,10 +2526,30 @@ function companion(method, path, body) {
                            from_msg: body.from_msg || '' });
     const from = RECORD.threads.find(x => x.id === body.thread_id);
     if (!from) return { ok: false, status: 404, error: 'unknown thread' };
-    const already = RECORD.threads.find(x =>
-      x.mark === 'strike' && x.quote === from.quote
-      && ((x.msgs || [])[0] || {}).author === IDENTITY);
-    if (already) return { ok: true, status: 200, data: { ok: true, thread: already, deduped: true } };
+    // Already struck — by the LINK first, by the quote second (server.mjs says
+    // why). A confirm carrying a DIFFERENT note rewrites the note on the strike
+    // that is already there rather than doing nothing: the reader is choosing
+    // better wording, which is the whole of the correction path.
+    const minefirst = x => ((x.msgs || [])[0] || {}).author === IDENTITY;
+    const struckMine = RECORD.threads.filter(x => x.mark === 'strike' && minefirst(x));
+    const already = struckMine.find(x => x.from_thread && x.from_thread === from.id)
+      || struckMine.find(x => x.quote === from.quote);
+    if (already) {
+      const note = String(body.note || '').trim();
+      const head = (already.msgs || [])[0];
+      if (!note || !head || head.text === note) {
+        return { ok: true, status: 200, data: { ok: true, thread: already, deduped: true } };
+      }
+      head.text = note;
+      head.edited = true;
+      already.updated = now();
+      if (body.from_msg) already.from_msg = String(body.from_msg);
+      already.from_thread = from.id;
+      RECORD.updated_at = now();
+      log('the note on a strikeout was rewritten: ' + already.id);
+      setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
+      return { ok: true, status: 200, data: { ok: true, thread: already, updated: true } };
+    }
     const t = {
       id: 't-' + Math.floor(Date.now() / 1000) + '-mint' + RECORD.threads.length,
       quote: from.quote, prefix: from.prefix, suffix: from.suffix,
@@ -6746,13 +6776,21 @@ async function selftestPdfStrike() {
     !!chipOf('claude') && /should come out/i.test(chipOf('claude').textContent));
   check('…saying why, in the bot’s own words', /says it better/.test(chipOf('claude').textContent));
   // BOTH BOTS MAY SUGGEST. The reader asked each in turn and is choosing.
+  const offers = () => chips().filter(c => c.querySelector('[data-act="strike-yes"]'));
   check('…and the OTHER bot’s suggestion is a chip of its own, on its own reply',
-    chips().length === 2 && !!chipOf('codex'));
+    offers().length === 2 && !!chipOf('codex'));
+  // …and the third one, which never became an offer at all
+  const refused = () => (disc() || document).querySelector('.filechip.strikechip.refused');
+  check('a suggestion whose note pointed back at the conversation is REFUSED, visibly',
+    !!refused() && /not filed/i.test(refused().textContent));
+  check('…saying which words did it, and offering nothing to click',
+    !!refused() && /the wording above/.test(refused().textContent)
+    && !refused().querySelector('button'));
   check('…carrying ITS wording, not the first one’s — no last-one-wins anywhere',
     /throat-clearing/.test(chipOf('codex').textContent)
     && !/throat-clearing/.test(chipOf('claude').textContent));
   check('…each offering exactly two answers, one of which is no',
-    chips().every(c => c.querySelectorAll('[data-act="strike-yes"]').length === 1
+    offers().length === 2 && offers().every(c => c.querySelectorAll('[data-act="strike-yes"]').length === 1
       && c.querySelectorAll('[data-act="strike-no"]').length === 1));
   check('…and the passage is STILL a plain highlight until the reader clicks',
     !document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="t-1754600600-d4d4"]'));
@@ -6788,11 +6826,52 @@ async function selftestPdfStrike() {
   check('…and the one they turned down RETIRING rather than vanishing',
     !!chipOf('claude') && chipOf('claude').classList.contains('passed')
     && /not chosen/i.test(chipOf('claude').textContent));
-  check('…still saying what it had proposed, with nothing left to click',
-    /says it better/.test(chipOf('claude').textContent)
-    && !chipOf('claude').querySelector('[data-act="strike-yes"]'));
+  check('…still saying what it had proposed',
+    /says it better/.test(chipOf('claude').textContent));
+  // …and keeping ONE control, which is the whole of the correction path: the
+  // note they took can turn out wrong, and the wording they passed over is
+  // then the one they want on the document.
+  check('…and offering to become the note instead, which retirement used to refuse',
+    !!chipOf('claude').querySelector('[data-act="strike-yes"]')
+    && /use this note/i.test(chipOf('claude').textContent));
+  // THE WAY BACK. The minted card is empty of the argument that produced it —
+  // that is the feature — so while the discussion still exists it carries a
+  // quiet link to it. On the page the strike's own paint sits over the
+  // discussion's highlight, so this button is the only road back to the chat.
+  check('the strikeout says where it came from, while there is somewhere to go',
+    !!cardFor(mint.id) && !!cardFor(mint.id).querySelector('.fromdisc [data-act="strike-view"]'));
   check('THE READER IS LEFT WHERE THEY WERE: arriving content never takes the scroll',
     d.held() === 't-1754600600-d4d4' && !!disc().classList.contains('focused'));
+
+  // ---- THE NOTE THEY TOOK WAS THE WRONG ONE -------------------------------
+  //
+  // The reader confirmed a wording, read it on the card, and wants the other
+  // one after all. Until this amendment there was no way whatever to change it:
+  // the door deduped, the chip had retired, and the note was on the record for
+  // good. One click now moves the note onto the strike that is already there —
+  // no second red line, the reader's name and the date unchanged.
+  const postsBefore = strikeFromPosts.length;
+  if (hit('[data-act="strike-yes"]', 'the Use this note button', chipOf('claude'))) {
+    await until(() => strikeFromPosts.length > postsBefore, 3000);
+  }
+  await sleep(260);
+  const fixed = RECORD.threads.find(t => t.id === mint.id);
+  check('a better note, confirmed, REWRITES the note on the strikeout',
+    !!fixed && /says it better/.test(fixed.msgs[0].text));
+  check('…on the same red line, not a second one',
+    RECORD.threads.filter(t => t.mark === 'strike'
+      && t.quote === 'Nothing had gone wrong').length === 1);
+  check('…still signed by the reader, and still dated when it was made',
+    fixed.msgs[0].author === IDENTITY && fixed.msgs[0].ts === mint.msgs[0].ts
+    && !!fixed.updated);
+  check('…the card showing the new note and saying it was edited',
+    /says it better/.test(cardFor(mint.id).textContent)
+    && !!cardFor(mint.id).querySelector('.edited'));
+  check('…and the chip saying which of the two things the click did',
+    !!chipOf('claude') && chipOf('claude').classList.contains('done')
+    && /note updated/i.test(chipOf('claude').textContent));
+  check('…while the chip that WAS the strikeout stops claiming to be',
+    !!chipOf('codex') && !/struck through/i.test(chipOf('codex').textContent));
 
   // ---- …and then they throw the discussion away ---------------------------
   if (hit('[data-act="del-thread"]', 'the delete control', disc())) {
@@ -6806,6 +6885,8 @@ async function selftestPdfStrike() {
     !!cardFor(mint.id) && !!document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="' + mint.id + '"]'));
   check('…and the focus falls through to it rather than into nothing',
     d.held() === mint.id);
+  check('…the "from a discussion" link going quietly away with it, never breaking',
+    !cardFor(mint.id).querySelector('.fromdisc'));
 
   // (what gets WRITTEN BACK into the file is pinned where the writing happens
   // — pdf-annot.test.mjs reads a real StrikeOut out of a real PDF — because

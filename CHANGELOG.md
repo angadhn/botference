@@ -2,6 +2,32 @@
 
 ## 2026-08-27
 
+- **A strikeout's note now says the whole thing, and you can change it.** When a
+  bot suggests a passage should come out, the note it proposes is the note that
+  goes onto the document — read weeks later by a co-author who has only the
+  struck passage and that one line, because you delete the conversation
+  afterwards. So a note that points back at the chat ("replace with the wording
+  above", "as discussed") is **refused**: no button appears, nothing is marked
+  up, the reply says so in plain words, and the bot is told why on its next turn
+  so it writes the line again properly. Where the conclusion is replacement
+  wording, the note now carries that wording in full — and nothing anywhere
+  truncates it. A note used to be silently cut at 200 characters, mid-word, and
+  then you were asked to paste the rest in by hand.
+
+- **…and a strikeout you have already made can be corrected in one click.** Ask
+  again in the discussion, take the better wording, and the note on the
+  strikeout is rewritten in place — same red line, your name, the date it was
+  made, and the exported PDF picks it up. A suggestion you passed over keeps a
+  *Use this note* button for the same reason, the chip tells you which of the two
+  things your click did, and you can still edit the note by hand like any comment
+  of your own. Before this there was no way to change it at all.
+
+- **A strikeout says where it came from.** While the discussion that produced it
+  still exists, the strikeout's card carries a quiet *from a discussion · view* —
+  the way back, and on the page the only way back, since the red line sits over
+  the highlight you would otherwise have clicked. Delete the discussion and the
+  link simply goes away; the strikeout stands alone, as it always has.
+
 - **The annotated PDF carries only live marks.** A thread you have filed is a
   settled argument, and the copy you send is for somebody else to read — so
   resolved threads are no longer written into it. They are not counted as

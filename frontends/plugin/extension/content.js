@@ -1988,7 +1988,12 @@
         if (!r.ok) return failure(r);
         await loadPage();
         return { ok: true, thread: r.data && r.data.thread,
-                 deduped: !!(r.data && r.data.deduped) };
+                 deduped: !!(r.data && r.data.deduped),
+                 // …and the third thing a confirm can do: rewrite the note on
+                 // the strike this discussion already produced, rather than
+                 // mint one. The drawer says which happened; the reader should
+                 // never have to work it out from the card.
+                 updated: !!(r.data && r.data.updated) };
       },
       // ---- the question vault ------------------------------------------
       // "Make a question of this." Either a thread (the card-head ?, or a

@@ -744,11 +744,24 @@ function onChatEvent(ev) {
         if (strikeable(page, th)) {
           const hit = store.parseStrikeSuggestion(ev.msg.text);
           if (hit) {
+            // …and is the note USABLE? A note is copied onto the document and
+            // read beside the struck passage by somebody who has neither this
+            // thread nor this reply — so one that points back here ("replace
+            // with the wording above") is refused, and so is one long enough
+            // that the only way to file it would be to cut it in half. Either
+            // way the line still comes off the words (it is machinery), the
+            // chip appears with NO BUTTON and says what happened, and the next
+            // turn of this thread tells the bot why (store.strikeRefusedBlock).
+            // Refusing visibly is the point: the failure the reader hit was a
+            // bot announcing a fix that the companion had quietly dropped.
+            const { fault, phrase } = store.strikeNoteFault(hit.why);
             ev.msg = {
               ...ev.msg,
               text: String(ev.msg.text).split(/\r?\n/)
                 .filter(l => l !== hit.line).join('\n').trimEnd(),
-              strike: { why: hit.why },
+              strike: fault
+                ? { why: hit.why.slice(0, 400), rejected: fault, ...(phrase ? { phrase } : {}) }
+                : { why: hit.why },
             };
           }
         }
@@ -1050,6 +1063,27 @@ const strikeable = (page, thread) => !!thread
   && store.markOf(thread) !== 'strike'
   && !thread.resolved;
 
+// A MINTED STRIKE IS INERT, and this is where that is enforced: `markOf(thread)
+// === 'strike'` above means the offer never rides a turn in the card the
+// discussion produced, the lift therefore never fires there, and no chip can
+// ever appear on it. The reader deletes the discussion precisely so that no bot
+// chatter travels to the co-author; letting the machinery run on the one thread
+// that must stay clean would put it straight back. Corrections come from the
+// discussion, through /strike-from, which rewrites the note in place.
+
+// The last suggestion in this thread, if it was refused at the lift and nothing
+// has been suggested since. Only the LAST one: a bot that was refused, wrote a
+// good line afterwards and had it taken does not want to be lectured about the
+// first attempt for the rest of the thread.
+function refusedStrikeNote(thread) {
+  for (let i = ((thread && thread.msgs) || []).length - 1; i >= 0; i--) {
+    const s = thread.msgs[i] && thread.msgs[i].strike;
+    if (!s) continue;
+    return s.rejected ? store.strikeRefusedBlock(s.rejected) : '';
+  }
+  return '';
+}
+
 function summon(page, target, text, extras = {}, me = { owner: true }) {
   const { forceAll, ...rest } = extras;
   extras = rest;
@@ -1103,7 +1137,15 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // thread (one already struck has nothing to suggest, and one already filed is
   // an argument that is over). A model that is never shown this block has no
   // way of learning the convention, which is the point.
-  const strikeContext = strikeable(page, thread) ? store.strikeOfferBlock() : '';
+  //
+  // …plus, where the last suggestion in this thread was THROWN AWAY at the lift
+  // (a note that pointed back at the conversation, or one too long to file
+  // without cutting), the sentence saying so. A model that is not told simply
+  // sees its line vanish and tells the reader the deletion was made — which is
+  // exactly what happened on the session this came from.
+  const strikeContext = strikeable(page, thread)
+    ? store.strikeOfferBlock() + refusedStrikeNote(thread)
+    : '';
   // ── and may this thread offer to be remembered? ───────────────────────
   // The bot's own trigger for the question vault. Composed on the same funnel
   // and for the same reason as the two above: the server holds the record, and
@@ -2638,22 +2680,78 @@ export function handler(req, res) {
       if (store.kindOf(page) !== 'pdf') {
         return fail(res, 409, 'a strikethrough is a PDF markup — this page cannot carry one');
       }
-      // Already done. A second click — a double tap, a chip in another tab, or
-      // the reader taking the OTHER bot's suggestion after taking one — must not
-      // put a second red line over one passage. Same passage, same hand, already
-      // struck: that IS this strike, and it is handed straight back rather than
-      // refused, so a client that asks twice gets one answer and no error.
+      // Already struck. A second confirm — a double tap, a chip in another tab,
+      // the reader taking the OTHER bot's suggestion, or (the case this was
+      // rebuilt for) the bot REISSUING its suggestion because the first note
+      // was wrong — must not put a second red line over one passage.
       //
       // The test is the QUOTE, not the thread: two suggestions inside one thread
       // are two opinions about the SAME passage and can only ever produce one
       // strikeout, while a suggestion about a genuinely different passage is a
-      // different anchor and mints its own. (The drawer does not offer the
-      // second click at all — a sibling chip retires to "not chosen" the moment
-      // one is taken — but the door does not rely on the drawer for that.)
-      const already = (page.threads || []).find(t =>
-        store.markOf(t) === 'strike' && t.quote === from.quote
-        && ((t.msgs || [])[0] || {}).author === me.handle);
-      if (already) return ok(res, { thread: already, deduped: true });
+      // different anchor and mints its own.
+      //
+      // WHAT CHANGED (2026-08-27). It used to hand the existing thread straight
+      // back and do nothing, which was right for a double tap and wrong for
+      // everything else: a reader whose first note came out deictic or truncated
+      // had NO WAY to correct it — the bot reissued, the chip was confirmed, and
+      // the door quietly kept the bad note while the bots told the reader it was
+      // fixed. A confirm is the owner's explicit choice of wording, so a DIFFERENT
+      // note now REWRITES the note on the strike that is already there.
+      //
+      // Owner identity and time: untouched and recorded respectively. The card
+      // keeps the hand that signed it and the moment it was created (`msgs[0].ts`
+      // is the annotation's date and the export's), gains `edited` so the drawer
+      // says so, and the thread gains `updated` — a plain ISO stamp, absent on
+      // every strike that has never been renoted, so nothing needs migrating.
+      // The card and the exported /Contents read the new note because both read
+      // `msgs[0].text`, which is the whole of the change.
+      //
+      // TWO WAYS TO FIND IT, and the LINK comes first. `from_thread` is what
+      // this discussion actually minted; the quote is only a guess that it is
+      // the same passage, and a guess that goes wrong the moment the anchor
+      // drifts — the passage gets rewritten, the thread re-anchors onto the new
+      // wording, and a correction from the very discussion that produced the
+      // mark would suddenly mint a SECOND red line beside the first. So a
+      // confirm coming out of a discussion updates the strike that discussion
+      // minted, whatever either of them now quotes; the quote match stays as
+      // the fallback for a suggestion that arose somewhere else (a second
+      // discussion on the same sentence, another tab, an older record with no
+      // link on it at all).
+      const mine = t => ((t.msgs || [])[0] || {}).author === me.handle;
+      const struck = (page.threads || []).filter(t => store.markOf(t) === 'strike' && mine(t));
+      const already = struck.find(t => t.from_thread && t.from_thread === from.id)
+        || struck.find(t => t.quote === from.quote);
+      // The note, whichever path takes it: NEVER CUT. A note past the cap is
+      // refused at the door in the same breath the lift refuses it, because
+      // half a replacement sentence on a document is worse than none — the
+      // reader who hit this got a strikeout whose note stopped mid-word and was
+      // then asked by the bot to paste the rest in by hand.
+      const note = String(data.note || '').trim();
+      if (note.length > store.STRIKE_NOTE_MAX) {
+        return fail(res, 400,
+          `that note is longer than ${store.STRIKE_NOTE_MAX} characters — it would have to be cut to fit, and a note is never cut`);
+      }
+      if (already) {
+        const head = (already.msgs || [])[0];
+        // nothing to say, or the same thing said twice: this IS that strike,
+        // handed back with no write and no broadcast (the double tap)
+        if (!note || !head || head.text === note) {
+          return ok(res, { thread: already, deduped: true });
+        }
+        head.text = note;
+        head.edited = true;
+        already.updated = new Date().toISOString();
+        // …and which reply won, now: the drawer reads `from_msg` to tell the
+        // chosen chip from the ones that were not chosen, and the chosen one
+        // has just changed. `from_thread` follows it, so the "view" link and
+        // the delete fall-through point at the discussion that is actually
+        // standing behind the note.
+        if (data.from_msg != null && data.from_msg !== '') already.from_msg = String(data.from_msg);
+        already.from_thread = from.id;
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+        return ok(res, { thread: already, updated: true });
+      }
       const thread = store.addThread(page, {
         quote: from.quote, prefix: from.prefix, suffix: from.suffix,
         page_number: from.page, mark: 'strike',
@@ -2662,8 +2760,10 @@ export function handler(req, res) {
         // exactly as one drawn by hand with an empty composer does (the popup
         // reads "(no note)" and the card reads "the passage was struck through,
         // with no note"). The reader may edit or delete it afterwards like any
-        // comment of their own, because it IS one.
-        text: String(data.note || '').trim().slice(0, 400),
+        // comment of their own, because it IS one — POST /edit takes it, being
+        // the owner's own message, and the card and the export both read
+        // `msgs[0].text`, so a hand-edit lands everywhere the confirm does.
+        text: note,
         author: me.handle,
         // it lands immediately after the discussion it came out of, so the
         // reader's eye finds it where they are already looking — and page order

@@ -387,11 +387,34 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 /* …and the suggestion the reader did NOT take. Both bots may propose a deletion
    in one thread; once one is taken the others have been answered, and they
    retire rather than vanish — the reader chose between two proposals and is
-   entitled to go on seeing what the one they turned down said. Muted, no
-   border colour of its own, no buttons: a record, not an offer. */
+/* …and the suggestion the reader did NOT take. Both bots may propose a deletion
+   in one thread; once one is taken the others have been answered, and they
+   retire rather than vanish — the reader chose between two proposals and is
+   entitled to go on seeing what the one they turned down said. Muted and
+   borderless: a record. It keeps ONE control (2026-08-27) — "Use this note" —
+   because the reader's commonest reason for coming back to a wording they
+   passed over is that the one they took turned out wrong. */
 .filechip.strikechip.passed {
   border-color: var(--line); color: var(--muted); opacity: .7;
 }
+.filechip.strikechip.passed:hover { opacity: 1 }
+/* A suggestion the companion THREW AWAY — a note that pointed back at the
+   conversation, or one too long to file without cutting it in half. It is not
+   an offer and never becomes one, so it carries no border colour and no button
+   at all; it exists so that a proposal the reader watched a bot make cannot
+   silently amount to nothing. */
+.filechip.strikechip.refused {
+  border-style: dashed; border-color: var(--line); color: var(--muted);
+}
+/* The way back from a minted strikeout to the argument that produced it, while
+   that argument still exists. As quiet as anything in the card: one grey line
+   under the quote, the same "view" the chip on the other side offers. */
+.fromdisc {
+  display: flex; align-items: center; gap: 8px;
+  margin: -2px 0 8px; font-size: 11.5px; color: var(--muted);
+}
+.fromdisc .rebtn { padding: 0 4px; font-size: 11.5px }
+.fromdisc .rebtn:not([disabled]):hover { color: var(--strike-line) }
 
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }

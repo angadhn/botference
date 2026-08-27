@@ -1325,8 +1325,11 @@
       //   arrived   threadId -> true for a few seconds after a strike is minted,
       //             which is the whole of the arrival affordance. Never scrolls
       //             anything: arriving content does not steal the view.
+      //   updated   ts -> true where that chip did not MINT the strike but
+      //             rewrote the note on one already there, so the chip can say
+      //             which of the two things the reader's click actually did
       marking: {},
-      strikes: { busy: '', declined: [], made: {}, arrived: {} },
+      strikes: { busy: '', declined: [], made: {}, arrived: {}, updated: {} },
       // ---- the question vault -------------------------------------------
       // "This is interesting — make a question of it." One click; a bot writes
       // the card; it is asked back weeks later in the reading room's /quiz.
@@ -2666,6 +2669,34 @@ ${selPillHtml()}
         + `<span class="wnhead">the passage was rewritten</span>${body}</div>`;
     }
 
+    // WHERE A STRIKEOUT CAME FROM, while the place it came from still exists.
+    //
+    // The discussion's chip already points forward — "Struck through, in your
+    // name · view" — and this is the same link read the other way. It matters
+    // because the minted card is deliberately EMPTY of the argument that
+    // produced it (that is the whole feature: the co-author gets a red line and
+    // one sentence, not a transcript), and a reader looking at a bare note four
+    // days later has otherwise no way back to the reasoning, or to the thread
+    // where a better note would be written.
+    //
+    // Rendered only while the origin is still on the record. `from_thread` is a
+    // SOFT link by design: the reader's next act is usually to delete the
+    // discussion, and a dangling id must read as "this strikeout stands alone",
+    // never as a broken link and never as an error. A RESOLVED discussion is
+    // still a discussion — it is filed in the archive below, the jump still
+    // finds it, and the link stays exactly as it is.
+    function fromDiscussionHtml(t) {
+      if (!isStruck(t) || !t.from_thread) return '';
+      const threads = (D.page && D.page.threads) || [];
+      const src = threads.find(x => x && x.id === t.from_thread);
+      if (!src) return '';
+      return `<div class="fromdisc">
+        <span>from a discussion${t.updated ? ', its note rewritten since' : ''}</span>
+        <button class="rebtn" type="button" data-act="strike-view"
+          data-target="${esc(src.id)}" title="go to the conversation this was decided in">view</button>
+      </div>`;
+    }
+
     function cardHtml(t) {
       const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
       const author = threadAuthor(t);
@@ -2695,6 +2726,7 @@ ${selPillHtml()}
           ${quoteHtml(t, orph, badge)}
           ${head}
         </div>
+        ${fromDiscussionHtml(t)}
         ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
@@ -6266,6 +6298,22 @@ ${selPillHtml()}
       if (!s || !s.why) return '';
       const ts = String(msg.ts || '');
       const threads = (D.page && D.page.threads) || [];
+      // REFUSED AT THE LIFT, and said out loud. A note that pointed back at
+      // this conversation, or one too long to file without cutting it in half,
+      // never becomes a button — but it must never become SILENCE either. The
+      // reader watched the bot propose something; if the chip simply did not
+      // appear they would have no way to tell a proposal that was dropped from
+      // one that was never made, and the bot's next sentence ("done — the
+      // passage is struck") would be the only account of it they had. So the
+      // chip appears, quiet and buttonless, saying what happened. The bot is
+      // told the same thing on its next turn here (store.strikeRefusedBlock).
+      if (s.rejected) {
+        const why = s.rejected === 'long'
+          ? 'the note was too long to put on the document without cutting it'
+          : `the note refers to this discussion${s.phrase ? ` (“${esc(s.phrase)}”)` : ''}, and the co-author will only see the passage`;
+        return `<div class="filechip strikechip refused">
+          <span class="fcw">Not filed — ${why}. Nothing was marked up.</span></div>`;
+      }
       // WHAT CAME OF THIS THREAD, if anything: the strike it produced, and —
       // the reason `from_msg` exists — which reply's suggestion was the one
       // taken. Read off the RECORD so it survives a reload and another tab,
@@ -6274,17 +6322,32 @@ ${selPillHtml()}
       const mineId = D.strikes.made[ts]
         || (born && String(born.from_msg || '') === ts ? born.id : '');
       if (mineId) {
-        return `<div class="filechip strikechip done">Struck through, in your name.
+        return `<div class="filechip strikechip done">${
+          D.strikes.updated[ts] ? 'Note updated on the strikeout, in your name.'
+            : 'Struck through, in your name.'}
           <button class="rebtn" type="button" data-act="strike-view" data-target="${esc(mineId)}">view</button></div>`;
       }
-      // …and the OTHER suggestions, once one has been taken. They retire rather
-      // than vanish: the reader chose between two proposals and is entitled to
-      // go on seeing what the one they turned down actually said. Quiet, no
-      // buttons — the question has been answered, and answering it twice would
-      // put a second red line over one passage (the door refuses that anyway).
+      // …and the OTHER suggestions, once one has been taken. They no longer
+      // RETIRE. That was right while the only thing a second click could do was
+      // put a second red line over one passage — but the failure this feature
+      // actually hit was the opposite one: the note that was taken came out
+      // wrong (a pointer at the discussion, a sentence cut mid-word), the bot
+      // reissued it properly, and the reader had no way whatever to apply the
+      // better wording. The chip still says it was not the one chosen — the
+      // reader is entitled to see what they turned down — and it now offers the
+      // one thing they may want from it, which is to make it the note instead.
+      // The door does the rest: same passage, same hand, so the note on the
+      // strike that is already there is rewritten and no second line appears.
       if (born) {
         return `<div class="filechip strikechip passed">
-          <span class="fcw">Not chosen — ${esc(s.why)}</span></div>`;
+          <span class="fcw">Not chosen — ${esc(s.why)}</span>
+          <span class="fcacts">
+            <button class="rebtn" type="button" data-act="strike-yes"
+              data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-why="${esc(s.why)}"
+              title="put this wording on the strikeout instead — the mark stays where it is"
+              ${D.strikes.busy ? 'disabled' : ''}>Use this note</button>
+          </span>
+        </div>`;
       }
       return `<div class="filechip strikechip">
         <span class="fcw">This passage should come out — ${esc(s.why)}</span>
@@ -6326,6 +6389,20 @@ ${selPillHtml()}
       }
       const made = r.thread && r.thread.id;
       if (made) {
+        // Which chip is the one that was taken — and, when this confirm
+        // REWROTE the note on a strike that already existed, which chip has
+        // stopped being it. Session memory is only the faster answer (the
+        // record's `from_msg` is the durable one), but a stale entry here would
+        // leave two chips both claiming to be the strikeout.
+        if (r.updated) {
+          for (const k of Object.keys(D.strikes.made)) {
+            if (D.strikes.made[k] === made && k !== ts) {
+              delete D.strikes.made[k];
+              delete D.strikes.updated[k];
+            }
+          }
+          D.strikes.updated[ts] = true;
+        }
         D.strikes.made[ts] = made;
         // the arrival affordance, and the whole of it: the new card says it is
         // new for a few seconds and then stops. The red line is already on the

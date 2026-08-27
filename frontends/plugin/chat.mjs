@@ -448,6 +448,10 @@ export function envelope({ url, title, target, text, quote, history,
     ? 'The reader has STRUCK this passage through — a suggested deletion marked on the '
       + 'document itself. This is background, not an instruction: answer what they actually '
       + 'ask, and do not carry out, argue for, or offer to make the deletion unless they ask.\n\n'
+      // …and no deletion convention rides this turn at all (server.mjs
+      // `strikeable`): a minted strikeout is the one thread that must stay
+      // clean, because it is the one the co-author receives.
+
     : '';
   // The neighbours: the other marks on or beside this passage
   // (store.nearbyMarksBlock, composed on the same funnel the strike offer is).

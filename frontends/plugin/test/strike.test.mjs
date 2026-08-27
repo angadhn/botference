@@ -178,6 +178,74 @@ await test('…and a REASONLESS suggestion is no suggestion at all', () => {
   assert.equal(store.parseStrikeSuggestion('nothing here'), null);
 });
 
+// The note is not always a reason. Where the discussion concluded in a
+// REPLACEMENT, the note is the replacement — and the whole of it, because the
+// person reading it has only the struck passage and this line.
+await test('a REPLACEMENT note survives the parse whole, markdown and all', () => {
+  const long = 'replace with: "The ET-Class model [9] extends their stiff/flexible '
+    + 'formulation to the tumbling case, and the decay predicted by Shan et al. (2024) '
+    + 'is recovered within one per cent over the first hundred orbits (Figure 1); the '
+    + 'discrepancy reported in section 4 is therefore an artefact of the *earlier* '
+    + 'linearisation and not of the model itself."';
+  assert.ok(long.length > 300, 'a realistic replacement is not 200 characters');
+  const hit = store.parseStrikeSuggestion(`Here is the wording.\n\nstrike: ${long}`);
+  assert.equal(hit.why, long, 'byte for byte — nothing here truncates');
+  assert.match(hit.why, /\*earlier\*/, 'and markdown INSIDE the note is left alone');
+  assert.equal(store.strikeNoteFault(hit.why).fault, '', 'it carries its own words, so it stands');
+});
+
+console.log('\nstrike — a note that will be useless on the document');
+
+// A note that points at the discussion is a note that will be meaningless
+// within the minute: the reader's next act is to DELETE the discussion, and the
+// co-author receives the struck passage and this line and nothing else.
+await test('a DEICTIC note is refused', () => {
+  for (const bad of [
+    'replace with the wording above naming Shan [X], ET-Class [9] and Figure 1',
+    'use the replacement I gave above',
+    'as discussed, this should come out',
+    'as I said, section 2 covers it',
+    'see my suggestion above',
+    'my earlier wording is better',
+    'this thread has settled it',
+  ]) {
+    const f = store.strikeNoteFault(bad);
+    assert.equal(f.fault, 'deictic', `should be refused: ${bad}`);
+    assert.ok(f.phrase, 'and the offending words come back, for the chip and the bot');
+  }
+});
+
+await test('…while a note about the DOCUMENT passes, however it points', () => {
+  for (const good of [
+    'the paragraph above already says this',
+    'section 2 already makes the point',
+    'this repeats an earlier result and adds nothing',
+    'the figure below shows the same thing',
+    'replace with: "The debris decays within ten orbits."',
+    // deixis is forgiven where the words themselves are carried: the note is
+    // self-contained however it introduces itself
+    'as discussed, replace with: "The debris decays within ten orbits."',
+  ]) {
+    assert.equal(store.strikeNoteFault(good).fault, '', `should pass: ${good}`);
+  }
+});
+
+await test('…and an ENORMOUS note is refused rather than cut in half', () => {
+  const huge = 'replace with: "' + 'x'.repeat(store.STRIKE_NOTE_MAX + 50) + '"';
+  assert.equal(store.strikeNoteFault(huge).fault, 'long');
+  assert.equal(store.strikeNoteFault('replace with: "' + 'x'.repeat(500) + '"').fault, '',
+    'a real replacement sentence is nowhere near the cap');
+});
+
+await test('…and the offer says both things, in words a model cannot read past', () => {
+  const block = store.strikeOfferBlock();
+  assert.match(block, /STAND ON ITS OWN/);
+  assert.match(block, /IN FULL and in quotes/);
+  assert.match(block, /refused rather than cut/);
+  assert.match(store.strikeRefusedBlock('deictic'), /REFUSED/);
+  assert.match(store.strikeRefusedBlock('long'), /not cut a note in half/);
+});
+
 console.log('\nstrike — the OTHER marks in the same sentence');
 
 // One sentence, three marks: two struck, one still being discussed. This is the
@@ -395,14 +463,14 @@ console.log('\nstrike — the span rule');
     const t = await threadOn(PDF, 'a passage worth arguing about', '@claude what is this for?');
     const env = await waitFor(
       () => inputs(log).find(x => /what is this for\?/.test(x)), 'the envelope');
-    assert.match(env, /strike: <one short reason>/);
+    assert.match(env, /strike: <the note>/);
     return t;
   });
 
   await test('…and a thread turn on an ARTICLE carries none', async () => {
     await POST(base, '/thread', { url: WEB, quote: 'another sentence', msg: { text: '@claude and this?' } });
     const env = await waitFor(() => inputs(log).find(x => /and this\?/.test(x)), 'the envelope');
-    assert.ok(!/strike: <one short reason>/.test(env),
+    assert.ok(!/strike: <the note>/.test(env),
       'there is nothing on a web page to write an /StrikeOut into');
   });
 
@@ -411,7 +479,8 @@ console.log('\nstrike — the span rule');
     await POST(base, '/mark', { url: PDF, thread_id: t.id, mark: 'strike' });
     await POST(base, '/reply', { url: PDF, thread_id: t.id, text: '@claude anything else?' });
     const env = await waitFor(() => inputs(log).find(x => /anything else\?/.test(x)), 'the envelope');
-    assert.ok(!/strike: <one short reason>/.test(env), 'nothing left to suggest');
+    assert.ok(!/strike: <the note>/.test(env),
+      'a MINTED STRIKE IS INERT: no offer rides it, so no chip can ever appear on it');
     assert.match(env, /STRUCK this passage through/, '…and the standing context still rides it');
   });
 
@@ -505,21 +574,193 @@ console.log('\nstrike — the span rule');
     assert.equal(r.json.thread.from_msg, chosen.ts,
       'the record says which REPLY was taken, not merely which thread');
     assert.equal(r.json.thread.msgs[0].author, ME, 'and it is still the reader’s comment');
-    // taking the other one afterwards cannot put a second line over one passage
+    // …and taking the OTHER one afterwards moves the note onto the strike that
+    // is already there rather than putting a second line over one passage
     const again = await POST(base, '/strike-from', {
       url: PDF, thread_id: d.id, note: suggestions[0].strike.why, from_msg: suggestions[0].ts,
     });
-    assert.equal(again.json.deduped, true);
+    assert.equal(again.json.updated, true);
     assert.equal(again.json.thread.id, r.json.thread.id);
+    assert.match(again.json.thread.msgs[0].text, /repeats section 2/, 'the wording they changed to');
+    assert.equal(again.json.thread.from_msg, suggestions[0].ts, 'and which reply won, now');
     assert.equal((await pageOf(PDF)).threads.filter(
       x => x.quote === 'a passage two bots were asked about' && x.mark === 'strike').length, 1);
   });
 
-  await test('a second click does not put a second red line over one passage', async () => {
-    const r = await POST(base, '/strike-from', { url: PDF, thread_id: discussion.id, note: 'again' });
+  console.log('\nstrike — the note the companion will not file');
+
+  await test('A DEICTIC SUGGESTION NEVER BECOMES A BUTTON, and says so', async () => {
+    const d = await threadOn(PDF, 'a passage the bot pointed at', 'what should this say?');
+    await POST(base, '/reply', { url: PDF, thread_id: d.id,
+      text: '@claude [mock:says:Here is the replacement, in full: … .\\n'
+        + 'strike: replace with the wording above naming Shan et al. and Figure 1]' });
+    const reply = await waitFor(async () => {
+      const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
+      return (th.msgs || []).filter(m => m.author === 'claude' && m.strike).pop();
+    }, 'the lift');
+    assert.equal(reply.strike.rejected, 'deictic', 'refused, and the record says why');
+    assert.equal(reply.strike.phrase, 'the wording above', 'and which words did it');
+    assert.ok(!/^strike:/m.test(reply.text), 'the machinery line is still off the words');
+    assert.equal((await pageOf(PDF)).threads.filter(x => x.quote === 'a passage the bot pointed at'
+      && x.mark === 'strike').length, 0, 'and nothing whatever was marked up');
+  });
+
+  await test('…and the bot is TOLD, on its next turn in that thread', async () => {
+    const th = (await pageOf(PDF)).threads.find(x => x.quote === 'a passage the bot pointed at');
+    await POST(base, '/reply', { url: PDF, thread_id: th.id, text: '@claude did that work?' });
+    const env = await waitFor(() => inputs(log).find(x => /did that work\?/.test(x)), 'the envelope');
+    assert.match(env, /YOUR LAST `strike:` LINE WAS REFUSED/);
+    assert.match(env, /pointed back at this discussion/);
+  });
+
+  await test('…and a good line afterwards is lifted as an ordinary offer again', async () => {
+    const th = (await pageOf(PDF)).threads.find(x => x.quote === 'a passage the bot pointed at');
+    await POST(base, '/reply', { url: PDF, thread_id: th.id,
+      text: '@claude [mock:says:Sorry.\\nstrike: replace with: "The debris decays within ten orbits."]' });
+    const reply = await waitFor(async () => {
+      const t2 = (await pageOf(PDF)).threads.find(x => x.id === th.id);
+      return (t2.msgs || []).filter(m => m.author === 'claude' && m.strike && !m.strike.rejected).pop();
+    }, 'the second lift');
+    assert.match(reply.strike.why, /decays within ten orbits/);
+    // and the refusal is no longer riding the turn: only the LAST suggestion counts
+    await POST(base, '/reply', { url: PDF, thread_id: th.id, text: '@claude and now?' });
+    const env = await waitFor(() => inputs(log).find(x => /and now\?/.test(x)), 'the envelope');
+    assert.ok(!/WAS REFUSED/.test(env), 'a bot that fixed it is not lectured about the first try');
+  });
+
+  // The OTHER silent failure on the reported session: the note arrived whole
+  // and the record cut it at 200 characters, mid-word, without telling anybody.
+  await test('A FULL REPLACEMENT SURVIVES END TO END — lift, mint, export', async () => {
+    const FULL = 'replace with: "The ET-Class model of Boschetti and co-workers extends '
+      + 'the stiff/flexible formulation of Shan et al. to the tumbling case, and reproduces the attitude '
+      + 'decay reported there to within one per cent over the first hundred orbits '
+      + '(Figure 1); the discrepancy noted in section 4 is an artefact of the earlier '
+      + 'linearisation rather than of the model."';
+    assert.ok(FULL.length > 340 && FULL.length < 700, `a realistic replacement (${FULL.length})`);
+    const d = await threadOn(PDF, 'a passage needing a whole new sentence', 'rewrite this?');
+    await POST(base, '/reply', { url: PDF, thread_id: d.id,
+      text: `@claude [mock:says:Here it is.\\nstrike: ${FULL}]` });
+    const reply = await waitFor(async () => {
+      const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
+      return (th.msgs || []).filter(m => m.author === 'claude' && m.strike).pop();
+    }, 'the lift');
+    assert.equal(reply.strike.rejected, undefined, 'it carries its own words');
+    assert.equal(reply.strike.why, FULL, 'INTACT at the lift');
+    const r = await POST(base, '/strike-from', {
+      url: PDF, thread_id: d.id, note: reply.strike.why, from_msg: reply.ts,
+    });
+    assert.equal(r.json.thread.msgs[0].text, FULL, 'INTACT on the mint');
+    const still = (await pageOf(PDF)).threads.find(x => x.id === r.json.thread.id);
+    assert.equal(still.msgs[0].text, FULL, 'INTACT on the record');
+    const contents = Ann.threadContents(still, { head: `“${still.quote}”` });
+    assert.ok(contents.includes(FULL), 'and INTACT in what the co-author receives');
+    assert.ok(!/stiff\/flexibl["\s]*$/.test(contents), 'nothing ends mid-word');
+  });
+
+  await test('…and a note past the cap is refused at the door, never trimmed', async () => {
+    const d = await threadOn(PDF, 'a passage with an essay attached', 'hm');
+    const huge = 'replace with: "' + 'x'.repeat(store.STRIKE_NOTE_MAX + 100) + '"';
+    const r = await POST(base, '/strike-from', { url: PDF, thread_id: d.id, note: huge });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /never cut/);
+    assert.equal((await pageOf(PDF)).threads.filter(
+      x => x.quote === 'a passage with an essay attached' && x.mark === 'strike').length, 0);
+  });
+
+  console.log('\nstrike — a note that came out wrong, and the reader fixing it');
+
+  // Its own discussion and its own strike, deliberately: this section rewrites
+  // a note over and over, and the mint above is the one the export test reads.
+  const FIXQ = 'a passage whose note came out wrong';
+  let fixDisc = null, fixMint = null;
+  await test('a second click with the SAME note is a double tap: nothing moves', async () => {
+    fixDisc = await threadOn(PDF, FIXQ, 'is this pulling its weight?');
+    const first = await POST(base, '/strike-from', {
+      url: PDF, thread_id: fixDisc.id, note: 'section 2 already makes the point',
+    });
+    fixMint = first.json.thread;
+    const r = await POST(base, '/strike-from', {
+      url: PDF, thread_id: fixDisc.id, note: 'section 2 already makes the point',
+    });
     assert.equal(r.status, 200);
     assert.equal(r.json.deduped, true);
-    assert.equal(r.json.thread.id, minted.id);
+    assert.equal(r.json.thread.id, fixMint.id);
+    assert.equal('updated' in r.json.thread, false, 'an idempotent click is not an edit');
+  });
+
+  await test('…and a click with no note at all leaves the one that is there', async () => {
+    const r = await POST(base, '/strike-from', { url: PDF, thread_id: fixDisc.id, note: '' });
+    assert.equal(r.json.deduped, true);
+    assert.equal(r.json.thread.msgs[0].text, 'section 2 already makes the point');
+  });
+
+  // THE BUG THIS CLOSES. The reader confirmed a chip whose note turned out to be
+  // useless on the document; the bot reissued the suggestion properly; and the
+  // door refused to do anything with it, so the bad note was stuck on the record
+  // for good while the bots reported it fixed.
+  await test('A BETTER NOTE, CONFIRMED, REWRITES THE ONE ON THE STRIKE', async () => {
+    const better = 'replace with: "The tumbling debris decays within ten orbits (Shan et al. 2024)."';
+    const created = fixMint.msgs[0].ts;
+    const r = await POST(base, '/strike-from', {
+      url: PDF, thread_id: fixDisc.id, note: better, from_msg: '2026-08-27T09:00:00.000Z',
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.updated, true, 'the confirm is the owner choosing better wording');
+    assert.equal(r.json.thread.id, fixMint.id, 'the same red line, not a second one');
+    assert.equal(r.json.thread.msgs[0].text, better);
+    assert.equal(r.json.thread.msgs[0].author, ME, 'still signed by the reader');
+    assert.equal(r.json.thread.msgs[0].ts, created, 'and still dated when it was made');
+    assert.equal(r.json.thread.msgs[0].edited, true, 'the card says so');
+    assert.ok(r.json.thread.updated >= created, 'the moment it was rewritten is on the record');
+    assert.equal(r.json.thread.from_msg, '2026-08-27T09:00:00.000Z', 'and which reply won');
+    const page = await pageOf(PDF);
+    assert.equal(page.threads.filter(x => x.quote === FIXQ && x.mark === 'strike').length, 1);
+    // …and what the co-author receives is the CORRECTED note
+    const still = page.threads.find(x => x.id === fixMint.id);
+    const contents = Ann.threadContents(still, { head: `“${still.quote}”` });
+    assert.match(contents, /Shan et al\. 2024/);
+    assert.ok(!/section 2 already makes the point/.test(contents), 'and not the note it replaced');
+  });
+
+  await test('…and the OWNER may rewrite it by hand, through the ordinary door', async () => {
+    // the minted comment is the reader's own message, so POST /edit takes it —
+    // no second editing path, and the export follows because it reads msgs[0]
+    const hand = 'replace with: "The tumbling debris decays within ten orbits (Shan 2024, Fig. 1)."';
+    const still = (await pageOf(PDF)).threads.find(x => x.id === fixMint.id);
+    const r = await POST(base, '/edit', {
+      url: PDF, thread_id: fixMint.id, ts: still.msgs[0].ts, text: hand,
+    });
+    assert.equal(r.status, 200);
+    const after = (await pageOf(PDF)).threads.find(x => x.id === fixMint.id);
+    assert.equal(after.msgs[0].text, hand);
+    assert.match(Ann.threadContents(after, { head: '“x”' }), /Fig\. 1/);
+  });
+
+  await test('THE LINK, not the quote, is what a correction follows home', async () => {
+    // the passage is rewritten under the discussion and the two anchors drift
+    // apart: quote-equality alone would mint a SECOND red line, which is the
+    // failure this ordering exists to prevent
+    const d = await threadOn(PDF, 'a passage that will drift', 'thoughts?');
+    const first = await POST(base, '/strike-from', {
+      url: PDF, thread_id: d.id, note: 'it repeats the abstract',
+    });
+    const id = first.json.thread.id;
+    await POST(base, '/reply', { url: PDF, thread_id: d.id,
+      text: '@claude [mock:says:Done — this passage now reads: "a passage that HAS drifted"]' });
+    await waitFor(async () => {
+      const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
+      return (th.msgs || []).some(m => m.author === 'claude' && /HAS drifted/.test(m.text));
+    }, 'the bot’s new wording');
+    const re = await POST(base, '/reanchor', { url: PDF, thread_id: d.id,
+      quote: 'a passage that HAS drifted' });
+    assert.equal(re.json.changed, true, 'the discussion now quotes the new wording');
+    const r = await POST(base, '/strike-from', {
+      url: PDF, thread_id: d.id, note: 'replace with: "the abstract already says this"',
+    });
+    assert.equal(r.json.updated, true);
+    assert.equal(r.json.thread.id, id, 'the strike this discussion minted, whatever it quotes now');
+    assert.equal((await pageOf(PDF)).threads.filter(x => x.mark === 'strike'
+      && x.from_thread === d.id).length, 1, 'and still exactly one line on the passage');
   });
 
   await test('no bot is summoned by a conversion — the decision is already made', async () => {
