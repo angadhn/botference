@@ -6022,6 +6022,218 @@ on the card, the chip saying which thing it did, the other chip standing down);
 and the `from a discussion · view` link present while the discussion lives and
 gone — not broken — after it is deleted.
 
+
+## Amendment (2026-08-27, shipped): Memorize — the vault gets a face, an address, and a way home
+
+The question vault shipped working and plain: a `/quiz` page in the reading
+room, one card at a time, correct answers in green and everything else in a
+column. Three things were missing, and they are the same thing said three ways
+— **the vault is a product, and it was living as a view.**
+
+### 1. THE LOOK
+
+The reading room is a LIST and reads like one: dense, sans, functional. The
+quiz is a single question met on a phone at the end of a day, and it is the
+only page here whose whole job is to be READ. So it gets a register of its own,
+built entirely out of the plugin's existing palette (`views.mjs` `QUIZ_STYLE`):
+
+| token | light | dark | what it is |
+|---|---|---|---|
+| `--q-ground` | `#f8f4ea` | `#191510` | the page, one shade warmer than the room's ivory |
+| `--q-card` | `#fffdf7` | `#221d16` | every card |
+| `--q-line` / `--q-line-soft` | `#e6dcc9` / 22% warm grey | 20% clay / 14% | borders, and the hairline down a margin card |
+| `--q-right` | `#2f7d55` | `#86c9a0` | a calm confirm — never a fanfare |
+| `--q-warm` | `#a8552e` | `#e79b70` | **wrong, warmly**: deliberately NOT `--strike-line` |
+| `--accent` | the plugin's own clay `#d97757` | | one accent, and only one |
+| `--q-serif` | Georgia / Iowan Old Style / Palatino / Times | | the question, and nothing else |
+
+**No web font is fetched.** This page has to work on a train with a bad
+connection and JavaScript off; Georgia is on every device that will ever open
+it. The sans stays the reading room's own, so the machinery never competes with
+the sentence.
+
+**Wrong is warm on purpose.** A red line in this product means "this passage
+should come out". A verdict is not a correction, and being wrong in your own
+memory is the ordinary business of remembering.
+
+Both schemes are DEFINED, not derived: dark is a designed palette, not an
+inversion. The page carries a `<title>` of its own (`Memorizer — botference`),
+the braid favicon, and a small identity mark (`memorize · botference`) that
+links home.
+
+### 2. MARGIN NOTES, BECAUSE THIS PRODUCT IS BUILT ON THEM
+
+On a wide screen (`min-width: 62rem`) the page is two columns:
+
+```
+grid-template-areas:  "card  margin"
+                      "acts  margin"
+```
+
+The question stays exactly where it is and everything the answer brought with
+it — the why, the passage it was made from, who wrote the card — sits BESIDE it
+as margin notes sit beside a manuscript. **The margin column is reserved in
+every state**, so revealing an answer never moves the question the reader is
+still looking at.
+
+On a phone there is no margin, so the same cards STACK under the options, met
+in reading order (question → your answer → why → where it came from) with the
+action bar `position: sticky; bottom: 0`. `next ›` has to be under the thumb
+while the eye is still in the explanation; that is the whole argument for
+pinning it, and it is the same argument the drawer's own action row makes.
+
+### 3. `memorizer.botference.com` — the vault at an address of its own
+
+One companion, two doors, one tunnel. `lib/plugin.sh` routes a third hostname
+at the same local service (exactly as it already routes the legacy
+`plugin.botference.com`), and `server.mjs` is host-aware:
+
+| | |
+|---|---|
+| `memorizer.botference.com/` | **is the quiz** (GET/HEAD rewritten to `/quiz` before routing, after the gate) |
+| that host, `MEMORY_PATHS` | `/quiz`, `/quiz-answer`, `/quiz-flag`, `/quiz-delete`, `/questions`, `/question`, `/auth`, `/signout`, `/whoami`, `/health` |
+| that host, anything else | `302 → /` for GET/HEAD, a clean `404` for anything else |
+| `discuss.botference.com` | unchanged in every respect |
+| override | `PLUGIN_MEMORY_HOSTNAME` (comma-separated), `PLUGIN_READING_HOSTNAME` |
+
+**Nothing about auth changes, and that is the point.** `hosted.mjs` has never
+looked at hostnames — `isLocalDirect` asks only whether the request came from
+localhost — and the review hub's device cookie is scoped to the PARENT domain,
+so a phone already approved for `review.botference.com` is the owner here with
+nothing typed. A `plugin_auth` session cookie is host-only, so signing in with
+the password on the new host is its own sign-in, which is the same behaviour
+the legacy door has had since the rename.
+
+Because the reading room is a DIFFERENT address from there, a card's source
+links have to be absolute on that host: `readingRoomOrigin(req)` swaps the
+leading label (`memorizer.` → `discuss.`) and every link in the view takes a
+`home` prefix that is empty everywhere else.
+
+### 4. Both directions of one link
+
+Filing a question paints NOTHING on the document — deliberately: a question is
+a note in the reader's own memory, not a property of the file. That is right,
+and it left a thread with no way to say what it had produced, and a card with
+no cheap way back. Both are now drawn, in the idiom the strikeout's `from a
+discussion · view` established:
+
+- **On a card (every state, not only a wrong answer):** one muted line,
+  `from a discussion · trace ↗` / `from a page you read · trace ↗`, opening in
+  a new window (`target="_blank" rel="noopener noreferrer"` — scriptless).
+  `server.mjs traceOf()` resolves it against the LIVE record at render time and
+  has exactly three outcomes: the discussion if that thread still exists, the
+  page if only the page does, and **nothing at all** if the page is gone. A
+  card's `thread_id` is a soft link by design, like a strikeout's `from_thread`.
+  The wrong-answer state keeps the full source block as well — quote, page
+  number, every link — and its "the conversation" link is resolved by the same
+  `trace`, so a card can never outlive its discussion into a dead link.
+- **On a thread:** `filed as a memory · view` (`filed as 3 memories` for
+  several), owner-only, read off the vault rather than the thread so that a
+  card discarded in the quiz stops the line appearing. `GET /questions?page=<url>`
+  answers it in the request the drawer was already making, as
+  `threads: {thread_id: n}` — a failed row is not a memory; a pending one is
+  about to be and counts.
+
+### 5. The Memorize tab — the near view
+
+`memorizer.botference.com` is the everything-bank, for revising CONCEPTS away
+from the Mac. The drawer gets the other half: **revise the page you are still
+standing on, while the argument that produced the questions is open beside it.**
+
+- A third tab, **Memorize**, owner-only, with the due count for the page.
+- Scope chips: `this page`, and the council projects that page is filed in.
+  **Never "everything"** — that is the far view, at its own address, and a
+  drawer offering it too would be two homes for one archive.
+- `GET /memory?url=<page>[&scope=page|project:<id>]` → `{scope, scopes[], counts, cards[]}`.
+  Owner-only. It adds the SCOPE and nothing else: answering goes through
+  `POST /quiz-answer`, the very endpoint the scriptless page posts to, so there
+  is **one SM-2 record on disk written by one place**. The sitting's ORDER is
+  drawer-local (a wrong card returns `MEM_REQUEUE = 3` places later), memory-only
+  for the same reason the server's sitting is.
+- Tapping a thread's `filed as a memory · view` opens the tab on that thread's
+  own question — reordering what is already due, never surfacing a card the
+  schedule is resting.
+
+**The wrong-answer moment, in a 320px column.** There is no margin here, and
+the naive translation (keep four option boxes, squeeze the explanation under
+them) spends the whole column on what the reader has already finished with. So
+the card becomes a **correction slip**:
+
+1. what they pressed shrinks to one struck line — `you said · B · …`;
+2. the distractors GO. They did their work at the moment of the tap; after it
+   they are three plausible wrong sentences between the reader and the answer;
+3. the right answer is promoted to a labelled slab in the confirm green — the
+   only option still at full size, so there is nothing to misread;
+4. the why then gets the full width, with the accent hairline the margin cards
+   wear on the quiz page — the same object, stacked rather than set beside;
+5. `next ›` sticks to the foot of the pane.
+
+### 6. Two ways a card leaves, and they are different acts
+
+| | route | what it means |
+|---|---|---|
+| **seems wrong** | `POST /quiz-flag` | PARKED: out of rotation, everything kept, waiting to be rewritten (phase 2 hands it back to the bots) |
+| **discard** | `POST /quiz-delete` | DROPPED: this was not worth remembering after all — **the row is removed from the vault, with no tombstone and no undo** |
+
+Both are offered on the quiz page and in the Memorize tab, quiet and well under
+the answer, so nothing competes with reading the explanation. Neither is silent:
+the quiz redirects to `?gone=discarded|flagged` and says which happened in one
+line; the tab says the same thing in its own beat for four seconds.
+
+### Files
+
+```
+views.mjs                 QUIZ_STYLE rewritten; quizView takes `trace`, `home`
+                          and `gone`; sourceHtml resolves its thread link;
+                          traceHtml; the identity mark and the page's <title>
+server.mjs                MEMORY_HOSTS / MEMORY_PATHS / readingRoomOrigin /
+                          isMemoryHost; the host rewrite in handler();
+                          traceOf(); GET /memory; /questions gains `page`,
+                          `threads` and `page_counts`; quizBack carries `gone`
+questions.mjs             threadCounts()
+extension/drawer.js       the Memorize tab (state, loadMemory, answerMemory,
+                          retireMemory, the correction slip); memoryLineHtml on
+                          a card; refreshDue carries the thread map
+extension/content.js      onMemoryCards / onQuizAnswer / onQuizFlag /
+                          onQuizDiscard; onQuestionCounts asks about this page
+extension/drawer.css      .pane[data-pane="memory"] and everything under it;
+                          .fromdisc.frommem
+lib/plugin.sh             PLUGIN_TUNNEL_MEMORY_HOSTNAME — a third ingress rule
+                          at the same companion
+```
+
+**Testing.** `questions.test.mjs` (51 → 66) gains three parts: the two-way link
+(a page naming which threads minted a memory; the door's count staying global
+while it does; a failed row not counting and a discarded one stopping; the
+trace across all three existence states, ending in NO affordance at all);
+the near view (page scope, project scopes, a 404 for an unknown page, and an
+answer from the tab writing the one SM-2 record — the lapse, the ease penalty,
+the right answer leaving the ease alone, the card leaving the due list);
+and the host (`/` is the quiz there, `/quiz` still is, the reading room 302s
+home, a write to an unserved path 404s, the source links go absolute, an answer
+and a flag round-trip and land back on that host, and `discuss` is untouched).
+`companion.test.mjs` (205 → 206) adds the new host to the hosted server: the
+gate in front of `/`, an approved device being the owner through it, a
+signed-in GUEST still refused, and `/pages` going home. `launcher.test.mjs`
+pins the third DNS route and the third ingress rule.
+
+Harness `?question=memorize&selftest=1` (22): the thread's line and its count,
+opening the tab on that thread's card, the two scopes and never a third, the
+answer going to `/quiz-answer`, the correction slip (the struck line, the
+promoted answer, the distractors gone, the why at width, the trace, `next`),
+and discard removing the card from the BANK with a beat that says so.
+
+#### Known limits (deliberate)
+
+- **Discard has no undo.** The row is gone. "Seems wrong" is the reversible one
+  and is the right button for "this card is bad"; discard means "I do not want
+  to be asked this again", which is a statement about the reader's own bank.
+- **The tab's sitting is drawer-local.** Closing the drawer costs the order of
+  the sitting, never the schedule — the same trade the server's own sitting
+  makes, for the same reason.
+- **The tab never shows the whole bank.** By design. If the reader wants
+  everything, the answer is the address, not a chip.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

@@ -459,6 +459,10 @@ const FILE_ROSTER = [
 // which passage becomes a question.
 const QUESTION = Q.get('question') || '';
 const QUESTION_FAILS = QUESTION === 'fail';
+// ?question=memorize — the drawer's own Memorize tab: cards already in the
+// vault for THIS page, one of them due, so the tab can be seen answering
+// rather than only listing. The vault is seeded below.
+const QUESTION_TAB = QUESTION === 'memorize';
 let fileFiled = FILEIN ? [{ root: WS_ROOT, id: 'adriana-paper', at: '2026-08-20T09:00:00Z' }] : [];
 const fileCalls = [];
 
@@ -1164,7 +1168,8 @@ let WAIT_REASON = null;
 // what the vault was asked for and what it holds — observable, because the
 // point of the pending row is that a click's effect is visible before the bot
 // has written anything
-window.__bfpQuestions = () => ({ posts: questionPosts, cards: questionVault });
+window.__bfpQuestions = () => ({ posts: questionPosts, cards: questionVault,
+                                 answers: quizAnswers, gone: quizGone });
 window.__bfpQueue = {
   hold(on) { HOLD_QUEUE = !!on; },
   reason(r) { WAIT_REASON = r || null; },
@@ -1319,6 +1324,40 @@ const strikeFromPosts = [];
 // must be visible rather than silent.
 const questionPosts = [];
 const questionVault = [];
+// ?question=memorize seeds the bank: two live cards off this page, one of them
+// carrying the thread it came out of (so the card in the margin says "filed as
+// a memory" and the tab can be opened straight onto it).
+if (QUESTION_TAB) {
+  questionVault.push({
+    id: 'q-mem-1', state: 'live', kind: 'mcq', difficulty: 2, model: 'claude',
+    question: 'What does the law of large numbers actually promise about the sample mean?',
+    options: ['It converges to the population mean as n grows without bound',
+              'It equals the population mean for any sufficiently large n',
+              'The sample variance falls to zero'],
+    answer: 0,
+    why: 'It is a statement about the limit, not about any particular sample: for any finite n '
+       + 'the sample mean can still be far from the population mean, and under fat tails it usually is.',
+    source: { url: PAGE_URL, page_key: 'k', title: 'Fat tails', site: 'example.com',
+              quote: 'The sample mean of a fat-tailed variable converges very slowly.',
+              thread_id: 't-1754500000-a1b2', page: 12, projects: ['applied-probability'], tags: ['stats'] },
+    sched: { due: new Date(Date.now() - 864e5).toISOString(), interval: 6, ease: 2.5,
+             reps: 2, lapses: 1, last: null, last_grade: 4, seen: 2 },
+  }, {
+    id: 'q-mem-2', state: 'live', kind: 'mcq', difficulty: 2, model: 'codex',
+    question: 'Why is a single observation able to dominate the average here?',
+    options: ['Because the tail carries most of the mass', 'Because n is small'],
+    answer: 0, why: 'Under a fat tail the largest observation can outweigh every other put together.',
+    source: { url: PAGE_URL, page_key: 'k', title: 'Fat tails', site: 'example.com',
+              quote: 'one observation out of ten thousand can carry more weight',
+              thread_id: 't-1754500000-a1b2',
+              page: 12, projects: ['applied-probability'], tags: ['stats'] },
+    sched: { due: new Date(Date.now() + 5 * 864e5).toISOString(), interval: 6, ease: 2.5,
+             reps: 3, lapses: 0, last: null, last_grade: 4, seen: 3 },
+  });
+}
+// what the fake companion did with a card the reader took out of the rotation
+const quizAnswers = [];
+const quizGone = [];
 // every /reanchor {thread_id, quote} — the durable half of a thread whose
 // passage a bot rewrote and the page then found again
 const reanchorPosts = [];
@@ -2587,13 +2626,54 @@ function companion(method, path, body) {
     log('question queued: ' + card.id);
     return { ok: true, status: 200, data: { ok: true, card, queued: true } };
   }
+  const isDue = c => c.state === 'live'
+    && Date.parse((c.sched && c.sched.due) || 0) <= Date.now();
+  const vaultCounts = cards => ({
+    total: cards.length, live: cards.filter(c => c.state === 'live').length,
+    due: cards.filter(isDue).length,
+    pending: cards.filter(c => c.state === 'pending').length,
+    failed: cards.filter(c => c.state === 'failed').length,
+    flagged: cards.filter(c => c.state === 'flagged').length,
+  });
   if (method === 'GET' && route === '/questions') {
-    const due = questionVault.filter(c => c.state === 'live').length;
+    // the counts the door reads, and — when a page was named — which of its
+    // threads have minted a memory, which is what the card's own line says
+    const threads = {};
+    for (const c of questionVault) {
+      const t = c.source && c.source.thread_id;
+      if (t && c.state !== 'failed') threads[t] = (threads[t] || 0) + 1;
+    }
     return { ok: true, status: 200,
-             data: { ok: true, counts: { total: questionVault.length, live: due, due,
-                                         pending: questionVault.filter(c => c.state === 'pending').length,
-                                         failed: questionVault.filter(c => c.state === 'failed').length,
-                                         flagged: 0 } } };
+             data: { ok: true, counts: vaultCounts(questionVault), threads,
+                     page_counts: vaultCounts(questionVault) } };
+  }
+  // the Memorize tab's own view: what is due, where the reader is standing
+  if (method === 'GET' && route === '/memory') {
+    const counts = vaultCounts(questionVault);
+    return { ok: true, status: 200,
+             data: { ok: true, scope: 'page',
+                     scopes: [{ id: 'page', label: 'this page', ...counts },
+                              { id: 'project:applied-probability', label: 'applied-probability', ...counts }],
+                     counts, cards: questionVault.filter(isDue) } };
+  }
+  // answering, through the SAME endpoint the scriptless quiz posts to
+  if (method === 'POST' && route === '/quiz-answer') {
+    const card = questionVault.find(c => c.id === body.id);
+    if (!card) return { ok: false, status: 404, error: 'unknown card' };
+    const correct = Number(body.choice) === card.answer;
+    quizAnswers.push({ id: card.id, choice: Number(body.choice), correct });
+    // one schedule, written here exactly as the companion writes it
+    card.sched = { ...card.sched, due: new Date(Date.now() + (correct ? 6 * 864e5 : 0)).toISOString(),
+                   lapses: (card.sched.lapses || 0) + (correct ? 0 : 1) };
+    return { ok: true, status: 200, data: { ok: true, card, correct } };
+  }
+  if (method === 'POST' && (route === '/quiz-flag' || route === '/quiz-delete')) {
+    const at = questionVault.findIndex(c => c.id === body.id);
+    if (at < 0) return { ok: false, status: 404, error: 'unknown card' };
+    quizGone.push({ id: body.id, how: route === '/quiz-delete' ? 'discard' : 'flag' });
+    if (route === '/quiz-delete') questionVault.splice(at, 1);
+    else questionVault[at].state = 'flagged';
+    return { ok: true, status: 200, data: { ok: true } };
   }
   // …and the agents' paragraph landing over the top of the placeholder, later,
   // as a `page` event — never as a message in the thread
@@ -7500,6 +7580,88 @@ async function selftestCommenters() {
   console.log(out.join('\n'));
 }
 
+// ── the Memorize tab ─────────────────────────────────────────────────────
+// The vault, revised where the reading is. Everything here is about ONE
+// SCHEDULE: the tab answers through the same /quiz-answer the scriptless page
+// posts to, and a card the reader drops leaves the bank rather than only this
+// sitting.
+async function selftestMemorize() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const pane = () => S.querySelector('.pane[data-pane="memory"]');
+  try {
+    // ---- the thread says what it left behind ----
+    d.open('comments');
+    const line = await until(() => S.querySelector('.card .frommem'), 4000);
+    check('a thread that minted questions says so, on the card', !!line);
+    check('…and counts them, in the drawer\'s quietest register',
+      !!line && /filed as 2 memories/.test(line.textContent));
+    check('…with one word to press, like the strikeout\'s own back-link',
+      !!line && !!line.querySelector('.rebtn'));
+
+    // ---- and it is the way into the tab ----
+    hit(line.querySelector('.rebtn'), 'the memory line\'s view');
+    const p = await until(() => (pane() && !pane().hidden ? pane() : null), 3000);
+    check('pressing it opens Memorize', !!p);
+    const q = await until(() => p.querySelector('.memq'), 3000);
+    check('…on a card that is DUE, not on a list of everything', !!q);
+    check('…and the one the thread minted, not wherever the schedule pointed',
+      !!q && /law of large numbers/.test(q.textContent));
+    check('the scopes are this page and its project, and never "everything" — '
+      + 'that is the far view, at its own address',
+      p.querySelectorAll('.memchip').length === 2);
+    const opts = p.querySelectorAll('.memopt');
+    check('every option is one tap, full width', opts.length === 3);
+    check('…and nothing here asks the reader to grade themselves',
+      !p.querySelector('select') && !p.querySelector('input[type="range"]'));
+
+    // ---- answering it, through the companion's own endpoint ----
+    hit(opts[1], 'a wrong option');
+    await until(() => p.querySelector('.memverdict'), 3000);
+    const ans = window.__bfpQuestions().answers[0];
+    check('the answer goes to /quiz-answer — one SM-2 record, not a second one',
+      !!ans && ans.id === 'q-mem-1' && ans.correct === false);
+    check('the verdict is warm, not the strikeout\'s red',
+      !!p.querySelector('.memverdict.wrong'));
+    check('what was pressed shrinks to one struck line',
+      !!p.querySelector('.memsaid s'));
+    check('…and the right answer is promoted, alone, unmistakable',
+      !!p.querySelector('.memanswer')
+      && /converges to the population mean/.test(p.querySelector('.memanswer').textContent));
+    check('the distractors are gone — the column is for the explanation now',
+      p.querySelectorAll('.memopt').length === 0);
+    check('the why gets the width, in the margin-note idiom',
+      !!p.querySelector('.memnote.why') && /statement about the limit/.test(p.querySelector('.memnote.why').textContent));
+    check('the passage it was made from is there too',
+      !!p.querySelector('.memnote.src'));
+    check('and the way back to the discussion it came out of',
+      !!p.querySelector('.frommem [data-act="strike-view"]'));
+    check('next is the obvious act', !!p.querySelector('.memnext'));
+    check('a wrong card comes back before the reader stands up',
+      d.questionState && true);
+
+    // ---- the two ways a card leaves ----
+    hit(p.querySelector('[data-act="mem-drop"]'), 'discard');
+    await until(() => window.__bfpQuestions().gone.length, 3000);
+    const gone = window.__bfpQuestions().gone[0];
+    check('discard drops the card from the VAULT, not only from this sitting',
+      !!gone && gone.how === 'discard'
+      && !window.__bfpQuestions().cards.some(c => c.id === 'q-mem-1'));
+    const beat = await until(() => p.querySelector('.membeat'), 3000);
+    check('…and says which of the two things it did',
+      !!beat && /discarded/.test(beat.textContent));
+    check('a discarded card is not the next question either',
+      !/law of large numbers/.test((p.querySelector('.memq') || {}).textContent || ''));
+  } catch (e) {
+    out.push('✗ threw: ' + (e && e.message));
+  }
+  window.__bfpSelftest = { done: true, out };
+  progress(out, 'done');
+  console.log(out.join('\n'));
+}
+
 // ── the question vault ───────────────────────────────────────────────────
 // One click makes a question. That sentence is the whole feature and every
 // assertion here is about protecting it: the reader chooses the passage and
@@ -8953,7 +9115,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : SENDFOCUS ? selftestSendFocus
         // the more specific flag first, as always: ?question=fail is a
         // DIFFERENT fixture from ?question=1 and gets its own pose
-        : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
+        : QUESTION_TAB ? selftestMemorize
+          : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration
@@ -8969,6 +9132,14 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         const b = d.shadow.querySelector('.pane[data-pane="chat"] .more-head');
         if (b) b.click(); else log('more: no disclosure to open');
       }, 300);
+    }
+    // ?question=memorize — the Memorize tab, opened on a due card. The tab is
+    // drawer state, so the only road to it from out here is its own control.
+    if (QUESTION_TAB) {
+      setTimeout(() => {
+        const b = d.shadow.querySelector('.tab[data-tab="memory"]');
+        if (b) b.click(); else log('memorize: no tab (owner not set?)');
+      }, 400);
     }
     // ?filein=1 — the "File this page in…" picker, open. The state is the
     // drawer's own, so the only way to it from out here is the button, exactly

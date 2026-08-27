@@ -2,6 +2,54 @@
 
 ## 2026-08-27
 
+- **Memorize: the question vault has a face, an address, and a way home.** The
+  quiz you review your filed questions in is now its own product at
+  **`memorizer.botference.com`** — on that address `/` *is* the quiz. Same
+  companion, same tunnel, same sign-in (a phone you already approved for the
+  review hub is the owner there with nothing typed), still owner-only and still
+  scriptless. The reading room stays at `discuss.botference.com`; anything else
+  on the vault's address goes home rather than serving the archive twice.
+  `--install-tunnel` routes the new hostname alongside the other two.
+
+- **…and it looks like something now.** Warm ivory ground, the question set in a
+  serif with room around it, softly rounded cards, one accent (the plugin's own
+  clay), and a dark scheme that is designed rather than inverted. On a wide
+  screen the explanation, the passage the card was made from and who wrote it
+  sit in a MARGIN beside the question — margin notes beside a manuscript, which
+  is the thing this whole product is — and the question does not move when you
+  answer. On a phone they stack in reading order under your answer, with `next`
+  pinned to the bottom of the screen so it is under your thumb while you are
+  still reading the explanation. Right is a calm green; wrong is warm, never the
+  strikeout's red — being wrong in your own memory is not a correction to the
+  document.
+
+- **A question and its discussion now point at each other.** Filing a question
+  marks nothing on the page (deliberately — a question is a note in your memory,
+  not a property of the file), which left no trace of it anywhere. Every card in
+  the quiz now carries a quiet *from a discussion · trace* that opens the source
+  in a new window, resolved when the page is drawn: the discussion if that
+  thread still exists, the page if only the page does, and nothing at all if the
+  page is gone — never a dead link. In the other direction, a comment thread
+  that has produced questions says *filed as a memory · view* (or *3 memories*),
+  and stops saying it the moment you discard the card.
+
+- **A Memorize tab in the drawer: revise the page you are on.** Beside Comments
+  and Page chat, a third tab shows what this page (or a council project it is
+  filed in — never "everything"; that is what the address is for) has put in the
+  vault, and lets you answer it there and then. It goes through the same
+  endpoints as the quiz page, so there is one schedule on disk and never a
+  second one. Get one wrong and the card becomes a correction slip: what you
+  pressed shrinks to a struck line, the wrong options disappear, the right
+  answer is promoted to a slab of its own, and the explanation gets the whole
+  width of the column.
+
+- **Two ways a card leaves, and they mean different things.** *Seems wrong*
+  parks a card — out of rotation, everything kept, waiting to be rewritten.
+  *Discard* drops it for good: it was not worth remembering after all, and the
+  row leaves the vault. Both are on the quiz page and in the drawer, both quiet
+  and well away from the answer buttons, and neither is silent — the next page
+  says which of the two happened.
+
 - **A strikeout's note now says the whole thing, and you can change it.** When a
   bot suggests a passage should come out, the note it proposes is the note that
   goes onto the document — read weeks later by a co-author who has only the

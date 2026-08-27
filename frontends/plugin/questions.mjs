@@ -223,6 +223,28 @@ export function facets(vault, now = Date.now()) {
   return { projects: walk('projects'), tags: walk('tags') };
 }
 
+// WHICH THREADS ON ONE PAGE HAVE MINTED A MEMORY — the other direction of the
+// quiz's own trace link, and the drawer's whole input for saying so on a card.
+//
+// One pass over the bank for one page, returned as `{ thread_id: n }`, because
+// the drawer already asks this endpoint for its due count and a second request
+// per thread would be a request per card on the screen. A FAILED row is not a
+// memory (nothing was written, and the drawer says so where the click was
+// made); a pending one is about to be, and counts — the reader clicked, and a
+// thread that says nothing until a bot comes back is exactly the silence the
+// pending row exists to prevent.
+export function threadCounts(vault, key) {
+  const want = String(key || '');
+  const out = {};
+  if (!want) return out;
+  for (const c of vault.cards || []) {
+    const s = c.source || {};
+    if (s.page_key !== want || !s.thread_id || c.state === 'failed') continue;
+    out[s.thread_id] = (out[s.thread_id] || 0) + 1;
+  }
+  return out;
+}
+
 // ---- capture -------------------------------------------------------------
 
 export function addPending(vault, { source, model = 'claude' }) {

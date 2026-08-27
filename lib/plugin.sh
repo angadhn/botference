@@ -91,13 +91,16 @@ random tunnel every session:
                       plist). Prints the URL and the password.
                       plugin.botference.com — the address before the
                       rename — is routed and served alongside it, so old
-                      bookmarks and extensions keep working.
+                      bookmarks and extensions keep working, and
+                      memorizer.botference.com is routed too: on that
+                      hostname '/' is the question vault's quiz.
   --uninstall-tunnel  Stop and remove the tunnel LaunchAgent and put the
                       companion back to plain localhost mode. The
                       Cloudflare tunnel and its DNS records are left
                       alone, so re-installing is one command
 Override the address with BOTFERENCE_PLUGIN_HOSTNAME (the legacy one with
-BOTFERENCE_PLUGIN_LEGACY_HOSTNAME, empty to drop it) and the tunnel name
+BOTFERENCE_PLUGIN_LEGACY_HOSTNAME and the vault's with
+BOTFERENCE_PLUGIN_MEMORY_HOSTNAME, either empty to drop it) and the tunnel name
 with BOTFERENCE_PLUGIN_TUNNEL, if the domain is not this one.
 HELP
 }
@@ -345,6 +348,13 @@ PLUGIN_TUNNEL_NAME="${BOTFERENCE_PLUGIN_TUNNEL:-botference-plugin}"
 # a configured extension made before the rename keeps working.
 PLUGIN_TUNNEL_HOSTNAME="${BOTFERENCE_PLUGIN_HOSTNAME:-discuss.botference.com}"
 PLUGIN_TUNNEL_LEGACY_HOSTNAME="${BOTFERENCE_PLUGIN_LEGACY_HOSTNAME-plugin.botference.com}"
+# …and the vault's own front door. The quiz is a PRODUCT — one question at a
+# time, opened on a phone at the end of a day — and a product wants a home page
+# rather than a path inside somebody else's site. Same tunnel, same companion,
+# one more ingress rule: on THIS hostname server.mjs serves the quiz at `/` and
+# sends everything else home (server.mjs MEMORY_PATHS). The reading room stays
+# where it is.
+PLUGIN_TUNNEL_MEMORY_HOSTNAME="${BOTFERENCE_PLUGIN_MEMORY_HOSTNAME-memorizer.botference.com}"
 PLUGIN_TUNNEL_DIR="${HOME}/.cloudflared"
 PLUGIN_TUNNEL_CONFIG="${PLUGIN_TUNNEL_DIR}/${PLUGIN_TUNNEL_NAME}.yml"
 PLUGIN_PASSWORD_FILE="${HOME}/.botference/plugin-password"
@@ -684,9 +694,24 @@ plugin_tunnel_install() {
     fi
   fi
 
+  # …and the vault's own address, on the same terms: a courtesy door, skipped
+  # with a note if the zone will not route it, never fatal to the main one.
+  local memory_ok=false
+  if [ -n "$PLUGIN_TUNNEL_MEMORY_HOSTNAME" ] \
+    && [ "$PLUGIN_TUNNEL_MEMORY_HOSTNAME" != "$PLUGIN_TUNNEL_HOSTNAME" ]; then
+    if _plugin_route_dns "$PLUGIN_TUNNEL_MEMORY_HOSTNAME"; then
+      memory_ok=true
+      echo "       also: ${PLUGIN_DNS_NOTE}  (Memorize — the question vault)"
+    else
+      echo "       note: ${PLUGIN_TUNNEL_MEMORY_HOSTNAME} could not be routed — skipping it."
+      echo "             the reading room is unaffected."
+    fi
+  fi
+
   # 3. the ingress config — one rule per hostname, all to the same companion
   local hosts=("$PLUGIN_TUNNEL_HOSTNAME")
   $legacy_ok && hosts+=("$PLUGIN_TUNNEL_LEGACY_HOSTNAME")
+  $memory_ok && hosts+=("$PLUGIN_TUNNEL_MEMORY_HOSTNAME")
   local cfg_tmp="${PLUGIN_TUNNEL_CONFIG}.tmp.$$"
   plugin_tunnel_config "$uuid" "$creds" "$url_port" "${hosts[@]}" > "$cfg_tmp" || {
     rm -f "$cfg_tmp"
@@ -734,6 +759,10 @@ plugin_tunnel_install() {
   echo "✅ Done — Discuss now lives at one address that does not change."
   echo ""
   echo "🔗 https://${PLUGIN_TUNNEL_HOSTNAME}/pages   ← the canonical address"
+  if $memory_ok; then
+    echo "🧠 https://${PLUGIN_TUNNEL_MEMORY_HOSTNAME}/   ← Memorize: the question vault,"
+    echo "   asked back on a schedule. Same companion, same sign-in, owner-only."
+  fi
   if $legacy_ok; then
     echo "   https://${PLUGIN_TUNNEL_LEGACY_HOSTNAME}/pages   (the old one, still answered —"
     echo "   same companion, same annotations; bookmark the one above)"

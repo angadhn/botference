@@ -414,69 +414,243 @@ ${liveScript(page.url)}`);
 // bot picks it), not the interval (SM-2 picks it), not the order (the schedule
 // picks it). The filter chips are a way of LOOKING at one bank, never a way of
 // filing anything into decks.
+// ---- the look -------------------------------------------------------------
+//
+// The reading room is a LIST and reads like one: dense, sans, functional. This
+// page is a single question at a time, met on a phone at the end of a day, and
+// it is the only page here whose whole job is to be READ and answered. So it
+// gets a look of its own — not a second product, a second register of the same
+// one: the palette is the plugin's own (the clay --accent the drawer and the
+// braid wear, the warm ivory ground), and everything added on top of it is
+// typographic.
+//
+//   TYPE.  The question is set in a serif, large, with room around it — the
+//   one sentence on the page that is being read rather than operated. No web
+//   font is fetched: this page must work on a train with a bad connection and
+//   scripting off, and Georgia (with the platform serifs behind it) is on
+//   every device that will ever open it. Everything else stays in the
+//   reading room's own sans, so the machinery never competes with the sentence.
+//
+//   COLOUR.  Right is a calm green — a confirmation, not a fanfare. Wrong is
+//   WARM (a deep clay-amber), deliberately not the strikeout's red: a red line
+//   in this product means "this passage should come out", a verdict is not a
+//   correction, and being wrong in your own memory is the ordinary business of
+//   remembering rather than an error. Both are defined for each scheme rather
+//   than derived, so dark is designed and not inverted.
 const QUIZ_STYLE = `
-.qcard { background:var(--card); border:1px solid var(--line); border-radius:12px;
-  padding:1.1rem 1.1rem 1rem; margin:0 0 1rem }
-.qq { font-size:1.12rem; line-height:1.45; margin:0 0 1rem; overflow-wrap:anywhere }
+:root {
+  --q-ground:#f8f4ea;              /* one shade warmer than the room's ivory */
+  --q-card:#fffdf7;
+  --q-line:#e6dcc9;
+  --q-line-soft:rgba(148,132,105,.22);
+  --q-shadow:0 1px 2px rgba(80,60,30,.05), 0 8px 24px -12px rgba(80,60,30,.18);
+  --q-shadow-lift:0 1px 2px rgba(80,60,30,.06), 0 10px 22px -10px rgba(190,110,70,.28);
+  --q-right:#2f7d55; --q-right-bg:rgba(85,160,115,.13); --q-right-line:rgba(60,140,95,.55);
+  --q-warm:#a8552e;  --q-warm-bg:rgba(200,110,60,.11);  --q-warm-line:rgba(190,110,65,.5);
+  --q-serif:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,"Times New Roman",serif }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --q-ground:#191510; --q-card:#221d16; --q-line:rgba(217,119,87,.20);
+    --q-line-soft:rgba(217,175,140,.14);
+    --q-shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 26px -14px rgba(0,0,0,.7);
+    --q-shadow-lift:0 1px 2px rgba(0,0,0,.4), 0 12px 26px -12px rgba(217,119,87,.28);
+    --q-right:#86c9a0; --q-right-bg:rgba(110,190,140,.14); --q-right-line:rgba(120,195,150,.45);
+    --q-warm:#e79b70;  --q-warm-bg:rgba(224,140,90,.12);   --q-warm-line:rgba(224,140,90,.42) }
+}
+body { background:var(--q-ground) }
+main { max-width:46rem; padding:2.4rem 1.15rem 6rem }
+/* ---- the identity mark: this page is its own address (memorizer.botference.com)
+   and wears its own name, in the braid the extension and the reading room
+   already wear. Small, quiet, and a link home. */
+header.qhead { border:0; padding:0; margin:0 0 1.8rem }
+.qhead h1 { margin:0; font-size:1rem; font-weight:400 }
+.qhead .who { float:none; display:block; text-align:right; font-size:.72rem; margin:0 0 .5rem }
+.mark .wm { white-space:nowrap }
+.mark { display:flex; align-items:center; gap:.55rem; color:var(--fg) }
+.mark:hover { text-decoration:none; color:var(--accent) }
+.mark img { width:26px; height:26px; border-radius:7px; flex:0 0 auto }
+.mark .wm { font:600 1.02rem/1 var(--q-serif); letter-spacing:.01em }
+.mark .wm i { font-style:normal; color:var(--muted); font-weight:400 }
+.qhead .sub { margin:.55rem 0 0; font-size:.78rem }
+/* ---- the rail, in this page's register: quieter chips, wider gaps */
+.rail { gap:.4rem; margin:0 0 1.1rem }
+.rail a { padding:.28rem .7rem; font-size:.76rem; background:var(--q-card);
+  border-color:var(--q-line) }
+.rail .n { opacity:.55; font-variant-numeric:tabular-nums }
+/* "you have got this one wrong before" — a dot in the warm colour, never the
+   ✗ the reading room uses: an ✗ beside a count reads as a way to dismiss the
+   chip, and there is nothing here to dismiss. The title says the number. */
+.rail a.weak::after { content:"●"; margin-left:.3rem; font-size:.5em;
+  vertical-align:.35em; color:var(--q-warm) }
+.score { color:var(--muted); font-size:.76rem; margin:0 0 1.1rem;
+  letter-spacing:.02em; font-variant-numeric:tabular-nums }
+.score b { color:var(--fg); font-weight:600 }
+/* ---- THE TWO COLUMNS.
+   On a wide screen the question stays where it is and everything the answer
+   brought with it — the why, the passage it came from, who wrote the card —
+   sits BESIDE it, as margin notes sit beside a manuscript. That is not a
+   decoration: this product is built on comments in a margin, and the guidance
+   about a question belongs in the same place as the guidance about a sentence.
+   The column is reserved in every state, so revealing an answer never moves
+   the question the reader is still looking at.
+   On a phone there is no margin, so the same cards STACK under the options —
+   met in reading order (question, your answer, why, where it came from) with
+   the action bar pinned to the bottom of the screen, because 'next' has to be
+   under the thumb while the eye is still on the explanation. */
+.qwrap { display:grid; gap:1rem; align-items:start }
+@media (min-width:62rem) {
+  main { max-width:70rem }
+  .qwrap { grid-template-columns:minmax(0,1fr) 21rem; gap:1.6rem;
+    grid-template-areas:"card margin" "acts margin" }
+  .qcard { grid-area:card } .qmargin { grid-area:margin } .qacts { grid-area:acts }
+  .qmargin { position:sticky; top:1.6rem }
+}
+.qcard { background:var(--q-card); border:1px solid var(--q-line); border-radius:16px;
+  padding:1.6rem 1.5rem 1.35rem; margin:0; box-shadow:var(--q-shadow) }
+@media (max-width:30rem) { .qcard { padding:1.25rem 1.05rem 1.1rem } }
+.qq { font:1.34rem/1.42 var(--q-serif); margin:0 0 1.35rem; overflow-wrap:anywhere;
+  letter-spacing:.005em }
+@media (min-width:62rem) { .qq { font-size:1.5rem } }
 /* One tap per answer, and a target big enough to hit without looking. The
    options are the only buttons on this page that are not accent-filled: four
    filled blocks would read as four ways to send rather than four answers. */
-form.opt { margin:0 0 .5rem }
-form.opt button, .optrow { display:flex; width:100%; text-align:left; gap:.6rem;
-  align-items:baseline; padding:.7rem .85rem; font:inherit; font-size:.95rem;
-  color:var(--fg); background:var(--card); border:1px solid var(--line);
-  border-radius:10px; cursor:pointer }
-form.opt button:hover { background:var(--quote); border-color:var(--accent) }
-.optrow { cursor:default; margin:0 0 .5rem }
-.optrow.right { border-color:var(--done-line); background:color-mix(in srgb, var(--done) 40%, var(--card)) }
-.optrow.wrong { border-color:var(--strike-line);
-  background:color-mix(in srgb, var(--strike-line) 10%, var(--card)) }
-.ol { flex:0 0 1.1rem; color:var(--muted); font-size:.8rem; font-weight:600 }
-.optrow.right .ol, .optrow.wrong .ol { color:inherit }
-.verdict { font-size:1rem; font-weight:600; margin:0 0 .7rem }
-.verdict.right { color:var(--done-line) }
-.verdict.wrong { color:var(--strike-line) }
-.why { margin:.2rem 0 1rem; font-size:.94rem; overflow-wrap:anywhere }
-/* WHERE IT CAME FROM — never optional. A bot wrote this card and the reader
-   may not believe it; the passage it was made from, and the conversation it
-   came out of, are one tap away from every answer. */
-.src { border-top:1px solid var(--line); padding-top:.8rem; margin-top:.4rem }
-.src blockquote { font-size:.86rem; margin:0 0 .5rem }
-.src .meta { color:var(--muted); font-size:.76rem; overflow-wrap:anywhere }
-.qacts { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; margin:1rem 0 0 }
+form.opt { margin:0 0 .55rem }
+form.opt button, .optrow { display:flex; width:100%; text-align:left; gap:.75rem;
+  align-items:baseline; padding:.8rem .95rem; font:inherit; font-size:.95rem;
+  line-height:1.45; color:var(--fg); background:transparent;
+  border:1px solid var(--q-line); border-radius:12px; cursor:pointer;
+  transition:border-color .12s ease, background .12s ease, box-shadow .12s ease }
+form.opt button:hover { background:var(--q-card); border-color:var(--accent);
+  box-shadow:var(--q-shadow-lift) }
+form.opt button:active { transform:translateY(1px) }
+.optrow { cursor:default; margin:0 0 .55rem }
+.optrow.right { border-color:var(--q-right-line); background:var(--q-right-bg) }
+.optrow.wrong { border-color:var(--q-warm-line); background:var(--q-warm-bg) }
+/* the letter, in a ring: an index, never a fifth thing to press */
+.ol { flex:0 0 1.55rem; height:1.55rem; display:inline-flex; align-items:center;
+  justify-content:center; border-radius:50%; border:1px solid var(--q-line-soft);
+  color:var(--muted); font-size:.72rem; font-weight:600; letter-spacing:.03em;
+  align-self:flex-start; margin-top:-.05rem }
+.optrow.right .ol { color:var(--q-right); border-color:var(--q-right-line) }
+.optrow.wrong .ol { color:var(--q-warm); border-color:var(--q-warm-line) }
+/* the verdict is a small line ABOVE the question, not a banner over it: the
+   card the reader is looking at is still the question */
+.verdict { font-size:.72rem; font-weight:600; margin:0 0 .8rem;
+  text-transform:uppercase; letter-spacing:.1em; display:flex; align-items:center; gap:.4rem }
+.verdict.right { color:var(--q-right) }
+.verdict.wrong { color:var(--q-warm) }
+/* ---- the margin cards. One label, one thing said. The hairline down the left
+   is the manuscript-margin idiom the drawer uses for a thread. */
+.mcard { background:var(--q-card); border:1px solid var(--q-line); border-left:2px solid var(--q-line-soft);
+  border-radius:4px 12px 12px 4px; padding:.85rem .95rem; margin:0 0 .75rem;
+  box-shadow:var(--q-shadow) }
+.mcard h3 { margin:0 0 .45rem; font-size:.66rem; font-weight:600; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.11em }
+.mcard p { margin:0; font-size:.88rem; line-height:1.55; overflow-wrap:anywhere }
+.mcard.why { border-left-color:var(--accent) }
+.mcard.why p { font-family:var(--q-serif); font-size:.95rem }
+.mcard.src { border-left-color:var(--q-line-soft) }
+.mcard.src blockquote { margin:0 0 .55rem; font:.86rem/1.55 var(--q-serif);
+  padding:.1rem 0 .1rem .7rem; background:transparent; border-left:2px solid var(--q-warm-line);
+  border-radius:0; color:var(--fg) }
+.mcard.src cite { color:var(--muted); font-style:normal; font-size:.8rem }
+.mcard .meta { color:var(--muted); font-size:.75rem; line-height:1.6; overflow-wrap:anywhere }
+/* who wrote the card. The rule stays neutral — the one cool colour on this
+   page would be the only thing on it that is not the plugin's own clay — and
+   the bot's name carries its own colour instead, as it does in the drawer. */
+.mcard.bot { border-left-color:var(--q-line-soft) }
+.mcard.bot .who-wrote { font-size:.8rem; color:var(--muted) }
+.mcard.bot .who-wrote b { color:var(--fg); font-weight:600 }
+.mcard.bot .who-wrote b.claude { color:var(--claude) }
+.mcard.bot .who-wrote b.codex { color:var(--codex) }
+.mcard.attn { border-left-color:var(--q-warm) }
+.mcard.attn p { color:var(--muted) }
+/* ---- the action bar. On a phone it is pinned to the bottom of the screen so
+   'next' stays under the thumb while the eye is still on the explanation. */
+.qacts { display:flex; flex-wrap:wrap; align-items:center; gap:.7rem; margin:.9rem 0 0 }
 .qacts form { margin:0 }
 .qacts .flag button, .qacts .del button { background:none; color:var(--muted);
-  border:1px solid var(--line); padding:.35rem .8rem; font-size:.78rem }
-.qacts .flag button:hover, .qacts .del button:hover { color:var(--strike-line);
-  border-color:var(--strike-line); background:none }
-.qacts a.next { display:inline-block; padding:.4rem 1.1rem; border-radius:8px;
-  background:var(--accent); color:#fff; font-size:.9rem }
+  border:1px solid var(--q-line); border-radius:999px; padding:.4rem .85rem; font-size:.76rem }
+.qacts .flag button:hover, .qacts .del button:hover { color:var(--q-warm);
+  border-color:var(--q-warm-line); background:none }
+.qacts a.next { display:inline-block; padding:.5rem 1.3rem; border-radius:999px;
+  background:var(--accent); color:#fff; font-size:.88rem; font-weight:600;
+  letter-spacing:.01em; box-shadow:var(--q-shadow-lift) }
 .qacts a.next:hover { background:var(--accent-hover); text-decoration:none }
-.score { color:var(--muted); font-size:.78rem }
-.score b { color:var(--fg); font-weight:600 }
-.rail .n { opacity:.7 }
-.rail a.weak::after { content:" ✗" ; color:var(--strike-line); opacity:.9 }
-.qbad { border-color:var(--strike-line) }
-.qbad .meta { color:var(--strike-line) }
+@media (max-width:61.99rem) {
+  /* the pinned bar is the foot of the page on a phone, so the page does not
+     also need a foot of its own under it */
+  main { padding-bottom:2rem }
+  .qacts.pinned { position:sticky; bottom:0; margin:1rem -1.15rem 0;
+    padding:.7rem 1.15rem calc(.7rem + env(safe-area-inset-bottom));
+    background:color-mix(in srgb, var(--q-ground) 92%, transparent);
+    backdrop-filter:blur(8px); border-top:1px solid var(--q-line-soft) }
+}
+/* ---- THE QUIET WAY BACK, on every card and not only a wrong one.
+   The full source block is the wrong answer's own business — quote, page
+   number, every link — because a bot wrote the card and a reader who has just
+   been told they are wrong is owed the paragraph. This is the other, smaller
+   need: 'where did this come from?', asked at any moment, answered without
+   losing the sitting — hence a new window. It resolves against the live store
+   at render time and simply is not drawn when the page it came from is gone.
+   Same register as the drawer's own 'from a discussion · view'. */
+.trace { margin:1rem 0 0; padding:.7rem 0 0; border-top:1px solid var(--q-line-soft);
+  font-size:.75rem; color:var(--muted); text-align:right }
+.trace a { color:var(--muted); border-bottom:1px solid var(--q-line-soft) }
+.trace a:hover { color:var(--accent); border-bottom-color:var(--accent); text-decoration:none }
+/* the receipt for a card just taken out of the rotation: one line, on the very
+   next page, because parking a card and discarding it are different acts and a
+   click that answers with a blank next question says neither */
+.beat { margin:0 0 1rem; padding:.55rem .85rem; border-radius:10px;
+  background:var(--q-card); border:1px solid var(--q-line);
+  border-left:2px solid var(--accent); color:var(--muted); font-size:.8rem }
+.qempty { text-align:center; padding:2.6rem 1.2rem }
+.qempty .qq { margin:0 0 .5rem; font-size:1.18rem }
+.qempty .score { margin:0 }
+.qbad { border-color:var(--q-warm-line) }
+.qbad .meta { color:var(--q-warm) }
 `;
 
 const OPT_LETTER = ['A', 'B', 'C', 'D', 'E'];
 
-// The one line under every card, and the reason the feature can be trusted at
-// all: the page, the passage, and — where the card came out of an argument —
-// the thread that produced it.
-function sourceHtml(card, read) {
+// WHERE IT CAME FROM — never optional on a wrong answer, and a margin card
+// here: the page, the passage, and, where the card came out of an argument,
+// the thread that produced it. `home` is the reading room's own origin, which
+// is empty (relative) everywhere except on the vault's own hostname, where the
+// reading room is a different address entirely.
+function sourceHtml(card, read, home = '', trace = null) {
   const s = card.source || {};
   const key = String(s.page_key || '');
-  const where = read && key ? `/a/${key}` : (key ? `/p/${key}` : '');
-  const thread = s.thread_id ? `/p/${key}#${s.thread_id}` : '';
-  return `<div class="src">
+  const where = read && key ? `${home}/a/${key}` : (key ? `${home}/p/${key}` : '');
+  // …and the conversation, only while there IS one: `trace` has already asked
+  // the live record whether that thread survives, and a card whose discussion
+  // the reader deleted must not offer a link into nothing.
+  const thread = (trace && trace.thread && s.thread_id) ? `${home}/p/${key}#${s.thread_id}` : '';
+  return `<section class="mcard src">
+<h3>where it came from</h3>
 ${s.quote ? `<blockquote>${escHtml(s.quote)}${Number(s.page) > 0 ? `<cite> — p. ${Number(s.page)}</cite>` : ''}</blockquote>` : ''}
 <p class="meta">${where ? `<a href="${escHtml(where)}">${escHtml(s.title || 'the page')}</a>` : escHtml(s.title || '')}${
   s.site ? ` · ${escHtml(s.site)}` : ''}${thread ? ` · <a href="${escHtml(thread)}">the conversation</a>` : ''}${
-  /^https?:/i.test(String(s.url || '')) ? ` · <a href="${escHtml(s.url)}" rel="noreferrer noopener">original</a>` : ''}${
-  card.model ? ` · written by ${escHtml(card.model)}` : ''}</p>
-</div>`;
+  /^https?:/i.test(String(s.url || '')) ? ` · <a href="${escHtml(s.url)}" rel="noreferrer noopener">original</a>` : ''}</p>
+</section>`;
+}
+
+// THE QUIET WAY BACK, on every card in every state.
+//
+// The block above is what a WRONG answer is owed. This is the small, always
+// available version of the same fact — one muted line, opened in a new window
+// so that following it does not cost the sitting. `trace` is resolved by the
+// caller against the live store (server.mjs traceOf) and comes in three
+// states, which is the whole of the contract: the discussion that produced the
+// card if it is still there, the page if only that survives, and NOTHING at
+// all if the page itself is gone. A card's thread id is a soft link by design
+// — the same design `from_thread` has on a strikeout — so a dangling one drops
+// the affordance rather than offering a dead link.
+function traceHtml(trace) {
+  if (!trace || !trace.href) return '';
+  const what = trace.thread ? 'from a discussion' : 'from a page you read';
+  return `<p class="trace">${escHtml(what)} · <a href="${escHtml(trace.href)}" target="_blank"`
+    + ` rel="noopener noreferrer" title="${escHtml(trace.title || 'the source')} — opens in a new window">trace ↗</a></p>`;
 }
 
 const scopeFields = scope => `<input type="hidden" name="project" value="${escHtml(scope.project || '')}">`
@@ -491,7 +665,8 @@ const quizHref = (scope, extra = {}) => {
   return `/quiz${s ? `?${s}` : ''}`;
 };
 
-export function quizView({ me, card, reveal, session, counts, facets, scope = {}, read = false }) {
+export function quizView({ me, card, reveal, session, counts, facets, scope = {},
+                           read = false, trace = null, home = '', gone = '' }) {
   const sc = { project: scope.project || '', tag: scope.tag || '' };
   // The rail: one bank, seen from an angle. Each chip carries how many of that
   // topic are due, and wears a ✗ where the reader has lapsed on it — which is
@@ -524,59 +699,100 @@ export function quizView({ me, card, reveal, session, counts, facets, scope = {}
       counts.failed ? ` · ${counts.failed} failed` : ''}${
       counts.flagged ? ` · ${counts.flagged} flagged` : ''}</p>`;
 
-  let body;
+  // The failures, if any: a generation that went wrong is a row the reader can
+  // see and remove, never a click that silently did nothing. It is a margin
+  // card like everything else that is ABOUT the sitting rather than in it.
+  const broken = (((counts.failed || 0) + (counts.flagged || 0)) > 0 && !reveal)
+    ? `<section class="mcard attn"><h3>needs attention</h3><p>${
+      counts.failed ? `${counts.failed} question${counts.failed === 1 ? '' : 's'} could not be written` : ''}${
+      counts.failed && counts.flagged ? ' and ' : ''}${
+      counts.flagged ? `${counts.flagged} you flagged as wrong` : ''}. They are out of the rotation.</p></section>`
+    : '';
+
+  let card_, margin, acts;
   if (reveal && card) {
     const right = !!reveal.correct;
-    body = `<section class="qcard">
-<p class="verdict ${right ? 'right' : 'wrong'}">${right ? '✓ Right' : '✗ Not quite'}</p>
+    card_ = `<section class="qcard">
+<p class="verdict ${right ? 'right' : 'wrong'}"><span aria-hidden="true">${right ? '✓' : '✗'}</span> ${
+  right ? 'right' : 'not quite'}</p>
 <p class="qq">${escHtml(card.question)}</p>
 ${(card.options || []).map((o, i) => {
       const cls = i === card.answer ? ' right' : (i === reveal.choice ? ' wrong' : '');
       return `<div class="optrow${cls}"><span class="ol">${OPT_LETTER[i] || ''}</span><span>${escHtml(o)}</span></div>`;
     }).join('\n')}
-${card.why ? `<p class="why">${escHtml(card.why)}</p>` : ''}
-${sourceHtml(card, read)}
-<div class="qacts"><a class="next" href="${escHtml(quizHref(sc))}">next ›</a>
+${traceHtml(trace)}</section>`;
+    // THE MARGIN. On a wide screen these sit beside the question, which stays
+    // exactly where it was; on a phone they stack under it, in the order they
+    // are read — why first, then the passage it was made from.
+    margin = `<aside class="qmargin">
+${card.why ? `<section class="mcard why"><h3>why</h3><p>${escHtml(card.why)}</p></section>` : ''}
+${sourceHtml(card, read, home, trace)}
+${card.model || card.hint ? `<section class="mcard bot"><h3>the card</h3>
+${card.hint ? `<p>${escHtml(card.hint)}</p>` : ''}
+${card.model ? `<p class="who-wrote">written by <b class="${
+  card.model === 'codex' ? 'codex' : 'claude'}">${escHtml(card.model)}</b></p>` : ''}</section>` : ''}
+</aside>`;
+    // TWO WAYS A CARD LEAVES, and they are different acts. "Seems wrong"
+    // PARKS it — out of rotation, everything kept, waiting to be rewritten,
+    // because a bot wrote this and the reader disagreeing is a complaint about
+    // the card and not about the passage they chose to remember. "Discard"
+    // DROPS it: this was not worth remembering after all, and the row goes for
+    // good. Both sit well under the answer, quiet, so that nothing here
+    // competes with reading the explanation.
+    acts = `<div class="qacts pinned"><a class="next" href="${escHtml(quizHref(sc))}">next ›</a>
 <form class="flag" method="POST" action="/quiz-flag">${scopeFields(sc)}
 <input type="hidden" name="id" value="${escHtml(card.id)}">
-<button>this card seems wrong</button></form></div>
-</section>`;
+<button>seems wrong</button></form>
+<form class="del" method="POST" action="/quiz-delete">${scopeFields(sc)}
+<input type="hidden" name="id" value="${escHtml(card.id)}">
+<button title="drop this question for good — it leaves the vault">discard</button></form></div>`;
   } else if (card) {
-    body = `<section class="qcard">
+    card_ = `<section class="qcard">
 <p class="qq">${escHtml(card.question)}</p>
 ${(card.options || []).map((o, i) => `<form class="opt" method="POST" action="/quiz-answer">${scopeFields(sc)}
 <input type="hidden" name="id" value="${escHtml(card.id)}">
 <input type="hidden" name="choice" value="${i}">
 <button><span class="ol">${OPT_LETTER[i] || ''}</span><span>${escHtml(o)}</span></button></form>`).join('\n')}
-</section>`;
+${traceHtml(trace)}</section>`;
+    // The margin column is RESERVED even with nothing in it, so that answering
+    // does not shift the question the reader is still looking at.
+    margin = `<aside class="qmargin">${broken}</aside>`;
+    acts = '';
   } else {
     // Nothing due is the ordinary, healthy state of a vault, and it should read
     // as one — not as an error and not as an invitation to go and make work.
-    body = `<section class="qcard"><p class="qq">${counts.due === 0 && counts.live
-      ? 'Nothing due. Everything you have filed is still fresh.'
-      : (counts.total
-        ? 'Nothing due under this filter.'
-        : 'No questions yet. Highlight something worth remembering and press ? in the drawer.')}</p>
+    const filtered = !!(sc.project || sc.tag);
+    const line = (filtered && !counts.total) ? 'Nothing filed under this filter.'
+      : (counts.live && !counts.due) ? 'Nothing due. Everything you have filed is still fresh.'
+        : (counts.total ? 'Nothing due under this filter.'
+          : 'No questions yet. Highlight something worth remembering and press ? in the drawer.');
+    card_ = `<section class="qcard qempty"><p class="qq">${line}</p>
 <p class="score">${counts.live} question${counts.live === 1 ? '' : 's'} in the vault${
-  counts.pending ? ` · ${counts.pending} being written` : ''}.</p></section>`;
+  counts.pending ? ` · ${counts.pending} being written` : ''}.${
+  filtered ? ` <a href="${escHtml(quizHref({}))}">show everything ›</a>` : ''}</p></section>`;
+    margin = `<aside class="qmargin">${broken}</aside>`;
+    acts = '';
   }
 
-  // The failures, if any: a generation that went wrong is a row the reader can
-  // see and remove, never a click that silently did nothing.
-  const broken = (((counts.failed || 0) + (counts.flagged || 0)) > 0 && !reveal)
-    ? `<h2>needs attention</h2><p class="empty">${counts.failed} question${counts.failed === 1 ? '' : 's'} could not be written`
-      + `${counts.flagged ? ` and ${counts.flagged} you flagged as wrong` : ''}. They are out of the rotation.</p>`
-    : '';
-
-  return shell('Quiz', `
-<header>${whoBadge(me)}
-<h1>Quiz</h1>
-<p class="sub">what you asked to be reminded of · <a href="/pages">all annotated pages</a></p>
+  // The name of the thing, in the braid the drawer and the reading room wear.
+  // This page has an address of its own (memorizer.botference.com) and is the
+  // only surface here that is a product rather than a view of the workspace.
+  return shell('Memorizer — botference', `
+<header class="qhead">${whoBadge(me)}
+<h1><a class="mark" href="${escHtml(home || '/')}"><img src="/favicon.ico" alt="" width="26" height="26">
+<span class="wm">memorize<i> · botference</i></span></a></h1>
+<p class="sub">what you asked to be reminded of · <a href="${escHtml(home)}/pages">the reading room</a></p>
 </header>
 ${rail}
+${gone ? `<p class="beat">${gone === 'discarded'
+    ? 'Discarded — that question has left the vault.'
+    : 'Parked — that card stops being asked until it is rewritten.'}</p>` : ''}
 ${score}
-${body}
-${broken}`, QUIZ_STYLE);
+<div class="qwrap">
+${card_}
+${margin}
+${acts}
+</div>`, QUIZ_STYLE);
 }
 
 // --- the article view: the review-doc experience, for any article ---------

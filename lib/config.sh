@@ -502,7 +502,8 @@ Modes:
                     invites collaborators (password gate + tunnel, guest
                     reading room at /pages); --install-tunnel gives it
                     ONE permanent address instead (a named cloudflared
-                    tunnel at discuss.botference.com — plugin.botference.com
+                    tunnel at discuss.botference.com (and the vault's
+                    quiz at memorizer.botference.com) — plugin.botference.com
                     stays answered as the old door — hosted mode, a
                     password saved in ~/.botference/plugin-password —
                     --uninstall-tunnel reverses it); the workspace is

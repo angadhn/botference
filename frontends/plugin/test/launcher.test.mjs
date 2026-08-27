@@ -263,6 +263,8 @@ exit 0`);
     assert.match(cfd, /^tunnel route dns botference-plugin discuss\.botference\.com$/m);
     assert.match(cfd, /^tunnel route dns botference-plugin plugin\.botference\.com$/m,
       'and the address from before the rename, so old bookmarks still land');
+    assert.match(cfd, /^tunnel route dns botference-plugin memorizer\.botference\.com$/m,
+      'and the vault\'s own front door, where the quiz is the site');
     assert.ok(fs.existsSync(CONFIG), 'the ingress config is written');
     assert.match(read(CONFIG), new RegExp(`credentials-file: ${p('.cloudflared', `${UUID}.json`)}`));
     assert.ok(fs.existsSync(TUNNEL_AGENT), 'the tunnel LaunchAgent is installed');
@@ -275,10 +277,12 @@ exit 0`);
     assert.match(r.out, /https:\/\/discuss\.botference\.com\/pages {3}← the canonical address/,
       'and it says where to go, and which of the two is the real one');
     assert.match(r.out, /https:\/\/plugin\.botference\.com\/pages {3}\(the old one/);
+    assert.match(r.out, /https:\/\/memorizer\.botference\.com\/ {3}← Memorize/);
     const cfg = read(CONFIG);
     assert.ok(cfg.includes('- hostname: discuss.botference.com')
-      && cfg.includes('- hostname: plugin.botference.com'),
-      'both hostnames are served by the one companion');
+      && cfg.includes('- hostname: plugin.botference.com')
+      && cfg.includes('- hostname: memorizer.botference.com'),
+      'all three hostnames are served by the one companion, and none is a redirect');
   });
 
   test('the companion agent moves to hosted mode, and never carries the password', () => {

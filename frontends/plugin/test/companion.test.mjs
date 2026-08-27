@@ -2851,6 +2851,35 @@ async function main() {
         'sessions are host-only, so signing in on one hostname does not leak to the other');
     });
 
+    // memorizer.botference.com is a SECOND DOOR onto this same process, exactly
+    // as plugin.botference.com is: one more ingress rule in the tunnel, and
+    // nothing in hosted.mjs looking at hostnames. What changes on that host is
+    // only WHAT IS SERVED — `/` is the quiz — and what does not change is the
+    // gate in front of it.
+    await test('the vault\'s own hostname is a door, not a way around the gate', async () => {
+      const MEMORIZER = { host: 'memorizer.botference.com' };
+      const bare = await GET(gb, '/', { ...MEMORIZER, accept: 'text/html' });
+      assert.equal(bare.status, 401, 'the quiz at / is as shut as the reading room');
+      assert.match(bare.body, /<form method="POST" action="\/auth">/, 'and answers with the gate');
+      const mint = (exp, id) =>
+        `${exp}.${id}.${crypto.createHmac('sha256', DEVICE_SECRET).update(`${exp}.${id}`).digest('hex')}`;
+      const dev = `hub_device=${mint(String(Date.now() + 1e6), 'a1b2c3d4e5f6')}`;
+      const owner = await GET(gb, '/', { ...MEMORIZER, cookie: dev, accept: 'text/html' });
+      assert.equal(owner.status, 200);
+      assert.match(owner.body, /<title>Memorizer — botference<\/title>/,
+        'an approved phone is the owner here too — the hub cookie is scoped to the parent domain');
+      // …and a GUEST is still only a guest: the vault is owner-only wherever
+      // it is served from
+      const jar = cookieJar(await FORM(gb, '/auth',
+        { handle: 'ada', password: 'guest-pw', next: '/' }, MEMORIZER));
+      const guest = await GET(gb, '/', { ...MEMORIZER, cookie: jar, accept: 'text/html' });
+      assert.equal(guest.status, 403, 'signing in is not being the owner');
+      // the reading room is not served from this address at all
+      const room = await GET(gb, '/pages', { ...MEMORIZER, cookie: dev, accept: 'text/html' });
+      assert.equal(room.status, 302);
+      assert.equal(room.headers.location, '/');
+    });
+
     await test('localhost is still the owner here, with no cookie and no password', async () => {
       const me = await GET(gb, '/whoami');
       assert.deepEqual(me.json, { ok: true, hosted: true, owner: true, handle: 'angadh' });

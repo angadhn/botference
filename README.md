@@ -846,8 +846,8 @@ owner password — full owner rights from anywhere) and the
 **collaborators'** guest password. It creates (or reuses) a named
 tunnel `botference-plugin`, routes `discuss.botference.com` to it (and
 keeps `plugin.botference.com`, the address from before the rename,
-routed and served by the same companion so old bookmarks still land),
-writes
+routed and served by the same companion so old bookmarks still land,
+plus `memorizer.botference.com` — see below), writes
 `~/.cloudflared/botference-plugin.yml` (one ingress rule to
 `http://127.0.0.1:4189`), installs a second LaunchAgent
 `com.botference.plugin-tunnel` that keeps the tunnel up at every login,
@@ -858,8 +858,31 @@ four words and a number, typeable from a phone — and kept in
 plist, because launchd starts the launcher and the launcher reads the
 file. The final URL and password are printed at the end. Set
 `BOTFERENCE_PLUGIN_HOSTNAME` (the legacy one with
-`BOTFERENCE_PLUGIN_LEGACY_HOSTNAME`, empty to drop it, and the tunnel
-name with `BOTFERENCE_PLUGIN_TUNNEL`) if your domain is not this one.
+`BOTFERENCE_PLUGIN_LEGACY_HOSTNAME`, the vault's with
+`BOTFERENCE_PLUGIN_MEMORY_HOSTNAME` — either empty to drop it — and the
+tunnel name with `BOTFERENCE_PLUGIN_TUNNEL`) if your domain is not this
+one.
+
+### Memorize: `memorizer.botference.com`
+
+The questions you filed, asked back on a schedule, at an address of
+their own: **`memorizer.botference.com`** — where `/` *is* the quiz.
+Same companion, same tunnel, same sign-in (an approved phone is the
+owner there with nothing typed), owner-only end to end, and scriptless,
+so it works on a train with JavaScript off. One question at a time; the
+options are form posts; a wrong answer shows the right one, why, and
+the passage it was made from, with a link into the conversation that
+produced it. Every card carries a quiet *trace* back to its source, and
+a card you decide is not worth keeping can be **discarded** (gone) or
+flagged as *seems wrong* (parked, for a bot to rewrite later).
+
+The reading room stays at `discuss.botference.com`; anything but the
+quiz on the vault's hostname goes home rather than serving the archive
+twice. In the drawer, a **Memorize** tab does the near version of the
+same thing — the questions from the page you are reading (or from a
+project it is filed in), reviewed in the column beside it, through the
+same endpoints and the same schedule. A comment thread that has
+produced questions says so, quietly, with the way to them.
 
 No ports are opened: the tunnel dials out from your machine. This
 machine stays the unauthenticated owner on `http://127.0.0.1:4189`, and

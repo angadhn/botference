@@ -1341,7 +1341,24 @@
       //   made      ts -> the card id that offer produced, for the session
       //   note      the one line the drawer says about the last capture
       //   due       how many are waiting in the vault, for the header button
-      questions: { busy: '', declined: [], made: {}, note: null, due: 0 },
+      //   threads   thread id -> how many memories that thread has minted, for
+      //             the card's own quiet line back into the quiz
+      questions: { busy: '', declined: [], made: {}, note: null, due: 0, threads: {} },
+      // ---- the Memorize tab: the vault, where the reading is -------------
+      // The quiz at memorizer.botference.com is the everything-bank — concepts,
+      // on a phone, away from the Mac. This is the other half: revising THIS
+      // page (or the project it is filed in) in the column beside it, while
+      // the argument that produced the questions is still open. It answers
+      // through the same /quiz-answer as the scriptless page, so there is one
+      // SM-2 record on disk and never a second one in here.
+      //   scope    'page' or 'project:<id>' — where the reader is looking from
+      //   scopes   what they may look from, with counts, from the companion
+      //   queue    the sitting's ORDER, memory-only exactly like the server's:
+      //            a card got wrong comes back REQUEUE places later, and a
+      //            reload is allowed to cost the order and nothing else
+      //   last     the answer just given, which is what the verdict paints
+      memory: { scope: 'page', scopes: [], counts: {}, queue: [], i: 0, last: null,
+                loading: false, error: '', note: '', asked: 0, right: 0, focus: '' },
       // ---- the council project behind a project artifact page -----------
       // Null on every ordinary page, and on those NOTHING below changes. On a
       // page the reader's own council wrote (workspace.mjs), Page chat stops
@@ -1549,6 +1566,9 @@
         cCount: shadow.querySelector('.tab[data-tab="comments"] .count'),
         comments: shadow.querySelector('.pane[data-pane="comments"]'),
         chat: shadow.querySelector('.pane[data-pane="chat"]'),
+        memtab: shadow.querySelector('.tab[data-tab="memory"]'),
+        mCount: shadow.querySelector('.tab[data-tab="memory"] .count'),
+        memory: shadow.querySelector('.pane[data-pane="memory"]'),
         pages: shadow.querySelector('.pane[data-pane="pages"]'),
         foot: shadow.querySelector('.footbar'),
         round: shadow.querySelector('.roundbar'),
@@ -1675,9 +1695,13 @@ ${selPillHtml()}
   <nav class="tabs">
     <button class="tab on" data-tab="comments" type="button">Comments<span class="count">0</span></button>
     <button class="tab" data-tab="chat" type="button">Page chat</button>
+    <!-- what this page put in the reader's memory, and the place to revise it
+         without leaving the page it came from. Owner-only, like the vault. -->
+    <button class="tab memtab" data-tab="memory" type="button" hidden>Memorize<span class="count" hidden>0</span></button>
   </nav>
   <div class="pane" data-pane="comments"></div>
   <div class="pane" data-pane="chat" hidden></div>
+  <div class="pane memory" data-pane="memory" hidden></div>
   <div class="pane pages" data-pane="pages" hidden></div>
   <!-- the review round as one visible thing, above the per-turn footbar: the
        footbar reports the TURN in flight, this reports the round the reader
@@ -2697,6 +2721,30 @@ ${selPillHtml()}
       </div>`;
     }
 
+    // WHAT THIS THREAD PUT IN THE VAULT, if anything.
+    //
+    // The other direction of the link the quiz draws back to here, and the
+    // same idiom as a strikeout's "from a discussion · view": one grey line,
+    // no colour of its own, a single word to press. It matters because filing
+    // a question is the one act in this drawer that leaves NOTHING on the page
+    // — no highlight, no mark, deliberately (a question is a note in the
+    // reader's own memory, not a property of the document) — so without this
+    // line a reader has no way at all to tell a thread they made a question of
+    // from one they meant to and never did.
+    //
+    // Read off the vault (refreshDue), never off the thread: the card is the
+    // record, the reader can delete it from the quiz, and this line has to go
+    // when they do. Owner-only, like everything else about the vault.
+    function memoryLineHtml(t) {
+      const n = Number(D.questions.threads && D.questions.threads[t.id]) || 0;
+      if (!D.owner || !n) return '';
+      return `<div class="fromdisc frommem">
+        <span>filed as ${n === 1 ? 'a memory' : `${n} memories`}</span>
+        <button class="rebtn" type="button" data-act="mem-open" data-target="${esc(t.id)}"
+          title="open Memorize — this is where the question comes back">view</button>
+      </div>`;
+    }
+
     function cardHtml(t) {
       const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
       const author = threadAuthor(t);
@@ -2727,6 +2775,7 @@ ${selPillHtml()}
           ${head}
         </div>
         ${fromDiscussionHtml(t)}
+        ${memoryLineHtml(t)}
         ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
@@ -2759,6 +2808,7 @@ ${selPillHtml()}
           ${quoteHtml(t, orph)}
           ${reopenBtn(t)}
         </div>
+        ${memoryLineHtml(t)}
         <p class="digest${pending ? ' provisional' : ''}">${esc(t.summary || '')}</p>
         <div class="drow">
           <button class="dtoggle" data-act="resolved-card" data-target="${esc(t.id)}" type="button" aria-expanded="${open ? 'true' : 'false'}">${open ? '▾ hide the thread' : `▸ show the thread (${n} message${n === 1 ? '' : 's'})`}</button>
@@ -3886,6 +3936,14 @@ ${selPillHtml()}
       // a council folder nobody has vouched for yet has exactly one thing to
       // say, and it is on this tab
       if (D.project && !D.project.confirmed) D.tab = 'chat';
+      // Memory is the owner's own vault: a guest is not shown a tab that would
+      // 403 behind them, and a tab that goes away takes the view with it.
+      if (D.el.memtab) {
+        D.el.memtab.hidden = !D.owner;
+        const n = Number(D.memory.counts && D.memory.counts.due) || 0;
+        if (D.el.mCount) { D.el.mCount.textContent = n > 99 ? '99+' : String(n); D.el.mCount.hidden = !n; }
+      }
+      if (D.tab === 'memory' && !D.owner) D.tab = CAPS.highlights ? 'comments' : 'chat';
       D.el.tabs.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === D.tab));
       paintView();
     }
@@ -3900,6 +3958,7 @@ ${selPillHtml()}
       D.el.pages.hidden = !pages;
       D.el.comments.hidden = pages || D.tab !== 'comments';
       D.el.chat.hidden = pages || D.tab !== 'chat';
+      if (D.el.memory) D.el.memory.hidden = pages || D.tab !== 'memory';
       const btn = D.shadow.querySelector('[data-act="pages"]');
       if (btn) {
         btn.classList.toggle('on', pages);
@@ -4814,6 +4873,26 @@ ${selPillHtml()}
         }
         if (act === 'q-note-x') { D.questions.note = null; render(); return; }
         if (act === 'quiz') { cb('onOpenQuiz')(); return; }
+        // ---- the Memorize tab -------------------------------------------
+        if (act === 'mem-scope') { D.memory.scope = btn.dataset.scope || 'page'; loadMemory(); return; }
+        if (act === 'mem-answer') { answerMemory(Number(btn.dataset.choice)); return; }
+        if (act === 'mem-next') { nextMemory(); return; }
+        if (act === 'mem-flag') { retireMemory(target, 'flag'); return; }
+        if (act === 'mem-drop') { retireMemory(target, 'drop'); return; }
+        if (act === 'mem-page') { bg({ t: 'open-here', path: `/p/${btn.dataset.key || ''}` }); return; }
+        // a thread's own "filed as a memory · view": the tab, opened on the
+        // page this thread is on, which is where its questions are
+        if (act === 'mem-open') {
+          holdOff();
+          D.tab = 'memory';
+          D.memory.scope = 'page';
+          // start the sitting on THIS thread's own question, where it is due
+          D.memory.focus = target || '';
+          paintTabs();
+          rememberTab();
+          loadMemory();
+          return;
+        }
         if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
         if (act === 'pages') { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); return; }
         if (act === 'pages-back') { showThreads(); return; }
@@ -4921,6 +5000,10 @@ ${selPillHtml()}
         D.tab = t.dataset.tab;
         paintTabs();
         rememberTab();
+        // the vault is global and written from other tabs and the quiz: what
+        // is due here is asked for when the tab is opened, never cached from
+        // the last time it was
+        if (D.tab === 'memory') loadMemory();
       });
 
       // THE READER'S OWN SCROLL ends the hold — and only theirs. A `scroll`
@@ -6249,7 +6332,235 @@ ${selPillHtml()}
       try { r = await cb('onQuestionCounts')(); } catch { r = null; }
       if (!r || r.ok === false) return;
       D.questions.due = (r.counts && r.counts.due) || 0;
+      // …and which threads on this page have minted one. A card that produced
+      // a memory says so (below); one whose card the reader has since deleted
+      // from the vault stops saying it on the next answer, because this map is
+      // replaced wholesale rather than merged.
+      const was = JSON.stringify(D.questions.threads || {});
+      D.questions.threads = (r.threads && typeof r.threads === 'object') ? r.threads : {};
+      // …and what this page has due, which is the Memorize tab's badge. The
+      // tab's own load overwrites it with whatever scope the reader chose;
+      // until they open it, "due here" is the honest number to show.
+      if (r.pageCounts && D.memory.scope === 'page') D.memory.counts = r.pageCounts;
       paintQuiz();
+      paintTabs();
+      if (JSON.stringify(D.questions.threads) !== was) render();
+    }
+
+    // ---- the Memorize tab -------------------------------------------------
+    //
+    // THE SAME VAULT AND THE SAME SCHEDULE, in the column beside the reading.
+    // Everything here answers through /quiz-answer, which is the endpoint the
+    // scriptless quiz posts to, so SM-2's record on disk is written once and
+    // by one place. What is local is the ORDER of this sitting — a card got
+    // wrong comes back MEM_REQUEUE places later — and that is memory-only for
+    // the same reason the server's sitting is: every consequence of an answer
+    // is on disk before the drawer hears about it, so a reload costs the order
+    // and nothing else.
+    const MEM_REQUEUE = 3;
+    async function loadMemory(keepScope) {
+      if (!D.owner) return;
+      const M = D.memory;
+      M.loading = true; M.error = '';
+      renderMemory();
+      let r;
+      try { r = await cb('onMemoryCards')({ scope: keepScope || M.scope }); } catch { r = null; }
+      M.loading = false;
+      if (!r || r.ok === false) { M.error = (r && r.error) || 'the companion did not answer'; renderMemory(); return; }
+      M.scope = r.scope || 'page';
+      M.scopes = r.scopes || [];
+      M.counts = r.counts || {};
+      M.queue = (r.cards || []).slice();
+      M.i = 0; M.last = null; M.asked = 0; M.right = 0;
+      // Arriving with a thread in mind (its "filed as a memory · view"): start
+      // the sitting on that thread's own question rather than wherever the
+      // schedule was pointing. Only reorders what is already due — the tab
+      // never shows a card the schedule is resting, on any road in.
+      if (M.focus) {
+        const at = M.queue.findIndex(c => c && ((c.source || {}).thread_id === M.focus || c.id === M.focus));
+        if (at > 0) M.queue.unshift(M.queue.splice(at, 1)[0]);
+        M.focus = '';
+      }
+      paintTabs();
+      renderMemory();
+    }
+
+    const memCard = () => (D.memory.queue[D.memory.i] || null);
+
+    async function answerMemory(choice) {
+      const M = D.memory;
+      const card = memCard();
+      if (!card || M.last) return;
+      const r = await cb('onQuizAnswer')(card.id, choice);
+      if (!r || r.ok === false) { M.error = (r && r.error) || 'that answer did not save'; renderMemory(); return; }
+      M.last = { id: card.id, choice, correct: !!r.correct, card: r.card || card };
+      M.asked += 1;
+      if (r.correct) M.right += 1;
+      // …and the one thing the schedule on disk cannot express: a card got
+      // wrong must come back before the reader stands up. SM-2 has already
+      // made it due this instant; this is what actually asks it again.
+      else M.queue.splice(Math.min(M.i + 1 + MEM_REQUEUE, M.queue.length), 0, r.card || card);
+      refreshDue();
+      renderMemory();
+    }
+
+    // TWO WAYS A CARD LEAVES, and they are not the same thing.
+    //
+    //   "seems wrong"  parks it: out of rotation, everything kept, waiting to
+    //                  be rewritten (a bot wrote it; the reader disagreeing
+    //                  with a card is a complaint about the card, not about
+    //                  the passage they chose to remember).
+    //   "discard"      drops it: this was not worth remembering after all, and
+    //                  the row goes. No confirm — the reader is deleting one
+    //                  machine-written question out of their own bank, which
+    //                  is a smaller act than the dialog would be — but never
+    //                  silent either: the pane says which of the two happened.
+    //
+    // Both take the card out of THIS sitting as well as out of the vault, or
+    // the requeued copy of a wrong answer would come back after it was gone.
+    async function retireMemory(id, how) {
+      const M = D.memory;
+      const r = await cb(how === 'drop' ? 'onQuizDiscard' : 'onQuizFlag')(id);
+      if (!r || r.ok === false) { M.error = (r && r.error) || 'that did not save'; renderMemory(); return; }
+      const before = M.queue.slice(0, M.i).filter(c => c && c.id === id).length;
+      M.queue = M.queue.filter(c => c && c.id !== id);
+      M.i = Math.max(0, M.i - before);
+      M.last = null;
+      // …and the count of what is RESTING has to move with it, or the
+      // caught-up line goes on counting a card that is no longer there.
+      M.counts = { ...M.counts, live: Math.max(0, (Number(M.counts.live) || 0) - 1) };
+      M.note = how === 'drop' ? 'discarded — it has left the vault' : 'parked for revision — it stops being asked';
+      const mine = M.note;
+      setTimeout(() => { if (D.memory.note === mine) { D.memory.note = ''; renderMemory(); } }, 4000);
+      refreshDue();
+      renderMemory();
+    }
+
+    function nextMemory() {
+      const M = D.memory;
+      M.last = null;
+      M.i += 1;
+      renderMemory();
+    }
+
+    const MEM_LETTER = ['A', 'B', 'C', 'D', 'E'];
+
+    function memScopesHtml() {
+      const M = D.memory;
+      if (!M.scopes.length) return '';
+      // ONE BANK, LOOKED AT FROM WHERE THE READER IS STANDING — this page, or
+      // a project it is filed in. Never "everything": that is the quiz's own
+      // job at its own address, and offering it here as well would be two
+      // homes for one archive.
+      return `<div class="memscopes">${M.scopes.map(s => `<button class="memchip${
+        s.id === M.scope ? ' on' : ''}" data-act="mem-scope" data-scope="${esc(s.id)}" type="button"
+        title="${esc(`${s.due} due of ${s.live} filed`)}">${esc(s.label)}<span class="n">${
+  Number(s.due) || 0}</span></button>`).join('')}</div>`;
+    }
+
+    // Where a card came from, in the drawer's own terms: a thread on THIS page
+    // is a jump (the passage is right there in the document), a card from
+    // another page in a project scope is a door to the reading room. Both
+    // resolve against what still exists — a deleted thread just leaves the
+    // page link, and neither is ever drawn as a dead one.
+    function memTraceHtml(card) {
+      const s = (card && card.source) || {};
+      const here = (D.page && D.page.url) === s.url;
+      const thread = here && ((D.page && D.page.threads) || []).some(t => t && t.id === s.thread_id);
+      if (thread) {
+        return `<div class="fromdisc frommem"><span>from a discussion on this page</span>
+          <button class="rebtn" type="button" data-act="strike-view" data-target="${esc(s.thread_id)}"
+            title="go to the passage this question was made from">trace</button></div>`;
+      }
+      if (!s.page_key) return '';
+      return `<div class="fromdisc frommem"><span>from ${esc(s.title || 'a page you read')}</span>
+        <button class="rebtn" type="button" data-act="mem-page" data-key="${esc(s.page_key)}"
+          title="open this page in the reading room">trace</button></div>`;
+    }
+
+    function memBodyHtml() {
+      const M = D.memory;
+      if (M.loading && !M.queue.length) return `<p class="memnote">reading the vault…</p>`;
+      if (M.error) return `<p class="memnote bad">${esc(M.error)}</p>`;
+      const card = M.last ? M.last.card : memCard();
+      if (!card) {
+        // Nothing due is the ordinary, healthy state of a vault and reads as
+        // one: what is resting is a number, not a warning.
+        const live = Number(M.counts.live) || 0;
+        const pending = Number(M.counts.pending) || 0;
+        return `<div class="memcard empty">
+          <p class="memq">${live ? 'All caught up here.' : 'Nothing filed from here yet.'}</p>
+          <p class="memnote">${live
+            ? `${live} question${live === 1 ? '' : 's'} resting${pending ? ` · ${pending} being written` : ''}.`
+            : 'Press ? on a comment, or select a passage and use the question tool.'}</p>
+        </div>`;
+      }
+      const opts = card.options || [];
+      if (!M.last) {
+        return `<div class="memcard">
+          <p class="memq">${esc(card.question)}</p>
+          ${opts.map((o, i) => `<button class="memopt" data-act="mem-answer" data-choice="${i}" type="button">
+            <span class="ol">${MEM_LETTER[i] || ''}</span><span>${esc(o)}</span></button>`).join('')}
+          ${memTraceHtml(card)}
+        </div>`;
+      }
+      // THE WRONG-ANSWER MOMENT, IN A 320px COLUMN.
+      //
+      // The quiz page can put the why, the passage and the provenance in a
+      // margin beside the question. There is no margin here, and the naive
+      // translation — keep all four options as boxes, then squeeze the
+      // explanation under them — spends the whole column on the thing the
+      // reader has already finished with. So the card becomes a CORRECTION
+      // SLIP instead:
+      //
+      //   · what they pressed shrinks to one struck line ("you said: B …").
+      //     They know what they pressed; it needs acknowledging, not a box.
+      //   · the distractors GO. They did their work at the moment of the tap,
+      //     and after it they are three lines of plausible-sounding wrong
+      //     answer sitting between the reader and the explanation.
+      //   · the right answer is promoted to a slab of its own, labelled, in
+      //     the confirm green — the only option still at full size, so there
+      //     is nothing to compare it against and nothing to misread.
+      //   · the why then gets the width that buys it: full column, serif, an
+      //     accent rule down its left. That rule is the same hairline the
+      //     margin cards wear on the quiz page — the same object, stacked
+      //     rather than set beside.
+      //   · and `next ›` sticks to the foot of the pane, so it is under the
+      //     thumb (or the cursor) while the eye is still in the explanation.
+      const right = !!M.last.correct;
+      const answer = opts[card.answer] || '';
+      const said = opts[M.last.choice] || '';
+      return `<div class="memcard slip">
+        <p class="memverdict ${right ? 'right' : 'wrong'}">${right ? '✓ right' : '✗ not quite'}</p>
+        <p class="memq">${esc(card.question)}</p>
+        ${right ? '' : `<p class="memsaid"><span class="lab">you said</span><span class="ol">${MEM_LETTER[M.last.choice] || ''}</span>
+          <s>${esc(said)}</s></p>`}
+        <div class="memanswer">
+          <span class="ol">${MEM_LETTER[card.answer] || ''}</span>
+          <span><b class="lbl">${right ? 'right answer' : 'the answer'}</b>${esc(answer)}</span>
+        </div>
+        ${card.why ? `<div class="memnote why"><b>why</b> ${esc(card.why)}</div>` : ''}
+        ${(card.source && card.source.quote)
+    ? `<div class="memnote src"><b>where it came from</b> <q>${esc(card.source.quote)}</q></div>` : ''}
+        ${memTraceHtml(card)}
+        <div class="memacts">
+          <button class="rebtn memnext" data-act="mem-next" type="button">next ›</button>
+          <span class="memscore">${M.right}/${M.asked} this sitting</span>
+        </div>
+        <div class="memminor">
+          <button class="rebtn" data-act="mem-flag" data-target="${esc(card.id)}" type="button"
+            title="park this card for revision — it stops being asked until it is rewritten">seems wrong</button>
+          <button class="rebtn" data-act="mem-drop" data-target="${esc(card.id)}" type="button"
+            title="drop this question for good — it leaves the vault">discard</button>
+        </div>
+      </div>`;
+    }
+
+    function renderMemory() {
+      if (!D.mounted || !D.el.memory) return;
+      const M = D.memory;
+      D.el.memory.innerHTML = `${memScopesHtml()}${
+        M.note ? `<p class="membeat">${esc(M.note)}</p>` : ''}${memBodyHtml()}`;
     }
 
     // A bot's suggestion, as a chip under its reply. One step, inline, like
@@ -7282,7 +7593,8 @@ ${selPillHtml()}
       // as the note it leaves and the count on the header's door.
       makeQuestion: (threadId, extra) => doMakeQuestion(threadId || '', extra || {}),
       questionState: () => ({ busy: D.questions.busy, note: D.questions.note,
-                              due: D.questions.due, made: { ...D.questions.made } }),
+                              due: D.questions.due, made: { ...D.questions.made },
+                              threads: { ...D.questions.threads } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,

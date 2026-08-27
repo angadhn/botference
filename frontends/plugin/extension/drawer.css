@@ -415,6 +415,13 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .fromdisc .rebtn { padding: 0 4px; font-size: 11.5px }
 .fromdisc .rebtn:not([disabled]):hover { color: var(--strike-line) }
+/* …and the same line for the OTHER thing a thread can leave behind: a memory
+   in the vault. Filing a question paints nothing on the document by design, so
+   this line is the only trace on the page that it happened — and the way to
+   the quiz, which is where the question actually comes back. Same register as
+   the strikeout's back-link; the accent, not the strike's red, because nothing
+   here is a deletion. */
+.fromdisc.frommem .rebtn:not([disabled]):hover { color: var(--accent) }
 
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }
@@ -650,6 +657,122 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 
 .pane { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 12px 14px 24px }
 .pane[hidden] { display: none }
+
+/* ── Memorize: the vault, in the column beside the reading ────────────────
+   The same vault and the same SM-2 as the quiz at memorizer.botference.com —
+   this is the near view (this page, this project) and that is the far one
+   (every concept, on a phone). The look is the quiz's own, compressed into a
+   drawer: the question in a serif because it is the one thing here being READ
+   rather than operated, the options as quiet full-width targets, and the why
+   and the passage as margin notes under them. */
+.pane[data-pane="memory"] { padding-top: 10px }
+.memscopes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px }
+.memchip {
+  padding: 4px 10px; border-radius: 999px; background: transparent; color: var(--muted);
+  border: 1px solid var(--card-line); font: 12px/1.3 var(--sans);
+}
+.memchip:hover { color: var(--fg); border-color: var(--accent) }
+.memchip.on { color: var(--accent); border-color: var(--accent); font-weight: 600 }
+.memchip .n { margin-left: 6px; opacity: .65; font-variant-numeric: tabular-nums }
+.memcard {
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 12px;
+  padding: 14px 13px 12px;
+}
+.memcard.empty { text-align: center; padding: 26px 14px }
+.memq {
+  margin: 0 0 12px;
+  font: 15.5px/1.45 Georgia, "Iowan Old Style", "Times New Roman", serif; color: var(--fg);
+}
+.memcard.empty .memq { margin-bottom: 4px }
+.memopt {
+  display: flex; width: 100%; text-align: left; gap: 9px; align-items: flex-start;
+  margin: 0 0 6px; padding: 9px 10px; font: 13px/1.45 var(--sans); color: var(--fg);
+  background: transparent; border: 1px solid var(--card-line); border-radius: 10px;
+}
+.memopt:hover { border-color: var(--accent); background: var(--rail) }
+.memopt.row { cursor: default }
+.memopt.row:hover { border-color: var(--card-line); background: transparent }
+/* right is a calm confirmation and wrong is WARM, never the strikeout's red:
+   a red line in this product means "this passage should come out", and being
+   wrong in your own memory is not a correction to the document */
+.memopt.right { border-color: var(--done-line); background: var(--done) }
+.memopt.wrong { border-color: var(--ready-line); background: var(--ready) }
+.memopt .ol {
+  flex: 0 0 18px; height: 18px; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: 50%; border: 1px solid var(--card-line);
+  font: 600 10px/1 var(--sans); color: var(--muted);
+}
+.memopt.right .ol, .memopt.wrong .ol { color: var(--fg); border-color: currentColor }
+.memverdict {
+  margin: 0 0 8px; font: 600 10.5px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+}
+.memverdict.right { color: var(--done-line) }
+.memverdict.wrong { color: var(--ready-line) }
+.memnote { margin: 10px 0 0; font: 12px/1.55 var(--sans); color: var(--muted) }
+.memnote.bad { color: var(--bad) }
+.memnote b {
+  display: block; font: 600 10px/1 var(--sans); letter-spacing: .11em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 4px;
+}
+.memnote.why { color: var(--fg); border-left: 2px solid var(--accent); padding-left: 9px }
+.memnote.src { border-left: 2px solid var(--card-line); padding-left: 9px }
+.memnote.src q { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif }
+/* ── the wrong-answer moment, in a drawer column ──────────────────────────
+   No margin to put anything in, so the card becomes a correction slip: what
+   was pressed shrinks to one struck line, the distractors go entirely (they
+   did their work at the tap and afterwards they are three plausible wrong
+   sentences between the reader and the explanation), and the right answer is
+   the only option left at full size. */
+.memsaid {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; margin: 0 0 10px;
+  font: 12px/1.5 var(--sans); color: var(--muted);
+}
+.memsaid .lab { white-space: nowrap }
+.memsaid s { flex: 1 1 60%; min-width: 0 }
+.memsaid .ol {
+  flex: 0 0 16px; height: 16px; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: 50%; border: 1px solid var(--card-line);
+  font: 600 9.5px/1 var(--sans);
+}
+.memsaid s { text-decoration-color: var(--ready-line) }
+.memanswer {
+  display: flex; gap: 9px; align-items: flex-start; padding: 11px 11px 12px;
+  border: 1px solid var(--done-line); border-left-width: 3px; border-radius: 10px;
+  background: var(--done); font: 13.5px/1.5 var(--sans); color: var(--fg);
+}
+.memanswer .ol {
+  flex: 0 0 18px; height: 18px; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: 50%; border: 1px solid var(--done-line);
+  font: 600 10px/1 var(--sans); color: var(--fg);
+}
+.memanswer .lbl {
+  display: block; font: 600 9.5px/1 var(--sans); letter-spacing: .12em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 4px;
+}
+.memcard.slip .memnote.why { font-size: 13px; line-height: 1.6 }
+.membeat {
+  margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; background: var(--rail);
+  border: 1px solid var(--card-line); font: 12px/1.4 var(--sans); color: var(--muted);
+}
+/* the two quiet exits, well under the answer: parking a card for revision and
+   dropping it for good are both the reader's business with the CARD, never a
+   fifth thing to press while they are answering the question */
+.memminor { display: flex; gap: 8px; margin: 12px 0 0; padding-top: 9px;
+  border-top: 1px solid var(--card-line) }
+.memminor .rebtn { font-size: 11.5px; color: var(--muted) }
+.memminor .rebtn:not([disabled]):hover { color: var(--strike-line) }
+/* `next ›` sticks to the foot of the column while the eye is still in the
+   explanation — the same reason the quiz page pins its action bar on a phone */
+.memacts { display: flex; align-items: center; gap: 10px; margin: 12px 0 0;
+  position: sticky; bottom: -12px; padding: 8px 0; background: var(--card) }
+/* two classes deep on purpose: .rebtn is declared further down this file and
+   would otherwise win the tie and paint the one obvious act as a grey link */
+.memacts .memnext {
+  padding: 5px 14px; border-radius: 999px; border: 1px solid transparent;
+  background: var(--accent); color: #fff; font-weight: 600; opacity: 1;
+}
+.memacts .memnext:hover { background: var(--accent-hover); color: #fff; border-color: transparent }
+.memscore { margin-left: auto; font: 11.5px/1 var(--sans); color: var(--muted) }
 
 /* ── the @-menu: who you can summon, where you are typing ───────────────── */
 /* Deliberately plain — a short list, the agent's own mark, the handle. It

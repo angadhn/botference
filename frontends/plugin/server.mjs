@@ -957,14 +957,74 @@ function quizSession(req) {
   if (Date.now() - s.at > QUIZ_TTL_MS) { quizzes.delete(who); return null; }
   return s;
 }
+// ---- memorizer.botference.com: the vault, at an address of its own -------
+//
+// One companion, two doors. The reading room is discuss.botference.com and
+// stays there; the quiz is a PRODUCT — a thing opened on a phone at the end of
+// a day, with nothing else on it — and a product wants a home page, not a path
+// inside somebody else's site. So the same tunnel carries a second hostname to
+// this same process (lib/plugin.sh's ingress list, exactly as the legacy
+// plugin.botference.com door is carried) and on THAT hostname `/` is the quiz.
+//
+// Nothing about auth changes, which is the point of doing it this way: the
+// gate, the owner-only checks and the hub's device cookie (scoped to the
+// PARENT domain, so an approved phone arrives already the owner) know nothing
+// about hostnames and are not asked to learn.
+const MEMORY_HOSTS = new Set(String(process.env.PLUGIN_MEMORY_HOSTNAME ?? 'memorizer.botference.com')
+  .split(',').map(h => h.trim().toLowerCase()).filter(Boolean));
+const hostOf = req => String((req && req.headers && req.headers.host) || '').split(':')[0].toLowerCase();
+export const isMemoryHost = req => MEMORY_HOSTS.has(hostOf(req));
+// What is served on the vault's hostname, and nothing else is. Everything here
+// is either the quiz, the session (so the sign-in the reading room uses works
+// unchanged on this host too) or an answer a script asks for.
+const MEMORY_PATHS = new Set(['/quiz', '/quiz-answer', '/quiz-flag', '/quiz-delete',
+  '/questions', '/question', '/auth', '/signout', '/whoami', '/health']);
+// The reading room's origin AS SEEN FROM the vault's hostname — empty (and so
+// every link relative) everywhere else. A card's source lives in the reading
+// room, which is a different address from here, so those links have to be
+// absolute; the sibling label on the same domain is the answer, and is
+// overridable for anyone whose two doors are named differently.
+export function readingRoomOrigin(req) {
+  if (!isMemoryHost(req)) return '';
+  const here = hostOf(req);
+  const sib = String(process.env.PLUGIN_READING_HOSTNAME || here.replace(/^[^.]+\./, 'discuss.'));
+  return (sib && sib !== here) ? `https://${sib}` : '';
+}
+
+// THE QUIET WAY BACK from a card to what made it, resolved against the live
+// store at the moment the page is drawn — three states and no fourth:
+//   · the discussion that produced the card, if that thread is still there;
+//   · the page, plain, if the thread is gone but the record is not;
+//   · nothing at all, if the page itself has gone.
+// A card's `thread_id` is a soft link by design (the same design `from_thread`
+// has on a strikeout): the reader deletes threads, and a dangling id must read
+// as "this question stands alone", never as a broken link.
+function traceOf(card, home = '') {
+  const s = (card && card.source) || {};
+  const key = String(s.page_key || '');
+  if (!key) return null;
+  const page = store.readPageByKey(key);
+  if (!page) return null;
+  const thread = s.thread_id ? store.findThread(page, s.thread_id) : null;
+  const title = store.displayTitle(page);
+  return thread
+    ? { href: `${home}/p/${key}#${thread.id}`, thread: true, title }
+    : { href: `${home}${store.hasSnapshot(key) ? '/a/' : '/p/'}${key}`, thread: false, title };
+}
+
 // where a quiz form post lands afterwards. Deliberately NOT `backTo` — that
 // one's allowlist is `/p/<key>` and widening it would widen an anti-open-
 // redirect guard for a page that needs no redirect from anywhere else.
-function quizBack(data, reveal) {
+function quizBack(data, reveal, gone) {
   const q = new URLSearchParams();
   if (data.project) q.set('project', String(data.project).slice(0, 80));
   if (data.tag) q.set('tag', String(data.tag).slice(0, 80));
   if (reveal) q.set('reveal', '1');
+  // what happened to the card the reader just took out of the rotation. It is
+  // one word on the next page, and it is not optional: parking a card and
+  // discarding it are different acts with different consequences, and a click
+  // that answers with a blank next question tells the reader neither.
+  if (gone) q.set('gone', gone);
   const s = q.toString();
   return `/quiz${s ? `?${s}` : ''}`;
 }
@@ -1444,7 +1504,7 @@ function runFigure(req, res) {
 }
 
 export function handler(req, res) {
-  const url = req.url.split('?')[0];
+  let url = req.url.split('?')[0];
   // CORS, hosted only: the remote extension is cross-origin against a public
   // hostname. Wildcard origin is safe precisely because API auth is a bearer
   // header — a wildcard can never carry the cookie the browsers use.
@@ -1481,6 +1541,21 @@ export function handler(req, res) {
     });
   }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
+
+  // --- the vault's own hostname ------------------------------------------
+  // On memory.botference.com the quiz IS the site: `/` is the page itself
+  // rather than a redirect to somebody else's index, and everything that is
+  // not the quiz or the session goes home rather than serving the reading
+  // room at a second address (two homes for one archive is the confusion this
+  // whole split exists to avoid). AFTER the gate, so the vault's new door is
+  // exactly as shut as the old one.
+  if (isMemoryHost(req)) {
+    if (url === '/' && (req.method === 'GET' || req.method === 'HEAD')) url = '/quiz';
+    else if (!MEMORY_PATHS.has(url)) {
+      if (req.method === 'GET' || req.method === 'HEAD') return res.writeHead(302, { location: '/' }).end();
+      return fail(res, 404, 'not found');
+    }
+  }
 
   // --- the reading room: collaborators without the extension -------------
   if (req.method === 'GET' && (url === '/' || url === '/pages')) {
@@ -2819,11 +2894,64 @@ export function handler(req, res) {
     const q = new URLSearchParams(req.url.split('?')[1] || '');
     const vault = questions.readVault();
     const scope = { project: q.get('project') || '', tag: q.get('tag') || '', key: q.get('key') || '' };
+    // ?page=<url> asks a SECOND question of the same request: which threads on
+    // that page have minted a memory. Deliberately not the `key` scope — the
+    // drawer wants the door's count over the WHOLE bank (one bank, every page)
+    // and the thread marks for the page it is open on, and folding the two
+    // into one filter would make the door say "3 due" when it means "3 due
+    // here". The drawer holds a url, not a sha1; either spelling is accepted.
+    const key = q.get('page') ? store.pageKey(q.get('page')) : scope.key;
     return ok(res, {
       counts: questions.counts(vault, scope),
       facets: questions.facets(vault),
       due: questions.dueCards(vault, { ...scope, limit: questions.SESSION_MAX }),
+      // WHICH THREADS ON THIS PAGE HAVE MINTED ONE, when a page was named:
+      // the drawer's own affordance, answered in the request it was already
+      // making rather than one per card on the screen.
+      threads: key ? questions.threadCounts(vault, key) : undefined,
+      // …and what THIS page has due, which is the Memorize tab's own badge.
+      // Separate from `counts` on purpose: the header door counts the whole
+      // bank, the tab counts where the reader is standing, and the two
+      // numbers are different questions with different answers.
+      page_counts: key ? questions.counts(vault, { key }) : undefined,
       cards: q.get('all') === '1' ? vault.cards : undefined,
+    });
+  }
+  // THE DRAWER'S OWN VIEW OF THE VAULT, scoped to where the reader IS.
+  //
+  // The quiz at memory.botference.com is the everything-bank: you go there to
+  // revise concepts, on a phone, away from all of this. This is the other half
+  // of the same thought — revising the page you are standing on, in the column
+  // beside it, while the argument that produced the questions is still open.
+  // Same vault, same endpoints, same SM-2: the drawer answers through
+  // /quiz-answer like the scriptless page does, and there is exactly one
+  // schedule on disk. What this route adds is the SCOPE the drawer needs and
+  // the reading room does not: this page, or one of the council projects the
+  // page is filed in ("what did I take away from this book").
+  if (req.method === 'GET' && url === '/memory') {
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const page = store.readPage(q.get('url') || '');
+    if (!page) return fail(res, 404, 'unknown page');
+    const key = store.pageKey(page.url);
+    const vault = questions.readVault();
+    // WHERE THE READER MAY LOOK FROM, and nothing else: this page, and the
+    // projects this page is filed in. Never the whole bank — that is the
+    // quiz's job, at its own address, and a drawer offering it too would be
+    // two homes for one archive.
+    const projects = store.projectsOf(page).map(p => ({
+      id: `project:${p.id}`, label: p.id,
+      ...questions.counts(vault, { project: p.id }),
+    }));
+    const scopes = [{ id: 'page', label: 'this page', ...questions.counts(vault, { key }) }, ...projects];
+    const asked = String(q.get('scope') || 'page');
+    const chosen = scopes.some(s => s.id === asked) ? asked : 'page';
+    const scope = chosen === 'page' ? { key } : { project: chosen.slice('project:'.length) };
+    return ok(res, {
+      scope: chosen,
+      scopes,
+      counts: questions.counts(vault, scope),
+      cards: questions.dueCards(vault, { ...scope, limit: questions.SESSION_MAX }),
     });
   }
   // Answering one. The grade is the whole of the reader's input — right or
@@ -2863,7 +2991,9 @@ export function handler(req, res) {
       questions.saveVault(vault);
       const s = quizSession(req);
       if (s && s.last && s.last.id === data.id) s.last = null;
-      if (data._form) return seeOther(res, quizBack(data, false));
+      if (data._form) {
+        return seeOther(res, quizBack(data, false, url === '/quiz-delete' ? 'discarded' : 'flagged'));
+      }
       ok(res, { ok: true });
     });
   }
@@ -2890,9 +3020,17 @@ export function handler(req, res) {
     const reveal = q.get('reveal') === '1' ? s.last : null;
     if (!reveal) s.last = null;
     const shown = reveal ? questions.findCard(vault, reveal.id) : questions.sessionCard(vault, s);
+    // where the reading room is, from here: relative on its own hostname,
+    // absolute on the vault's own (they are two addresses for one companion)
+    const home = readingRoomOrigin(req);
     const html = quizView({
       me,
       card: shown,
+      home,
+      // the quiet way back, on every card and in every state — resolved now,
+      // against the live record, so a deleted thread or a deleted page drops
+      // the affordance instead of offering a link to nothing
+      trace: shown ? traceOf(shown, home) : null,
       // does the source page have a readable copy on this machine? then "the
       // page" is the article view and the quote is a tap from being in context
       read: !!(shown && store.hasSnapshot(String((shown.source || {}).page_key || ''))),
@@ -2901,6 +3039,8 @@ export function handler(req, res) {
       counts: questions.counts(vault, scope),
       facets: questions.facets(vault),
       scope,
+      // the one-line receipt for a card just taken out of the rotation
+      gone: ['discarded', 'flagged'].includes(q.get('gone')) ? q.get('gone') : '',
     });
     return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   }

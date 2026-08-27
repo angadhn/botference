@@ -383,15 +383,24 @@ await test('a card is drawn as its question and one form per option', () => {
 await test('a wrong answer shows the right one, the why, AND where it came from', () => {
   const v = vaultWith({});
   const c = v.cards[0];
+  // the thread link is the CALLER's resolution (server.mjs traceOf, against
+  // the live record) — the view is handed a `trace` or it draws none, which is
+  // what stops a card outliving its discussion into a dead link
+  const trace = { href: `/p/${'a'.repeat(40)}#t-1`, thread: true, title: 'Fat tails' };
   const html = views.quizView({ me: ME, card: c, reveal: { id: c.id, choice: 1, correct: false },
-    session: { asked: 1, right: 0, wrong: 1, left: 1 }, counts: COUNTS, facets: Q.facets(v) });
+    session: { asked: 1, right: 0, wrong: 1, left: 1 }, counts: COUNTS, facets: Q.facets(v), trace });
   assert.match(html, /class="verdict wrong"/);
   assert.match(html, /class="optrow right"/);
   assert.match(html, /class="optrow wrong"/);
   assert.match(html, /convergence in the limit/, 'the explanation');
   assert.match(html, /converges very slowly/, 'the passage itself');
   assert.match(html, new RegExp(`href="/p/${'a'.repeat(40)}#t-1"`), 'the conversation it came from');
-  assert.match(html, /this card seems wrong/, 'a bot wrote this and may be wrong');
+  assert.match(html, /seems wrong/, 'a bot wrote this and may be wrong');
+  assert.match(html, />discard</, '…and a question that was not worth keeping can go');
+  const lonely = views.quizView({ me: ME, card: c, reveal: { id: c.id, choice: 1, correct: false },
+    session: { asked: 1, right: 0, wrong: 1, left: 1 }, counts: COUNTS, facets: Q.facets(v) });
+  assert.doesNotMatch(lonely, new RegExp(`#t-1`),
+    'and with no trace resolved, no link into a discussion that may not be there');
 });
 
 await test('the source is the ARTICLE where there is a readable copy', () => {
@@ -540,7 +549,7 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
     assert.equal(card.sched.lapses, 1);
     assert.equal(card.sched.interval, 0);
     const html = await GET(s.base, '/quiz?reveal=1', { accept: 'text/html' });
-    assert.match(html.body, /Not quite/);
+    assert.match(html.body, /not quite/);
     assert.match(html.body, /asymptotic/);
     assert.match(html.body, /converges very slowly/, 'the passage it came from');
     assert.match(html.body, new RegExp(`#${threadId}`), 'and the thread');
@@ -663,6 +672,263 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
   await sleep(120);
 }
 
+// ---------------------------------------------------------------------------
+// PART SIX: the two-way link, the near view, and the vault's own address.
+//
+// A question leaves no mark on the page — that is deliberate — so the only
+// trace of it anywhere is the pair of quiet affordances built here: the card
+// knows what made it, and the thread knows what it made. Both resolve against
+// what still EXISTS, which is the whole of the contract: a deleted thread or a
+// deleted page must degrade to a smaller true statement, never to a dead link.
+{
+  const root = tmp('two-way');
+  const s = await startServer({ root, args: ['--no-agents'] });
+  const vaultFile = path.join(root, '.botference', 'plugin', 'questions.json');
+  const vault = () => JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+  const save = v => fs.writeFileSync(vaultFile, JSON.stringify(v, null, 2));
+
+  await POST(s.base, '/page', { url: PAGE, title: 'Fat tails', site: 'example.com' });
+  const th = await POST(s.base, '/thread', {
+    url: PAGE, quote: 'The sample mean converges very slowly.',
+    prefix: '', suffix: '', msg: { text: 'why?' },
+  });
+  const tid = th.json.thread.id;
+  const th2 = await POST(s.base, '/thread', {
+    url: PAGE, quote: 'One observation can outweigh the rest.',
+    prefix: '', suffix: '', msg: { text: 'and this?' },
+  });
+  const tid2 = th2.json.thread.id;
+  // two cards off this page: one on a thread that survives, one on a thread
+  // the reader is about to delete
+  await POST(s.base, '/question', { url: PAGE, thread_id: tid });
+  await POST(s.base, '/question', { url: PAGE, thread_id: tid2 });
+  {
+    const v = vault();
+    for (const c of v.cards) {
+      c.state = 'live'; c.question = 'Q?'; c.options = ['a', 'b']; c.answer = 0;
+      c.why = 'because'; c.sched.due = new Date(Date.now() - 864e5).toISOString();
+    }
+    save(v);
+  }
+  const key = Object.keys((await GET(s.base, '/index')).json)[0];
+
+  await test('a page names which of its threads have minted a memory', async () => {
+    const r = await GET(s.base, `/questions?page=${encodeURIComponent(PAGE)}`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.threads, { [tid]: 1, [tid2]: 1 });
+    assert.equal(r.json.page_counts.due, 2);
+  });
+
+  await test('…and asking that does NOT narrow the door\'s own count to one page',
+    async () => {
+      // the header door counts one bank, every page; the tab counts where the
+      // reader is standing. Two questions, two answers, one request.
+      const r = await GET(s.base, `/questions?page=${encodeURIComponent(PAGE)}`);
+      assert.equal(r.json.counts.due, 2, 'counts stay global');
+      const scoped = await GET(s.base, `/questions?key=${'0'.repeat(40)}`);
+      assert.equal(scoped.json.counts.due, 0, '…and `key` is still the filter that narrows them');
+    });
+
+  await test('a failed row is not a memory, and a deleted card stops being one', async () => {
+    const v = vault();
+    v.cards[1].state = 'failed';
+    save(v);
+    let r = await GET(s.base, `/questions?page=${encodeURIComponent(PAGE)}`);
+    assert.deepEqual(r.json.threads, { [tid]: 1 }, 'nothing was written, so nothing was filed');
+    const gone = v.cards[1].id;
+    await POST(s.base, '/quiz-delete', { id: gone });
+    r = await GET(s.base, `/questions?page=${encodeURIComponent(PAGE)}`);
+    assert.deepEqual(r.json.threads, { [tid]: 1 });
+    v.cards = vault().cards;
+    assert.ok(!v.cards.some(c => c.id === gone), 'discard drops the row from the bank');
+  });
+
+  await test('the quiz page carries the way back while the discussion lives', async () => {
+    const html = (await GET(s.base, '/quiz', { accept: 'text/html' })).body;
+    assert.match(html, /from a discussion/);
+    assert.match(html, new RegExp(`href="/p/${key}#${tid}"[^>]*target="_blank"`));
+    assert.match(html, /rel="noopener noreferrer"/, 'a new window, and no window.opener');
+  });
+
+  await test('…the page alone once the discussion is deleted', async () => {
+    await POST(s.base, '/delete', { url: PAGE, thread_id: tid });
+    const html = (await GET(s.base, '/quiz', { accept: 'text/html' })).body;
+    assert.match(html, /from a page you read/);
+    assert.match(html, new RegExp(`href="/p/${key}"[^>]*target="_blank"`));
+    assert.doesNotMatch(html, new RegExp(`#${tid}`), 'and never a link into a thread that is gone');
+  });
+
+  await test('…and nothing at all once the page is gone', async () => {
+    await POST(s.base, '/delete-page', { url: PAGE });
+    const html = (await GET(s.base, '/quiz', { accept: 'text/html' })).body;
+    assert.doesNotMatch(html, /trace ↗/, 'a dangling provenance drops the affordance');
+    assert.doesNotMatch(html, /target="_blank"/);
+  });
+
+  s.proc.kill();
+  await sleep(120);
+}
+
+// PART SEVEN: the near view — the drawer's Memorize tab.
+//
+// The far view (the quiz at its own address) is for revising CONCEPTS; this is
+// for revising the page you are still standing on. One vault, one schedule:
+// everything the tab does it does through the endpoints the scriptless page
+// uses, and the only thing this route adds is the scope.
+{
+  const root = tmp('memorize');
+  const s = await startServer({ root, args: ['--no-agents'] });
+  const vaultFile = path.join(root, '.botference', 'plugin', 'questions.json');
+  const vault = () => JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+  const save = v => fs.writeFileSync(vaultFile, JSON.stringify(v, null, 2));
+  const OTHER = 'https://example.com/other';
+
+  await POST(s.base, '/page', { url: PAGE, title: 'Fat tails', site: 'example.com' });
+  await POST(s.base, '/page', { url: OTHER, title: 'Another', site: 'example.com' });
+  const t = await POST(s.base, '/thread', {
+    url: PAGE, quote: 'The sample mean converges very slowly.',
+    prefix: '', suffix: '', msg: { text: 'why?' },
+  });
+  await POST(s.base, '/question', { url: PAGE, thread_id: t.json.thread.id });
+  await POST(s.base, '/question', { url: OTHER, quote: 'a passage over there' });
+  {
+    const v = vault();
+    for (const c of v.cards) {
+      c.state = 'live'; c.question = `Q about ${c.source.title}`;
+      c.options = ['right', 'wrong']; c.answer = 0; c.why = 'because';
+      c.source.projects = ['applied-probability'];
+      c.sched.due = new Date(Date.now() - 864e5).toISOString();
+    }
+    save(v);
+  }
+
+  await test('the tab is scoped to the page the reader is on', async () => {
+    const r = await GET(s.base, `/memory?url=${encodeURIComponent(PAGE)}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.json.scope, 'page');
+    assert.equal(r.json.cards.length, 1);
+    assert.equal(r.json.cards[0].source.url, PAGE, 'the other page\'s card is not here');
+    assert.equal(r.json.counts.due, 1);
+  });
+
+  await test('…and widens only to the projects that page is filed in', async () => {
+    const r = await GET(s.base, `/memory?url=${encodeURIComponent(PAGE)}`);
+    assert.deepEqual(r.json.scopes.map(x => x.id), ['page'],
+      'an unfiled page offers no wider view, and never "everything"');
+    await POST(s.base, '/project-page', { url: PAGE, root, project_id: 'applied-probability' })
+      .catch(() => null);
+  });
+
+  await test('an unknown page is a 404, not an empty sitting', async () => {
+    const r = await GET(s.base, `/memory?url=${encodeURIComponent('https://nowhere.test/x')}`);
+    assert.equal(r.status, 404);
+  });
+
+  await test('answering from the tab writes the SAME SM-2 record, not a second one', async () => {
+    const before = await GET(s.base, `/memory?url=${encodeURIComponent(PAGE)}`);
+    const card = before.json.cards[0];
+    const r = await POST(s.base, '/quiz-answer', { id: card.id, choice: 1 });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.correct, false);
+    const onDisk = vault().cards.find(c => c.id === card.id);
+    assert.equal(onDisk.sched.lapses, 1, 'the lapse is on the one record on disk');
+    assert.ok(onDisk.sched.ease < 2.5, 'and the ease took SM-2\'s penalty');
+    const good = await POST(s.base, '/quiz-answer', { id: card.id, choice: 0 });
+    assert.equal(good.json.correct, true);
+    const after = vault().cards.find(c => c.id === card.id);
+    assert.equal(after.sched.reps, 1);
+    assert.equal(after.sched.ease, onDisk.sched.ease, 'a right answer leaves the ease alone');
+    const still = await GET(s.base, `/memory?url=${encodeURIComponent(PAGE)}`);
+    assert.equal(still.json.cards.length, 0, 'and the card it rescheduled is no longer due here');
+    assert.equal(still.json.counts.live, 1, '…while the count of what is resting says so');
+  });
+
+  s.proc.kill();
+  await sleep(120);
+}
+
+// PART EIGHT: memorizer.botference.com — the vault at an address of its own.
+//
+// One companion, two doors, carried by one tunnel. On the vault's hostname `/`
+// IS the quiz; the reading room stays where it is and everything else on this
+// host goes home rather than serving a second copy of the archive.
+{
+  const root = tmp('host');
+  const s = await startServer({ root, args: ['--no-agents'] });
+  const MEM = { host: 'memorizer.botference.com' };
+  const DISCUSS = { host: 'discuss.botference.com' };
+
+  await POST(s.base, '/page', { url: PAGE, title: 'Fat tails', site: 'example.com' });
+  const t = await POST(s.base, '/thread', {
+    url: PAGE, quote: 'The sample mean converges very slowly.',
+    prefix: '', suffix: '', msg: { text: 'why?' },
+  });
+  await POST(s.base, '/question', { url: PAGE, thread_id: t.json.thread.id });
+  {
+    const f = path.join(root, '.botference', 'plugin', 'questions.json');
+    const v = JSON.parse(fs.readFileSync(f, 'utf8'));
+    v.cards[0] = { ...v.cards[0], state: 'live', question: 'What does it promise?',
+      options: ['the limit', 'every sample'], answer: 0, why: 'the limit' };
+    fs.writeFileSync(f, JSON.stringify(v, null, 2));
+  }
+
+  await test('on the vault\'s hostname, / IS the quiz', async () => {
+    const r = await GET(s.base, '/', { ...MEM, accept: 'text/html' });
+    assert.equal(r.status, 200);
+    assert.match(r.body, /<title>Memorizer — botference<\/title>/);
+    assert.match(r.body, /What does it promise\?/, 'and it is the card, not a landing page');
+    assert.match(r.body, /rel="icon"/, 'with the braid on the tab');
+  });
+
+  await test('…/quiz is still itself there, and the reading room is not', async () => {
+    assert.equal((await GET(s.base, '/quiz', { ...MEM, accept: 'text/html' })).status, 200);
+    for (const p of ['/pages', '/p/abc', '/a/abc', '/index']) {
+      const r = await GET(s.base, p, { ...MEM, accept: 'text/html' });
+      assert.equal(r.status, 302, `${p} should go home`);
+      assert.equal(r.headers.location, '/');
+    }
+    const post = await POST(s.base, '/page', { url: PAGE }, MEM);
+    assert.equal(post.status, 404, 'and a write to a path this host does not serve is a clean 404');
+  });
+
+  await test('the card\'s links leave for the reading room, absolutely', async () => {
+    const html = (await GET(s.base, '/', { ...MEM, accept: 'text/html' })).body;
+    assert.match(html, /https:\/\/discuss\.botference\.com\/p\//,
+      'a source on the vault\'s host has to name the room it lives in');
+    assert.match(html, /href="https:\/\/discuss\.botference\.com\/pages"/);
+  });
+
+  await test('answering and flagging work on the new host, and land back on it', async () => {
+    await GET(s.base, '/', { ...MEM, accept: 'text/html' });   // start a sitting
+    const id = JSON.parse(fs.readFileSync(
+      path.join(root, '.botference', 'plugin', 'questions.json'), 'utf8')).cards[0].id;
+    const a = await FORM(s.base, '/quiz-answer', { id, choice: '1' }, MEM);
+    assert.equal(a.status, 303);
+    assert.equal(a.headers.location, '/quiz?reveal=1');
+    const shown = await GET(s.base, '/quiz?reveal=1', { ...MEM, accept: 'text/html' });
+    assert.match(shown.body, /not quite/);
+    const f = await FORM(s.base, '/quiz-flag', { id }, MEM);
+    assert.equal(f.status, 303);
+    assert.equal(f.headers.location, '/quiz?gone=flagged');
+    const beat = await GET(s.base, '/quiz?gone=flagged', { ...MEM, accept: 'text/html' });
+    assert.match(beat.body, /Parked/, 'and the next page says which of the two things happened');
+  });
+
+  await test('the reading room\'s own hostname is untouched', async () => {
+    const r = await GET(s.base, '/', { ...DISCUSS, accept: 'text/html' });
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.location, '/pages');
+    assert.equal((await GET(s.base, '/pages', { ...DISCUSS, accept: 'text/html' })).status, 200);
+    const q = await GET(s.base, '/quiz', { ...DISCUSS, accept: 'text/html' });
+    assert.equal(q.status, 200);
+    assert.doesNotMatch(q.body, /https:\/\/discuss\.botference\.com/,
+      'and there the links stay relative, because the room is right here');
+  });
+
+  s.proc.kill();
+  await sleep(120);
+}
+
 // Owner-only, every door. The vault is the reader's own memory and the record
 // of what they keep getting wrong; it also spends the owner's agents.
 {
@@ -674,7 +940,9 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
 
   await test('a guest is refused at every question door', async () => {
     for (const [method, p] of [['POST', '/question'], ['GET', '/questions'],
-      ['POST', '/quiz-answer'], ['POST', '/quiz-flag'], ['POST', '/quiz-delete'], ['GET', '/quiz']]) {
+      ['POST', '/quiz-answer'], ['POST', '/quiz-flag'], ['POST', '/quiz-delete'], ['GET', '/quiz'],
+      // the near view is the same vault seen from a page, and just as private
+      ['GET', `/memory?url=${encodeURIComponent(PAGE)}`]]) {
       const r = method === 'GET'
         ? await GET(h.base, p, REMOTE)
         : await POST(h.base, p, { url: PAGE }, REMOTE);

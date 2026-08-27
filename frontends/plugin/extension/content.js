@@ -2018,10 +2018,47 @@
                  queued: !!(r.data && r.data.queued),
                  reason: (r.data && r.data.reason) || '' };
       },
+      // Two answers in one request: how many are due across the WHOLE bank
+      // (the door's only number — one vault, every page) and which threads on
+      // THIS page have minted a memory, which is the card-side half of the
+      // link the quiz draws in the other direction.
       onQuestionCounts: async () => {
-        const r = await api('GET', '/questions');
+        const r = await api('GET', '/questions?page=' + encodeURIComponent(URL_NOW));
         if (!r.ok) return failure(r);
-        return { ok: true, counts: (r.data && r.data.counts) || {} };
+        return { ok: true, counts: (r.data && r.data.counts) || {},
+                 threads: (r.data && r.data.threads) || {},
+                 pageCounts: (r.data && r.data.page_counts) || {} };
+      },
+      // ---- the Memorize tab ---------------------------------------------
+      // What this page (or a project it is filed in) has put in the vault,
+      // and what of it is due. The big bank lives at its own address and is
+      // for revising CONCEPTS; this is for revising the page you are still
+      // standing on, which is why the scope is never "everything".
+      onMemoryCards: async ({ scope } = {}) => {
+        const r = await api('GET', '/memory?url=' + encodeURIComponent(URL_NOW)
+          + (scope ? '&scope=' + encodeURIComponent(scope) : ''));
+        if (!r.ok) return failure(r);
+        return { ok: true, ...(r.data || {}) };
+      },
+      // Answering, through the SAME endpoint the scriptless quiz posts to:
+      // one SM-2 record on disk, written by one place, whichever surface the
+      // reader happened to answer on.
+      onQuizAnswer: async (id, choice) => {
+        const r = await api('POST', '/quiz-answer', { id, choice });
+        if (!r.ok) return failure(r);
+        return { ok: true, card: r.data && r.data.card, correct: !!(r.data && r.data.correct) };
+      },
+      // The two ways a card leaves the rotation, from the drawer. Parking it
+      // keeps everything (phase 2 hands it back to the bots to rewrite);
+      // discarding is the reader saying this was not worth remembering after
+      // all, and the row goes.
+      onQuizFlag: async id => {
+        const r = await api('POST', '/quiz-flag', { id });
+        return r.ok ? { ok: true } : failure(r);
+      },
+      onQuizDiscard: async id => {
+        const r = await api('POST', '/quiz-delete', { id });
+        return r.ok ? { ok: true } : failure(r);
       },
       // The quiz is a page in the reading room, not a panel in here — the
       // reader reviews on a phone, and this drawer cannot follow them there.
