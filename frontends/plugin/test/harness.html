@@ -240,6 +240,17 @@
                      the vault assertions; `?question=fail` is the other
                      outcome — a generation that came back with no block in it,
                      which must be VISIBLE and not silent.
+    ?question=memorize  the drawer's Memorize tab: this page's own cards, the
+                     wrong-answer correction slip, the two quiet exits (present
+                     while the card is still being read, not only after it), and
+                     the "looks like a duplicate" hint over two cards out of one
+                     discussion.
+    ?question=revise the OTHER thing a bot can propose about the vault: a
+                     REWRITE of a card this discussion already filed. Two chips
+                     — one offering it (Revise the card / No) and one the
+                     companion refused at the lift because its `revises:` named
+                     nothing in the vault, which must be visible and must never
+                     become a second card. `&selftest=1` runs those.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -463,6 +474,11 @@ const QUESTION_FAILS = QUESTION === 'fail';
 // vault for THIS page, one of them due, so the tab can be seen answering
 // rather than only listing. The vault is seeded below.
 const QUESTION_TAB = QUESTION === 'memorize';
+// ?question=revise — the OTHER thing a bot can propose about the vault: a
+// rewrite of a card this discussion already filed. Two chips in one thread,
+// deliberately: the offer (Revise the card / No) and one the companion threw
+// away at the lift, which must be visible and must never become a second card.
+const QUESTION_REVISE = QUESTION === 'revise';
 let fileFiled = FILEIN ? [{ root: WS_ROOT, id: 'adriana-paper', at: '2026-08-20T09:00:00Z' }] : [];
 const fileCalls = [];
 
@@ -942,6 +958,29 @@ if (QUESTION) {
   ]);
 }
 
+// ?question=revise — the same thread, three exchanges later: the reader has
+// said the filed question is badly worded, and the bot has answered with the
+// corrected card naming the one it replaces. The second bot message is the one
+// the companion REFUSED at the lift (its `revises:` named nothing in the
+// vault), which is drawn as a dashed chip with no button at all.
+if (QUESTION_REVISE) {
+  RECORD.threads[0].msgs = RECORD.threads[0].msgs.concat([
+    { author: 'angadh', ts: iso(1.5), text: '@claude that question you filed is badly worded.' },
+    { author: 'claude', ts: iso(1.2),
+      text: 'You are right — "promise" was doing too much work there. Here it is again.',
+      question: { revises: 'q-mem-1',
+        why: 'What does the law of large numbers promise about the SAMPLE MEAN?',
+        card: { question: 'What does the law of large numbers promise about the SAMPLE MEAN?',
+                options: ['it converges to the population mean as n grows',
+                          'it equals the population mean once n is large enough'],
+                answer: 0, kind: 'mcq', difficulty: 2,
+                why: 'A statement about the limit, not about any particular sample.' } } },
+    { author: 'codex', ts: iso(1),
+      text: 'Mine went the same way, though I named the wrong card.',
+      question: { revises: 'q-not-in-the-vault', rejected: 'unknown' } },
+  ]);
+}
+
 // The project-artifact record: a local file, filed under the project that
 // wrote it, and standing in whichever council chat the reader last opened.
 // `page_chat` is the drawer's mirror of THAT chat — restored messages, read
@@ -1169,7 +1208,8 @@ let WAIT_REASON = null;
 // point of the pending row is that a click's effect is visible before the bot
 // has written anything
 window.__bfpQuestions = () => ({ posts: questionPosts, cards: questionVault,
-                                 answers: quizAnswers, gone: quizGone });
+                                 answers: quizAnswers, gone: quizGone,
+                                 revised: reviseCalls, kept: quizKept });
 window.__bfpQueue = {
   hold(on) { HOLD_QUEUE = !!on; },
   reason(r) { WAIT_REASON = r || null; },
@@ -1328,7 +1368,7 @@ const questionVault = [];
 // ?question=memorize seeds the bank: two live cards off this page, one of them
 // carrying the thread it came out of (so the card in the margin says "filed as
 // a memory" and the tab can be opened straight onto it).
-if (QUESTION_TAB) {
+if (QUESTION_TAB || QUESTION_REVISE) {
   questionVault.push({
     id: 'q-mem-1', state: 'live', kind: 'mcq', difficulty: 2, model: 'claude',
     question: 'What does the law of large numbers actually promise about the sample mean?',
@@ -1359,6 +1399,11 @@ if (QUESTION_TAB) {
 // what the fake companion did with a card the reader took out of the rotation
 const quizAnswers = [];
 const quizGone = [];
+// …and the two acts the revision work added: rewriting a card in place (with
+// the schedule it had BEFORE, so a test can prove it survived) and the reader
+// saying two similar cards are different questions after all
+const reviseCalls = [];
+const quizKept = [];
 // every /reanchor {thread_id, quote} — the durable half of a thread whose
 // passage a bot rewrote and the page then found again
 const reanchorPosts = [];
@@ -2648,6 +2693,18 @@ function companion(method, path, body) {
              data: { ok: true, counts: vaultCounts(questionVault), threads,
                      page_counts: vaultCounts(questionVault) } };
   }
+  // "these two look like the same question" — the companion's own cheap signal
+  // (questions.duplicateOf), which rides the cards rather than being a request
+  // of its own: the tab draws the hint beside them.
+  const dupOf = card => {
+    if (card.state !== 'live') return null;
+    const kept = card.kept_with || [];
+    const other = questionVault.find(c => c !== card && c.state === 'live'
+      && kept.indexOf(c.id) < 0
+      && (c.source || {}).page_key === (card.source || {}).page_key
+      && (c.source || {}).thread_id && c.source.thread_id === (card.source || {}).thread_id);
+    return other ? { id: other.id, question: other.question, why: 'thread' } : null;
+  };
   // the Memorize tab's own view: what is due, where the reader is standing
   if (method === 'GET' && route === '/memory') {
     const counts = vaultCounts(questionVault);
@@ -2655,7 +2712,37 @@ function companion(method, path, body) {
              data: { ok: true, scope: 'page',
                      scopes: [{ id: 'page', label: 'this page', ...counts },
                               { id: 'project:applied-probability', label: 'applied-probability', ...counts }],
-                     counts, cards: questionVault.filter(isDue) } };
+                     counts,
+                     cards: questionVault.filter(isDue).map(c => {
+                       const dup = dupOf(c);
+                       return dup ? { ...c, dup } : c;
+                     }) } };
+  }
+  // the reader's veto on that hint, pinned on BOTH cards
+  if (method === 'POST' && route === '/quiz-keep') {
+    const a = questionVault.find(c => c.id === body.id);
+    const b = questionVault.find(c => c.id === body.other);
+    if (!a || !b) return { ok: false, status: 404, error: 'unknown card' };
+    a.kept_with = (a.kept_with || []).concat([b.id]);
+    b.kept_with = (b.kept_with || []).concat([a.id]);
+    quizKept.push({ id: a.id, other: b.id });
+    return { ok: true, status: 200, data: { ok: true } };
+  }
+  // …and the OTHER thing a confirm can do: rewrite a card that already exists
+  // rather than mint a second one. The corrected card is read off the record,
+  // exactly as the companion reads it, and the SCHEDULE is not touched.
+  if (method === 'POST' && route === '/question-revise') {
+    const th = RECORD.threads.find(x => x.id === body.thread_id);
+    const msg = th && (th.msgs || []).find(m => String(m.ts || '') === String(body.from_msg || ''));
+    const q = msg && msg.question;
+    if (!q || !q.revises || !q.card) return { ok: false, status: 404, error: 'no revision on that reply' };
+    const card = questionVault.find(c => c.id === q.revises);
+    if (!card) return { ok: false, status: 404, error: 'that card is no longer in the vault' };
+    reviseCalls.push({ id: card.id, from_msg: body.from_msg, sched: { ...card.sched } });
+    Object.assign(card, q.card, { state: 'live', updated_at: now(), revised_by: msg.author });
+    toContent({ t: 'ws', ev: { type: 'question', url: PAGE_URL, card_id: card.id,
+                               state: 'live', revised: true } });
+    return { ok: true, status: 200, data: { ok: true, card, revised: true } };
   }
   // answering, through the SAME endpoint the scriptless quiz posts to
   if (method === 'POST' && route === '/quiz-answer') {
@@ -7665,8 +7752,38 @@ async function selftestMemorize() {
     check('…and nothing here asks the reader to grade themselves',
       !p.querySelector('select') && !p.querySelector('input[type="range"]'));
 
+    // ---- the two quiet exits are findable BEFORE the card is answered ----
+    // They used to appear only after an answer, and the reader could not find
+    // them: the only way to be rid of a card was to answer it first.
+    check('a card carries its two exits while it is still being read',
+      !!p.querySelector('.memminor [data-act="mem-flag"]')
+      && !!p.querySelector('.memminor [data-act="mem-drop"]'));
+    check('…quietly, well under the options, competing with nothing',
+      !!p.querySelector('.memminor')
+      && p.querySelector('.memminor').compareDocumentPosition(p.querySelector('.memopt'))
+        === Node.DOCUMENT_POSITION_PRECEDING);
+
+    // ---- "this looks like a duplicate" ----
+    const dup = p.querySelector('.memdup');
+    check('two cards out of one discussion are noticed, and said so quietly', !!dup);
+    check('…showing the OTHER question in full, which is what there is to judge by',
+      !!dup && /single observation able to dominate/.test(dup.textContent));
+    check('…with one tap to drop it and one to say they are different',
+      !!dup && !!dup.querySelector('[data-act="mem-dup-drop"]')
+      && !!dup.querySelector('[data-act="mem-dup-keep"]'));
+    check('and it is a HINT: nothing has gone anywhere on its own',
+      window.__bfpQuestions().cards.length === 2 && !window.__bfpQuestions().gone.length);
+    hit(dup && dup.querySelector('[data-act="mem-dup-keep"]'), 'they are different');
+    await until(() => window.__bfpQuestions().kept.length, 3000);
+    check('the veto is pinned on both cards, in the vault, not only in this tab',
+      (window.__bfpQuestions().cards[0].kept_with || []).length === 1
+      && (window.__bfpQuestions().cards[1].kept_with || []).length === 1);
+    check('…and the hint goes at once — a hint that needed pressing twice is a nag',
+      !!await until(() => (p.querySelector('.memdup') ? null : true), 2000));
+
     // ---- answering it, through the companion's own endpoint ----
-    hit(opts[1], 'a wrong option');
+    // (re-queried: the pane has re-rendered since `opts` was taken)
+    hit(p.querySelectorAll('.memopt')[1], 'a wrong option');
     await until(() => p.querySelector('.memverdict'), 3000);
     const ans = window.__bfpQuestions().answers[0];
     check('the answer goes to /quiz-answer — one SM-2 record, not a second one',
@@ -7697,7 +7814,10 @@ async function selftestMemorize() {
     check('discard drops the card from the VAULT, not only from this sitting',
       !!gone && gone.how === 'discard'
       && !window.__bfpQuestions().cards.some(c => c.id === 'q-mem-1'));
-    const beat = await until(() => p.querySelector('.membeat'), 3000);
+    const beat = await until(() => {
+      const b = p.querySelector('.membeat');
+      return b && /discarded/.test(b.textContent) ? b : null;
+    }, 3000);
     check('…and says which of the two things it did',
       !!beat && /discarded/.test(beat.textContent));
     check('a discarded card is not the next question either',
@@ -7835,6 +7955,82 @@ async function selftestQuestionFail() {
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (question-fail) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ── revising a card that is already filed ────────────────────────────────
+// The failure this pose comes from: the reader asked a bot to rewrite a
+// question it had filed, and the bot — with no way to say "change that one" —
+// wrote a second card. So the chip has to say plainly WHICH of the two things
+// pressing it does, and a `revises:` the companion could not honour must never
+// quietly become a card at all.
+async function selftestQuestionRevise() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const chips = () => [...S.querySelectorAll('.filechip.qchip')];
+
+  try {
+    d.open('comments');
+    await until(() => chips().length >= 2, 5000);
+    const offer = chips().find(c => !c.classList.contains('refused'));
+    const refused = chips().find(c => c.classList.contains('refused'));
+
+    // ---- the offer, and the word that makes it a different act ----
+    check('a bot may propose a REWRITE, in the same one-step chip as everything else', !!offer);
+    check('…and the button says which of the two things it does',
+      !!offer && /Revise the card/.test(offer.textContent)
+      && !/File it/.test(offer.textContent));
+    check('…and it promises the reader keeps their place in the rotation',
+      !!offer && /rotation|unchanged/i.test(
+        offer.querySelector('[data-act="q-revise"]').getAttribute('title') || ''));
+    check('BOTS NEVER REVISE either — nothing has changed until it is pressed',
+      window.__bfpQuestions().revised.length === 0
+      && /law of large numbers actually promise/.test(
+        window.__bfpQuestions().cards.find(c => c.id === 'q-mem-1').question));
+
+    // ---- a refusal is loud, and is never a second card ----
+    check('a `revises:` naming nothing in the vault is drawn, not swallowed', !!refused);
+    check('…with NO button at all, like a refused strike note',
+      !!refused && !refused.querySelector('button'));
+    check('…saying what happened, in both directions',
+      !!refused && /no such card/.test(refused.textContent)
+      && /Nothing was filed either/.test(refused.textContent));
+    check('…and it minted nothing: the bank still holds exactly what it held',
+      window.__bfpQuestions().cards.length === 2
+      && window.__bfpQuestions().posts.length === 0);
+
+    // ---- confirming it ----
+    const before = { ...window.__bfpQuestions().cards.find(c => c.id === 'q-mem-1').sched };
+    hit(offer.querySelector('[data-act="q-revise"]'), 'the Revise the card button');
+    const call = await until(() => window.__bfpQuestions().revised[0] || null, 3000);
+    check('one press rewrites the card that is already there', !!call && call.id === 'q-mem-1');
+    check('…and there is still exactly ONE card, not two',
+      window.__bfpQuestions().cards.length === 2
+      && window.__bfpQuestions().cards.filter(c => c.id === 'q-mem-1').length === 1);
+    const after = window.__bfpQuestions().cards.find(c => c.id === 'q-mem-1');
+    check('…carrying the corrected wording', /SAMPLE MEAN/.test(after.question));
+    check('THE SCHEDULE SURVIVES — the reader\'s history with the idea is the valuable part',
+      JSON.stringify(after.sched) === JSON.stringify(before));
+    check('the chip settles into having REVISED, never into having filed',
+      !!await until(() => [...S.querySelectorAll('.filechip.qchip.done')]
+        .find(c => /Revised/.test(c.textContent)), 3000));
+    const note = await until(() => S.querySelector('.qnote'), 3000);
+    check('…and the drawer says the same thing in its own line',
+      !!note && /rewritten/.test(note.textContent) && !/filed/.test(note.textContent));
+
+    check('nothing threw', window.__bfpErrors.length === 0);
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (question-revise) ' + (out.length - bad.length) + '/' + out.length +
     (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
@@ -9164,7 +9360,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         // the more specific flag first, as always: ?question=fail is a
         // DIFFERENT fixture from ?question=1 and gets its own pose
         : QUESTION_TAB ? selftestMemorize
-          : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
+          : QUESTION_REVISE ? selftestQuestionRevise
+            : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration

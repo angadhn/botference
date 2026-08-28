@@ -1378,7 +1378,20 @@ export function appendMsg(page, threadId, {
   // something and offering to file a revision question about it
   // (questions.parseQuestionSuggestion). Offer, field, chip — the vault stays
   // empty until the reader presses the button.
-  if (question && question.why) msg.question = { why: String(question.why) };
+  //
+  // …and the same field carries the OTHER thing a bot can propose about the
+  // vault: a rewrite of a card this discussion already filed
+  // (`questions.parseCardRevision`). `revises` is the card it names, `card` is
+  // the whole corrected question the confirm applies, and `rejected` is the
+  // record that the id pointed nowhere ('unknown') or at another page's card
+  // ('elsewhere') — refused at the lift, drawn as a buttonless chip, never
+  // allowed to become a second card.
+  if (question && (question.why || question.revises)) {
+    msg.question = { why: String(question.why || '') };
+    if (question.revises) msg.question.revises = String(question.revises);
+    if (question.rejected) msg.question.rejected = String(question.rejected);
+    if (question.card && typeof question.card === 'object') msg.question.card = question.card;
+  }
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written
   // into — the reader replying, or a bot's answer landing — is a live thread

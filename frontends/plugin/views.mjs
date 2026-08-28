@@ -565,6 +565,19 @@ form.opt button:active { transform:translateY(1px) }
 .mcard.bot .who-wrote b.codex { color:var(--codex) }
 .mcard.attn { border-left-color:var(--q-warm) }
 .mcard.attn p { color:var(--muted) }
+/* the duplicate hint. Deliberately the quietest card in the margin — muted
+   type, muted buttons, no colour of its own: it is a suggestion the reader is
+   free to ignore, and anything louder would read as a fault in a vault that is
+   working exactly as intended. */
+.mcard.dup { border-left-color:var(--q-line-soft) }
+.mcard.dup p { color:var(--muted); font-size:.82rem }
+.mcard.dup blockquote { margin:.5rem 0 .6rem; font:.88rem/1.5 var(--q-serif); color:var(--fg);
+  padding:.1rem 0 .1rem .7rem; border-left:2px solid var(--q-line); background:transparent }
+.dupacts { display:flex; flex-wrap:wrap; gap:.4rem }
+.dupacts form { margin:0 }
+.dupacts button { background:none; color:var(--muted); border:1px solid var(--q-line);
+  border-radius:999px; padding:.32rem .7rem; font-size:.72rem; cursor:pointer }
+.dupacts button:hover { color:var(--fg); border-color:var(--q-line-soft) }
 /* ---- the action bar. On a phone it is pinned to the bottom of the screen so
    'next' stays under the thumb while the eye is still on the explanation. */
 .qacts { display:flex; flex-wrap:wrap; align-items:center; gap:.7rem; margin:.9rem 0 0 }
@@ -653,6 +666,39 @@ function traceHtml(trace) {
     + ` rel="noopener noreferrer" title="${escHtml(trace.title || 'the source')} — opens in a new window">trace ↗</a></p>`;
 }
 
+// "THIS LOOKS LIKE A DUPLICATE." A hint, and it is written as one: it says
+// what it noticed, shows the other question in full so the reader can see for
+// themselves, and offers the three answers there are — drop that one, drop
+// this one, or they are different (which pins the pair and stops the hint
+// coming back). Nothing is merged and nothing goes automatically; two similar
+// questions about one passage are a perfectly reasonable thing to have, and
+// only the reader can tell them from one question asked twice.
+//
+// It sits in the margin, under the why, and only on a reveal: the moment to
+// decide what to keep is after a card has been asked, never while the reader
+// is trying to answer it.
+function dupHtml(card, dup, scope) {
+  if (!dup || !dup.card) return '';
+  const other = dup.card;
+  return `<section class="mcard dup"><h3>looks like a duplicate</h3>
+<p>${dup.why === 'thread'
+    ? 'Another question in your vault came out of the same discussion:'
+    : 'Another question in your vault asks almost the same thing:'}</p>
+<blockquote>${escHtml(other.question)}</blockquote>
+<div class="dupacts">
+<form method="POST" action="/quiz-delete">${scopeFields(scope)}
+<input type="hidden" name="id" value="${escHtml(other.id)}">
+<button title="keep the one you are looking at and drop the other">discard that one</button></form>
+<form method="POST" action="/quiz-delete">${scopeFields(scope)}
+<input type="hidden" name="id" value="${escHtml(card.id)}">
+<button title="keep the other one and drop this">discard this one</button></form>
+<form method="POST" action="/quiz-keep">${scopeFields(scope)}
+<input type="hidden" name="id" value="${escHtml(card.id)}">
+<input type="hidden" name="other" value="${escHtml(other.id)}">
+<button title="keep both — you will not be asked about this pair again">they are different</button></form>
+</div></section>`;
+}
+
 const scopeFields = scope => `<input type="hidden" name="project" value="${escHtml(scope.project || '')}">`
   + `<input type="hidden" name="tag" value="${escHtml(scope.tag || '')}">`;
 
@@ -666,7 +712,7 @@ const quizHref = (scope, extra = {}) => {
 };
 
 export function quizView({ me, card, reveal, session, counts, facets, scope = {},
-                           read = false, trace = null, home = '', gone = '' }) {
+                           read = false, trace = null, home = '', gone = '', dup = null }) {
   const sc = { project: scope.project || '', tag: scope.tag || '' };
   // The rail: one bank, seen from an angle. Each chip carries how many of that
   // topic are due, and wears a ✗ where the reader has lapsed on it — which is
@@ -726,6 +772,7 @@ ${traceHtml(trace)}</section>`;
     // are read — why first, then the passage it was made from.
     margin = `<aside class="qmargin">
 ${card.why ? `<section class="mcard why"><h3>why</h3><p>${escHtml(card.why)}</p></section>` : ''}
+${dupHtml(card, dup, sc)}
 ${sourceHtml(card, read, home, trace)}
 ${card.model || card.hint ? `<section class="mcard bot"><h3>the card</h3>
 ${card.hint ? `<p>${escHtml(card.hint)}</p>` : ''}

@@ -284,9 +284,15 @@ export function addPending(vault, { source, model = 'claude' }) {
 // with the schedule it was born with, so it is due the moment it exists — or it
 // does not, and the card is FAILED WITH THE REASON ON IT. A generation that
 // went wrong is a row the reader can see and delete, never a silence.
+//
+// ONLY A PENDING ROW IS SETTLED. A generation is an answer to a click made
+// minutes ago, and in between the reader may have revised the card by hand
+// (reviseCard below) — at which point the late arrival is a stale draft of
+// something that has already been rewritten, and writing it in would undo the
+// correction in front of them. A card that is no longer pending is left alone.
 export function settle(vault, id, text, model) {
   const card = findCard(vault, id);
-  if (!card) return null;
+  if (!card || card.state !== 'pending') return null;
   if (model) card.model = String(model).toLowerCase().replace(/[^a-z]/g, '') || card.model;
   card.settled_at = nowIso();
   const parsed = parseCardBlock(text);
@@ -310,7 +316,9 @@ export function settle(vault, id, text, model) {
 
 export function failCard(vault, id, error) {
   const card = findCard(vault, id);
-  if (!card) return null;
+  // …and the same guard, for the same reason: a turn that came back empty must
+  // not be able to fail a card the reader has since put right.
+  if (!card || card.state !== 'pending') return null;
   card.state = 'failed';
   card.error = clip(error, 300) || 'the question could not be written';
   card.settled_at = nowIso();
@@ -339,6 +347,150 @@ export function deleteCard(vault, id) {
   if (i < 0) return false;
   vault.cards.splice(i, 1);
   return true;
+}
+
+// ---- REVISING A CARD THAT IS ALREADY IN THE BANK -------------------------
+//
+// Until this existed a bot could only MINT. The reader asked one to rewrite a
+// question it had just made — the wording was off — and it did the only thing
+// the conventions gave it: it wrote another card. Two live cards from one
+// discussion, both asking the same thing, and no route anywhere in the product
+// to change the first. It is the strikeout's failure exactly (a note that came
+// out wrong with no way to correct it), and it gets the strikeout's answer:
+// a confirmed suggestion UPDATES what is already there.
+//
+// WHAT CHANGES: the question, the options, the correct answer, the why, the
+// kind, the difficulty. That is the whole of what a bot writes.
+//
+// WHAT SURVIVES, and the important half:
+//
+//   · THE SCHEDULE. `sched` is not touched — not the ease the reader has
+//     earned on this idea over four months, not the lapses, not the due date.
+//     The card is a handle on a CONCEPT and the reader's history with that
+//     concept is the valuable thing in this file; the wording is the cheap
+//     part. Resetting SM-2 because a sentence was rephrased would throw away
+//     the only data here that took time to make, and would punish correcting
+//     a card — which is the last thing this should do.
+//   · the provenance (`source`), so the trace links, the page, the projects
+//     and the tags all still point where they did;
+//   · `created_at` and `model` — when this memory was made, and who wrote the
+//     card that made it. `updated_at` and `revised_by` record the rewrite
+//     beside them rather than over them (`store.appendMsg`'s `edited` idiom).
+//
+// A FLAGGED card comes back to life. "Seems wrong" parks a card waiting to be
+// rewritten and this is the rewrite; leaving it parked afterwards would make
+// the fix invisible. A FAILED one goes live too — a row that says "the reply
+// had no block in it" is exactly the row a second try should repair.
+export function reviseCard(vault, id, next, { model = '', from_msg = '' } = {}) {
+  const card = findCard(vault, id);
+  if (!card || !next) return null;
+  Object.assign(card, {
+    state: 'live',
+    kind: next.kind,
+    question: next.question,
+    options: next.options,
+    answer: next.answer,
+    why: next.why,
+    difficulty: next.difficulty,
+    updated_at: nowIso(),
+    revisions: (Number(card.revisions) || 0) + 1,
+  });
+  const who = String(model || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (who) card.revised_by = who;
+  if (from_msg) card.revised_from = String(from_msg);
+  delete card.error;
+  delete card.flag;
+  return card;
+}
+
+// WHAT THIS DISCUSSION HAS ALREADY PUT IN THE BANK — the list the offer block
+// shows a bot so it can name one instead of writing another. Pending rows are
+// left out (there is nothing written yet to revise), and so is anything from
+// another page: a card is revised from the discussion that made it.
+export function mintedIn(vault, thread_id, key = '') {
+  const want = String(thread_id || '');
+  if (!want) return [];
+  return (vault.cards || [])
+    .filter(c => c && c.state !== 'pending' && (c.source || {}).thread_id === want
+      && (!key || c.source.page_key === key))
+    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+}
+
+// ---- "these two look like the same question" -----------------------------
+//
+// A HINT, and deliberately not a dedupe engine. The reader can end up with two
+// cards about one idea in the ordinary course of using this — a bot minting
+// instead of revising, a second click on a passage they had already filed —
+// and the place they NOTICE is the place they are asked both of them. So the
+// quiz and the Memorize tab say "this looks like a duplicate of …" beside the
+// card, with one tap to drop whichever they do not want, and that is all it
+// does: nothing merges, nothing is discarded automatically, and a hint the
+// reader ignores costs them one quiet line.
+//
+// THE SIGNAL IS CHEAP, on purpose. Two LIVE cards look like the same question
+// when they are from the same page and either
+//
+//   · they came out of the SAME DISCUSSION (`thread_id`) — the case that
+//     actually happened, and the strongest evidence available: one argument,
+//     one point, two cards; or
+//   · their question texts overlap by DUP_SIM of their words (Jaccard over
+//     words of 3+ letters, which is stable against "the"/"a"/word order).
+//
+// There is no embedding, no model call and no index: it is one pass over the
+// bank per card drawn, which for a vault of thousands is nothing.
+export const DUP_SIM = 0.7;
+const bagOf = s => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+  .trim().split(' ').filter(w => w.length > 2));
+export function textOverlap(a, b) {
+  const A = bagOf(a);
+  const B = bagOf(b);
+  if (!A.size || !B.size) return 0;
+  let both = 0;
+  for (const w of A) if (B.has(w)) both += 1;
+  return both / (A.size + B.size - both);
+}
+
+// The reader's veto, and the reason the hint is not a nag: "they are different"
+// pins the pair on BOTH cards and it is never suggested again.
+export function keepBoth(vault, id, otherId) {
+  const a = findCard(vault, id);
+  const b = findCard(vault, otherId);
+  if (!a || !b || a === b) return null;
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const kept = Array.isArray(x.kept_with) ? x.kept_with : [];
+    if (!kept.includes(y.id)) kept.push(y.id);
+    x.kept_with = kept;
+  }
+  return a;
+}
+
+// The nearest live sibling that looks like the same question, or null. The
+// strongest evidence wins (a shared discussion beats a text overlap), then the
+// closest wording, then the older card — so the hint is stable across reloads.
+const beats = (row, best) => {
+  const a = row.why === 'thread';
+  const b = best.why === 'thread';
+  if (a !== b) return a;
+  if (row.score !== best.score) return row.score > best.score;
+  return String(row.card.created_at || '') < String(best.card.created_at || '');
+};
+export function duplicateOf(vault, card) {
+  if (!card || card.state !== 'live') return null;
+  const src = card.source || {};
+  const kept = new Set(Array.isArray(card.kept_with) ? card.kept_with : []);
+  let best = null;
+  for (const other of vault.cards || []) {
+    if (!other || other.id === card.id || other.state !== 'live') continue;
+    if (kept.has(other.id)) continue;
+    const s = other.source || {};
+    if (!src.page_key || s.page_key !== src.page_key) continue;
+    const thread = !!src.thread_id && s.thread_id === src.thread_id;
+    const score = textOverlap(card.question, other.question);
+    if (!thread && score < DUP_SIM) continue;
+    const row = { card: other, why: thread ? 'thread' : 'text', score };
+    if (!best || beats(row, best)) best = row;
+  }
+  return best;
 }
 
 // ---- the block a bot writes, and reading it back ------------------------
@@ -377,12 +529,12 @@ export function parseCardBlock(text) {
   if (!body) return { ok: false, error: 'no ```question block in the reply' };
 
   const lines = body.split(/\r?\n/);
-  const fields = { question: [], options: [], correct: '', why: [], kind: '', difficulty: '' };
+  const fields = { question: [], options: [], correct: '', why: [], kind: '', difficulty: '', revises: '' };
   let where = '';                     // which multi-line field is still open
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, '');
     if (!line.trim() && where !== 'why') { where = ''; continue; }
-    const kv = /^\s*(Q|question|correct|answer|why|because|kind|type|difficulty)\s*:\s*(.*)$/i.exec(line);
+    const kv = /^\s*(Q|question|correct|answer|why|because|kind|type|difficulty|revises|revise|updates)\s*:\s*(.*)$/i.exec(line);
     const opt = OPT_RE.exec(line);
     // an option letter beats a key: "A) answer: 3" is an option, not a field
     if (opt && !/^\s*(Q|question)\s*:/i.test(line)) {
@@ -397,6 +549,14 @@ export function parseCardBlock(text) {
       else if (k === 'correct' || k === 'answer') { fields.correct = v; where = ''; }
       else if (k === 'why' || k === 'because') { fields.why = [v]; where = 'why'; }
       else if (k === 'kind' || k === 'type') { fields.kind = v.toLowerCase(); where = ''; }
+      // WHICH CARD THIS BLOCK REWRITES, if any. A line of the block rather
+      // than a line of the reply, because it belongs to the card and not to
+      // the conversation — and named here so that it also CLOSES a running
+      // `why:`, whichever order a model writes the fields in.
+      else if (k === 'revises' || k === 'revise' || k === 'updates') {
+        fields.revises = v.trim().replace(/^[`"']|[`"'.,;]+$/g, '');
+        where = '';
+      }
       else { fields.difficulty = v; where = ''; }
       continue;
     }
@@ -435,7 +595,9 @@ export function parseCardBlock(text) {
   }
   const dRaw = parseInt(fields.difficulty, 10);
   const difficulty = Number.isFinite(dRaw) ? Math.min(3, Math.max(1, dRaw)) : 2;
-  return { ok: true, card: { question, options, answer, kind, difficulty, why: clip(fields.why.join(' '), WHY_MAX) } };
+  return { ok: true,
+    card: { question, options, answer, kind, difficulty, why: clip(fields.why.join(' '), WHY_MAX) },
+    revises: fields.revises };
 }
 
 // "A", "a)", "1", "True", or the option's own text — a model will write any of
@@ -479,7 +641,7 @@ export function answerIndex(correct, options) {
 // offering in one thread are two chips, each with its own wording.
 export const QUESTION_MARK = 'question:';
 
-export const questionOfferBlock = () =>
+export const questionOfferBlock = (minted = []) =>
   'If — and ONLY if — this exchange has shown a real gap in the reader\'s understanding of '
   + 'something worth remembering (they asked the same thing twice, or took away the opposite '
   + 'of what the passage says), you may END your reply with a line of its own reading '
@@ -487,7 +649,92 @@ export const questionOfferBlock = () =>
   + 'button that files a revision question about it; you are not filing anything, and you are '
   + 'not writing the question here. Offer this RARELY — a reader who understood the answer '
   + 'does not need to be quizzed on it, and an offer on every turn is an offer nobody reads. '
-  + 'Say nothing at all if there is no such gap.\n';
+  + 'Say nothing at all if there is no such gap.\n'
+  + reviseOfferBlock(minted);
+
+// …AND THE ONLY WAY TO CHANGE ONE THAT IS ALREADY FILED.
+//
+// This block rides a turn only where this discussion has actually minted
+// something, because until then there is nothing to revise and the paragraph
+// would be an invitation to invent a card id. When it does ride, it carries
+// the ids, so a bot asked to "reword that question" has the one fact it needs
+// and never has to guess.
+//
+// The sentence that matters most is the LAST one. A model that means to
+// correct a card and writes a block without `revises:` files a SECOND card —
+// which is the failure this whole amendment came out of — and the only defence
+// against it is saying so plainly here. There is no way to infer the intent
+// from a block that does not carry it: two questions about one passage are a
+// perfectly ordinary thing to want.
+export const REVISE_KEY = 'revises:';
+export const QUESTION_FENCE = 'question';
+export const reviseOfferBlock = (minted = []) => {
+  const rows = (minted || []).filter(c => c && c.id);
+  if (!rows.length) return '';
+  return '\nQUESTIONS THIS DISCUSSION HAS ALREADY FILED:\n'
+    + rows.map(c => `  · ${c.id} — “${clip(c.question, 90)}${
+      String(c.question || '').length > 90 ? '…' : ''}”${
+      c.state === 'flagged' ? ' (the reader flagged this one as wrong)' : ''}`).join('\n')
+    + '\n\nTo CHANGE one of them — the reader says it is wrong, or you can see that it is — '
+    + `write the WHOLE corrected card as a \`\`\`${QUESTION_FENCE} block whose first line is `
+    + `\`${REVISE_KEY} <the id above>\`:\n\n`
+    + `    \`\`\`${QUESTION_FENCE}\n`
+    + `    ${REVISE_KEY} ${rows[0].id}\n`
+    + '    Q: <the corrected question>\n'
+    + '    A) <option>\n'
+    + '    B) <option>\n'
+    + '    correct: A\n'
+    + '    why: <one or two sentences>\n'
+    + '    ```\n\n'
+    + 'The reader gets a button that rewrites THAT card where it stands, keeping everything '
+    + 'they have earned on it — how well they know it, and when it next comes back. '
+    + `A \`\`\`${QUESTION_FENCE} block WITHOUT a \`${REVISE_KEY}\` line does not correct anything: `
+    + 'it asks for a NEW, SECOND card beside the old one. So if you mean to change one of the '
+    + `questions above, the \`${REVISE_KEY}\` line is not optional.\n`;
+};
+
+// The reader never saw a button, and the bot has to be told — the same
+// sentence-on-the-next-turn `store.strikeRefusedBlock` writes, and for the same
+// reason: a suggestion that vanishes silently is indistinguishable from one
+// that landed, and a bot with no news assumes the card was fixed.
+export const reviseRefusedBlock = (fault, id, minted = []) =>
+  'YOUR LAST `' + REVISE_KEY + '` BLOCK WAS REFUSED — the reader never saw a button for it, and '
+  + `NOTHING in their vault was changed. ${fault === 'elsewhere'
+    ? `The card \`${id}\` exists but belongs to a different page, and a card is only ever `
+      + 'revised from the discussion it was made in.'
+    : fault === 'unparsed'
+      ? `The block naming \`${id}\` could not be read as a card.`
+      : `There is no card \`${id}\` in the vault — the id was wrong or invented.`} `
+  + (minted && minted.length
+    ? `The questions this discussion filed are: ${minted.map(c => c.id).join(', ')}. `
+      + 'If you still mean to correct one, write the whole card again against one of those ids.\n'
+    : 'This discussion has not filed any questions, so there is nothing here to revise.\n');
+
+// The block, back out of a reply. The LAST fenced block that names a card is
+// the one that counts (same rule as every other convention here), and one that
+// names no card is not a revision at all — it is a bot writing a card into the
+// conversation, which nothing lifts.
+export function parseCardRevision(text) {
+  const src = String(text == null ? '' : text);
+  let hit = null;
+  for (const m of src.matchAll(FENCE_RE)) {
+    const parsed = parseCardBlock(m[0]);
+    const id = parsed.ok ? parsed.revises : revisesIn(m[1]);
+    if (!id) continue;
+    hit = parsed.ok
+      ? { id, block: m[0], ok: true, card: parsed.card }
+      : { id, block: m[0], ok: false, error: parsed.error };
+  }
+  return hit;
+}
+// …read straight off the body too, so a block that will not PARSE is still
+// recognised as an attempted revision and refused out loud rather than left
+// sitting in the reply as prose.
+const REVISES_RE = /^\s*(?:revises|revise|updates)\s*:\s*(\S+)\s*$/im;
+const revisesIn = body => {
+  const m = REVISES_RE.exec(String(body || ''));
+  return m ? m[1].replace(/^[`"']|[`"'.,;]+$/g, '') : '';
+};
 
 // A line of its own, the LAST one counts, and a reason is REQUIRED: a bare
 // `question:` is a model echoing the convention back rather than concluding

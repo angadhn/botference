@@ -6421,6 +6421,204 @@ nothing; and a render that throws still saves the comment and posts nothing.
   whole document: 18 pages of PNG for a paper the reader may mark up twice is
   a cost the product should not take without being asked.
 
+## Amendment (2026-08-28, shipped): a filed question can be CORRECTED
+
+Reported from the live vault. The reader filed a card off a discussion, read
+it, decided the wording was wrong, and asked the bot in that same thread to
+rewrite it. The bot did the only thing the conventions gave it: it wrote
+another question. Two live cards from one argument, both about one idea, the
+first one standing — and **no route anywhere in the product to change a card
+once it exists**. A bot could mint and nothing else.
+
+That is the strikeout's failure of 2026-08-27 exactly (a note that came out
+wrong, with no way to correct it), so it gets the strikeout's answer, in the
+same shape and the same words: a suggestion the reader confirms UPDATES what is
+already there.
+
+### 1. The convention: a block that names the card it replaces
+
+The offer block (`questions.questionOfferBlock`) now takes what this discussion
+has already filed, and rides the turn carrying it — id and the first words of
+each question, `questions.mintedIn` reading the live vault at envelope time,
+exactly as the strike offer reads the record:
+
+```
+QUESTIONS THIS DISCUSSION HAS ALREADY FILED:
+  · q-1756…-a1b2 — “What does the law of large numbers promise…”
+```
+
+…and teaches the form for changing one. `strike:` and `file-in:` are single
+lines because they carry one fact; a card carries seven, so a REVISION is the
+same fenced block a card has always been, with one line more:
+
+````
+```question
+revises: q-1756…-a1b2
+Q: What does the law of large numbers promise about the SAMPLE MEAN?
+A) it converges to the population mean as n grows
+B) it equals the population mean once n is large enough
+correct: A
+why: A statement about the limit, not about any particular sample.
+```
+````
+
+`revises` is a field of the block, not a line of the reply, because it belongs
+to the card and not to the conversation — and being a field means it also
+closes a running `why:`, whichever order a model writes its fields in.
+`revises:` / `revise:` / `updates:` are all read; the last block naming a card
+wins, like every other convention here.
+
+**The sentence that carries the whole fix is the negative one.** The offer says
+plainly that a ```question block WITHOUT a `revises:` line asks for a NEW,
+SECOND card, so if the intent is to change one of the questions listed above
+the line is not optional. `bridge-system-prompt.md` rule 14 says the same. A
+bot asked to "reword that" that writes a plain block still mints a duplicate —
+there is no way to infer the intent from a block that does not carry it (two
+questions about one passage are an ordinary thing to want), so that residual
+risk is accepted and answered on the other side by the duplicate hint below.
+
+**The lift and the chip.** `server.mjs` lifts the block off the reply's words
+into `msg.question = { revises, why, card }` (per MESSAGE, like `strike` and
+`file_in`), `store.appendMsg` persists it, and the drawer draws **Revise the
+card / No** instead of **File it / No**. Confirming it summons nobody: the
+corrected card is already on the record, and `POST /question-revise` reads it
+from there rather than from the request — so the chip carries pointers only and
+no client can post a card of its own invention into the reader's bank.
+
+### 2. What an update changes, and what survives
+
+```
+POST /question-revise { url, thread_id, from_msg }   → { card, revised: true }
+```
+
+`questions.reviseCard` replaces the question, the options, the correct answer,
+the why, the kind and the difficulty — the whole of what a bot writes — and
+keeps:
+
+- **THE SCHEDULE, untouched.** Not the ease the reader has earned on this idea
+  over four months, not the lapses, not the due date. The card is a handle on a
+  CONCEPT; the reader's history with that concept is the valuable thing in this
+  file and the wording is the cheap part. Resetting SM-2 because a sentence was
+  rephrased would throw away the only data here that took time to make, and
+  would punish correcting a card — the last thing this should do.
+- the provenance (`source`), so the trace links, the page, the projects and the
+  tags all still point where they did;
+- `created_at` and `model` — when the memory was made, and who wrote the card
+  that made it. `updated_at`, `revised_by` and `revised_from` are recorded
+  BESIDE them, never over them (the `edited` idiom `store.appendMsg` uses).
+
+A **flagged** card goes back to `live`: "seems wrong" parks a card waiting to be
+rewritten, and this is the rewrite — leaving it parked would make the fix
+invisible. A **failed** one goes live too; a row saying "the reply had no block
+in it" is exactly the row a second try repairs. And `settle` / `failCard` now
+touch a PENDING row only, so a generation that comes back minutes late cannot
+write a stale draft over a card the reader has since corrected.
+
+### 3. Two refusals, and neither may ever mint
+
+Checked at the lift, against the vault the reader actually has, and re-checked
+at the door against the vault as it is by then:
+
+| the `revises:` names | `rejected` | the chip says |
+|---|---|---|
+| a card that is not in the vault | `unknown` | *"Not changed — there is no such card in your vault (q-…). Nothing was filed either."* |
+| a card belonging to another page | `elsewhere` | *"…that card belongs to another page, and a question is only revised from the discussion it was made in."* |
+| a block that will not parse | `unparsed` | *"…the corrected card could not be read."* |
+
+The chip is dashed and **has no button at all**, exactly like a refused strike
+note, and for the identical reason: the reader watched a bot propose a
+correction, and a proposal that silently amounts to nothing is how they end up
+being told a card was fixed when it was not. Falling through into minting a new
+card would be worse still — that is the failure this whole amendment exists to
+end. The bot is told on its next turn in the thread
+(`questions.reviseRefusedBlock`, composed by `server.mjs refusedRevision`, LAST
+suggestion only), including the ids it could have named.
+
+### 4. "This looks like a duplicate" — a hint, and nothing more
+
+The reader can still end up with two cards about one idea (a bot minting
+instead of revising; a second click on a passage already filed), and the place
+they NOTICE is the place they are asked both. So `questions.duplicateOf` — one
+pass over the bank per card drawn, no index, no model call:
+
+> Two **live** cards look like the same question when they are from the same
+> page and either they came out of the **same discussion** (`thread_id` — the
+> case that actually happened, and the strongest evidence there is: one
+> argument, one point, two cards) or their question texts overlap by
+> `DUP_SIM = 0.7` (Jaccard over words of 3+ letters, stable against stopwords
+> and word order).
+
+It rides the cards (`GET /memory`, and the quiz's own reveal) rather than being
+a request of its own, because both surfaces draw it beside the card. It offers
+the three answers there are — discard that one, discard this one, or **they are
+different** (`POST /quiz-keep`, which pins the pair on BOTH cards so the hint
+never returns). Nothing merges, nothing goes automatically, and a hint the
+reader ignores costs one quiet line. On the quiz it appears **on the reveal
+only**: the moment to decide what to keep is after a card has been asked, never
+while they are trying to answer it.
+
+### 5. The two quiet exits, findable
+
+`seems wrong` and `discard` existed and the reader could not find them: they
+were drawn only AFTER an answer, so the only way to be rid of a card was to
+answer it first — which grades a question you are trying to delete. They are a
+statement about the CARD, and the card is on screen before it is answered as
+much as after it, so the row is now drawn in **both states of the Memorize
+tab**, same place, same words, same quiet register.
+
+### Files
+
+```
+questions.mjs           reviseCard(); mintedIn(); parseCardRevision();
+                        reviseOfferBlock() + reviseRefusedBlock();
+                        duplicateOf() / textOverlap() / keepBoth();
+                        `revises` in the block grammar; settle/failCard
+                        act on a PENDING row only
+server.mjs              the revision lift and its two refusals; mintedHere() /
+                        refusedRevision() on the envelope funnel; POST
+                        /question-revise, POST /quiz-keep; withDuplicate() on
+                        /memory and the quiz's reveal
+store.mjs               appendMsg carries question.revises / .card / .rejected
+views.mjs               dupHtml() + the .mcard.dup rules
+extension/drawer.js     the Revise-the-card chip and the refused one;
+                        doReviseQuestion(); memMinorHtml in both states;
+                        memDupHtml() + keepMemoryPair()
+extension/drawer.css    .filechip.qchip.refused, .memdup
+extension/content.js    onQuestionRevise, onQuizKeep
+bridge-system-prompt.md rule 14 — change it, do not write another one
+```
+
+**Testing.** `questions.test.mjs` (66 → 89). Pure: the offer block naming what
+was filed and refusing to invite an invented id; the block parsed whole, the
+last one winning, a plain block still meaning a NEW card, and an unparseable
+one still recognised as an attempted revision; the update with the schedule
+asserted byte-for-byte unchanged; a flagged card revived; a late generation
+dropped; and the duplicate signal in both its shapes with the negatives (a
+different question, another page, a parked card, and the veto). Live: the
+envelope carrying the minted list, the block coming off the words, the vault
+untouched until the click, the confirm rewriting ONE card with its schedule,
+both refusals minting nothing and refused at the door too, the bot being told,
+and the hint over the wire with `/quiz-keep` pinning it on both cards.
+`companion.test.mjs` adds the two new doors to the owner-only 403 list.
+
+Harness: new pose `?question=revise&selftest=1` (15) — the two chips (an offer
+whose button says *Revise the card*, and a buttonless dashed refusal), nothing
+changing until it is pressed, one card and not two afterwards, and the schedule
+proved intact through the fake companion. `?question=memorize` (22 → 30) gains
+the exits in the unanswered state and the duplicate hint with its veto.
+
+#### Known limits (deliberate)
+
+- **A bot that ignores `revises:` still mints.** Answered by prompt wording and
+  by the duplicate hint, not by inference. See §1.
+- **The hint is not a dedupe engine.** No merging, no clustering, no
+  cross-page pairing, and no hint at all for two cards that say the same thing
+  in genuinely different words. One cheap signal, surfaced where the reader is
+  already looking.
+- **A revision is not versioned.** `revisions` counts them; the previous
+  wording is not kept. The card is the artifact and the discussion is the
+  workshop — the old wording is still in the thread that wrote it.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

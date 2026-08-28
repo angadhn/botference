@@ -780,8 +780,35 @@ function onChatEvent(ev) {
       if (ev.msg && ev.target !== store.PAGE_CHAT) {
         const th = store.findThread(page, ev.target);
         if (questionable(page, th)) {
-          const hit = questions.parseQuestionSuggestion(ev.msg.text);
-          if (hit) {
+          // …or to CORRECT one this discussion has already filed. A revision
+          // is a whole card rather than a one-line offer, so it is the fenced
+          // block with a `revises: <card-id>` line in it, and it is checked
+          // HERE — at the lift — against the vault the reader actually has.
+          //
+          // The two ways it can be wrong are the two ways a pointer is ever
+          // wrong: the card is not there, or it is somebody else's. Neither is
+          // ever allowed to fall through into minting a new card — that is
+          // precisely the failure this exists to stop, and a silent second
+          // card is worse than no button at all. So the block still comes off
+          // the words (it is machinery), the chip appears with no button and
+          // says which of the two it was, and the bot is told on its next turn
+          // in this thread (questions.reviseRefusedBlock).
+          const rev = questions.parseCardRevision(ev.msg.text);
+          const hit = rev ? null : questions.parseQuestionSuggestion(ev.msg.text);
+          if (rev) {
+            const vault = questions.readVault();
+            const card = questions.findCard(vault, rev.id);
+            const fault = !card ? 'unknown'
+              : (card.source || {}).page_key !== store.pageKey(page.url) ? 'elsewhere'
+                : (rev.ok ? '' : 'unparsed');
+            ev.msg = {
+              ...ev.msg,
+              text: String(ev.msg.text).split(rev.block).join('').replace(/\n{3,}/g, '\n\n').trim(),
+              question: fault
+                ? { revises: rev.id, rejected: fault, ...(rev.error ? { why: rev.error } : {}) }
+                : { revises: rev.id, why: rev.card.question, card: rev.card },
+            };
+          } else if (hit) {
             ev.msg = {
               ...ev.msg,
               text: String(ev.msg.text).split(/\r?\n/)
@@ -983,7 +1010,7 @@ export const isMemoryHost = req => MEMORY_HOSTS.has(hostOf(req));
 // What is served on the vault's hostname, and nothing else is. Everything here
 // is either the quiz, the session (so the sign-in the reading room uses works
 // unchanged on this host too) or an answer a script asks for.
-const MEMORY_PATHS = new Set(['/quiz', '/quiz-answer', '/quiz-flag', '/quiz-delete',
+const MEMORY_PATHS = new Set(['/quiz', '/quiz-answer', '/quiz-flag', '/quiz-delete', '/quiz-keep',
   '/questions', '/question', '/auth', '/signout', '/whoami', '/health']);
 // The reading room's origin AS SEEN FROM the vault's hostname — empty (and so
 // every link relative) everywhere else. A card's source lives in the reading
@@ -1016,6 +1043,16 @@ function traceOf(card, home = '') {
   return thread
     ? { href: `${home}/p/${key}#${thread.id}`, thread: true, title }
     : { href: `${home}${store.hasSnapshot(key) ? '/a/' : '/p/'}${key}`, thread: false, title };
+}
+
+// THE DUPLICATE HINT, attached to a card on its way out. A hint and not a
+// verdict: the pair, why they look alike, and nothing else — every decision
+// about it belongs to the reader, who is the only one who can tell two similar
+// questions about one passage from one question asked twice.
+function withDuplicate(vault, card) {
+  const dup = questions.duplicateOf(vault, card);
+  if (!dup) return card;
+  return { ...card, dup: { id: dup.card.id, question: dup.card.question, why: dup.why } };
 }
 
 // where a quiz form post lands afterwards. Deliberately NOT `backTo` — that
@@ -1150,6 +1187,26 @@ function refusedStrikeNote(thread) {
   return '';
 }
 
+// What this discussion has put in the vault, for the offer block to list, and
+// the refusal for a `revises:` that pointed nowhere. Both read the LIVE record
+// (the vault, and the last question suggestion in the thread) at envelope time,
+// exactly as the strike pair does.
+const mintedHere = (page, thread) => (thread
+  ? questions.mintedIn(questions.readVault(), thread.id, store.pageKey(page.url))
+  : []);
+function refusedRevision(page, thread) {
+  for (let i = ((thread && thread.msgs) || []).length - 1; i >= 0; i--) {
+    const q = thread.msgs[i] && thread.msgs[i].question;
+    if (!q) continue;
+    // the LAST suggestion only: a bot that has since got it right is not
+    // lectured about the attempt before it
+    return q.rejected
+      ? questions.reviseRefusedBlock(q.rejected, q.revises || '', mintedHere(page, thread))
+      : '';
+  }
+  return '';
+}
+
 function summon(page, target, text, extras = {}, me = { owner: true }) {
   const { forceAll, ...rest } = extras;
   extras = rest;
@@ -1218,7 +1275,15 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // a model never shown the convention cannot use it. Unlike the strike offer
   // this is not a PDF affair — a gap in understanding is not a property of the
   // file format — so every page's thread turn carries it.
-  const questionContext = questionable(page, thread) ? questions.questionOfferBlock() : '';
+  //
+  // …carrying what this discussion has ALREADY filed, so that a bot asked to
+  // reword a question can name the card instead of writing a second one — and,
+  // where the last block it wrote was refused at the lift, the sentence saying
+  // so. A model with no news assumes the correction landed and tells the
+  // reader it did, which is the failure this pair of blocks exists to prevent.
+  const questionContext = questionable(page, thread)
+    ? questions.questionOfferBlock(mintedHere(page, thread)) + refusedRevision(page, thread)
+    : '';
   // ── what ELSE is marked up on this passage? ───────────────────────────
   // The other threads whose quotes sit on or beside this one — the two
   // strikeouts already in the sentence this comment is about. Composed here for
@@ -2931,6 +2996,61 @@ export function handler(req, res) {
         ...(made.reason ? { reason: made.reason } : {}) });
     });
   }
+  // "Revise the card." The other half of the offer above, and the only route
+  // in this product that CHANGES a question rather than adding one.
+  //
+  // The corrected card is read off the RECORD — the message the bot wrote,
+  // where the lift already parsed and checked it — and never off the request.
+  // The chip therefore carries pointers only (which thread, which reply), the
+  // guards that ran at the lift run again here against the vault as it is NOW
+  // (a card the reader discarded in between is gone, and this must say so
+  // rather than resurrect it), and a client cannot post a card of its own
+  // invention into somebody's bank.
+  if (req.method === 'POST' && url === '/question-revise') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = store.findThread(page, data.thread_id);
+      if (!thread) return fail(res, 404, 'unknown thread');
+      const ts = String(data.from_msg || '');
+      const msg = (thread.msgs || []).find(m => m && String(m.ts || '') === ts);
+      const q = (msg && msg.question) || null;
+      // …the refusal FIRST: a revision thrown away at the lift kept its
+      // `revises` and no card, and the honest answer to a click on it is what
+      // happened, not "there is nothing here"
+      if (q && q.rejected) return fail(res, 400, 'that revision was refused when it was written');
+      if (!q || !q.revises || !q.card) return fail(res, 404, 'no revision on that reply');
+      const vault = questions.readVault();
+      const card = questions.findCard(vault, q.revises);
+      if (!card) return fail(res, 404, 'that card is no longer in the vault');
+      if ((card.source || {}).page_key !== store.pageKey(page.url)) {
+        return fail(res, 400, 'that card belongs to another page');
+      }
+      const revised = questions.reviseCard(vault, q.revises, q.card,
+        { model: msg.author, from_msg: ts });
+      questions.saveVault(vault);
+      broadcast({ type: 'question', url: page.url, card_id: revised.id,
+        state: revised.state, revised: true });
+      ok(res, { card: revised, revised: true });
+    });
+  }
+  // "They are not the same question." The reader's veto on the duplicate hint,
+  // pinned on both cards so it is never offered again. The other two answers to
+  // the hint need no door of their own: dropping one of the pair is
+  // /quiz-delete, and ignoring it costs a line.
+  if (req.method === 'POST' && url === '/quiz-keep') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const vault = questions.readVault();
+      if (!questions.keepBoth(vault, data.id, data.other)) return fail(res, 404, 'unknown card');
+      questions.saveVault(vault);
+      // from the scriptless page: back to the reveal the reader was reading,
+      // which now simply has no hint on it
+      if (data._form) return seeOther(res, quizBack(data, true));
+      ok(res, { ok: true });
+    });
+  }
   // The vault itself, as JSON: the drawer reads it for its due count, and the
   // tests read it for everything.
   if (req.method === 'GET' && url === '/questions') {
@@ -2995,7 +3115,13 @@ export function handler(req, res) {
       scope: chosen,
       scopes,
       counts: questions.counts(vault, scope),
-      cards: questions.dueCards(vault, { ...scope, limit: questions.SESSION_MAX }),
+      // …each with the sibling that looks like the same question, where there
+      // is one (questions.duplicateOf). It rides the card rather than being a
+      // request of its own because the tab draws the hint beside the card and
+      // a second round trip per card on screen would be absurd for a line the
+      // reader may ignore.
+      cards: questions.dueCards(vault, { ...scope, limit: questions.SESSION_MAX })
+        .map(c => withDuplicate(vault, c)),
     });
   }
   // Answering one. The grade is the whole of the reader's input — right or
@@ -3079,6 +3205,11 @@ export function handler(req, res) {
       // page" is the article view and the quote is a tap from being in context
       read: !!(shown && store.hasSnapshot(String((shown.source || {}).page_key || ''))),
       reveal,
+      // …and the sibling that looks like the same question, if there is one.
+      // Offered on the reveal only: the reader is deciding what to keep, and
+      // the moment to decide that is after the card has been asked, never
+      // while they are trying to answer it.
+      dup: (reveal && shown) ? (questions.duplicateOf(vault, shown) || null) : null,
       session: { asked: s.asked, right: s.right, wrong: s.wrong, left: Math.max(0, s.queue.length - s.i) },
       counts: questions.counts(vault, scope),
       facets: questions.facets(vault),

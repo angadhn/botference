@@ -2,6 +2,41 @@
 
 ## 2026-08-28
 
+- **A question you filed can now be fixed instead of filed twice.** If you asked
+  a bot to reword a question it had made, it had no way of saying "change that
+  one" — so it wrote another, and you ended up with two questions about the same
+  idea and no way to correct either. Now, in a discussion that has already made
+  questions, a bot is shown which ones (with their ids) and can offer a
+  corrected version of a particular card. The button under its reply says
+  **Revise the card** rather than **File it**, and pressing it rewrites the
+  question that is already there — one card, not two.
+
+- **Revising a card does not cost you your progress with it.** The wording, the
+  options, the right answer and the explanation are all replaced; how well you
+  know it and when it comes back next are left exactly as they were. That is
+  deliberate: your history with an idea took months to build and the wording
+  took a moment, so correcting a question should never send it back to the start.
+  A card you had flagged as wrong goes back into rotation the moment it is
+  rewritten, which is what flagging was always waiting for.
+
+- **A correction that cannot be applied says so, and never quietly makes a new
+  card instead.** If a bot names a card that is not in your vault, or one from
+  another page, you get a greyed note under its reply saying so — no button, and
+  nothing filed. The bot is told the same on its next turn, so it cannot go on
+  telling you a question was fixed when it was not.
+
+- **"This looks like a duplicate."** Where two questions in your vault came out
+  of the same discussion, or ask nearly the same thing about the same page, the
+  quiz and the Memorize tab say so quietly beside the card and show you the other
+  one. One tap discards whichever you do not want, or says they are different —
+  in which case that pair is never mentioned again. It is a hint and only a hint:
+  nothing is merged and nothing is ever removed on its own.
+
+- **"Seems wrong" and "discard" are where you can find them.** In the Memorize
+  tab they used to appear only after you had answered a card, so getting rid of a
+  question meant answering it first. They now sit under the card the whole time,
+  as quietly as before.
+
 - **The bots can see the page now.** Highlight a figure caption in a PDF and ask
   what the plot shows, and the answer is no longer "I cannot see it": the viewer
   renders that page to an image, the companion keeps it beside the page's

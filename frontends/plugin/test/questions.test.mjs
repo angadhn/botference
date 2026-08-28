@@ -364,6 +364,153 @@ await test('a bare marker is a model echoing the convention, not concluding anyt
   assert.equal(Q.parseQuestionSuggestion('no marker here'), null);
 });
 
+// ---------------------------------------------------------------------------
+// REVISING A CARD THAT IS ALREADY FILED.
+//
+// The failure this comes from: the reader filed a card from a thread and asked
+// the bot to rewrite it. The bot had no way to say "change that one", so it
+// wrote another — and the vault held two live questions about one idea with no
+// route anywhere to correct either. Everything below is about the two halves
+// of the fix: a block that NAMES the card, and an update that keeps the
+// reader's history with it.
+console.log('\nquestions — revising a card that is already filed');
+
+const REV = id => [
+  '```question',
+  `revises: ${id}`,
+  'Q: What does the law of large numbers promise about the SAMPLE MEAN?',
+  'A) it converges to the population mean as n grows',
+  'B) it equals the population mean once n is large enough',
+  'correct: A',
+  'why: A statement about the limit, not about any particular sample.',
+  '```',
+].join('\n');
+
+await test('the offer block names what this discussion has filed, and teaches the form', () => {
+  const b = Q.questionOfferBlock([{ id: 'q-1-aa', question: 'What does the LLN promise?', state: 'live' }]);
+  assert.match(b, /q-1-aa/, 'the id, so a bot never has to guess one');
+  assert.match(b, /What does the LLN promise\?/);
+  assert.match(b, /revises:/);
+  // the sentence the whole failure turned on: a block without it is a NEW card
+  assert.match(b, /WITHOUT a `revises:` line does not correct anything/);
+  assert.match(b, /keeping everything they have earned on it/i);
+});
+
+await test('…and says nothing at all where nothing has been filed', () => {
+  assert.doesNotMatch(Q.questionOfferBlock([]), /revises:/,
+    'nothing to revise is no invitation to invent an id');
+  assert.equal(Q.reviseOfferBlock([]), '');
+});
+
+await test('a fenced block naming a card parses as a REVISION, whole', () => {
+  const hit = Q.parseCardRevision(`Fair point.\n\n${REV('q-1-aa')}`);
+  assert.equal(hit.id, 'q-1-aa');
+  assert.equal(hit.ok, true);
+  assert.match(hit.card.question, /SAMPLE MEAN/);
+  assert.equal(hit.card.options.length, 2);
+  assert.equal(hit.card.answer, 0);
+  assert.match(hit.card.why, /about the limit/);
+  assert.ok(hit.block.startsWith('```question'), 'the block itself, so the lift can take it off the words');
+});
+
+await test('the LAST block wins, and one with no `revises:` is not a revision at all', () => {
+  assert.equal(Q.parseCardRevision(`${REV('q-old')}\n\n${REV('q-new')}`).id, 'q-new');
+  assert.equal(Q.parseCardRevision(BLOCK), null, 'a plain card block asks for a NEW card');
+  assert.equal(Q.parseCardRevision('no block here'), null);
+  // …and the `revises:` line never leaks into the question it introduces
+  assert.doesNotMatch(Q.parseCardRevision(REV('q-1-aa')).card.question, /revises/i);
+});
+
+await test('a block that names a card but will not parse is still seen, and refused', () => {
+  const broken = ['```question', 'revises: q-1-aa', 'Q: what?', 'A) only one option', '```'].join('\n');
+  const hit = Q.parseCardRevision(broken);
+  assert.equal(hit.id, 'q-1-aa');
+  assert.equal(hit.ok, false);
+  assert.match(hit.error, /at least 2 options/);
+});
+
+await test('revising rewrites the card and LEAVES THE SCHEDULE ALONE', () => {
+  const v = vaultWith({ sched: { interval: 21, ease: 2.36, reps: 5, lapses: 2, seen: 9 } });
+  const card = v.cards[0];
+  const before = { ...card.sched };
+  const madeAt = card.created_at;
+  const parsed = Q.parseCardRevision(REV(card.id));
+  const out = Q.reviseCard(v, card.id, parsed.card, { model: 'codex', from_msg: '2026-08-28T09:00:00Z' });
+  assert.match(out.question, /SAMPLE MEAN/, 'the wording is the cheap part, and it changes');
+  assert.equal(out.options.length, 2);
+  assert.equal(out.answer, 0);
+  assert.match(out.why, /about the limit/);
+  // the valuable part, and the reason this is not a delete-and-refile:
+  assert.deepEqual(out.sched, before, 'the reader keeps every day of history with this idea');
+  assert.equal(out.created_at, madeAt, 'and the date the memory was made');
+  assert.equal(out.model, 'claude', 'who wrote it originally stands');
+  assert.equal(out.revised_by, 'codex', '…beside who rewrote it');
+  assert.equal(out.revisions, 1);
+  assert.ok(Date.parse(out.updated_at) > 0);
+  assert.deepEqual(out.source, v.cards[0].source, 'the provenance and every trace link survive');
+});
+
+await test('a card the reader FLAGGED comes back to life when it is rewritten', () => {
+  const v = vaultWith({});
+  const card = v.cards[0];
+  Q.flagCard(v, card.id, 'the options overlap');
+  assert.equal(card.state, 'flagged');
+  Q.reviseCard(v, card.id, Q.parseCardRevision(REV(card.id)).card, { model: 'claude' });
+  assert.equal(card.state, 'live', 'the rewrite IS the answer to "seems wrong"');
+  assert.equal(card.flag, undefined);
+});
+
+await test('a late generation can never clobber a card the reader has revised', () => {
+  const v = { version: 1, cards: [] };
+  const card = Q.addPending(v, { source: source() });
+  Q.reviseCard(v, card.id, Q.parseCardRevision(REV(card.id)).card, { model: 'claude' });
+  assert.equal(Q.settle(v, card.id, BLOCK, 'claude'), null, 'the stale draft is dropped');
+  assert.match(card.question, /SAMPLE MEAN/);
+  assert.equal(Q.failCard(v, card.id, 'the reply did not parse'), null);
+  assert.equal(card.state, 'live');
+});
+
+// ---------------------------------------------------------------------------
+// "THIS LOOKS LIKE A DUPLICATE" — a hint, and deliberately nothing more.
+console.log('\nquestions — the duplicate hint');
+
+await test('two cards out of one discussion look like the same question', () => {
+  const v = vaultWith({}, { text: BLOCK.replace('law of large numbers', 'LLN') });
+  const hit = Q.duplicateOf(v, v.cards[0]);
+  assert.equal(hit.card.id, v.cards[1].id);
+  assert.equal(hit.why, 'thread', 'one argument, one point, two cards');
+});
+
+await test('…and so does near-identical wording on one page, from different threads', () => {
+  const v = vaultWith(
+    { source: { thread_id: 't-1' } },
+    { source: { thread_id: 't-2' } },
+  );
+  v.cards[1].question = v.cards[0].question.replace('promise', 'actually promise');
+  const hit = Q.duplicateOf(v, v.cards[0]);
+  assert.equal(hit.why, 'text');
+  assert.ok(hit.score >= Q.DUP_SIM);
+});
+
+await test('a different question, or a different page, is never a duplicate', () => {
+  const v = vaultWith({ source: { thread_id: 't-1' } }, { source: { thread_id: 't-2' } });
+  v.cards[1].question = 'How does a Cauchy distribution behave under averaging?';
+  assert.equal(Q.duplicateOf(v, v.cards[0]), null, 'a cheap signal must not be a loud one');
+  const far = vaultWith({}, { source: { page_key: 'b'.repeat(40) } });
+  assert.equal(Q.duplicateOf(far, far.cards[0]), null, 'one bank, but a hint is about one passage');
+});
+
+await test('only LIVE cards are paired, and "they are different" ends it for good', () => {
+  const v = vaultWith({}, {});
+  v.cards[1].state = 'flagged';
+  assert.equal(Q.duplicateOf(v, v.cards[0]), null, 'a parked card is not competing with anything');
+  v.cards[1].state = 'live';
+  assert.ok(Q.duplicateOf(v, v.cards[0]));
+  Q.keepBoth(v, v.cards[0].id, v.cards[1].id);
+  assert.equal(Q.duplicateOf(v, v.cards[0]), null);
+  assert.equal(Q.duplicateOf(v, v.cards[1]), null, 'pinned on BOTH, so the hint cannot come back sideways');
+});
+
 console.log('\nquestions — the quiz page');
 
 const ME = { handle: 'angadh', owner: true };
@@ -847,6 +994,214 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
   await sleep(120);
 }
 
+// PART SEVEN-AND-A-HALF: a bot correcting a card it already filed.
+//
+// The whole path, in the order it happens live: a card is filed from a thread,
+// the reader says it is wrong, and the bot's next reply carries the corrected
+// card naming the one it replaces. The two things this suite is really about
+// are that confirming CHANGES the card rather than adding one, and that a
+// `revises:` pointing anywhere it should not never falls through into minting.
+{
+  const root = tmp('revise');
+  const logDir = tmp('revise-logs');
+  const log = path.join(logDir, 'bridge.jsonl');
+  const s = await startServer({ root, env: { MOCK_BRIDGE_LOG: log } });
+  const vaultFile = path.join(root, '.botference', 'plugin', 'questions.json');
+  const vault = () => { try { return JSON.parse(fs.readFileSync(vaultFile, 'utf8')); } catch { return { cards: [] }; } };
+  const inputs = () => (fs.existsSync(log)
+    ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+      .filter(e => e.type === 'input').map(e => String(e.text))
+    : []);
+  const OTHER = 'https://example.com/elsewhere';
+  const lastBotMsg = async tid => {
+    const p = await GET(s.base, `/page?url=${encodeURIComponent(PAGE)}`);
+    const th = (p.json.threads || []).find(x => x.id === tid);
+    return [...(th.msgs || [])].reverse().find(m => m.author === 'claude');
+  };
+  // the corrected card, as a bot writes it: one `[mock:says:…]` directive with
+  // the whole fenced block in it
+  const saysRevision = id => '[mock:says:You are right — that was badly worded.\\n\\n'
+    + '```question\\n'
+    + `revises: ${id}\\n`
+    + 'Q: What does the law of large numbers promise about the SAMPLE MEAN?\\n'
+    + 'A) it converges to the population mean as n grows\\n'
+    + 'B) it equals the population mean once n is large enough\\n'
+    + 'correct: A\\n'
+    + 'why: A statement about the limit, not about any particular sample.\\n'
+    + '```]';
+
+  await POST(s.base, '/page', { url: PAGE, title: 'Fat tails', site: 'example.com' });
+  await POST(s.base, '/page', { url: OTHER, title: 'Elsewhere', site: 'example.com' });
+  const t = await POST(s.base, '/thread', {
+    url: PAGE, quote: 'The sample mean converges very slowly.', prefix: '', suffix: '',
+    msg: { text: `why is that? ${SAYS}` },
+  });
+  const tid = t.json.thread.id;
+  await POST(s.base, '/question', { url: PAGE, thread_id: tid });
+  const filed = await waitFor(() => {
+    const c = vault().cards[0];
+    return c && c.state === 'live' ? c : null;
+  }, 'the first card to settle');
+  // a card on ANOTHER page, for the refusal that matters most
+  await POST(s.base, '/question', { url: OTHER, quote: 'a passage over there' });
+  const away = await waitFor(() => vault().cards.find(c => c.source.url === OTHER), 'the other card');
+
+  await test('the next turn in the thread SHOWS the bot what it has already filed', async () => {
+    await POST(s.base, '/reply', { url: PAGE, thread_id: tid,
+      text: `@claude that question is badly worded. ${saysRevision(filed.id)}` });
+    const env = await waitFor(
+      () => inputs().find(x => /badly worded/.test(x) && /QUESTIONS THIS DISCUSSION HAS ALREADY FILED/.test(x)),
+      'the envelope carrying the minted list');
+    assert.match(env, new RegExp(filed.id), 'the id, so it never has to be guessed');
+    assert.match(env, /revises:/);
+    assert.match(env, /does not correct anything/, 'and the sentence that stops a second card');
+  });
+
+  await test('the block comes off the words and is lifted as a REVISION', async () => {
+    const msg = await waitFor(async () => {
+      const m = await lastBotMsg(tid);
+      return m && m.question ? m : null;
+    }, 'the bot to answer with a revision');
+    assert.equal(msg.question.revises, filed.id);
+    assert.match(msg.question.card.question, /SAMPLE MEAN/, 'the corrected card rides the record');
+    assert.equal(msg.question.card.options.length, 2);
+    assert.doesNotMatch(msg.text, /```question/, 'the block is machinery, not prose');
+    assert.match(msg.text, /badly worded/, '…and the sentence around it stays');
+  });
+
+  await test('BOTS NEVER FILE, and never REVISE either, until the reader presses it', () => {
+    assert.equal(vault().cards.filter(c => c.source.url === PAGE).length, 1,
+      'no second card appeared while the offer sat there');
+    assert.match(vault().cards[0].question, /What does the LLN promise/, 'and the first one is untouched');
+  });
+
+  await test('confirming it rewrites the card IN PLACE, schedule and all', async () => {
+    // give the card a history worth protecting first
+    const before = vault().cards[0];
+    const msg = await lastBotMsg(tid);
+    const r = await POST(s.base, '/question-revise',
+      { url: PAGE, thread_id: tid, from_msg: msg.ts });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.revised, true);
+    const after = vault().cards.find(c => c.id === before.id);
+    assert.equal(vault().cards.filter(c => c.source.url === PAGE).length, 1, 'one card, corrected');
+    assert.match(after.question, /SAMPLE MEAN/);
+    assert.deepEqual(after.sched, before.sched, 'the reader keeps their history with the idea');
+    assert.equal(after.created_at, before.created_at);
+    assert.deepEqual(after.source, before.source, 'and every trace link still points where it did');
+    assert.equal(after.revised_by, 'claude');
+    assert.ok(after.updated_at);
+  });
+
+  await test('a `revises:` naming a card that does not exist is REFUSED, loudly', async () => {
+    await POST(s.base, '/reply', { url: PAGE, thread_id: tid,
+      text: `@claude try again. ${saysRevision('q-does-not-exist')}` });
+    const msg = await waitFor(async () => {
+      const m = await lastBotMsg(tid);
+      return m && m.question && m.question.rejected ? m : null;
+    }, 'the refusal');
+    assert.equal(msg.question.rejected, 'unknown');
+    assert.equal(msg.question.revises, 'q-does-not-exist');
+    assert.equal(vault().cards.filter(c => c.source.url === PAGE).length, 1,
+      'and NOTHING was minted — which is the whole point of refusing at the lift');
+    const r = await POST(s.base, '/question-revise', { url: PAGE, thread_id: tid, from_msg: msg.ts });
+    assert.equal(r.status, 400, 'the door refuses it too, not only the chip');
+  });
+
+  await test('…and one naming another page\'s card is refused as that', async () => {
+    await POST(s.base, '/reply', { url: PAGE, thread_id: tid,
+      text: `@claude once more. ${saysRevision(away.id)}` });
+    const msg = await waitFor(async () => {
+      const m = await lastBotMsg(tid);
+      return m && m.question && m.question.revises === away.id ? m : null;
+    }, 'the second refusal');
+    assert.equal(msg.question.rejected, 'elsewhere');
+    assert.match(vault().cards.find(c => c.id === away.id).question, /LLN promise|^$/,
+      'the other page\'s card was not touched');
+  });
+
+  await test('the bot is TOLD, on its next turn, that nothing was changed', async () => {
+    await POST(s.base, '/reply', { url: PAGE, thread_id: tid, text: '@claude did that work?' });
+    const env = await waitFor(
+      () => inputs().find(x => /did that work\?/.test(x)), 'the next envelope');
+    assert.match(env, /WAS REFUSED/);
+    assert.match(env, /belongs to a different page/);
+    assert.match(env, /NOTHING in their vault was changed/);
+  });
+
+  s.proc.kill();
+  await sleep(120);
+}
+
+// PART SEVEN-AND-THREE-QUARTERS: "this looks like a duplicate", over the wire.
+//
+// The hint rides the cards the Memorize tab is drawing, because the tab draws
+// it beside them; the reader's three answers are two doors that already existed
+// (discard either one) plus the veto.
+{
+  const root = tmp('dupes');
+  const s = await startServer({ root, args: ['--no-agents'] });
+  const vaultFile = path.join(root, '.botference', 'plugin', 'questions.json');
+  const vault = () => JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+  const save = v => fs.writeFileSync(vaultFile, JSON.stringify(v, null, 2));
+
+  await POST(s.base, '/page', { url: PAGE, title: 'Fat tails', site: 'example.com' });
+  const t = await POST(s.base, '/thread', {
+    url: PAGE, quote: 'The sample mean converges very slowly.',
+    prefix: '', suffix: '', msg: { text: 'why?' },
+  });
+  await POST(s.base, '/question', { url: PAGE, thread_id: t.json.thread.id });
+  await POST(s.base, '/question', { url: PAGE, thread_id: t.json.thread.id });
+  {
+    const v = vault();
+    for (const c of v.cards) {
+      c.state = 'live'; c.question = 'What does the law of large numbers promise?';
+      c.options = ['a limit', 'an equality']; c.answer = 0; c.why = 'because';
+      c.sched.due = new Date(Date.now() - 864e5).toISOString();
+    }
+    save(v);
+  }
+
+  await test('the tab says which card looks like which, and why', async () => {
+    const r = await GET(s.base, `/memory?url=${encodeURIComponent(PAGE)}`);
+    assert.equal(r.status, 200);
+    const [a, b] = r.json.cards;
+    assert.equal(a.dup.id, b.id);
+    assert.equal(a.dup.why, 'thread', 'two cards out of one argument');
+    assert.ok(a.dup.question, 'and the other question in full, to judge by');
+  });
+
+  await test('the quiz says it too, but only once the card has been answered', async () => {
+    const id = vault().cards[0].id;
+    const plain = await GET(s.base, '/quiz', { accept: 'text/html' });
+    assert.doesNotMatch(plain.body, /looks like a duplicate/,
+      'never while the reader is trying to answer the question');
+    await FORM(s.base, '/quiz-answer', { id, choice: '0' });
+    const html = await GET(s.base, '/quiz?reveal=1', { accept: 'text/html' });
+    assert.match(html.body, /looks like a duplicate/);
+    assert.match(html.body, /discard that one/);
+    assert.match(html.body, /they are different/);
+  });
+
+  await test('"they are different" pins the pair and the hint never returns', async () => {
+    const [a, b] = vault().cards;
+    const r = await POST(s.base, '/quiz-keep', { id: a.id, other: b.id });
+    assert.equal(r.status, 200);
+    const after = vault().cards;
+    assert.deepEqual(after[0].kept_with, [b.id]);
+    assert.deepEqual(after[1].kept_with, [a.id], 'on BOTH, or it comes back from the other side');
+    const m = await GET(s.base, `/memory?url=${encodeURIComponent(PAGE)}`);
+    assert.ok(!m.json.cards.some(c => c.dup), 'and the tab stops saying it');
+  });
+
+  await test('an unknown card is a 404 there too', async () => {
+    assert.equal((await POST(s.base, '/quiz-keep', { id: 'q-nope', other: 'q-nope2' })).status, 404);
+  });
+
+  s.proc.kill();
+  await sleep(120);
+}
+
 // PART EIGHT: memorizer.botference.com — the vault at an address of its own.
 //
 // One companion, two doors, carried by one tunnel. On the vault's hostname `/`
@@ -941,6 +1296,9 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
   await test('a guest is refused at every question door', async () => {
     for (const [method, p] of [['POST', '/question'], ['GET', '/questions'],
       ['POST', '/quiz-answer'], ['POST', '/quiz-flag'], ['POST', '/quiz-delete'], ['GET', '/quiz'],
+      // the two doors the revision path added: rewriting a card, and the
+      // duplicate hint's veto. Both write to the owner's own bank.
+      ['POST', '/question-revise'], ['POST', '/quiz-keep'],
       // the near view is the same vault seen from a page, and just as private
       ['GET', `/memory?url=${encodeURIComponent(PAGE)}`]]) {
       const r = method === 'GET'

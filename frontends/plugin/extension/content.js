@@ -2073,6 +2073,23 @@
                  queued: !!(r.data && r.data.queued),
                  reason: (r.data && r.data.reason) || '' };
       },
+      // …and the other thing a confirm can do: REWRITE a card this discussion
+      // already filed, rather than add a second one beside it. The corrected
+      // card lives on the record (the reply the chip sits under), so this
+      // carries pointers only — which thread, which reply — and the companion
+      // reads the card it already parsed and checked.
+      onQuestionRevise: async (threadId, fromMsg) => {
+        const r = await api('POST', '/question-revise',
+          { url: URL_NOW, thread_id: threadId, from_msg: fromMsg || '' });
+        if (!r.ok) return failure(r);
+        return { ok: true, card: r.data && r.data.card, revised: true };
+      },
+      // "They are not the same question" — the reader's veto on the duplicate
+      // hint, pinned on both cards so it is never offered again.
+      onQuizKeep: async (id, other) => {
+        const r = await api('POST', '/quiz-keep', { id, other });
+        return r.ok ? { ok: true } : failure(r);
+      },
       // Two answers in one request: how many are due across the WHOLE bank
       // (the door's only number — one vault, every page) and which threads on
       // THIS page have minted a memory, which is the card-side half of the

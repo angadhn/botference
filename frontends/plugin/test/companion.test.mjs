@@ -2465,6 +2465,10 @@ async function main() {
         ['/quiz-answer', { id: 'q-x', choice: 0 }],
         ['/quiz-flag', { id: 'q-x' }],
         ['/quiz-delete', { id: 'q-x' }],
+        // …nor rewrite one of the owner's cards, nor answer the duplicate hint
+        // on their behalf
+        ['/question-revise', { url: PAGE1, thread_id: 't-x', from_msg: 'x' }],
+        ['/quiz-keep', { id: 'q-x', other: 'q-y' }],
         // …nor put a picture into the owner's archive: a page image is what an
         // agent is then handed to LOOK at, which is the last thing a guest may
         // choose the contents of

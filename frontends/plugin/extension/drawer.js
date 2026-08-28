@@ -1339,11 +1339,14 @@
       //   declined  the ts of any bot offer the reader said no to — per tab,
       //             never persisted, exactly like a declined filing
       //   made      ts -> the card id that offer produced, for the session
+      //   revised   ts -> true where that reply's block REWROTE a card rather
+      //             than filing one; the chip must say which happened, and the
+      //             reader should never have to work it out
       //   note      the one line the drawer says about the last capture
       //   due       how many are waiting in the vault, for the header button
       //   threads   thread id -> how many memories that thread has minted, for
       //             the card's own quiet line back into the quiz
-      questions: { busy: '', declined: [], made: {}, note: null, due: 0, threads: {} },
+      questions: { busy: '', declined: [], made: {}, revised: {}, note: null, due: 0, threads: {} },
       // ---- the Memorize tab: the vault, where the reading is -------------
       // The quiz at memorizer.botference.com is the everything-bank — concepts,
       // on a phone, away from the Mac. This is the other half: revising THIS
@@ -4865,6 +4868,9 @@ ${selPillHtml()}
           doMakeQuestion(target, { from_msg: btn.dataset.ts, hint: btn.dataset.why });
           return;
         }
+        // …and the third thing a confirm can be: not another card, but a
+        // rewrite of one this discussion already filed.
+        if (act === 'q-revise') { doReviseQuestion(target, btn.dataset.ts); return; }
         if (act === 'q-no') {
           const row = btn.closest && btn.closest('[data-ts]');
           if (row && row.dataset.ts) D.questions.declined.push(row.dataset.ts);
@@ -4880,6 +4886,11 @@ ${selPillHtml()}
         if (act === 'mem-flag') { retireMemory(target, 'flag'); return; }
         if (act === 'mem-drop') { retireMemory(target, 'drop'); return; }
         if (act === 'mem-page') { bg({ t: 'open-here', path: `/p/${btn.dataset.key || ''}` }); return; }
+        // the duplicate hint's three answers: drop the other one, drop this
+        // one, or say they are different (which pins the pair so the hint
+        // never comes back)
+        if (act === 'mem-dup-drop') { retireMemory(target, 'drop'); return; }
+        if (act === 'mem-dup-keep') { keepMemoryPair(target, btn.dataset.other); return; }
         // a thread's own "filed as a memory · view": the tab, opened on the
         // page this thread is on, which is where its questions are
         if (act === 'mem-open') {
@@ -6502,6 +6513,8 @@ ${selPillHtml()}
           ${opts.map((o, i) => `<button class="memopt" data-act="mem-answer" data-choice="${i}" type="button">
             <span class="ol">${MEM_LETTER[i] || ''}</span><span>${esc(o)}</span></button>`).join('')}
           ${memTraceHtml(card)}
+          ${memDupHtml(card)}
+          ${memMinorHtml(card)}
         </div>`;
       }
       // THE WRONG-ANSWER MOMENT, IN A 320px COLUMN.
@@ -6543,17 +6556,68 @@ ${selPillHtml()}
         ${(card.source && card.source.quote)
     ? `<div class="memnote src"><b>where it came from</b> <q>${esc(card.source.quote)}</q></div>` : ''}
         ${memTraceHtml(card)}
+        ${memDupHtml(card)}
         <div class="memacts">
           <button class="rebtn memnext" data-act="mem-next" type="button">next ›</button>
           <span class="memscore">${M.right}/${M.asked} this sitting</span>
         </div>
-        <div class="memminor">
-          <button class="rebtn" data-act="mem-flag" data-target="${esc(card.id)}" type="button"
-            title="park this card for revision — it stops being asked until it is rewritten">seems wrong</button>
-          <button class="rebtn" data-act="mem-drop" data-target="${esc(card.id)}" type="button"
-            title="drop this question for good — it leaves the vault">discard</button>
+        ${memMinorHtml(card)}
+      </div>`;
+    }
+
+    // THE TWO QUIET EXITS, IN EVERY STATE THE CARD IS READ IN.
+    //
+    // They used to appear only after an answer, and the reader could not find
+    // them: looking at a card they no longer wanted, the only way to be rid of
+    // it was to answer it first — which grades a question they were trying to
+    // delete. "Seems wrong" and "discard" are statements about the CARD, and a
+    // card is on the screen before it is answered as much as after it. So the
+    // row is drawn in both, in the same place, with the same words. Still
+    // quiet, still under everything else, still no confirm dialog: findable
+    // without ever competing with the question.
+    const memMinorHtml = card => `<div class="memminor">
+      <button class="rebtn" data-act="mem-flag" data-target="${esc(card.id)}" type="button"
+        title="park this card for revision — it stops being asked until it is rewritten">seems wrong</button>
+      <button class="rebtn" data-act="mem-drop" data-target="${esc(card.id)}" type="button"
+        title="drop this question for good — it leaves the vault">discard</button>
+    </div>`;
+
+    // "This looks like a duplicate." The hint, in the drawer's register: what
+    // was noticed, the other question in full, and one tap for each of the
+    // three answers there are. A hint and not a dedupe engine — nothing merges,
+    // nothing goes on its own, and "they are different" pins the pair so it is
+    // never suggested again.
+    function memDupHtml(card) {
+      const d = card && card.dup;
+      if (!d || !d.id) return '';
+      return `<div class="memdup">
+        <p class="memdupw">${d.why === 'thread'
+    ? 'Another question came out of the same discussion:'
+    : 'Another question here asks almost the same thing:'}</p>
+        <p class="memdupq">${esc(d.question || '')}</p>
+        <div class="memdupacts">
+          <button class="rebtn" data-act="mem-dup-drop" data-target="${esc(d.id)}" type="button"
+            title="keep the one you are looking at and drop the other">discard that one</button>
+          <button class="rebtn" data-act="mem-dup-keep" data-target="${esc(card.id)}"
+            data-other="${esc(d.id)}" type="button"
+            title="keep both — you will not be asked about this pair again">they are different</button>
         </div>
       </div>`;
+    }
+
+    // The reader's veto. It writes through to the vault (both cards remember
+    // the pair) and the hint goes at once — a hint that needed pressing twice
+    // would be a nag.
+    async function keepMemoryPair(id, other) {
+      const M = D.memory;
+      const r = await cb('onQuizKeep')(id, other);
+      if (!r || r.ok === false) { M.error = (r && r.error) || 'that did not save'; renderMemory(); return; }
+      for (const c of M.queue) if (c && (c.id === id || c.id === other)) delete c.dup;
+      if (M.last && M.last.card) delete M.last.card.dup;
+      M.note = 'kept both — they will not be paired again';
+      const mine = M.note;
+      setTimeout(() => { if (D.memory.note === mine) { D.memory.note = ''; renderMemory(); } }, 4000);
+      renderMemory();
     }
 
     function renderMemory() {
@@ -6790,9 +6854,45 @@ ${selPillHtml()}
     // until the reader presses the button.
     function questionChipHtml(msg, threadId) {
       const q = msg && msg.question;
-      if (!q || !q.why) return '';
+      if (!q || (!q.why && !q.revises)) return '';
       const ts = String(msg.ts || '');
       if (D.questions.declined.indexOf(ts) >= 0) return '';
+      // A REVISION REFUSED AT THE LIFT, and said out loud. The block named a
+      // card that is not in the vault, or one belonging to another page, or it
+      // would not parse — and the one thing that must never happen is for it
+      // to quietly become a SECOND card, which is the failure this whole
+      // convention exists to end. So no button, ever, and a sentence saying
+      // which of the three it was. The bot is told the same on its next turn
+      // here (questions.reviseRefusedBlock).
+      if (q.rejected) {
+        const why = q.rejected === 'elsewhere'
+          ? 'that card belongs to another page, and a question is only revised from the discussion it was made in'
+          : q.rejected === 'unparsed'
+            ? 'the corrected card could not be read'
+            : 'there is no such card in your vault';
+        return `<div class="filechip qchip refused">
+          <span class="fcw">Not changed — ${esc(why)}${
+  q.revises ? ` (${esc(q.revises)})` : ''}. Nothing was filed either.</span></div>`;
+      }
+      // A REVISION OFFERED. Same chip, different verb, and the difference is
+      // the whole point: "File it" adds a card, "Revise the card" rewrites the
+      // one that is already there and leaves the reader's history with it
+      // exactly where it was.
+      if (q.revises) {
+        if (D.questions.revised[ts]) {
+          return `<div class="filechip qchip done">Revised — the card keeps its place in the rotation.</div>`;
+        }
+        return `<div class="filechip qchip">
+          <span class="fcw">Rewrite the question you already filed — ${esc(q.why || 'a corrected card')}</span>
+          <span class="fcacts">
+            <button class="rebtn" type="button" data-act="q-revise"
+              data-target="${esc(threadId)}" data-ts="${esc(ts)}"
+              title="rewrite that card where it stands — when it next comes back is unchanged"
+              ${D.questions.busy ? 'disabled' : ''}>Revise the card</button>
+            <button class="rebtn no" type="button" data-act="q-no">No</button>
+          </span>
+        </div>`;
+      }
       if (D.questions.made[ts]) {
         return `<div class="filechip qchip done">Filed — you will be asked about this.</div>`;
       }
@@ -6805,6 +6905,29 @@ ${selPillHtml()}
           <button class="rebtn no" type="button" data-act="q-no">No</button>
         </span>
       </div>`;
+    }
+
+    // "Revise the card", confirmed. Nothing is minted and no bot is summoned:
+    // the corrected card is already on the record (the reply the chip sits
+    // under), and this is the reader agreeing to it. The one thing the note
+    // says out loud is what did NOT change — a reader who has been revising a
+    // card for ten minutes wants to know their schedule survived it.
+    async function doReviseQuestion(threadId, ts) {
+      if (D.questions.busy) return;
+      D.questions.busy = ts;
+      render();
+      let r;
+      try { r = await cb('onQuestionRevise')(threadId, ts); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.questions.busy = '';
+      if (!r || r.ok === false) {
+        qnote((r && r.error) || 'that card could not be revised', true);
+        render();
+        return;
+      }
+      D.questions.revised[ts] = true;
+      qnote('the question was rewritten — when it comes back next is unchanged');
+      render();
     }
 
     // ---- the PDF's own margin, in and out ---------------------------------
@@ -7378,6 +7501,10 @@ ${selPillHtml()}
       if (ev.type === 'question') {
         refreshDue();
         if (ev.state === 'failed') qnote(`that question could not be written — ${ev.error || 'the reply did not parse'}`, true);
+        // a rewrite is not a filing, and saying so in the same words would tell
+        // the reader they had just made a second card — which is the thing the
+        // revision path exists to stop
+        else if (ev.revised) qnote('the question was rewritten — when it comes back next is unchanged');
         else if (ev.state === 'live') qnote('a question was filed — it is in the quiz now');
         render();
         return;
@@ -7594,6 +7721,7 @@ ${selPillHtml()}
       makeQuestion: (threadId, extra) => doMakeQuestion(threadId || '', extra || {}),
       questionState: () => ({ busy: D.questions.busy, note: D.questions.note,
                               due: D.questions.due, made: { ...D.questions.made },
+                              revised: { ...D.questions.revised },
                               threads: { ...D.questions.threads } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       openModels, closeModels, setWidth: w => applyWidth(w),

@@ -759,6 +759,15 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    fifth thing to press while they are answering the question */
 .memminor { display: flex; gap: 8px; margin: 12px 0 0; padding-top: 9px;
   border-top: 1px solid var(--card-line) }
+/* the duplicate hint: the quietest thing in the pane, because it is a
+   suggestion about the reader's own bank and not a fault in it */
+.memdup { margin: 12px 0 0; padding: 8px 10px; border-radius: 9px;
+  border: 1px dashed var(--card-line); background: var(--rail) }
+.memdupw { margin: 0; font: 11.5px/1.45 var(--sans); color: var(--muted) }
+.memdupq { margin: 5px 0 7px; font: 13px/1.5 var(--serif, var(--sans)); color: var(--fg) }
+.memdupacts { display: flex; flex-wrap: wrap; gap: 8px }
+.memdupacts .rebtn { font-size: 11.5px; color: var(--muted) }
+.memdupacts .rebtn:not([disabled]):hover { color: var(--fg) }
 .memminor .rebtn { font-size: 11.5px; color: var(--muted) }
 .memminor .rebtn:not([disabled]):hover { color: var(--strike-line) }
 /* `next ›` sticks to the foot of the column while the eye is still in the
@@ -1175,6 +1184,12 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 /* The bot's own offer, as a chip: the filing chip's shape in the accent, since
    what it makes is neither a filing nor a mark on the page. */
 .filechip.qchip.done { border-style: solid; border-color: var(--accent); color: var(--accent) }
+/* A revision the companion threw away — a `revises:` naming a card that is not
+   in the vault, or one from another page. Dashed and buttonless, exactly like
+   a refused strike note and for the identical reason: the reader watched a bot
+   propose a correction, and a proposal that silently amounts to nothing is how
+   they end up being told a card was fixed when it was not. */
+.filechip.qchip.refused { border-style: dashed; border-color: var(--line); color: var(--muted) }
 /* The receipt at the top of the column. A capture is answered by an agent turn
    that may be behind a queue, so this says what happened and then goes away —
    it is not a progress bar and must never look like one. */
