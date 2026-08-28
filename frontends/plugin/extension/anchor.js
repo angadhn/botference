@@ -36,22 +36,64 @@
   // never present in a stored quote — drop them from the normalized view.
   const INVISIBLE = /[​‌‍⁠﻿­]/;
 
+  const SPACE = /\s/;   // \s covers nbsp, which article HTML is full of
+
   // Normalized copy of `raw` plus map[i] = raw offset of normalized char i.
+  //
+  // ── WHY THIS BUILDS AN ARRAY AND JOINS ONCE ────────────────────────────────
+  // The obvious spelling accumulates into a string (`norm += c`) and asks the
+  // string what its last character was (`norm[norm.length - 1] !== ' '`). That
+  // second line is a trap: V8 builds `+=` into a CONS-STRING rope, and INDEXING
+  // a rope flattens the whole thing. So every whitespace character in the
+  // document re-copied every character before it, and normIndex was O(n²) in
+  // the length of the page — invisible on an article, fatal on a book. Measured
+  // on a synthetic PDF: 59 ms at 40 pages, 1.0 s at 120, 17.9 s at 500. Since
+  // `locate` normalizes the whole page once per thread, a 500-page document
+  // with 300 threads spent about ninety MINUTES on a single repaint.
+  //
+  // Chunks in an array, joined once, and the "was the last emitted character a
+  // space" question answered by a boolean instead of by the string. Same output,
+  // character for character; linear. (FOLD never maps anything to a space and a
+  // space is never a non-space, so the flag is exactly the test it replaces.)
   function normIndex(raw) {
     raw = String(raw == null ? '' : raw);
-    let norm = '';
+    const out = [];
     const map = [];
+    let lastSpace = false;
     for (let i = 0; i < raw.length; i++) {
       const c = raw[i];
       if (INVISIBLE.test(c)) continue;
-      if (/\s/.test(c)) { // \s covers nbsp, which article HTML is full of
-        if (norm && norm[norm.length - 1] !== ' ') { norm += ' '; map.push(i); }
+      if (SPACE.test(c)) {
+        if (out.length && !lastSpace) { out.push(' '); map.push(i); lastSpace = true; }
       } else {
-        norm += FOLD[c] || c;
+        out.push(FOLD[c] || c);
         map.push(i);
+        lastSpace = false;
       }
     }
-    return { norm, map };
+    return { norm: out.join(''), map };
+  }
+
+  // ── THE HAYSTACK IS NORMALIZED ONCE PER REPAINT, NOT ONCE PER THREAD ───────
+  // Every thread on the page is located against the SAME page text, in one
+  // loop, with the same `raw` string object. Normalizing it afresh for each of
+  // them is the second half of the same bug the note above describes: linear
+  // now rather than quadratic, but still multiplied by the thread count. One
+  // entry, keyed on string identity — a repaint hits it for every thread after
+  // the first, and the next repaint's `raw` (a fresh string) replaces it.
+  //
+  // Only for haystacks worth caching: a needle is normalized through
+  // `normalize()` and must never evict the page. Identity (`===`) rather than
+  // content, deliberately — comparing two 1 MB strings to save one traversal of
+  // one of them is not a saving.
+  const CACHE_MIN = 4096;
+  let normCache = null;
+  function normIndexOf(raw) {
+    if (typeof raw !== 'string' || raw.length < CACHE_MIN) return normIndex(raw);
+    if (normCache && normCache.raw === raw) return normCache.idx;
+    const idx = normIndex(raw);
+    normCache = { raw, idx };
+    return idx;
   }
 
   // Comparable form of a fragment: folded, single-spaced, trimmed.
@@ -98,7 +140,7 @@
     limit = limit || 50;
     const nn = normalize(needle);
     if (!nn) return [];
-    const { norm, map } = normIndex(raw);
+    const { norm, map } = normIndexOf(raw);
     const spans = [];
     let from = 0, at;
     while (spans.length < limit && (at = norm.indexOf(nn, from)) !== -1) {
@@ -320,25 +362,38 @@
   // Flatten a subtree into { raw, segs } where segs[i] = {node, from, to}.
   // node === null marks a synthetic '\n' inserted at block boundaries so a
   // quote can never silently run across two unrelated paragraphs' edges.
+  // (The chunks-and-join spelling is not a style choice — see normIndex above.
+  // `sep()` asked the accumulated string for its last character at every block
+  // boundary, and indexing a `+=` rope flattens it, so the walk was O(n²) in
+  // the document's own length: 2.6 SECONDS on a 500-page PDF, for a walk that
+  // touches 36,000 nodes and should cost tens of milliseconds. The question
+  // "does what we have so far end in a newline" is answered by a flag instead,
+  // and the pieces are joined once at the end. Byte-identical output.)
   function buildTextIndex(rootEl) {
     const doc = (typeof document !== 'undefined') ? document : null;
     const start = rootEl || (doc && doc.body) || null;
     const segs = [];
-    let raw = '';
-    if (!start) return { raw, segs, root: null };
+    const chunks = [];
+    let len = 0;
+    let endsNl = true;            // "" counts: the original bailed on empty too
+    if (!start) return { raw: '', segs, root: null };
 
     const sep = () => {
-      if (!raw || raw[raw.length - 1] === '\n') return;
-      segs.push({ node: null, from: raw.length, to: raw.length + 1 });
-      raw += '\n';
+      if (endsNl) return;
+      segs.push({ node: null, from: len, to: len + 1 });
+      chunks.push('\n');
+      len += 1;
+      endsNl = true;
     };
 
     (function walk(el) {
       for (let n = el.firstChild; n; n = n.nextSibling) {
         if (n.nodeType === 3) {
           if (!n.data.length) continue;
-          segs.push({ node: n, from: raw.length, to: raw.length + n.data.length });
-          raw += n.data;
+          segs.push({ node: n, from: len, to: len + n.data.length });
+          chunks.push(n.data);
+          len += n.data.length;
+          endsNl = n.data.charCodeAt(n.data.length - 1) === 10;
         } else if (n.nodeType === 1) {
           const tag = n.nodeName.toUpperCase();
           if (SKIP_TAGS.test(tag)) continue;
@@ -362,7 +417,7 @@
       }
     })(start);
 
-    return { raw, segs, root: start };
+    return { raw: chunks.join(''), segs, root: start };
   }
 
   const textSegs = index => index.segs.filter(s => s.node);
@@ -401,22 +456,43 @@
     return start <= end ? { start, end } : { start: end, end: start };
   }
 
-  // Text nodes overlapping [start,end), clipped: [{node, s, e}].
+  // `index.segs` is contiguous and ascending by construction — every segment
+  // begins where the one before it ended — so the segment covering an offset
+  // can be found by halving instead of by walking. On an article the walk was
+  // free; on a 500-page book it is 35,000 segments per highlight painted, and
+  // there are hundreds of highlights.
+  // Returns the index of the first segment whose `to` is past `off`.
+  function segIndexAt(segs, off) {
+    let lo = 0, hi = segs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (segs[mid].to <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  // Text nodes overlapping [start,end), clipped: [{node, s, e, seg}].
+  // `seg` rides along so paintOffsets can put the index right after splitting.
   function textNodesIn(index, start, end) {
     const out = [];
-    for (const seg of index.segs) {
+    const segs = index.segs;
+    for (let i = segIndexAt(segs, start); i < segs.length; i++) {
+      const seg = segs[i];
+      if (seg.from >= end) break;
       if (!seg.node) continue;
-      if (seg.to <= start || seg.from >= end) continue;
       const s = Math.max(0, start - seg.from);
       const e = Math.min(seg.node.data.length, end - seg.from);
-      if (e > s) out.push({ node: seg.node, s, e });
+      if (e > s) out.push({ node: seg.node, s, e, seg });
     }
     return out;
   }
 
   function locusFor(index, off, atEnd) {
     const segs = textSegs(index);
-    for (const s of segs) {
+    const from = Math.max(0, segIndexAt(segs, atEnd ? off - 1 : off) - 1);
+    for (let i = from; i < segs.length; i++) {
+      const s = segs[i];
+      if (s.from > off) break;
       if (atEnd ? (off > s.from && off <= s.to) : (off >= s.from && off < s.to)) {
         return { node: s.node, offset: off - s.from };
       }
@@ -445,8 +521,22 @@
 
   // Wrap every text node slice of [start,end) in <mark class="bfp-hl">.
   // Splitting a text node never changes the page's concatenated text, so
-  // offsets computed from an earlier index stay valid — but `index` itself is
-  // stale afterwards and callers must rebuild it before painting the next one.
+  // offsets computed from an earlier index stay valid.
+  //
+  // ── THE INDEX IS MENDED, NOT THROWN AWAY ───────────────────────────────────
+  // It used to be that `index` was stale afterwards and the caller had to
+  // rebuild it before painting the next thread. That rule cost a full walk of
+  // the document — with a getComputedStyle on every element in it — once per
+  // highlight, so a book with three hundred threads walked five hundred pages
+  // three hundred times before it could show a single one.
+  //
+  // But the damage a paint does to the index is small and exactly known: ONE
+  // text node became at most three, over the same span of offsets, and nothing
+  // else in the document moved. So the split is written back into `index.segs`
+  // here, in place, and the index stays true. Callers may now paint every
+  // thread against one index — and a caller that rebuilds anyway is still
+  // correct, just slower.
+  //
   // `state` is `true`/"done" for a resolved thread, "ready" for one a bot has
   // answered and the reader has not yet filed, anything falsy for an open one.
   // (The boolean spelling is the original one and is still what most callers
@@ -460,11 +550,24 @@
       + (mark === 'strike' ? ' ' + STRIKE_CLASS : '');
     const parts = textNodesIn(index, start, end);
     const marks = [];
+    const mended = new Map();
     for (const p of parts) {
       let n = p.node;
       if (!n.parentNode) continue;
-      if (p.e < n.data.length) n.splitText(p.e);
-      if (p.s > 0) n = n.splitText(p.s);
+      const seg = p.seg;
+      const whole = n.data.length;
+      let tail = null, head = null;
+      if (p.e < whole) tail = n.splitText(p.e);
+      if (p.s > 0) { head = n; n = n.splitText(p.s); }
+      // …and the index's picture of that one text node, put right. The three
+      // pieces cover exactly the offsets the one node covered.
+      if (seg) {
+        const pieces = [];
+        if (head) pieces.push({ node: head, from: seg.from, to: seg.from + p.s });
+        pieces.push({ node: n, from: seg.from + p.s, to: seg.from + p.e });
+        if (tail) pieces.push({ node: tail, from: seg.from + p.e, to: seg.to });
+        mended.set(seg, pieces);
+      }
       if (!n.data.trim()) continue; // don't leave empty marks on inter-node whitespace
       const mark = (n.ownerDocument || document).createElement('mark');
       mark.className = 'bfp-hl' + stateClass;
@@ -473,6 +576,15 @@
       n.parentNode.insertBefore(mark, n);
       mark.appendChild(n);
       marks.push(mark);
+    }
+    if (mended.size && index && index.segs) {
+      const next = [];
+      for (const s of index.segs) {
+        const pieces = mended.get(s);
+        if (pieces) { for (const piece of pieces) next.push(piece); }
+        else next.push(s);
+      }
+      index.segs = next;
     }
     return marks;
   }

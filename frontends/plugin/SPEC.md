@@ -60,6 +60,8 @@ frontends/plugin/
     fixtures/article.html  ← sample static article, served at /test-page (companion agent)
     harness.html           ← loads extension JS with chrome-API + companion mocks for visual QA (extension agent)
     anchor.test.mjs        ← anchoring unit tests        (extension agent)
+    pdf-perf.test.mjs      ← a 300-page book with 250 threads, in a real browser:
+                             the ceilings that keep a textbook openable (extension agent)
   extension/               ← the whole MV3 extension     (extension agent owns)
     manifest.json
     background.js          ← service worker: owns WS to companion, all fetches, tab broadcast
@@ -6618,6 +6620,173 @@ the exits in the unanswered state and the duplicate hint with its veto.
 - **A revision is not versioned.** `revisions` counts them; the previous
   wording is not kept. The card is the artifact and the discussion is the
   workshop — the old wording is still in the thread that wrote it.
+
+## Amendment (2026-08-28, shipped): a textbook opens
+
+The reader wants to mark up a five-hundred-page book. On the manuscripts this
+product was built against — eighteen pages, a dozen threads — nothing was ever
+wrong. At a hundred pages with a hundred threads the tab froze for **two
+minutes and seventeen seconds** before a single highlight appeared, and every
+comment filed froze it again. At the size actually wanted it did not open at
+all.
+
+Nothing was broken. Every assertion in every suite passed, before and after.
+The product was simply **quadratic in the length of the document**, in two
+places, for one reason.
+
+### 1. THE BUG, WHICH IS THE SAME BUG TWICE
+
+```js
+    raw += n.data;                       // V8 builds a CONS-STRING rope
+    …
+    if (raw[raw.length - 1] === '\n')     // …and INDEXING a rope flattens it
+```
+
+Both hot loops built a string with `+=` and then asked that string for its last
+character. `buildTextIndex` asked at every block boundary; `normIndex` asked at
+every whitespace character. Each question copied every character accumulated so
+far, so a walk that should be linear in the page was quadratic in it — and the
+cost is invisible until the page is a book:
+
+| the whole page's text | one `normIndex` inside one `locate` |
+| --- | --- |
+| 40 pages (93 K chars) | 59 ms |
+| 120 pages (281 K chars) | 1.0 s |
+| 250 pages (593 K chars) | 4.5 s |
+| 500 pages (1.19 M chars) | **17.9 s** |
+
+`locate` runs once per thread, so a 500-page book with 300 threads spent about
+**ninety minutes** re-anchoring itself, once per repaint, of which there are
+many during a load. Chunks in an array, joined once, with the "does it end in a
+newline / a space" question answered by a boolean: same output character for
+character, linear.
+
+### 2. THE PAGE'S TEXT IS NORMALIZED ONCE PER REPAINT, NOT ONCE PER THREAD
+
+`findSpans` normalized the whole document afresh for every thread it looked
+for. Linear now rather than quadratic, but still multiplied by the thread
+count. One entry, keyed on **string identity** — every thread in a repaint is
+located against the same `raw` — and only for haystacks over 4 KB, so a needle
+can never evict the page (`normIndexOf`).
+
+### 3. THE INDEX IS MENDED, NOT THROWN AWAY
+
+`reanchorAll` rebuilt the entire text index between every two highlights, on
+the honest ground that painting splits text nodes and leaves the index stale.
+But the damage a paint does is small and exactly known: **one text node became
+at most three, over the same span of offsets, and nothing else moved.**
+
+So `paintOffsets` now writes the split back into `index.segs` in place, and one
+index serves the whole sweep. A caller that rebuilds anyway is still correct,
+just slower. Measured over a load of a 120-page document with 100 threads: the
+document was walked **184 times (23.2 s)** and is now walked **4 times (16 ms)**.
+
+`textNodesIn` and `locusFor` also stopped scanning all 35,000 segments to find
+one — the array is contiguous and ascending by construction, so they halve
+instead (`segIndexAt`).
+
+### THE NUMBERS
+
+The real viewer, real PDF.js and the real extension in headless Chromium over
+CDP, on a synthetic PDF with a record of threads spread evenly through it.
+
+**120 pages, 100 threads** — the largest size the old code could be made to
+finish at all:
+
+| | before | after |
+| --- | --- | --- |
+| load: nav → every page box AND every highlight painted | 137,192 ms | **1,032 ms** |
+| whole-document walks during that load | 184 (23,184 ms) | **4 (16 ms)** |
+| `reanchorAll` — the whole page re-anchored and repainted | 92,962 ms | **67 ms** |
+| `locate` × 25 | 20,422 ms | **4.0 ms** |
+| `buildTextIndex`, once | 143 ms | **8.7 ms** |
+| Send → the reader's words visibly in the thread | 54 ms | 58 ms |
+| scroll, p99 frame gap | 9.3 ms | 9.2 ms |
+
+**500 pages, 300 threads** — the size actually asked for. There is no "before"
+column because there is no before: a single repaint was ~90 minutes.
+
+| load | `reanchorAll` | `buildTextIndex` | drawer redraw | Send → visible | scroll p99 |
+| --- | --- | --- | --- | --- | --- |
+| 3,793 ms | 394 ms | 34.5 ms | 66 ms | 106 ms | 13.2 ms |
+
+`reanchorAll` at that size breaks down as: 300 unpaints 25 ms · index 38 ms ·
+300 locates 179 ms · 300 paints 89 ms · the rest (reconcile, track-changes,
+`setOrphans`) ~94 ms.
+
+**Neither the Send path nor scrolling was ever the problem.** The Send is
+optimistic and always was — the words are in the thread before anything is
+awaited, and the figure capture is on the path but behind that (`imagePosts:1`
+was confirmed on every measured Send, so nothing about the capture-at-save
+guarantee changed). Scrolling a settled document was always smooth. What made
+both FEEL slow was the re-anchor that a `page` event kicked off underneath
+them: a minute and a half of frozen tab, arriving just after the reader
+pressed something.
+
+### Files
+
+```
+extension/anchor.js    normIndex (linear) · normIndexOf (the one-entry haystack
+                       cache) · buildTextIndex (linear) · segIndexAt · textNodesIn
+                       returns its seg · paintOffsets mends index.segs in place
+extension/content.js   reanchorAll paints every thread against ONE index
+test/pdf-perf.test.mjs the ceilings, on a 300-page / 250-thread book
+```
+
+Nothing about the anchoring CONTRACT moved: a quote must still match exactly
+once in the whole document, ties are still broken by prefix/suffix overlap, and
+an unresolvable one is still an orphan. Every existing suite passes unchanged
+(anchor 47, pdf 186, pdf-render 106, pdf-annot 112, strike 57, companion 212,
+workspace 126, …), as does every harness pose except the three already known
+broken on HEAD (`tasks=1`, `checklist=1`, `unconfirmed=1&workspace=1`).
+
+### Testing
+
+`pdf-perf.test.mjs` (new, 11): a 300-page book generated with the vendored
+pdf-lib, 250 threads spread through it in a realistic mix (open, ready for
+review, filed in the closed archive, struck), driven through the real viewer.
+It asserts every page laid out, every thread anchored and painted, none
+orphaned — and then five ceilings: load 12 s, `buildTextIndex` 600 ms,
+`locate`×25 600 ms, `reanchorAll` 3 s, Send 2.5 s. Measured on the author's
+laptop: 1.7–2.3 s · 21 ms · 9 ms · 240 ms · 94–463 ms. **The ceilings are
+deliberately loose and must not be tightened towards the measurements**: they
+exist to catch the return of a quadratic, which is two orders of magnitude, not
+to police a percentage. It skips (exit 0) with no Chromium, exactly as
+`pdf-render.test.mjs` does, and the whole run costs about four seconds.
+
+#### Known limits (deliberate)
+
+- **Re-anchoring is still WHOLE-DOCUMENT, and is now the largest remaining
+  cost.** 394 ms at 500 pages / 300 threads, on every `page` event — a visible
+  hitch, no longer a freeze. The designed fix is per-page, incremental
+  anchoring: a PDF thread already records the `page` it sits on and the viewer
+  already renders page-at-a-time, so a repaint could touch only the pages whose
+  threads changed and locate within that page's text (300 × 2.4 K chars instead
+  of 300 × 1.19 M). **Designed, not built**, and the reason is the contract, not
+  the work: uniqueness is currently document-wide, and a page-scoped search
+  would accept a quote that is ambiguous across the book. Doing it properly
+  means deciding what "exactly once" means on a paged document, which is a
+  product decision and not a performance one.
+
+- **The drawer's comment list is rebuilt whole on every change.** ~58 ms at 250
+  threads, ~66 ms at 300, ~140 ms at 600 — linear, and it is what a Send
+  actually costs (a small number of rebuilds; two on the minimal path). The
+  designed fix is **windowing**: only the cards near the scroll position are
+  built, the rest are height-reserved placeholders. Per-thread folding and the
+  closed Resolved archive already do a version of this and are why the number
+  is as good as it is. **Designed, not built** — it has to be reconciled with
+  the send-hold (`holdInView` needs the held card to be a real node), with
+  `focus`, with `restoreMention` and with the scrollTop restore, and none of
+  those may regress for a win on a size the product now handles.
+
+- **600 threads is past the shoulder.** `reanchorAll` 795 ms and Send 800 ms at
+  500 pages / 600 threads: usable, not pleasant, and the two limits above are
+  what would fix it.
+
+- **The record travels whole.** `GET /page` ships every thread on every
+  refresh, and a 500-page PDF's snapshot POST is 1.26 MB. Both are gated (the
+  snapshot by its own content hash) and neither was measurable beside the
+  anchoring, so neither was touched.
 
 ## Out of scope for v1 (do not build)
 

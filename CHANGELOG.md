@@ -2,6 +2,36 @@
 
 ## 2026-08-28
 
+- **A long PDF opens.** Marking up a book was, quietly, not possible: at a
+  hundred pages with a hundred comments the tab sat frozen for over two minutes
+  before a single highlight appeared, and every comment you filed froze it
+  again. At the size you actually wanted — several hundred pages, a few hundred
+  comments — it never finished at all. The same document now comes up in about a
+  second, and a five-hundred-page book with three hundred comments in about
+  three and a half.
+
+- **Why it was slow, in one sentence.** Every time the extension went looking
+  for where your comments belong on the page, it re-read the whole document from
+  the beginning — and it did that once for every comment, and then re-read it
+  again between painting each highlight. On an article you would never notice.
+  On a textbook it was the whole afternoon. It reads the document once now, and
+  keeps the reading.
+
+- **Filing a comment no longer freezes the page behind it.** Your words always
+  appeared in the thread straight away; what came next was the whole document
+  being re-read, which is what made pressing Send feel like the app had stopped.
+  That pass now takes a fraction of a second instead of a minute and a half.
+
+- **Nothing about how comments attach to the page has changed.** Same rule for
+  finding a passage, same handling of a passage that has moved or gone, same
+  orphan badge when it cannot be found. This was only ever about how long it
+  took to answer, never about the answer.
+
+- **There is now a test that keeps it that way.** It builds a three-hundred-page
+  book with two hundred and fifty comments on it, opens it in a real browser,
+  and fails if opening it or filing a comment ever starts creeping back towards
+  slow.
+
 - **A question you filed can now be fixed instead of filed twice.** If you asked
   a bot to reword a question it had made, it had no way of saying "change that
   one" — so it wrote another, and you ended up with two questions about the same

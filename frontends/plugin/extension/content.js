@@ -987,8 +987,11 @@
   function freshIndex() { return Anchor.buildTextIndex(document.body); }
 
   // Unpaint everything, re-locate every thread against clean text, then paint
-  // one at a time. Painting splits text nodes (so the index goes stale) but
-  // never changes the page's concatenated text, so the offsets stay valid.
+  // one at a time. Painting splits text nodes but never changes the page's
+  // concatenated text, so the offsets stay valid — and paintOffsets now mends
+  // the index in place as it splits, so ONE index serves the whole sweep. It
+  // used to be rebuilt from the whole document between every two highlights,
+  // which is what made a long document with many threads unopenable.
   function reanchorAll() {
     if (!PAGE) return;
     const threads = PAGE.threads || [];
@@ -1026,7 +1029,7 @@
     for (const t of threads) Anchor.unpaint(t.id);
     Anchor.unpaint('__new__');
 
-    let index = freshIndex();
+    const index = freshIndex();
     const nextOrphans = {};
     locs = {};
     tracks = {};
@@ -1059,12 +1062,10 @@
       // amber, so the same glance says which passages are waiting on them
       Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id,
         t.resolved ? true : (t.addressed ? 'ready' : false), markOf(t));
-      index = freshIndex();
     }
     // repaint the provisional highlight if a new comment is being composed
     if (pendingSel) {
       Anchor.paintOffsets(index, pendingSel.start, pendingSel.end, '__new__', false, pendingSel.mark);
-      index = freshIndex();
     }
 
     // Tell the server only about anchors whose verdict actually changed — and
