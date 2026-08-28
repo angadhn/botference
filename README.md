@@ -567,6 +567,23 @@ Your original is never touched, and the annotated copy is still the same
 document to Discuss — same page, same chat — because annotations are not
 words.
 
+**The bots can see the page, not just read it.** A figure is not text: it
+is in no extract, so for a long time a question about a plot got a bot
+paraphrasing its caption back, or saying plainly that it could not see
+it. Now, when you comment on a page of a PDF, Discuss renders that page
+to an image beside the page's text and the turn hands the file to the
+agents to open — and they really do open it (claude with its Read tool,
+codex with `view_image`). So *"what does this figure actually show?"* on
+a caption is a question about the figure. Tables and equations come
+through the same way, and a scanned page — which has no words at all —
+is finally something they can read.
+
+It costs about a tenth of a second when you save a comment, the same
+page is never sent twice, and a page that could not be drawn (the
+document is not open in a tab, or the comment came from your phone)
+makes the bots say so rather than guess. The pictures live beside the
+page's text under `.botference/plugin/` and go when the page does.
+
 **Striking a passage through.** On a PDF the selection pill has two tools
 rather than one — Adobe's pair. The first is the comment button you know.
 The second strikes the passage through: a thin red line through the

@@ -512,6 +512,9 @@ export function clearRuns(msg) {
 export function deletePage(url) {
   try { fs.unlinkSync(pageFile(url)); } catch { }
   try { fs.unlinkSync(snapshotFile(pageKey(url))); } catch { }
+  // …and the pictures of its pages, which are the same kind of thing the
+  // snapshot is and go the same way
+  try { deletePageImages(pageKey(url)); } catch { }
   try { fs.rmSync(runsDir(pageKey(url)), { recursive: true, force: true }); } catch { }
   const idx = readIndex();
   delete idx[pageKey(url)];
@@ -546,6 +549,94 @@ export function snapshotInfo(key) {
 }
 
 export const hasSnapshot = key => !!snapshotInfo(key);
+
+// --- page images: the half of a document that is not text -----------------
+// A PDF reaches the bots as EXTRACTED TEXT, and a figure is not text: the
+// reader who highlights a caption and asks what the plot actually shows is
+// asking about the one part of the document nothing on this machine ever had.
+// So the viewer renders the page — it is drawing that page anyway — and posts
+// the picture, and the turn names the file. Both CLIs can open it (claude's
+// Read, codex's view_image; both verified against a real image), and reads are
+// already pre-allowed, so a named path costs no prompt and no new permission.
+//
+// One file per PAGE of a document, beside that page's snapshot, replaced whole
+// like a snapshot is and deleted with the page. A page image is a CACHE of a
+// rendering, never a second copy of the document: the local-PDF promise that
+// the bytes are never uploaded is untouched — what crosses is a picture of one
+// page, exactly as the snapshot is a copy of the words on it.
+const PAGE_IMAGE_EXTS = ['png', 'jpg'];
+export const pageImageFile = (key, n, ext = 'png') => path.join(SNAPS,
+  `${safeKey(key)}-p${Math.max(1, Math.floor(Number(n) || 0))}.${ext === 'jpg' ? 'jpg' : 'png'}`);
+
+// The path of the image this page HAS, whichever of the two encodings it is
+// in, or '' — the one question the envelope asks.
+export function findPageImage(key, n) {
+  if (!(Number(n) > 0)) return '';
+  for (const ext of PAGE_IMAGE_EXTS) {
+    const f = pageImageFile(key, n, ext);
+    if (isFile(f)) return f;
+  }
+  return '';
+}
+
+export function pageImageInfo(key, n) {
+  const file = findPageImage(key, n);
+  if (!file) return null;
+  try {
+    const st = fs.statSync(file);
+    return { path: file, bytes: st.size, captured_at: new Date(st.mtimeMs).toISOString() };
+  } catch { return null; }
+}
+
+// Which pages of this document have a picture, ascending. Read off the
+// directory rather than out of the record: an image is a file on disk and
+// nothing else, so there is no second place for the truth to live and go stale.
+export function pageImagesOf(key) {
+  const k = safeKey(key);
+  if (!k) return [];
+  let names = [];
+  try { names = fs.readdirSync(SNAPS); } catch { return []; }
+  const re = new RegExp(`^${k}-p(\\d+)\\.(?:png|jpg)$`);
+  const out = [];
+  for (const name of names) {
+    const m = re.exec(name);
+    if (m) out.push(Number(m[1]));
+  }
+  return [...new Set(out)].sort((a, b) => a - b);
+}
+
+// Content-keyed, which is the whole of "a re-capture is free": the same page
+// rendered again is byte-identical, so the write is skipped and the file keeps
+// its mtime. A page that CHANGED (a live PDF re-rendered at a new scale, a
+// figure that moved) writes over the old one — this is a cache of the current
+// document, not a version history, exactly like a snapshot.
+export function savePageImage(url, n, buf, ext = 'png') {
+  fs.mkdirSync(SNAPS, { recursive: true });
+  const key = pageKey(url);
+  const file = pageImageFile(key, n, ext);
+  const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  const existing = findPageImage(key, n);
+  if (existing) {
+    try {
+      const had = crypto.createHash('sha256').update(fs.readFileSync(existing)).digest('hex');
+      if (had === sha) return { file: existing, stored: false, unchanged: true, sha };
+    } catch { }
+    // the same page in the OTHER encoding is the same page: never leave two
+    if (existing !== file) { try { fs.unlinkSync(existing); } catch { } }
+  }
+  const tmp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
+  return { file, stored: true, unchanged: false, sha };
+}
+
+export function deletePageImages(key) {
+  for (const n of pageImagesOf(key)) {
+    for (const ext of PAGE_IMAGE_EXTS) {
+      try { fs.unlinkSync(pageImageFile(key, n, ext)); } catch { }
+    }
+  }
+}
 
 // The file a PDF on somebody's disk came out of. Only the NAME: a local PDF is
 // identified by the hash of its bytes precisely so that its location does not

@@ -830,6 +830,54 @@
   // fire and forget: a snapshot is never worth delaying a comment for
   function maybeSnapshot() { snapshotNow(); }
 
+  // --- a picture of the page, for the bots -------------------------------
+  // The snapshot carries the WORDS of this document and a figure is not words.
+  // A reader who highlights "Figure 3: mean drift by cohort" and asks what the
+  // plot actually shows is asking about the one thing no extract has ever
+  // held — and the bots, having only the caption, said so or, worse, guessed.
+  // The viewer is drawing that page anyway, so it renders it to an image
+  // (`__BFP_PDF.capture`) and it goes beside the snapshot, where the turn
+  // names it (chat.mjs figureBlock).
+  //
+  // Same cadence and the same reason as the snapshot: it lands BEFORE the
+  // message that may summon, because the turn is planned against what is on
+  // disk. It is not only for mentions — the summon may come hours later from
+  // the phone, with this tab long closed, and a page nobody captured then is a
+  // page nobody can capture at all.
+  //
+  // Content-keyed at both ends: the same page rendered again hashes the same
+  // here and is not sent, and a send that gets through writes nothing on the
+  // companion if the bytes match. A failure rearms and never blocks anything.
+  const shotHashes = new Map();
+  const CAPTURE_MS = 6000;
+  function capturePage(n) {
+    const page = Math.floor(Number(n) || 0);
+    const V = (typeof window !== 'undefined' && window.__BFP_PDF) || null;
+    if (!(page > 0) || !V || typeof V.capture !== 'function') return Promise.resolve();
+    let shot;
+    try { shot = V.capture(page); } catch (_) { return Promise.resolve(); }
+    // never let a slow render hold a comment: the picture is worth waiting a
+    // moment for and worth nothing at all if it costs the reader their send
+    return Promise.race([
+      Promise.resolve(shot).then((s) => {
+        if (!s || !s.data) return;
+        const h = hashText(String(s.ext || '') + ':' + s.data);
+        if (shotHashes.get(page) === h) return;
+        shotHashes.set(page, h);
+        return api('POST', '/page-image',
+          { url: URL_NOW, page, ext: s.ext || 'png', data: s.data })
+          .then((r) => { if (!r || !r.ok) shotHashes.delete(page); })
+          .catch(() => { shotHashes.delete(page); });
+      }).catch(() => { shotHashes.delete(page); }),
+      new Promise((resolve) => setTimeout(resolve, CAPTURE_MS)),
+    ]);
+  }
+  // which page of the document a thread is anchored to, as the record has it
+  function pageOfThread(threadId) {
+    const t = (PAGE && (PAGE.threads || []).find(x => x.id === threadId)) || null;
+    return (t && t.page > 0) ? t.page : 0;
+  }
+
   // First-turn context. An adapter gets first refusal — it may have to fetch
   // the real document from its own origin — and anything it cannot produce
   // (non-200, network, signed out, an account chooser served 200) comes back
@@ -1793,6 +1841,9 @@
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
         if (wasNew) await snapshotNow();
+        // …and the picture of the page this comment is on, before the message
+        // that may summon: a caption's thread is exactly the one that needs it
+        if (pendingSel && pendingSel.page > 0) await capturePage(pendingSel.page);
         // `mark` rides only when it is not the default, so an article's payload
         // is byte-for-byte the one it always was
         const body = { url: URL_NOW, quote, prefix, suffix, msg: { text },
@@ -1858,6 +1909,10 @@
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
         if (wasNew) await snapshotNow();
+        // a reply into a thread that sits on page N is a turn about page N: if
+        // that page was never captured (this thread was made before the viewer
+        // could, or on the phone), this is the moment it can be
+        await capturePage(pageOfThread(threadId));
         const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}) };
         const ctx = await mentionContext(text, route);
         applyContext(body, ctx);

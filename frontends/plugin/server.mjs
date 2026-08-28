@@ -81,6 +81,12 @@ const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-sto
 // above the document limit, not at it
 const DOCX_MAX = 8 * 1024 * 1024;
 const BODY_MAX = 12 * 1024 * 1024;
+// One rendered page, PNG or JPEG. A text page at 1700px is a few hundred KB
+// and a page of photographs is a couple of megabytes; 4 MB is well clear of
+// both and well under the wire limit, which base64 inflates by a third.
+const PAGE_IMAGE_MAX = 4 * 1024 * 1024;
+const pngLike = b => b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+const jpegLike = b => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
 
 // --- one companion per workspace: pid lock (same pattern as the council) ---
 const lockFile = path.join(store.ROOT, '.botference', 'plugin-web.lock');
@@ -2015,6 +2021,44 @@ export function handler(req, res) {
       store.saveSnapshot(data.url, html);
       broadcast({ type: 'page', url: page.url });
       return ok(res, { stored: true, bytes: Buffer.byteLength(html), dropped });
+    });
+  }
+  // --- a picture of one page, for the half of a document that is not text ---
+  // The snapshot carries the WORDS of a page and a figure is not words: a
+  // reader who highlights a caption and asks what the plot shows was, until
+  // now, asking the one question nothing on this machine could answer. The
+  // viewer renders the page it is already drawing and posts the picture here;
+  // the envelope names the file and both CLIs open it (chat.mjs `figure`).
+  //
+  // Owner-only, for the same reason the snapshot is: this writes into the
+  // reader's own archive, under the reader's own page. Capped, and content
+  // keyed in the store — the same page rendered twice writes nothing.
+  if (req.method === 'POST' && url === '/page-image') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      if (!data.url) return fail(res, 400, 'url required');
+      const n = Math.floor(Number(data.page) || 0);
+      if (!(n > 0)) return fail(res, 400, 'page required');
+      const page = store.readPage(data.url);
+      if (!page) return fail(res, 404, 'unknown page');
+      // a data: url or bare base64, whichever the caller found easier —
+      // canvas.toDataURL gives the first
+      const raw = String(data.data || '').replace(/^data:image\/(?:png|jpe?g);base64,/, '');
+      let buf;
+      try { buf = Buffer.from(raw, 'base64'); } catch { buf = Buffer.alloc(0); }
+      if (!buf.length) return fail(res, 400, 'image data required');
+      if (buf.length > PAGE_IMAGE_MAX) {
+        return ok(res, { stored: false, page: n, reason: 'page image too large' });
+      }
+      // it must BE an image: this file is handed to an agent to look at, and a
+      // name ending in .png is not evidence of anything
+      const ext = pngLike(buf) ? 'png' : (jpegLike(buf) ? 'jpg' : '');
+      if (!ext) return fail(res, 400, 'not a PNG or JPEG');
+      const r = store.savePageImage(data.url, n, buf, ext);
+      return ok(res, {
+        stored: r.stored, unchanged: r.unchanged, page: n,
+        bytes: buf.length, path: r.file,
+      });
     });
   }
   // the article view's two scripts: the extension's own anchoring code (so the

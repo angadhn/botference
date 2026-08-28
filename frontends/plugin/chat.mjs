@@ -15,7 +15,7 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
   readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle,
-  pageKey, snapshotFile, hasSnapshot } from './store.mjs';
+  pageKey, snapshotFile, hasSnapshot, kindOf, findPageImage, pageImagesOf } from './store.mjs';
 import { applyEnv as applyKeyEnv } from '../shared/keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -319,9 +319,53 @@ export const SPAN_DISCIPLINE =
   + 'EXACTLY the suggestion as you already stated it in this thread, word for word, with no '
   + 'scope growth; "add some of it" means the part they named and nothing else.\n';
 
+// The picture of a page, in the three states a turn can actually be in.
+// Pure and exported so the suites can hold each of them still:
+//
+//   HAVE IT   — this turn is anchored to page N and page N has been rendered:
+//               name the file and say what it is for, in the imperative, with
+//               both CLIs' verbs so neither has to guess which tool applies.
+//   HAVEN'T   — anchored to page N of a paged document with no picture: say
+//               that plainly, and forbid the guess-from-the-caption answer.
+//   N/A       — an article, or a turn anchored to no page at all: nothing.
+//               A page chat on a document that HAS pictures gets the list,
+//               because "what does figure 3 show" is asked there too.
+const FIGURE_OPEN = 'open it (claude: the Read tool; codex: view_image)';
+const FIGURE_USE = 'Answer figure questions from what you can SEE in the image — never infer '
+  + 'what a figure shows from its caption or its number.';
+const IMAGE_LIST_MAX = 12;
+export function figureBlock({ pageImage, pageImages, paged, pageNumber }) {
+  const n = Number(pageNumber) || 0;
+  if (n > 0) {
+    if (pageImage) {
+      return `A rendered image of page ${n} of this document is on this machine, at ${pageImage} — `
+        + `${FIGURE_OPEN} to SEE that page as it is printed: its figures, plots, tables, `
+        + 'equations and anything else the extracted text cannot carry. The passage quoted '
+        + `below is on that page. ${FIGURE_USE}\n`;
+    }
+    if (paged) {
+      return `No rendered image of page ${n} is available — nothing has drawn this document `
+        + 'since, so you can read its words but you CANNOT see its figures. If what is being '
+        + 'asked is about a figure, a plot or an image, say plainly that you cannot see it and '
+        + 'ask the reader to open the document again; do not answer from the caption as though '
+        + 'you had looked.\n';
+    }
+    return '';
+  }
+  const list = (pageImages || []).slice(0, IMAGE_LIST_MAX);
+  if (!list.length) return '';
+  const more = (pageImages || []).length - list.length;
+  return 'Rendered images of some of this document\'s pages are on this machine — '
+    + `${list.map(p => `page ${p.n}: ${p.path}`).join(', ')}`
+    + `${more > 0 ? `, and ${more} more page${more === 1 ? '' : 's'}` : ''}. `
+    + `Where the question is about something printed on one of those pages, ${FIGURE_OPEN} `
+    + `to see it. ${FIGURE_USE}\n`;
+}
+
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
+  snapshotPath, pageImage, pageImages, paged,
+  pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
@@ -361,6 +405,22 @@ export function envelope({ url, title, target, text, quote, history,
       + 'sanitized HTML; a PDF has one <section> per page, each headed "Page N". '
       + 'READ that file to answer anything about parts of the document not shown here.\n'
     : '';
+  // …and the half of the document that no extract has ever carried. A figure
+  // is not text: it is absent from the snapshot, absent from the inline slice,
+  // and absent from the PDF's own text layer, so a bot asked what a plot shows
+  // could only ever paraphrase its caption back — which is what the reader
+  // caught it doing. Where the viewer has rendered the page and posted the
+  // picture, the turn names that file; both CLIs can open it (verified: claude
+  // reads a PNG with Read, codex with view_image), and reads are pre-allowed,
+  // so this costs no prompt and no new permission surface, exactly as the
+  // snapshot path does not.
+  //
+  // THE MISSING STATE IS SAID OUT LOUD. A turn whose page was never captured
+  // (the tab has been closed since, the comment came from the phone) must not
+  // look like a turn with no figures on the page: silence there is how a model
+  // ends up describing a plot it cannot see. So the absent case gets a line of
+  // its own, and it is an instruction to say so rather than to guess.
+  const figure = figureBlock({ pageImage, pageImages, paged, pageNumber });
   // A project artifact is not a web page and the turn should not pretend it
   // is: it is a file THIS project wrote, sitting on this machine, and the
   // agents already have read access to the whole council root. So the banner
@@ -410,7 +470,7 @@ export function envelope({ url, title, target, text, quote, history,
   // suggestion, not a standing instruction, and a bot that has already
   // declined to suggest anything should not be asked again every turn.
   const roster = first ? String(suggestContext || '') : '';
-  const standing = `${snap}${writes}${filed}`;
+  const standing = `${snap}${figure}${writes}${filed}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`
@@ -1058,6 +1118,15 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // and a page without one simply keeps the envelope it always had
     const snapKey = isLib ? '' : pageKey(job.url);
     const snapshotPath = snapKey && hasSnapshot(snapKey) ? snapshotFile(snapKey) : '';
+    // …and the pictures of its pages, asked the same question at the same
+    // moment and for the same reason: a capture that landed while this turn
+    // waited in the queue counts, and one that never happened is a fact this
+    // turn has to state rather than hide (envelope → figureBlock).
+    const paged = !isLib && kindOf(readPage(job.url) || { url: job.url }) === 'pdf';
+    const pageImage = snapKey ? findPageImage(snapKey, job.pageNumber || 0) : '';
+    const pageImages = (snapKey && !(job.pageNumber > 0))
+      ? pageImagesOf(snapKey).map(n => ({ n, path: findPageImage(snapKey, n) })).filter(p => p.path)
+      : [];
     steps.push({
       text: envelope({ url: job.url, title, target: job.target, text: job.text,
         quote: job.quote, history: job.history, first: !sid,
@@ -1072,7 +1141,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         untaggedAll: !!job.untaggedAll,
         // the thread's sticky address, when the reader's words named nobody
         routeHint: job.routeHint || '',
-        snapshotPath, pageNumber: job.pageNumber || 0, mark: job.mark || '',
+        snapshotPath, pageImage, pageImages, paged,
+        pageNumber: job.pageNumber || 0, mark: job.mark || '',
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
         library: isLib ? DIR : '',

@@ -822,6 +822,63 @@ function download(bytes, name) {
   setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) { /* gone already */ } }, 30000);
 }
 
+// --- a picture of one page, for the bots ------------------------------------
+// Everything the agents have ever had of this document is its TEXT: the
+// snapshot is the text layer, the envelope's slice is the text layer, and a
+// figure is in neither. A reader who highlighted a caption and asked what the
+// plot showed got told it could not be seen — correctly, and uselessly.
+//
+// This tab is the only place that can answer, because it is the only thing on
+// the machine that renders the file at all. So a page can be drawn to an
+// OFFSCREEN canvas on demand and handed to content.js, which posts it to the
+// companion (POST /page-image); the turn then names the file and the CLI opens
+// it. Offscreen, deliberately: the display canvas belongs to the zoom level the
+// reader chose and may be mid-render or not drawn at all (a page 40 pages down
+// has a text layer and no pixels), and neither of those should decide what the
+// bots get to see.
+//
+// The scale is its own: 1700px on the long edge is 9pt type still legible in a
+// screenshot and a file of a few hundred KB — the two things this has to be at
+// once. A page of photographs can still blow past the companion's 4 MB cap as
+// PNG, so that one falls back to JPEG rather than being dropped: a slightly
+// soft figure is worth incomparably more than no figure.
+const SHOT_EDGE = 1700;
+const SHOT_MAX = 4 * 1024 * 1024;
+const b64Bytes = s => Math.floor(String(s).length * 3 / 4);
+async function capturePage(n) {
+  const want = Math.floor(Number(n) || 0);
+  if (!pdfDoc || want < 1 || want > pdfDoc.numPages) return null;
+  const known = pages.find(p => p.n === want);
+  let page = known ? known.page : null;
+  if (!page) { try { page = await pdfDoc.getPage(want); } catch { return null; } }
+  const base = page.getViewport({ scale: 1 });
+  const long = Math.max(base.width, base.height) || 1;
+  const viewport = page.getViewport({ scale: Math.max(0.2, Math.min(4, SHOT_EDGE / long)) });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  const ctx = canvas.getContext('2d', { alpha: false });
+  // a PDF page is paper: white behind it, or a transparent PNG reads as black
+  // ink on black in half the viewers that will open it
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  try {
+    await page.render({ canvasContext: ctx, viewport }).promise;
+  } catch (e) {
+    console.warn('[botference] page ' + want + ' did not render for capture:', e);
+    return null;
+  }
+  let ext = 'png';
+  let data = '';
+  try { data = canvas.toDataURL('image/png'); } catch { return null; }
+  if (b64Bytes(data) > SHOT_MAX) {
+    try { data = canvas.toDataURL('image/jpeg', 0.85); ext = 'jpg'; } catch { return null; }
+  }
+  const comma = data.indexOf(',');
+  if (comma < 0) return null;
+  return { page: want, ext, w: canvas.width, h: canvas.height, data: data.slice(comma + 1) };
+}
+
 // The two doors content.js knocks on. Deliberately narrow: everything else in
 // here is this module's own business.
 window.__BFP_PDF = {
@@ -836,6 +893,9 @@ window.__BFP_PDF = {
     if (!await ensureAnn()) return null;
     return collectItems(threads);
   },
+  // one page, rendered to an image, for the companion to keep beside the
+  // snapshot — the half of the document that is not text
+  capture: capturePage,
   // observable, for the render test: which library is loaded, and how many
   // pages the document has
   get ready() { return !!pdfDoc; },

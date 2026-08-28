@@ -774,6 +774,48 @@ eq('…without ever opening a Save dialog for a file it was not going to write',
   allFiled && allFiled.asked, false);
 
 
+// ---- the picture of a page --------------------------------------------------
+// The whole seam, end to end, on a REAL rendering: the viewer draws page 1 to
+// an offscreen canvas, the bytes come back here, the store files them where an
+// envelope will name them, and the file on disk is a PNG that really does open.
+// A live bridge is the one thing this machine cannot stand up in a test, so the
+// assertion stops exactly where the CLI would pick it up: the path the envelope
+// prints exists and is an image.
+const shot = await evaluate(`(async () => {
+  const P = window.__BFP_PDF;
+  if (!P || typeof P.capture !== 'function') return { err: 'no capture seam' };
+  const s = await P.capture(1);
+  const none = await P.capture(99);
+  return { s, none };
+})()`);
+ok('the viewer can render a page to an image', !!(shot && shot.s && shot.s.data),
+  JSON.stringify(shot && shot.err));
+eq('…a page that does not exist is not invented', shot && shot.none, null);
+if (shot && shot.s && shot.s.data) {
+  const s = shot.s;
+  eq('…it is the page that was asked for', s.page, 1);
+  eq('…encoded as a PNG', s.ext, 'png');
+  ok('…at a legible size, and no larger than it needs to be',
+    Math.max(s.w, s.h) > 1000 && Math.max(s.w, s.h) <= 1700, s.w + 'x' + s.h);
+  const buf = Buffer.from(s.data, 'base64');
+  ok('…real PNG bytes', buf.length > 1000 && buf.slice(1, 4).toString() === 'PNG', 'bytes ' + buf.length);
+  ok('…and not a blank sheet: a drawn page compresses to more than a solid colour',
+    buf.length > 4000, 'bytes ' + buf.length);
+  // where the envelope will look for it
+  const url = 'bfp-pdf://text/' + 'a'.repeat(64);
+  storeMod.upsertPage({ url, title: 'two pages', site: 'local pdf', kind: 'pdf' });
+  const w = storeMod.savePageImage(url, 1, buf, s.ext);
+  ok('the store files it where the turn will name it', w.stored && fs.existsSync(w.file));
+  eq('…and that is the path the envelope resolves',
+    storeMod.findPageImage(storeMod.pageKey(url), 1), w.file);
+  const chatMod = await import(path.join(ROOT, 'chat.mjs'));
+  ok('…which the envelope prints in full', chatMod.figureBlock({
+    pageImage: storeMod.findPageImage(storeMod.pageKey(url), 1), paged: true, pageNumber: 1,
+  }).includes(w.file));
+  ok('…and the file it names is on disk, an image, and readable by anything that opens PNGs',
+    fs.readFileSync(w.file).slice(1, 4).toString() === 'PNG');
+}
+
 try { ws.close(); } catch { /* closing anyway */ }
 cleanup();
 

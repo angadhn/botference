@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 2026-08-28
+
+- **The bots can see the page now.** Highlight a figure caption in a PDF and ask
+  what the plot shows, and the answer is no longer "I cannot see it": the viewer
+  renders that page to an image, the companion keeps it beside the page's
+  snapshot, and the turn hands the agent the file to open. Both bots really do
+  look — claude with its Read tool, codex with `view_image` — so figures, plots,
+  tables and equations are finally part of what a comment is about. A scanned
+  page, which has no text at all, is readable to them for the first time.
+
+- **…and when it cannot see, it says so.** A page that was never captured — the
+  document is not open in a tab, or the comment came from the phone — makes the
+  turn say exactly that, and tells the bot to admit it rather than answer from
+  the caption. Silence there was how a model ended up describing a figure it had
+  never seen.
+
+- Capture is quiet and costs nothing you would notice: it happens when you
+  comment on a page (about a tenth of a second), the same page is never sent
+  twice, and a render that fails never delays or blocks your comment. Pictures
+  live under `.botference/plugin/snapshots/` beside the page's text and are
+  deleted with the page.
+
 ## 2026-08-27
 
 - **Memorize: the question vault has a face, an address, and a way home.** The

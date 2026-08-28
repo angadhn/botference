@@ -2465,6 +2465,10 @@ async function main() {
         ['/quiz-answer', { id: 'q-x', choice: 0 }],
         ['/quiz-flag', { id: 'q-x' }],
         ['/quiz-delete', { id: 'q-x' }],
+        // …nor put a picture into the owner's archive: a page image is what an
+        // agent is then handed to LOOK at, which is the last thing a guest may
+        // choose the contents of
+        ['/page-image', { url: PAGE1, page: 1, data: 'iVBORw0KGgo=' }],
       ];
       for (const [route, body] of calls) {
         const r = await POST(hb, route, body, ADA);
@@ -4218,6 +4222,119 @@ async function main() {
     assert.equal((await pdfPage()).threads.length, before + 1);
     assert.equal((await POST(base, '/pdf-annotations', { url: PDF_URL, annots: [] })).status, 400);
     assert.equal((await POST(base, '/pdf-annotations', { annots: [{ id: A1 }] })).status, 400);
+  });
+
+  // --- the picture of a page: the half of a document that is not text -----
+  // A figure is in no extract. The viewer renders the page and posts it here;
+  // the turn names the file and the CLI opens it. What is driven: the door
+  // (owner-only, capped, an image and not merely a name ending in .png), the
+  // content key (a re-capture writes nothing), and the three states the
+  // envelope can be in — the picture is there, it could have been there and is
+  // not, or this turn is about no page at all.
+  const IMG_URL = 'bfp-pdf://text/' + 'd'.repeat(64);
+  const IMG_KEY = crypto.createHash('sha1').update(IMG_URL).digest('hex');
+  const SNAP_DIR = path.join(root, '.botference', 'plugin', 'snapshots');
+  const PNG_RED = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const PNG_BLUE = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC';
+  const imgFile = n => path.join(SNAP_DIR, `${IMG_KEY}-p${n}.png`);
+
+  await test('a rendered page is stored beside the snapshot, and a re-capture writes nothing', async () => {
+    await POST(base, '/page', { url: IMG_URL, title: 'A Paper With Figures', site: 'local pdf', kind: 'pdf' });
+    const first = await POST(base, '/page-image', { url: IMG_URL, page: 4, data: PNG_RED });
+    assert.equal(first.status, 200);
+    assert.equal(first.json.stored, true);
+    assert.equal(first.json.path, imgFile(4), 'named by page, beside the snapshot');
+    assert.ok(fs.existsSync(imgFile(4)), 'the picture really is on disk');
+    assert.equal(fs.readFileSync(imgFile(4)).slice(1, 4).toString(), 'PNG', 'and it is a PNG');
+    const mtime = fs.statSync(imgFile(4)).mtimeMs;
+    const again = await POST(base, '/page-image', { url: IMG_URL, page: 4, data: PNG_RED });
+    assert.equal(again.json.stored, false, 'the same page rendered again is a no-op');
+    assert.equal(again.json.unchanged, true);
+    assert.equal(fs.statSync(imgFile(4)).mtimeMs, mtime, 'the file was not rewritten');
+    // …but a page that CHANGED is replaced: this is a cache of the document as
+    // it is now, exactly as a snapshot is
+    const moved = await POST(base, '/page-image', { url: IMG_URL, page: 4, data: PNG_BLUE });
+    assert.equal(moved.json.stored, true);
+    assert.equal(fs.readFileSync(imgFile(4)).toString('base64'), PNG_BLUE);
+    // a data: url, which is what canvas.toDataURL hands the extension
+    const asDataUrl = await POST(base, '/page-image',
+      { url: IMG_URL, page: 5, data: `data:image/png;base64,${PNG_RED}` });
+    assert.equal(asDataUrl.json.stored, true);
+    assert.ok(fs.existsSync(imgFile(5)));
+  });
+
+  await test('the door refuses a non-image, an oversized page, an unknown page and a guest', async () => {
+    const notAnImage = await POST(base, '/page-image',
+      { url: IMG_URL, page: 6, data: Buffer.from('<html>not a figure</html>').toString('base64') });
+    assert.equal(notAnImage.status, 400);
+    assert.deepEqual(notAnImage.json, { ok: false, error: 'not a PNG or JPEG' });
+    const huge = await POST(base, '/page-image',
+      { url: IMG_URL, page: 6, data: Buffer.alloc(5 * 1024 * 1024).toString('base64') });
+    assert.equal(huge.status, 200);
+    assert.equal(huge.json.stored, false);
+    assert.equal(huge.json.reason, 'page image too large');
+    assert.ok(!fs.existsSync(imgFile(6)), 'nothing refused ever lands on disk');
+    assert.equal((await POST(base, '/page-image', { url: IMG_URL, data: PNG_RED })).status, 400);
+    assert.equal((await POST(base, '/page-image', { url: IMG_URL, page: 0, data: PNG_RED })).status, 400);
+    assert.equal((await POST(base, '/page-image', { url: IMG_URL, page: 2, data: '' })).status, 400);
+    assert.equal((await POST(base, '/page-image',
+      { url: 'https://nowhere.test/none', page: 1, data: PNG_RED })).status, 404);
+  });
+
+  await test('a turn on a captured page names the image; one on an uncaptured page says so', async () => {
+    // page 4 has a picture (above); page 9 has none
+    const from = inputs(logFile).length;
+    const seen = await POST(base, '/thread', {
+      url: IMG_URL, quote: 'Figure 3: drift by cohort', prefix: '', suffix: '', page: 4,
+      msg: { text: '@claude what does this plot actually show?' },
+    });
+    assert.equal(seen.json.queued, true);
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(turn.includes(`A rendered image of page 4 of this document is on this machine, at ${imgFile(4)}`),
+      'the image is named by absolute path');
+    assert.ok(turn.includes('claude: the Read tool; codex: view_image'),
+      'and each bot is told the verb its own CLI has');
+    assert.ok(turn.includes('never infer'), 'with the instruction not to answer from the caption');
+
+    const from2 = inputs(logFile).length;
+    await POST(base, '/thread', {
+      url: IMG_URL, quote: 'Figure 9: the apparatus', prefix: '', suffix: '', page: 9,
+      msg: { text: '@claude and this one?' },
+    });
+    const blind = await waitFor(() => inputs(logFile).slice(from2).find(t => t.startsWith('@claude ')), 'the blind turn');
+    assert.ok(blind.includes('No rendered image of page 9 is available'),
+      'a page that was never captured is said out loud, not passed over in silence');
+    assert.ok(blind.includes('say plainly that you cannot see it'));
+    assert.ok(!blind.includes(imgFile(4)), 'and no other page\'s picture is offered in its place');
+  });
+
+  await test('page chat on a document with pictures is told which pages have them', async () => {
+    const from = inputs(logFile).length;
+    await POST(base, '/reply', { url: IMG_URL, thread_id: '__page__', text: '@claude what is in figure 3?' });
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the page-chat turn');
+    assert.ok(turn.includes('Rendered images of some of this document\'s pages'), 'the list rides page chat');
+    assert.ok(turn.includes(`page 4: ${imgFile(4)}`) && turn.includes(`page 5: ${imgFile(5)}`),
+      'naming every page that has one');
+    assert.ok(!turn.includes('No rendered image of page'), 'page chat sits on no page, so nothing is missing');
+  });
+
+  await test('an ARTICLE says nothing about figures either way', async () => {
+    const url = 'https://ledger.test/2026/plain-article';
+    await POST(base, '/page', { url, title: 'A Plain Article', site: 'ledger.test' });
+    const from = inputs(logFile).length;
+    await POST(base, '/thread', { url, quote: 'a plain passage', prefix: '', suffix: '', page: 2,
+      msg: { text: '@claude a plain question' } });
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the article turn');
+    assert.ok(!turn.includes('rendered image'), 'no page-vision line on a page that is not a document');
+    assert.ok(!turn.includes('No rendered image'), 'and no apology for one either');
+  });
+
+  await test('deleting the page takes its pictures with it', async () => {
+    assert.ok(fs.existsSync(imgFile(4)) && fs.existsSync(imgFile(5)));
+    const r = await POST(base, '/delete-page', { url: IMG_URL });
+    assert.equal(r.status, 200);
+    assert.ok(!fs.existsSync(imgFile(4)) && !fs.existsSync(imgFile(5)),
+      'a picture of a page of a deleted document is nobody\'s');
   });
 
   // --- real config, no mock: the bridge must stay lazy ------------------

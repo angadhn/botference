@@ -692,6 +692,59 @@ function rawOfViewer(pages) {
     !!store.readIndex()[store.pageKey(OLDER)] && store.hasSnapshot(store.pageKey(OLDER)));
 }
 
+// ---- 6. THE PICTURE ---------------------------------------------------------
+// The half of a document that no extract carries. Two halves of one promise:
+// the store keeps one image per page beside the snapshot and knows which pages
+// have one, and the envelope says which of the three states this turn is in.
+{
+  const chat = await import(path.join(here, '..', 'chat.mjs'));
+  const URL6 = 'bfp-pdf://text/' + 'e'.repeat(64);
+  const KEY6 = store.pageKey(URL6);
+  store.upsertPage({ url: URL6, title: 'Figures', site: 'local pdf', kind: 'pdf' });
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+    'base64');
+  const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0xff, 0xd9]);
+
+  eq('a page with no picture has no path', store.findPageImage(KEY6, 3), '');
+  const w1 = store.savePageImage(URL6, 3, png, 'png');
+  ok('the first capture writes', w1.stored && fs.existsSync(w1.file));
+  eq('…named for its page, beside the snapshot',
+    path.basename(w1.file), `${KEY6}-p3.png`);
+  const w2 = store.savePageImage(URL6, 3, png, 'png');
+  ok('the same bytes again write nothing (content-keyed)', !w2.stored && w2.unchanged);
+  // the same page in the other encoding is the same page: never two files
+  const w3 = store.savePageImage(URL6, 3, jpg, 'jpg');
+  ok('a re-encode replaces rather than doubles',
+    w3.stored && fs.existsSync(w3.file) && !fs.existsSync(w1.file));
+  eq('…and the page still has exactly one picture', store.pageImagesOf(KEY6), [3]);
+  store.savePageImage(URL6, 3, png, 'png');
+  store.savePageImage(URL6, 11, png, 'png');
+  eq('every captured page, ascending', store.pageImagesOf(KEY6), [3, 11]);
+  eq('a picture of another page is not this page\'s', store.findPageImage(store.pageKey('bfp-pdf://text/' + 'f'.repeat(64)), 3), '');
+
+  const seen = chat.figureBlock({ pageImage: '/tmp/x-p3.png', paged: true, pageNumber: 3 });
+  ok('a captured page is named, with both CLIs\' verbs',
+    seen.includes('/tmp/x-p3.png') && seen.includes('Read tool') && seen.includes('view_image'));
+  ok('…and the caption is forbidden as a substitute for looking', seen.includes('never infer'));
+  const blind = chat.figureBlock({ pageImage: '', paged: true, pageNumber: 3 });
+  ok('an uncaptured page of a document says so, and says what to do about it',
+    blind.includes('No rendered image of page 3') && blind.includes('cannot see it'));
+  eq('an article says nothing at all',
+    chat.figureBlock({ pageImage: '', paged: false, pageNumber: 3 }), '');
+  eq('and neither does a turn with no page and no pictures',
+    chat.figureBlock({ pageImage: '', pageImages: [], paged: true, pageNumber: 0 }), '');
+  const listed = chat.figureBlock({
+    pageImages: [{ n: 3, path: '/tmp/a-p3.png' }, { n: 11, path: '/tmp/a-p11.png' }],
+    paged: true, pageNumber: 0,
+  });
+  ok('a page chat is told which pages have pictures',
+    listed.includes('page 3: /tmp/a-p3.png') && listed.includes('page 11: /tmp/a-p11.png'));
+
+  store.deletePage(URL6);
+  eq('deleting the page deletes its pictures', store.pageImagesOf(KEY6), []);
+}
+
 fs.rmSync(TMP_ROOT, { recursive: true, force: true });
 
 // ---- report -----------------------------------------------------------------

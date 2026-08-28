@@ -1307,6 +1307,7 @@ const postedMsgs = [];      // every /thread + /reply body, for the article_text
 const keyModePosts = [];    // every /key-mode body, for the billing-picker checks
 const KEYMODE_APPLIES = 'now';
 const snapshots = [];       // every /snapshot body, for the phone-reading checks
+const pageImagePosts = [];  // every /page-image body — which page was rendered for the bots
 const orphanPosts = [];     // every /orphan body
 const resolvePosts = [];    // every /resolve {thread_id, resolved}
 const summarizePosts = [];  // …and every /summarize the reader asked for by hand
@@ -2714,6 +2715,15 @@ function companion(method, path, body) {
     snapshots.push(String((body && body.html) || ''));
     log('snapshot posted (' + ((body && body.html) || '').length + ' bytes)');
     return { ok: true, status: 200, data: { ok: true, stored: true } };
+  }
+  // …and the picture of one page of it, which is the half of a document the
+  // snapshot cannot carry. Recorded, not decoded: what the companion does with
+  // the bytes is companion.test.mjs's business — what matters here is which
+  // page the extension chose to capture, and when.
+  if (method === 'POST' && route === '/page-image') {
+    pageImagePosts.push(body || {});
+    log('page image posted (page ' + ((body && body.page) || '?') + ')');
+    return { ok: true, status: 200, data: { ok: true, stored: true, page: body && body.page } };
   }
   if (method === 'GET' && route === '/health') return { ok: true, status: 200, data: { ok: true, bridge: 'running', queue: queueDepth } };
   // the companion is the authority on who you are; the {t:'identity'} shim
@@ -6372,6 +6382,16 @@ async function selftestPdf() {
   check('…and nothing of the viewer’s own furniture in it', !text.includes('harness'));
 
   // ---- a new anchor carries its page ----
+  // ---- and the picture of the page it came off ----
+  // The seam is the viewer's `capture`, stubbed here exactly as PDF.js is
+  // stubbed everywhere else in this pose: what is being driven is the
+  // EXTENSION's decision — which page, in what order, and how often — not
+  // Mozilla's renderer, which pdf-render.test.mjs drives for real.
+  const captureCalls = [];
+  window.__BFP_PDF = {
+    capture: async (n) => { captureCalls.push(n); return { page: n, ext: 'png', w: 1200, h: 1600, data: 'iVBORw0KGgoPAGE' + n }; },
+  };
+
   const ta = await pdfSelect(2, 'sentence that survives a season', 'This is the page-2 claim.');
   check('selecting inside the text layer opens the composer', !!ta);
   check('…and paints a provisional highlight in the text layer',
@@ -6385,6 +6405,34 @@ async function selftestPdf() {
     threadPages.slice(0, before).every(p => p === undefined));
   await until(() => q('.pane[data-pane="comments"] .card').length === 4);
   check('the drawer has the new card', q('.pane[data-pane="comments"] .card').length === 4);
+
+  // …and the picture went with it, of the right page, before the comment
+  check('commenting on a page renders that page for the bots',
+    captureCalls.includes(2) && pageImagePosts.length === 1 && pageImagePosts[0].page === 2);
+  check('…as base64 image data, named by its encoding',
+    pageImagePosts[0].data === 'iVBORw0KGgoPAGE2' && pageImagePosts[0].ext === 'png');
+  check('…filed under the PDF, like everything else on this page',
+    pageImagePosts[0].url === PDF_URL);
+  const seq2 = apiCalls.map(c => c.path);
+  check('…and it landed BEFORE the message that may summon',
+    seq2.indexOf('/page-image') !== -1 && seq2.indexOf('/page-image') < seq2.lastIndexOf('/thread'));
+  // the same page again is the same picture: rendered, hashed, not re-sent
+  const ta2 = await pdfSelect(2, 'Nobody at the club', 'And another on the same page.');
+  check('a second comment on the same page still selects', !!ta2);
+  S.querySelector('.card.pending .send').click();
+  await until(() => threadPages.length > before + 1);
+  check('…but the unchanged page is not posted twice', pageImagePosts.length === 1);
+  // a render that fails must cost the reader nothing: the comment still saves,
+  // and the turn will say the page could not be seen rather than pretending
+  window.__BFP_PDF = { capture: async () => { throw new Error('no canvas today'); } };
+  const ta3 = await pdfSelect(1, 'Nothing had gone wrong', 'A page-1 comment.');
+  check('a page whose render fails still opens the composer', !!ta3);
+  const before3 = threadPages.length;
+  S.querySelector('.card.pending .send').click();
+  const saved3 = await until(() => threadPages.length > before3);
+  check('…and the comment is saved anyway', !!saved3 && threadPages[before3] === 1);
+  check('…with nothing posted for the page nobody could draw', pageImagePosts.length === 1);
+  delete window.__BFP_PDF;
 
   // ---- the snapshot, and the anchors surviving the trip to a phone ----
   const snap = await until(() => snapshots[0]);

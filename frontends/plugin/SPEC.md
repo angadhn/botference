@@ -6234,6 +6234,193 @@ and discard removing the card from the BANK with a beat that says so.
 - **The tab never shows the whole bank.** By design. If the reader wants
   everything, the answer is the address, not a chip.
 
+## Amendment (2026-08-28, shipped): the bots can see the page
+
+The reader highlighted a figure caption on their own manuscript — *"Figure 2:
+Concept renders of two inflation roles"* — and asked what the render actually
+showed. The answer came back that it could not be seen. It was a true answer,
+and it was the product failing: a PDF reaches the agents as **extracted text**,
+and a figure is not text. It is absent from the snapshot, absent from the
+envelope's inline slice, absent from PDF.js's own text layer. Everything this
+product does with a manuscript it did blind, and the only thing a bot could do
+with a plot was paraphrase its caption back.
+
+So the page itself crosses.
+
+```
+   the viewer renders page N ──POST /page-image──▶  snapshots/<key>-p<N>.png
+   (it is drawing that page anyway)                          │
+                                                             ▼
+                             the turn NAMES that file, and the CLI opens it
+                             (claude: Read · codex: view_image)
+```
+
+### 1. WHO RENDERS IT, AND WHY IT IS NOT THE COMPANION
+
+The tab, and only the tab — the same call the PDF export made, for the same
+reason. The companion has never seen the document (the local-PDF promise is
+that the bytes are never uploaded, copied or stored) and could not rasterize it
+if it had. `pdf/viewer.js` already holds a parsed `PDFPageProxy` for every page,
+so `capture(n)` draws that page to an **offscreen** canvas and hands back
+base64. Offscreen deliberately: the display canvas belongs to the zoom the
+reader chose, may be mid-render, and for a page forty pages down does not exist
+at all (the viewer paints only what is on screen — a page has a text layer long
+before it has pixels). None of those should decide what the bots get to see.
+
+What crosses is a **picture of one page**, exactly as the snapshot is a copy of
+the words on one page. The invariant is untouched: an image is not text, so it
+does not enter the identity, the anchors, the export or the record.
+
+**The scale is 1700px on the long edge**, which is the one number this had to
+get right: 9pt type in a two-column paper is legible at it, a dense table reads
+at it, and a text page costs 300–500 KB. Measured on the reader's own 18-page
+manuscript through the real viewer: 1202×1700, 311–515 KB, **36–107 ms** a
+page. A page of photographs can still pass the companion's 4 MB cap as PNG, so
+that one page re-encodes as JPEG at 0.85 rather than being dropped — a slightly
+soft figure is worth incomparably more than no figure.
+
+### 2. WHEN IT IS CAPTURED
+
+On the cadence the snapshot already proved, and for the same reason: **before
+the message that may summon**. `content.js` captures the page a comment is
+being made on (`onSave`, from `pendingSel.page`) and the page a reply's thread
+sits on (`onReply`, from the record), then posts, then sends the message — so
+`planSteps` finds the file already on disk when it plans the turn.
+
+Not only on mentions. The summon may come hours later from the phone with this
+tab long closed, and **a page nobody captured then is a page nobody can capture
+at all**. So any comment on a page of a document buys that page's picture.
+
+Never at the cost of the comment. The capture is raced against 6 seconds and
+every failure — no viewer, a render that throws, a refused POST — resolves
+quietly; the message goes either way, and the turn then says the page could not
+be seen rather than pretending.
+
+**Content-keyed at both ends.** The extension hashes what it captured and does
+not send an unchanged page twice; the companion hashes what arrives and, if the
+bytes match the file it holds, writes nothing and does not even touch the
+mtime. A re-capture is free, which is what lets the cadence be this liberal.
+
+### 3. THE DOOR: `POST /page-image` (owner-only)
+
+```
+{ url, page, ext?, data }        data: base64, or a whole data: url
+→ { ok, stored, unchanged, page, bytes, path }
+```
+
+Owner-only for a sharper reason than the snapshot's: this file is handed to an
+agent **to look at**. Choosing the pixels a model reads is the last power a
+guest may hold. Capped at 4 MB (`PAGE_IMAGE_MAX`), and the bytes must actually
+BE a PNG or a JPEG — checked by magic number, because a field called `ext` is
+not evidence of anything. Over the cap answers `{stored:false, reason}` rather
+than failing, exactly as an oversized snapshot does.
+
+Storage is `store.savePageImage` → `snapshots/<pageKey>-p<N>.png` (or `.jpg`),
+beside that page's snapshot, one file per page, replaced whole. It is a cache
+of the document as it is now, never a version history. `pageImagesOf(key)` reads
+the answer off the directory rather than out of the record, so there is no
+second place for the truth to live and go stale. Deleting the page deletes the
+pictures with it.
+
+### 4. WHAT THE TURN SAYS — THREE STATES, AND THE MISSING ONE IS SAID OUT LOUD
+
+`chat.figureBlock` (pure, exported, unit-tested), composed in `planSteps` at
+the moment the turn is planned — like `hasSnapshot`, so a capture that landed
+while the turn queued counts — and riding in `standing` beside the snapshot
+path, on **every** turn and for the same reason (a resumed session's replayed
+history is uneven; a bridge restart drops it whole).
+
+| the turn | what it says |
+|---|---|
+| anchored to page N, captured | *"A rendered image of page N of this document is on this machine, at `<path>` — open it (claude: the Read tool; codex: view_image) to SEE that page as it is printed… The passage quoted below is on that page. Answer figure questions from what you can SEE in the image — never infer what a figure shows from its caption."* |
+| anchored to page N of a paged document, NOT captured | *"No rendered image of page N is available… you can read its words but you CANNOT see its figures. If what is being asked is about a figure, say plainly that you cannot see it and ask the reader to open the document again; do not answer from the caption as though you had looked."* |
+| page chat on a document that has pictures | the pages that have one, each named by path |
+| an article, or any turn on no page | nothing at all — byte-for-byte the envelope it always was |
+
+The second row is the load-bearing one. A turn whose page was never captured
+must not look like a turn on a page with no figures: silence there is precisely
+how a model ends up confidently describing a plot it has not seen. So the
+absent state is a sentence, and it is an instruction to say so.
+
+### 5. BOTH BOTS, HONESTLY — AND CODEX CAN SEE
+
+The envelope names each CLI's own verb because a model made to guess which tool
+applies is a model that wastes the turn. **Verified empirically against a real
+image, not assumed**: `claude -p` opens a PNG with `Read` and reads it back;
+`codex exec` (0.147.0) opens it with its `view_image` tool and reads it back.
+Both therefore see the page, and reads are already pre-allowed on plugin turns
+(the deny gate only ever sees WRITE requests), so a named path costs no prompt
+and no new permission surface — the snapshot path's own argument, unchanged.
+
+Had codex been blind it would have been told an image exists and where, and
+told to say it could not open it. The wording degrades that way by
+construction; it simply did not have to.
+
+### Files
+
+```
+extension/pdf/viewer.js   capturePage(n) — offscreen render, SHOT_EDGE 1700,
+                          PNG with a JPEG fallback over SHOT_MAX; exposed as
+                          __BFP_PDF.capture
+extension/content.js      capturePage/pageOfThread — the cadence, the hash, the
+                          6s race; awaited in onSave and onReply
+server.mjs                POST /page-image (owner-only), PAGE_IMAGE_MAX,
+                          pngLike/jpegLike
+store.mjs                 pageImageFile / findPageImage / pageImageInfo /
+                          pageImagesOf / savePageImage / deletePageImages;
+                          deletePage takes the pictures too
+chat.mjs                  figureBlock; envelope gains pageImage / pageImages /
+                          paged; planSteps computes all three
+```
+
+### Testing
+
+`companion.test.mjs` (206 → 212): the picture stored beside the snapshot and
+named by page; a re-capture writing nothing and not touching the mtime; a
+changed page replacing; a `data:` url accepted; the door refusing a non-image,
+an oversized page, a missing page number, empty data and an unknown page; the
+guest 403 beside the other owner-only doors; and then the three envelope states
+end to end through the mock bridge — the image named by absolute path with both
+CLIs' verbs on a captured page, "No rendered image of page 9" on one never
+captured, the list on page chat, and an ARTICLE saying nothing either way.
+Deleting the page deletes the pictures.
+
+`pdf.test.mjs` (172 → 186): the store's half pure — the content key, the
+re-encode replacing rather than doubling, `pageImagesOf` ascending, deletion —
+and `figureBlock`'s four shapes.
+
+`pdf-render.test.mjs` (95 → 106): the seam FOR REAL. The two-page fixture in a
+real Chromium, `__BFP_PDF.capture(1)` through real PDF.js: real PNG bytes at a
+legible size, a page that does not exist coming back `null` rather than
+invented, the store filing it, and **the path the envelope prints existing on
+disk and being an image**. A live bridge cannot be stood up in a test, so that
+is exactly where the assertion stops — the seam is the path, and the path
+resolves.
+
+Harness `?pdf=1&selftest=1` (50 → 59), driven at the seam the viewer uses: a
+comment on page 2 renders page 2, posts it as base64 under the PDF's own url,
+and does so BEFORE the message; a second comment on the same page posts
+nothing; and a render that throws still saves the comment and posts nothing.
+
+#### Known limits (deliberate)
+
+- **Web articles are still text-only.** An `<img>` beside a quote is not
+  fetched. The shape is the same one (nearest image to the anchor at thread
+  creation, downloaded by the companion, named the same way) and is designed,
+  not built.
+- **A region you cannot select is still not commentable.** Page-vision covers
+  most of that pain — comment on any text on the page, or in page chat, and the
+  bot sees the whole page, figure included — but where a scanned page has no
+  text at all there is nothing to anchor to. The intended shape is a rect
+  comment: alt-drag on the page, the nearest caption line as the thread's quote
+  (so it anchors, exports and orphans exactly as every other thread does), with
+  `region:{page,x,y,w,h}` beside it for the badge and the turn. Designed, not
+  built: it is a selection-UX change, a drawer change and a record-shape change
+  for a case page-vision already softens.
+- **Only pages that have been commented on are captured.** No pre-capture of a
+  whole document: 18 pages of PNG for a paper the reader may mark up twice is
+  a cost the product should not take without being asked.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
