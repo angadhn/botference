@@ -7792,6 +7792,166 @@ is nearer one than another. Harness `?pdf=1&strike=elsewhere` is the chip's
 screenshot pose (the `p. 2` badge); `&selftest=1` (12) drives the click through
 to a red line on page 2.
 
+## Amendment (2026-08-29, shipped): the words are sideways — the ink was not
+
+A manuscript came back with a landscape table on a portrait page. Table 3: five
+validation stages across, four integration tracks down, and every word in it set
+at a quarter turn so the column heads read bottom-to-top. The reader struck two
+of those heads through, exported the annotated copy, opened it in Acrobat, and
+found the deletions drawn as short red dashes ACROSS the words rather than along
+them — and the comment quotes, in the drawer, were odd stumps: "Stabilize and",
+"Characterize", "Requirements".
+
+Three different layers can be wrong about a sideways table. Only one of them
+was, and the two that were not are written down here first, because the time
+lost to this was mostly spent proving them innocent.
+
+#### 1. The paint was already right, and the reason is worth keeping
+
+A strikeout on screen is not a `text-decoration`, it is a background gradient:
+`linear-gradient(to bottom, …)` with 2px of red at 55% of the mark's box (see
+the strikeout amendment above for why). The mark sits INSIDE a text-layer span,
+and for a rotated run PDF.js has already put `transform: rotate(-90deg)` on that
+span. A background gradient is resolved in the element's own, PRE-transform box
+— which for a sideways run is still wide and short, because only the span above
+it is turned — so the 55% line crosses the short axis, which is across the
+letters and along the words, and the ancestor's rotation carries it onto the
+glyphs.
+
+In other words the band comes out right for free, and it comes out right
+BECAUSE the mark was painted with a gradient rather than a border or a
+positioned element. That was a decision made for a different reason entirely
+(one element has one `text-decoration-color`, and a struck-then-rewritten
+passage needs two lines). It is now also the reason a landscape table strikes
+correctly, and `pdf-render.test.mjs` pins all four steps of the argument so that
+nobody "simplifies" it back into a border.
+
+The highlight wash is a background COLOUR over the same box and is correct for
+the same reason, only more obviously.
+
+#### 2. The export was wrong, and a QuadPoint is not a box
+
+`quadsForThread` built each quad from `getClientRects()`, which answers with
+axis-aligned rectangles, always. For a bottom-to-top run that rectangle is the
+mark's SHADOW: it contains the words and says nothing about which way they go.
+The writer then emitted it as four corners of an upright box and drew the
+strikeout bar horizontally across the middle. Acrobat, told "here is a box",
+drew what it was told.
+
+But QuadPoints have always been FOUR CORNERS, and the corner ORDER is the
+information: the first two corners are the top of the line read left-to-right
+ALONG the text. A level run has `UL.y == UR.y`; a sideways one has
+`UL.x == UR.x`. That single fact is the whole fix in the file format, and it is
+what every viewer already reads to decide which way to draw a bar.
+
+So a quad in `annots.js` is now either shape:
+
+```
+[x0,y0,x1,y1]                      an upright box — the ordinary line
+[x1,y1,x2,y2,x3,y3,x4,y4]          four corners: UL, UR, LL, LR
+```
+
+named from the TEXT's point of view, not the page's. Everything downstream is
+expressed in the two directions those corners give — along the run (UL→UR) and
+across it (UL→LL) — so `strikeQuad` is `strikeBar` rewritten in the quad's own
+axes and reduces to it exactly when the quad is upright. `pdf-annot.test.mjs`
+asserts that reduction to six decimal places, because "the general case agrees
+with the old one" is the only proof that no horizontal paper's file moved.
+
+The appearance stream keeps `re` for an upright quad — one operator, byte-for-
+byte what shipped — and emits a four-point path for a turned one, because `re`
+cannot say "rectangle, turned".
+
+**And where the corners come from, since the DOM will not give them.**
+`Element.getBoxQuads()` is exactly the right question — four corners, transforms
+folded in — and Chromium has never implemented it (Firefox only; verified, not
+assumed). So they are reconstructed from two reliable things: the mark's screen
+rectangle, and the angle its contents are turned by, which is the span's own
+`--rotate` plus this page's turn if the reader has turned it. For a quarter turn
+the bounding box IS the turned box with its sides swapped, so the four corners
+are the bounding box's four corners in a different order and nothing is lost.
+Type set on a diagonal falls back to the box, which is what shipped and is no
+worse than it was.
+
+#### 3. The quotes were the SELECTION, and this is what a page turn is for
+
+The stumps were never a quote bug. The quote is the text the reader selected,
+and the reader had selected stumps — because selecting a sideways run is
+genuinely awful, and now measured rather than described (`pdf-render.test.mjs`,
+three drags before the turn and three after):
+
+- dragging ALONG the run — bottom to top — selects it cleanly. The machinery
+  is fine.
+- the drag anybody ACTUALLY makes over words, left to right, is a drag ACROSS
+  the letters, and gets nothing like the run.
+- a hand that wanders off the column gets nothing at all: the press lands on
+  the layer between two runs and there is no text position there.
+
+Which is the honest diagnosis: the gesture is wrong, not the code. So the fix is
+to make the natural gesture the right one, which is what the reader would do
+with a piece of paper — turn it.
+
+#### 4. Turning one page
+
+Per page, from a small control on the page marker (quiet until the page is
+hovered) or with `r` / shift-R for the page under the middle of the window.
+
+**View state, exactly like the zoom.** Not in the record, not in the snapshot,
+not in the identity — the words are the same words whichever way the paper is
+held, and a comment made on a turned page must be findable by somebody who never
+turned it. That falls out for free rather than being enforced: the text layer's
+DOM is untouched by a turn, so the anchor, the quote and the extracted text are
+bit-identical before and after.
+
+**How, and why it is cheap.** PDF.js is asked for a rotated viewport and draws
+an upright page onto the canvas. The TEXT LAYER cannot be asked the same
+question: it positions every span as a percentage of the file's own un-rotated
+viewBox, and the angle a span carries is the angle the glyphs were drawn at in
+the FILE — a rotated viewport changes neither. (Checked, not assumed: rebuilding
+the layer at `rotation: 90` produces identical spans.) So the layer keeps its
+un-turned size and is turned whole, in one CSS transform, stated in `viewer.css`
+rather than borrowed from the vendored stylesheet, which has no such rule.
+
+Turning the container rather than rebuilding it is the point: every `<mark>`
+survives, un-repainted, and so does a live selection. `--scale-factor` is the
+one number that has to be told about the turn, because `vp.width` is the page's
+HEIGHT once the viewport is turned a quarter and `rawDims` is never rotated.
+
+**What composes with what.** Zoom and rotation compose (both go through
+`sizePage`, from one viewport). Export composes: the quads go through
+`viewport.convertToPdfPoint`, which knows about the turn, and the test asserts
+the file gets the SAME quad whether the reader turned the page or not. A figure
+captured from a turned page is captured the right way up — the turn is the only
+evidence anywhere about which way round the page makes sense, and a model
+reading a sideways table is in exactly the trouble the reader was.
+
+**Why not the trackpad gesture, which is what anybody asks for first.** Because
+Chromium never receives it. macOS delivers a two-finger rotate as an NSEvent of
+type `rotate`; WebKit turns that into a `gesturechange` event with a `rotation`
+property, which is why Preview and Safari can do this and why every article
+about it is about Safari. Chromium does not implement the gesture events at all,
+so there is no event to listen for and nothing to shim — and a trackpad rotate
+produces no wheel deltas either, so wheel-with-modifiers is not an
+approximation of it. A key and a button, and no half-working gesture.
+
+#### 5. What is inherent, and stays a limitation
+
+- **Turning a page does not repair drift.** A press that lands between two runs
+  still resolves to nothing, turned or not. What changes is which gesture is
+  natural, not how the browser resolves a bad one. There is a test saying so, in
+  those words, so the feature cannot quietly grow the claim.
+- **Reading order is the file's, not the table's.** A rotated run is ONE text
+  item and therefore one span, so it survives as text whole — a `passage:`
+  suggestion locates in it, and the snapshot a phone reads carries it. What is
+  not preserved is which visual COLUMN a cell belongs to: the order is the order
+  the cells were drawn, which for a table is row by row. Selecting a visual
+  column of a table therefore still selects a diagonal of cells. Fixing that
+  needs a table-structure engine, and this is not one.
+- **A sticky note on a rotated page** finds its line with a horizontal band test
+  (`spanNearest`). Left as is: an imported Acrobat note pinned beside a sideways
+  cell is rare enough that the cure is worse than the disease.
+- **Type set on a diagonal** exports as an upright box, as before.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

@@ -2,6 +2,42 @@
 
 ## 2026-08-29
 
+- **Strikeouts on sideways text now come out right in the exported PDF.** A
+  landscape table on a portrait page — the column heads set at a quarter turn,
+  so they read bottom-to-top — used to export with its deletions drawn as short
+  red dashes across the words instead of lines through them. On screen they were
+  always fine; the fault was in what got written into the file. A PDF stores a
+  mark as four corners, and the order of those corners is how a reader knows
+  which way the words run — we were flattening every mark to an upright box
+  first, which threw that away. Now a turned mark is written turned, and Acrobat,
+  Preview and everything else draw the line along the words. Level lines are
+  written exactly as before, down to the byte.
+
+- **You can turn a single page while you read.** A sideways table can be stood
+  upright: hover a page and a small turn button appears beside its number, or
+  press `r` for the page you are looking at (shift-R turns it back). It is per
+  page and it lasts as long as the tab does — like the zoom, it is not saved and
+  it changes nothing about the document, so a comment you make on a turned page
+  is the same comment to somebody who never turned it. Highlights, strikeouts
+  and anything you have selected all come along with the page rather than being
+  redrawn. If you send a page picture to the bots after turning it, they get it
+  the right way up too.
+
+  The reason this is worth having: selecting sideways words is genuinely
+  horrible. Dragging along them means dragging bottom-to-top, and the ordinary
+  left-to-right drag that anybody actually makes gets a stump of a word or
+  nothing at all — which is where the odd fragmentary quotes in the drawer were
+  coming from. Turn the page and the ordinary drag is the right one. To be
+  straight about the limits: it does not make a wandering drag any more
+  forgiving, and it does not teach us the shape of a table — selecting what
+  looks like one column of a sideways table still picks up cells from across it,
+  because the file stores them row by row and there is nothing in it that says
+  otherwise.
+
+  Trackpad rotate gestures are not possible here: macOS only delivers them to
+  Safari, and Chromium never sees the gesture at all — hence the button and the
+  key.
+
 - **You can now click through to a comment that has something painted over it.**
   The ordinary sequence — discuss a passage, resolve it, then strike the passage
   through yourself — used to bury the discussion: the red line sat on top of the

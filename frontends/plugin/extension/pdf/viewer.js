@@ -227,7 +227,14 @@ const dpr = () => Math.min(window.devicePixelRatio || 1, 3);
 
 // What the vendored .textLayer rules must be told, read off the very viewport
 // the page was laid out with. Never computed a second way.
-const totalScaleFactor = vp => vp.width / vp.rawDims.pageWidth;
+//
+// A TURNED page is the one place the ratio has to be read off the other axis:
+// `vp.width` is the page's HEIGHT once the viewport is rotated a quarter turn,
+// and dividing that by `rawDims.pageWidth` would announce a scale factor of
+// 792/612 on a page nobody zoomed. rawDims is never rotated — it is the file's
+// own viewBox — so the numerator has to be the side that still corresponds to
+// it.
+const totalScaleFactor = vp => ((vp.rotation % 180) ? vp.height : vp.width) / vp.rawDims.pageWidth;
 
 function fitScale(base) {
   const avail = Math.max(240, Math.min(docEl.clientWidth - PAGE_GUTTER, MAX_FIT_WIDTH));
@@ -238,7 +245,8 @@ function fitScale(base) {
 // scale factor announced to the stylesheet. The canvas and the text layer are
 // both hung on this and nothing else.
 function sizePage(p) {
-  const vp = p.page.getViewport({ scale });
+  const rot = pageRotation(p);
+  const vp = p.page.getViewport({ scale, rotation: rot });
   p.viewport = vp;
   const w = Math.floor(vp.width);
   const h = Math.floor(vp.height);
@@ -247,7 +255,76 @@ function sizePage(p) {
   p.div.style.height = h + 'px';
   p.canvas.style.width = w + 'px';
   p.canvas.style.height = h + 'px';
+  // ── THE TEXT LAYER IS LAID OUT IN THE PAGE'S OWN, UNTURNED FRAME ──────────
+  // PDF.js positions every span as a percentage of `rawDims`, which is the
+  // file's viewBox and knows nothing about a viewport rotation; the angle a
+  // span carries (`--rotate`) is the angle the GLYPHS were drawn at in the
+  // file, and a rotated viewport does not change it either. So turning a page
+  // is not something the layer's contents can be asked to do — it is one
+  // transform on the layer itself, and the layer must keep the un-turned size
+  // for the percentages inside it to mean anything.
+  //
+  // That is also the reason this is cheap and safe: nothing in the layer moves.
+  // Every <mark> anchor.js painted, every text node, every selection range
+  // survives a rotation untouched — the page is turned, not rebuilt.
+  const turned = rot % 180 !== 0;
+  p.layerDiv.style.width = (turned ? h : w) + 'px';
+  p.layerDiv.style.height = (turned ? w : h) + 'px';
+  p.div.setAttribute(ROT_ATTR, String(rot));
   return vp;
+}
+
+// ---- turning one page --------------------------------------------------
+//
+// A sideways table is the ordinary reason. A landscape figure on a portrait
+// page, a scan fed in the wrong way round, a form printed rotated: all the
+// same wish, which is to read the thing the right way up without leaving the
+// discussion the page is carrying.
+//
+// PER PAGE, AND NOT PERSISTED. This is view state, exactly like the zoom: it
+// belongs to this session's reading of the document and to nothing else. It is
+// not in the record, not in the snapshot, not in the identity — the words are
+// the same words whichever way the paper is held, and a comment made on a
+// turned page must be findable by somebody who never turned it. (That falls
+// out for free: the text layer's DOM is untouched, so the anchor, the quote
+// and the extracted text are bit-identical before and after.)
+const ROT_ATTR = 'data-bfp-rot';
+const rotations = new Map();        // page number → 0 | 90 | 180 | 270
+const pageRotation = p => rotations.get(p.n) || 0;
+
+// One page, turned a quarter turn. `by` is +90 or -90; the page re-lays out
+// and redraws, and everything painted on it comes along.
+function rotatePage(p, by) {
+  if (!p) return;
+  const next = ((pageRotation(p) + (Number(by) || 0)) % 360 + 360) % 360;
+  if (next) rotations.set(p.n, next); else rotations.delete(p.n);
+  const vp = sizePage(p);
+  p.drawnAt = -1;
+  // the SAME viewport the box was just sized from — see relayout()
+  if (p.layer) {
+    try { p.layer.update({ viewport: vp }); }
+    catch (e) { console.warn('[botference] text layer did not re-orient:', e); }
+  }
+  paintCanvas(p);
+  const btn = p.rotBtn;
+  if (btn) btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+  return next;
+}
+
+// The page the reader is looking at: the one covering the middle of the
+// window. A keyboard shortcut has to mean something without a click first, and
+// "the page in front of me" is what it means.
+function pageAtCentre() {
+  const mid = window.innerHeight / 2;
+  let best = null;
+  let bestD = Infinity;
+  for (const p of pages) {
+    const r = p.div.getBoundingClientRect();
+    const d = (r.top <= mid && r.bottom >= mid) ? 0
+      : Math.min(Math.abs(r.top - mid), Math.abs(r.bottom - mid));
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return best;
 }
 
 // The canvas is the expensive half and is drawn only for pages that are
@@ -272,7 +349,10 @@ async function paintCanvas(p) {
   p.drawing = true;
   try { p.task && p.task.cancel(); } catch { /* replaced mid-flight */ }
   const ratio = dpr();
-  const viewport = p.page.getViewport({ scale: want * ratio });
+  // the same quarter turn the box was sized for — PDF.js rotates the RENDER,
+  // so the canvas holds an upright page rather than an upright page's sideways
+  // picture, which is what makes the figure capture below worth having
+  const viewport = p.page.getViewport({ scale: want * ratio, rotation: pageRotation(p) });
   p.canvas.width = Math.floor(viewport.width);
   p.canvas.height = Math.floor(viewport.height);
   const ctx = p.canvas.getContext('2d', { alpha: false });
@@ -324,6 +404,40 @@ $('zoom-in').addEventListener('click', () => setScale(scale * 1.25));
 $('zoom-out').addEventListener('click', () => setScale(scale / 1.25));
 $('zoom-fit').addEventListener('click', () => { fitWidth = true; relayout(); });
 
+// ---- r, and shift-R ---------------------------------------------------------
+//
+// WHY NOT THE TRACKPAD GESTURE, WHICH IS WHAT ANYBODY WOULD ASK FOR FIRST.
+// Because Chromium never receives it. macOS delivers a two-finger rotate as an
+// NSEvent of type `rotate`; WebKit turns that into a `gesturechange` event with
+// a `rotation` property, which is why Preview and Safari can do this and why
+// every article about it is about Safari. Chromium does not implement the
+// gesture events at all — the rotate never reaches the renderer, so there is no
+// event to listen for and no shim that could invent one. Wheel-with-modifiers
+// is not an approximation of it either: a trackpad rotate produces no wheel
+// deltas. So the honest answer is a key and a button, and no half-working
+// gesture that would be worse than neither.
+//
+// `r` turns the page under the middle of the window, which is the page being
+// read; shift-R turns it back. Never while something is being typed into, and
+// never with a modifier that means something else to the browser.
+window.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key !== 'r' && e.key !== 'R') return;
+  // …and NOT the retargeted one. The drawer is a shadow root, so a keystroke
+  // typed into its composer arrives here with `e.target` rewritten to the host
+  // element — which is not an input, and would have turned the page under
+  // somebody in the middle of writing the word "rather".
+  const t = (e.composedPath && e.composedPath()[0]) || e.target;
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.nodeName || ''))) return;
+  // a reader who is mid-selection is not asking for the page to move
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return;
+  const p = pageAtCentre();
+  if (!p) return;
+  e.preventDefault();
+  rotatePage(p, e.shiftKey ? -90 : 90);
+});
+
 // The window is not the only thing that resizes this: the drawer pushes the
 // page aside with a margin on <html>, which fires no resize event at all. So
 // the CONTAINER is watched, and a fit that has not actually changed does
@@ -352,6 +466,22 @@ function makePage(n, page) {
   const label = document.createElement('div');
   label.className = 'bfp-pdf-label';
   label.textContent = Adapters ? Adapters.pdfPageLabel(n) : 'Page ' + n;
+  // …and the one control that belongs to a single page rather than to the
+  // document. It carries `bfp-ui`, so anchor.js steps over it and the page
+  // marker flattens to exactly the string it always did — the snapshot a phone
+  // reads must not grow a button. Quiet until the page is hovered, because a
+  // reader of forty ordinary pages should never see it.
+  const rot = document.createElement('button');
+  rot.type = 'button';
+  rot.className = 'bfp-ui bfp-rot';
+  rot.title = 'Turn this page (r, or shift-R the other way)';
+  rot.setAttribute('aria-label', 'Turn page ' + n);
+  rot.setAttribute('aria-pressed', 'false');
+  rot.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" '
+    + 'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" '
+    + 'aria-hidden="true"><path d="M13.5 7a5.5 5.5 0 1 1-1.9-4.2"></path>'
+    + '<path d="M13.6 1.4v3.2h-3.2"></path></svg>';
+  label.append(rot);
 
   const div = document.createElement('div');
   div.className = 'bfp-pdf-page';
@@ -364,7 +494,11 @@ function makePage(n, page) {
   div.append(canvas, layerDiv);
   docEl.append(label, div);
 
-  const p = { n, div, canvas, layerDiv, page, base, viewport: null, layer: null, task: null, drawnAt: -1 };
+  const p = { n, div, canvas, layerDiv, page, base, viewport: null, layer: null, task: null, drawnAt: -1, rotBtn: rot };
+  rot.addEventListener('click', e => {
+    e.preventDefault();
+    rotatePage(p, e.shiftKey || e.altKey ? -90 : 90);
+  });
   pages.push(p);
   if (pages.length === 1 && fitWidth) scale = fitScale(base);
   sizePage(p);
@@ -633,6 +767,82 @@ function pageOfNode(node) {
   return div ? pages.find(p => p.div === div) || null : null;
 }
 
+// ---- a mark's SHAPE, not its shadow ----------------------------------------
+//
+// `getClientRects()` answers with axis-aligned rectangles, always. For a line
+// of ordinary prose that is the mark itself; for a column head in a landscape
+// table — set sideways, so the words run bottom-to-top — it is the mark's
+// SHADOW: a tall thin box that contains the run and says nothing about which
+// way the run goes. Write that to the file and Acrobat, told only "here is a
+// box", strikes it out the way it strikes out a box: a short horizontal dash
+// across the middle of one word, at right angles to the sentence being
+// deleted. That was the bug.
+//
+// WHAT THE DOM WILL AND WILL NOT TELL YOU. `Element.getBoxQuads()` is exactly
+// the right question — four corners, transforms folded in — and Chromium has
+// never implemented it (Firefox only). So the corners are RECONSTRUCTED, from
+// two things that are both reliable:
+//
+//   · the mark's screen rectangle, which is the bounding box of the turned box
+//   · the angle the box is turned by, which is the span's own `--rotate` (the
+//     angle the glyphs were drawn at in the file) plus this page's turn, if
+//     the reader has turned it
+//
+// For a quarter turn — which is what a sideways table is, and the only kind of
+// rotated type a paper ever contains — the bounding box IS the turned box with
+// its sides swapped, so the four corners are the bounding box's four corners
+// in a different order, and no arithmetic is lost. Anything else (type set on
+// a diagonal, a rotated logo) falls back to the box, which is what shipped and
+// is no worse than it was.
+const QUARTER_EPS = 2;                  // degrees — a typesetter's rounding
+function markAngle(p, m) {
+  const span = m.closest ? m.closest('.textLayer span') : null;
+  let a = 0;
+  if (span) {
+    const v = parseFloat(getComputedStyle(span).getPropertyValue('--rotate'));
+    if (isFinite(v)) a = v;
+  }
+  return ((a + pageRotation(p)) % 360 + 360) % 360;
+}
+// A screen rectangle plus the angle its contents are turned by → the four
+// corners of the turned box, named FROM THE TEXT'S POINT OF VIEW: where the
+// run starts and the ascenders are (UL), where it ends (UR), and the two
+// baseline-side corners below them. Pure, and the only geometry in this file
+// that has to be reasoned about rather than read off.
+function turnedCorners(r, deg) {
+  const l = r.left, t = r.top, rt = r.right, b = r.bottom;
+  const near = (a, x) => Math.abs(((a - x) % 360 + 360) % 360) <= QUARTER_EPS
+    || Math.abs(((a - x) % 360 + 360) % 360 - 360) <= QUARTER_EPS;
+  if (near(deg, 0)) return [[l, t], [rt, t], [l, b], [rt, b]];
+  // -90: the run reads bottom-to-top. rotate(-90) sends local (x,y) to (y,-x),
+  // so the start of the run lands at the rectangle's BOTTOM-left.
+  if (near(deg, 270)) return [[l, b], [l, t], [rt, b], [rt, t]];
+  // +90: top-to-bottom
+  if (near(deg, 90)) return [[rt, t], [rt, b], [l, t], [l, b]];
+  if (near(deg, 180)) return [[rt, b], [l, b], [rt, t], [l, t]];
+  return null;                          // not a quarter turn: keep the box
+}
+function markQuads(p, pageRect, m) {
+  const out = [];
+  const A = Ann || window.BFPPdfAnnots;
+  const toPdf = (x, y) => p.viewport.convertToPdfPoint(x - pageRect.left, y - pageRect.top);
+  const deg = markAngle(p, m);
+  for (const r of m.getClientRects()) {
+    if (r.width < 0.5 || r.height < 0.5) continue;
+    const corners = turnedCorners(r, deg);
+    // A LEVEL LINE STAYS A BOX. Not an optimisation: it is what keeps a
+    // horizontal paper's exported file identical to the one that shipped, and
+    // what lets everything downstream go on assuming four numbers until a page
+    // actually turns the words. (The `quadUpright` re-check is not belt and
+    // braces — a page the reader has turned makes a sideways run LEVEL, and a
+    // level run sideways, and this is where that comes out in the numbers.)
+    const c = corners && corners.map(pt => toPdf(pt[0], pt[1]));
+    if (!c || !A || A.quadUpright(c)) { out.push(pdfBox(p, pageRect, r)); continue; }
+    out.push([c[0][0], c[0][1], c[1][0], c[1][1], c[2][0], c[2][1], c[3][0], c[3][1]]);
+  }
+  return out;
+}
+
 // A thread's highlight, as the file would draw it: one quad per line of the
 // passage, grouped by the page it is on (a quote across a page break is two
 // annotations, because an annotation belongs to exactly one page).
@@ -650,11 +860,10 @@ function quadsForThread(id) {
     const p = pageOfNode(m);
     if (!p || !p.viewport) continue;
     const box = p.div.getBoundingClientRect();
-    for (const r of m.getClientRects()) {
-      if (r.width < 0.5 || r.height < 0.5) continue;
-      if (!byPage.has(p.n)) byPage.set(p.n, []);
-      byPage.get(p.n).push(pdfBox(p, box, r));
-    }
+    const quads = markQuads(p, box, m);
+    if (!quads.length) continue;
+    if (!byPage.has(p.n)) byPage.set(p.n, []);
+    byPage.get(p.n).push(...quads);
   }
   return [...byPage.entries()].map(([page, quads]) => ({ page, quads }));
 }
@@ -853,7 +1062,15 @@ async function capturePage(n) {
   if (!page) { try { page = await pdfDoc.getPage(want); } catch { return null; } }
   const base = page.getViewport({ scale: 1 });
   const long = Math.max(base.width, base.height) || 1;
-  const viewport = page.getViewport({ scale: Math.max(0.2, Math.min(4, SHOT_EDGE / long)) });
+  // …the way the READER is holding it. If they turned this page upright to
+  // read its landscape table, the bots get it upright too: the turn is the one
+  // piece of evidence anywhere about which way round the page makes sense, and
+  // a model reading a sideways table is in exactly the trouble the reader was.
+  // (Rotation-invariant otherwise, so an untouched page captures as before.)
+  const viewport = page.getViewport({
+    scale: Math.max(0.2, Math.min(4, SHOT_EDGE / long)),
+    rotation: known ? pageRotation(known) : 0,
+  });
   const canvas = document.createElement('canvas');
   canvas.width = Math.floor(viewport.width);
   canvas.height = Math.floor(viewport.height);
@@ -896,6 +1113,19 @@ window.__BFP_PDF = {
   // one page, rendered to an image, for the companion to keep beside the
   // snapshot — the half of the document that is not text
   capture: capturePage,
+  // Turning a page, and being told which way every page is turned. View state,
+  // so it is offered here rather than saved anywhere — and driveable, because
+  // "a turned page still selects, still paints and still exports" is a claim
+  // only a browser can check (pdf-render.test.mjs).
+  rotate(n, by) {
+    const p = pages.find(q => q.n === Number(n));
+    return p ? rotatePage(p, by == null ? 90 : by) : null;
+  },
+  get rotations() {
+    const out = {};
+    for (const p of pages) out[p.n] = pageRotation(p);
+    return out;
+  },
   // observable, for the render test: which library is loaded, and how many
   // pages the document has
   get ready() { return !!pdfDoc; },

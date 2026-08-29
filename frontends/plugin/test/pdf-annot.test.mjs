@@ -284,6 +284,77 @@ const tiny = A.strikeBar([72, 100, 200, 104]);   // 4pt type
 ok('…and on very small type it is thinner still, never thicker than the line',
   tiny[3] < bar[3] && tiny[3] > 0, JSON.stringify(tiny));
 
+// ---- and the same bar, on words that are not level -------------------------
+// A landscape table on a portrait page. The quad is four corners rather than a
+// box, and the whole of the fix is that everything below reads those corners
+// as two DIRECTIONS — along the run and across it — instead of as x and y.
+//
+// The turned quad used here is the real shape of "Characterize the debris
+// field" on page 12 of the manuscript this was found on, reduced to round
+// numbers: 12pt type drawn at x=180 running UP the page from y=200 for 149pt.
+// UL is where the run starts and the ascenders are, which on a page turned
+// this way is the BOTTOM of the column.
+const TURNED = [169, 200, 169, 349, 183, 200, 183, 349];   // UL, UR, LL, LR
+const UPRIGHT = [72, 700, 400, 700, 72, 686, 400, 686];
+
+eq('a box is read as four corners', A.quadCorners([72, 686, 400, 700]),
+  [[72, 700], [400, 700], [72, 686], [400, 686]]);
+eq('…and eight numbers are read as the four corners they are',
+  A.quadCorners(UPRIGHT), [[72, 700], [400, 700], [72, 686], [400, 686]]);
+ok('a level quad knows it is level', A.quadUpright(A.quadCorners(UPRIGHT)));
+ok('…and a turned one knows it is not', !A.quadUpright(A.quadCorners(TURNED)));
+eq('a quad’s box is its box whichever way it is turned',
+  A.quadBox(A.quadCorners(TURNED)), [169, 200, 183, 349]);
+
+// THE ONE THAT MATTERS: the general case reduces to the old one exactly. If
+// these two ever disagree, every horizontal paper's exported file has moved.
+{
+  const box = A.strikeBar([72, 686, 400, 700]);
+  const q = A.strikeQuad(A.quadCorners([72, 686, 400, 700]));
+  const b = A.quadBox(q);
+  eq('the turned bar agrees with the old one, exactly, on a level line',
+    [b[0], b[1], b[2] - b[0], b[3] - b[1]].map(v => Math.round(v * 1e6) / 1e6),
+    box.map(v => Math.round(v * 1e6) / 1e6));
+}
+{
+  const q = A.strikeQuad(A.quadCorners(TURNED));
+  const run = [q[1][0] - q[0][0], q[1][1] - q[0][1]];
+  const across = [q[2][0] - q[0][0], q[2][1] - q[0][1]];
+  ok('a turned bar runs the length of the words it deletes',
+    Math.abs(run[0]) < 1e-9 && Math.abs(run[1] - 149) < 1e-9, JSON.stringify(q));
+  ok('…and is only a line thick, across them',
+    Math.abs(across[1]) < 1e-9 && Math.abs(Math.abs(across[0]) - Math.min(A.STRIKE_H, 14 * 0.09)) < 1e-9,
+    JSON.stringify(across));
+  // and it sits where a strikeout sits: at the middle of the x-height, which is
+  // 42% of the way up from the BASELINE edge — the LL/LR side of the quad
+  const mid = (q[0][0] + q[2][0]) / 2;
+  ok('…at the middle of the x-height, measured from the baseline side',
+    Math.abs(mid - (183 - 14 * 0.42)) < 0.01, 'mid ' + mid);
+}
+
+// …and end to end: a turned quad goes into the file as eight honest numbers,
+// and its bar as a path, because `re` cannot say "rectangle, turned".
+const tOut = await A.writeAnnots(PDFLib, src, [{
+  page: 1, quads: [TURNED], subtype: 'StrikeOut',
+  contents: 'angadh: this column head should go', author: 'angadh',
+  ts: '2026-08-29T09:00:00Z', color: [0.78, 0.19, 0.19], name: 'bfp-turned',
+}]);
+eq('a turned strikeout is written', tOut.written, 1);
+{
+  const doc2 = await PDFDocument.load(tOut.bytes);
+  const a = doc2.getPage(0).node.Annots().lookup(0);
+  const qp = a.get(PDFName.of('QuadPoints')).asArray().map(v => v.asNumber());
+  eq('…with its four corners in the order the words run', qp, TURNED);
+  ok('…so a reader can tell: the first two corners share an X, not a Y',
+    Math.abs(qp[0] - qp[2]) < 0.01 && Math.abs(qp[1] - qp[3]) > 100, JSON.stringify(qp));
+  const rect = a.get(PDFName.of('Rect')).asArray().map(v => v.asNumber());
+  ok('…and a Rect that is the box of every corner, not of two of them',
+    rect[0] <= 169 && rect[1] <= 200 && rect[2] >= 183 && rect[3] >= 349, JSON.stringify(rect));
+  const ap = doc2.context.lookup(a.get(PDFName.of('AP')).get(PDFName.of('N')));
+  const txt = Buffer.from(ap.getContents()).toString('latin1');
+  ok('…and a bar drawn as a path, along the words', /\bm\b/.test(txt) && /\bh f\b/.test(txt) && !/\bre\b/.test(txt), txt);
+}
+
 const sOut = await A.writeAnnots(PDFLib, src, [{
   page: 1, quads: [[72, 700, 400, 714]], subtype: 'StrikeOut',
   contents: 'angadh · 25 Aug 2026, 09:00:\n(no note)', author: 'angadh',

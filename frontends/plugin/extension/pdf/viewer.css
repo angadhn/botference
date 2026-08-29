@@ -98,7 +98,14 @@ body {
 .doc {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  /* `safe` matters as soon as one page can be turned. A centred flex item that
+   * is WIDER than its container overflows on both sides, and the half that
+   * overflows to the left cannot be scrolled to — it is simply gone. A portrait
+   * page stood upright is wider than the fit the other pages were sized to, so
+   * without this the left edge of the very table the reader turned the page to
+   * see is the part they cannot reach. `safe center` centres while it fits and
+   * falls back to the start when it does not. */
+  align-items: safe center;
   gap: 6px;
   padding: 18px 12px 60px;
 }
@@ -113,7 +120,36 @@ body {
   color: var(--muted);
   letter-spacing: .04em;
   margin: 10px 0 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
+
+/* The turn control. One page's, not the document's — so it lives on the page
+ * marker rather than in the bar, where every other control is about the whole
+ * file. Invisible until the reader is near this page, because forty ordinary
+ * pages should not each grow a button; kept in the layout at opacity 0 so
+ * nothing shifts when it appears. */
+.bfp-rot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s ease, color .12s ease, border-color .12s ease;
+}
+.bfp-pdf-label:hover .bfp-rot,
+.bfp-rot:focus-visible,
+.bfp-rot[aria-pressed="true"] { opacity: 1 }
+.bfp-rot:hover { color: var(--accent); border-color: var(--accent) }
+.bfp-rot[aria-pressed="true"] { color: var(--accent) }
 
 /* The page box. --total-scale-factor and --scale-round-* are PDF.js's, read by
  * the vendored .textLayer rules; --scale-factor is set on this element by
@@ -134,6 +170,28 @@ body {
   width: 100%;
   height: 100%;
 }
+
+/* ── A PAGE TURNED A QUARTER TURN ──────────────────────────────────────────
+ * The canvas needs nothing: PDF.js is asked for a rotated viewport and draws
+ * an upright page into it. The TEXT LAYER cannot be asked the same question —
+ * it positions every span as a percentage of the file's own un-rotated viewBox
+ * and gives each one the angle its glyphs were drawn at, and a rotated
+ * viewport changes neither. So the layer keeps its un-turned size (set inline
+ * by viewer.js) and is turned here, whole, in one transform.
+ *
+ * Turning the container rather than rebuilding it is the point: every <mark>
+ * anchor.js painted stays exactly where it was in the layer, so highlights,
+ * strikeouts, click-to-thread and live selections all survive a turn without
+ * being repainted — and each mark's strike band, which is a gradient in the
+ * mark's OWN box, keeps running along the words rather than across them.
+ *
+ * The translate is what puts the turned box back over the page box; the
+ * percentages are of the layer's own (un-turned) size, so they read as "the
+ * page's height" and "the page's width" respectively. `transform-origin: 0 0`
+ * comes from the vendored .textLayer rule and is assumed here. */
+.bfp-pdf-page[data-bfp-rot="90"] > .textLayer { transform: rotate(90deg) translateY(-100%) }
+.bfp-pdf-page[data-bfp-rot="180"] > .textLayer { transform: rotate(180deg) translate(-100%, -100%) }
+.bfp-pdf-page[data-bfp-rot="270"] > .textLayer { transform: rotate(270deg) translateX(-100%) }
 
 /* A highlight is painted INTO the text layer, over the canvas — the same
  * <mark class="bfp-hl"> anchor.js paints on an article, whose inline styles win

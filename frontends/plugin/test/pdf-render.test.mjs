@@ -34,6 +34,9 @@ const FIXTURE = 'test/fixtures/two-pages.pdf';
 // accidental write out of the developer's live .botference
 process.env.BOTFERENCE_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-render-'));
 const A = createRequire(import.meta.url)(path.join(ROOT, 'extension', 'adapters.js'));
+// the annotation geometry, node-side: the same file the page loads, so the bar
+// this test predicts is the bar the viewer would draw
+const Annots = createRequire(import.meta.url)(path.join(ROOT, 'extension', 'pdf', 'annots.js'));
 const { sanitizeArticle } = await import(path.join(ROOT, 'sanitize.mjs'));
 const storeMod = await import(path.join(ROOT, 'store.mjs'));
 
@@ -121,10 +124,40 @@ const ANNOTATED = await (async () => {
   return Buffer.from(await doc.save({ useObjectStreams: false }));
 })();
 
+// ---- …and a page whose words are not level ---------------------------------
+// A landscape table on a portrait page: the thing that broke, reduced to the
+// smallest file that still breaks it. Three column heads set with
+// `rotate: degrees(90)`, so their glyphs run bottom-to-top, and two ordinary
+// horizontal lines above and below them so that every assertion below has a
+// level control beside the turned one.
+//
+// Built here rather than committed for the reason ANNOTATED is, and for one
+// more: the real specimen this was found on is a colleague's unpublished
+// manuscript, and no test fixture in this repo is going to be made of somebody
+// else's paper.
+const ROT_RUN = 'Characterize the debris field';
+const ROT_LEVEL = 'An ordinary horizontal line of prose for contrast.';
+const ROTATED = await (async () => {
+  const { PDFDocument, StandardFonts, degrees } = PDFLib;
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([612, 792]);
+  page.drawText('Table 3 the sideways table', { x: 72, y: 740, size: 14, font });
+  const cols = ['Stabilize and control the platform', ROT_RUN, 'Requirements for capture'];
+  // x=120/180/240, all starting at y=200 and running UP the page
+  cols.forEach((s, i) => page.drawText(s, { x: 120 + i * 60, y: 200, size: 12, font, rotate: degrees(90) }));
+  page.drawText(ROT_LEVEL, { x: 72, y: 120, size: 12, font });
+  return Buffer.from(await doc.save({ useObjectStreams: false }));
+})();
+
 const server = http.createServer((req, res) => {
   const rel = decodeURIComponent(String(req.url).split('?')[0]).replace(/^\/+/, '');
   if (rel === 'annotated.pdf') {
     res.writeHead(200, { 'content-type': 'application/pdf', 'accept-ranges': 'bytes' }).end(ANNOTATED);
+    return;
+  }
+  if (rel === 'rotated.pdf') {
+    res.writeHead(200, { 'content-type': 'application/pdf', 'accept-ranges': 'bytes' }).end(ROTATED);
     return;
   }
   const file = path.join(ROOT, rel);
@@ -814,6 +847,502 @@ if (shot && shot.s && shot.s.data) {
   }).includes(w.file));
   ok('…and the file it names is on disk, an image, and readable by anything that opens PNGs',
     fs.readFileSync(w.file).slice(1, 4).toString() === 'PNG');
+}
+
+// ---- THE SIDEWAYS TABLE ----------------------------------------------------
+//
+// A landscape table rotated onto a portrait page. Three separate layers can be
+// wrong about it and only one of them was, which is why this section checks
+// all three by name.
+//
+//   PAINT     the strike's band is a gradient in the MARK's own box, and the
+//             mark sits inside a span the text layer has already rotated — so
+//             the band comes along and runs through the words. This was always
+//             right, and is asserted so it stays right.
+//   EXPORT    the quads were built from getClientRects(), which answers with
+//             axis-aligned boxes and therefore describes a bottom-to-top run
+//             as a tall thin rectangle. Acrobat, told "here is a box", struck
+//             it out across the middle: a short red dash at right angles to
+//             the sentence being deleted. THIS was the bug.
+//   TURNING   and the reader's own answer to a sideways table, which is to
+//             turn the page — checked here because turning must not disturb
+//             either of the two above.
+await send('Page.navigate', {
+  url: origin + '/extension/pdf/viewer.html?src=' + encodeURIComponent(origin + '/rotated.pdf'),
+});
+let rot = null;
+for (let i = 0; i < 60; i++) {
+  await sleep(500);
+  rot = await evaluate(`(() => ({
+    spans: document.querySelectorAll('.textLayer span').length,
+    chain: !!(window.BFPAnchor && window.__BFP_PDF),
+  }))()`);
+  if (rot && rot.spans > 0) break;
+}
+ok('[rotated] the sideways page renders and the annotator is up',
+  !!(rot && rot.spans > 0 && rot.chain), JSON.stringify(rot));
+
+// A real drag, in real screen coordinates — the only way to ask what a reader
+// dragging across these words actually gets.
+async function drag(x0, y0, x1, y1, steps) {
+  const n = steps || 16;
+  // Let go of whatever was selected last. A mousedown INSIDE an existing
+  // selection starts a drag-and-drop of that text, not a new selection, and a
+  // test that forgot this measures the browser's drag handler instead of its
+  // selection.
+  await evaluate('window.getSelection().removeAllRanges()');
+  const at = (a, b, i) => a + (b - a) * (i / n);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0, y: y0, buttons: 0 });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x0, y: y0, button: 'left', clickCount: 1, buttons: 1 });
+  await sleep(30);
+  for (let i = 1; i <= n; i++) {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at(x0, x1, i), y: at(y0, y1, i), button: 'left', buttons: 1 });
+  }
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x1, y: y1, button: 'left', clickCount: 1, buttons: 0 });
+  await sleep(60);
+  return evaluate(`String(window.getSelection())`);
+}
+// Where the run is on screen right now, and which way it lies. Scrolled into
+// the middle of the window first: a mouse event dispatched at a y below the
+// window is dispatched at nothing, and "the selection came back empty" would
+// then be a fact about the test's window rather than about rotated text.
+const runBox = () => evaluate(`(() => {
+  const s = [...document.querySelectorAll('.textLayer span')].find(x => x.textContent === ${JSON.stringify(ROT_RUN)});
+  if (!s) return null;
+  s.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = s.getBoundingClientRect();
+  return { l: r.left, t: r.top, w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+           rotate: getComputedStyle(s).getPropertyValue('--rotate').trim() };
+})()`);
+
+if (rot && rot.spans > 0) {
+  const before = await runBox();
+  eq('[rotated] the text layer says so: the run carries a quarter turn of its own',
+    before && before.rotate, '-90deg');
+  ok('[rotated] …and stands up on screen — taller than it is wide',
+    !!(before && before.h > before.w * 3), JSON.stringify(before));
+
+  // ---- 0. THE WORDS THEMSELVES ---------------------------------------------
+  // Before any of the geometry: does a sideways run survive as TEXT? This is
+  // what the bots read, what a phone reads, and what a `passage:` suggestion is
+  // located in — and if a turned run came out of the text layer chopped up or
+  // interleaved with its neighbours, none of the rest would be worth fixing.
+  //
+  // It survives, and the reason is worth knowing: a rotated run is ONE text
+  // item in the file and therefore one span in the layer, so it is contiguous
+  // however the page is turned. What is NOT preserved is which visual COLUMN a
+  // cell belongs to — the order is the order the file drew the cells in, which
+  // for a table is row by row. That is inherent, and the limitation is written
+  // down in SPEC.md rather than papered over here.
+  const words = await evaluate(`(() => {
+    const Ad = window.BFPAdapters, An = window.BFPAnchor;
+    const pages = Ad.pdfPagesFromDom(document);
+    const holder = document.createElement('div');
+    holder.innerHTML = Ad.pdfSnapshotHtml(pages);
+    document.body.appendChild(holder);
+    const snap = An.buildTextIndex(holder);
+    const idx = An.buildTextIndex(document.body);
+    const at = idx.raw.indexOf(${JSON.stringify(ROT_RUN)});
+    const anchor = at < 0 ? null : An.buildAnchor(idx.raw, at, at + ${JSON.stringify(ROT_RUN)}.length);
+    const found = anchor ? An.locate(snap.raw, anchor) : null;
+    holder.remove();
+    return {
+      lines: pages[0].lines,
+      whole: pages[0].lines.includes(${JSON.stringify(ROT_RUN)}),
+      found: !!(found && found.ok),
+      text: found && found.ok ? snap.raw.slice(found.start, found.end) : (found && found.reason),
+      prefix: anchor && anchor.prefix, suffix: anchor && anchor.suffix,
+    };
+  })()`);
+  ok('[rotated] a sideways run comes out of the text layer whole, not in pieces',
+    !!(words && words.whole), JSON.stringify(words && words.lines));
+  ok('[rotated] …so an anchor made on it is found again in the snapshot a phone reads',
+    !!(words && words.found), JSON.stringify(words));
+  eq('[rotated] …quoting the same words', words && words.text, ROT_RUN);
+  ok('[rotated] …with a sane prefix and suffix, which is what a bot’s passage lands by',
+    !!(words && /platform/.test(words.prefix || '') && /Requirements/.test(words.suffix || '')),
+    JSON.stringify(words));
+
+  // ---- 1. PAINT ------------------------------------------------------------
+  const paint = await evaluate(`(() => {
+    const A = window.BFPAnchor;
+    const idx = A.buildTextIndex(document.body);
+    const at = idx.raw.indexOf(${JSON.stringify(ROT_RUN)});
+    if (at < 0) return { err: 'the rotated run is not in the index' };
+    const marks = A.paintOffsets(idx, at, at + ${JSON.stringify(ROT_RUN)}.length, 'rot-strike', null, 'strike');
+    const m = marks[0];
+    if (!m) return { err: 'nothing was painted' };
+    const cs = getComputedStyle(m);
+    const r = m.getBoundingClientRect();
+    return {
+      marks: marks.length,
+      struck: m.classList.contains('bfp-strike'),
+      // the mark's OWN box, before any ancestor transform: this is the space
+      // the gradient's 55% is measured in
+      localW: m.offsetWidth, localH: m.offsetHeight,
+      ownTransform: cs.transform,
+      band: cs.backgroundImage,
+      screenW: r.width, screenH: r.height,
+      inRotatedSpan: (() => { const s = m.closest('span'); return s ? getComputedStyle(s).getPropertyValue('--rotate').trim() : ''; })(),
+    };
+  })()`);
+  eq('[rotated] the struck run paints as one mark', paint && paint.marks, 1);
+  ok('[rotated] …with the strike band on it', !!(paint && paint.struck && /linear-gradient/.test(paint.band || '')),
+    JSON.stringify(paint));
+  // THE PAINT ASSERTION. The band is `to bottom` at 55% of the mark's own box,
+  // and the mark's own box is WIDE — the run is only stood up by the span
+  // above it. So the 55% line crosses the box's short axis, which is across
+  // the letters and along the words, and the ancestor's rotation carries it
+  // onto the glyphs. A band drawn from the SCREEN rectangle instead (tall and
+  // thin) would be a 2px dash across one letter.
+  ok('[rotated] …drawn in the mark’s own un-turned box, which is wide',
+    !!(paint && paint.localW > paint.localH * 3), JSON.stringify(paint));
+  eq('[rotated] …because the mark itself is not transformed — the span above it is',
+    paint && paint.ownTransform, 'none');
+  eq('[rotated] …by exactly the quarter turn the file drew the words at',
+    paint && paint.inRotatedSpan, '-90deg');
+  ok('[rotated] …so on screen the same mark is tall and thin: the band runs ALONG the words',
+    !!(paint && paint.screenH > paint.screenW * 3), JSON.stringify(paint));
+
+  // ---- 2. EXPORT -----------------------------------------------------------
+  // The numbers, in PDF user space. The fixture's own geometry is known: the
+  // run was drawn at x=180, from y=200, at 12pt, turned a quarter turn — so
+  // its quad must be about 14pt across and about 149pt long, and the long side
+  // must lie along the PAGE'S Y AXIS. An axis-aligned box would have the same
+  // extent and no way to say which of its sides the words run down.
+  const quads = await evaluate(`(async () => {
+    const A = window.BFPAnchor, P = window.__BFP_PDF;
+    const idx = A.buildTextIndex(document.body);
+    const at2 = idx.raw.indexOf(${JSON.stringify(ROT_LEVEL)});
+    A.paintOffsets(idx, at2, at2 + ${JSON.stringify(ROT_LEVEL)}.length, 'rot-level', null, 'strike');
+    const out = await P.collect([
+      { id: 'rot-strike', quote: ${JSON.stringify(ROT_RUN)}, mark: 'strike',
+        msgs: [{ author: 'angadh', ts: '2026-08-29T09:00:00Z', text: 'This column head should go.' }] },
+      { id: 'rot-level', quote: ${JSON.stringify(ROT_LEVEL)}, mark: 'strike',
+        msgs: [{ author: 'angadh', ts: '2026-08-29T09:01:00Z', text: 'And this level line.' }] },
+    ]);
+    return out;
+  })()`);
+  const turnedItem = (quads && quads.items || []).find(i => /column head/.test(i.contents || ''));
+  const levelItem = (quads && quads.items || []).find(i => /level line/.test(i.contents || ''));
+  eq('[rotated] both threads are placeable', quads && quads.orphaned, 0);
+  eq('[rotated] a LEVEL line is still four numbers — an ordinary paper’s file does not change',
+    levelItem && levelItem.quads[0].length, 4);
+  eq('[rotated] …and a turned one is eight: four corners, which is what a QuadPoint is',
+    turnedItem && turnedItem.quads[0].length, 8);
+  if (turnedItem && turnedItem.quads[0].length === 8) {
+    const q = turnedItem.quads[0];
+    const run = [q[2] - q[0], q[3] - q[1]];         // UL → UR: along the words
+    const across = [q[4] - q[0], q[5] - q[1]];      // UL → LL: the line's height
+    const len = Math.hypot(run[0], run[1]);
+    const thick = Math.hypot(across[0], across[1]);
+    ok('[rotated] …whose long side runs the length of the words (~149pt at 12pt type)',
+      len > 130 && len < 170, 'len ' + len.toFixed(2) + ' of ' + JSON.stringify(q.map(v => +v.toFixed(2))));
+    ok('[rotated] …and whose short side is one line high (~14pt)',
+      thick > 10 && thick < 20, 'thick ' + thick.toFixed(2));
+    // THE ASSERTION THE BUG WAS: the run lies along the page's Y axis, and the
+    // file now says so. Before, both directions were lost to a bounding box.
+    ok('[rotated] …and the words run UP THE PAGE, not across it',
+      Math.abs(run[0]) < 2 && Math.abs(run[1]) > 130,
+      'run ' + JSON.stringify(run.map(v => +v.toFixed(2))));
+    ok('[rotated] …with the line’s height across the page, at right angles to it',
+      Math.abs(across[1]) < 2 && Math.abs(across[0]) > 10,
+      'across ' + JSON.stringify(across.map(v => +v.toFixed(2))));
+    // WHICH CORNER IS WHICH, not merely which way the quad lies. Turned a
+    // quarter this way, the glyphs' ascenders point toward SMALLER x and the
+    // baseline sits at larger x (the run was drawn at x=180 and the quad runs
+    // 169→183). So UL — the ascender side — must be the small-x corner. Get
+    // this backwards and every number above still passes while the strikeout
+    // bar lands at 58% of the line instead of 42%: a red rule along the tops
+    // of the letters rather than through them.
+    ok('[rotated] …and UL is the ascender side, so the bar knows where the baseline is',
+      q[0] < q[4] - 5, 'UL.x ' + q[0].toFixed(2) + ' LL.x ' + q[4].toFixed(2));
+    // …which is exactly what strikeQuad then does with it
+    const bar = Annots.strikeQuad([[q[0], q[1]], [q[2], q[3]], [q[4], q[5]], [q[6], q[7]]]);
+    const barX = (bar[0][0] + bar[2][0]) / 2;
+    ok('[rotated] …and the bar it makes sits at the middle of the x-height, near the baseline',
+      barX > (q[0] + q[4]) / 2, 'bar at x ' + barX.toFixed(2)
+      + ' between ascender ' + q[0].toFixed(2) + ' and baseline ' + q[4].toFixed(2));
+    // and it is where the run actually is: drawn at x=180, from y=200 upward
+    const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+    ok('[rotated] …on the words themselves, not somewhere near them',
+      Math.min(...xs) > 165 && Math.max(...xs) < 190
+      && Math.min(...ys) > 195 && Math.max(...ys) < 355,
+      JSON.stringify(q.map(v => +v.toFixed(2))));
+  }
+
+  // ---- 3. …and what a PDF reader gets ---------------------------------------
+  // Written, re-parsed, and read back: a StrikeOut whose QuadPoints are NOT an
+  // upright rectangle, and an appearance stream that draws its bar as a PATH
+  // (`re` cannot say "rectangle, turned") — while the level line beside it is
+  // still one `re`, exactly as it always was.
+  const reparse = await evaluate(`(async () => {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = '/extension/vendor/pdf-lib/pdf-lib.min.js';
+      s.onload = res; s.onerror = () => rej(new Error('pdf-lib did not load'));
+      document.head.appendChild(s);
+    });
+    const A = window.BFPPdfAnnots, P = window.__BFP_PDF;
+    const got = await P.collect([
+      { id: 'rot-strike', quote: ${JSON.stringify(ROT_RUN)}, mark: 'strike',
+        msgs: [{ author: 'angadh', ts: '2026-08-29T09:00:00Z', text: 'turned' }] },
+      { id: 'rot-level', quote: ${JSON.stringify(ROT_LEVEL)}, mark: 'strike',
+        msgs: [{ author: 'angadh', ts: '2026-08-29T09:01:00Z', text: 'level' }] },
+    ]);
+    const src = new Uint8Array(await (await fetch('/rotated.pdf')).arrayBuffer());
+    const out = await A.writeAnnots(window.PDFLib, src, got.items);
+    const pdfjs = await import('/extension/vendor/pdfjs/build/pdf.min.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = '/extension/vendor/pdfjs/build/pdf.worker.min.mjs';
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(out.bytes), isEvalSupported: false }).promise;
+    const page = await doc.getPage(1);
+    const annots = (await page.getAnnotations({ intent: 'display' })).map(a => ({
+      subtype: a.subtype,
+      text: (a.contentsObj && a.contentsObj.str) || '',
+      quadPoints: a.quadPoints ? JSON.parse(JSON.stringify(a.quadPoints)) : null,
+    }));
+    // …and the ink itself, read straight out of the file's bytes
+    const raw = new TextDecoder('latin1').decode(out.bytes);
+    return { written: out.written, annots,
+             paths: (raw.match(/\\bh f\\b/g) || []).length,
+             rawQuads: (raw.match(/\\/QuadPoints\\s*\\[[^\\]]*\\]/g) || []),
+             words: (await page.getTextContent()).items.map(i => i.str).join('') };
+  })()`);
+  eq('[rotated] both marks are written into the copy', reparse && reparse.written, 2);
+  const back = (reparse && reparse.annots) || [];
+  const turnedBack = back.find(a => /\bturned\b/.test(a.text));
+  const levelBack = back.find(a => /\blevel\b/.test(a.text));
+  eq('[rotated] the turned one comes back a StrikeOut', turnedBack && turnedBack.subtype, 'StrikeOut');
+  eq('[rotated] …and so does the level one', levelBack && levelBack.subtype, 'StrikeOut');
+  // WHAT "TURNED" MEANS IN A QUADPOINT, EXACTLY. A quarter-turned rectangle is
+  // still an axis-aligned rectangle — its four corners have two x values and
+  // two y values either way, so you cannot tell a sideways run from a level one
+  // by looking at the set of points. What says which way the words run is the
+  // ORDER: the first two corners are the top of the line, left to right ALONG
+  // the text, so a level run has UL.y == UR.y and a sideways one has
+  // UL.x == UR.x. That ordering is the whole of what the file was failing to
+  // say, and the whole of what Acrobat reads to decide which way to draw a bar.
+  const upright = qp => {
+    const f = [];
+    JSON.stringify(qp, (k, v) => { if (typeof v === 'number') f.push(v); return v; });
+    if (f.length < 8) return null;
+    return Math.abs(f[1] - f[3]) < 0.2 && Math.abs(f[0] - f[4]) < 0.2;
+  };
+  // Read out of the FILE'S OWN BYTES, not out of pdf.js: pdf.js normalises
+  // QuadPoints on the way in (it sorts the corners into a box), which is
+  // precisely the information this fix exists to preserve. The bytes are what
+  // Acrobat gets.
+  const rawOrders = (reparse && reparse.rawQuads || []).map(t =>
+    upright((t.match(/-?[\d.]+/g) || []).map(Number)));
+  eq('[rotated] two marks, two QuadPoints arrays in the file', rawOrders.length, 2);
+  ok('[rotated] …one of them saying its words run level, as they always did',
+    rawOrders.includes(true), JSON.stringify(reparse && reparse.rawQuads));
+  ok('[rotated] …and one saying they do not — which is what the file could not say before',
+    rawOrders.includes(false), JSON.stringify(reparse && reparse.rawQuads));
+  eq('[rotated] …and the turned bar is drawn as a path, because `re` cannot say “turned”',
+    reparse && reparse.paths, 1);
+  ok('[rotated] …and not a word of the document changed',
+    !!(reparse && reparse.words.includes('Characterize')), reparse && reparse.words);
+
+  // ---- 4. TURNING THE PAGE --------------------------------------------------
+  // What the reader actually wants: the table the right way up. Per page, view
+  // only, and — the whole reason it is done as one transform on the layer —
+  // without disturbing a single thing painted on it.
+  // ---- what selecting a sideways run is actually like ---------------------
+  // "Finicky" was the reader's word and it is exactly right, so it is measured
+  // here rather than described: three drags, before the turn and after it.
+  const clean = sel => {
+    const v = String(sel || '').trim();
+    // inside the run, and nowhere else — the neighbouring columns are the
+    // thing a bad selection swallows, and the caption is the other one
+    return v.length > ROT_RUN.length * 0.7 && ROT_RUN.includes(v);
+  };
+  Object.assign(before, await runBox());
+  const alongBefore = await drag(before.cx, before.t + before.h - 4, before.cx, before.t + 4);
+  ok('[rotated] the machinery is not broken: dragging ALONG the run does select it',
+    clean(alongBefore), JSON.stringify(alongBefore));
+  // …but that is a bottom-to-top drag, and nobody makes one. The gesture a
+  // reader actually makes over words is left to right, and over a sideways
+  // run it is a drag ACROSS the letters. This is the complaint, reproduced.
+  Object.assign(before, await runBox());
+  const sweepBefore = await drag(before.l - 30, before.cy, before.l + before.w + 220, before.cy);
+  ok('[rotated] …whereas the sweep anybody would ACTUALLY make gets nothing like it',
+    !clean(sweepBefore), JSON.stringify(sweepBefore));
+  // …and the drift that decides it. Along a sideways run, a few pixels sideways
+  // is a few pixels ACROSS the column, and the neighbouring column is right
+  // there — so a hand that is not dead straight takes two cells at once.
+  Object.assign(before, await runBox());
+  const driftBefore = await drag(before.cx - before.w * 0.9, before.t + before.h - 4,
+                                 before.cx + before.w * 0.9, before.t + 4);
+  // …and the third drag, which is the honest one. A hand that wanders off the
+  // column entirely gets NOTHING — not the next column, not a fragment: the
+  // press lands on the layer between two runs and there is no text position
+  // there. Recorded so that nobody later claims turning the page cured this;
+  // it does not, and the assertion after the turn says so in the same words.
+  const NEIGHBOURS = ['Stabilize and control the platform', 'Requirements for capture'];
+  const spilled = sel => NEIGHBOURS.some(t => String(sel || '').includes(t));
+  ok('[rotated] …and a hand that wanders off the column gets nothing usable at all',
+    !clean(driftBefore) && !spilled(driftBefore), JSON.stringify(driftBefore));
+
+  const turned = await evaluate(`(() => {
+    const box = document.querySelector('.bfp-pdf-page');
+    const layer = box.querySelector('.textLayer');
+    const b0 = box.getBoundingClientRect();
+    const b4 = { w: layer.offsetWidth, h: layer.offsetHeight };
+    const sf0 = getComputedStyle(box).getPropertyValue('--scale-factor');
+    const painted0 = window.BFPAnchor.marksFor('rot-strike').length;
+    const btn = document.querySelector('.bfp-pdf-label .bfp-rot');
+    btn.click();                                   // the control the reader sees
+    const b1 = box.getBoundingClientRect();
+    return {
+      hadButton: !!btn,
+      pressed: btn.getAttribute('aria-pressed'),
+      attr: box.getAttribute('data-bfp-rot'),
+      rotations: window.__BFP_PDF.rotations,
+      before: { w: Math.round(b0.width), h: Math.round(b0.height) },
+      after: { w: Math.round(b1.width), h: Math.round(b1.height) },
+      // the LAYOUT box, not the client rect: a turned element's client rect is
+      // the bounding box of the turn, which is the page box by construction
+      layerBefore: b4, layerAfter: { w: layer.offsetWidth, h: layer.offsetHeight },
+      scaleBefore: sf0.trim(), scaleAfter: getComputedStyle(box).getPropertyValue('--scale-factor').trim(),
+      painted0, painted1: window.BFPAnchor.marksFor('rot-strike').length,
+      canvasCss: { w: Math.round(parseFloat(box.querySelector('canvas').style.width)),
+                   h: Math.round(parseFloat(box.querySelector('canvas').style.height)) },
+    };
+  })()`);
+  ok('[rotated] every page carries its own turn control', !!(turned && turned.hadButton));
+  eq('[rotated] …one press turns this page a quarter turn', turned && turned.attr, '90');
+  eq('[rotated] …and only this page', JSON.stringify(turned && turned.rotations), '{"1":90}');
+  eq('[rotated] …and the control says it is turned', turned && turned.pressed, 'true');
+  ok('[rotated] the page box swaps its sides',
+    !!(turned && Math.abs(turned.after.w - turned.before.h) <= 2
+       && Math.abs(turned.after.h - turned.before.w) <= 2), JSON.stringify(turned));
+  ok('[rotated] …and the canvas with it',
+    !!(turned && Math.abs(turned.canvasCss.w - turned.after.w) <= 2), JSON.stringify(turned));
+  // The text layer keeps its UN-turned size: every span inside it is positioned
+  // as a percentage of the file's own viewBox, so a layer that swapped sides
+  // would put every word somewhere the glyphs are not. It is turned by one
+  // transform instead, which is why nothing inside it has to move.
+  eq('[rotated] …while the text layer keeps the size the spans are laid out against',
+    JSON.stringify(turned && turned.layerAfter), JSON.stringify(turned && turned.layerBefore));
+  eq('[rotated] …and the scale factor does not lurch because the sides swapped',
+    turned && turned.scaleAfter, turned && turned.scaleBefore);
+  // NOTHING WAS REPAINTED. The marks are the same nodes they were.
+  eq('[rotated] …and every mark painted on the page survives the turn, un-repainted',
+    turned && turned.painted1, turned && turned.painted0);
+
+  const after = await runBox();
+  ok('[rotated] the sideways run is now the right way up — wider than it is tall',
+    !!(after && after.w > after.h * 3), JSON.stringify(after));
+  const paintAfter = await evaluate(`(() => {
+    const m = window.BFPAnchor.marksFor('rot-strike')[0];
+    const r = m.getBoundingClientRect();
+    return { w: r.width, h: r.height, band: getComputedStyle(m).backgroundImage,
+             localW: m.offsetWidth, localH: m.offsetHeight };
+  })()`);
+  ok('[rotated] …and its strike band came with it, still along the words',
+    !!(paintAfter && paintAfter.w > paintAfter.h * 3 && /linear-gradient/.test(paintAfter.band || '')),
+    JSON.stringify(paintAfter));
+
+  // THE ACCEPTANCE CRITERION. The same gesture a reader makes over any line of
+  // text — left to right, along the words — which got nothing before the turn.
+  Object.assign(after, await runBox());
+  const afterSel = await drag(after.l + 2, after.cy, after.l + after.w - 2, after.cy);
+  Object.assign(after, await runBox());
+  const afterDrift = await drag(after.l + 2, after.cy - after.h * 0.9,
+                                after.l + after.w - 2, after.cy + after.h * 0.9);
+  ok('[rotated] THE POINT: after turning, the ordinary left-to-right drag selects the run cleanly',
+    clean(afterSel), JSON.stringify(afterSel));
+  // …and it now tolerates a wandering hand the way any line of text does: the
+  // drift that used to cross into the next column is now drift ALONG the line,
+  // where there is nothing to cross into.
+  // The same wandering drag, after the turn. It is no better — it gets nothing
+  // either — and that is the limit of what turning a page can do: it changes
+  // which GESTURE is the natural one, not how the browser resolves a press
+  // that lands between two runs. Stated as a test so the claim stays honest.
+  ok('[rotated] …while a hand that wanders off the line still gets nothing, turned or not',
+    !clean(afterDrift) && !spilled(afterDrift), JSON.stringify(afterDrift));
+
+  // …and the export still lands on the words, from the turned page. The quads
+  // go through viewport.convertToPdfPoint, which knows about the turn, so the
+  // numbers must be the ones the un-turned page gave.
+  const quadsAfter = await evaluate(`(async () => {
+    const out = await window.__BFP_PDF.collect([{ id: 'rot-strike', quote: ${JSON.stringify(ROT_RUN)}, mark: 'strike',
+      msgs: [{ author: 'angadh', ts: '2026-08-29T09:00:00Z', text: 'turned' }] }]);
+    return out.items[0] && out.items[0].quads[0];
+  })()`);
+  if (turnedItem && quadsAfter) {
+    const same = turnedItem.quads[0].every((v, i) => Math.abs(v - quadsAfter[i]) < 1.5);
+    ok('[rotated] …and the file gets the SAME quad whether the reader turned the page or not',
+      same, JSON.stringify([turnedItem.quads[0], quadsAfter].map(a => a.map(v => +v.toFixed(2)))));
+  }
+
+  // the keyboard, and the way back
+  const keyed = await evaluate(`(() => {
+    const box = document.querySelector('.bfp-pdf-page');
+    // a reader mid-selection is not asking for the page to move, and the last
+    // drag left one — so the key does nothing until the selection is let go
+    window.getSelection().selectAllChildren(box);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
+    const whileSelecting = box.getAttribute('data-bfp-rot');
+    window.getSelection().removeAllRanges();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'R', shiftKey: true, bubbles: true }));
+    const back = box.getAttribute('data-bfp-rot');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
+    const fwd = box.getAttribute('data-bfp-rot');
+    // …and never while the reader is typing
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
+    const typed = box.getAttribute('data-bfp-rot');
+    input.remove();
+    // …including into the DRAWER, which is a shadow root. A keystroke from
+    // inside one arrives at window with its target rewritten to the HOST, so a
+    // guard that only looks at e.target sees a <div> and turns the page under
+    // somebody halfway through the word "rather".
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('textarea');
+    shadow.appendChild(inner);
+    inner.focus();
+    inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true, composed: true }));
+    const shadowTyped = box.getAttribute('data-bfp-rot');
+    host.remove();
+    // the positive control, so the two guards above cannot pass by simply
+    // never reaching the handler: the same bubbled keystroke from something
+    // that is NOT a place to type does turn the page
+    const plain = document.createElement('div');
+    document.body.appendChild(plain);
+    plain.dispatchEvent(new KeyboardEvent('keydown', { key: 'R', shiftKey: true, bubbles: true }));
+    const bubbled = box.getAttribute('data-bfp-rot');
+    const btnAfterKey = document.querySelector('.bfp-pdf-label .bfp-rot').getAttribute('aria-pressed');
+    plain.remove();
+    // …and put it back the way it was, because the figure capture below is
+    // about what a TURNED page hands the bots
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
+    return { whileSelecting, back, fwd, typed, shadowTyped, bubbled, btnAfterKey };
+  })()`);
+  eq('[rotated] a key never moves the page out from under a live selection',
+    keyed && keyed.whileSelecting, '90');
+  eq('[rotated] shift-R turns it back', keyed && keyed.back, '0');
+  eq('[rotated] …and r turns it again', keyed && keyed.fwd, '90');
+  eq('[rotated] …but never out from under somebody who is typing', keyed && keyed.typed, '90');
+  eq('[rotated] …including typing into the drawer, which is a shadow root',
+    keyed && keyed.shadowTyped, '90');
+  eq('[rotated] …while an ordinary keystroke from the page still turns it',
+    keyed && keyed.bubbled, '0');
+  eq('[rotated] …and the button on the page agrees, however the turn was asked for',
+    keyed && keyed.btnAfterKey, 'false');
+
+  // the picture the bots get is the picture the reader is looking at
+  const shotTurned = await evaluate(`(async () => {
+    const s = await window.__BFP_PDF.capture(1);
+    return s ? { w: s.w, h: s.h } : null;
+  })()`);
+  ok('[rotated] a figure captured from a turned page is captured the right way up',
+    !!(shotTurned && shotTurned.w > shotTurned.h), JSON.stringify(shotTurned));
 }
 
 try { ws.close(); } catch { /* closing anyway */ }

@@ -162,9 +162,75 @@
     return out;
   }
 
+  // ---- a quad, when the words are not level ---------------------------------
+  //
+  // A QuadPoint is FOUR CORNERS, not a box, and the PDF spec has always allowed
+  // those corners to describe a rotated rectangle. This side used to ignore
+  // that: every quad was [x0,y0,x1,y1], an upright box, because every line of
+  // every paper anybody had tested on ran left to right.
+  //
+  // Then a landscape table arrived on a portrait page — Table 3 of a real
+  // manuscript, its column heads set sideways so the text runs bottom-to-top —
+  // and the upright box was a lie about it in two different ways. The quad
+  // covering "Characterize the debris field" was tall and thin (it is a
+  // vertical run), so Acrobat drew the strikeout bar as Acrobat is told to:
+  // horizontally, across the middle of that tall thin box. A short red dash
+  // through the middle of a word, at right angles to the sentence it was
+  // supposed to delete.
+  //
+  // So a quad here is now EITHER shape:
+  //
+  //   [x0,y0,x1,y1]                        an upright box — the ordinary line
+  //   [x1,y1,x2,y2,x3,y3,x4,y4]            four corners: UL, UR, LL, LR
+  //
+  // and the four corners are named FROM THE TEXT'S POINT OF VIEW, not the
+  // page's: "upper-left" is where the run starts and the ascenders are, however
+  // the run is turned on the paper. That is the same convention QuadPoints
+  // itself uses, which is why a rotated quad written this way is drawn correctly
+  // by a viewer that never heard of us.
+  //
+  // Everything downstream — the rect, the bar, the appearance stream — is
+  // expressed in those corners and in the two vectors they give: ALONG the run
+  // (UL→UR) and ACROSS it (UL→LL). An upright quad is the case where those two
+  // happen to be the x and y axes, and it keeps its old fast path so a
+  // horizontal paper's file is byte-for-byte what it always was.
+  function quadCorners(q) {
+    if (!q) return null;
+    const n = q.length || 0;
+    if (n >= 8) {
+      const c = [[+q[0], +q[1]], [+q[2], +q[3]], [+q[4], +q[5]], [+q[6], +q[7]]];
+      return c.every(p => isFinite(p[0]) && isFinite(p[1])) ? c : null;
+    }
+    if (n >= 4) {
+      const x0 = Math.min(+q[0], +q[2]), x1 = Math.max(+q[0], +q[2]);
+      const y0 = Math.min(+q[1], +q[3]), y1 = Math.max(+q[1], +q[3]);
+      if (![x0, x1, y0, y1].every(isFinite)) return null;
+      return [[x0, y1], [x1, y1], [x0, y0], [x1, y0]];
+    }
+    return null;
+  }
+  // Is this quad simply a box? Not a style question: an upright quad is drawn
+  // with `re`, which is one operator and exactly what Acrobat writes, and a
+  // turned one needs a path. The tolerance is a tenth of a point — smaller than
+  // any rounding a viewport conversion can introduce, larger than float noise.
+  const UPRIGHT_EPS = 0.1;
+  function quadUpright(c) {
+    if (!c) return false;
+    const [ul, ur, ll, lr] = c;
+    return Math.abs(ul[1] - ur[1]) <= UPRIGHT_EPS && Math.abs(ll[1] - lr[1]) <= UPRIGHT_EPS
+      && Math.abs(ul[0] - ll[0]) <= UPRIGHT_EPS && Math.abs(ur[0] - lr[0]) <= UPRIGHT_EPS;
+  }
+  const quadBox = c => [
+    Math.min(c[0][0], c[1][0], c[2][0], c[3][0]),
+    Math.min(c[0][1], c[1][1], c[2][1], c[3][1]),
+    Math.max(c[0][0], c[1][0], c[2][0], c[3][0]),
+    Math.max(c[0][1], c[1][1], c[2][1], c[3][1]),
+  ];
+
   // pdf.js hands QuadPoints back as a flat run of eight numbers per quad
   // (upper-left, upper-right, lower-left, lower-right). Two of those corners
-  // are enough for a box, and a box is all the text hunt wants.
+  // are enough for a box, and a box is all the text hunt wants — the import
+  // side compares against span boxes, which are axis-aligned themselves.
   function quadRects(q) {
     const flat = [];
     if (!q) return flat;
@@ -362,24 +428,31 @@
     for (const item of items || []) {
       const n = Number(item && item.page) || 0;
       const page = pages[n - 1];
-      const quads = (item && item.quads) || [];
-      if (!page || !quads.length) { skipped.push(item); continue; }
+      // every quad in corner form, whichever way it was handed in: a rotated
+      // run keeps its turn, an upright line is squared off exactly as before
+      const corners = ((item && item.quads) || []).map(quadCorners).filter(Boolean);
+      if (!page || !corners.length) { skipped.push(item); continue; }
       const color = normColor(item.color);
 
-      // the annotation's box is every quad, with a hair of padding so a
-      // rounded coordinate cannot clip the ink
-      const rect = quads.reduce((r, q) => [
-        Math.min(r[0], q[0]), Math.min(r[1], q[1]),
-        Math.max(r[2], q[2]), Math.max(r[3], q[3]),
-      ], [Infinity, Infinity, -Infinity, -Infinity]).map((v, i) => (i < 2 ? v - 1 : v + 1));
+      // the annotation's box is every CORNER of every quad, with a hair of
+      // padding so a rounded coordinate cannot clip the ink. Taken from the
+      // corners and not from the quads' own boxes, because a turned quad's box
+      // is not one of its numbers.
+      const rect = corners.reduce((r, c) => {
+        const b = quadBox(c);
+        return [Math.min(r[0], b[0]), Math.min(r[1], b[1]), Math.max(r[2], b[2]), Math.max(r[3], b[3])];
+      }, [Infinity, Infinity, -Infinity, -Infinity]).map((v, i) => (i < 2 ? v - 1 : v + 1));
 
       // QuadPoints: upper-left, upper-right, lower-left, lower-right per quad
-      // — the order every real producer writes and every real consumer reads.
+      // — the order every real producer writes and every real consumer reads,
+      // and the order in which a TURNED quad tells a viewer which way its words
+      // run. This is the whole of the sideways-table fix in the file format:
+      // eight honest numbers instead of a box.
       const qp = [];
-      for (const q of quads) qp.push(q[0], q[3], q[2], q[3], q[0], q[1], q[2], q[1]);
+      for (const c of corners) qp.push(c[0][0], c[0][1], c[1][0], c[1][1], c[2][0], c[2][1], c[3][0], c[3][1]);
 
       const subtype = String(item.subtype || '') === 'StrikeOut' ? 'StrikeOut' : 'Highlight';
-      const apRef = appearanceStream(ctx, PDFRawStream, rect, quads, color, subtype);
+      const apRef = appearanceStream(ctx, PDFRawStream, rect, corners, color, subtype);
       const dict = ctx.obj({
         Type: 'Annot',
         Subtype: subtype,
@@ -433,14 +506,35 @@
   // shape, flattened to STRIKE_H of a point and lifted to STRIKE_AT of the
   // quad's height, and NO Multiply blend — multiply is what makes a highlight
   // read as ink over glyphs, and a line through them is meant to be opaque.
+  //
+  // AND IT IS DRAWN ALONG THE WORDS, not across the page. For an upright line
+  // those are the same sentence and the bar is one `re`. For a column head set
+  // sideways they are at right angles to each other, and the difference between
+  // them is the difference between a deletion and a smudge: the bar is built
+  // from the quad's own two directions — along the run (UL→UR) and across it
+  // (UL→LL) — and emitted as a four-point path, because `re` cannot say
+  // "rectangle, turned".
   const STRIKE_AT = 0.42;   // up from the quad's baseline edge: mid x-height
   const STRIKE_H = 1.1;     // points — Acrobat's own weight for a strikeout
-  function appearanceStream(ctx, PDFRawStream, rect, quads, color, subtype) {
+  function appearanceStream(ctx, PDFRawStream, rect, corners, color, subtype) {
     const struck = String(subtype || '') === 'StrikeOut';
     const ops = ['/GS0 gs', color.map(v => round3(v)).join(' ') + ' rg'];
-    for (const q of quads) {
-      const box = struck ? strikeBar(q) : [q[0], q[1], q[2] - q[0], q[3] - q[1]];
-      ops.push([round3(box[0]), round3(box[1]), round3(box[2]), round3(box[3]), 're', 'f'].join(' '));
+    for (const c of corners) {
+      const shape = struck ? strikeQuad(c) : c;
+      // an upright shape is still written the way Acrobat writes it — one
+      // operator, and a diff against an older export that shows nothing
+      if (quadUpright(shape)) {
+        const b = quadBox(shape);
+        ops.push([round3(b[0]), round3(b[1]), round3(b[2] - b[0]), round3(b[3] - b[1]), 're', 'f'].join(' '));
+        continue;
+      }
+      // …and a turned one as its perimeter: UL → UR → LR → LL → close. (Not
+      // the quad's own UL,UR,LL,LR order, which crosses itself and fills a
+      // bow-tie.)
+      const p = [shape[0], shape[1], shape[3], shape[2]];
+      ops.push(round3(p[0][0]) + ' ' + round3(p[0][1]) + ' m');
+      for (let i = 1; i < 4; i++) ops.push(round3(p[i][0]) + ' ' + round3(p[i][1]) + ' l');
+      ops.push('h f');
     }
     const body = ops.join('\n') + '\n';
     const gs = struck
@@ -457,14 +551,40 @@
     }), encodeAscii(body));
     return ctx.register(stream);
   }
-  // one quad → the bar drawn through it, as [x, y, width, height] in the same
-  // user space the quad is in. Pure, so the geometry is testable without a PDF.
+  // one UPRIGHT quad → the bar drawn through it, as [x, y, width, height] in
+  // the same user space the quad is in. Pure, so the geometry is testable
+  // without a PDF. Kept for the ordinary line, and as the thing strikeQuad is
+  // checked against.
   function strikeBar(q) {
     const h = Math.max(0, Number(q[3]) - Number(q[1]));
     // a bar can never be thicker than the line it strikes, however small the
     // type; below that it is a proportion of the quad
     const t = Math.min(STRIKE_H, Math.max(0.4, h * 0.09));
     return [Number(q[0]), Number(q[1]) + h * STRIKE_AT - t / 2, Number(q[2]) - Number(q[0]), t];
+  }
+
+  // …and the same bar for a quad that is turned: four corners in, four corners
+  // out. The arithmetic is the arithmetic above written in the quad's own two
+  // directions instead of in x and y, which is why it agrees with strikeBar
+  // exactly when the quad is upright (pdf-annot.test.mjs asserts that, because
+  // "the general case reduces to the old one" is the only proof that the old
+  // files did not change).
+  //
+  //   across = UL→LL, the height of the line, however the line is turned
+  //   the bar sits STRIKE_AT of the way up from the BASELINE edge (LL/LR),
+  //   which is (1 - STRIKE_AT) of the way down from the ascender edge
+  function strikeQuad(c) {
+    const [ul, ur, ll] = c;
+    const ax = ll[0] - ul[0], ay = ll[1] - ul[1];
+    const h = Math.hypot(ax, ay);
+    if (!(h > 0)) return c;
+    const ux = ax / h, uy = ay / h;                 // unit vector across the run
+    const t = Math.min(STRIKE_H, Math.max(0.4, h * 0.09));
+    const near = h * (1 - STRIKE_AT) - t / 2;       // top edge of the bar
+    const far = near + t;                           // …and its bottom
+    const at = (p, d) => [p[0] + ux * d, p[1] + uy * d];
+    // UL, UR, LL, LR of the BAR — the same corner order a quad uses
+    return [at(ul, near), at(ur, near), at(ul, far), at(ur, far)];
   }
   const round3 = n => Math.round(Number(n) * 1000) / 1000;
   function encodeAscii(s) {
@@ -477,6 +597,7 @@
     MARKUP, NOTES, isMarkup, isNote, isImportable,
     pdfDateToIso, isoToPdfDate,
     hash16, annotKey, normalizeAnnot, quadRects, foldReplies,
+    quadCorners, quadUpright, quadBox, strikeQuad,
     spansUnder, spanNearest, quoteFromSpans, overlap, COVERED, QUOTE_MAX,
     threadContents, prettyDate, exportFileName,
     writeAnnots, normColor, strikeBar, STRIKE_AT, STRIKE_H, markForKind,
