@@ -2,14 +2,46 @@
 
 ## 2026-08-29
 
-- **Discuss your blog draft, and have the bots edit the draft.** Write a post in
-  markdown, run your site locally (`jekyll serve`), open the page in the browser
-  and comment on it the way you comment on anything else — and now, when you ask
-  for a passage to be tightened, the bots change the MARKDOWN the page was built
-  from. Jekyll rebuilds, the tab reloads, and you are looking at the result.
-  Before this, a comment on your own draft could be answered and could not be
-  acted on: everything the bots could see was the rendered page, which is a
-  photocopy the next build throws away.
+- **Discuss your blog draft, and have the bots suggest changes to the draft.**
+  Write a post in markdown, run your site locally (`jekyll serve`), open the page
+  in the browser and comment on it the way you comment on anything else — and now,
+  when you ask for a passage to be tightened, the bots go and read the MARKDOWN
+  the page was built from and propose a change to it. Before this, a comment on
+  your own draft could be answered and could not be acted on: everything the bots
+  could see was the rendered page, which is a photocopy the next build throws
+  away.
+
+- **They propose; you decide; nothing happens to your post until you say so.**
+  A suggested change arrives under the reply as a small card: the sentence as it
+  stands, the sentence as it would read — struck through where words go, tinted
+  where they arrive — and one line saying why. There is an Accept and a Reject
+  on it and nothing else. Until you press Accept, your file has not been
+  touched. When you do, the change is made, Jekyll rebuilds, the tab reloads and
+  you are looking at the result.
+
+- **A whole-page pass is a stack of small changes, each answered on its own.**
+  Ask in the page chat — "spell-check the whole post" — and the answer comes
+  back as a list of proposals rather than a paragraph describing them. Go
+  through them one at a time, or press **Accept all** and take the lot: they are
+  applied top to bottom, in the order they appear in the post.
+
+- **When a change cannot be made safely, it is not made, and you are told.**
+  The companion finds the passage by looking for it in your file, and it insists
+  on finding it exactly once. If the sentence has since been edited, or if the
+  same wording appears in three places, there is no way to know which one was
+  meant — so nothing is changed, the card turns and says which of the two
+  happened, and the change is yours to make by hand if you still want it. It
+  never picks one and hopes. An Accept all stops there too: what has already
+  been applied stays applied, and what is left is still yours to answer. (This
+  is the same rule the paper-review side of botference has used on LaTeX
+  manuscripts for months — the same code, imported rather than rewritten, down
+  to being untroubled by line wrapping and by curly quotes.)
+
+- **A proposal that could not be read still shows up.** If a bot writes a
+  malformed suggestion, you get a quiet card saying so rather than silence —
+  because silence is indistinguishable from a change that landed, and the bot's
+  own "done!" would then be the only account of it you had. Bots are told, on
+  their next turn, what you accepted and what you turned down.
 
 - **You tell it once which folder your site comes from.** In the companion's
   `config.json`:
@@ -47,13 +79,13 @@
   botference still commits and pushes as it always did — a paper under review is
   a shared working copy; your blog is your published name.)
 
-- **What the bots quietly changed is still shown to you.** A rewrite nobody
-  commented on still turns into a comment thread on the page, as it does on any
-  document — measured on the markdown source now, which is where the change
-  actually happened. One caveat, honestly: because you comment on the rendered
-  page and the bot edits markdown, a thread the machine opens over a passage
-  that is mostly markup may not find its place on the page. You still get to
-  read it; it just sits without a highlight.
+- **Every file that moves is still counted and named.** On other kinds of
+  document, a change nobody commented on turns into a comment thread of its own
+  so it cannot land invisibly. On your blog there is nothing for that to catch —
+  no change lands during a turn at all, and everything proposed is already a
+  card in front of you — so it does not run there. What does run is the count:
+  if anything in your site's folder moves, you are told what moved, and if it is
+  this post, the tab reloads.
 
 ## 2026-08-28
 

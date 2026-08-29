@@ -40,6 +40,7 @@ import * as keys from '../shared/keys.mjs';
 import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
+import * as suggest from './suggest.mjs';
 import * as collateral from './collateral.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -442,6 +443,17 @@ function noteBlogTurnStart(url) {
     // blog.mdDoc: collateral.mjs finds its blocks in HTML tags, and raw
     // markdown has none, so an unblocked file diffs as one enormous region
     text: blog.mdDoc(sourceSnapshot(bg.source_path)),
+    // …and, in suggest mode, the instruction NOT to diff it. Collateral threads
+    // exist to catch edits nobody commented on — a change that landed silently
+    // because no thread stood where it landed. In suggest mode no change lands
+    // during a turn at all: the bots propose, the file is untouched until the
+    // reader accepts, and every proposal is already a card in front of them. A
+    // diff here could therefore only report the reader's OWN accepted edits
+    // back to them as if a bot had slipped them in, and the >6-region collapse
+    // would fold a sweep the reader is mid-way through into one summary note.
+    // The census itself stays: a picture placed under assets/ is still a real
+    // write and the tab still has to reload for it.
+    noCollateral: !!bg.suggest_mode,
     at: new Date().toISOString(),
   });
 }
@@ -490,6 +502,10 @@ function sourceSnapshot(file) {
 function reportCollateral(page, seen, after, ev) {
   if (!page || !seen || !seen.text) return 0;
   if (!after) return 0;
+  // …and never on a turn that proposed instead of writing (noteBlogTurnStart
+  // says why at length). Suggestions are cards by construction; they are not
+  // regions discovered in a diff, and they must not be summary-collapsed.
+  if (seen.noCollateral) return 0;
   const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
   const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
   const author = store.isAgentAuthor(agents[0]) ? agents[0] : 'claude';
@@ -1001,6 +1017,27 @@ function onChatEvent(ev) {
           }
         }
       }
+      // …and, on a page of the reader's own site, did the bot PROPOSE a change
+      // to the markdown? Fourth use of the idiom, and the first that is a
+      // stack: a typo sweep is ten small proposals and they are all meant, so
+      // every ```suggest block in the reply is lifted (suggest.liftSuggestions),
+      // the blocks come off the words because they are machinery, and each
+      // becomes a card the reader accepts or refuses.
+      //
+      // The gate is the page's KIND (blog.suggestMode), never the message: a
+      // reply on a PDF or a project artifact carries no cards however it is
+      // written, because the accept path has nowhere to write and the
+      // convention was never taught there. Page chat counts — "spell-check the
+      // whole page" is asked there and its answer is a stack of cards.
+      if (ev.msg && ev.msg.kind !== 'tools') {
+        const bg = blogOf(page.url);
+        if (bg && bg.confirmed && bg.source_path && bg.suggest_mode) {
+          const lifted = suggest.liftSuggestions(ev.msg.text);
+          if (lifted.cards.length) {
+            ev.msg = { ...ev.msg, text: lifted.text, suggestions: lifted.cards };
+          }
+        }
+      }
       // appendMsg also REOPENS a resolved thread: a bot answering into it is
       // new activity, and new activity is the end of resolved
       store.appendMsg(page, ev.target, ev.msg);
@@ -1377,6 +1414,26 @@ function refusedStrikeNote(thread) {
 const mintedHere = (page, thread) => (thread
   ? questions.mintedIn(questions.readVault(), thread.id, store.pageKey(page.url))
   : []);
+// What became of the LAST stack of suggestions in this conversation — the
+// third use of the pattern refusedStrikeNote and refusedRevision are, written
+// the same way and for the same reason. Only the last message that carried
+// cards is looked at: a bot whose next stack was taken whole should not be
+// read the verdicts of three turns ago for the rest of the thread, and the
+// cards themselves are the record if anyone wants the history.
+//
+// It reads the LIVE record at envelope time, so a card accepted a second ago —
+// after the reply was written, which is when every acceptance happens — is
+// reported with the state it has now.
+function suggestVerdict(page, target) {
+  const msgs = store.msgsOf(page, target) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const cards = msgs[i] && msgs[i].suggestions;
+    if (!Array.isArray(cards) || !cards.length) continue;
+    return suggest.verdictBlock(cards);
+  }
+  return '';
+}
+
 function refusedRevision(page, thread) {
   for (let i = ((thread && thread.msgs) || []).length - 1; i >= 0; i--) {
     const q = thread.msgs[i] && thread.msgs[i].question;
@@ -1447,7 +1504,17 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // same reason — a resumed session's replayed history is uneven, and the only
   // thing a turn can rely on carrying is the turn.
   const bg = blogOf(page.url);
-  const blogContext = (bg && bg.confirmed && bg.source_path) ? blog.blogBlock(bg) : '';
+  // …and, on a page whose kind proposes rather than edits (blog.suggestMode —
+  // every blog root there is), the convention for writing a proposal, plus
+  // what the reader did with the last stack. Composed here on the same funnel
+  // and for the same three reasons the strike offer and the question offer
+  // are: the server holds the record, a model never shown the convention
+  // cannot use it, and a bot told nothing about its last suggestions assumes
+  // they landed and says so.
+  const blogContext = (bg && bg.confirmed && bg.source_path)
+    ? blog.blogBlock(bg)
+      + (bg.suggest_mode ? suggest.suggestBlock() + suggestVerdict(page, target) : '')
+    : '';
   // ── may this thread be struck through? ────────────────────────────────
   // The offer a bot needs before it can suggest a deletion (store.mjs
   // strikeOfferBlock). Composed here, once, on the same funnel and for the same
@@ -1655,6 +1722,67 @@ function authorOf(req, res) {
   const me = hosted.identity(req);
   if (me.error) { fail(res, me.code, me.error); return null; }
   return me;
+}
+
+// --- answering a suggestion card -------------------------------------------
+//
+// The three /suggest-* routes all begin the same way: the page, the message
+// carrying the stack, and the blog record that says which file the cards are
+// about. Resolved once here so that all three refuse the same things in the
+// same words — and so that the SOURCE OF TRUTH for "which file may this write"
+// is the companion's own mapping (blog.blogPageFor) rather than anything the
+// request body says. A card never carries a path, and no request can name one:
+// the reader accepting a proposal on this page can only ever change the file
+// this page renders from.
+function suggestTargetOf(res, data) {
+  const page = pageOf(res, data);
+  if (!page) return null;
+  const target = data.thread_id || store.PAGE_CHAT;
+  const msgs = store.msgsOf(page, target);
+  if (!msgs) { fail(res, 404, 'unknown thread'); return null; }
+  const found = store.resolveMsg(msgs, pick(data));
+  if (!found) { fail(res, 404, 'unknown message'); return null; }
+  const bg = blogOf(page.url);
+  if (!bg || !bg.confirmed || !bg.source_path) {
+    fail(res, 409, 'this page has no confirmed markdown source to change');
+    return null;
+  }
+  if (!bg.suggest_mode) { fail(res, 409, 'this page is not in suggest mode'); return null; }
+  return { page, target, msg: found.msg, bg };
+}
+
+// The loop the turn-end census closes, closed for an ACCEPT instead.
+//
+// An accepted card writes the source file outside any turn — no bridge ran, so
+// no turn-end fires — and the tab would otherwise sit on the old rendering
+// forever. So the same census is taken around the write and the same
+// `blog-files` event is broadcast, which content.js already knows how to
+// answer: `page_changed` true → reload, and the reader watches their post come
+// back with the change in it. Track changes on the page then comes free,
+// because the file really did move.
+//
+// `collateral` is deliberately absent from this payload: nothing here was
+// discovered by a diff. The change is the card the reader just pressed.
+function announceBlogWrite(url, bg, before) {
+  const changed = workspace.diffScans(before, blog.scanSite(bg.root));
+  if (!changed.length) return;
+  const own = path.relative(bg.root, bg.source_path).split(path.sep).join('/');
+  const payload = {
+    type: 'blog-files',
+    url,
+    root: bg.root,
+    serve_origin: bg.serve_origin,
+    source: own,
+    count: changed.length,
+    page_changed: changed.includes(own),
+    assets_changed: false,
+    accepted: true,          // this one is the reader's own press, not a turn's edit
+    files: changed.slice(0, workspace.CHANGED_LIST_MAX),
+    at: new Date().toISOString(),
+  };
+  lastChanges.set(url, payload);
+  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
+  broadcast(payload);
 }
 
 // --- running a python block ------------------------------------------------
@@ -2063,6 +2191,95 @@ export function handler(req, res) {
       // every tab on a page of this site has to stop asking, or start working
       broadcast({ type: 'blog-root', root, state });
       return ok(res, { root, state });
+    });
+  }
+  // --- suggestion cards on a blog page -----------------------------------
+  // The reader's answer to a proposal. Owner-only, all three, for the same
+  // reason every route above is: the act at the end of them is a WRITE into a
+  // folder on this machine that only the owner has vouched for, and a tunnel
+  // is exactly where that must not be reachable.
+  //
+  // POST /suggest-accept {url, thread_id, ts, author, id} — accept one card.
+  // The span is replaced in the markdown source (suggest.applyCard, which is
+  // frontends/review's unique-span rule imported whole), jekyll rebuilds, and
+  // the tab is told to reload the way a turn's own edit tells it. A span that
+  // has drifted or occurs more than once is REFUSED: the card goes to
+  // needs-manual with the reason on it and the file is not touched. Nothing
+  // here ever guesses at a span.
+  if (req.method === 'POST' && url === '/suggest-accept') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const at = suggestTargetOf(res, data);
+      if (!at) return;
+      const { page, bg, msg } = at;
+      const card = store.findCardIn(msg, data.id);
+      if (!card) return fail(res, 404, 'unknown suggestion');
+      if (card.state !== 'open') return fail(res, 409, `that suggestion is already ${card.state}`);
+      const before = blog.scanSite(bg.root);
+      const r = suggest.applyCard(bg.source_path, card);
+      if (!r.ok) {
+        store.setCardState(card, 'needs-manual', { reason: r.reason, detail: r.detail });
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+        // 200, not an error: the request was answered, and the answer is on
+        // the card. A 4xx would leave the drawer showing a failed fetch and
+        // the reader with no idea the card had changed state.
+        return ok(res, { card, applied: false });
+      }
+      store.setCardState(card, 'applied');
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      announceBlogWrite(page.url, bg, before);
+      return ok(res, { card, applied: true });
+    });
+  }
+  // POST /suggest-reject {…, id} — turn one down. The file is not touched (it
+  // never was), the card keeps the refusal so the reader can see what they
+  // said no to, and the bot is told on its next turn in this conversation
+  // (suggest.verdictBlock) rather than being left to assume it landed.
+  if (req.method === 'POST' && url === '/suggest-reject') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const at = suggestTargetOf(res, data);
+      if (!at) return;
+      const card = store.findCardIn(at.msg, data.id);
+      if (!card) return fail(res, 404, 'unknown suggestion');
+      if (card.state === 'applied') return fail(res, 409, 'that suggestion has already been applied');
+      store.setCardState(card, 'rejected');
+      store.savePage(at.page);
+      broadcast({ type: 'page', url: at.page.url });
+      return ok(res, { card });
+    });
+  }
+  // POST /suggest-accept-all {url, thread_id, ts, author} — a sweep's whole
+  // stack, in document order, stopping LOUDLY at the first card that cannot be
+  // placed (suggest.applyStack says why at length). The answer names what
+  // landed, what stopped it and what was left untouched, and every card's own
+  // state says the same thing where the reader is looking.
+  if (req.method === 'POST' && url === '/suggest-accept-all') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const at = suggestTargetOf(res, data);
+      if (!at) return;
+      const { page, bg, msg } = at;
+      const open = (msg.suggestions || []).filter(c => c.state === 'open');
+      if (!open.length) return fail(res, 409, 'there is nothing left to accept here');
+      const before = blog.scanSite(bg.root);
+      const out = suggest.applyStack(bg.source_path, open);
+      for (const id of out.applied) store.setCardState(store.findCardIn(msg, id), 'applied');
+      if (out.stopped) {
+        store.setCardState(store.findCardIn(msg, out.stopped.id), 'needs-manual',
+          { reason: out.stopped.reason, detail: out.stopped.detail });
+      }
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      if (out.applied.length) announceBlogWrite(page.url, bg, before);
+      return ok(res, {
+        applied: out.applied.length,
+        left: out.left.length,
+        stopped: out.stopped ? { id: out.stopped.id, detail: out.stopped.detail } : null,
+        cards: msg.suggestions,
+      });
     });
   }
   // …and there is NO publish route here, deliberately. The reader's website

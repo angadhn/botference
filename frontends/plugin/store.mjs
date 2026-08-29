@@ -1330,8 +1330,65 @@ export function setCheckbox(text, index, checked) {
 // answer, so it is written once here rather than as a third copy of the regex.
 export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
 
+// ---- suggestion cards, as the record keeps them ---------------------------
+//
+// A card is a bot's PROPOSED change to the markdown behind a blog page
+// (suggest.mjs writes them, this file stores them, the drawer draws them).
+// Five states and no sixth:
+//
+//   open          proposed, and the reader has not answered
+//   applied       accepted; the span was replaced in the source file
+//   rejected      turned down by the reader; the file was never touched
+//   needs-manual  accepted, and REFUSED at the apply: the passage had drifted
+//                 or occurred more than once, so there was no one place to put
+//                 it. The apply rule never guesses, so this is where a card
+//                 that cannot be placed stops — visibly, with the reason on it
+//   unreadable    the block would not parse; there was never anything to apply
+//
+// The last two exist for the same reason the strike refusal chip does: a
+// proposal that vanishes silently is indistinguishable from one that landed.
+export const CARD_STATES = ['open', 'applied', 'rejected', 'needs-manual', 'unreadable'];
+const CARD_TEXT_MAX = 8000;
+
+// exactly the fields a card has, and nothing a restored or hand-edited record
+// could add beside them
+export function sanitizeCard(c) {
+  if (!c || typeof c !== 'object' || !c.id) return null;
+  const state = CARD_STATES.includes(String(c.state)) ? String(c.state) : 'open';
+  const out = { id: String(c.id).slice(0, 64), state };
+  if (c.current != null) out.current = String(c.current).slice(0, CARD_TEXT_MAX);
+  if (c.proposed != null) out.proposed = String(c.proposed).slice(0, CARD_TEXT_MAX);
+  if (c.why) out.why = String(c.why).slice(0, 400);
+  if (c.deletes) out.deletes = true;
+  if (c.error) out.error = String(c.error).slice(0, 400);
+  if (c.detail) out.detail = String(c.detail).slice(0, 400);
+  if (c.reason) out.reason = String(c.reason).slice(0, 40);
+  if (c.at) out.at = String(c.at).slice(0, 40);
+  return out;
+}
+
+/** The card with this id, anywhere in this message's stack. */
+export const findCardIn = (msg, id) =>
+  ((msg && msg.suggestions) || []).find(c => c && c.id === String(id)) || null;
+
+/**
+ * Answer a card, in place. The card is the whole record of what became of it —
+ * there is no ledger beside it, because a blog root has no git and so no round
+ * to commit or revert (see suggest.mjs on what was deliberately not ported).
+ */
+export function setCardState(card, state, extra = {}) {
+  if (!card || !CARD_STATES.includes(state)) return null;
+  card.state = state;
+  card.at = nowIso();
+  delete card.reason;
+  delete card.detail;
+  if (extra.reason) card.reason = String(extra.reason).slice(0, 40);
+  if (extra.detail) card.detail = String(extra.detail).slice(0, 400);
+  return card;
+}
+
 export function appendMsg(page, threadId, {
-  author, text, ts, kind, route, origin, file_in, strike, question,
+  author, text, ts, kind, route, origin, file_in, strike, question, suggestions,
 }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
@@ -1391,6 +1448,21 @@ export function appendMsg(page, threadId, {
     if (question.revises) msg.question.revises = String(question.revises);
     if (question.rejected) msg.question.rejected = String(question.rejected);
     if (question.card && typeof question.card === 'object') msg.question.card = question.card;
+  }
+  // …and the fourth, which is the same shape again and the biggest of them: on
+  // a blog source page a bot does not edit the markdown, it PROPOSES — one
+  // card per ```suggest block, lifted off the reply by the server
+  // (suggest.liftSuggestions). Offer, field, card: the file does not move until
+  // the reader presses Accept, and the card carries its own answer afterwards
+  // (`state`), so nothing else has to remember what became of it.
+  //
+  // A LIST rather than a single field, unlike the three above, because a typo
+  // sweep is genuinely several proposals in one reply and they are not
+  // alternatives. `sanitizeCard` keeps exactly the fields a card has, so a
+  // record restored from anywhere cannot smuggle a fifth one in.
+  if (Array.isArray(suggestions) && suggestions.length) {
+    const kept = suggestions.map(sanitizeCard).filter(Boolean);
+    if (kept.length) msg.suggestions = kept;
   }
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written

@@ -2078,6 +2078,47 @@
                  // never have to work it out from the card.
                  updated: !!(r.data && r.data.updated) };
       },
+      // ---- suggested edits to a blog post -------------------------------
+      // A bot proposed a change to the markdown behind this page and the
+      // reader answered. Accept is the only thing in this extension that
+      // causes a file on the reader's disk to change, and it carries no path:
+      // the companion resolves which file this page renders from, so the most
+      // a request can ever ask for is "the change proposed on this page".
+      //
+      // `loadPage()` after each, because the card's state lives on the record
+      // — and the RELOAD, when one is coming, arrives on its own through the
+      // usual `blog-files` event, exactly as it does for a turn's own edit.
+      onSuggestAccept: async (threadId, ts, id) => {
+        const r = await api('POST', '/suggest-accept', {
+          url: URL_NOW, ...(threadId === PAGE_TARGET ? {} : { thread_id: threadId }), ts, id,
+        });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, card: r.data && r.data.card, applied: !!(r.data && r.data.applied) };
+      },
+      onSuggestReject: async (threadId, ts, id) => {
+        const r = await api('POST', '/suggest-reject', {
+          url: URL_NOW, ...(threadId === PAGE_TARGET ? {} : { thread_id: threadId }), ts, id,
+        });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, card: r.data && r.data.card };
+      },
+      // A whole sweep, in document order, stopping at the first passage that
+      // cannot be placed. The answer is a tally rather than a card, because
+      // that is what the reader needs to read after pressing one button over
+      // ten changes.
+      onSuggestAcceptAll: async (threadId, ts) => {
+        const r = await api('POST', '/suggest-accept-all', {
+          url: URL_NOW, ...(threadId === PAGE_TARGET ? {} : { thread_id: threadId }), ts,
+        });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true,
+                 applied: (r.data && r.data.applied) || 0,
+                 left: (r.data && r.data.left) || 0,
+                 stopped: (r.data && r.data.stopped) || null };
+      },
       // ---- the question vault ------------------------------------------
       // "Make a question of this." Either a thread (the card-head ?, or a
       // bot's own offer confirmed) or a bare selection with no thread on it at

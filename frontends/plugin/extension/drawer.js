@@ -1352,6 +1352,17 @@
       //   threads   thread id -> how many memories that thread has minted, for
       //             the card's own quiet line back into the quiz
       questions: { busy: '', declined: [], made: {}, revised: {}, note: null, due: 0, threads: {} },
+      // ---- suggested edits to a blog post --------------------------------
+      // The bots propose; the reader accepts or refuses; only then does the
+      // markdown behind this page move. Almost nothing lives here, and that is
+      // deliberate: a card's STATE is on the card, in the record, because it
+      // survives a reload — and this page is about to reload, because that is
+      // what accepting one does.
+      //   busy   the card id (or the message ts, for an Accept all) in flight
+      //   note   the one line a sweep leaves behind: what applied, what stopped
+      //          it, what was left. Keyed by the message it belongs to so it
+      //          cannot end up under somebody else's reply.
+      suggest: { busy: '', note: null },
       // ---- the Memorize tab: the vault, where the reading is -------------
       // The quiz at memorizer.botference.com is the everything-bank — concepts,
       // on a phone, away from the Mac. This is the other half: revising THIS
@@ -1946,7 +1957,8 @@ ${selPillHtml()}
         ${body}${acts}${
           D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}${
           D.strikes.declined.indexOf(String(r.ts)) < 0 ? strikeChipHtml(r, target) : ''}${
-          questionChipHtml(r, target)}</div>`;
+          questionChipHtml(r, target)}${
+          suggestStackHtml(r, target)}</div>`;
     }
 
     // Tool activity (msg.kind === 'tools') is process detail, not an answer: a
@@ -4933,6 +4945,15 @@ ${selPillHtml()}
         // the discussion ends here, because the reader has asked to be somewhere
         // else (focusThread's own release rule does it).
         if (act === 'strike-view') { focus(target); scrollToThread(target); return; }
+        // ---- the bots' proposed edits to this post -----------------------
+        // Accept writes the markdown and the page reloads; Reject writes
+        // nothing and is remembered ON THE RECORD, unlike the three chips
+        // above whose "no" is a per-tab dismissal — a proposal the reader
+        // turned down is something the bot has to be told about next turn.
+        if (act === 'sg-yes' || act === 'sg-no' || act === 'sg-all') {
+          doSuggest(act, target, btn.dataset.ts, btn.dataset.sg || '');
+          return;
+        }
         // ---- the question vault ------------------------------------------
         // The reader's button, and the bot's offer answered. Both end in the
         // same one call, because there is exactly one way a card is made and
@@ -6921,6 +6942,147 @@ ${selPillHtml()}
       qnote(r.queued === false
         ? `filed, but nobody could write it — ${r.reason || 'the agents are off'}`
         : 'a question is being written — it will be in the quiz shortly', r.queued === false);
+      render();
+    }
+
+    // ---- suggested edits to the post ------------------------------------
+    //
+    // On a blog source page the bots do not edit the markdown, they PROPOSE:
+    // every ```suggest block in a reply is lifted into `msg.suggestions`
+    // (suggest.mjs), and this draws the stack. The same idiom as the three
+    // chips above — machinery off the words, an offer the reader answers —
+    // grown to the size the thing being offered actually is: a before-and-after
+    // of a passage cannot live on one line.
+    //
+    // THE DIFF IS THE REVIEW ENGINE'S, and so is the drawing of it: struck
+    // where words left, tinted where they arrived, and where the two sides
+    // share nothing recognisable, the honest stacked pair instead of confetti.
+    // `wordDiff` and the `.wasnow` markup were already here for track changes;
+    // nothing about a suggestion needed a second one.
+    //
+    // A STACK, NOT A CHIP. A spell-check of a whole post is ten small
+    // proposals and they are not alternatives — so they are listed, each
+    // answered on its own, with one "Accept all" over the top for the reader
+    // who has read them and agrees.
+    function sgDiffHtml(card) {
+      const cur = String(card.current || '');
+      const prop = String(card.proposed || '');
+      if (!prop.trim()) {
+        return `<div class="wasnow" data-deleted="1"><div class="wnstack"><div class="wnrow">`
+          + `<span class="wnlab">cut</span><span class="wnval"><del>${esc(cur)}</del></span>`
+          + `</div></div></div>`;
+      }
+      const ops = wordDiff(cur, prop);
+      if (ops) {
+        return `<div class="wasnow"><div class="wndiff">${ops.map(o => o.t === '='
+          ? esc(o.s) : o.t === '-' ? `<del>${esc(o.s)}</del>` : `<ins>${esc(o.s)}</ins>`)
+          .join(' ')}</div></div>`;
+      }
+      return `<div class="wasnow" data-stacked="1"><div class="wnstack">`
+        + `<div class="wnrow"><span class="wnlab">now</span><span class="wnval">${esc(cur)}</span></div>`
+        + `<div class="wnrow"><span class="wnlab">proposed</span><span class="wnval">${esc(prop)}</span></div>`
+        + `</div></div>`;
+    }
+
+    function sgCardHtml(card, target, ts) {
+      const id = String(card.id || '');
+      const busy = D.suggest.busy === id || D.suggest.busy === ts;
+      // NOT READABLE: the block never parsed, so there was never anything to
+      // apply. Buttonless and quiet, exactly like the strike chip's refusal and
+      // for the identical reason — a proposal that simply did not appear is
+      // indistinguishable from one that was never made, and the bot's own next
+      // sentence would be the only account of it the reader had.
+      if (card.state === 'unreadable') {
+        return `<div class="sgcard refused"><span class="sgw">A change was proposed here and `
+          + `could not be read — ${esc(card.error || 'the block was malformed')}. `
+          + `Nothing was changed.</span></div>`;
+      }
+      const why = card.why ? `<div class="sgwhy">${esc(card.why)}</div>` : '';
+      const diff = sgDiffHtml(card);
+      // NEEDS MANUAL RESOLUTION: the reader said yes and the apply refused,
+      // because the passage had moved or stood in more than one place. The
+      // engine this is ported from never guesses at a span and neither does
+      // this — so the card says what happened, keeps the proposal visible so
+      // the reader can make the change by hand, and the file was not touched.
+      if (card.state === 'needs-manual') {
+        return `<div class="sgcard manual">${why}${diff}`
+          + `<div class="sgnote">Could not be applied — ${esc(card.detail
+            || 'the passage could not be found exactly once in the source')}. `
+          + `The post is unchanged.</div></div>`;
+      }
+      if (card.state === 'applied') {
+        return `<div class="sgcard done">${why}${diff}`
+          + `<div class="sgnote">Applied to the post.</div></div>`;
+      }
+      if (card.state === 'rejected') {
+        return `<div class="sgcard passed">${why}${diff}`
+          + `<div class="sgnote">Turned down — the post is unchanged.</div></div>`;
+      }
+      return `<div class="sgcard" data-sg="${esc(id)}">${why}${diff}
+        <div class="sgacts">
+          <button class="rebtn" type="button" data-act="sg-yes" data-target="${esc(target)}"
+            data-ts="${esc(ts)}" data-sg="${esc(id)}" ${busy ? 'disabled' : ''}
+            title="make this change to the post">Accept</button>
+          <button class="rebtn no" type="button" data-act="sg-no" data-target="${esc(target)}"
+            data-ts="${esc(ts)}" data-sg="${esc(id)}" ${busy ? 'disabled' : ''}>Reject</button>
+        </div>
+      </div>`;
+    }
+
+    function suggestStackHtml(msg, target) {
+      const cards = (msg && msg.suggestions) || [];
+      if (!cards.length) return '';
+      const ts = String(msg.ts || '');
+      const open = cards.filter(c => c && c.state === 'open').length;
+      const n = cards.length;
+      const busy = D.suggest.busy === ts;
+      const head = `<div class="sghead"><span class="sgn">${n} suggested change${
+        n === 1 ? '' : 's'}${open && open !== n ? ` · ${open} still open` : ''}</span>${
+        open > 1
+          ? `<button class="rebtn" type="button" data-act="sg-all" data-target="${esc(target)}"
+              data-ts="${esc(ts)}" ${busy ? 'disabled' : ''}
+              title="apply them all, top to bottom — it stops if one cannot be placed">Accept all</button>`
+          : ''}</div>`;
+      const note = D.suggest.note && D.suggest.note.ts === ts
+        ? `<div class="sgbeat${D.suggest.note.bad ? ' err' : ''}">${esc(D.suggest.note.text)}</div>`
+        : '';
+      return `<div class="sgstack">${head}${note}${
+        cards.map(c => sgCardHtml(c, target, ts)).join('')}</div>`;
+    }
+
+    // One card, answered. No optimistic paint anywhere in here: whether a span
+    // can be placed is a question only the companion can answer, and a card
+    // that flipped to "applied" in the drawer and then came back needs-manual
+    // would be the drawer telling the reader something it does not know.
+    async function doSuggest(act, target, ts, id) {
+      if (D.suggest.busy) return;
+      D.suggest.busy = act === 'sg-all' ? ts : id;
+      D.suggest.note = null;
+      holdOn(target);          // the reload is coming; stay where they are
+      render();
+      let r;
+      try {
+        r = act === 'sg-yes' ? await cb('onSuggestAccept')(target, ts, id)
+          : act === 'sg-no' ? await cb('onSuggestReject')(target, ts, id)
+            : await cb('onSuggestAcceptAll')(target, ts);
+      } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.suggest.busy = '';
+      if (!r || r.ok === false) {
+        D.suggest.note = { ts, text: (r && r.error) || 'that could not be done', bad: true };
+        render();
+        return;
+      }
+      // The one message worth writing: what a sweep did. A single card says
+      // everything it has to say on its own face, and a second line about it
+      // would be noise.
+      if (act === 'sg-all') {
+        const parts = [`${r.applied} applied`];
+        if (r.stopped) parts.push(`stopped at one that could not be placed — ${r.stopped.detail || ''}`);
+        if (r.left) parts.push(`${r.left} left`);
+        D.suggest.note = { ts, text: parts.join(' · '), bad: !!r.stopped };
+      } else if (act === 'sg-yes' && r.applied === false) {
+        D.suggest.note = { ts, text: 'that one could not be placed — see the card', bad: true };
+      }
       render();
     }
 

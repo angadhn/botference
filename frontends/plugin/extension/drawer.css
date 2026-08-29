@@ -1290,6 +1290,64 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .wasnow .wnval { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere }
 .wasnow .wnrow:first-child .wnval { color: var(--muted); text-decoration: line-through }
 
+/* ── suggested edits: what the bots propose to do to the post ───────────── */
+/* On a blog source page nothing is edited — it is PROPOSED, and this is what
+   the reader answers. A stack rather than a chip, because a spell-check of a
+   post is ten small proposals and every one of them is answered on its own.
+   The before-and-after inside each card is the .wasnow block above, unchanged:
+   there is one suggested-edit idiom in this drawer and this is it. */
+.sgstack { margin: 8px 0 2px }
+.sghead {
+  display: flex; align-items: baseline; gap: 10px;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.sghead .sgn { flex: 1 1 auto; min-width: 0 }
+.sghead .rebtn { opacity: 1; flex: none; text-transform: none; letter-spacing: 0 }
+.sghead .rebtn:not([disabled]):hover { color: var(--accent) }
+.sgcard {
+  margin-top: 6px; padding: 7px 9px 6px; border-radius: 7px;
+  border: 1px solid var(--card-line);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, var(--card-line));
+  background: var(--rail);
+}
+/* the card owns the frame; the diff inside it is bare, or the two borders
+   read as two boxes about one change */
+.sgcard .wasnow { margin: 0; padding: 0; border: 0; background: none }
+.sgwhy { font: 12px/1.5 var(--sans); color: var(--muted); margin-bottom: 5px }
+.sgacts { display: flex; gap: 12px; margin-top: 6px }
+.sgacts .rebtn { opacity: 1 }
+.sgacts .rebtn:not([disabled]):hover { color: var(--accent) }
+.sgacts .rebtn.no { color: var(--muted) }
+.sgnote { margin-top: 5px; font: 12px/1.45 var(--sans); color: var(--muted) }
+/* ACCEPTED — the file really did change, and the page has reloaded showing it */
+.sgcard.done {
+  border-left-color: color-mix(in srgb, var(--done) 70%, var(--card-line));
+  opacity: .8;
+}
+.sgcard.done .sgnote { color: color-mix(in srgb, var(--done) 65%, var(--fg)) }
+/* TURNED DOWN — kept visible, because the reader is entitled to see what they
+   said no to, and the bot has been told the same thing */
+.sgcard.passed { opacity: .55; border-left-color: var(--card-line) }
+.sgcard.passed:hover { opacity: 1 }
+/* NEEDS MANUAL RESOLUTION — the reader said yes and the passage could not be
+   placed exactly once. The apply rule never guesses, so this state is the
+   honest end of the road and it is loud enough to be read as one. */
+.sgcard.manual {
+  border-left-color: color-mix(in srgb, var(--bad) 60%, var(--card-line));
+  background: color-mix(in srgb, var(--bad) 6%, var(--rail));
+}
+.sgcard.manual .sgnote { color: color-mix(in srgb, var(--bad) 75%, var(--fg)) }
+/* NOT READABLE — the block never parsed; buttonless and quiet, exactly like
+   the strike chip's refusal and for the same reason */
+.sgcard.refused {
+  border-left-color: var(--card-line); color: var(--muted);
+  font: 12px/1.5 var(--sans);
+}
+/* what a sweep did, in one line under its head */
+.sgbeat { margin-top: 5px; font: 12px/1.45 var(--sans); color: var(--muted) }
+.sgbeat.err { color: color-mix(in srgb, var(--bad) 75%, var(--fg)) }
+
 /* ── ready for review ───────────────────────────────────────────────────── */
 /* BETWEEN the open list and the archive, because that is where these threads
    are in their life: past the bots, not yet past the reader. Same shape as the

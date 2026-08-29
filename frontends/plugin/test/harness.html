@@ -237,6 +237,19 @@
                      `&selftest=1` runs the blog-page assertions — including
                      that there is no publish control anywhere on the drawer,
                      which is the design and not an omission.
+    ?suggest=1       SUGGEST MODE, which only exists on a blog source page and
+                     so turns one on for itself. A bot has answered a comment
+                     with two proposed changes to the markdown: each is drawn
+                     as a before-and-after with Accept and Reject on it, and
+                     nothing has happened to the post. `?suggest=states` shows
+                     one card in each of the four answered states — applied,
+                     turned down, could-not-be-placed (with the reason on it),
+                     and a block that never parsed. `?suggest=sweep` is a
+                     whole-page spell-check answered in page chat with SIX
+                     cards, which is the case the turn-end collateral diff
+                     would have collapsed into one summary note and which a
+                     suggestion stack must never be. `&selftest=1` on any of
+                     the three.
     ?filein=1        the "File this page in…" picker, open, on an ORDINARY page
                      (an arXiv PDF, not a project artifact): the council's
                      projects with a peek at each one's recent chats and files,
@@ -465,7 +478,13 @@ const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
 //     isolated-world escape __BFP_PROJECT is; content.js reads it instead of
 //     asking the companion, so the pose needs no fake round trip.
 // ───────────────────────────────────────────────────────────────────────────
-const BLOG = Q.get('blog') || '';
+// ?suggest=… — suggest mode, which only exists ON a blog source page, so the
+// pose turns one on for itself. `1` is the ordinary case (a stack of open
+// proposals under a bot's reply); `states` is one card in each of the four
+// answered states; `sweep` is a whole-page spell-check in page chat, which is
+// the case the collateral summary-collapse must never be allowed to eat.
+const SUGGEST = Q.get('suggest') || '';
+const BLOG = Q.get('blog') || (SUGGEST ? '1' : '');
 const BLOG_ROOT = '/Users/reader/sites/angadhn.github.io';
 const BLOG_PAGE = BLOG ? {
   serve_origin: 'http://localhost:4000',
@@ -1024,6 +1043,74 @@ if (QUESTION_REVISE) {
     { author: 'codex', ts: iso(1),
       text: 'Mine went the same way, though I named the wrong card.',
       question: { revises: 'q-not-in-the-vault', rejected: 'unknown' } },
+  ]);
+}
+
+// ?suggest=… — the bots PROPOSE a change to the markdown behind this page and
+// the reader accepts or refuses. The proposals are a FIELD on the message
+// (store.appendMsg `suggestions`), never an edit: the post does not move until
+// a button is pressed, which is the whole of the feature.
+const sgCard = (id, current, proposed, why, state, extra) => Object.assign(
+  { id, current, proposed, why, state: state || 'open' }, extra || {});
+if (SUGGEST === '1') {
+  RECORD.threads[1].msgs = RECORD.threads[1].msgs.concat([
+    { author: 'angadh', ts: iso(6), text: '@claude then fix it — make it read as the paraphrase it is.' },
+    { author: 'claude', ts: iso(5),
+      text: 'Two changes, one to the sentence and one to the clause after it.',
+      suggestions: [
+        sgCard('sg1', 'called it a structural failure of oversight',
+          'described it as a structural failure of oversight',
+          '"called it" reads as a direct quotation and this is a paraphrase'),
+        sgCard('sg2', 'which is the kind of sentence that survives a subediting pass',
+          'which is the kind of sentence that survives subediting',
+          'three words doing one word\'s work'),
+      ] },
+  ]);
+}
+// ?suggest=states — every answered state at once, which is the pose that
+// matters most: applied, turned down, could-not-be-placed, and the block that
+// never parsed. The middle two are the ones a reader must never have to guess
+// about, so they are drawn side by side here.
+if (SUGGEST === 'states') {
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(9), text: '@claude go through the whole post.' },
+    { author: 'claude', ts: iso(8),
+      text: 'Four things. One of them I could not word properly — sorry.',
+      suggestions: [
+        sgCard('sa', 'trades possession and early tempo for control late in games',
+          'trades possession and early tempo for late control',
+          'shorter, same meaning', 'applied'),
+        sgCard('sb', 'the results have improved every year',
+          'the results have improved season on season',
+          '"every year" is not quite what the table shows', 'rejected'),
+        sgCard('sc', 'the underlying numbers stayed flat',
+          'the underlying numbers barely moved',
+          '"flat" is doing work it cannot support', 'needs-manual',
+          { reason: 'ambiguous',
+            detail: 'that wording appears 3 times in the source, so there is no way to tell which one is meant' }),
+        sgCard('sd', '', '', '', 'unreadable',
+          { error: 'the block has no `current:` line' }),
+      ] },
+  ]);
+}
+// ?suggest=sweep — "@claude spell-check the whole page", answered in page chat
+// with a stack of six small proposals. Six is deliberate: it is exactly the
+// number at which the turn-end collateral diff would collapse a set of regions
+// into one summary note, and a suggestion stack must never be collapsed —
+// these are cards by construction, not regions found in a diff.
+if (SUGGEST === 'sweep') {
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(4), text: '@claude spell-check the whole page.' },
+    { author: 'claude', ts: iso(3),
+      text: 'Six, all small.',
+      suggestions: [
+        sgCard('w1', 'The mood in the stands was flat', 'The mood in the stands was flat,', 'missing comma'),
+        sgCard('w2', 'the walk back to the tram stop', 'the walk back to the tram-stop', 'hyphenate it, as the style guide has it'),
+        sgCard('w3', 'quieter than it has been in years', 'quieter than it had been in years', 'tense'),
+        sgCard('w4', 'a structural failure of oversight', 'a structural failure of oversight,', 'comma before the relative clause'),
+        sgCard('w5', 'Aragon were relegated in April', 'Aragón were relegated in April', 'the accent is in the club\'s own name'),
+        sgCard('w6', 'eleven games without a win', 'eleven matches without a win', '"matches" everywhere else in the piece'),
+      ] },
   ]);
 }
 
@@ -2151,6 +2238,41 @@ function companion(method, path, body) {
     }
     return { ok: true, status: 200, data: { ok: true, root: BLOG_ROOT,
       state: (body && body.confirm) ? 'yes' : 'no' } };
+  }
+  // ---- answering a suggestion (suggest.mjs) -----------------------------
+  // The companion's own answer, faked at the same grain: a card's state is on
+  // the card, in the record, so all three of these do is set it and hand the
+  // record back. `needs-manual` is what the real thing answers when the
+  // passage cannot be placed — never a 4xx, because the answer belongs on the
+  // card where the reader is looking.
+  if (route === '/suggest-accept' || route === '/suggest-reject' || route === '/suggest-accept-all') {
+    const all = RECORD.threads.flatMap(t => t.msgs).concat(RECORD.page_chat);
+    const msg = all.find(m => m && m.ts === (body && body.ts));
+    if (!msg || !msg.suggestions) return { ok: false, status: 404, error: 'unknown message' };
+    const answer = (card, state, extra) => Object.assign(card, { state }, extra || {});
+    if (route === '/suggest-reject') {
+      const c = msg.suggestions.find(x => x.id === body.id);
+      if (!c) return { ok: false, status: 404, error: 'unknown suggestion' };
+      answer(c, 'rejected');
+      return { ok: true, status: 200, data: { ok: true, card: c } };
+    }
+    if (route === '/suggest-accept') {
+      const c = msg.suggestions.find(x => x.id === body.id);
+      if (!c) return { ok: false, status: 404, error: 'unknown suggestion' };
+      // `sg2` is the pose's drifted one: pressing Accept on it must land in
+      // the needs-manual state and change nothing
+      if (c.id === 'sg2') {
+        answer(c, 'needs-manual', { reason: 'drift',
+          detail: 'that wording is not in the source any more — the file changed after this was written' });
+        return { ok: true, status: 200, data: { ok: true, card: c, applied: false } };
+      }
+      answer(c, 'applied');
+      return { ok: true, status: 200, data: { ok: true, card: c, applied: true } };
+    }
+    const open = msg.suggestions.filter(c => c.state === 'open');
+    if (!open.length) return { ok: false, status: 409, error: 'there is nothing left to accept here' };
+    for (const c of open) answer(c, 'applied');
+    return { ok: true, status: 200, data: { ok: true, applied: open.length, left: 0, stopped: null } };
   }
   if (route === '/project-sessions') {
     if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
@@ -9379,6 +9501,101 @@ async function selftestWorkspace() {
   console.log(out.join('\n'));
 }
 
+// ?suggest=…&selftest=1 — the bots propose, the reader answers.
+//
+// The claims: a proposal is drawn as a before-and-after and not as prose; the
+// reader has both answers on every open card and neither on an answered one;
+// accepting says so; a passage that could not be placed says THAT, with the
+// reason, and does not pretend anything happened; a block that never parsed is
+// visible and buttonless rather than silently absent; and a whole-page sweep
+// arrives as six separate cards rather than one collapsed summary — because
+// suggestions are cards by construction and are never diffed regions.
+async function selftestSuggest() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const pane = SUGGEST === '1' ? 'comments' : 'chat';
+  const all = sel => S.querySelectorAll('.pane[data-pane="' + pane + '"] ' + sel);
+  const one = sel => all(sel)[0];
+  const txt = sel => (one(sel) || {}).textContent || '';
+
+  d.open(pane);
+  await sleep(200);
+
+  check('the proposals arrive as a stack', !!all('.sgstack').length);
+  check('…headed by how many there are', /suggested change/.test(txt('.sghead')));
+
+  if (SUGGEST === '1') {
+    check('both proposals are drawn, each on its own', all('.sgcard').length === 2);
+    check('a proposal shows what would go and what would come',
+      !!one('.sgcard .wasnow del') && !!one('.sgcard .wasnow ins'));
+    check('…and says why', /direct quotation/.test(txt('.sgcard .sgwhy')));
+    check('the reader has both answers', all('.sgcard [data-act="sg-yes"]').length === 2
+      && all('.sgcard [data-act="sg-no"]').length === 2);
+    check('and one press for the lot', !!all('[data-act="sg-all"]').length);
+    check('nothing has happened to the post yet',
+      !all('.sgcard.done').length && !all('.sgcard.manual').length);
+
+    check('accepting one is a click', hit(all('.sgcard [data-act="sg-yes"]')[0], 'sg-yes'));
+    await sleep(260);
+    check('…and the card says so', !!all('.sgcard.done').length);
+    check('…and offers nothing more to press',
+      !(one('.sgcard.done') || { querySelector: () => null }).querySelector('[data-act="sg-yes"]'));
+    check('…while the other is still the reader\'s to answer',
+      all('.sgcard [data-act="sg-yes"]').length === 1);
+
+    // the drifted one: accepted, and refused at the apply
+    check('accepting the drifted one is a click', hit(all('.sgcard [data-act="sg-yes"]')[0], 'sg-yes'));
+    await sleep(260);
+    check('a passage that cannot be placed says so', !!all('.sgcard.manual').length);
+    check('…with the reason on it', /not in the source any more/.test(txt('.sgcard.manual')));
+    check('…and says the post is unchanged', /unchanged/.test(txt('.sgcard.manual')));
+  } else if (SUGGEST === 'states') {
+    check('every state is drawn', all('.sgcard').length === 4);
+    check('the accepted one says it landed', /Applied to the post/.test(txt('.sgcard.done')));
+    check('the refused one is still readable', !!all('.sgcard.passed').length
+      && /Turned down/.test(txt('.sgcard.passed')));
+    check('the one that could not be placed names the reason',
+      /appears 3 times/.test(txt('.sgcard.manual')));
+    check('…and does not claim anything happened', /unchanged/.test(txt('.sgcard.manual')));
+    check('a block that never parsed is visible', !!all('.sgcard.refused').length);
+    check('…and buttonless', !(one('.sgcard.refused') || { querySelector: () => null })
+      .querySelector('button'));
+    check('nothing answered offers a button any more',
+      !all('.sgcard.done button, .sgcard.passed button, .sgcard.manual button').length);
+    check('the head counts what is left open', /0 suggested|4 suggested/.test(txt('.sghead')));
+  } else {
+    // the sweep: six is the number at which a DIFF would collapse into one
+    // summary note, and this must not
+    check('all six proposals are drawn', all('.sgcard').length === 6);
+    check('…and none of them is a summary of the others',
+      !/and \d+ more|changed in \d+ places/i.test(txt('.sgstack')));
+    check('each one is answerable on its own', all('.sgcard [data-act="sg-yes"]').length === 6);
+    check('and the whole sweep in one press', !!all('[data-act="sg-all"]').length);
+    check('accepting all is a click', hit(one('[data-act="sg-all"]'), 'sg-all'));
+    await sleep(300);
+    check('…and every one of them lands', all('.sgcard.done').length === 6);
+    check('…with one line saying what the press did', /applied/.test(txt('.sgbeat')));
+  }
+
+  // The promise this whole feature is built on, asserted from the outside:
+  // nothing anywhere in the drawer offers to publish, and no card claims to
+  // have edited anything the reader did not press.
+  check('there is still no publish control on the drawer',
+    !S.querySelector('[data-act*="publish"], [data-act*="commit"], [data-act*="push"]'));
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (suggest) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?blog=…&selftest=1 — the reader's own site, edited at the source.
 //
 // The claims: the chat tab names the MARKDOWN the bots will edit rather than
@@ -9522,6 +9739,9 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : QUESTION_TAB ? selftestMemorize
           : QUESTION_REVISE ? selftestQuestionRevise
             : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
+        // …and the more specific flag first here too: ?suggest=… turns a blog
+        // page on for itself, so it must be tried before the blog pose
+        : SUGGEST ? selftestSuggest
         : BLOG ? selftestBlog
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
@@ -9561,7 +9781,11 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (FILEIN === 'chip') setTimeout(() => d.open('chat'), 300);
     // ?blog=… — the source card lives on the chat tab, so that is the tab a
     // screenshot of this feature has to be of
-    if (BLOG && Q.get('selftest') !== '1') setTimeout(() => d.open('chat'), 300);
+    // …and where the pose is a suggestion stack, the pane it is IN: a stack
+    // written into a thread is in the margin, a whole-page sweep is in chat
+    if (BLOG && Q.get('selftest') !== '1') {
+      setTimeout(() => d.open(SUGGEST === '1' ? 'comments' : 'chat'), 300);
+    }
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
     // reader picks a past council chat out of (screenshot state)
     if (WORKSPACE && Q.get('picker') === '1') {

@@ -7027,6 +7027,210 @@ list produces, and a value that is not a command name being ignored.
 Full node sweep green (blog 45, companion 212, workspace 126, adapters 314,
 pdf 186, …); `pytest tests/` 769 passed.
 
+## Amendment (2026-08-29, shipped): suggest mode — the bots propose, the reader decides
+
+A blog source page shipped this morning with the bots editing the markdown
+directly. That is right for a manuscript under review and wrong for somebody's
+published writing: the reader asks a question about a paragraph, and the answer
+is that their draft has already been changed. The undo is a text editor.
+
+On a blog page the bots now **propose**. A change arrives as a suggestion card
+— the passage as it stands, the passage as it would read, and one line saying
+why — and **nothing touches the file until the reader presses Accept**.
+
+### 1. THIS IS A PORT, AND THAT IS THE POINT
+
+`frontends/review` solved this in full for LaTeX papers, and the pipeline did
+not cross when Discuss absorbed review-page commenting: the unified comment
+store came over, the suggest/apply half did not. What follows is that half,
+brought over rather than invented a second time.
+
+| ported from `frontends/review` | how it arrives here |
+|---|---|
+| the card's fields (`SCHEMA.md`: `current_text` / `proposed_text`) | `current` / `proposed` / `why` on `msg.suggestions` |
+| rendered as a del/ins diff | the drawer's own `wordDiff` + `.wasnow` markup, which track changes already used |
+| accept = **unique-span replacement** in the source | `suggest.applyCard` |
+| whitespace- and smart-quote-tolerant matching, true offsets for the replacement | `assets/span-match.js`, **imported, not copied** |
+| ambiguous or drifted spans → `needs_manual_resolution`, never guessed | the card's `needs-manual` state, with the reason on its face |
+| human suggestions go through the same apply path as a bot's | n/a here — a reader who wants to edit their own post has an editor open |
+
+**The matcher is imported.** `suggest.mjs` does
+`import SpanMatch from '../review/assets/span-match.js'`. It runs in node, in
+the companion, so there is nothing to copy across the extension boundary and
+none of the `normUrl` / `tagHue` duplication precedent applies. If a second
+matcher ever appears beside this one, that is the bug — and `test/suggest.mjs`
+carries the review engine's own edge cases (a wrapped passage matched by a
+single-spaced needle, curly quotes folded to straight, two matches, none)
+precisely so the two cannot drift apart quietly.
+
+**What was deliberately NOT ported.** `apply.mjs` keeps a round ledger
+(`state/apply.json`) because a review round ends in `git commit`, with
+`git checkout` as the undo. A blog root has no git at all — that is the settled
+promise of the previous amendment, held in `blog.KIND_RULES` — so there is no
+round, nothing to commit and nothing to revert. A card's whole life is on the
+card. `bib_entries` and `source_json` do not port either: a post has no
+bibliography, and its front matter is markdown.
+
+### 2. The block a bot writes
+
+The fourth use of the established idiom — machinery inside a reply, lifted off
+the words by the companion, drawn as something the reader answers. `strike:`
+and `file-in:` are single lines because they carry one fact; a proposal carries
+a whole passage twice over, so it is a **fenced block**, for the same reason
+the question vault's card is:
+
+```suggest
+current: The mass saving is the whole argument and it is not a small one.
+proposed: The mass saving is the whole argument, and it is not small.
+why: the double negative reads as a hedge
+```
+
+- `current:` must appear **exactly once** in the source file. That is the whole
+  apply rule. The envelope tells the bot what to do when it does not: widen the
+  passage until it is unique.
+- `current:` and `proposed:` may run over several lines; a key line closes the
+  field before it. Line breaks and straight-versus-curly quotes do not matter
+  (that is the matcher's job); every other character does.
+- **A cut must be said**: `proposed: (delete)`. An empty `proposed:` is refused
+  rather than guessed at — it is far more often a model losing its footing than
+  a model meaning to remove a paragraph.
+- **EVERY block in the reply counts**, and this is the one place the convention
+  differs from the question vault's last-block-wins. A typo sweep is ten small
+  proposals; they are not alternatives, they are the answer.
+
+Capped at 30 cards a reply. A block that will not parse still comes off the
+words and still becomes a card — a buttonless one saying what was wrong.
+Refusing **visibly** is the rule the strike chip already established: a
+proposal that vanishes silently is indistinguishable from one that landed, and
+the bot's own next sentence would be the only account of it the reader had.
+
+### 3. Accept, reject, accept-all
+
+Three owner-only doors (`POST /suggest-accept`, `/suggest-reject`,
+`/suggest-accept-all`). None of them carries a path: the companion resolves
+which file this page renders from, so the most a request can ever ask for is
+"the change proposed on this page".
+
+**Accept** replaces the unique span and writes the file. Then the same census
+the turn boundary takes is taken around the write and the same `blog-files`
+event is broadcast — so jekyll rebuilds, the tab reloads, and tracked changes
+on the page come free, because the file really did move.
+
+**The refusals, which are the safety property.** A span that occurs zero times
+(the source has drifted) or more than once (ambiguous) is refused: **nothing is
+written**, the card goes to `needs-manual` with the reason on its face, and the
+answer is a 200 rather than an error — the request was answered, and the answer
+belongs on the card where the reader is looking. There is no third outcome and
+no best-effort.
+
+**Accept all** applies a sweep in **document order** — the reader watching the
+post rebuild sees the changes arrive top to bottom — re-resolving each card
+against a freshly read file, because every accepted edit moves every offset
+after it. It **stops at the first refusal**, loudly: what already landed stays
+landed, the card that stopped it says why, and the rest are still the reader's
+to answer. A card that had no address in the document *to begin with* sorts
+last rather than derailing nine changes the reader has already read and agreed
+to; a card that **loses** its address mid-run — because an earlier accepted
+edit took the passage it was sitting in — stops the run where it stands.
+
+**Reject** writes nothing and is remembered ON THE RECORD, unlike the three
+chips before it whose "no" is a per-tab dismissal. A turned-down proposal is
+something the bot has to be told about.
+
+**The card is the whole record.** Five states, no sixth: `open`, `applied`,
+`rejected`, `needs-manual`, `unreadable`. `store.sanitizeCard` keeps exactly
+the fields a card has, so a restored or hand-edited record cannot smuggle in a
+fifth.
+
+### 4. What the turn says, and what it is told back
+
+`blog.blogBlock` no longer says "edit it". It still spells out the write scope,
+because that is still true and still the sandbox's own boundary — but it is now
+named as the **safety net rather than the route**, and the deny-git paragraph
+is untouched. The one genuine write left is a **picture**: an image file cannot
+be proposed as a passage of text, so images are still placed and edited
+directly, while the markdown line that references a new one is proposed like
+every other line.
+
+`suggest.suggestBlock` rides every blog turn beside it, for the reason every
+standing block does: a resumed session's replayed history is uneven, a bridge
+restart drops it whole, and a model never shown a convention cannot use it.
+
+And `suggest.verdictBlock` rides the next turn: what the reader accepted, what
+they turned down, and what could not be placed. Same sentence-on-the-next-turn
+rule as `store.strikeRefusedBlock` and `questions.reviseRefusedBlock`, same
+reason — a bot with no news assumes the file changed and tells the reader so.
+Only the LAST stack is reported, exactly as those two report only the last
+suggestion.
+
+### 5. Collateral does not run on a blog turn any more
+
+The turn-end diff exists to catch an edit that landed with **no comment at it**.
+In suggest mode nothing lands during a turn at all, so a diff has nothing to
+narrate — and two things it could do instead are both wrong: report the
+reader's own accepted changes back to them as if a bot had slipped them in, and
+collapse a sweep the reader is halfway through into one `>6 regions` summary
+note. **Suggestions are cards by construction, not regions found in a diff, and
+they are never summary-collapsed.** `noteBlogTurnStart` marks the turn
+`noCollateral` and `reportCollateral` returns at the door.
+
+**The census stays**, and it is the guarantee §4 of the previous amendment
+actually makes about a bot that writes anyway against its instructions: every
+file that moved is counted, named and broadcast, and the tab reloads. Only the
+auto-threads are gone.
+
+### 6. Scope
+
+- **Blog pages: suggest mode is the default and the only mode.** It is a
+  property of the KIND (`blog.KIND_RULES` → `blog.suggestMode`), asked in one
+  place, with no per-site override and no config key — the same shape as the
+  git promise, and for the same reason: a config that rides the reader's
+  nightly backup can move the path and cannot weaken the rule.
+- **Review / LaTeX pages** keep their own engine, untouched.
+- **Project and workspace artifact pages** keep direct editing. That is their
+  SPEC contract — a project artifact is a file the council itself wrote, not
+  the reader's published identity — and a per-page toggle between the two modes
+  is **designed and not built**: the mode would have to be a property of the
+  page kind (where it is now) rather than a switch, or the promise stops being
+  a promise.
+- **PDFs are untouched.** A strike suggestion is its own thing and stays that.
+
+### 7. Files
+
+`suggest.mjs` (new, ~330 lines: the grammar, the lift, the ported apply rule,
+the two envelope blocks), `blog.mjs` (`KIND_RULES.suggest`, `suggestMode`,
+`suggest_mode` on the wire, `blogBlock` rewritten), `server.mjs` (the lift in
+`onChatEvent`, `suggestVerdict`, `suggestTargetOf`, `announceBlogWrite`, the
+three endpoints, the collateral gate), `store.mjs` (`CARD_STATES`,
+`sanitizeCard`, `findCardIn`, `setCardState`, `suggestions` through
+`appendMsg`), `extension/drawer.js` (`suggestStackHtml`, `sgCardHtml`,
+`sgDiffHtml`, `doSuggest`, three acts), `extension/content.js` (three
+callbacks), `extension/drawer.css` (`.sgstack` and the four states).
+
+### 8. Testing
+
+`test/suggest.test.mjs` (new, 42). The grammar and the apply rule with no
+server near them — every block counting, multi-line fields, the refused empty
+`proposed:`, the review engine's four span cases, byte-precise replacement, a
+refusal writing nothing, document order, the mid-run stop, and an edit that
+shifts every offset after it. Then the companion end against a synthetic Jekyll
+repo and the mock bridge: the lift, the block coming off the words, the file
+untouched by the turn, accept/reject/needs-manual/accept-all end to end, the
+`blog-files` reload, the verdict on the next turn, an ordinary web page
+carrying no cards at all, and all three doors owner-only.
+
+`test/blog.test.mjs` (45): the collateral assertion is inverted and says why —
+the census still names every file that moved and still reloads the tab; only
+the auto-threads are gone.
+
+`test/harness.html?suggest=1` (17/17), `?suggest=states` (12/12),
+`?suggest=sweep` (10/10), all headless. The blog poses are unmoved (12/12, 9/9,
+5/5) and so is everything else — main 649/649, workspace 88/88, gdocs 83/83,
+pdf-strike 81/81, question 21/21, more 21/21, colledit 21/21 in the same sweep.
+Full node sweep green (suggest 42, blog 45, companion 212, workspace 126,
+adapters 314, pdf 186, questions 89, …). `core/` is untouched, so `pytest` was
+not re-run.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

@@ -548,7 +548,21 @@ console.log('\ncompanion — blog source pages');
     assert.equal(events.of('blog-files').length, before);
   });
 
-  await test('an uncommented rewrite of the source becomes a thread on the page', async () => {
+  // SINCE SUGGEST MODE, this is the other way round, and deliberately.
+  //
+  // The turn-end diff exists to catch an edit that landed with no comment at
+  // it — a silence. On a blog page there is now no such thing: a bot proposes
+  // and NOTHING moves until the reader accepts a card, so a diff across a turn
+  // has nothing to narrate and could only ever report the reader's own
+  // accepted changes back to them as if a bot had slipped them in. Worse, the
+  // >6-region collapse would fold a sweep the reader is halfway through into
+  // one summary note.
+  //
+  // What still holds is the guarantee the SPEC actually makes about a bot that
+  // writes anyway, against its instructions: THE CENSUS. Every file that moved
+  // is counted, named and broadcast, and the tab reloads. That is asserted
+  // here — the reporting survives; only the auto-threads are gone.
+  await test('a turn cannot open collateral threads on a blog page any more', async () => {
     // the reader's own comment is on the FIRST paragraph; the bot silently
     // rewrites the SECOND, which nothing narrates and nothing would show
     const t = await POST(base, '/thread', {
@@ -575,12 +589,16 @@ console.log('\ncompanion — blog source pages');
     const before = events.of('blog-files').length;
     await POST(base, '/reply', { url: POST_URL, thread_id: '__page__',
       text: `@claude [mock:copy:${patch}|${SOURCE}] tighten paragraph two` });
-    await waitFor(() => events.of('blog-files').length > before, 'the change event');
+    const ev = await waitFor(() => (events.of('blog-files').length > before
+      ? events.of('blog-files').pop() : null), 'the change event');
+    // the reporting half, which is the promise the SPEC makes: the file that
+    // moved is named, and the tab is told to reload
+    assert.equal(ev.page_changed, true);
+    assert.deepEqual(ev.files, ['_posts/2026-08-20-space-balloons.md']);
+    assert.ok(!ev.collateral, 'and nothing was narrated as a change nobody asked for');
     const page = (await GET(base, '/page?url=' + enc(POST_URL))).json;
-    const auto = (page.threads || []).filter(x => x.auto);
-    assert.ok(auto.length >= 1, 'the silent edit surfaced as a thread');
-    assert.match(auto[auto.length - 1].quote, /entire argument/);
-    assert.match(auto[auto.length - 1].prior_quote || '', /whole argument/);
+    assert.equal((page.threads || []).filter(x => x.auto).length, 0,
+      'a page where nothing moves during a turn has no silent edits to surface');
   });
 
   await test('a DECLINED repo turns the page back into an ordinary web page', async () => {
