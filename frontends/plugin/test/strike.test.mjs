@@ -206,6 +206,53 @@ await test('…the passage line binds FORWARD, and a stray one aims at nothing',
     'quoted wording', 'the quote marks a model wraps it in come off');
 });
 
+// A CHANGE ON ANOTHER PAGE (2026-08-29). Reported on the reader's manuscript: a
+// thread on page 13 concluded that the scope sentence belonged in Section 1, on
+// page 2, and the bot could only refuse — a `passage:` had to sit on the
+// thread's own page — and tell the reader to go and mark it up themselves.
+await test('a `page:` line names another page, and binds forward with its passage', () => {
+  const hits = store.parseStrikeSuggestions([
+    'That belongs in Section 1.',
+    'page: 2',
+    'passage: The method is described in section 4.',
+    'strike: replace with: "The method is described in section 1."',
+  ].join('\n'));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].page, 2);
+  assert.equal(hits[0].passage, 'The method is described in section 4.');
+  assert.equal(hits[0].lines.length, 3, 'all three lines are machinery and all three come off');
+});
+
+await test('…in either order, and written the way a model actually writes it', () => {
+  const a = store.parseStrikeSuggestions('passage: some wording\npage: p. 13\nstrike: cut it')[0];
+  assert.equal(a.page, 13, '"p. 13" is a page number');
+  assert.equal(a.passage, 'some wording');
+  const b = store.parseStrikeSuggestions('page: page 4 (Section 2)\npassage: some wording\nstrike: cut')[0];
+  assert.equal(b.page, 4, 'the number is what is meant, whatever is written round it');
+});
+
+await test('…and a `page:` alone still comes off the words, naming nothing', () => {
+  const hits = store.parseStrikeSuggestions('strike: cut it\npage: 7');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].page, 0, 'a page AFTER a suggestion does not re-aim it');
+  assert.deepEqual(hits.orphanLines, ['page: 7']);
+  assert.equal(store.parseStrikeSuggestions('page: nowhere in particular\nstrike: cut')[0].page, 0,
+    'a line with no number in it names no page');
+});
+
+await test('…and same-page and cross-page suggestions mix in one reply', () => {
+  const hits = store.parseStrikeSuggestions([
+    'Two things.',
+    'passage: the sentence here',
+    'strike: it repeats the one before it',
+    'page: 2',
+    'passage: the sentence there',
+    'strike: replace with: "the corrected sentence"',
+  ].join('\n'));
+  assert.deepEqual(hits.map(h => h.page), [0, 2], 'the page binds to ITS suggestion and no other');
+  assert.deepEqual(hits.map(h => h.passage), ['the sentence here', 'the sentence there']);
+});
+
 await test('…and a message carries the list, old records and new alike', () => {
   assert.deepEqual(store.strikesOf({ strike: { why: 'one' } }), [{ why: 'one' }],
     'a reply written before any of this reads back exactly as it did');
@@ -221,6 +268,11 @@ await test('…and the offer teaches both, including the end of "go and re-highl
   assert.match(block, /Never ask the reader to go back and re-highlight/);
   assert.match(block, /passage: <the full exact wording as it appears on the page>/);
   assert.match(block, /exactly ONCE on this page/);
+  // …and the end of "go and do it yourself on the other page", which is the
+  // refusal the reader actually hit
+  assert.match(block, /A CHANGE ON ANOTHER PAGE NAMES THAT PAGE/);
+  assert.match(block, /page: <N>/);
+  assert.match(block, /NEVER tell the reader to go and highlight it themselves/);
   // …and the span rule says the same thing from its own side: naming a passage
   // is the sanctioned way past the highlight, silent widening still is not
   assert.match(chatSpan, /SANCTIONED way to reach just beyond an incomplete highlight/);
@@ -235,10 +287,21 @@ await test('…and every fault a suggestion can have says what it was', () => {
     ['offpage', /different page/],
     ['ambiguous', /more than once on this page/],
     ['covered', /another mark/],
+    ['pageless', /names where to look and nothing to look for/],
   ]) {
     assert.match(store.strikeFaultWhy(fault, 'the words'), re, fault);
     assert.match(store.strikeRefusedBlock(fault, 'the words'), /REFUSED/);
   }
+});
+
+await test('…and a refusal about ANOTHER page says which page was searched', () => {
+  assert.match(store.strikeFaultWhy('unlocatable', 'the words', 2), /not on page 2/);
+  assert.match(store.strikeFaultWhy('ambiguous', 'the words', 2), /more than once on page 2/);
+  assert.match(store.strikeFaultWhy('covered', 'the words', 2), /already on page 2/);
+  assert.match(store.strikeFaultWhy('offpage', 'the words', 2), /not on page 2/);
+  assert.match(store.strikeRefusedBlock('unlocatable', 'the words', 2), /page 2/);
+  // …and with no page named it is the message it has always been
+  assert.match(store.strikeFaultWhy('unlocatable', 'the words'), /not on this page/);
 });
 
 await test('…and a REASONLESS suggestion is no suggestion at all', () => {
@@ -1123,6 +1186,242 @@ console.log('\nstrike — the span rule');
     assert.equal(store.strikesOf(reply)[0].rejected, 'covered', 'refused before it was ever a button');
     assert.equal((await manuPage()).threads.filter(t =>
       t.quote === 'four repeats the argument at greater length').length, 0, 'and nothing was marked up');
+  });
+
+  // ------------------------------------------------------------------------
+  // A CHANGE ON ANOTHER PAGE.
+  //
+  // THE REPORT, from the reader's own manuscript. A thread on page 13 concluded
+  // that a scope sentence belonged in Section 1 — which is on page 2 — and the
+  // bot answered: "A page-13 strike cannot add wording on an earlier page; use
+  // the Section 1 scope sentence there." That refusal was this companion's own
+  // rule working exactly as written, and the rule had simply been outgrown: one
+  // discussion legitimately concludes changes on other pages. So a suggestion
+  // may now name its page. Nothing is relaxed — the wording must locate on THAT
+  // page, once, clear of its other marks — the search just moves.
+  // ------------------------------------------------------------------------
+  // THE WORD, NOT THE CLAUSE AROUND IT.
+  //
+  // THE REPORT. Asked to change one word, the bots proposed striking the phrase
+  // it sat in — "can stabilize the" for a change to "stabilise",
+  // "momentum-conserving motion" where "motion" survives — and the reader was
+  // typing "only suggest changes at the word level if that is all you are
+  // changing" into the chat by hand. Half of that habit is a rule the bots are
+  // now given; the other half is that widening was, until now, the only way to
+  // be unambiguous about a word that occurs twice on a page. It is not needed:
+  // the suggestion is made inside a discussion, and the discussion says which
+  // occurrence is meant.
+  console.log('\nstrike — the word, not the clause around it');
+
+  const WORDS = 'https://example.org/word-level.pdf';
+  const W5 = 'A reaction wheel can stabilize the platform in yaw. '
+    + 'Later work shows the same wheel can stabilize the platform in pitch, '
+    + 'which is the claim under discussion here. '
+    + 'A tether can stabilize nothing at all.';
+  const WSNAP = `<section><h2>Page 5</h2><p>${W5}</p></section>`;
+  const wordsPage = async () => (await GET(base, '/page?url=' + enc(WORDS))).json;
+  await POST(base, '/page', { url: WORDS, title: 'Word level', kind: 'pdf' });
+  {
+    const snap = await POST(base, '/snapshot', { url: WORDS, html: WSNAP });
+    assert.equal(snap.json.stored, true);
+  }
+
+  await test('THE REPORTED CASE: one word struck, though the word occurs three times', async () => {
+    // the reader's thread sits beside the SECOND occurrence — that is the
+    // sentence they are arguing about
+    const t = (await POST(base, '/thread', {
+      url: WORDS, quote: 'which is the claim under discussion here', page: 5,
+      msg: { text: '@claude “stabilize” should be British spelling.' },
+    })).json.thread;
+    const r = await POST(base, '/strike-from', {
+      url: WORDS, thread_id: t.id, passage: 'stabilize',
+      note: 'replace with: "stabilise"',
+    });
+    assert.equal(r.status, 200, 'a one-word span is not ambiguous — the discussion says which');
+    const card = r.json.thread;
+    assert.equal(card.quote, 'stabilize', 'the mark is the word, and not the clause round it');
+    assert.equal(card.page, 5);
+    // the occurrence NEAREST the thread's own anchor: the second one, whose
+    // context is "the same wheel can " / " the platform in pitch"
+    assert.match(card.prefix, /the same wheel can $/,
+      'anchored by the text around where it actually landed');
+    assert.match(card.suffix, /^ the platform in pitch/);
+    assert.ok(!/yaw/.test(card.suffix), 'not the first occurrence, which is a sentence away');
+  });
+
+  await test('…and with no discussion beside either of them it is still refused', async () => {
+    // a thread whose own quote is nowhere in this page's text has no locality
+    // to lend, and two matches then name neither — exactly as they always did
+    const t = (await POST(base, '/thread', {
+      url: WORDS, quote: 'a clause this page has never contained', page: 5,
+      msg: { text: 'hm' },
+    })).json.thread;
+    const r = await POST(base, '/strike-from', {
+      url: WORDS, thread_id: t.id, passage: 'stabilize', note: 'it should come out',
+    });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /more than once/);
+    assert.match(r.json.error, /no nearer one than the other/);
+  });
+
+  await test('…and the offer tells the bots to stop widening in the first place', () => {
+    const block = store.strikeOfferBlock();
+    assert.match(block, /THE MARK COVERS THE CHANGING WORDS, EXACTLY/);
+    assert.match(block, /passage: stabilize`, not the clause it sits in/);
+    assert.match(block, /Neighbouring words that SURVIVE the change must stay outside the mark/);
+    assert.match(block, /DO NOT WIDEN TO BE UNAMBIGUOUS/);
+    assert.match(block, /NEAREST the passage under discussion/);
+  });
+
+  console.log('\nstrike — a change on another page');
+
+  const CROSS = 'https://example.org/cross-page.pdf';
+  const C2 = 'Section 1 sets out the scope of the work. The definition of arm length is '
+    + 'given in appendix B. The same claim appears here and the same claim appears here.';
+  const C13 = 'Deployment is treated only in passing on this page. '
+    + 'The scope sentence really belongs in section 1.';
+  const CSNAP = `<section><h2>Page 2</h2><p>${C2}</p></section>`
+    + `<section><h2>Page 13</h2><p>${C13}</p></section>`;
+  const crossPage = async () => (await GET(base, '/page?url=' + enc(CROSS))).json;
+  const threadOnPage13 = async (quote, text) =>
+    (await POST(base, '/thread', { url: CROSS, quote, page: 13, msg: { text } })).json.thread;
+
+  await POST(base, '/page', { url: CROSS, title: 'Cross page', kind: 'pdf' });
+  {
+    const snap = await POST(base, '/snapshot', { url: CROSS, html: CSNAP });
+    assert.equal(snap.json.stored, true);
+  }
+
+  let far = null;
+  let farCard = null;
+  await test('THE REPORTED CASE: a page-13 discussion changes a sentence on page 2', async () => {
+    far = await threadOnPage13('The scope sentence really belongs in section 1.',
+      '@claude where should this actually live?');
+    await POST(base, '/reply', {
+      url: CROSS, thread_id: far.id,
+      text: '@claude [mock:says:In section 1, where the scope is already set out.\n'
+        + 'page: 2\n'
+        + 'passage: Section 1 sets out the scope of the work.\n'
+        + 'strike: replace with: "Section 1 sets out the scope of the work, including deployment."]',
+    });
+    const reply = await waitFor(async () => {
+      const th = (await crossPage()).threads.find(x => x.id === far.id);
+      return (th.msgs || []).filter(m => m.author === 'claude' && store.strikesOf(m).length).pop();
+    }, 'the lift');
+    const [sug] = store.strikesOf(reply);
+    assert.equal(sug.rejected, undefined, 'the bot names the page rather than refusing');
+    assert.equal(sug.page, 2, 'and the record carries which page it means');
+    assert.equal(sug.passage, 'Section 1 sets out the scope of the work.');
+    assert.ok(!/^page:/m.test(reply.text), 'the page line is machinery, and comes off the words');
+    assert.ok(!/^passage:/m.test(reply.text));
+    const r = await POST(base, '/strike-from', {
+      url: CROSS, thread_id: far.id, from_msg: reply.ts, from_idx: 0,
+      passage: sug.passage, page: sug.page, note: sug.why,
+    });
+    assert.equal(r.status, 200);
+    farCard = r.json.thread;
+    assert.equal(farCard.page, 2, 'THE WHOLE POINT: the mark lands on the page it is about');
+    assert.equal(farCard.quote, 'Section 1 sets out the scope of the work.');
+    assert.match(farCard.suffix, /^ The definition/, 'anchored in PAGE 2’s own context');
+    assert.equal(store.markOf(farCard), 'strike');
+    assert.equal(farCard.from_thread, far.id, 'an ordinary child of the discussion that decided it');
+    const page = await crossPage();
+    assert.deepEqual(store.broodOf(page, far.id).map(t => t.id), [farCard.id]);
+    assert.equal(page.threads.find(t => t.id === far.id).page, 13,
+      'and the discussion itself has not moved an inch');
+  });
+
+  await test('…the wrong page named is refused, at the lift and at the door alike', async () => {
+    const d = await threadOnPage13('Deployment is treated only in passing on this page.', 'hm');
+    // the wording is real, and it is on page 13 — not on the page 2 they named
+    const r = await POST(base, '/strike-from', {
+      url: CROSS, thread_id: d.id, page: 2,
+      passage: 'Deployment is treated only in passing on this page.',
+      note: 'it should come out',
+    });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /not on page 2/);
+    await POST(base, '/reply', { url: CROSS, thread_id: d.id,
+      text: '@claude [mock:says:Here.\npage: 2\n'
+        + 'passage: Deployment is treated only in passing on this page.\n'
+        + 'strike: cut it]' });
+    const reply = await waitFor(async () => {
+      const th = (await crossPage()).threads.find(x => x.id === d.id);
+      return (th.msgs || []).filter(m => m.author === 'claude' && store.strikesOf(m).length).pop();
+    }, 'the lift');
+    const [sug] = store.strikesOf(reply);
+    assert.equal(sug.rejected, 'offpage', 'refused before it was ever a button');
+    assert.equal(sug.page, 2, 'and the refusal remembers which page was searched');
+    // …and the bot is told which page, not merely "this page"
+    await POST(base, '/reply', { url: CROSS, thread_id: d.id, text: '@claude why not?' });
+    const env = await waitFor(() => inputs(log).find(x => /why not\?/.test(x)), 'the envelope');
+    assert.match(env, /YOUR LAST `strike:` LINE WAS REFUSED/);
+    assert.match(env, /page 2/);
+  });
+
+  await test('…an AMBIGUOUS wording on the named page is refused there', async () => {
+    const d = await threadOnPage13('a clause of its own, far one', 'hm');
+    const r = await POST(base, '/strike-from', {
+      url: CROSS, thread_id: d.id, page: 2,
+      passage: 'same claim appears here', note: 'it should come out',
+    });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /more than once on page 2/);
+  });
+
+  await test('…and a page named with no wording names nowhere', async () => {
+    const d = await threadOnPage13('a clause of its own, far two', 'hm');
+    const r = await POST(base, '/strike-from',
+      { url: CROSS, thread_id: d.id, page: 2, note: 'it should come out' });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /names where to look and nothing to look for/);
+  });
+
+  await test('ONE REPLY, ONE CHANGE HERE AND ONE THERE', async () => {
+    const d = await threadOnPage13('Deployment is treated only in passing', 'anything else?');
+    await POST(base, '/reply', {
+      url: CROSS, thread_id: d.id,
+      text: '@claude [mock:says:Two.\n'
+        + 'passage: The scope sentence really belongs in section 1.\n'
+        + 'strike: it repeats what section 1 already says\n'
+        + 'page: 2\n'
+        + 'passage: The definition of arm length is given in appendix B.\n'
+        + 'strike: replace with: "The definition of arm length is given in section 2."]',
+    });
+    const reply = await waitFor(async () => {
+      const th = (await crossPage()).threads.find(x => x.id === d.id);
+      return (th.msgs || []).filter(m => m.author === 'claude'
+        && store.strikesOf(m).length === 2).pop();
+    }, 'two suggestions');
+    const list = store.strikesOf(reply);
+    assert.deepEqual(list.map(x => x.rejected), [undefined, undefined]);
+    assert.deepEqual(list.map(x => Number(x.page) || 0), [0, 2],
+      'the page binds to its own suggestion, and the other one stays here');
+    const made = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await POST(base, '/strike-from', {
+        url: CROSS, thread_id: d.id, from_msg: reply.ts, from_idx: i,
+        passage: list[i].passage, page: Number(list[i].page) || 0, note: list[i].why,
+      });
+      assert.equal(r.status, 200, `chip ${i}`);
+      assert.equal(r.json.deduped, undefined, `chip ${i} minted rather than deduped`);
+      made.push(r.json.thread);
+    }
+    assert.deepEqual(made.map(t => Number(t.page) || 0), [13, 2],
+      'one mark on the page under discussion, one on the page the reply named');
+    assert.equal(new Set(made.map(t => t.id)).size, 2);
+    assert.equal(store.broodOf(await crossPage(), d.id).length, 2,
+      'one discussion, two children, two pages');
+  });
+
+  await test('THE EXPORT carries the cross-page mark on the page it was made on', async () => {
+    const page = await crossPage();
+    const note = exportNote.renderNote(page, store.readConfig(), new Date('2026-08-29T10:00:00Z'));
+    assert.ok(note.includes('~~Section 1 sets out the scope of the work.~~'),
+      'struck in the note like any other strikeout');
+    const at = note.indexOf('Section 1 sets out the scope of the work.');
+    assert.match(note.slice(at, at + 400), /— p\. 2/,
+      'and attributed to page 2, not to the page the discussion was on');
   });
 
   console.log('\nstrike — a child changes parents');

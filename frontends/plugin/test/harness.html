@@ -95,8 +95,15 @@
                      it; `&strike=brood` shows one discussion's THREE minted
                      strikeouts and its brood line, two of them anchored on
                      wording the bot named with `passage:` rather than on the
-                     reader's highlight; `&selftest=1` runs the strikeout
-                     assertions.
+                     reader's highlight; `&strike=elsewhere` has the discussion
+                     conclude that a sentence on ANOTHER PAGE has to change, so
+                     the chip names the page the mark will be made on;
+                     `&strike=stack` puts THREE markings on
+                     one passage — a resolved discussion, the reader's own
+                     strikeout painted over it, and a narrower comment inside
+                     both — and clicks them, so the chooser that asks which one
+                     was meant is the screenshot state; `&selftest=1` runs the
+                     strikeout assertions (or, with `stack`, the chooser's).
     ?sendfocus=1     the plain article, for one claim about the DRAWER: pressing
                      Send holds that thread — spotlit and scrolled back into
                      view on every redraw — while the bot answers into it, and
@@ -800,9 +807,21 @@ const PDF_SCAN = PDF_MODE === 'scan';
 // TAKEN: three separate strikeouts minted out of one conversation, two of them
 // anchored on wording the bot named for itself rather than on the reader's
 // highlight. The screenshot pose for the brood line and the corrected span.
+// ?pdf=1&strike=stack — THE MARKINGS ON TOP OF ONE ANOTHER. The reader's real
+// sequence: discuss a passage, resolve it, then strike the passage through
+// yourself. The red line is painted over the settled highlight, so a click on
+// those words could only ever reach the strike. Three markings share this
+// spot on page 2 — a narrow open comment inside a strikeout inside a wider
+// resolved discussion — which is the chooser's pose and its selftest.
 const STRIKE_BROOD = Q.get('strike') === 'brood';
+const STRIKE_STACK = Q.get('strike') === 'stack';
+// ?pdf=1&strike=elsewhere — A CHANGE ON ANOTHER PAGE. The discussion is on page
+// 1 and has concluded that a sentence on page 2 has to change; the suggestion
+// says which page with a `page:` line, and the chip has to tell the reader
+// where the red line is about to go before they authorise it.
+const STRIKE_ELSEWHERE = Q.get('strike') === 'elsewhere';
 const STRIKE = PDF_MODE === '1' && (Q.get('strike') === '1' || Q.get('strike') === 'pill'
-  || STRIKE_BROOD);
+  || STRIKE_BROOD || STRIKE_STACK || STRIKE_ELSEWHERE);
 // what the bot rewrote the passage TO, and what it replaced
 const STRIKE_WAS = 'They simply kept doing what they had been doing';
 const STRIKE_NOW = 'They carried on exactly as before';
@@ -1269,6 +1288,55 @@ if (PDFV) {
             text: 'Done — this passage now reads: "' + STRIKE_NOW + '"' },
         ] },
     );
+    // ?strike=elsewhere — the discussion on page 1 that concluded a sentence on
+    // PAGE 2 has to change. Its own conversation is untouched; what the reader
+    // sees is a chip naming the wording and the page it stands on.
+    if (STRIKE_ELSEWHERE) {
+      RECORD.threads.push(
+        { id: 't-1754601000-x1',
+          quote: 'Nothing had gone right either.',
+          prefix: 'Nothing had gone wrong.', suffix: '',
+          page: 1, orphaned: false, addressed: true, addressed_by: 'codex',
+          msgs: [
+            { author: 'angadh', ts: iso(12),
+              text: '@codex this reads like the sentence at the end of page 2.' },
+            { author: 'codex', ts: iso(11),
+              text: 'It does — and the page 2 one is the weaker of the two.',
+              strikes: [
+                { why: 'replace with: "one week after another."',
+                  passage: 'one week at a time', page: 2 },
+              ] },
+          ] },
+      );
+    }
+    // ?strike=stack — THREE MARKINGS ON ONE SPOT. The reader's own sequence,
+    // exactly as reported: a passage argued over and RESOLVED, then struck
+    // through by hand — so the red line is painted over the settled highlight
+    // and the discussion underneath cannot be clicked. A third, narrower
+    // comment sits inside both, which is what makes the chooser's ordering
+    // observable: nearest-fitting first, so the two words come before the
+    // sentence and the sentence before the wider passage.
+    // (The strikeout itself is t-1754600300-s1a1 above, unchanged.)
+    if (STRIKE_STACK) {
+      RECORD.threads.push(
+        { id: 't-1754600800-k1',
+          quote: 'outlives a manager. Nobody at the club disputed it',
+          prefix: 'sentence that survives a season and', suffix: 'They carried on exactly',
+          page: 2, orphaned: false,
+          resolved: true, resolved_at: iso(9), resolved_by: 'angadh',
+          summary: 'Settled: the claim stands, the sentence goes.',
+          msgs: [
+            { author: 'angadh', ts: iso(20), text: 'Does the report actually say this?' },
+            { author: 'claude', ts: iso(19),
+              text: 'It says nobody objected on the record, which is not the same claim.' },
+          ] },
+        { id: 't-1754600900-k2',
+          quote: 'at the club',
+          prefix: 'outlives a manager. Nobody', suffix: 'disputed it. They carried',
+          page: 2, orphaned: false,
+          msgs: [{ author: 'angadh', ts: iso(8), text: 'Which club — Aragon, or the league?' }] },
+      );
+    }
     // ?strike=brood — the decisions already taken. One conversation, three
     // separate red lines: the passage it was about, and two spans the bot named
     // for itself with `passage:` because the reader's highlight did not cover
@@ -2841,7 +2909,8 @@ function companion(method, path, body) {
     strikeFromPosts.push({ thread_id: body.thread_id, note: body.note || '',
                            from_msg: body.from_msg || '',
                            from_idx: Number(body.from_idx) || 0,
-                           passage: body.passage || '' });
+                           passage: body.passage || '',
+                           page: Number(body.page) || 0 });
     const from = RECORD.threads.find(x => x.id === body.thread_id);
     if (!from) return { ok: false, status: 404, error: 'unknown thread' };
     // Already struck — by the LINK first, by the quote second (server.mjs says
@@ -2859,7 +2928,10 @@ function companion(method, path, body) {
     const span = String(body.passage || '') || from.quote;
     const already = struckMine.find(x => x.from_thread === from.id
         && String(x.from_msg || '') === fromMsg && (Number(x.from_idx) || 0) === fromIdx)
-      || struckMine.find(x => x.quote === span);
+      // …and the span match is a match on the PAGE too: the same wording can
+      // stand on two pages, and a change decided for one is not the other
+      || struckMine.find(x => x.quote === span
+        && (Number(x.page) || 0) === (Number(body.page) || Number(from.page) || 0));
     if (already) {
       const note = String(body.note || '').trim();
       const head = (already.msgs || [])[0];
@@ -2886,7 +2958,10 @@ function companion(method, path, body) {
     const t = {
       id: 't-' + Math.floor(Date.now() / 1000) + '-mint' + RECORD.threads.length,
       quote: span, prefix: from.prefix, suffix: from.suffix,
-      page: from.page, orphaned: false, mark: 'strike',
+      // the page the change lands on — the discussion's own unless the
+      // suggestion named another one of this document's pages
+      page: Number(body.page) > 0 ? Number(body.page) : from.page,
+      orphaned: false, mark: 'strike',
       from_thread: from.id, from_msg: fromMsg,
       ...(fromIdx ? { from_idx: fromIdx } : {}),
       ...(body.passage ? { passage_named: true } : {}),
@@ -3336,6 +3411,25 @@ function pdfDrag(page, phrase) {
   const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
   document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   return new Promise(resolve => setTimeout(() => resolve(true), 300));
+}
+
+// A CLICK ON STACKED PAINT. The innermost mark on a spot several threads have
+// marked, hit at a real point inside it — content.js reads clientX/clientY and
+// anchor.js's marksAtPoint tests the point, so a bare .click() with no
+// coordinates would be a different gesture than the reader's.
+// `id` names WHICH thread's paint to aim at; the click then lands on whatever
+// is painted on top of it there, which is what a finger would hit.
+function clickStackedMark(id) {
+  const base = document.querySelector(
+    'mark.bfp-hl[data-bfp' + (id ? '="' + id + '"' : '') + ']');
+  if (!base) { log('stack: nothing painted to click' + (id ? ' for ' + id : '')); return null; }
+  let el = base;
+  for (;;) { const inner = el.querySelector('mark.bfp-hl'); if (!inner) break; el = inner; }
+  const r = el.getBoundingClientRect();
+  const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+  el.dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  return { el, x, y };
 }
 
 // …and the same drag answered with the pill's SECOND tool (a PDF only): the
@@ -7429,6 +7523,234 @@ async function selftestPdfStrike() {
   console.log(out.join('\n'));
 }
 
+// ?pdf=1&strike=elsewhere&selftest=1 — A CHANGE ON ANOTHER PAGE.
+//
+//   The discussion is on page 1 and has concluded that a sentence on page 2 has
+//   to change. What is pinned here is the extension's half of that: the chip
+//   says WHERE before the click, the click carries the page to the door, and the
+//   red line lands on page 2 while the discussion stays where it was.
+async function selftestStrikeElsewhere() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const DISC = 't-1754601000-x1';
+  const card = () => S.querySelector('.card[data-thread="' + DISC + '"]');
+  await until(card, 4000);
+  const chip = () => card() && card().querySelector('.filechip.strikechip');
+  check('the suggestion arrives as a chip, like any other', !!chip());
+  check('…showing the wording it will be drawn on',
+    !!chip() && /one week at a time/.test(chip().textContent));
+  check('…and the PAGE it will be drawn on, before the click',
+    !!chip().querySelector('.fcpage')
+    && /p\. 2/.test(chip().querySelector('.fcpage').textContent));
+  const yes = chip().querySelector('[data-act="strike-yes"]');
+  check('…on a live offer, not a refusal', !!yes);
+  check('…carrying the page down to the button itself', yes.dataset.page === '2');
+
+  const before = strikeFromPosts.length;
+  yes.click();
+  await until(() => strikeFromPosts.length > before, 3000);
+  await sleep(300);
+  check('the confirm tells the companion which page', 
+    (strikeFromPosts[strikeFromPosts.length - 1] || {}).page === 2);
+  const made = RECORD.threads.filter(t => t.mark === 'strike' && t.from_thread === DISC);
+  check('…and one strikeout is minted from it', made.length === 1);
+  check('…on PAGE 2, which is the whole of the amendment',
+    made.length === 1 && Number(made[0].page) === 2);
+  check('…anchored on the wording the bot named',
+    made.length === 1 && made[0].quote === 'one week at a time');
+  check('…while the discussion itself has not moved off page 1',
+    (RECORD.threads.find(t => t.id === DISC) || {}).page === 1);
+  await sleep(200);
+  check('…and the red line is painted where the words are',
+    !!document.querySelector('[data-bfp-pdf-page="2"] mark.bfp-hl.bfp-strike[data-bfp="'
+      + made[0].id + '"]'));
+  check('…the chip settling into an answer of its own',
+    !!chip() && chip().classList.contains('done'));
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (strike-elsewhere) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?pdf=1&strike=stack&selftest=1 — CLICKING THROUGH STACKED MARKS.
+//
+//   THE REPORT. The reader discusses a passage, resolves the thread, then
+//   strikes the passage through themselves. The strike's red line is painted
+//   over the settled highlight, so clicking those words on the page could only
+//   ever open the strike: the conversation underneath was on the document and
+//   yet unreachable from it, and had to be hunted for in the drawer.
+//
+//   So a click where markings overlap AT THE POINT CLICKED asks which one was
+//   meant. What is pinned here is the whole of the contract: that the chooser
+//   appears for an overlap and NEVER for a single mark, that its rows name what
+//   each marking is and stand in nearest-fitting order, that choosing one lands
+//   the reader exactly where a direct click would (archive unfolded and all),
+//   and that Esc and a click away put it down.
+async function selftestStackPick() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const cardFor = id => S.querySelector('.card[data-thread="' + id + '"]');
+  const A = window.BFPAnchor;
+  const STRUCK = 't-1754600300-s1a1';   // the reader's own strikeout
+  const DISC = 't-1754600800-k1';       // …over the discussion they resolved
+  const NARROW = 't-1754600900-k2';     // …and a two-word comment inside both
+  const ALONE = 't-1754600100-p2b3';    // a mark with nothing on top of it
+  const rows = () => [...S.querySelectorAll('.markpick .pickrow')];
+  const picker = () => S.querySelector('.markpick');
+  const up = () => !!picker() && picker().classList.contains('on');
+
+  await until(() => document.querySelector('mark.bfp-hl[data-bfp="' + DISC + '"]'), 4000);
+
+  // ---- the pose is the reported one --------------------------------------
+  check('the passage carries a strikeout',
+    !!document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="' + STRUCK + '"]'));
+  check('…over a discussion that was resolved',
+    !!document.querySelector('mark.bfp-hl.bfp-done[data-bfp="' + DISC + '"]'));
+  check('…and a third, narrower marking inside both',
+    !!document.querySelector('mark.bfp-hl[data-bfp="' + NARROW + '"]'));
+
+  // ---- one mark is not a choice ------------------------------------------
+  // The common case, and the one that must not have moved a byte.
+  d.focus(null);
+  clickStackedMark(ALONE);
+  await sleep(200);
+  check('a click on a mark with nothing under it opens no chooser', !up());
+  check('…it goes straight to the card, exactly as it always has',
+    !!cardFor(ALONE) && cardFor(ALONE).classList.contains('focused'));
+
+  // ---- …and a stack is -----------------------------------------------------
+  d.focus(null);
+  await sleep(60);
+  const at = clickStackedMark(STRUCK);
+  await sleep(200);
+  check('a click where three markings overlap opens the chooser instead', up());
+  check('…with one row per marking', rows().length === 3);
+  // …at the click, and never off the edge of the window: a chooser opened near
+  // the foot or the right margin comes back inside rather than half off screen,
+  // so "where the click was" is a claim about the OPENING, bounded by the glass.
+  check('…put where the click was, and always inside the window', (() => {
+    const r = picker().getBoundingClientRect();
+    const inside = r.left >= -1 && r.top >= -1
+      && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1;
+    const nearX = !at || Math.abs(r.left - at.x) < 40
+      || r.right >= window.innerWidth - 12;      // clamped to the right margin
+    const nearY = !at || Math.abs(r.top - at.y) < 60
+      || r.bottom <= at.y + 1;                   // flipped up over the click
+    return inside && nearX && nearY;
+  })());
+  check('…and no card taken yet: the chooser is a question, not an answer',
+    !S.querySelector('.pane[data-pane="comments"] .card.focused'));
+
+  // ---- the rows say what each marking IS ----------------------------------
+  const ids = rows().map(r => r.getAttribute('data-thread'));
+  check('nearest-fitting first: the two words, then the sentence, then the passage',
+    ids.join(',') === [NARROW, STRUCK, DISC].join(','));
+  const rowFor = id => rows()[ids.indexOf(id)];
+  const kindOf = id => rowFor(id).querySelector('.pkind').textContent.trim();
+  const whatOf = id => rowFor(id).querySelector('.pwhat').textContent.trim();
+  const stateOf = id => (rowFor(id).querySelector('.pstate') || {}).textContent || '';
+  check('the strikeout calls itself a strikeout', kindOf(STRUCK) === 'strikeout');
+  check('…and quotes its note, which is why it was struck',
+    /nothing in the report supports it/i.test(whatOf(STRUCK)));
+  check('the discussion calls itself a comment', kindOf(DISC) === 'comment');
+  check('…quotes the words that opened it',
+    /does the report actually say this/i.test(whatOf(DISC)));
+  check('…and says it is resolved, which is why it is buried',
+    /resolved/i.test(stateOf(DISC)));
+  check('the narrow one is an open comment with no state to report',
+    kindOf(NARROW) === 'comment' && !stateOf(NARROW).trim()
+    && /which club/i.test(whatOf(NARROW)));
+  check('each row wears its own marking\'s paint',
+    rowFor(STRUCK).querySelector('.pdot.strike')
+    && rowFor(DISC).querySelector('.pdot.done')
+    && rowFor(NARROW).querySelector('.pdot.open'));
+  check('…and every row is a real button the keyboard can reach',
+    rows().every(r => r.tagName === 'BUTTON' && r.getAttribute('role') === 'menuitem'));
+  check('…the first of them already focused', S.activeElement === rows()[0]);
+
+  // ---- Esc puts it down, and takes nothing else with it -------------------
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(120);
+  check('Esc dismisses the chooser', !up());
+  check('…and leaves the drawer where it was', d.isOpen());
+
+  // ---- a click away puts it down too --------------------------------------
+  clickStackedMark(STRUCK);
+  await sleep(160);
+  check('the chooser comes back on the next click', up());
+  document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  await sleep(120);
+  check('…and a mousedown anywhere else on the page dismisses it', !up());
+
+  // ---- choosing the buried discussion --------------------------------------
+  // The whole point of the feature: the resolved thread is inside a collapsed
+  // archive, so "focus it" means opening that archive and unfolding the card —
+  // which is precisely what reveal() already does for a direct click, and why
+  // this row does not have a second path of its own.
+  clickStackedMark(STRUCK);
+  await sleep(160);
+  const buried = rows()[ids.indexOf(DISC)];
+  check('the buried discussion has a row to click', !!buried);
+  buried.click();
+  await sleep(260);
+  check('choosing it puts the chooser away', !up());
+  check('…and focuses ITS card, not the strikeout painted over it',
+    !!cardFor(DISC) && cardFor(DISC).classList.contains('focused')
+    && !(cardFor(STRUCK) && cardFor(STRUCK).classList.contains('focused')));
+  check('…out of the resolved archive, which had to be opened to show it',
+    !!cardFor(DISC) && !!cardFor(DISC).closest('.arch, .resolved, .pane'));
+  check('…and the card is scrolled into view rather than merely lit', (() => {
+    const c = cardFor(DISC), box = S.querySelector('.pane[data-pane="comments"]');
+    if (!c || !box) return false;
+    const cr = c.getBoundingClientRect(), br = box.getBoundingClientRect();
+    return cr.bottom > br.top && cr.top < br.bottom;
+  })());
+
+  // ---- and the strikeout is still reachable the same way -------------------
+  clickStackedMark(STRUCK);
+  await sleep(160);
+  const strikeRow = rows()[rows().map(r => r.getAttribute('data-thread')).indexOf(STRUCK)];
+  if (strikeRow) strikeRow.click();
+  await sleep(260);
+  check('…and the strikeout is reached by the same chooser, not by luck',
+    !!cardFor(STRUCK) && cardFor(STRUCK).classList.contains('focused'));
+
+  // ---- the point test is about PAINT, not about quotes ---------------------
+  check('marksAtPoint answers from the marks themselves', (() => {
+    const el = document.querySelector('mark.bfp-hl[data-bfp="' + NARROW + '"]');
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const got = A.marksAtPoint(el, r.left + r.width / 2, r.top + r.height / 2);
+    return got.length === 3 && got[0] === NARROW;
+  })());
+  check('…and a point inside only one of them names only that one', (() => {
+    const el = document.querySelector('mark.bfp-hl[data-bfp="' + ALONE + '"]');
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return A.marksAtPoint(el, r.left + 2, r.top + r.height / 2).join(',') === ALONE;
+  })());
+  check('…never the provisional mark of a comment being written',
+    A.marksAtPoint(document.body, -1, -1).indexOf('__new__') === -1);
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (stack-pick) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // Everything the web-PDF selftest asserts is true here too and is not repeated;
 // what is asserted here is the one thing that differs, which is also the one
 // thing that could quietly ruin the feature: WHAT THE PAGE IS.
@@ -9856,6 +10178,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (Q.get('selftest') === '1') {
       setTimeout(WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
+        : STRIKE_STACK ? selftestStackPick
+        : STRIKE_ELSEWHERE ? selftestStrikeElsewhere
         : STRIKE ? selftestPdfStrike : PDF_SCAN ? selftestPdfScan : PDFV ? selftestPdf
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
         : MORE ? selftestMore : COLLEDIT ? selftestColledit
@@ -9969,6 +10293,16 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         // &strike=pill — the same page with the SELECTION PILL up, which is the
         // other half of the feature and cannot be photographed without a drag
         if (Q.get('strike') === 'pill') pdfDrag(2, 'sentence that survives a season');
+        // &strike=stack — the chooser itself. It only exists in answer to a
+        // click, so the pose has to make one, on the innermost paint and at a
+        // real point inside it (marksAtPoint reads clientX/clientY).
+        if (STRIKE_STACK) clickStackedMark('t-1754600300-s1a1');
+        // &strike=elsewhere — the chip is the picture, so put its card in view
+        if (STRIKE_ELSEWHERE) {
+          const dd = window.__bfp.drawer;
+          dd.focus('t-1754601000-x1');
+          dd.scrollToThread('t-1754601000-x1');
+        }
       }, 900);
     }
     if (READY) {

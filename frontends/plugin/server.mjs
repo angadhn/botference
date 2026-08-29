@@ -1013,13 +1013,20 @@ function onChatEvent(ev) {
               // page's real text, so a wording that cannot be located never
               // becomes a button. The reader's partial highlight is corrected
               // by the bot, never by being sent back to re-highlight it.
-              if (hit.passage) {
-                const r = store.resolvePassage(page, th, hit.passage, html);
+              // …and did it name ANOTHER PAGE for that wording? One discussion
+              // legitimately concludes changes elsewhere in the document, so a
+              // `page:` line moves the same four checks onto that page. A page
+              // named with no passage is refused here rather than guessed at.
+              if (hit.passage || hit.page) {
+                const r = store.resolvePassage(page, th, hit.passage, html, hit.page);
                 if (r.fault) {
                   return { why: clipped, passage: hit.passage, rejected: r.fault,
+                    ...(hit.page ? { page: hit.page } : {}),
                     ...(r.phrase ? { phrase: r.phrase } : {}) };
                 }
-                return { why: hit.why, passage: r.anchor.quote };
+                return { why: hit.why, passage: r.anchor.quote,
+                  ...(r.anchor.page && r.anchor.page !== (Number(th && th.page) || 0)
+                    ? { page: r.anchor.page } : {}) };
               }
               return { why: hit.why };
             });
@@ -1476,7 +1483,10 @@ function refusedStrikeNote(thread) {
     const list = store.strikesOf(thread.msgs[i]);
     if (!list.length) continue;
     const bad = list.find(s => s.rejected);
-    return bad ? store.strikeRefusedBlock(bad.rejected, bad.phrase || '') : '';
+    // …and about the page it NAMED, where it named one: "not on this page" is
+    // no use to a bot that meant page 2 and is being told about page 13.
+    return bad ? store.strikeRefusedBlock(bad.rejected, bad.phrase || '',
+      Number(bad.page) || 0) : '';
   }
   return '';
 }
@@ -3497,14 +3507,20 @@ export function handler(req, res) {
       // the reader's, where the suggestion named its own (`passage:`). Checked
       // again here and not merely at the lift, because a door must not take a
       // client's word for where a mark may be made.
+      //
+      // …and it may be on ANOTHER PAGE of this document (`page:`), which the
+      // door checks for itself against that page's snapshot text for the same
+      // reason it re-checks the passage: a client's word for where a mark may
+      // be made is not good enough when the mark is made in the reader's name.
       const passage = String(data.passage || '').trim();
+      const wantPage = Number(data.page) > 0 ? Number(data.page) : 0;
       let anchor = { quote: from.quote, prefix: from.prefix, suffix: from.suffix, page: from.page };
-      if (passage) {
+      if (passage || wantPage) {
         const r = store.resolvePassage(page, from, passage,
-          store.readSnapshot(store.pageKey(page.url)));
+          store.readSnapshot(store.pageKey(page.url)), wantPage);
         if (r.fault) {
           return fail(res, 400,
-            `that passage cannot be marked — ${store.strikeFaultWhy(r.fault, r.phrase)}`);
+            `that passage cannot be marked — ${store.strikeFaultWhy(r.fault, r.phrase, wantPage)}`);
         }
         anchor = r.anchor;
       }
@@ -3515,7 +3531,12 @@ export function handler(req, res) {
       const already = struck.find(t => t.from_thread === from.id
           && String(t.from_msg || '') === fromMsg
           && (Number(t.from_idx) || 0) === fromIdx)
-        || struck.find(t => t.quote === anchor.quote);
+        // …and the quote match is a match on the SPAN, which on a paged
+        // document means the page too: the same sentence can occur on page 2
+        // and on page 13, and a change decided for one must not be handed back
+        // the strikeout standing on the other.
+        || struck.find(t => t.quote === anchor.quote
+          && (Number(t.page) || 0) === (Number(anchor.page) || 0));
       // The note, whichever path takes it: NEVER CUT. A note past the cap is
       // refused at the door in the same breath the lift refuses it, because
       // half a replacement sentence on a document is worse than none — the

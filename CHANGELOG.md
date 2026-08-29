@@ -2,6 +2,40 @@
 
 ## 2026-08-29
 
+- **You can now click through to a comment that has something painted over it.**
+  The ordinary sequence — discuss a passage, resolve it, then strike the passage
+  through yourself — used to bury the discussion: the red line sat on top of the
+  highlight, so clicking those words on the page always opened the strikeout,
+  and the conversation underneath could only be found by scrolling the drawer
+  looking for it. Now a click where two or more markings overlap opens a small
+  list right where you clicked, one line per marking, saying what each one is
+  ("strikeout — Cut this…", "comment — Does the report actually say this? ·
+  resolved") with a swatch of its own colour beside it. Pick one and you land on
+  its card exactly as a direct click would. Where only one marking is under your
+  finger nothing changes at all — the click is the click it has always been.
+  Escape or a click elsewhere puts the list away.
+
+- **A discussion can now propose a change on a different page.** Deciding on
+  page 13 that something belongs in Section 1 used to end with the bot telling
+  you to go to page 2 and mark it up yourself — which is exactly the errand this
+  feature exists to save you. A suggestion can now name the page it means, and
+  the button puts the strikeout there. The checks are unchanged, just moved to
+  that page: the wording has to be on it, once, and clear of anything already
+  marked there — otherwise you get the same visible refusal you always did, now
+  saying which page was searched. The mark it makes is an ordinary strikeout
+  belonging to the discussion that decided it, and the numbered "view" link on
+  the discussion takes you to it even if that page has not been drawn yet.
+
+- **And the bots are told to strike the words that change, and no more.** They
+  had a habit of proposing a whole phrase for a one-word fix — "can stabilize
+  the" when only the spelling changes — partly out of caution, because a bare
+  word can appear twice on a page. Two things fix it: they are now told plainly
+  that a strikeout covers what is actually changing, since striking words that
+  survive tells a co-author they were deleted; and the companion no longer needs
+  them to widen, because when a word appears more than once it takes the one
+  nearest the passage you are discussing and anchors the mark by the text around
+  it.
+
 - **The bots can now see what the whole review has already decided.** Editing a
   long draft, decisions pile up in different threads: you settle a phrasing on
   page 2, you agree a deletion on page 5. Until now a bot answering a comment on

@@ -169,6 +169,66 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .selpill.twin .selbtn + .selbtn { box-shadow: inset 1px 0 0 var(--card-line) }
 .selbtn svg { display: block }
 
+/* ── the overlap chooser ───────────────────────────────────────────────────
+ * Two markings on one passage — a strikeout painted over the discussion that
+ * produced it — and a click that cannot mean either. One row per marking,
+ * nearest-fitting first, put where the finger was. It borrows the pill's
+ * chrome deliberately: same card, same hairline, same shadow, so it reads as
+ * the page-side half of the drawer rather than as a browser menu. */
+.markpick {
+  position: fixed; pointer-events: auto; z-index: 3;
+  display: none; flex-direction: column; min-width: 220px; max-width: min(360px, 90vw);
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.markpick.on { display: flex }
+/* Two lines, always: WHAT IT IS on the first (with its state at the end of
+ * it), and the words it carries on the second. A single line would have to
+ * ellipsise the note out of existence on one row and not on the next, and a
+ * chooser whose rows are different shapes is harder to read than one whose
+ * rows are two lines each. */
+.pickrow {
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: baseline; gap: 2px 8px;
+  text-align: left; width: 100%;
+  font: 13px/1.4 var(--sans); padding: 8px 12px;
+  background: transparent; color: inherit;
+  border: 0; border-radius: 0; box-shadow: none;
+}
+.pickrow + .pickrow { box-shadow: inset 0 1px 0 var(--card-line) }
+.pickrow:hover, .pickrow:focus-visible {
+  background: var(--rail); color: var(--fg); outline: none;
+}
+.pickrow:focus-visible { box-shadow: inset 2px 0 0 var(--accent) }
+.pickrow + .pickrow:focus-visible { box-shadow: inset 0 1px 0 var(--card-line), inset 2px 0 0 var(--accent) }
+/* A swatch of the marking's OWN paint leads the row — the yellow, amber or
+ * sage wash of a highlight, the red rule of a strikeout — so the reader
+ * matches a row to the ink under their cursor before reading a word of it. */
+.pickrow .pdot {
+  grid-column: 1; grid-row: 1; align-self: center; position: relative;
+  width: 14px; height: 14px; border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--card-line);
+}
+.pickrow .pdot.open { background: var(--hl) }
+.pickrow .pdot.ready { background: var(--ready) }
+.pickrow .pdot.done { background: var(--done) }
+.pickrow .pdot.strike::after {
+  content: ''; position: absolute; left: 2px; right: 2px; top: 6px;
+  height: 2px; background: var(--strike-line);
+}
+.pickrow .pkind { grid-column: 2; grid-row: 1; font-weight: 600; color: var(--heading) }
+.pickrow.struck .pkind { color: var(--strike-line) }
+.pickrow .pstate {
+  grid-column: 3; grid-row: 1; justify-self: end;
+  font-size: 12px; color: var(--muted);
+}
+.pickrow .pwhat {
+  grid-column: 2 / -1; grid-row: 2; min-width: 0; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
 /* ── panel ─────────────────────────────────────────────────────────────── */
 .panel {
   position: fixed; top: 0; right: 0; width: 420px; max-width: 100vw; height: 100%;
@@ -451,6 +511,16 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   color: var(--muted); font-style: italic;
   text-decoration: line-through;
   text-decoration-color: var(--strike-line);
+}
+/* …and WHERE, when the change lands on another page of the document. Not
+   struck — it is not part of the wording that goes, it is the address of it —
+   and small, because it is one fact and a decisive one. */
+.strikechip .fcpage {
+  display: inline-block; margin-left: 6px;
+  font: 11px/1.4 var(--sans); font-style: normal;
+  color: var(--muted); text-decoration: none;
+  padding: 0 5px; border: 1px solid var(--card-line); border-radius: 999px;
+  vertical-align: 1px;
 }
 
 .pop-agentrow { margin: 0 0 10px }

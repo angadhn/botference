@@ -606,6 +606,70 @@
     return seen;
   }
 
+  // ── WHAT IS UNDER THE CURSOR ──────────────────────────────────────────────
+  // THE REPORT. A passage is discussed, the discussion is resolved, and then
+  // the reader strikes the passage through. The strike's red line is painted
+  // over the discussion's highlight, so clicking the words on the page could
+  // only ever reach the strike — the conversation underneath was unreachable
+  // from the document and had to be hunted for in the drawer.
+  //
+  // So a click asks what ELSE is under it. Overlapping paints NEST: the second
+  // paint of the same words finds the text node the first one already wrapped
+  // and wraps it again, so at any point on the page the marks covering that
+  // point are an ancestor chain — innermost is the most recently painted, the
+  // one whose ink the reader is actually looking at. Walking the chain from
+  // the click target IS a point test, and an exact one; `elementsFromPoint` is
+  // folded in afterwards only to catch a paint that overlaps this one on
+  // SCREEN without containing it in the tree, which a PDF's absolutely
+  // positioned text layer can produce.
+  //
+  // Order is nearest-fitting: the smallest painted span first, because that is
+  // the most specific thing the reader can have meant by clicking there, and
+  // the innermost paint breaks a tie between two marks over the same words.
+  // Returns ids only — naming them is the drawer's job, since only the drawer
+  // has the threads.
+  const POINT_SEL = 'mark.bfp-hl[data-bfp], del.' + WAS_CLASS + '[data-bfp]';
+
+  // How much of the document a thread's marking covers, in characters. The
+  // <del> of a track change counts too: it is painted, it is clickable, and it
+  // is part of what that thread put on the page.
+  function paintedLen(id) {
+    let n = 0;
+    for (const m of marksFor(id)) n += (m.textContent || '').length;
+    const del = wasFor(id);
+    if (del) n += (del.textContent || '').length;
+    return n;
+  }
+
+  function marksAtPoint(target, x, y) {
+    const found = new Map();   // id → depth (0 = innermost at the click)
+    const add = (el, depth) => {
+      const id = el && el.getAttribute && el.getAttribute('data-bfp');
+      if (!id || id === '__new__') return;
+      const prev = found.get(id);
+      if (prev == null || depth < prev) found.set(id, depth);
+    };
+    let depth = 0;
+    for (let n = target; n; n = n.parentNode) {
+      if (n.nodeType === 1 && n.matches && n.matches(POINT_SEL)) add(n, depth++);
+    }
+    // …and anything whose painted box contains the point without being an
+    // ancestor of what was hit. Ranked after the chain, in stacking order.
+    if (typeof document.elementsFromPoint === 'function'
+        && typeof x === 'number' && typeof y === 'number') {
+      let stack = [];
+      try { stack = document.elementsFromPoint(x, y) || []; } catch { stack = []; }
+      for (let i = 0; i < stack.length; i++) {
+        const el = stack[i];
+        if (el && el.matches && el.matches(POINT_SEL)) add(el, 1e6 + i);
+      }
+    }
+    const ids = Array.from(found.keys());
+    const len = new Map(ids.map(id => [id, paintedLen(id)]));
+    ids.sort((a, b) => (len.get(a) - len.get(b)) || (found.get(a) - found.get(b)));
+    return ids;
+  }
+
   // Unwrap cleanly: text back into the parent, then normalize() re-joins the
   // split siblings so a delete leaves the DOM exactly as it was found.
   function unpaint(id) {
@@ -786,6 +850,7 @@
     // dom
     buildTextIndex, offsetsFromRange, offsetOf, rangeFromOffsets, textNodesIn,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
+    marksAtPoint, paintedLen,
     markResolved, isMarkResolved, markAddressed, isMarkAddressed,
     markStruck,
     paintWas, unpaintWas, wasFor, wasIds, markInserted,

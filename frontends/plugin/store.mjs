@@ -1087,6 +1087,24 @@ export const STRIKE_ENTRY_MAX = 6;
 export const PASSAGE_MARK = 'passage:';
 export const PASSAGE_MIN = 4;          // shorter than this locates nothing useful
 
+// …and WHICH PAGE that wording is on, when it is not this one.
+//
+// The failure, from the reader's manuscript again: a discussion on page 13
+// concluded that the scope sentence belonged in Section 1, which is on page 2.
+// The bot could not say so — a `passage:` had to sit on the thread's own page —
+// so it refused, and told the reader to go and make the change on page 2
+// themselves. That is the same clerical hand-off `passage:` exists to abolish,
+// one page further out.
+//
+// A `page: <N>` line, directly above the `strike:` it belongs to and binding
+// forward exactly as `passage:` does, moves the search to page N of THIS
+// document. Nothing else moves: the wording must still locate on that page,
+// exactly once, and outside every other mark on it. What the reader gets is
+// still a button, and the card it mints is an ordinary strikeout anchored on
+// page N. A `page:` with no `passage:` beside it names a page and no words, and
+// is refused rather than guessed at.
+export const PAGE_MARK = 'page:';
+
 // The invitation, as it rides the turn (server.mjs summon → chat.mjs envelope).
 //
 // Two things it has to get across, and models will fight both:
@@ -1141,6 +1159,28 @@ export const strikeOfferBlock = () =>
   + 'page and must not run across part of another mark already on it. If it '
   + 'cannot be found, or is found twice, the suggestion is refused and no button '
   + 'appears.\n'
+  + 'THE MARK COVERS THE CHANGING WORDS, EXACTLY. A strikeout means "these '
+  + 'words come out", so it must cover the words that are actually changing and '
+  + 'not one word more. If only a spelling changes, strike the word: '
+  + `\`${PASSAGE_MARK} stabilize\`, not the clause it sits in. Neighbouring words `
+  + 'that SURVIVE the change must stay outside the mark — striking them tells '
+  + 'the co-author they were deleted, and they were not. Widening is right only '
+  + 'when the replacement genuinely rewrites those words too.\n'
+  + 'DO NOT WIDEN TO BE UNAMBIGUOUS. If the changing words alone occur more than '
+  + 'once on the page, that is not your problem to solve by taking in the words '
+  + 'either side: this companion anchors the mark with the text around wherever '
+  + 'it lands, and where a word occurs twice it takes the occurrence NEAREST the '
+  + 'passage under discussion. Name the words that change, and no others.\n'
+  + 'A CHANGE ON ANOTHER PAGE NAMES THAT PAGE. A discussion here may conclude '
+  + 'that something has to change elsewhere in the document — the definition '
+  + 'belongs in Section 1, the sentence duplicates one on page 2. Say so with a '
+  + `\`${PAGE_MARK} <N>\` line beside the \`${PASSAGE_MARK}\` line, both directly `
+  + `above their \`${STRIKE_MARK}\` line, and the mark is made on page N. NEVER `
+  + 'tell the reader to go and highlight it themselves on the other page: that '
+  + 'is the clerical work this exists to abolish, and a page number is all it '
+  + 'takes to avoid it. The wording must still be copied exactly from page N, '
+  + `occur once there, and sit clear of that page's other marks. A \`${PAGE_MARK}\` `
+  + `line with no \`${PASSAGE_MARK}\` beside it names nowhere and is refused.\n`
   + 'Use it rarely — a disagreement or a question is NOT this. Say nothing at '
   + 'all if in doubt.\n';
 
@@ -1155,9 +1195,18 @@ export const strikeOfferBlock = () =>
 // which the companion locates in the page's own text before it will let a mark
 // be made there, because a mark that landed on the wrong words would be made in
 // the reader's name on a file they hand to somebody else.
-export const strikeFaultWhy = (fault, phrase) => {
+// `pageNo` is the page the suggestion NAMED for itself, where it named one: the
+// refusal has to say which page was searched, or a bot told "it is not on this
+// page" about a page it never meant learns nothing at all.
+export const strikeFaultWhy = (fault, phrase, pageNo) => {
   const q = phrase ? ` (“${phrase}”)` : '';
+  const n = Number(pageNo) > 0 ? Number(pageNo) : 0;
+  const where = n ? `page ${n}` : 'this page';
   switch (fault) {
+    case 'pageless':
+      return `a \`${PAGE_MARK}\` line names where to look and nothing to look for — `
+        + `it has to travel with a \`${PASSAGE_MARK}\` line carrying the exact wording `
+        + `on that page`;
     case 'long':
       return `the note ran past ${STRIKE_NOTE_MAX} characters, and this companion `
         + 'will not cut a note in half and put half of it on a document';
@@ -1165,24 +1214,30 @@ export const strikeFaultWhy = (fault, phrase) => {
       return `there were more than ${STRIKE_PER_REPLY_MAX} suggestions in one reply, `
         + 'and this one was past the limit';
     case 'unlocatable':
-      return `the \`${PASSAGE_MARK}\` wording${q} is not on this page — it has to be `
+      return `the \`${PASSAGE_MARK}\` wording${q} is not on ${where} — it has to be `
         + 'copied from the page character for character';
     case 'offpage':
-      return `the \`${PASSAGE_MARK}\` wording${q} is on a different page of this `
-        + 'document from the passage under discussion';
+      return n
+        ? `the \`${PASSAGE_MARK}\` wording${q} is somewhere in this document but not `
+          + `on ${where}, which is the page your \`${PAGE_MARK}\` line named`
+        : `the \`${PASSAGE_MARK}\` wording${q} is on a different page of this `
+          + `document from the passage under discussion — say which with a `
+          + `\`${PAGE_MARK}\` line if you meant it`;
     case 'ambiguous':
-      return `the \`${PASSAGE_MARK}\` wording${q} occurs more than once on this page, `
-        + 'so there is no telling which one you meant';
+      return `the \`${PASSAGE_MARK}\` wording${q} occurs more than once on ${where} `
+        + 'and the passage under discussion is no nearer one than the other, so '
+        + 'there is no telling which you meant — name the changing words together '
+        + 'with enough of what they change INTO, never a wider span of the page';
     case 'covered':
       return `the \`${PASSAGE_MARK}\` wording runs across part of another mark `
-        + `already on this page${q}, whose text is not yours to re-cover`;
+        + `already on ${where}${q}, whose text is not yours to re-cover`;
     default:
       return 'it pointed back at this discussion instead of standing on its own';
   }
 };
-export const strikeRefusedBlock = (fault, phrase = '') =>
+export const strikeRefusedBlock = (fault, phrase = '', pageNo = 0) =>
   'YOUR LAST `strike:` LINE WAS REFUSED — the reader never saw a button for it, '
-  + `because ${strikeFaultWhy(fault, phrase)}. `
+  + `because ${strikeFaultWhy(fault, phrase, pageNo)}. `
   + 'Nothing was marked up and nothing was filed. If you still mean it, write '
   + 'the line again with the whole of what you mean inside it — the complete '
   + 'replacement wording, in quotes — and say nothing that refers to this '
@@ -1215,18 +1270,35 @@ const unwrapLine = raw => String(raw).trim().replace(/^[-*>\s]+/, '')
 // `passage:` with nothing after it simply names nothing rather than silently
 // re-aiming the suggestion above it. It still comes off the words: it is
 // machinery either way.
+// A `page:` line binds forward the same way and to the same `strike:`, and may
+// stand on either side of the `passage:` it travels with — a model writes the
+// two in whichever order reads best to it, and they mean one thing together.
 export function parseStrikeSuggestions(text) {
   const re = new RegExp(`^${STRIKE_MARK}\\s*(.+)$`, 'i');
   const pre = new RegExp(`^${PASSAGE_MARK}\\s*(.+)$`, 'i');
+  const pg = new RegExp(`^${PAGE_MARK}\\s*(.+)$`, 'i');
   const hits = [];
   let pending = null;
+  const held = () => (pending || (pending = { passage: '', page: 0, lines: [] }));
   for (const raw of String(text || '').split(/\r?\n/)) {
     const line = unwrapLine(raw);
     const p = pre.exec(line);
     if (p) {
       const passage = String(p[1] || '').replace(/^[—:-]\s*/, '').trim()
         .replace(/^["“”«»„`]([\s\S]*)["“”«»„`]$/, '$1').trim();
-      pending = { passage, line: raw };
+      const h = held();
+      h.passage = passage;
+      h.lines.push(raw);
+      continue;
+    }
+    const g = pg.exec(line);
+    if (g) {
+      // "p. 13", "13", "page 13 (Section 1)" — the number is what is meant, and
+      // a line with no number in it names no page and is machinery all the same
+      const n = Number((/(\d+)/.exec(String(g[1])) || [])[1]) || 0;
+      const h = held();
+      h.page = n > 0 ? n : 0;
+      h.lines.push(raw);
       continue;
     }
     const m = re.exec(line);
@@ -1236,13 +1308,15 @@ export function parseStrikeSuggestions(text) {
     hits.push({
       why,
       passage: (pending && pending.passage) || '',
+      page: (pending && pending.page) || 0,
       line: raw,
-      lines: pending ? [pending.line, raw] : [raw],
+      lines: pending ? [...pending.lines, raw] : [raw],
     });
     pending = null;
   }
-  // a `passage:` that named nothing is still machinery and still comes off
-  if (pending) hits.orphanLines = [pending.line];
+  // a `passage:` or a `page:` that named nothing is still machinery and still
+  // comes off the reply's words
+  if (pending) hits.orphanLines = pending.lines;
   return hits;
 }
 
@@ -1253,7 +1327,8 @@ export function parseStrikeSuggestion(text) {
   const hits = parseStrikeSuggestions(text);
   if (!hits.length) return null;
   const last = hits[hits.length - 1];
-  return { why: last.why, line: last.line, ...(last.passage ? { passage: last.passage } : {}) };
+  return { why: last.why, line: last.line, ...(last.passage ? { passage: last.passage } : {}),
+    ...(last.page ? { page: last.page } : {}) };
 }
 
 // Every strike suggestion a message carries, old records included. A reply
@@ -1471,20 +1546,69 @@ export function nearbyMarksBlock(page, thread, text = '') {
 // Returns { fault, phrase, anchor }. `anchor` is the corrected quote with 32
 // characters of context each side, cut from the page text itself — the same
 // shape the extension computes for a hand-drawn highlight.
-export function resolvePassage(page, thread, passage, html) {
+//
+// WHERE IT LOOKS (2026-08-29). `wantPage`, when given, moves every one of those
+// checks onto that page of this document instead of the thread's own. One
+// discussion legitimately concludes changes on several pages — the reader's
+// page-13 thread deciding that the scope sentence belongs in Section 1, on page
+// 2 — and the old rule refused it and sent the reader off to make the change by
+// hand. Nothing is relaxed: the wording must locate on the NAMED page, once,
+// clear of that page's other marks, and the anchor is cut from that page's text
+// so the card lands where the words actually are.
+export function resolvePassage(page, thread, passage, html, wantPage) {
   const want = fold(passage);
-  if (!want) return { fault: '', phrase: '', anchor: null };
-  if (want.length < PASSAGE_MIN) return { fault: 'unlocatable', phrase: want, anchor: null };
-  const n = Number(thread && thread.page) || 0;
+  const named = Number(wantPage) > 0 ? Number(wantPage) : 0;
+  if (!want) {
+    // a page named with no wording is a pointer at a page and nothing else:
+    // there is nothing on it to mark, and guessing is not on offer
+    if (named) return { fault: 'pageless', phrase: String(named), anchor: null };
+    return { fault: '', phrase: '', anchor: null };
+  }
+  if (want.length < PASSAGE_MIN) {
+    return { fault: 'unlocatable', phrase: want, anchor: null, page: named };
+  }
+  const n = named || Number(thread && thread.page) || 0;
   const text = snapshotPageText(html, n);
-  const first = text ? text.indexOf(want) : -1;
-  if (first < 0) {
+  const hits = [];
+  for (let i = text ? text.indexOf(want) : -1; i >= 0; i = text.indexOf(want, i + 1)) hits.push(i);
+  if (!hits.length) {
     const whole = snapshotPdfText(html || '');
     return { fault: whole && whole.includes(want) ? 'offpage' : 'unlocatable',
-      phrase: want.slice(0, 80), anchor: null };
+      phrase: want.slice(0, 80), anchor: null, page: named };
   }
-  if (text.indexOf(want, first + 1) >= 0) {
-    return { fault: 'ambiguous', phrase: want.slice(0, 80), anchor: null };
+  // TWO MATCHES, AND THE DISCUSSION KNOWS WHICH (2026-08-29).
+  //
+  // The reported habit this exists to break: asked to change one word, a bot
+  // proposes striking the whole clause round it — "can stabilize the" for a
+  // change to "stabilise" — because a bare word occurs twice on the page and
+  // widening was the only way it knew to be unambiguous. The reader was typing
+  // "only suggest changes at the word level" into the chat by hand.
+  //
+  // It never needed to widen. A suggestion is made INSIDE a discussion, and the
+  // discussion is anchored somewhere on this page; the occurrence the reader
+  // means is the one beside the words they are talking about. So where the
+  // wording occurs more than once, the thread's own anchor breaks the tie and
+  // the NEAREST occurrence wins — and the prefix/suffix are then cut from that
+  // occurrence's own neighbourhood, so the mark is unambiguous however short
+  // the passage was.
+  //
+  // The tiebreak needs a locality, and refuses without one:
+  //   · the thread must be on the page being searched (a `page:` line pointing
+  //     at another page has no locality there, by definition), and
+  //   · its quote must actually locate in that page's text, and
+  //   · one occurrence must be strictly nearer than the rest — two equidistant
+  //     matches name neither, exactly as two matches always did.
+  let first = hits[0];
+  if (hits.length > 1) {
+    const here = n === (Number(thread && thread.page) || 0) ? locateQuote(text, thread) : -1;
+    if (here < 0) {
+      return { fault: 'ambiguous', phrase: want.slice(0, 80), anchor: null, page: named };
+    }
+    const scored = hits.map(i => ({ i, d: Math.abs(i - here) })).sort((a, b) => a.d - b.d);
+    if (scored[1] && scored[1].d === scored[0].d) {
+      return { fault: 'ambiguous', phrase: want.slice(0, 80), anchor: null, page: named };
+    }
+    first = scored[0].i;
   }
   const end = first + want.length;
   for (const t of (page && page.threads) || []) {
@@ -1497,7 +1621,7 @@ export function resolvePassage(page, thread, passage, html) {
     const i = locateQuote(text, t);
     if (i < 0) continue;
     if (i < end && first < i + q.length) {
-      return { fault: 'covered', phrase: q.slice(0, 80), anchor: null };
+      return { fault: 'covered', phrase: q.slice(0, 80), anchor: null, page: named };
     }
   }
   return {
@@ -1701,6 +1825,8 @@ export function appendMsg(page, threadId, {
     .map(s => ({
       why: String(s.why),
       ...(s.passage ? { passage: String(s.passage) } : {}),
+      // the page the change lands on, when it is not this thread's own
+      ...(Number(s.page) > 0 ? { page: Number(s.page) } : {}),
       ...(s.rejected ? { rejected: String(s.rejected) } : {}),
       ...(s.phrase ? { phrase: String(s.phrase) } : {}),
     }));
@@ -1708,6 +1834,7 @@ export function appendMsg(page, threadId, {
   else if (strike && strike.why) {
     msg.strike = { why: String(strike.why) };
     if (strike.passage) msg.strike.passage = String(strike.passage);
+    if (Number(strike.page) > 0) msg.strike.page = Number(strike.page);
     if (strike.rejected) msg.strike.rejected = String(strike.rejected);
     if (strike.phrase) msg.strike.phrase = String(strike.phrase);
   }

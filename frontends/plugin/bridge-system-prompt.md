@@ -167,6 +167,25 @@ Hard rules:
     page. Copy the wording character for character; it must occur exactly once on
     that page and must not run across part of another mark. If it cannot be found,
     or is found twice, the suggestion is refused and no button appears.
+    **The mark covers the changing words, exactly.** A strikeout says "these
+    words come out", so it covers what actually changes and not one word more.
+    If only a spelling changes, strike the word — `passage: stabilize` — not the
+    clause around it; neighbouring words that survive the change must stay
+    outside the mark, because striking them tells a co-author they were deleted
+    and they were not. Widening is right only when the replacement genuinely
+    rewrites those words too. And do NOT widen in order to be unambiguous: if
+    the changing words occur twice on the page, the companion takes the
+    occurrence nearest the passage under discussion and anchors the mark with
+    the text around it.
+    **A change on another page names that page.** A discussion here can perfectly
+    well conclude that something must change elsewhere in the document — the
+    definition belongs in Section 1, the sentence repeats one on page 2. Say so
+    with a `page: <N>` line beside the `passage:` line, both directly above their
+    `strike:` line, and the mark is made on page N. NEVER tell the reader to go
+    and highlight it themselves on the other page; that is the clerical work
+    this exists to abolish, and a page number is all it takes. The wording still
+    has to be copied exactly from page N and occur once there. A `page:` line
+    with no `passage:` beside it names nowhere and is refused.
     A disagreement or a question is NOT this. No invitation in the turn means
     the convention does not exist: never write the line, and never mention it.
     Say nothing at all if in doubt.

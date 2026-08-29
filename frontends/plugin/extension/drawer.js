@@ -1593,6 +1593,7 @@
         round: shadow.querySelector('.roundbar'),
         selpill: shadow.querySelector('.selpill'),
         selbtn: shadow.querySelector('.selbtn'),
+        markpick: shadow.querySelector('.markpick'),
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
         projpick: shadow.querySelector('.popover.projpick'),
@@ -1687,9 +1688,18 @@
 </div>`;
     }
 
+    // The chooser that opens where two markings lie on top of one another.
+    // Empty until a click fills it; it lives beside the selection pill because
+    // it is the same kind of thing — a small page-side popover in the drawer's
+    // register, put where the reader's finger is.
+    function markPickHtml() {
+      return `<div class="markpick" role="menu" aria-label="What is marked here"></div>`;
+    }
+
     function shell() {
       return `
 ${selPillHtml()}
+${markPickHtml()}
 <aside class="panel" role="complementary" aria-label="Botference Discuss">
   <div class="grip" title="Drag to resize · double-click to reset" role="separator" aria-orientation="vertical"></div>
   <div class="hdr">
@@ -4837,6 +4847,26 @@ ${selPillHtml()}
         cb('onSelect')(b.getAttribute('data-mark') || 'highlight');
       });
 
+      // …and the chooser that opens where two markings overlap. Same mousedown
+      // guard for the same reason, and Esc / arrow keys because its rows are a
+      // menu: the reader may have arrived here from the keyboard.
+      D.el.markpick.addEventListener('mousedown', e => e.preventDefault());
+      D.el.markpick.addEventListener('click', e => {
+        const r = e.target && e.target.closest && e.target.closest('.pickrow');
+        if (!r) return;
+        e.preventDefault();
+        choosePick(r.getAttribute('data-thread') || '');
+      });
+      D.el.markpick.addEventListener('keydown', e => {
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        const rows = [...D.el.markpick.querySelectorAll('.pickrow')];
+        if (!rows.length) return;
+        e.preventDefault();
+        const at = rows.indexOf(D.shadow.activeElement);
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        rows[(at + step + rows.length) % rows.length].focus();
+      });
+
       // resize handle
       D.el.grip.addEventListener('mousedown', beginDrag);
       D.el.grip.addEventListener('dblclick', e => { e.preventDefault(); applyWidth(W_DEFAULT); rememberWidth(); });
@@ -4957,7 +4987,8 @@ ${selPillHtml()}
         // the chip away for this tab and is remembered nowhere else.
         if (act === 'strike-yes') {
           doStrikeFrom(target, btn.dataset.ts, Number(btn.dataset.idx) || 0,
-            btn.dataset.why, btn.dataset.passage || '');
+            btn.dataset.why, btn.dataset.passage || '',
+            Number(btn.dataset.page) || 0);
           return;
         }
         if (act === 'strike-no') {
@@ -6826,18 +6857,22 @@ ${selPillHtml()}
       // told the same thing on its next turn here (store.strikeRefusedBlock).
       if (s.rejected) {
         const q = s.phrase ? ` (“${esc(s.phrase)}”)` : '';
+        // which page was searched — the one the suggestion named, or this one
+        const where = Number(s.page) > 0 ? `p. ${Number(s.page)}` : 'this page';
         const why = s.rejected === 'long'
           ? 'the note was too long to put on the document without cutting it'
           : s.rejected === 'capped'
             ? 'there were more suggestions in one reply than can be offered at once'
           : s.rejected === 'unlocatable'
-            ? `the wording it named${q} is not on this page`
+            ? `the wording it named${q} is not on ${where}`
           : s.rejected === 'offpage'
-            ? `the wording it named${q} is on a different page of this document`
+            ? `the wording it named${q} is elsewhere in this document, not on ${where}`
           : s.rejected === 'ambiguous'
-            ? `the wording it named${q} occurs more than once on this page`
+            ? `the wording it named${q} occurs more than once on ${where}`
           : s.rejected === 'covered'
-            ? `the wording it named runs across part of another mark already here${q}`
+            ? `the wording it named runs across part of another mark already on ${where}`
+          : s.rejected === 'pageless'
+            ? 'it named a page but no wording on it'
           : `the note refers to this discussion${q}, and the co-author will only see the passage`;
         return `<div class="filechip strikechip refused">
           <span class="fcw">Not filed — ${why}. Nothing was marked up.</span></div>`;
@@ -6847,8 +6882,14 @@ ${selPillHtml()}
       // suggestion says which words it means and the chip SHOWS them, because
       // the click is about to put a red line there in the reader's name and
       // consent to a mark you cannot see is not consent.
+      // …and WHERE, when the change lands on another page of this document. A
+      // reader about to authorise a red line somewhere they cannot see must be
+      // told which page it is going on before they click, not after.
+      const onPage = Number(s.page) > 0
+        ? `<span class="fcpage" title="${esc('the page this mark will be made on')}">p. ${Number(s.page)}</span>`
+        : '';
       const named = s.passage
-        ? `<span class="fcpassage" title="${esc('the wording this will be drawn on')}">“${esc(s.passage)}”</span>`
+        ? `<span class="fcpassage" title="${esc('the wording this will be drawn on')}">“${esc(s.passage)}”</span>${onPage}`
         : '';
       // WHAT CAME OF THIS CHIP, if anything: the strike it produced. `from_msg`
       // says which REPLY was taken and `from_idx` which suggestion inside it,
@@ -6884,10 +6925,16 @@ ${selPillHtml()}
       // offer however many of its siblings have already been taken.
       const mineThread = threads.find(x => x && x.id === threadId);
       const span = s.passage || String((mineThread && mineThread.quote) || '');
+      // …and on the same PAGE, because a suggestion aimed at another page of
+      // the document is a different change however the words read
+      const spanPage = Number(s.page) > 0 ? Number(s.page)
+        : Number(mineThread && mineThread.page) || 0;
       const rival = anyBorn && threads.find(t => t && isStruck(t)
-        && t.from_thread === threadId && t.quote === span);
+        && t.from_thread === threadId && t.quote === span
+        && (Number(t.page) || 0) === spanPage);
       const data = `data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-idx="${idx}"`
-        + ` data-why="${esc(s.why)}" data-passage="${esc(s.passage || '')}"`;
+        + ` data-why="${esc(s.why)}" data-passage="${esc(s.passage || '')}"`
+        + ` data-page="${Number(s.page) || 0}"`;
       if (rival) {
         return `<div class="filechip strikechip passed">
           <span class="fcw">Not chosen — ${esc(s.why)}${named}</span>
@@ -6922,14 +6969,17 @@ ${selPillHtml()}
     // never steals the scroll; that is the whole rule, and a card the reader did
     // not ask to be taken to is arriving content however deliberate the click
     // that caused it.
-    async function doStrikeFrom(threadId, ts, idx, why, passage) {
+    async function doStrikeFrom(threadId, ts, idx, why, passage, pageNo) {
       const key = String(ts) + '#' + (Number(idx) || 0);
       if (D.strikes.busy) return;
       D.strikes.busy = key;
       holdOn(threadId);      // stay where they are, whatever arrives
       render();
       let r;
-      try { r = await cb('onStrikeFrom')(threadId, why, ts, Number(idx) || 0, passage || ''); }
+      try {
+        r = await cb('onStrikeFrom')(threadId, why, ts, Number(idx) || 0, passage || '',
+          Number(pageNo) || 0);
+      }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.strikes.busy = '';
       if (!r || r.ok === false) {
@@ -7794,6 +7844,91 @@ ${selPillHtml()}
       return D;
     }
 
+    // ---- two markings, one spot on the page --------------------------------
+    // THE REPORT. The reader discusses a passage, resolves the thread, then
+    // strikes the passage through themselves. The red line is painted over the
+    // highlight, so a click on those words could only ever open the strike:
+    // the settled conversation underneath was there on the page and yet
+    // unreachable from it.
+    //
+    // So where marks genuinely overlap AT THE POINT CLICKED (anchor.js's
+    // marksAtPoint decides that, from the paint, not from what the quotes have
+    // in common) the reader is asked which one they meant. One row per marking,
+    // nearest-fitting first, each saying what it IS — "strikeout — suggested
+    // deletion", "comment — “…” · resolved" — because the reader is choosing
+    // between two things they can both see and neither of which has a name.
+    //
+    // A single mark is not a choice and never opens this: that click is
+    // byte-for-byte the one it has always been.
+    const PICK_NOTE_MAX = 52;
+    // The first thing anybody actually WROTE in the thread — a bot's answer
+    // included, because a thread whose only words are a bot's is still best
+    // named by them. A strikeout filed in silence has no note at all, and says
+    // what it is instead.
+    function pickNote(t) {
+      for (const m of ((t && t.msgs) || [])) {
+        const s = String((m && m.text) || '').trim().replace(/\s+/g, ' ');
+        if (s) return s.length > PICK_NOTE_MAX ? s.slice(0, PICK_NOTE_MAX - 1) + '…' : s;
+      }
+      return '';
+    }
+    function pickRow(t) {
+      const struck = t.mark === 'strike';
+      const kind = struck ? 'strikeout' : 'comment';
+      const note = pickNote(t);
+      const what = note ? '“' + note + '”' : (struck ? 'suggested deletion' : 'no note yet');
+      const state = isResolved(t) ? 'resolved' : isAddressed(t) ? 'ready for review' : '';
+      // which paint this marking wears on the page, so the row can carry a
+      // swatch of it: the strike's red rule, or the highlight's own stage
+      const paint = struck ? 'strike'
+        : isResolved(t) ? 'done' : isAddressed(t) ? 'ready' : 'open';
+      return { kind, what, state, struck, paint };
+    }
+    function showPicks(x, y, ids) {
+      mount();
+      const rows = (ids || []).map(threadById).filter(Boolean);
+      // one thread, or none we know about, is not a choice — the caller's own
+      // single-mark path has already run, so this simply shows nothing
+      if (rows.length < 2) { hidePicks(); return D; }
+      const box = D.el.markpick;
+      box.innerHTML = rows.map(t => {
+        const r = pickRow(t);
+        return `<button class="pickrow${r.struck ? ' struck' : ''}" type="button" role="menuitem"
+  data-thread="${esc(t.id)}"><span class="pdot ${esc(r.paint)}" aria-hidden="true"></span><span
+  class="pkind">${esc(r.kind)}</span><span class="pwhat">${esc(r.what)}</span>${
+  r.state ? `<span class="pstate">${esc(r.state)}</span>` : ''}</button>`;
+      }).join('');
+      box.classList.add('on');
+      // measured after it is displayable, so a three-row chooser near the foot
+      // of the window comes UP rather than off the bottom
+      const w = box.offsetWidth || 260, h = box.offsetHeight || 90;
+      box.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+      box.style.top = (y + 8 + h > window.innerHeight - 8
+        ? Math.max(8, y - 8 - h) : y + 8) + 'px';
+      const first = box.querySelector('.pickrow');
+      if (first) first.focus();
+      return D;
+    }
+    function hidePicks() {
+      if (!D.mounted) return D;
+      D.el.markpick.classList.remove('on');
+      D.el.markpick.innerHTML = '';
+      return D;
+    }
+    function picksOpen() { return !!(D.mounted && D.el.markpick.classList.contains('on')); }
+    // Choosing a row is a click on that mark, and nothing more: the same
+    // open → focus → scrollToThread a direct click does, so `reveal` unfolds a
+    // resolved card out of the archive and `focus` releases a send-hold under
+    // its own rule. There is no second path to keep in step.
+    function choosePick(id) {
+      hidePicks();
+      if (!id) return D;
+      open('comments');
+      focus(id);
+      scrollToThread(id);
+      return D;
+    }
+
     // ---- companion events -----------------------------------------------
     // One event must never be able to take the drawer down with it. Everything
     // live — the working chip, the streaming text, the answer itself — arrives
@@ -8046,6 +8181,12 @@ ${selPillHtml()}
                               revised: { ...D.questions.revised },
                               threads: { ...D.questions.threads } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
+      // the overlap chooser: content.js decides there IS an overlap, the drawer
+      // names the threads and does the choosing
+      showPicks, hidePicks, picksOpen, choosePick,
+      // what the chooser would say about a thread — the harness reads the rows
+      // it drew, and this is how a node test could read one without a DOM
+      pickRow: id => { const t = threadById(id); return t ? pickRow(t) : null; },
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
       // Whether a ```python block may be run from here: the companion's answer
@@ -8055,7 +8196,13 @@ ${selPillHtml()}
       setCanRun: on => { D.canRun = !!on; render(); return D; },
       // One Esc, one layer. content.js's document-level handler asks this
       // first, so a lightbox closes instead of the whole drawer.
-      escape: () => { if (!D.light) return false; closeLight(); return true; },
+      escape: () => {
+        // innermost layer first: the overlap chooser sits over the page, above
+        // even a lightbox in the reader's attention, and closing it must not
+        // take the drawer with it
+        if (picksOpen()) { hidePicks(); return true; }
+        if (!D.light) return false; closeLight(); return true;
+      },
       // the library's record, handed in the way setPage hands the page's
       setLibrary: page => { D.library.page = page || null; if (D.view === 'pages') renderLibrary(); },
       refreshLibrary: () => { if (D.view === 'pages') loadLibrary(); },

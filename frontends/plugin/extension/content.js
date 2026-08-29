@@ -2065,12 +2065,17 @@
       // deleted afterwards and the co-author receives a clean red line signed by
       // the reader. No optimistic paint — the new thread has an id only the
       // companion can mint, and loadPage paints it the moment it lands.
-      onStrikeFrom: async (threadId, note, fromMsg, fromIdx, passage) => {
+      onStrikeFrom: async (threadId, note, fromMsg, fromIdx, passage, pageNo) => {
         const r = await api('POST', '/strike-from',
           { url: URL_NOW, thread_id: threadId, note: note || '', from_msg: fromMsg || '',
             // WHICH suggestion inside that reply (one reply may carry three),
             // and the passage the bot named for itself where it named one
-            from_idx: Number(fromIdx) || 0, passage: passage || '' });
+            from_idx: Number(fromIdx) || 0, passage: passage || '',
+            // …and the PAGE that wording is on, when the discussion concluded
+            // that the change belongs somewhere else in the document. The door
+            // checks it again against that page's own text — this is a request,
+            // not a permission.
+            page: Number(pageNo) || 0 });
         if (!r.ok) return failure(r);
         await loadPage();
         return { ok: true, thread: r.data && r.data.thread,
@@ -2525,7 +2530,27 @@
         return { ok: true };
       },
       onReconnect: () => bg({ t: 'reconnect' }),
-      onJump: id => Anchor.scrollTo(id),
+      // The quote clicked: go to the mark. On a PDF the mark may be on a page
+      // that has not been rendered yet — a strikeout minted for page 2 out of a
+      // discussion on page 13 — and then there is nothing painted to scroll to.
+      // Falling back to the PAGE puts the reader in front of the words; the
+      // paint arrives with the render, a moment later, and lands under their eye
+      // rather than nowhere.
+      onJump: id => {
+        if (Anchor.scrollTo(id)) return true;
+        const t = ((PAGE && PAGE.threads) || []).find(x => x && x.id === id);
+        const n = Number(t && t.page) || 0;
+        if (!n) return false;
+        const attr = (window.BFPAdapters && window.BFPAdapters.PDF_PAGE_ATTR)
+          || 'data-bfp-pdf-page';
+        const box = document.querySelector('[' + attr + '="' + n + '"]');
+        if (!box || !box.scrollIntoView) return false;
+        box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // …and once the page has rendered and content.js has painted it, take
+        // the reader the last few lines to the mark itself
+        setTimeout(() => Anchor.scrollTo(id), 600);
+        return true;
+      },
       onFocus: id => {
         for (const t of (PAGE && PAGE.threads) || []) Anchor.setFocus(t.id, t.id === id);
       },
@@ -2579,7 +2604,7 @@
   }, true);
 
   document.addEventListener('mousedown', e => {
-    if (drawer && !inOurUI(e.target)) drawer.hideSel();
+    if (drawer && !inOurUI(e.target)) { drawer.hideSel(); drawer.hidePicks(); }
   }, true);
 
   // The pill clicked: freeze the anchor, paint it provisionally, open the
@@ -2648,6 +2673,16 @@
     const id = mark.getAttribute('data-bfp');
     if (!id || id === '__new__') return;
     e.preventDefault();
+    // …and where SEVERAL markings lie on this spot — the reader's own strike
+    // painted over the discussion that produced it is the ordinary case — the
+    // click cannot mean one of them, so it asks. `marksAtPoint` answers from
+    // the paint at (x, y), nearest-fitting first; anything shorter than two
+    // ids is not a choice and falls through to the click this has always been.
+    const at = Anchor.marksAtPoint(e.target, e.clientX, e.clientY);
+    if (at.length > 1) {
+      activate().then(d => { if (d) d.showPicks(e.clientX, e.clientY, at); });
+      return;
+    }
     activate().then(d => {
       d.open('comments');
       d.focus(id);
@@ -2657,9 +2692,13 @@
 
   // Esc closes the drawer wherever the focus is
   document.addEventListener('keydown', e => {
-    // one layer at a time: an open lightbox (a figure from a code-block run)
-    // takes the Esc before the drawer does
-    if (e.key === 'Escape' && drawer && drawer.isOpen() && !drawer.escape()) { drawer.close(); }
+    if (e.key !== 'Escape' || !drawer) return;
+    // one layer at a time: the overlap chooser, then an open lightbox (a figure
+    // from a code-block run), then the drawer. The first two are up whether or
+    // not the panel is — a chooser can be opened on a dormant page — so they
+    // are asked before the drawer's own state is.
+    if (drawer.picksOpen && drawer.picksOpen()) { drawer.hidePicks(); return; }
+    if (drawer.isOpen() && !drawer.escape()) { drawer.close(); }
   }, true);
 
   // ---- the bots changed this project's files ------------------------------

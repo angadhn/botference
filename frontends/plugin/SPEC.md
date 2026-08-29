@@ -7631,6 +7631,167 @@ round names the log, and the log holds both of the round's comments.
   and no state for "this contradicts thread X"; it is a sentence in a reply, and
   the reader is the one who acts on it.
 
+## Amendment (2026-08-29, shipped): two markings, one spot — the chooser
+
+**The report.** The reader discusses a passage, resolves the thread, and then
+strikes the passage through themselves. The strike's red line is painted over
+the settled highlight, so clicking those words on the page could only ever open
+the strike: the conversation underneath was on the document and yet unreachable
+from it, and had to be hunted for by scrolling the drawer.
+
+**A click where marks overlap asks which one was meant.** Not a new gesture and
+not a new place — a small popover opens at the click, in the drawer's own visual
+register beside the selection pill, one row per marking under the cursor. Each
+row says what it IS, because the reader is choosing between two things they can
+both see and neither of which has a name: *strikeout — "Cut this — nothing in
+the report supports it."*, *comment — "Does the report actually say this?" ·
+resolved*. A swatch of the marking's own paint leads the row (the yellow, amber
+or sage wash, the red rule) so a row can be matched to the ink before a word of
+it is read. Esc and a click away put it down; the rows are buttons, the first is
+focused, and the arrows move between them.
+
+**A single mark is not a choice**, and that click is byte-for-byte the one it
+has always been. The chooser exists only where two or more marks genuinely
+cover the point clicked.
+
+**Overlap is decided from the PAINT, not from the quotes.** `marksAtPoint`
+(anchor.js) walks the ancestor chain of what was hit: overlapping paints NEST —
+the second paint of the same words finds the text node the first already wrapped
+and wraps it again — so at any point on the page the marks covering it are an
+ancestor chain, innermost last-painted first. That chain IS the point test, and
+an exact one. `elementsFromPoint` is folded in afterwards only to catch a paint
+that overlaps this one on screen without containing it in the tree, which a
+PDF's absolutely positioned text layer can produce. Order is nearest-fitting —
+the smallest painted span first, the innermost paint breaking a tie between two
+marks over the same words — because the smallest span is the most specific thing
+the reader can have meant by clicking there.
+
+**Choosing a row is a click on that mark and nothing more:** the same
+`open('comments')` → `focus` → `scrollToThread` a direct click does, so
+`reveal()` unfolds a resolved card out of the archive, a commenter filter stands
+aside, and a send-hold is released under its own rule. There is no second path
+to keep in step.
+
+### Files
+
+```
+extension/anchor.js       marksAtPoint(target, x, y), paintedLen(id)
+extension/content.js      the highlight-click handler asks marksAtPoint first;
+                          Esc and outside-mousedown dismiss the chooser
+extension/drawer.js       .markpick in the shell; showPicks / hidePicks /
+                          picksOpen / choosePick, pickRow / pickNote; the
+                          chooser takes Esc ahead of the lightbox
+extension/drawer.css      .markpick, .pickrow and its swatch
+```
+
+**Testing.** Harness `?pdf=1&strike=stack` — a resolved discussion, the reader's
+own strikeout painted over it, and a narrower comment inside both, which is the
+screenshot pose. `&selftest=1` (32) is the whole contract: a single-mark click
+opens no chooser and goes straight to its card; a click on the stack opens one
+with three correctly-named rows in nearest-first order; the buried resolved
+discussion is reached by its row and lands in view out of the archive; Esc and a
+click away dismiss; and `marksAtPoint` itself answers from the marks, never
+naming the provisional `__new__` one.
+
+## Amendment (2026-08-29, shipped): a change on another page
+
+**The report.** A thread on page 13 concluded that a scope sentence belonged in
+Section 1 — page 2 — and the bot refused: *"A page-13 strike cannot add wording
+on an earlier page; use the Section 1 scope sentence there."* That refusal was
+this companion's own rule (the 2026-08-26 `passage:` check, which required the
+wording to sit on the thread's page) working exactly as written. The rule had
+simply been outgrown: one discussion legitimately concludes changes on other
+pages, and sending the reader off to mark it up by hand is the clerical work
+`passage:` exists to abolish, one page further out.
+
+**The grammar grows one line.** `page: <N>` binds forward to the next `strike:`
+exactly as `passage:` does, may stand on either side of it, and moves the search
+to page N of this document. Without it, behaviour is byte-identical to before.
+
+**Validation is relocated, not relaxed.** `resolvePassage` takes the page to
+search: the wording must locate on the NAMED page, exactly once, and clear of
+that page's other marks — the four faults are checked against that page's
+snapshot text, at the lift and again at the door, and the prefix/suffix are cut
+from that page's own neighbourhood so the card anchors where the words are. A
+`page:` with no `passage:` beside it names a page and nothing on it, and is
+refused (`pageless`). Refusals now say WHICH page was searched, because "not on
+this page" teaches nothing to a bot that meant another one.
+
+**The child is an ordinary strikeout**, with the same parent, brood and adoption
+semantics as any other — it simply stands on a different page. The dedupe that
+matches on the quote now matches on the page too, since one sentence can stand
+on two pages. The brood line's numbered *view* jumps there through the ordinary
+reveal path, and `onJump` falls back to scrolling the PAGE when the mark is on a
+page the viewer has not rendered yet, then takes the reader the last few lines
+once the paint arrives. The cap is unchanged: three suggestions per reply, any
+pages.
+
+## Amendment (2026-08-29, shipped): the mark covers the changing words, exactly
+
+**The report.** Asked to change one word, the bots proposed striking the phrase
+around it — `can stabilize the` for a change to "stabilise", `momentum-conserving
+motion` where "motion" survives — and the reader was typing *"only suggest
+changes at the word level if that is all you are changing"* into the chat by
+hand. A strikeout says "these words come out"; striking words that survive the
+change tells a co-author they were deleted, and they were not.
+
+**Half of it is a rule**, now standing in the offer block and in rule 13: the
+mark covers what changes and not one word more, and widening is right only when
+the replacement genuinely rewrites the neighbouring words too.
+
+**The other half is that widening used to be the only way to be unambiguous.**
+A bare word occurs twice on a page and the ambiguity check refused it. It never
+needed to widen: a suggestion is made inside a discussion, and the discussion is
+anchored somewhere on that page — the occurrence meant is the one beside the
+words being talked about. So where the wording occurs more than once, the
+thread's own anchor breaks the tie and the NEAREST occurrence wins; the
+prefix/suffix are then cut from that occurrence's neighbourhood, which is what
+makes a one-word mark unambiguous without being wider.
+
+The tiebreak needs a locality and refuses without one: the thread must be on the
+page being searched (a `page:` line pointing elsewhere has no locality there, by
+definition), its quote must actually locate in that page's text, and one
+occurrence must be strictly nearer than the rest — two equidistant matches name
+neither, exactly as two matches always did.
+
+### Files (both strike amendments)
+
+```
+store.mjs                 PAGE_MARK; parseStrikeSuggestions carries `page` and
+                          binds it forward; resolvePassage takes `wantPage` and
+                          the nearest-occurrence tiebreak; strikeFaultWhy /
+                          strikeRefusedBlock take the page; the `pageless`
+                          fault; appendMsg keeps `page` on a suggestion;
+                          strikeOfferBlock's two new paragraphs
+server.mjs                the lift passes hit.page to resolvePassage and keeps
+                          it on the refusal; /strike-from takes `page`, checks
+                          it again, and dedupes on quote AND page;
+                          refusedStrikeNote names the page
+bridge-system-prompt.md   rule 13: the two new paragraphs
+extension/drawer.js       the chip's data-page, doStrikeFrom's page argument,
+                          the `p. N` badge, page-aware refusal wording, and a
+                          rival chip matched on page as well as span
+extension/content.js      onStrikeFrom sends `page`; onJump falls back to the
+                          page box for a mark not yet painted
+extension/drawer.css      .strikechip .fcpage
+```
+
+**Testing.** `test/strike.test.mjs` (73 → 87). Pure: the `page:` grammar, both
+orders, "p. 13" and "page 4 (Section 2)", a stray `page:` that names nothing but
+still comes off the words, mixed same-page and cross-page blocks in one reply,
+the page-aware fault wording, and both new paragraphs of the offer block. End to
+end over the real doors: the reported shape — a page-13 discussion minting a
+strikeout on page 2, anchored in page 2's own context, with the discussion
+unmoved and the brood intact; the wrong page named refused at the lift and at
+the door alike and the bot told which page; ambiguity on the named page; a page
+with no wording; one reply landing one change here and one there; the export
+carrying the cross-page mark under `p. 2`; and the word-level case — "stabilize"
+three times on a page, the thread beside the second, the one-word mark landing
+there with the right context either side, and still refused where no discussion
+is nearer one than another. Harness `?pdf=1&strike=elsewhere` is the chip's
+screenshot pose (the `p. 2` badge); `&selftest=1` (12) drives the click through
+to a red line on page 2.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
