@@ -605,6 +605,19 @@ This is PDFs only, on purpose: a strikeout is a suggested edit to a
 draft, and a news article is not a draft. The pill on an ordinary page is
 the single comment button it has always been.
 
+**A discussion that ends in several changes.** Argue about a passage and
+the bots may end an answer with up to three proposals at once — three
+chips, three Strike it buttons, each one you can take or leave. Every one
+you take becomes its own strikeout in your name, and the discussion grows
+a quiet line saying what it produced — *struck through here — 3 changes*
+— with a number for each that jumps to it. And when your highlight was
+short of the words the change actually needs, the bot names the full
+passage itself and the chip shows you exactly what will be struck before
+you press anything; you are never sent back to highlight it again. A
+named passage has to be on the page you are reading, found there exactly
+once, and clear of any marking already there — otherwise no button
+appears and the chip says why.
+
 **And the pages your council writes.** When a council chat builds an HTML
 artifact inside its own project —
 `…/botference/projects/spaceship-engineering/index.html` — opening that

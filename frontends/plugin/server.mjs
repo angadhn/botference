@@ -947,26 +947,56 @@ function onChatEvent(ev) {
       if (ev.msg && ev.target !== store.PAGE_CHAT) {
         const th = store.findThread(page, ev.target);
         if (strikeable(page, th)) {
-          const hit = store.parseStrikeSuggestion(ev.msg.text);
-          if (hit) {
-            // …and is the note USABLE? A note is copied onto the document and
-            // read beside the struck passage by somebody who has neither this
-            // thread nor this reply — so one that points back here ("replace
-            // with the wording above") is refused, and so is one long enough
-            // that the only way to file it would be to cut it in half. Either
-            // way the line still comes off the words (it is machinery), the
-            // chip appears with NO BUTTON and says what happened, and the next
-            // turn of this thread tells the bot why (store.strikeRefusedBlock).
-            // Refusing visibly is the point: the failure the reader hit was a
-            // bot announcing a fix that the companion had quietly dropped.
-            const { fault, phrase } = store.strikeNoteFault(hit.why);
+          // ALL of them, now. One discussion routinely concludes that two or
+          // three separate places have to change, and a thread can only ever
+          // mint one card for its own quote — so a reply may carry up to
+          // STRIKE_PER_REPLY_MAX suggestions, each about a different passage,
+          // each becoming its own chip and its own card.
+          const hits = store.parseStrikeSuggestions(ev.msg.text);
+          const machinery = hits.flatMap(h => h.lines || [h.line])
+            .concat(hits.orphanLines || []);
+          if (hits.length) {
+            // the page's own text, for the `passage:` check below — read ONCE
+            // for the whole reply however many suggestions it carries
+            const html = store.readSnapshot(store.pageKey(page.url));
+            const strikes = hits.slice(0, store.STRIKE_ENTRY_MAX).map((hit, i) => {
+              const clipped = hit.why.slice(0, 400);
+              // past the cap: a visible refusal rather than a silent drop, for
+              // the reason every other refusal here is visible — a suggestion
+              // that vanished is indistinguishable from one never made.
+              if (i >= store.STRIKE_PER_REPLY_MAX) {
+                return { why: clipped, rejected: 'capped' };
+              }
+              const { fault, phrase } = store.strikeNoteFault(hit.why);
+              if (fault) {
+                return { why: clipped, rejected: fault, ...(phrase ? { phrase } : {}) };
+              }
+              // …and did it name its own passage? Checked HERE, against the
+              // page's real text, so a wording that cannot be located never
+              // becomes a button. The reader's partial highlight is corrected
+              // by the bot, never by being sent back to re-highlight it.
+              if (hit.passage) {
+                const r = store.resolvePassage(page, th, hit.passage, html);
+                if (r.fault) {
+                  return { why: clipped, passage: hit.passage, rejected: r.fault,
+                    ...(r.phrase ? { phrase: r.phrase } : {}) };
+                }
+                return { why: hit.why, passage: r.anchor.quote };
+              }
+              return { why: hit.why };
+            });
             ev.msg = {
               ...ev.msg,
               text: String(ev.msg.text).split(/\r?\n/)
-                .filter(l => l !== hit.line).join('\n').trimEnd(),
-              strike: fault
-                ? { why: hit.why.slice(0, 400), rejected: fault, ...(phrase ? { phrase } : {}) }
-                : { why: hit.why },
+                .filter(l => machinery.indexOf(l) < 0).join('\n').trimEnd(),
+              strikes,
+            };
+          } else if (machinery.length) {
+            // a `passage:` line that named nothing is machinery too
+            ev.msg = {
+              ...ev.msg,
+              text: String(ev.msg.text).split(/\r?\n/)
+                .filter(l => machinery.indexOf(l) < 0).join('\n').trimEnd(),
             };
           }
         }
@@ -1398,11 +1428,17 @@ const strikeable = (page, thread) => !!thread
 // has been suggested since. Only the LAST one: a bot that was refused, wrote a
 // good line afterwards and had it taken does not want to be lectured about the
 // first attempt for the rest of the thread.
+// A reply may now carry several, so the answer is about the LAST REPLY that
+// suggested anything: if every suggestion in it was taken as an offer, nothing
+// is said; if any was refused, the first refusal in it is the one named, because
+// telling a bot three things at once about three lines is how a turn stops being
+// read at all.
 function refusedStrikeNote(thread) {
   for (let i = ((thread && thread.msgs) || []).length - 1; i >= 0; i--) {
-    const s = thread.msgs[i] && thread.msgs[i].strike;
-    if (!s) continue;
-    return s.rejected ? store.strikeRefusedBlock(s.rejected) : '';
+    const list = store.strikesOf(thread.msgs[i]);
+    if (!list.length) continue;
+    const bad = list.find(s => s.rejected);
+    return bad ? store.strikeRefusedBlock(bad.rejected, bad.phrase || '') : '';
   }
   return '';
 }
@@ -3393,10 +3429,39 @@ export function handler(req, res) {
       // the fallback for a suggestion that arose somewhere else (a second
       // discussion on the same sentence, another tab, an older record with no
       // link on it at all).
+      //
+      // WHAT CHANGED AGAIN (2026-08-29). A discussion may now mint SEVERAL
+      // cards, so "the strike this thread minted" is no longer a single thing
+      // and the link alone cannot say which one a confirm is about. The link
+      // match is therefore the CHIP's link — thread, reply and position in that
+      // reply — which is exactly "the card this very chip made", and still beats
+      // the quote after an anchor has drifted. The quote match then does the
+      // work it always did, one rung out: a different chip, a different bot, a
+      // different discussion, all landing on the same span.
+      //
+      // …and the passage that span is measured on may be the BOT's rather than
+      // the reader's, where the suggestion named its own (`passage:`). Checked
+      // again here and not merely at the lift, because a door must not take a
+      // client's word for where a mark may be made.
+      const passage = String(data.passage || '').trim();
+      let anchor = { quote: from.quote, prefix: from.prefix, suffix: from.suffix, page: from.page };
+      if (passage) {
+        const r = store.resolvePassage(page, from, passage,
+          store.readSnapshot(store.pageKey(page.url)));
+        if (r.fault) {
+          return fail(res, 400,
+            `that passage cannot be marked — ${store.strikeFaultWhy(r.fault, r.phrase)}`);
+        }
+        anchor = r.anchor;
+      }
+      const fromMsg = String(data.from_msg || '');
+      const fromIdx = Number(data.from_idx) > 0 ? Number(data.from_idx) : 0;
       const mine = t => ((t.msgs || [])[0] || {}).author === me.handle;
       const struck = (page.threads || []).filter(t => store.markOf(t) === 'strike' && mine(t));
-      const already = struck.find(t => t.from_thread && t.from_thread === from.id)
-        || struck.find(t => t.quote === from.quote);
+      const already = struck.find(t => t.from_thread === from.id
+          && String(t.from_msg || '') === fromMsg
+          && (Number(t.from_idx) || 0) === fromIdx)
+        || struck.find(t => t.quote === anchor.quote);
       // The note, whichever path takes it: NEVER CUT. A note past the cap is
       // refused at the door in the same breath the lift refuses it, because
       // half a replacement sentence on a document is worse than none — the
@@ -3409,28 +3474,44 @@ export function handler(req, res) {
       }
       if (already) {
         const head = (already.msgs || [])[0];
-        // nothing to say, or the same thing said twice: this IS that strike,
-        // handed back with no write and no broadcast (the double tap)
-        if (!note || !head || head.text === note) {
+        // RE-ADOPTION. The card has exactly one parent — the discussion standing
+        // behind the note it now carries — and this confirm came out of a
+        // discussion that may not be the one it had. Editing a long draft
+        // surfaces inconsistencies late, and a conversation on page 9 legitimately
+        // takes over a mark decided on page 3. `from_thread` moves, the old
+        // brood drops it, the new brood gains it, and `prior_threads` keeps the
+        // trace so the move is a record rather than an erasure.
+        const adopted = store.adoptStrike(already, from.id);
+        const renoted = !!(note && head && head.text !== note);
+        const remsg = fromMsg && (String(already.from_msg || '') !== fromMsg
+          || (Number(already.from_idx) || 0) !== fromIdx);
+        // nothing to say, nothing moved: this IS that strike, handed back with
+        // no write and no broadcast (the double tap)
+        if (!adopted && !renoted && !remsg) {
           return ok(res, { thread: already, deduped: true });
         }
-        head.text = note;
-        head.edited = true;
-        already.updated = new Date().toISOString();
-        // …and which reply won, now: the drawer reads `from_msg` to tell the
-        // chosen chip from the ones that were not chosen, and the chosen one
-        // has just changed. `from_thread` follows it, so the "view" link and
-        // the delete fall-through point at the discussion that is actually
-        // standing behind the note.
-        if (data.from_msg != null && data.from_msg !== '') already.from_msg = String(data.from_msg);
-        already.from_thread = from.id;
+        if (renoted) {
+          head.text = note;
+          head.edited = true;
+          already.updated = new Date().toISOString();
+        }
+        // …and which reply won, now: the drawer reads `from_msg`/`from_idx` to
+        // tell the chosen chip from the ones that were not chosen, and the
+        // chosen one may have just changed.
+        if (fromMsg) {
+          already.from_msg = fromMsg;
+          if (fromIdx) already.from_idx = fromIdx; else delete already.from_idx;
+        }
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
-        return ok(res, { thread: already, updated: true });
+        return ok(res, { thread: already, updated: renoted, ...(adopted ? { adopted: true } : {}) });
       }
       const thread = store.addThread(page, {
-        quote: from.quote, prefix: from.prefix, suffix: from.suffix,
-        page_number: from.page, mark: 'strike',
+        // the anchor, which is the reader's highlight unless the suggestion
+        // corrected it with a `passage:` line of its own
+        quote: anchor.quote, prefix: anchor.prefix, suffix: anchor.suffix,
+        page_number: anchor.page, mark: 'strike',
+        passage_named: !!passage,
         // The note, and the whole of it: the reason the suggestion gave, or
         // nothing at all — in which case the strikeout speaks for itself,
         // exactly as one drawn by hand with an empty composer does (the popup
@@ -3445,14 +3526,22 @@ export function handler(req, res) {
         // reader's eye finds it where they are already looking — and page order
         // survives the discussion being deleted, because the index is spent at
         // insertion and never consulted again
-        index: (page.threads || []).indexOf(from) + 1,
+        // …and after the ones it already minted, so a brood of three reads in
+        // the order the reader confirmed them rather than backwards
+        index: Math.max(
+          (page.threads || []).indexOf(from),
+          ...store.broodOf(page, from.id).map(t => (page.threads || []).indexOf(t)),
+        ) + 1,
         from_thread: from.id,
         // …and WHICH suggestion was taken. Both bots may propose a deletion in
         // one thread — the reader asks each in turn and picks the wording they
         // prefer — so the record has to say which reply's chip was the one that
         // was clicked, or the drawer cannot tell the chosen one from the ones
         // that were merely not chosen.
-        from_msg: String(data.from_msg || ''),
+        // …and WHICH suggestion IN that reply, because one reply may now carry
+        // up to STRIKE_PER_REPLY_MAX of them and each mints its own card.
+        from_msg: fromMsg,
+        from_idx: fromIdx,
       });
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });

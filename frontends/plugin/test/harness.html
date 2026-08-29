@@ -92,7 +92,11 @@
                      dimmed, washed <del>) and must not touch each other
                      mechanically. The screenshot state scrolls to page 2;
                      `&strike=pill` puts the two-tool selection pill up over
-                     it; `&selftest=1` runs the strikeout assertions.
+                     it; `&strike=brood` shows one discussion's THREE minted
+                     strikeouts and its brood line, two of them anchored on
+                     wording the bot named with `passage:` rather than on the
+                     reader's highlight; `&selftest=1` runs the strikeout
+                     assertions.
     ?sendfocus=1     the plain article, for one claim about the DRAWER: pressing
                      Send holds that thread — spotlit and scrolled back into
                      view on every redraw — while the bot answers into it, and
@@ -792,7 +796,13 @@ const PDF_SCAN = PDF_MODE === 'scan';
 // drawn struck. The two markings must be tellable apart at a glance and must
 // not touch each other mechanically, which is the whole of what the selftest
 // below is for.
-const STRIKE = PDF_MODE === '1' && (Q.get('strike') === '1' || Q.get('strike') === 'pill');
+// ?pdf=1&strike=brood — the same page with the discussion's decisions ALREADY
+// TAKEN: three separate strikeouts minted out of one conversation, two of them
+// anchored on wording the bot named for itself rather than on the reader's
+// highlight. The screenshot pose for the brood line and the corrected span.
+const STRIKE_BROOD = Q.get('strike') === 'brood';
+const STRIKE = PDF_MODE === '1' && (Q.get('strike') === '1' || Q.get('strike') === 'pill'
+  || STRIKE_BROOD);
 // what the bot rewrote the passage TO, and what it replaced
 const STRIKE_WAS = 'They simply kept doing what they had been doing';
 const STRIKE_NOW = 'They carried on exactly as before';
@@ -1233,6 +1243,21 @@ if (PDFV) {
             text: 'Here is the replacement in full: … .',
             strike: { why: 'replace with the wording above naming Shan and Figure 1',
                       rejected: 'deictic', phrase: 'the wording above' } },
+          // …and the amendment of 2026-08-29: ONE REPLY, TWO CHANGES, each
+          // naming its own passage. The reader's highlight covers one of them
+          // only partly, which used to end in the bot telling them to go and
+          // re-highlight it; now the suggestion says which words it means and
+          // the chip shows them before the click. Each confirmed chip mints its
+          // own card, and both hang off this same discussion.
+          { author: 'angadh', ts: iso(16), text: '@claude anything else on this line?' },
+          { author: 'codex', ts: iso(15),
+            text: 'Two more, and one of them is wider than your highlight.',
+            strikes: [
+              { why: 'replace with: "Nothing went right either."',
+                passage: 'Nothing had gone right either.' },
+              { why: 'it repeats the sentence before it',
+                passage: 'just unconvinced.' },
+            ] },
         ] },
       { id: 't-1754600500-s3c3',
         quote: STRIKE_WAS,
@@ -1244,6 +1269,29 @@ if (PDFV) {
             text: 'Done — this passage now reads: "' + STRIKE_NOW + '"' },
         ] },
     );
+    // ?strike=brood — the decisions already taken. One conversation, three
+    // separate red lines: the passage it was about, and two spans the bot named
+    // for itself with `passage:` because the reader's highlight did not cover
+    // them. Each is an ordinary strikeout of the reader's own, carrying its note
+    // and not one word of the argument; what says they came from one place is
+    // `from_thread`, which the discussion reads back as its brood.
+    if (STRIKE_BROOD) {
+      const DISC = 't-1754600600-d4d4';
+      const kid = (n, quote, prefix, suffix, idx, text, named) => ({
+        id: 't-1754600700-b' + n, quote, prefix, suffix, page: 1, orphaned: false,
+        mark: 'strike', from_thread: DISC, from_msg: iso(15), from_idx: idx,
+        ...(named ? { passage_named: true } : {}),
+        msgs: [{ author: 'angadh', ts: iso(14), text }],
+      });
+      const at = RECORD.threads.findIndex(t => t.id === DISC) + 1;
+      RECORD.threads.splice(at, 0,
+        kid(1, 'Nothing had gone wrong', 'just unconvinced.', 'Nothing had gone right either.',
+          0, 'it is throat-clearing before the real point', false),
+        kid(2, 'Nothing had gone right either.', 'Nothing had gone wrong.', '',
+          1, 'replace with: "Nothing went right either."', true),
+        kid(3, 'just unconvinced.', 'than it has been in years — not angry,',
+          'Nothing had gone wrong.', 2, 'it repeats the sentence before it', true));
+    }
   }
 }
 
@@ -2791,7 +2839,9 @@ function companion(method, path, body) {
   // deleted afterwards and this one is untouched.
   if (method === 'POST' && route === '/strike-from') {
     strikeFromPosts.push({ thread_id: body.thread_id, note: body.note || '',
-                           from_msg: body.from_msg || '' });
+                           from_msg: body.from_msg || '',
+                           from_idx: Number(body.from_idx) || 0,
+                           passage: body.passage || '' });
     const from = RECORD.threads.find(x => x.id === body.thread_id);
     if (!from) return { ok: false, status: 404, error: 'unknown thread' };
     // Already struck — by the LINK first, by the quote second (server.mjs says
@@ -2800,8 +2850,16 @@ function companion(method, path, body) {
     // better wording, which is the whole of the correction path.
     const minefirst = x => ((x.msgs || [])[0] || {}).author === IDENTITY;
     const struckMine = RECORD.threads.filter(x => x.mark === 'strike' && minefirst(x));
-    const already = struckMine.find(x => x.from_thread && x.from_thread === from.id)
-      || struckMine.find(x => x.quote === from.quote);
+    // …and the CHIP is the link now, not merely the thread: one reply may carry
+    // three suggestions and each mints its own card, so "the strike this
+    // discussion made" is no longer a single thing. Same order as the companion:
+    // the chip's own link first, the passage second.
+    const fromMsg = String(body.from_msg || '');
+    const fromIdx = Number(body.from_idx) || 0;
+    const span = String(body.passage || '') || from.quote;
+    const already = struckMine.find(x => x.from_thread === from.id
+        && String(x.from_msg || '') === fromMsg && (Number(x.from_idx) || 0) === fromIdx)
+      || struckMine.find(x => x.quote === span);
     if (already) {
       const note = String(body.note || '').trim();
       const head = (already.msgs || [])[0];
@@ -2811,7 +2869,14 @@ function companion(method, path, body) {
       head.text = note;
       head.edited = true;
       already.updated = now();
-      if (body.from_msg) already.from_msg = String(body.from_msg);
+      if (fromMsg) {
+        already.from_msg = fromMsg;
+        if (fromIdx) already.from_idx = fromIdx; else delete already.from_idx;
+      }
+      // RE-ADOPTION: one parent, and the trace of the last one kept
+      if (already.from_thread && already.from_thread !== from.id) {
+        already.prior_threads = (already.prior_threads || []).concat([already.from_thread]);
+      }
       already.from_thread = from.id;
       RECORD.updated_at = now();
       log('the note on a strikeout was rewritten: ' + already.id);
@@ -2820,12 +2885,18 @@ function companion(method, path, body) {
     }
     const t = {
       id: 't-' + Math.floor(Date.now() / 1000) + '-mint' + RECORD.threads.length,
-      quote: from.quote, prefix: from.prefix, suffix: from.suffix,
+      quote: span, prefix: from.prefix, suffix: from.suffix,
       page: from.page, orphaned: false, mark: 'strike',
-      from_thread: from.id, from_msg: String(body.from_msg || ''),
+      from_thread: from.id, from_msg: fromMsg,
+      ...(fromIdx ? { from_idx: fromIdx } : {}),
+      ...(body.passage ? { passage_named: true } : {}),
       msgs: [{ author: IDENTITY, ts: now(), text: String(body.note || '') }],
     };
-    RECORD.threads.splice(RECORD.threads.indexOf(from) + 1, 0, t);
+    // after the ones it has already minted, so a brood reads in the order the
+    // reader confirmed them rather than backwards
+    const kin = RECORD.threads.filter(x => x.mark === 'strike' && x.from_thread === from.id);
+    RECORD.threads.splice(Math.max(RECORD.threads.indexOf(from),
+      ...kin.map(x => RECORD.threads.indexOf(x))) + 1, 0, t);
     RECORD.updated_at = now();
     log('struck from a discussion: ' + t.id);
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
@@ -7175,8 +7246,13 @@ async function selftestPdfStrike() {
   check('…saying why, in the bot’s own words', /says it better/.test(chipOf('claude').textContent));
   // BOTH BOTS MAY SUGGEST. The reader asked each in turn and is choosing.
   const offers = () => chips().filter(c => c.querySelector('[data-act="strike-yes"]'));
+  // …the two chips that are about THIS THREAD'S OWN PASSAGE, which is what
+  // "both bots may suggest, and the reader picks" is a claim about. A chip that
+  // names its own `passage:` is a second CHANGE, not a rival wording, and is
+  // counted with the multi-suggestion reply further down.
+  const rivals = () => offers().filter(c => !c.querySelector('.fcpassage'));
   check('…and the OTHER bot’s suggestion is a chip of its own, on its own reply',
-    offers().length === 2 && !!chipOf('codex'));
+    rivals().length === 2 && !!chipOf('codex'));
   // …and the third one, which never became an offer at all
   const refused = () => (disc() || document).querySelector('.filechip.strikechip.refused');
   check('a suggestion whose note pointed back at the conversation is REFUSED, visibly',
@@ -7188,7 +7264,7 @@ async function selftestPdfStrike() {
     /throat-clearing/.test(chipOf('codex').textContent)
     && !/throat-clearing/.test(chipOf('claude').textContent));
   check('…each offering exactly two answers, one of which is no',
-    offers().length === 2 && offers().every(c => c.querySelectorAll('[data-act="strike-yes"]').length === 1
+    rivals().length === 2 && offers().every(c => c.querySelectorAll('[data-act="strike-yes"]').length === 1
       && c.querySelectorAll('[data-act="strike-no"]').length === 1));
   check('…and the passage is STILL a plain highlight until the reader clicks',
     !document.querySelector('mark.bfp-hl.bfp-strike[data-bfp="t-1754600600-d4d4"]'));
@@ -7240,6 +7316,58 @@ async function selftestPdfStrike() {
     !!cardFor(mint.id) && !!cardFor(mint.id).querySelector('.fromdisc [data-act="strike-view"]'));
   check('THE READER IS LEFT WHERE THEY WERE: arriving content never takes the scroll',
     d.held() === 't-1754600600-d4d4' && !!disc().classList.contains('focused'));
+
+  // ---- ONE REPLY, TWO CHANGES — and a bot correcting the highlight --------
+  //
+  // The amendment of 2026-08-29. A discussion routinely concludes that two or
+  // three separate places have to change, and a thread can only ever mint one
+  // card for its own quote; and the reader's highlight is often short of the
+  // words the change actually needs, which used to end in the bot telling them
+  // to go back and re-highlight it. Both are the same reply now: several
+  // `strike:` lines, each free to name its own `passage:`.
+  const multi = () => [...(disc() ? disc().querySelectorAll('.reply[data-author="codex"]') : [])].pop();
+  const multiChips = () => [...(multi() ? multi().querySelectorAll('.filechip.strikechip') : [])];
+  check('one reply may carry SEVERAL suggestions, and each is its own chip',
+    multiChips().length === 2);
+  check('…each showing the WORDING it will be drawn on, before the click',
+    multiChips().every(c => !!c.querySelector('.fcpassage'))
+    && /Nothing had gone right either/.test(multiChips()[0].textContent)
+    && /just unconvinced/.test(multiChips()[1].textContent));
+  check('…that wording drawn struck through, which is what the button will do to it',
+    cs(multiChips()[0].querySelector('.fcpassage')).textDecorationLine.includes('line-through'));
+  check('…and both are LIVE offers: a second place is a second change, never a rival',
+    multiChips().every(c => !!c.querySelector('[data-act="strike-yes"]')
+      && !c.classList.contains('passed')));
+  check('…each carrying which suggestion in the reply it is',
+    multiChips().map(c => c.querySelector('[data-act="strike-yes"]').dataset.idx).join(',') === '0,1');
+
+  const kinBefore = RECORD.threads.length;
+  for (const i of [0, 1]) {
+    const before = strikeFromPosts.length;
+    if (hit('[data-act="strike-yes"]', 'strike chip ' + i, multiChips()[i])) {
+      await until(() => strikeFromPosts.length > before, 3000);
+    }
+    await sleep(200);
+  }
+  await sleep(200);
+  const kin = () => RECORD.threads.filter(t => t.mark === 'strike'
+    && t.from_thread === 't-1754600600-d4d4');
+  check('TWO CHIPS, TWO CARDS — one parent holding all of its brood',
+    RECORD.threads.length === kinBefore + 2 && kin().length === 3);
+  check('…each anchored on the passage the bot named, not on the reader’s highlight',
+    kin().some(t => t.quote === 'Nothing had gone right either.' && t.passage_named)
+    && kin().some(t => t.quote === 'just unconvinced.' && t.passage_named));
+  check('…and the record saying which suggestion in which reply made each one',
+    kin().filter(t => (Number(t.from_idx) || 0) === 1).length === 1);
+  const brood = () => (disc() || document).querySelector('.fromdisc.brood');
+  check('the discussion says what it struck out, and how many',
+    !!brood() && /3 changes/.test(brood().textContent));
+  check('…with a numbered way to each one, because a single "view" would mean whichever came first',
+    !!brood() && brood().querySelectorAll('[data-act="strike-view"]').length === 3
+    && [...brood().querySelectorAll('[data-act="strike-view"]')]
+      .map(b => b.textContent.trim()).join('') === '123');
+  check('…and both of the new chips settling into an answer of their own',
+    multiChips().every(c => c.classList.contains('done')));
 
   // ---- THE NOTE THEY TOOK WAS THE WRONG ONE -------------------------------
   //

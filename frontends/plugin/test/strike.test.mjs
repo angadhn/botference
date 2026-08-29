@@ -115,6 +115,8 @@ const inputs = file => (fs.existsSync(file)
 process.env.BOTFERENCE_PROJECT_ROOT = tmp('own-store');
 const store = await import(path.join(PLUGIN, 'store.mjs'));
 const views = await import(path.join(PLUGIN, 'views.mjs'));
+const exportNote = await import(path.join(PLUGIN, 'export.mjs'));
+const { SPAN_DISCIPLINE: chatSpan } = await import(path.join(PLUGIN, 'chat.mjs'));
 const Ann = createRequire(import.meta.url)(path.join(PLUGIN, 'extension', 'pdf', 'annots.js'));
 
 // ---------------------------------------------------------------------------
@@ -170,6 +172,73 @@ await test('…only on a line of its own, and the LAST one counts', () => {
   assert.equal(store.parseStrikeSuggestion('strike: first\nstrike: second').why, 'second');
   assert.equal(store.parseStrikeSuggestion('- `strike: it repeats section 2`').why,
     'it repeats section 2', 'markdown around the line does not hide it');
+});
+
+// ONE REPLY, SEVERAL CHANGES (2026-08-29). A discussion routinely concludes
+// that two or three separate places have to change, and a thread can only ever
+// mint one card for its own quote — so a reply may carry up to
+// STRIKE_PER_REPLY_MAX suggestions, each with a `passage:` of its own.
+await test('a reply may carry SEVERAL suggestions, each with its own passage', () => {
+  const hits = store.parseStrikeSuggestions([
+    'Three things have to change here.',
+    'passage: The inflatable-arm literature',
+    'strike: replace with: "Work on inflatable arms"',
+    'strike: it repeats section 2',
+    'passage: and adds nothing to it',
+    'strike: replace with: "and adds little"',
+  ].join('\n'));
+  assert.equal(hits.length, 3);
+  assert.equal(hits[0].passage, 'The inflatable-arm literature');
+  assert.match(hits[0].why, /Work on inflatable arms/);
+  assert.equal(hits[1].passage, '', 'a suggestion with no passage means the thread’s own quote');
+  assert.equal(hits[2].passage, 'and adds nothing to it');
+  assert.equal(hits[0].lines.length, 2, 'both lines are machinery and both come off the words');
+  assert.equal(hits[1].lines.length, 1);
+});
+
+await test('…the passage line binds FORWARD, and a stray one aims at nothing', () => {
+  const hits = store.parseStrikeSuggestions('strike: cut it\npassage: some wording');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].passage, '', 'a passage AFTER a suggestion does not re-aim it');
+  assert.deepEqual(hits.orphanLines, ['passage: some wording'],
+    'but it is still machinery, and still comes off the reply’s words');
+  assert.equal(store.parseStrikeSuggestions('passage: “quoted wording”\nstrike: cut')[0].passage,
+    'quoted wording', 'the quote marks a model wraps it in come off');
+});
+
+await test('…and a message carries the list, old records and new alike', () => {
+  assert.deepEqual(store.strikesOf({ strike: { why: 'one' } }), [{ why: 'one' }],
+    'a reply written before any of this reads back exactly as it did');
+  assert.deepEqual(store.strikesOf({ strikes: [{ why: 'a' }, { why: 'b' }] }),
+    [{ why: 'a' }, { why: 'b' }]);
+  assert.deepEqual(store.strikesOf({}), []);
+});
+
+await test('…and the offer teaches both, including the end of "go and re-highlight"', () => {
+  const block = store.strikeOfferBlock();
+  assert.match(block, /MORE THAN ONE CHANGE IS ALLOWED/);
+  assert.match(block, /IF THE HIGHLIGHT IS INCOMPLETE, NAME THE PASSAGE YOURSELF/);
+  assert.match(block, /Never ask the reader to go back and re-highlight/);
+  assert.match(block, /passage: <the full exact wording as it appears on the page>/);
+  assert.match(block, /exactly ONCE on this page/);
+  // …and the span rule says the same thing from its own side: naming a passage
+  // is the sanctioned way past the highlight, silent widening still is not
+  assert.match(chatSpan, /SANCTIONED way to reach just beyond an incomplete highlight/);
+  assert.match(chatSpan, /Never send the reader away to re-highlight/);
+  assert.match(chatSpan, /forbidden is widening in SILENCE/);
+});
+
+await test('…and every fault a suggestion can have says what it was', () => {
+  for (const [fault, re] of [
+    ['capped', /more than 3 suggestions/],
+    ['unlocatable', /not on this page/],
+    ['offpage', /different page/],
+    ['ambiguous', /more than once on this page/],
+    ['covered', /another mark/],
+  ]) {
+    assert.match(store.strikeFaultWhy(fault, 'the words'), re, fault);
+    assert.match(store.strikeRefusedBlock(fault, 'the words'), /REFUSED/);
+  }
 });
 
 await test('…and a REASONLESS suggestion is no suggestion at all', () => {
@@ -507,7 +576,7 @@ console.log('\nstrike — the span rule');
     const th = page.threads.find(x => x.id === discussion.id);
     ME = th.msgs[0].author;
     const reply = th.msgs.filter(m => m.author === 'claude').pop();
-    assert.deepEqual(reply.strike, { why: 'section 2 already makes the point' });
+    assert.deepEqual(store.strikesOf(reply), [{ why: 'section 2 already makes the point' }]);
     assert.equal(reply.text, 'No — section 2 already makes the point.',
       'the machinery line is taken out of the words');
     assert.equal(store.markOf(th), 'highlight',
@@ -555,18 +624,18 @@ console.log('\nstrike — the span rule');
       });
       await waitFor(async () => {
         const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
-        return (th.msgs || []).some(m => m.author === who && m.strike);
+        return (th.msgs || []).some(m => m.author === who && store.strikesOf(m).length);
       }, `${who}'s suggestion`);
     }
     const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
-    const suggestions = th.msgs.filter(m => m.strike);
+    const suggestions = th.msgs.filter(m => store.strikesOf(m).length);
     assert.equal(suggestions.length, 2, 'a suggestion rides its own REPLY — never last-one-wins');
     assert.deepEqual(suggestions.map(m => m.author), ['claude', 'codex']);
-    assert.match(suggestions[1].strike.why, /throat-clearing/);
+    assert.match(store.strikesOf(suggestions[1])[0].why, /throat-clearing/);
     // …and the reader takes the SECOND one
     const chosen = suggestions[1];
     const r = await POST(base, '/strike-from', {
-      url: PDF, thread_id: d.id, note: chosen.strike.why, from_msg: chosen.ts,
+      url: PDF, thread_id: d.id, note: store.strikesOf(chosen)[0].why, from_msg: chosen.ts,
     });
     assert.equal(r.status, 200);
     assert.match(r.json.thread.msgs[0].text, /throat-clearing/, 'the wording they chose');
@@ -577,7 +646,7 @@ console.log('\nstrike — the span rule');
     // …and taking the OTHER one afterwards moves the note onto the strike that
     // is already there rather than putting a second line over one passage
     const again = await POST(base, '/strike-from', {
-      url: PDF, thread_id: d.id, note: suggestions[0].strike.why, from_msg: suggestions[0].ts,
+      url: PDF, thread_id: d.id, note: store.strikesOf(suggestions[0])[0].why, from_msg: suggestions[0].ts,
     });
     assert.equal(again.json.updated, true);
     assert.equal(again.json.thread.id, r.json.thread.id);
@@ -596,10 +665,10 @@ console.log('\nstrike — the span rule');
         + 'strike: replace with the wording above naming Shan et al. and Figure 1]' });
     const reply = await waitFor(async () => {
       const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
-      return (th.msgs || []).filter(m => m.author === 'claude' && m.strike).pop();
+      return (th.msgs || []).filter(m => m.author === 'claude' && store.strikesOf(m).length).pop();
     }, 'the lift');
-    assert.equal(reply.strike.rejected, 'deictic', 'refused, and the record says why');
-    assert.equal(reply.strike.phrase, 'the wording above', 'and which words did it');
+    assert.equal(store.strikesOf(reply)[0].rejected, 'deictic', 'refused, and the record says why');
+    assert.equal(store.strikesOf(reply)[0].phrase, 'the wording above', 'and which words did it');
     assert.ok(!/^strike:/m.test(reply.text), 'the machinery line is still off the words');
     assert.equal((await pageOf(PDF)).threads.filter(x => x.quote === 'a passage the bot pointed at'
       && x.mark === 'strike').length, 0, 'and nothing whatever was marked up');
@@ -619,9 +688,10 @@ console.log('\nstrike — the span rule');
       text: '@claude [mock:says:Sorry.\\nstrike: replace with: "The debris decays within ten orbits."]' });
     const reply = await waitFor(async () => {
       const t2 = (await pageOf(PDF)).threads.find(x => x.id === th.id);
-      return (t2.msgs || []).filter(m => m.author === 'claude' && m.strike && !m.strike.rejected).pop();
+      return (t2.msgs || []).filter(m => m.author === 'claude'
+        && store.strikesOf(m).some(s => !s.rejected)).pop();
     }, 'the second lift');
-    assert.match(reply.strike.why, /decays within ten orbits/);
+    assert.match(store.strikesOf(reply)[0].why, /decays within ten orbits/);
     // and the refusal is no longer riding the turn: only the LAST suggestion counts
     await POST(base, '/reply', { url: PDF, thread_id: th.id, text: '@claude and now?' });
     const env = await waitFor(() => inputs(log).find(x => /and now\?/.test(x)), 'the envelope');
@@ -642,12 +712,12 @@ console.log('\nstrike — the span rule');
       text: `@claude [mock:says:Here it is.\\nstrike: ${FULL}]` });
     const reply = await waitFor(async () => {
       const th = (await pageOf(PDF)).threads.find(x => x.id === d.id);
-      return (th.msgs || []).filter(m => m.author === 'claude' && m.strike).pop();
+      return (th.msgs || []).filter(m => m.author === 'claude' && store.strikesOf(m).length).pop();
     }, 'the lift');
-    assert.equal(reply.strike.rejected, undefined, 'it carries its own words');
-    assert.equal(reply.strike.why, FULL, 'INTACT at the lift');
+    assert.equal(store.strikesOf(reply)[0].rejected, undefined, 'it carries its own words');
+    assert.equal(store.strikesOf(reply)[0].why, FULL, 'INTACT at the lift');
     const r = await POST(base, '/strike-from', {
-      url: PDF, thread_id: d.id, note: reply.strike.why, from_msg: reply.ts,
+      url: PDF, thread_id: d.id, note: store.strikesOf(reply)[0].why, from_msg: reply.ts,
     });
     assert.equal(r.json.thread.msgs[0].text, FULL, 'INTACT on the mint');
     const still = (await pageOf(PDF)).threads.find(x => x.id === r.json.thread.id);
@@ -858,6 +928,255 @@ console.log('\nstrike — the span rule');
       'the envelope');
     assert.ok(!/OTHER MARKS ON THIS SAME PASSAGE/.test(env));
     assert.ok(!/YOUR REMIT IS/.test(env));
+  });
+
+  // ------------------------------------------------------------------------
+  // ONE DISCUSSION, SEVERAL CHANGES — and a bot that corrects the highlight.
+  //
+  // Both halves come out of one reported failure on a real manuscript. The
+  // reader highlighted "nflatable-arm" — short of the initial letter and of the
+  // words either side — the discussion concluded the phrase should be rewritten,
+  // and the bot REFUSED to suggest anything, telling the reader to go back and
+  // re-highlight the full wording. And more generally: one discussion often
+  // concludes that two or three separate places need changing, while a thread
+  // can only ever mint one card for its own quote.
+  console.log('\nstrike — one discussion, several changes');
+
+  const MANU = 'https://example.org/inflatable-arms.pdf';
+  const P9 = 'Deployment is treated only in passing. The inflatable-arm literature is thin, '
+    + 'and nobody has measured the damping. Section four repeats the argument at greater '
+    + 'length and adds nothing to it. The thermal model is described in appendix B, and '
+    + 'the thermal model is described again in appendix C.';
+  const P10 = 'Page ten mentions the ET-Class formulation and nothing else at all.';
+  const MSNAP = `<section><h2>Page 9</h2><p>${P9}</p></section>`
+    + `<section><h2>Page 10</h2><p>${P10}</p></section>`;
+  const manuPage = async () => (await GET(base, '/page?url=' + enc(MANU))).json;
+  const threadOnPage9 = async (quote, text) =>
+    (await POST(base, '/thread', { url: MANU, quote, page: 9, msg: { text } })).json.thread;
+
+  await POST(base, '/page', { url: MANU, title: 'Inflatable arms', kind: 'pdf' });
+  {
+    const snap = await POST(base, '/snapshot', { url: MANU, html: MSNAP });
+    assert.equal(snap.json.stored, true);
+  }
+
+  let inflate = null;
+  let inflateCard = null;
+  await test('THE REPORTED CASE: a partial highlight, corrected by the bot itself', async () => {
+    // exactly what the reader had: the highlight is missing the first letter of
+    // "inflatable" and stops short of the words either side
+    inflate = await threadOnPage9('nflatable-arm', 'this phrase reads backwards, no?');
+    await POST(base, '/reply', {
+      url: MANU, thread_id: inflate.id,
+      text: '@claude [mock:says:Agreed — the whole phrase has to turn round.\\n'
+        + 'passage: The inflatable-arm literature\\n'
+        + 'strike: replace with: "Work on inflatable arms is thin."]',
+    });
+    const reply = await waitFor(async () => {
+      const th = (await manuPage()).threads.find(x => x.id === inflate.id);
+      return (th.msgs || []).filter(m => m.author === 'claude' && store.strikesOf(m).length).pop();
+    }, 'the lift');
+    const [s] = store.strikesOf(reply);
+    assert.equal(s.rejected, undefined, 'the bot names the passage rather than refusing');
+    assert.equal(s.passage, 'The inflatable-arm literature', 'located on the page, and kept');
+    assert.ok(!/^passage:/m.test(reply.text), 'the passage line is machinery, and comes off');
+    assert.ok(!/^strike:/m.test(reply.text), 'so is the strike line');
+    // …and the confirm anchors THERE, not on the reader's partial selection
+    const r = await POST(base, '/strike-from', {
+      url: MANU, thread_id: inflate.id, from_msg: reply.ts, from_idx: 0,
+      passage: s.passage, note: s.why,
+    });
+    assert.equal(r.status, 200);
+    inflateCard = r.json.thread;
+    assert.equal(inflateCard.quote, 'The inflatable-arm literature',
+      'THE WHOLE POINT: the reader never re-highlighted anything');
+    assert.equal(inflateCard.page, 9);
+    assert.match(inflateCard.prefix, /passing\. $/, 'anchored with the page’s own context before it');
+    assert.match(inflateCard.suffix, /^ is thin/, '…and after it');
+    assert.equal(inflateCard.passage_named, true, 'and the record says the bot named the span');
+    assert.equal(inflateCard.from_thread, inflate.id);
+    const disc = (await manuPage()).threads.find(x => x.id === inflate.id);
+    assert.equal(disc.quote, 'nflatable-arm', 'the discussion’s own highlight is untouched');
+  });
+
+  let brood = null;
+  let broodIds = [];
+  await test('THREE SUGGESTIONS IN ONE REPLY BECOME THREE CARDS, one parent', async () => {
+    brood = await threadOnPage9('Section four', 'what else needs doing round here?');
+    await POST(base, '/reply', {
+      url: MANU, thread_id: brood.id,
+      text: '@claude [mock:says:Three things.\\n'
+        + 'passage: Deployment is treated only in passing.\\n'
+        + 'strike: replace with: "Deployment is treated in section 3."\\n'
+        + 'passage: nobody has measured the damping\\n'
+        + 'strike: replace with: "the damping was measured by Shan et al. (2024)"\\n'
+        + 'passage: appendix B\\n'
+        + 'strike: replace with: "appendix C"]',
+    });
+    const reply = await waitFor(async () => {
+      const th = (await manuPage()).threads.find(x => x.id === brood.id);
+      return (th.msgs || []).filter(m => m.author === 'claude'
+        && store.strikesOf(m).length === 3).pop();
+    }, 'three suggestions in one reply');
+    const list = store.strikesOf(reply);
+    assert.deepEqual(list.map(s => s.rejected), [undefined, undefined, undefined]);
+    assert.deepEqual(list.map(s => s.passage), [
+      'Deployment is treated only in passing.',
+      'nobody has measured the damping',
+      'appendix B',
+    ]);
+    // DISJOINT IS ALLOWED, deliberately: none of the three touches the words the
+    // reader highlighted. A rule that every passage must overlap the highlight
+    // would make "one discussion, several changes" unbuildable, and what makes
+    // it safe is not overlap but consent — the chip shows the wording, and
+    // nothing is marked up until the reader presses the button.
+    assert.ok(!list.some(s => s.passage.includes('Section four')),
+      'a second place on the page is a second change, not a widening of this one');
+    for (let i = 0; i < 3; i++) {
+      const r = await POST(base, '/strike-from', {
+        url: MANU, thread_id: brood.id, from_msg: reply.ts, from_idx: i,
+        passage: list[i].passage, note: list[i].why,
+      });
+      assert.equal(r.status, 200, `chip ${i}`);
+      assert.equal(r.json.deduped, undefined, `chip ${i} minted rather than deduped`);
+      broodIds.push(r.json.thread.id);
+    }
+    assert.equal(new Set(broodIds).size, 3, 'three chips, three separate red lines');
+    const page = await manuPage();
+    const kids = store.broodOf(page, brood.id);
+    assert.equal(kids.length, 3, 'and one parent holding all three');
+    assert.deepEqual(kids.map(t => t.quote), list.map(s => s.passage),
+      'in the order they were confirmed, which is where the drawer numbers them');
+    assert.deepEqual(kids.map(t => Number(t.from_idx) || 0), [0, 1, 2],
+      'each says WHICH suggestion in that reply it came from');
+    assert.deepEqual(kids.map(t => t.from_msg), [reply.ts, reply.ts, reply.ts]);
+    // …and the discussion still holds its own quote, unstruck
+    const disc = page.threads.find(x => x.id === brood.id);
+    assert.equal(store.markOf(disc), 'highlight');
+  });
+
+  await test('…and a fourth suggestion in one reply is refused OUT LOUD', async () => {
+    const d = await threadOnPage9('a clause nowhere near the others', 'anything else?');
+    await POST(base, '/reply', {
+      url: MANU, thread_id: d.id,
+      text: '@claude [mock:says:Lots.\\nstrike: one\\nstrike: two\\nstrike: three\\nstrike: four]',
+    });
+    const reply = await waitFor(async () => {
+      const th = (await manuPage()).threads.find(x => x.id === d.id);
+      return (th.msgs || []).filter(m => m.author === 'claude'
+        && store.strikesOf(m).length === 4).pop();
+    }, 'the lift');
+    const list = store.strikesOf(reply);
+    assert.deepEqual(list.map(s => s.rejected),
+      [undefined, undefined, undefined, 'capped'],
+      'the first three are offers and the fourth is a visible refusal, never a silent drop');
+    // …and the bot hears about it on its next turn here
+    await POST(base, '/reply', { url: MANU, thread_id: d.id, text: '@claude what about the fourth?' });
+    const env = await waitFor(() => inputs(log).find(x => /what about the fourth\?/.test(x)), 'the envelope');
+    assert.match(env, /YOUR LAST `strike:` LINE WAS REFUSED/);
+    assert.match(env, /more than 3 suggestions/);
+  });
+
+  console.log('\nstrike — the passage a suggestion named for itself');
+
+  const badPassage = async (thread, passage) => POST(base, '/strike-from',
+    { url: MANU, thread_id: thread.id, passage, note: 'it should come out' });
+
+  await test('a passage on ANOTHER PAGE is refused — this is a correction, not a teleport', async () => {
+    const d = await threadOnPage9('a clause of its own, one', 'hm');
+    const r = await badPassage(d, 'the ET-Class formulation');
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /different page/);
+  });
+
+  await test('…a passage that is nowhere on the page is refused', async () => {
+    const d = await threadOnPage9('a clause of its own, two', 'hm');
+    const r = await badPassage(d, 'a sentence this manuscript has never contained');
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /not on this page/);
+  });
+
+  await test('…an AMBIGUOUS passage is refused: two matches name neither', async () => {
+    const d = await threadOnPage9('a clause of its own, three', 'hm');
+    const r = await badPassage(d, 'thermal model is described');
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /more than once/);
+  });
+
+  await test('…and one running across ANOTHER MARK is refused, span discipline enforced', async () => {
+    // the rule of 2026-08-26 said "never re-cover text another mark already
+    // covers"; until now nothing could check it. A named passage can be checked.
+    const neighbour = await threadOnPage9('repeats the argument', 'this is somebody else’s');
+    await POST(base, '/mark', { url: MANU, thread_id: neighbour.id, mark: 'strike' });
+    const d = await threadOnPage9('a clause of its own, four', 'hm');
+    const r = await badPassage(d, 'four repeats the argument at greater length');
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /another mark/);
+    // …and the same fault comes back at the LIFT, as a buttonless chip
+    await POST(base, '/reply', { url: MANU, thread_id: d.id,
+      text: '@claude [mock:says:Try this.\\npassage: four repeats the argument at greater length\\n'
+        + 'strike: cut the repetition]' });
+    const reply = await waitFor(async () => {
+      const th = (await manuPage()).threads.find(x => x.id === d.id);
+      return (th.msgs || []).filter(m => m.author === 'claude' && store.strikesOf(m).length).pop();
+    }, 'the lift');
+    assert.equal(store.strikesOf(reply)[0].rejected, 'covered', 'refused before it was ever a button');
+    assert.equal((await manuPage()).threads.filter(t =>
+      t.quote === 'four repeats the argument at greater length').length, 0, 'and nothing was marked up');
+  });
+
+  console.log('\nstrike — a child changes parents');
+
+  await test('A LATER DISCUSSION MAY TAKE OVER AN EARLIER MARK, and the trace is kept', async () => {
+    // editing a long draft surfaces inconsistencies late: this conversation
+    // concludes that a mark decided in an earlier one now needs different words
+    const later = await threadOnPage9('appendix C', 'this contradicts page 3');
+    const child = broodIds[1];
+    const before = (await manuPage()).threads.find(t => t.id === child);
+    assert.equal(before.from_thread, brood.id, 'it belongs to the first discussion for now');
+    const r = await POST(base, '/strike-from', {
+      url: MANU, thread_id: later.id,
+      passage: 'nobody has measured the damping',
+      note: 'replace with: "the damping is measured in section 5"',
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.thread.id, child, 'the same red line — never a second one on the passage');
+    assert.equal(r.json.adopted, true, 'and the record says the parent changed');
+    assert.equal(r.json.updated, true);
+    const page = await manuPage();
+    const now = page.threads.find(t => t.id === child);
+    assert.equal(now.from_thread, later.id, 'ONE parent, and it is the new one');
+    assert.deepEqual(now.prior_threads, [brood.id], 'the old one is lineage, not erasure');
+    assert.match(now.msgs[0].text, /section 5/);
+    assert.equal(store.broodOf(page, brood.id).length, 2, 'the old brood drops it');
+    assert.equal(store.broodOf(page, later.id).length, 1, '…and the new one gains it');
+  });
+
+  await test('…and adopting it back does not lose where it has been', async () => {
+    const child = broodIds[1];
+    const r = await POST(base, '/strike-from', {
+      url: MANU, thread_id: brood.id,
+      passage: 'nobody has measured the damping', note: 'replace with: "measured in section 5"',
+    });
+    assert.equal(r.json.thread.id, child);
+    const now = (await manuPage()).threads.find(t => t.id === child);
+    assert.equal(now.from_thread, brood.id);
+    assert.equal(now.prior_threads.length, 1, 'the list keeps where it has been, not a loop of it');
+  });
+
+  await test('…and a mark that never moved keeps no lineage at all', async () => {
+    const still = (await manuPage()).threads.find(t => t.id === broodIds[0]);
+    assert.equal('prior_threads' in still, false, 'nothing on disk that did not have to be there');
+  });
+
+  await test('THE EXPORT does not care how many children a discussion had', async () => {
+    const page = await manuPage();
+    const note = exportNote.renderNote(page, store.readConfig(), new Date('2026-08-29T10:00:00Z'));
+    for (const q of ['The inflatable-arm literature', 'Deployment is treated only in passing.',
+      'appendix B']) {
+      assert.ok(note.includes(`~~${q}~~`), `struck in the note: ${q}`);
+    }
+    assert.match(note, /suggested deletion/);
   });
 
   console.log('\nstrike — what a converted thread looks like everywhere else');

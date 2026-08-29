@@ -315,7 +315,13 @@ export const SPAN_DISCIPLINE =
   + 'page already covers. If the change you believe in genuinely needs something outside '
   + 'the quote to move as well, do not quietly widen your wording to reach it: say so, in '
   + 'a line of its own — "this would also need changing outside your highlight: …" — and '
-  + 'leave that text where it is. And when the reader says "add it" or "do it", implement '
+  + 'leave that text where it is. The one SANCTIONED way to reach just beyond an '
+  + 'incomplete highlight is a `passage:` line on a strike suggestion, where this turn has '
+  + 'invited one: it names the full wording out loud, the reader sees exactly what will be '
+  + 'marked, and nothing happens until they press the button. Never send the reader away '
+  + 'to re-highlight a passage you can name yourself. What stays forbidden is widening in '
+  + 'SILENCE — a rewording that quietly swallows words the quote did not contain. '
+  + 'And when the reader says "add it" or "do it", implement '
   + 'EXACTLY the suggestion as you already stated it in this thread, word for word, with no '
   + 'scope growth; "add some of it" means the part they named and nothing else.\n';
 

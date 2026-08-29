@@ -1956,7 +1956,7 @@ ${selPillHtml()}
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
         ${body}${acts}${
           D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}${
-          D.strikes.declined.indexOf(String(r.ts)) < 0 ? strikeChipHtml(r, target) : ''}${
+          strikeChipHtml(r, target)}${
           questionChipHtml(r, target)}${
           suggestStackHtml(r, target)}</div>`;
     }
@@ -2741,6 +2741,28 @@ ${selPillHtml()}
       </div>`;
     }
 
+    // …and the SAME LINK READ DOWNWARDS: what this discussion struck out.
+    //
+    // A thread may now mint several cards — one discussion routinely concludes
+    // that two or three separate places have to change — so a single "view"
+    // would be a link to whichever one happened to come first. The brood is
+    // numbered instead, in the order the marks sit in the document, and each
+    // number is the jump to that card. Derived from the record (`from_thread`),
+    // like everything else here, so it survives a reload, another tab, and a
+    // card that has since been adopted by a different discussion.
+    function broodHtml(t) {
+      const threads = (D.page && D.page.threads) || [];
+      const brood = threads.filter(x => x && isStruck(x) && x.from_thread === t.id && x.id !== t.id);
+      if (!brood.length) return '';
+      const links = brood.map((x, i) => `<button class="rebtn" type="button" data-act="strike-view"
+        data-target="${esc(x.id)}" title="${esc('“' + String(x.quote || '').slice(0, 80) + '”')}"
+        >${brood.length === 1 ? 'view' : String(i + 1)}</button>`).join('<span class="broodsep">·</span>');
+      return `<div class="fromdisc brood">
+        <span>${brood.length === 1 ? 'struck through here' : `struck through here — ${brood.length} changes`}</span>
+        ${links}
+      </div>`;
+    }
+
     // WHAT THIS THREAD PUT IN THE VAULT, if anything.
     //
     // The other direction of the link the quiz draws back to here, and the
@@ -2795,6 +2817,7 @@ ${selPillHtml()}
           ${head}
         </div>
         ${fromDiscussionHtml(t)}
+        ${broodHtml(t)}
         ${memoryLineHtml(t)}
         ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
@@ -2828,6 +2851,7 @@ ${selPillHtml()}
           ${quoteHtml(t, orph)}
           ${reopenBtn(t)}
         </div>
+        ${broodHtml(t)}
         ${memoryLineHtml(t)}
         <p class="digest${pending ? ' provisional' : ''}">${esc(t.summary || '')}</p>
         <div class="drow">
@@ -4932,12 +4956,16 @@ ${selPillHtml()}
         // reader's own on the same passage and leaves this thread alone; no puts
         // the chip away for this tab and is remembered nowhere else.
         if (act === 'strike-yes') {
-          doStrikeFrom(target, btn.dataset.ts, btn.dataset.why);
+          doStrikeFrom(target, btn.dataset.ts, Number(btn.dataset.idx) || 0,
+            btn.dataset.why, btn.dataset.passage || '');
           return;
         }
         if (act === 'strike-no') {
-          const row = btn.closest && btn.closest('[data-ts]');
-          if (row && row.dataset.ts) D.strikes.declined.push(row.dataset.ts);
+          // ONE CHIP, not the reply: a bot may make three suggestions in one
+          // answer and turning down the first says nothing about the other two.
+          const chip = btn.closest && btn.closest('.strikechip');
+          const y = chip && chip.querySelector('[data-act="strike-yes"]');
+          if (y) D.strikes.declined.push(String(y.dataset.ts) + '#' + (Number(y.dataset.idx) || 0));
           render();
           return;
         }
@@ -6765,10 +6793,27 @@ ${selPillHtml()}
     // in one conversation are two chips, side by side, each in its own bubble,
     // each carrying its own bot's wording; there is no last-one-wins anywhere in
     // the path (the lift is `msg.strike`, exactly as filing's is `msg.file_in`).
+    // A REPLY MAY CARRY SEVERAL, since 2026-08-29: one discussion routinely
+    // concludes that two or three separate places have to change, and a thread
+    // can only ever mint one card for its own quote. Each suggestion is its own
+    // chip, in the order the bot wrote them, and each confirmed chip mints its
+    // own card — all of them hanging off this same discussion. `from_idx` is
+    // what tells them apart on the record, `strikesOf`'s shape is what lets a
+    // reply written before the amendment render exactly as it always did.
     function strikeChipHtml(msg, threadId) {
-      const s = msg && msg.strike;
-      if (!s || !s.why) return '';
+      const list = Array.isArray(msg && msg.strikes)
+        ? msg.strikes.filter(s => s && s.why)
+        : (msg && msg.strike && msg.strike.why ? [msg.strike] : []);
+      if (!list.length) return '';
+      return list.map((s, i) => oneStrikeChipHtml(s, i, msg, threadId)).join('');
+    }
+
+    function oneStrikeChipHtml(s, idx, msg, threadId) {
       const ts = String(msg.ts || '');
+      const key = ts + '#' + idx;
+      // said no to, in this tab: the chip goes away and nothing anywhere
+      // remembers it, exactly as a declined filing does
+      if (D.strikes.declined.indexOf(key) >= 0) return '';
       const threads = (D.page && D.page.threads) || [];
       // REFUSED AT THE LIFT, and said out loud. A note that pointed back at
       // this conversation, or one too long to file without cutting it in half,
@@ -6780,22 +6825,43 @@ ${selPillHtml()}
       // chip appears, quiet and buttonless, saying what happened. The bot is
       // told the same thing on its next turn here (store.strikeRefusedBlock).
       if (s.rejected) {
+        const q = s.phrase ? ` (“${esc(s.phrase)}”)` : '';
         const why = s.rejected === 'long'
           ? 'the note was too long to put on the document without cutting it'
-          : `the note refers to this discussion${s.phrase ? ` (“${esc(s.phrase)}”)` : ''}, and the co-author will only see the passage`;
+          : s.rejected === 'capped'
+            ? 'there were more suggestions in one reply than can be offered at once'
+          : s.rejected === 'unlocatable'
+            ? `the wording it named${q} is not on this page`
+          : s.rejected === 'offpage'
+            ? `the wording it named${q} is on a different page of this document`
+          : s.rejected === 'ambiguous'
+            ? `the wording it named${q} occurs more than once on this page`
+          : s.rejected === 'covered'
+            ? `the wording it named runs across part of another mark already here${q}`
+          : `the note refers to this discussion${q}, and the co-author will only see the passage`;
         return `<div class="filechip strikechip refused">
           <span class="fcw">Not filed — ${why}. Nothing was marked up.</span></div>`;
       }
-      // WHAT CAME OF THIS THREAD, if anything: the strike it produced, and —
-      // the reason `from_msg` exists — which reply's suggestion was the one
-      // taken. Read off the RECORD so it survives a reload and another tab,
-      // with this session's own memory of the click as the faster answer.
-      const born = threads.find(t => t && isStruck(t) && t.from_thread === threadId);
-      const mineId = D.strikes.made[ts]
-        || (born && String(born.from_msg || '') === ts ? born.id : '');
+      // THE PASSAGE, WHEN THE BOT NAMED ITS OWN. The reader's highlight was
+      // short by a letter, or the change belongs a line further on; the
+      // suggestion says which words it means and the chip SHOWS them, because
+      // the click is about to put a red line there in the reader's name and
+      // consent to a mark you cannot see is not consent.
+      const named = s.passage
+        ? `<span class="fcpassage" title="${esc('the wording this will be drawn on')}">“${esc(s.passage)}”</span>`
+        : '';
+      // WHAT CAME OF THIS CHIP, if anything: the strike it produced. `from_msg`
+      // says which REPLY was taken and `from_idx` which suggestion inside it,
+      // because one reply may carry three. Read off the RECORD so it survives a
+      // reload and another tab, with this session's own memory of the click as
+      // the faster answer.
+      const born = threads.find(t => t && isStruck(t) && t.from_thread === threadId
+        && String(t.from_msg || '') === ts && (Number(t.from_idx) || 0) === idx);
+      const anyBorn = threads.find(t => t && isStruck(t) && t.from_thread === threadId);
+      const mineId = D.strikes.made[key] || (born ? born.id : '');
       if (mineId) {
         return `<div class="filechip strikechip done">${
-          D.strikes.updated[ts] ? 'Note updated on the strikeout, in your name.'
+          D.strikes.updated[key] ? 'Note updated on the strikeout, in your name.'
             : 'Struck through, in your name.'}
           <button class="rebtn" type="button" data-act="strike-view" data-target="${esc(mineId)}">view</button></div>`;
       }
@@ -6810,22 +6876,32 @@ ${selPillHtml()}
       // one thing they may want from it, which is to make it the note instead.
       // The door does the rest: same passage, same hand, so the note on the
       // strike that is already there is rewritten and no second line appears.
-      if (born) {
+      // NOT CHOSEN, which is a claim about ONE PASSAGE and not about the reply.
+      // A chip is a rival of a card only when it is about the same words: the
+      // second bot's wording for the passage under discussion, or a `passage:`
+      // naming a span that is already struck. A chip that names a DIFFERENT
+      // passage is a second change, not a losing alternative, and stays a live
+      // offer however many of its siblings have already been taken.
+      const mineThread = threads.find(x => x && x.id === threadId);
+      const span = s.passage || String((mineThread && mineThread.quote) || '');
+      const rival = anyBorn && threads.find(t => t && isStruck(t)
+        && t.from_thread === threadId && t.quote === span);
+      const data = `data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-idx="${idx}"`
+        + ` data-why="${esc(s.why)}" data-passage="${esc(s.passage || '')}"`;
+      if (rival) {
         return `<div class="filechip strikechip passed">
-          <span class="fcw">Not chosen — ${esc(s.why)}</span>
+          <span class="fcw">Not chosen — ${esc(s.why)}${named}</span>
           <span class="fcacts">
-            <button class="rebtn" type="button" data-act="strike-yes"
-              data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-why="${esc(s.why)}"
+            <button class="rebtn" type="button" data-act="strike-yes" ${data}
               title="put this wording on the strikeout instead — the mark stays where it is"
               ${D.strikes.busy ? 'disabled' : ''}>Use this note</button>
           </span>
         </div>`;
       }
       return `<div class="filechip strikechip">
-        <span class="fcw">This passage should come out — ${esc(s.why)}</span>
+        <span class="fcw">${s.passage ? 'This wording should come out' : 'This passage should come out'} — ${esc(s.why)}${named}</span>
         <span class="fcacts">
-          <button class="rebtn" type="button" data-act="strike-yes"
-            data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-why="${esc(s.why)}"
+          <button class="rebtn" type="button" data-act="strike-yes" ${data}
             ${D.strikes.busy ? 'disabled' : ''}>Strike it</button>
           <button class="rebtn no" type="button" data-act="strike-no">No</button>
         </span>
@@ -6846,13 +6922,14 @@ ${selPillHtml()}
     // never steals the scroll; that is the whole rule, and a card the reader did
     // not ask to be taken to is arriving content however deliberate the click
     // that caused it.
-    async function doStrikeFrom(threadId, ts, why) {
+    async function doStrikeFrom(threadId, ts, idx, why, passage) {
+      const key = String(ts) + '#' + (Number(idx) || 0);
       if (D.strikes.busy) return;
-      D.strikes.busy = ts;
+      D.strikes.busy = key;
       holdOn(threadId);      // stay where they are, whatever arrives
       render();
       let r;
-      try { r = await cb('onStrikeFrom')(threadId, why, ts); }
+      try { r = await cb('onStrikeFrom')(threadId, why, ts, Number(idx) || 0, passage || ''); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.strikes.busy = '';
       if (!r || r.ok === false) {
@@ -6868,14 +6945,14 @@ ${selPillHtml()}
         // leave two chips both claiming to be the strikeout.
         if (r.updated) {
           for (const k of Object.keys(D.strikes.made)) {
-            if (D.strikes.made[k] === made && k !== ts) {
+            if (D.strikes.made[k] === made && k !== key) {
               delete D.strikes.made[k];
               delete D.strikes.updated[k];
             }
           }
-          D.strikes.updated[ts] = true;
+          D.strikes.updated[key] = true;
         }
-        D.strikes.made[ts] = made;
+        D.strikes.made[key] = made;
         // the arrival affordance, and the whole of it: the new card says it is
         // new for a few seconds and then stops. The red line is already on the
         // passage — content.js repainted from the record before we got here.

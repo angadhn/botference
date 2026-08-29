@@ -2,6 +2,43 @@
 
 ## 2026-08-29
 
+- **One discussion can now end in several changes, not just one.** A bot
+  answering a comment on a PDF may propose up to three separate deletions or
+  replacements in a single reply — each with its own chip, each with its own
+  Strike it button. Take one, take all three, take none. Until now a
+  conversation that concluded "these three sentences all have to change" could
+  only ever produce one red line, because a marking belonged to the passage you
+  had highlighted and there was only one of those.
+
+- **And the discussion says what it produced.** A thread that has struck
+  something out carries a quiet line under its quote — "struck through here — 3
+  changes" — with a number for each one that takes you straight to it. The
+  strikeouts themselves already carried the link the other way ("from a
+  discussion · view"); now both ends of it are drawn.
+
+- **The bots can name the passage themselves when your highlight was short.**
+  This fixes something that happened on a real manuscript: a highlight that
+  missed the first letter of a word and stopped short of the words either side,
+  and a bot that answered by telling the reader to go back and highlight it
+  again properly. It can now say which words it means — the full phrase, copied
+  from the page — and the chip shows you exactly what will be struck, with a
+  line through it, before you press anything. The mark lands on the right words.
+  You never re-highlight.
+
+- **A named passage is checked before it can become a button.** It has to be on
+  the page you are reading, found there exactly once, and it may not run
+  half-across a marking that is already there. If any of that fails, no button
+  appears, the chip says which of the four things went wrong, and the bot is
+  told on its next turn — so it fixes the line instead of telling you a deletion
+  was made.
+
+- **A strikeout can change hands.** Editing a long draft turns up
+  inconsistencies late: a conversation on page 9 concludes that the mark you
+  made out of a conversation on page 3 now needs different wording. Confirming
+  it there moves the mark to the new discussion — it drops out of the old one's
+  list and appears in the new one's, and the trail of where it has been is kept
+  on the record rather than overwritten.
+
 - **Discuss your blog draft, and have the bots suggest changes to the draft.**
   Write a post in markdown, run your site locally (`jekyll serve`), open the page
   in the browser and comment on it the way you comment on anything else — and now,

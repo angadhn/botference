@@ -2065,9 +2065,12 @@
       // deleted afterwards and the co-author receives a clean red line signed by
       // the reader. No optimistic paint — the new thread has an id only the
       // companion can mint, and loadPage paints it the moment it lands.
-      onStrikeFrom: async (threadId, note, fromMsg) => {
+      onStrikeFrom: async (threadId, note, fromMsg, fromIdx, passage) => {
         const r = await api('POST', '/strike-from',
-          { url: URL_NOW, thread_id: threadId, note: note || '', from_msg: fromMsg || '' });
+          { url: URL_NOW, thread_id: threadId, note: note || '', from_msg: fromMsg || '',
+            // WHICH suggestion inside that reply (one reply may carry three),
+            // and the passage the bot named for itself where it named one
+            from_idx: Number(fromIdx) || 0, passage: passage || '' });
         if (!r.ok) return failure(r);
         await loadPage();
         return { ok: true, thread: r.data && r.data.thread,

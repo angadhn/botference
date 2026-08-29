@@ -982,6 +982,45 @@ export function setThreadMark(thread, mark) {
   return true;
 }
 
+// ---- a parent and its brood ------------------------------------------------
+//
+// One discussion, several strikeouts. A thread mints a card per confirmed chip
+// and each card links back with `from_thread`, so the brood is DERIVED — there
+// is no list on the parent to keep in step, nothing to repair when a card is
+// deleted, and a card that changes parents is in the new brood and out of the
+// old one by construction. In page order, which is the order the drawer's column
+// is in and the order the reader will read them.
+export const broodOf = (page, threadId) => (!threadId ? []
+  : ((page && page.threads) || []).filter(t =>
+    t && markOf(t) === 'strike' && t.from_thread === threadId && t.id !== threadId));
+
+// …and a child CHANGING parents, which is a real thing and not a bug.
+//
+// Editing a long draft surfaces inconsistencies late: a discussion on page 9
+// concludes that the passage struck out of a discussion on page 3 needs
+// different wording, and the confirm there is now the reason that mark says what
+// it says. The card has exactly ONE parent — the discussion standing behind the
+// note it currently carries — so `from_thread` MOVES, the old brood drops it and
+// the new one gains it.
+//
+// What must not be lost is the trace. `prior_threads` is a lineage list, oldest
+// first, capped: where this mark has been. Soft, like `from_thread` itself —
+// every id in it may dangle, nothing looks them up expecting an answer.
+export const PRIOR_THREADS_MAX = 8;
+export function adoptStrike(thread, parentId) {
+  const want = String(parentId || '');
+  const had = String((thread && thread.from_thread) || '');
+  if (!thread || !want || had === want) return false;
+  if (had) {
+    const line = (Array.isArray(thread.prior_threads) ? thread.prior_threads : [])
+      .filter(x => x && x !== had && x !== want);
+    line.push(had);
+    thread.prior_threads = line.slice(-PRIOR_THREADS_MAX);
+  }
+  thread.from_thread = want;
+  return true;
+}
+
 // ---- a bot SUGGESTING the strike -------------------------------------------
 //
 // The same idiom as `file-in:` (workspace.mjs SUGGEST_MARK), for the same
@@ -1007,6 +1046,43 @@ export const STRIKE_MARK = 'strike:';
 // REFUSED at the lift, loudly, so the bot writes a shorter one (see
 // `strikeNoteFault`).
 export const STRIKE_NOTE_MAX = 1200;
+
+// How many suggestions ONE reply may carry.
+//
+// It was one, silently, because `parseStrikeSuggestion` took the last line and
+// threw the rest away — and that was wrong for the ordinary shape of this work.
+// A discussion about a paragraph concludes that three things have to change, in
+// three places, and a thread can only ever mint one card for its own quote. So a
+// reply may now end with up to three `strike:` lines, each self-contained, each
+// about a DIFFERENT passage; each confirmed chip mints its own card and all of
+// them hang off the same discussion.
+//
+// Three, because the reader chose three: enough for "the phrase, the citation
+// and the sentence after it", few enough that a wall of chips is not what a
+// reply looks like. Further replies may carry three more — the cap is per reply,
+// not per conversation.
+export const STRIKE_PER_REPLY_MAX = 3;
+
+// …and how many entries one message keeps at all, refusals included. A model
+// that ignores the cap gets its first three as buttons and the next few as
+// visible refusals; past that the reply is not a suggestion any more.
+export const STRIKE_ENTRY_MAX = 6;
+
+// The line that names a suggestion's OWN passage, directly above its `strike:`.
+//
+// The failure, from the reader's manuscript: they highlighted "nflatable-arm" —
+// missing the leading letter, and stopping short of the words either side — and
+// the discussion concluded the whole phrase should read "The inflatable-arm
+// literature". The bot REFUSED to suggest anything, telling the reader to go and
+// re-highlight the full wording. That is the clerical work this feature exists
+// to abolish, done to the one person who should never have to do it.
+//
+// A bot can see the page. If the highlight is short by a letter, or by a word at
+// each end, it can say so exactly: `passage: <the full wording, copied>`. The
+// companion locates it, checks it, and the confirmed chip mints a card anchored
+// THERE rather than on the reader's partial selection.
+export const PASSAGE_MARK = 'passage:';
+export const PASSAGE_MIN = 4;          // shorter than this locates nothing useful
 
 // The invitation, as it rides the turn (server.mjs summon → chat.mjs envelope).
 //
@@ -1045,6 +1121,23 @@ export const strikeOfferBlock = () =>
   + 'Otherwise the note is the reason itself, in one sentence. Say the whole of '
   + `what you mean and nothing more; over ${STRIKE_NOTE_MAX} characters is `
   + 'refused rather than cut.\n'
+  + `MORE THAN ONE CHANGE IS ALLOWED. If the discussion has concluded that `
+  + `several separate places need changing, write up to ${STRIKE_PER_REPLY_MAX} `
+  + `\`${STRIKE_MARK}\` lines in one reply — each about a DIFFERENT passage and `
+  + 'each standing entirely on its own, because each becomes its own mark on the '
+  + 'document. Two lines about the SAME passage are two opinions about one mark, '
+  + 'not two changes, and only one of them can ever be taken. A later reply may '
+  + 'carry more.\n'
+  + 'IF THE HIGHLIGHT IS INCOMPLETE, NAME THE PASSAGE YOURSELF. Never ask the '
+  + 'reader to go back and re-highlight: put a line reading '
+  + `\`${PASSAGE_MARK} <the full exact wording as it appears on the page>\` `
+  + `DIRECTLY ABOVE the \`${STRIKE_MARK}\` line it belongs to, and the mark is `
+  + 'made there instead of on the partial selection. The same line is how you '
+  + 'reach a second place on this page. Copy the wording character for character '
+  + 'from the page, including the punctuation; it must occur exactly ONCE on this '
+  + 'page and must not run across part of another mark already on it. If it '
+  + 'cannot be found, or is found twice, the suggestion is refused and no button '
+  + 'appears.\n'
   + 'Use it rarely — a disagreement or a question is NOT this. Say nothing at '
   + 'all if in doubt.\n';
 
@@ -1053,16 +1146,45 @@ export const strikeOfferBlock = () =>
 // know: the chip simply never appeared, and the reader — who watched it not
 // appear — gets told the deletion was made. Silence here is how a bot ends up
 // claiming a fix that never happened.
-export const strikeRefusedBlock = fault =>
+//
+// Six faults now, in two families. The first two are about the NOTE (deictic,
+// long); the other four are about the PASSAGE a suggestion named for itself —
+// which the companion locates in the page's own text before it will let a mark
+// be made there, because a mark that landed on the wrong words would be made in
+// the reader's name on a file they hand to somebody else.
+export const strikeFaultWhy = (fault, phrase) => {
+  const q = phrase ? ` (“${phrase}”)` : '';
+  switch (fault) {
+    case 'long':
+      return `the note ran past ${STRIKE_NOTE_MAX} characters, and this companion `
+        + 'will not cut a note in half and put half of it on a document';
+    case 'capped':
+      return `there were more than ${STRIKE_PER_REPLY_MAX} suggestions in one reply, `
+        + 'and this one was past the limit';
+    case 'unlocatable':
+      return `the \`${PASSAGE_MARK}\` wording${q} is not on this page — it has to be `
+        + 'copied from the page character for character';
+    case 'offpage':
+      return `the \`${PASSAGE_MARK}\` wording${q} is on a different page of this `
+        + 'document from the passage under discussion';
+    case 'ambiguous':
+      return `the \`${PASSAGE_MARK}\` wording${q} occurs more than once on this page, `
+        + 'so there is no telling which one you meant';
+    case 'covered':
+      return `the \`${PASSAGE_MARK}\` wording runs across part of another mark `
+        + `already on this page${q}, whose text is not yours to re-cover`;
+    default:
+      return 'it pointed back at this discussion instead of standing on its own';
+  }
+};
+export const strikeRefusedBlock = (fault, phrase = '') =>
   'YOUR LAST `strike:` LINE WAS REFUSED — the reader never saw a button for it, '
-  + `because ${fault === 'long'
-    ? `the note ran past ${STRIKE_NOTE_MAX} characters, and this companion will `
-      + 'not cut a note in half and put half of it on a document'
-    : 'it pointed back at this discussion instead of standing on its own'}. `
+  + `because ${strikeFaultWhy(fault, phrase)}. `
   + 'Nothing was marked up and nothing was filed. If you still mean it, write '
   + 'the line again with the whole of what you mean inside it — the complete '
   + 'replacement wording, in quotes — and say nothing that refers to this '
-  + 'conversation.\n';
+  + `conversation. Where the fault was the \`${PASSAGE_MARK}\` line, quote the `
+  + 'wording again exactly as the page has it, once, and inside no other mark.\n';
 
 // …and the line, back out of the reply. A line of its own, the LAST one counts,
 // and a reason is required — a bare `strike:` is a model echoing the convention
@@ -1073,20 +1195,71 @@ export const strikeRefusedBlock = fault =>
 // to be stripped from the whole line, which was fine for "it repeats section 2"
 // and quietly mangled a replacement sentence with an emphasised title or a
 // snippet in it.
-export function parseStrikeSuggestion(text) {
+const unwrapLine = raw => String(raw).trim().replace(/^[-*>\s]+/, '')
+  .replace(/^([`*_]+)([\s\S]*?)\1$/, '$2').trim();
+
+// ALL of them, in the order the bot wrote them.
+//
+// A reply may carry several suggestions (STRIKE_PER_REPLY_MAX), because one
+// discussion routinely concludes that two or three separate places have to
+// change and a thread can only ever mint one card for its own quote. Each hit
+// carries the lines it was made of, so the server can lift ALL the machinery
+// off the reply's words and leave the prose.
+//
+// A `passage:` line binds FORWARD, to the next `strike:` line: it reads as a
+// heading over the change it introduces ("in this wording — do this"), which is
+// the order a model writes it in anyway, and forward binding means a stray
+// `passage:` with nothing after it simply names nothing rather than silently
+// re-aiming the suggestion above it. It still comes off the words: it is
+// machinery either way.
+export function parseStrikeSuggestions(text) {
   const re = new RegExp(`^${STRIKE_MARK}\\s*(.+)$`, 'i');
-  let found = null;
+  const pre = new RegExp(`^${PASSAGE_MARK}\\s*(.+)$`, 'i');
+  const hits = [];
+  let pending = null;
   for (const raw of String(text || '').split(/\r?\n/)) {
-    const line = raw.trim().replace(/^[-*>\s]+/, '')
-      .replace(/^([`*_]+)([\s\S]*?)\1$/, '$2').trim();
+    const line = unwrapLine(raw);
+    const p = pre.exec(line);
+    if (p) {
+      const passage = String(p[1] || '').replace(/^[—:-]\s*/, '').trim()
+        .replace(/^["“”«»„`]([\s\S]*)["“”«»„`]$/, '$1').trim();
+      pending = { passage, line: raw };
+      continue;
+    }
     const m = re.exec(line);
     if (!m) continue;
     const why = String(m[1] || '').replace(/^[—:-]\s*/, '').trim();
-    if (!why) continue;
-    found = { why, line: raw };
+    if (!why) { pending = null; continue; }
+    hits.push({
+      why,
+      passage: (pending && pending.passage) || '',
+      line: raw,
+      lines: pending ? [pending.line, raw] : [raw],
+    });
+    pending = null;
   }
-  return found;
+  // a `passage:` that named nothing is still machinery and still comes off
+  if (pending) hits.orphanLines = [pending.line];
+  return hits;
 }
+
+// The LAST one, which is what everything wanted back when a reply could only
+// carry one. Kept for the callers that genuinely want a single answer (and for
+// the record's own back-compatibility); the lift reads them all.
+export function parseStrikeSuggestion(text) {
+  const hits = parseStrikeSuggestions(text);
+  if (!hits.length) return null;
+  const last = hits[hits.length - 1];
+  return { why: last.why, line: last.line, ...(last.passage ? { passage: last.passage } : {}) };
+}
+
+// Every strike suggestion a message carries, old records included. A reply
+// written before this amendment has ONE, under `strike`; one written since has
+// a list under `strikes`. Nothing on disk migrates — this is the only thing
+// that should ever ask.
+export const strikesOf = msg => (Array.isArray(msg && msg.strikes)
+  ? msg.strikes.filter(s => s && s.why)
+  : (msg && msg.strike && msg.strike.why ? [msg.strike] : []));
 
 // ---- …and the two ways a note can be unusable ------------------------------
 //
@@ -1260,7 +1433,82 @@ export function nearbyMarksBlock(page, thread, text = '') {
     + 'of your own. A suggestion that swallowed one of them would apply the same edit twice.\n';
 }
 
-export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark, from_thread, from_msg }) {
+// ---- the passage a SUGGESTION named for itself -----------------------------
+//
+// `passage:` (PASSAGE_MARK) overrides the thread's own quote for the card a
+// confirmed chip mints. It exists because of a real refusal: the reader
+// highlighted "nflatable-arm", the discussion concluded the phrase should read
+// "The inflatable-arm literature", and the bot told them to go and re-highlight
+// it properly. The bot can see the page; it can say which words it means.
+//
+// This is the check, and it is strict, because the mark it authorises is made
+// in the READER'S name on a file they send to a co-author:
+//
+//   · the wording must be found in the page's own snapshot text, on the SAME
+//     PAGE as the thread (found elsewhere in the document → `offpage`, found
+//     nowhere → `unlocatable`, no snapshot → `unlocatable`, because a span this
+//     companion cannot locate is a span it must not anchor);
+//   · exactly once (`ambiguous` otherwise — a phrase that occurs twice on a page
+//     names neither of them);
+//   · and it may not run across PART of another mark already on this page
+//     (`covered`). That is the span-discipline rule of 2026-08-26 enforced
+//     mechanically for the first time: a suggestion may not re-cover text
+//     somebody else's mark owns. Landing on exactly the same span is not
+//     covering it — that is the adoption path, and /strike-from handles it.
+//
+// DISJOINT IS ALLOWED, deliberately: the passage need not overlap the thread's
+// quote, only sit on its page. The whole point of several suggestions in one
+// reply is that one discussion concludes several separate places must change,
+// and a rule that every passage must touch the highlight would leave that
+// promise unkeepable. What makes it safe is not overlap but consent — the chip
+// shows the reader the exact wording before they click, nothing is marked up
+// until they do, and `covered` stops the one case consent cannot cover, which
+// is a mark landing half-across somebody else's.
+//
+// Returns { fault, phrase, anchor }. `anchor` is the corrected quote with 32
+// characters of context each side, cut from the page text itself — the same
+// shape the extension computes for a hand-drawn highlight.
+export function resolvePassage(page, thread, passage, html) {
+  const want = fold(passage);
+  if (!want) return { fault: '', phrase: '', anchor: null };
+  if (want.length < PASSAGE_MIN) return { fault: 'unlocatable', phrase: want, anchor: null };
+  const n = Number(thread && thread.page) || 0;
+  const text = snapshotPageText(html, n);
+  const first = text ? text.indexOf(want) : -1;
+  if (first < 0) {
+    const whole = snapshotPdfText(html || '');
+    return { fault: whole && whole.includes(want) ? 'offpage' : 'unlocatable',
+      phrase: want.slice(0, 80), anchor: null };
+  }
+  if (text.indexOf(want, first + 1) >= 0) {
+    return { fault: 'ambiguous', phrase: want.slice(0, 80), anchor: null };
+  }
+  const end = first + want.length;
+  for (const t of (page && page.threads) || []) {
+    if (!t || t === thread || (thread && t.id === thread.id)) continue;
+    // the cards this discussion already minted are its own business
+    if (thread && t.from_thread && t.from_thread === thread.id) continue;
+    if ((Number(t.page) || 0) !== n) continue;
+    const q = fold(t.quote);
+    if (!q || q === want) continue;      // the same span exactly = adoption, not covering
+    const i = locateQuote(text, t);
+    if (i < 0) continue;
+    if (i < end && first < i + q.length) {
+      return { fault: 'covered', phrase: q.slice(0, 80), anchor: null };
+    }
+  }
+  return {
+    fault: '', phrase: '',
+    anchor: {
+      quote: want,
+      prefix: text.slice(Math.max(0, first - 32), first),
+      suffix: text.slice(end, end + 32),
+      page: n,
+    },
+  };
+}
+
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark, from_thread, from_msg, from_idx, passage_named }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
@@ -1294,8 +1542,20 @@ export function addThread(page, { quote, prefix, suffix, text, author, index, pa
   // asks each in turn and picks — so "this thread produced a strike" is not a
   // precise enough answer for the drawer to know which chip was the one that
   // was clicked and which were merely not chosen.
+  //
+  // …and `from_idx` is that note one rung finer again, because a single reply
+  // may now carry up to STRIKE_PER_REPLY_MAX suggestions and "which reply" is no
+  // longer a precise enough answer either. It is the suggestion's position in
+  // that reply's list. Absent means the first, which is what every record
+  // written before this amendment meant.
+  //
+  // `passage_named` records that the anchor came from the BOT's `passage:` line
+  // rather than from the reader's own highlight — provenance for the card, and
+  // the reason the chip shows the wording before it is clicked.
   if (from_thread) thread.from_thread = String(from_thread);
   if (from_msg) thread.from_msg = String(from_msg);
+  if (Number(from_idx) > 0) thread.from_idx = Number(from_idx);
+  if (passage_named) thread.passage_named = true;
   const p = pageNumber(page_number);
   if (p) thread.page = p;
   // the extension knows the page order of its highlights; when it tells us
@@ -1388,7 +1648,7 @@ export function setCardState(card, state, extra = {}) {
 }
 
 export function appendMsg(page, threadId, {
-  author, text, ts, kind, route, origin, file_in, strike, question, suggestions,
+  author, text, ts, kind, route, origin, file_in, strike, strikes, question, suggestions,
 }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
@@ -1426,8 +1686,25 @@ export function appendMsg(page, threadId, {
   // from it, and the bot is told on its next turn here. A refusal that left no
   // trace would be indistinguishable from a suggestion never made — which is
   // exactly how a reader ends up being told a deletion happened when it did not.
-  if (strike && strike.why) {
+  //
+  // …and there may be SEVERAL of them (STRIKE_PER_REPLY_MAX), because one
+  // discussion routinely concludes that two or three separate places have to
+  // change. The list lives under `strikes`; `strike` stays exactly what it was
+  // for every record already written, and `strikesOf` is the only thing that
+  // should ever ask which shape a message is in.
+  const list = (Array.isArray(strikes) ? strikes : [])
+    .filter(s => s && s.why)
+    .slice(0, STRIKE_ENTRY_MAX)
+    .map(s => ({
+      why: String(s.why),
+      ...(s.passage ? { passage: String(s.passage) } : {}),
+      ...(s.rejected ? { rejected: String(s.rejected) } : {}),
+      ...(s.phrase ? { phrase: String(s.phrase) } : {}),
+    }));
+  if (list.length) msg.strikes = list;
+  else if (strike && strike.why) {
     msg.strike = { why: String(strike.why) };
+    if (strike.passage) msg.strike.passage = String(strike.passage);
     if (strike.rejected) msg.strike.rejected = String(strike.rejected);
     if (strike.phrase) msg.strike.phrase = String(strike.phrase);
   }

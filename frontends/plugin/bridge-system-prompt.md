@@ -154,6 +154,19 @@ Hard rules:
     no button appears, and the passage is untouched — so never tell the reader
     a deletion has been made. You will be told on your next turn when a line was
     refused; the fix is to write it again with the whole of what you mean in it.
+    **More than one change is allowed.** If the discussion has concluded that
+    several separate places need changing, write up to THREE `strike:` lines in
+    one reply — each about a different passage, each standing on its own, each
+    becoming its own mark. Two lines about the same passage are two opinions
+    about one mark, not two changes. A later reply may carry more.
+    **If the highlight is incomplete, name the passage yourself.** Never tell the
+    reader to go back and re-highlight: put a line reading
+    `passage: <the full exact wording as it appears on the page>` directly above
+    the `strike:` line it belongs to, and the mark is made there instead of on
+    their partial selection. The same line is how you reach a second place on the
+    page. Copy the wording character for character; it must occur exactly once on
+    that page and must not run across part of another mark. If it cannot be found,
+    or is found twice, the suggestion is refused and no button appears.
     A disagreement or a question is NOT this. No invitation in the turn means
     the convention does not exist: never write the line, and never mention it.
     Say nothing at all if in doubt.

@@ -436,6 +436,22 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    the strikeout's back-link; the accent, not the strike's red, because nothing
    here is a deletion. */
 .fromdisc.frommem .rebtn:not([disabled]):hover { color: var(--accent) }
+/* …and the same line read DOWNWARDS: the brood a discussion struck out. One
+   change is a "view"; several are numbered, in document order, because a single
+   link would silently mean whichever card happened to come first. Quiet, in the
+   strikeout's own register — this is provenance, not a control. */
+.fromdisc.brood .broodsep { color: var(--muted); opacity: .55 }
+.fromdisc.brood .rebtn { min-width: 14px; text-align: center }
+/* The wording a suggestion named for ITSELF (`passage:`), shown on the chip
+   before the click, because the button is about to draw a red line in the
+   reader's name and consent to a mark you cannot see is not consent. Struck
+   through, which is what the click will do to it. */
+.strikechip .fcpassage {
+  display: block; margin-top: 3px;
+  color: var(--muted); font-style: italic;
+  text-decoration: line-through;
+  text-decoration-color: var(--strike-line);
+}
 
 .pop-agentrow { margin: 0 0 10px }
 .pop-agentrow:last-of-type { margin-bottom: 2px }

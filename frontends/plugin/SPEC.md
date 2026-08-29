@@ -7231,6 +7231,214 @@ Full node sweep green (suggest 42, blog 45, companion 212, workspace 126,
 adapters 314, pdf 186, questions 89, …). `core/` is untouched, so `pytest` was
 not re-run.
 
+## Amendment (2026-08-29, shipped): one discussion, several changes — and a bot that can correct the highlight
+
+Reported from a live session on the reader's manuscript, and it is two failures
+in one screenshot. The reader had highlighted **"nflatable-arm"** — missing the
+initial letter, stopping short of the words either side — and the thread
+concluded that the phrase should read differently. The bot **refused to
+suggest anything**: *"the highlight omitted part of the phrase, re-highlight the
+full wording."* That is the clerical work this whole feature exists to abolish,
+handed to the one person who should never be doing it. And underneath it, the
+structural limit: one discussion routinely concludes that **two or three
+separate places** must change, while a thread could only ever mint one card for
+its own quote.
+
+Two additions, and they are the same addition seen twice: a suggestion is no
+longer bound to the reader's selection, in NUMBER or in SPAN.
+
+### 1. A reply may carry several suggestions (`STRIKE_PER_REPLY_MAX = 3`)
+
+`store.parseStrikeSuggestions` reads them all, in order, instead of taking the
+last line and throwing the rest away. Each becomes its own chip; each confirmed
+chip mints its own card; all of them link back to the same discussion through
+`from_thread`, exactly as one did.
+
+Three per reply — the reader's number. Enough for "the phrase, the citation and
+the sentence after it"; few enough that a reply is not a wall of buttons. It is
+per REPLY, not per conversation: a later answer may carry three more. A fourth
+line in one reply is not dropped, it is **refused out loud** (`rejected:
+'capped'`, a buttonless chip, and the bot told on its next turn) — the rule the
+2026-08-27 amendment settled: a suggestion that vanished is indistinguishable
+from one never made.
+
+**Two `strike:` lines about the same passage are still one mark.** That is not a
+cap, it is arithmetic: they are two opinions about one span (the two-bots case,
+which is unchanged), and the door dedupes them onto one red line. Several
+suggestions therefore MEAN several passages, and the offer says so.
+
+**On the record.** The message carries `strikes: [ … ]`; `strike` stays exactly
+what it was on every reply already written, and `store.strikesOf(msg)` is the
+only thing that asks which shape a message is in. Nothing on disk migrates. A
+minted card gains `from_idx` — which suggestion IN that reply — because
+`from_msg` alone stopped being precise enough the moment a reply could carry
+three.
+
+**The brood, in the drawer.** The parent card carries the link its children
+already carried backwards: *"struck through here — 3 changes · 1 · 2 · 3"*,
+each number a jump to that card, in document order. Derived from `from_thread`
+(`store.broodOf`), never stored: nothing to keep in step, nothing to repair when
+a card is deleted, and a card that changes parents is in one brood and out of
+the other by construction.
+
+### 2. A child has one parent, and may be RE-ADOPTED
+
+Editing a long draft surfaces inconsistencies late. A discussion on page 9
+concludes that the mark decided in a discussion on page 3 now needs different
+words — and that later conversation is legitimately the one standing behind the
+note. So `from_thread` **moves**: the old brood drops the card, the new brood
+gains it, both view links follow, and `store.adoptStrike` pushes the previous
+parent onto `prior_threads` (oldest first, capped at `PRIOR_THREADS_MAX = 8`) so
+the move is a record rather than an erasure. Soft ids, like `from_thread`
+itself — every one of them may dangle.
+
+Adoption happens on the ordinary confirm path and is reported as `adopted: true`
+beside `updated`. It also makes a same-note confirm **not** a no-op: a click
+that only moves the parent still writes, because something moved.
+
+**Which card a confirm is about**, amended once more. It was the link
+(`from_thread`) first and the quote second. The link is now the CHIP's link —
+thread + `from_msg` + `from_idx`, which is "the card this very chip made" — and
+the quote match does the work one rung out: a different chip, the other bot, a
+different discussion, all landing on the same span. The chip link still beats
+the quote after an anchor has drifted, which is the case the ordering exists
+for.
+
+### 3. `passage:` — the bot names its own span
+
+A suggestion may put a line of its own DIRECTLY ABOVE its `strike:` line:
+
+```
+passage: The inflatable-arm literature
+strike:  replace with: "Work on inflatable arms is thin."
+```
+
+It binds FORWARD (a heading over the change it introduces, which is the order a
+model writes it in anyway, and a stray one then aims at nothing rather than
+silently re-aiming the suggestion above it). Both lines come off the reply's
+words; both are machinery.
+
+**`store.resolvePassage` is the check**, and it is strict, because the mark it
+authorises is drawn in the READER'S name on a file they hand to a co-author:
+
+| fault | what it means |
+|---|---|
+| `unlocatable` | not in the page's snapshot text — or there is no snapshot, because a span this companion cannot locate is one it must not anchor |
+| `offpage` | found in the document, but not on the thread's page |
+| `ambiguous` | found more than once on the page: it names neither |
+| `covered` | it runs across PART of another mark already on this page |
+
+A clean answer comes back as an anchor — the quote plus 32 characters of the
+page's own context each side, the same shape the extension computes for a
+hand-drawn highlight. The confirm anchors THERE. **The reader never re-highlights
+anything.** Checked at the lift (so a bad wording never becomes a button) and
+again at the door (so a client's word is never taken for where a mark may go).
+
+**Disjoint is allowed, and that was the decision to make.** The passage must sit
+on the thread's page; it need not touch the thread's quote. The alternative —
+overlap required for the first child, disjoint only for explicitly-additional
+ones — was rejected on two grounds. It makes the state of the record decide what
+grammar means (the same line is legal or illegal depending on what has already
+been minted, which is unexplainable to a model and untestable in isolation), and
+it makes the promise of §1 unkeepable: "one discussion, several changes" is
+about several PLACES, and a rule that every passage must touch the highlight
+leaves only nested variants of one span.
+
+What makes disjoint safe is not overlap, it is **consent plus a mechanical
+floor**. The chip shows the exact wording — struck through, which is what the
+button will do to it — before it is pressed, and nothing is marked up until the
+reader presses it; that is the same rule the whole feature rests on. And
+`covered` is the floor consent cannot supply: a mark landing half-across
+somebody else's is refused whatever anyone clicks. Landing on exactly the same
+span is not covering it — that is the adoption path of §2, and the door handles
+it.
+
+That `covered` check is also the first MECHANICAL enforcement of the span
+discipline of 2026-08-26. Until now the companion could only tell a bot to keep
+its hands off a neighbour's text; a named passage is a span it can actually
+measure.
+
+### 4. The wording, reconciled
+
+`SPAN_DISCIPLINE` (chat.mjs) said "never change a word outside the quote", which
+is what taught bots to send the reader away to re-highlight. It now names the
+one sanctioned way past the fence — a `passage:` line on a strike suggestion,
+where the turn has invited one, because it says the words out loud and the
+reader sees them before anything happens — and keeps the prohibition where it
+belongs: **silent widening**, a rewording that quietly swallows text the quote
+did not contain. `strikeOfferBlock` and `bridge-system-prompt.md` rule 13 carry
+the same two paragraphs: several changes are allowed, and *never ask the reader
+to go back and re-highlight*.
+
+### 5. Everything downstream was already right
+
+A child is an ordinary strike thread. `pdf/viewer.js collectItems` writes one
+`/StrikeOut` per placed thread and has never had a one-per-quote assumption in
+it; `export.mjs` renders `~~quote~~` per thread. Several children per parent
+therefore need nothing from the export at all, which the tests now pin rather
+than assume. `from_thread`, `from_idx`, `prior_threads` and `passage_named` are
+provenance and **nothing in either export has heard of any of them** — what the
+co-author receives is still a red line, a human's name and one note.
+
+### Files
+
+```
+store.mjs                       STRIKE_PER_REPLY_MAX / STRIKE_ENTRY_MAX /
+                                PASSAGE_MARK / PASSAGE_MIN; parseStrikeSuggestions
+                                (parseStrikeSuggestion is now its last hit);
+                                strikesOf; resolvePassage; broodOf; adoptStrike /
+                                PRIOR_THREADS_MAX; strikeFaultWhy and the six
+                                faults; strikeOfferBlock rewritten; addThread
+                                takes from_idx / passage_named; appendMsg keeps
+                                `strikes`
+server.mjs                      the lift reads every suggestion, caps at three
+                                and resolves each `passage:`; refusedStrikeNote
+                                reads the list; /strike-from takes `passage` and
+                                `from_idx`, matches chip-first, adopts, and mints
+                                after the last child
+chat.mjs                        SPAN_DISCIPLINE names the sanctioned way out
+extension/drawer.js             strikeChipHtml maps the list; oneStrikeChipHtml;
+                                the four new refusals; `.fcpassage`; broodHtml on
+                                open and resolved cards; doStrikeFrom keyed by
+                                ts#idx; per-chip decline
+extension/content.js            onStrikeFrom passes from_idx and passage
+extension/drawer.css            .fromdisc.brood, .broodsep, .strikechip .fcpassage
+bridge-system-prompt.md         rule 13 — several changes, and `passage:`
+```
+
+**Testing.** `test/strike.test.mjs` (57 → 73). Pure: the multi-block parse with
+its forward-binding `passage:` and its orphan line, `strikesOf` over both record
+shapes, the offer teaching both new things, the span rule naming the sanctioned
+route, and every fault's sentence. End to end against the mock bridge and a real
+snapshot: **the reported case** — a `nflatable-arm` highlight, a `passage:`
+naming the full phrase, and a mint anchored on `The inflatable-arm literature`
+with the page's own prefix and suffix, the discussion's own quote untouched;
+three suggestions in one reply becoming three cards under one parent with
+`from_idx` 0/1/2; a fourth refused as `capped` and the bot told; the four
+passage faults refused at the door and `covered` refused at the lift as well;
+re-adoption moving `from_thread`, keeping `prior_threads`, and updating both
+broods; a mark that never moved carrying no lineage key at all; and the Obsidian
+export rendering all three children without being asked to.
+
+Harness `?pdf=1&strike=1&selftest=1` (81 → 92): a codex reply carrying TWO
+suggestions, each naming its own passage; both chips live (a second place is a
+second change, never a rival); each showing its wording, struck through, before
+the click; both confirmed, two more cards minted, and the discussion's brood
+line reading "3 changes" with three numbered jumps. Full node sweep and harness
+sweep green.
+
+#### Known limits (deliberate)
+
+- **A `passage:` on a page with no snapshot cannot be taken.** The companion
+  refuses rather than guesses. On a PDF the snapshot is written by the viewer,
+  so this bites only on a record made before the page was ever rendered.
+- **Adoption is by the confirm, never automatic.** A card whose parent is
+  deleted keeps a dangling `from_thread` and stands alone, exactly as before;
+  nothing hunts for a new parent for it.
+- **`prior_threads` is a trace, not a history.** It holds ids, not what was said,
+  and it is capped — a card passed back and forth many times keeps the last
+  eight hands.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
