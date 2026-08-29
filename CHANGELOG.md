@@ -1,5 +1,60 @@
 # CHANGELOG
 
+## 2026-08-29
+
+- **Discuss your blog draft, and have the bots edit the draft.** Write a post in
+  markdown, run your site locally (`jekyll serve`), open the page in the browser
+  and comment on it the way you comment on anything else — and now, when you ask
+  for a passage to be tightened, the bots change the MARKDOWN the page was built
+  from. Jekyll rebuilds, the tab reloads, and you are looking at the result.
+  Before this, a comment on your own draft could be answered and could not be
+  acted on: everything the bots could see was the rendered page, which is a
+  photocopy the next build throws away.
+
+- **You tell it once which folder your site comes from.** In the companion's
+  `config.json`:
+
+      "blog_sites": [{ "serve_origin": "http://localhost:4000",
+                       "root": "/Users/you/sites/yourblog", "kind": "jekyll" }]
+
+  The first time you open a page of that site, the drawer asks — once — "is this
+  your site?", exactly as it asks about a council folder, and for the same
+  reason: saying yes is what lets the bots edit files in there. Saying no is
+  kept too, and it never asks again.
+
+- **It works out which file the page came from by reading your repo, not by
+  guessing.** Front-matter `permalink` first, then the permalink templates in
+  your `_config.yml` (categories and all), then the usual filename conventions,
+  and finally a match on the slug — which covers permalink styles nobody
+  modelled. Posts, drafts, pages and collections all resolve. If two files share
+  a slug it says so rather than picking one, and if it cannot work out which
+  markdown renders at an address it tells you that in the drawer and leaves
+  everything read-only. The drawer names the file it is about to edit, so you
+  always know what is about to change.
+
+- **Images too.** A bot can put a new picture in the right place — the file
+  under `assets/`, referenced the way the rest of your post references images —
+  and edit an existing one with whatever image tools are on the machine.
+
+- **It will never publish your site, and that is on purpose.** Nothing in
+  Discuss commits, pushes, branches or tags anything in your site's repository,
+  there is no publish button and no way to ask for one, and the bots are told in
+  so many words not to run git there (the CLI is configured to refuse it as
+  well). You put your site live yourself, by your own route. This is a promise
+  written into the code rather than a setting: it belongs to the KIND of folder,
+  so a config restored onto a new computer brings the protection with it and
+  there is no flag anywhere to switch it off. (The paper-review side of
+  botference still commits and pushes as it always did — a paper under review is
+  a shared working copy; your blog is your published name.)
+
+- **What the bots quietly changed is still shown to you.** A rewrite nobody
+  commented on still turns into a comment thread on the page, as it does on any
+  document — measured on the markdown source now, which is where the change
+  actually happened. One caveat, honestly: because you comment on the rendered
+  page and the bot edits markdown, a thread the machine opens over a passage
+  that is mostly markup may not find its place on the page. You still get to
+  read it; it just sits without a highlight.
+
 ## 2026-08-28
 
 - **A long PDF opens.** Marking up a book was, quietly, not possible: at a

@@ -41,7 +41,12 @@ if (process.env.MOCK_ENV_DUMP) {
   // root — so what is present at spawn is the whole of the write scope,
   // exactly as the API keys are the whole of the auth.
   const scope = {};
-  for (const k of ['BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS', 'BOTFERENCE_PROJECT_ROOT']) {
+  // …and, since blog source pages, WHAT this child may not run: the reader's
+  // website repo is theirs to publish, so a blog child is born with git and gh
+  // denied (cli_adapters._plan_denied_commands turns this into claude's
+  // permissions.deny). Same field, same reason: it is part of the scope.
+  for (const k of ['BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS', 'BOTFERENCE_PLAN_DENY_BASH',
+    'BOTFERENCE_PROJECT_ROOT']) {
     if (k in process.env) scope[k] = process.env[k];
   }
   try {
@@ -203,6 +208,21 @@ function input(text) {
       try {
         fs.mkdirSync(path.dirname(write), { recursive: true });
         fs.writeFileSync(write, `rewritten by the mock at ${new Date().toISOString()}\n`);
+      } catch { }
+    }
+    // [mock:copy:<from>|<to>] — the same act with CONTENT the test chose.
+    // `[mock:write]` stamps a one-line placeholder, which proves a file moved
+    // and nothing else; a test about what the turn-end DIFF makes of an edit
+    // needs the edit to be a real one, so this copies a prepared file over the
+    // target. Once per directive, exactly as above and for the same reason.
+    // The separator is `|` because both halves are absolute paths.
+    const cm = [...String(text).matchAll(/\[mock:copy:([^\]|]+)\|([^\]]+)\]/g)]
+      .filter(m => !written.has(m[0])).pop();
+    if (cm) {
+      written.add(cm[0]);
+      try {
+        fs.mkdirSync(path.dirname(cm[2]), { recursive: true });
+        fs.copyFileSync(cm[1], cm[2]);
       } catch { }
     }
     for (const model of models) {

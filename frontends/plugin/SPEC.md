@@ -52,11 +52,15 @@ frontends/plugin/
                              copied byte-for-byte into drawer.js and reader.js (companion agent)
   collateral.mjs           ← the edits nobody commented on: the turn-end diff of the
                              review document, its regions, dedupe and caps (companion agent)
+  blog.mjs                 ← blog source pages: which repo a local site is served
+                             from, which markdown a url renders from, the census
+                             over it, and the write rules (companion agent)
   bridge-system-prompt.md  ← bot role file              (companion agent)
   test/
     companion.test.mjs     ← endpoint tests w/ mock bridge (companion agent)
     collateral.test.mjs    ← the collateral-edit diff, dedupe and caps (companion agent)
     workspace.test.mjs     ← project artifact pages, end to end (companion agent)
+    blog.test.mjs          ← blog source pages: mapping, scope, reload, no-git (companion agent)
     fixtures/article.html  ← sample static article, served at /test-page (companion agent)
     harness.html           ← loads extension JS with chrome-API + companion mocks for visual QA (extension agent)
     anchor.test.mjs        ← anchoring unit tests        (extension agent)
@@ -6787,6 +6791,241 @@ to police a percentage. It skips (exit 0) with no Chromium, exactly as
   refresh, and a 500-page PDF's snapshot POST is 1.26 MB. Both are gated (the
   snapshot by its own content hash) and neither was measurable beside the
   anchoring, so neither was touched.
+
+## Amendment (2026-08-29, shipped): blog source pages — the draft behind the page
+
+The reader writes a post in markdown, runs `jekyll serve`, opens
+`http://localhost:4000/…` and reads it the way anybody else will. Then they
+comment on a paragraph — and until now the bots could answer that comment in
+prose and could not act on it, because everything they can see is the RENDERED
+page: a file under `_site/` that the next build throws away. The document was
+three directories away and nothing in this companion could find it.
+
+A page of the reader's own locally-served site is now a **blog source page**:
+Discuss resolves which markdown file it was rendered from, spawns a bridge
+child with that repository writable, and closes the loop — the bots edit the
+source, jekyll rebuilds, the tab reloads, the reader sees the result.
+
+### 1. What is new, in one table
+
+| | project **artifact** page | **blog source** page |
+|---|---|---|
+| the address | `file://…/projects/<id>/index.html` | `http://localhost:4000/<permalink>/` |
+| what the reader sees | the file itself | a RENDERING of the file |
+| what the bots edit | that same file | the markdown three directories away |
+| how it is found | walk up to a council root | resolve the url against the repo |
+| the write root | `projects/<id>/` | the whole repository |
+| the lane | the project | the repository |
+| filed where | the council project's own chats | "Plugin pages", like any web page |
+| publishing | n/a | **never — see §6** |
+
+Everything else is machinery that already existed and was left alone: the
+turn-end census, the reload broadcast, collateral threads, track changes,
+re-anchoring, the confirmation contract.
+
+### 2. Registration is TWO answers, deliberately
+
+`config.json`, in the companion's own workspace:
+
+```json
+"blog_sites": [{ "serve_origin": "http://localhost:4000",
+                 "root": "/Users/me/sites/angadhn.github.io", "kind": "jekyll" }],
+"blog_roots":  { "/Users/me/sites/angadhn.github.io": true }
+```
+
+- **`blog_sites` is the DECLARATION** — "the site at this address is built from
+  this folder of mine". Only the owner can make it (`POST /blog-site`, or the
+  config by hand), and it is refused for anything that is not an http(s) origin
+  pointing at a directory with a `_config.yml` or a `_posts/` in it. A list,
+  because a reader may run two sites. The origin is matched EXACTLY: no
+  wildcard, no "any localhost port".
+- **`blog_roots` is the ANSWER** — the one-time "is this your site?" card in
+  the drawer, kept per resolved path, a NO kept as firmly as a YES. It exists
+  for exactly the reason `council_roots` does: what hangs off a yes is a bridge
+  child spawned with that directory writable.
+
+Declared-but-unconfirmed is a real state and it is the one the card asks in.
+A comment made in it is KEPT and the bots are not summoned — the same refusal
+an unconfirmed council root makes, with its own wording so the reader knows
+which folder is being asked about.
+
+### 3. Mapping is a READ OF THE REPO, never a guess from the url
+
+`blog.indexOf(root)` walks `_posts/`, `_drafts/`, `_pages/`, every collection
+directory (from `_config.yml`'s `collections:`, or the `_name` directories that
+exist) and the top-level pages, reads the first 8 KB of each for its front
+matter, and gives every document the list of urls it could be served at:
+
+1. **front-matter `permalink`** — the document's own word, and it wins outright.
+2. **the configured template** — the site-wide `permalink:` for posts, the
+   collection's own for a collection, expanded with `:categories`, `:title`,
+   `:year`, `:month`, `:day`, `:collection`, `:path` and the named styles
+   (`pretty`, `date`, `ordinal`, `none`). Categories are slugified the way
+   Jekyll slugifies them.
+3. **the conventions** — `/slug/`, `/YYYY/MM/DD/slug/`, `/cat/slug/`,
+   `/collection/slug/`, a page at its own path.
+
+A request path is normalized (decoded, `index.html` dropped, one trailing
+slash) and looked up. Anything the table misses falls to **the slug fallback**:
+the last real segment of the address, matched against the slugs the repo
+contains. That is what carries a permalink style this module does not model —
+and where TWO documents share a slug the answer is **ambiguous**, named as
+such, with both paths, rather than resolved by luck.
+
+The index is cached per repo against the mtimes of the document directories,
+`_config.yml`, and every document — so a new post, a renamed one and a
+permalink edited inside an existing file are all picked up without restarting
+anything.
+
+**An unmappable page under a registered origin is an ANSWER, not a silence.**
+The drawer says which address could not be resolved and why; the page stays an
+ordinary web page that can be discussed; nothing is writable. A bot let loose
+on a repository with no idea which file the reader means is precisely what this
+module exists to prevent.
+
+### 4. The write scope, honestly
+
+The child is spawned with the REPOSITORY as its one extra write root
+(`BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS` → claude's `permissions.allow` Edit rules,
+codex's `workspace-write` sandbox). So:
+
+- **"nothing outside this repository" is enforced by the tools.**
+- **"only this post and its images" is not.** It is the envelope's instruction
+  plus the turn-end census that shows the reader every file that moved. A
+  directory is the only boundary an OS sandbox understands, and pretending
+  otherwise would be the kind of promise this SPEC does not make. (The same
+  honest gap the project-artifact amendment documents for claude's `Bash`.)
+
+The envelope block (`blog.blogBlock`) rides EVERY turn on the page, like the
+project write rule and for the same reason. It carries the source path, the
+asset directories, the instruction to leave `_site/`, `_config.yml`,
+`_layouts/`, `_includes/` and other posts alone — and one thing no other
+envelope has to say:
+
+> Quotes in this conversation come from the RENDERED page, so the wording you
+> are given is the prose without its markdown. Find the matching passage in the
+> source yourself and edit it there.
+
+That is the whole of the source-map machinery, and deliberately so: the reader
+comments on rendered text, the bot edits markdown, and a model is good at
+finding the sentence. Nothing tries to map offsets between the two.
+
+Images may be **added** (a file under `assets/`, referenced site-absolutely in
+the style the post already uses) or **edited** with whatever the machine has —
+`sips`, ImageMagick — which the envelope names rather than assumes. No image
+editor was built and none should be.
+
+### 5. The loop closes at the turn boundary
+
+Turn-start takes a census of the repo and a snapshot of the source file;
+turn-end diffs both.
+
+- The census **skips `_site/`, `.jekyll-cache/`, `vendor/`, `node_modules/`**
+  and every dotfile. Those move a second after the bots save, *because jekyll
+  rebuilt* — counting them would make every turn "42 files changed" and the
+  reload would be reporting the build instead of the edit.
+- `blog-files` carries `page_changed`, and the tab does what it does for a
+  project artifact: this post's source moved (or a picture in it) → reload;
+  something else in the site moved → one line in the chat and nothing else.
+- **The build is not waited for.** Discuss does not poll `_site/` for somebody
+  else's watcher to settle. `jekyll serve` rebuilds by itself, and with
+  `--livereload` the page reloads itself too — both are supported, neither is
+  required, and a reload that lands a moment early is corrected by the next
+  one. No loop is possible: a reload starts no turn.
+- **Collateral is diffed on the SOURCE**, not on the page — the rendered copy
+  is regenerated wholesale and diffing it would attribute the build to the
+  bots. Markdown carries no tags for `collateral.docBlocks` to find, so the
+  file is presented to the diff one paragraph per block (`blog.mdDoc`);
+  without that, any edit anywhere reads as one enormous region.
+  **The anchoring caveat:** an auto-thread's quote is then MARKDOWN. For
+  ordinary prose that is the same string the page shows and it anchors; for a
+  passage that is mostly markup it will not, and the reader gets an orphaned
+  thread they can still read. That is better than a silent rewrite, and it is
+  the honest cost of the reader and the bot looking at two different documents.
+
+### 6. THE SITE'S REPOSITORY IS THE READER'S ALONE
+
+**Discuss edits working files and stops there.** There is no publish button, no
+publish endpoint, and no git anywhere in this feature: nothing here stages,
+commits, pushes, branches or tags in a blog root, and the bots are told in so
+many words not to. The reader puts their site live by their own hand, by their
+own route.
+
+This is a **design commitment, not an omission**, and it is stated here so that
+nobody later reads the gap as a missing feature. The road from a draft to the
+public internet is the author's, and a machine that could take it on their
+behalf — even behind a confirm — is a machine that will one day take it by
+accident.
+
+**The contrast with the review engine is deliberate.** `frontends/review`
+keeps its bot commit/push powers untouched: a paper repository under review is
+a collaborative working copy where committing is the point. A blog repository
+is somebody's published identity. Same company, different object.
+
+**The guarantee lives in CODE, not in config.** `blog.KIND_RULES` gives every
+kind of blog root `git: false`, `blog.gitAllowed()` is the one place that is
+asked, and `normalizeSite()` keeps exactly three fields off a config row
+(`serve_origin`, `root`, `kind`) so a fourth cannot be smuggled in. This
+matters because the companion's `config.json` RIDES THE READER'S NIGHTLY BACKUP
+REPO and will be restored onto other machines: the config records *which*
+directories are blog roots — the path may differ per machine, and
+re-registering is one call — while *what a blog root can never do* is not in
+the file at all. A copied, hand-edited or restored config can move the path and
+cannot weaken the rule; there is no flag to flip and no code path to reach.
+
+**Defence in depth, named for what it is.** The blog child is additionally
+spawned with `BOTFERENCE_PLAN_DENY_BASH=git,gh`, which
+`cli_adapters._plan_denied_commands` turns into claude's `permissions.deny`
+(deny beats allow, so the blanket `Bash` does not reopen it) plus a deny on
+writes into `.git/`. That is a command-prefix rule enforced by one CLI; codex
+has no equivalent. It is a second lock, not the lock. **The guarantee that
+holds is that the companion has no publishing code path at all** — asserted in
+the suite by 404ing every route anyone might reach for and by checking that
+`blog.mjs` starts no processes whatsoever.
+
+The environment variable is empty everywhere else, so council and review
+sessions are byte-for-byte what they were.
+
+### 7. Files
+
+`blog.mjs` (new, ~700 lines: registration, mapping, census, the envelope
+block — every function in it a READ), `server.mjs` (the blog children,
+`chatFor`'s third answer, the blog census and `blog-files`, five endpoints:
+`GET /blog-page`, `GET /blog-sites`, `POST /blog-site`, `POST /blog-root`),
+`chat.mjs` (`denyBash`, the `blogContext` block in the envelope),
+`core/cli_adapters.py` (`_plan_denied_commands`, env-gated and empty by
+default), `extension/content.js` (`loadBlog`, `onBlogFiles`, the confirm
+callback), `extension/drawer.js` (`setBlog`, the source card, the confirm
+card), `extension/drawer.css`.
+
+### 8. Testing
+
+`test/blog.test.mjs` (new, 45) against a **synthetic** Jekyll repo in a temp
+dir — the developer's real site is never read, never written and never bridged
+against, and no git runs because there is no git to run. Front matter and
+`_config.yml` parsing; every mapping rule including the permalink override, the
+category template, both collection templates, the slug fallback, the ambiguous
+slug, the unmappable url, `_site/` never being a source, and the index
+rebuilding when a post is added or a permalink edited in place. Then the
+companion end against the mock bridge: the unconfirmed refusal, a DECLINED repo
+going back to being an ordinary web page, the write root being the repo, one
+child per repo, no write root on an unmappable page, the
+envelope's source path and rules, `blog-files` on a source edit, silence on a
+`_site/` rebuild, a reload on a new image, collateral on the source — and the
+whole of §6.
+
+`test/harness.html?blog=1` (plus `?blog=unconfirmed`, `?blog=unmapped`), with
+`&selftest=1`: 12/12, 9/9 and 5/5, headless. The poses already on HEAD are
+unmoved by all of this — main 649/649, workspace 88/88, more 21/21, colledit
+21/21 in the same sweep. The last two assertions of every
+one of them are that there is no publish control anywhere on the drawer and
+that nothing offers to put the site live.
+
+`tests/test_cli_adapters.py` (+3): no deny rules by default, the deny rules a
+list produces, and a value that is not a command name being ignored.
+
+Full node sweep green (blog 45, companion 212, workspace 126, adapters 314,
+pdf 186, …); `pytest tests/` 769 passed.
 
 ## Out of scope for v1 (do not build)
 

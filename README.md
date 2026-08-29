@@ -705,6 +705,48 @@ minutes) so an afternoon of reading does not leave processes lying
 around. The web council has had the same arrangement for a while —
 `COUNCIL_MAX_CHATS`, one bridge per open chat.
 
+### Discuss your blog draft
+
+You write a post in markdown, run the site locally (`jekyll serve`), and
+read the finished page in the browser. Comment on a paragraph there and
+ask for it to be tightened, and the bots edit the **markdown the page was
+built from** — not the rendered HTML, which is a photocopy the next build
+throws away. Jekyll rebuilds by itself, the tab reloads, and you are
+looking at the result. Ask for a picture in a spot and it goes into
+`assets/` with the right path in the post; ask for an existing one to be
+cropped and they use whatever image tools the machine has.
+
+Tell it once which folder your site is served from, in
+`.botference/plugin/config.json`:
+
+```json
+"blog_sites": [{ "serve_origin": "http://localhost:4000",
+                 "root": "/Users/you/sites/yourblog", "kind": "jekyll" }]
+```
+
+The first page of that site you open asks — once — *is this your site?*,
+exactly as it asks about a council folder and for the same reason: yes is
+what lets the bots write in there. It then works out which file each
+address came from by **reading your repo**: front-matter `permalink`
+first, then the permalink templates in your `_config.yml`, then the
+filename conventions, then the slug. Posts, drafts, pages and collections
+all resolve; if two files share a slug it says so instead of guessing,
+and if it cannot tell which markdown renders at an address it says that
+too and leaves everything read-only. The drawer names the file it is
+about to edit, so you always know what is about to change — and a rewrite
+nobody commented on still opens its own comment thread, as on any
+document.
+
+**It will never publish your site.** Nothing here commits, pushes,
+branches or tags anything in that repository, there is no publish button,
+and the bots are told not to run git in there (the CLI refuses it as
+well). Putting the site live stays yours, by your own route. That is a
+rule in the code rather than a setting — it belongs to the kind of folder,
+so a config restored onto another computer brings it along and there is
+nothing to switch off. (Paper review is the deliberate opposite and still
+commits and pushes: a paper under review is a shared working copy; your
+blog is your published name.)
+
 ### The question vault: what you read, asked back
 
 Everything else in Discuss is a record of having understood something

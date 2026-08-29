@@ -366,7 +366,8 @@ export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
   snapshotPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
-  filedContext, suggestContext, strikeContext, questionContext, nearbyContext }) {
+  filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
+  blogContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -470,7 +471,14 @@ export function envelope({ url, title, target, text, quote, history,
   // suggestion, not a standing instruction, and a bot that has already
   // declined to suggest anything should not be asked again every turn.
   const roster = first ? String(suggestContext || '') : '';
-  const standing = `${snap}${figure}${writes}${filed}`;
+  // …and the OTHER kind of write scope: a locally-served page of the reader's
+  // own site, whose source is a markdown file in a repo they have vouched for
+  // (blog.mjs blogBlock — where the file is, what may be touched, and the fact
+  // that every quote in the conversation came from the RENDERING). It stands
+  // where the project write rule stands and never beside it: a page cannot be
+  // both a council artifact and a blog draft.
+  const draft = String(blogContext || '');
+  const standing = `${snap}${figure}${writes}${draft}${filed}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`
@@ -665,8 +673,13 @@ const activeSessionOf = ev => {
 //             opened whenever the project changes, not once per child: one
 //             council root can hold artifacts from a dozen projects.
 //   writeRoot The ONE directory this child may write in — absolute, always
-//             `<root>/projects/<id>/`. Default '' = write nothing, which is
-//             every other bridge in this companion.
+//             `<root>/projects/<id>/` (or, for a blog page, the site repo).
+//             Default '' = write nothing, which is every other bridge in this
+//             companion.
+//   denyBash  Commands this child may not run at all, as a list of names.
+//             Default [] = nothing denied, which is every bridge but one: a
+//             blog child is spawned with ['git','gh'], because the reader's
+//             website repository is theirs to publish and Discuss never does.
 //
 // ── HOW THE WRITE SCOPE IS ACTUALLY ENFORCED (Phase 2) ────────────────────
 // `writeRoot` leaves here as BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS, which the
@@ -692,7 +705,8 @@ const activeSessionOf = ev => {
 // `permission_request` branch in handle(). That request is not a per-file
 // prompt: answering yes grants a whole additional write ROOT for the rest of
 // the session, which is precisely the widening this feature refuses.
-export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot = '' }) {
+export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot = '',
+  denyBash = [] }) {
   let proc = null;
   let available = false;      // a live child we can write to
   let ready = false;          // bridge is between turns
@@ -784,7 +798,14 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // Phase 2: the one writable directory, or none at all. Set — never
         // set empty — because an empty value reads as "unset" to the
         // controller and would fall back to the project's own write_roots.
-        ...(writeRoot ? { BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: writeRoot } : {}) }),
+        ...(writeRoot ? { BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: writeRoot } : {}),
+        // …and the commands this child may not run at all. Blog source pages
+        // (blog.mjs) spawn with `git,gh` here: the reader's website repository
+        // is theirs to publish, and nothing Discuss drives may commit or push
+        // in it. The controller turns this into claude's `permissions.deny`
+        // plus a deny on writes into `.git/` — defence in depth behind the
+        // real guarantee, which is that the companion has no publish code.
+        ...(denyBash.length ? { BOTFERENCE_PLAN_DENY_BASH: denyBash.join(',') } : {}) }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     available = true;
@@ -1156,6 +1177,9 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // here: the server holds the page record and the workspace reader.
         filedContext: job.filedContext || '',
         suggestContext: job.suggestContext || '',
+        // the markdown source behind a locally-served page of the reader's own
+        // site, and the rules for editing it (blog.mjs blogBlock)
+        blogContext: job.blogContext || '',
         // the strikeout offer, on a thread that could take one (server.mjs)
         strikeContext: job.strikeContext || '',
         // …and the revision-question offer, on a thread that has one to make

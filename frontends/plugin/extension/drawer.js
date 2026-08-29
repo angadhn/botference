@@ -1192,6 +1192,11 @@
       // Never computed here: the companion owns the queue, so a tab that was
       // closed for half the round still comes back to the truth (see /round).
       round: null,
+      // The markdown draft behind a locally-served page of the reader's own
+      // site (GET /blog-page), or null — which is every page but those. Never
+      // computed here either: which file a url renders from is a question only
+      // the companion can answer, because only it can read the repo.
+      blog: null,
       orphans: {},         // threadId -> bool (content.js's live anchoring verdict)
       // stream_id -> {who, target, text, shown, done}. `text` is everything
       // RECEIVED; `shown` is how much of it the reader has been shown so far
@@ -3388,6 +3393,60 @@ ${selPillHtml()}
         </div></div>`;
     }
 
+    // ---- the draft behind a page of the reader's own site ----------------
+    // The reader is looking at their own post, rendered by `jekyll serve` on
+    // localhost. The thing worth editing is the markdown it came from, and the
+    // whole of what this card does is SAY SO — which file the bots are about
+    // to edit, or why the companion cannot tell.
+    //
+    // Three states, one card:
+    //   unconfirmed  the repo has been declared but not vouched for. The
+    //                question, in the same words and for the same reason the
+    //                council-root card asks it: a yes spawns a child with that
+    //                directory writable.
+    //   mapped       the source file, named. This is the reassurance the
+    //                feature lives or dies on — a reader about to ask for a
+    //                rewrite wants to know WHICH file is about to change.
+    //   unmapped     the companion could not work out which markdown renders
+    //                at this address, and says why. Nothing is writable, and
+    //                the page is an ordinary web page that can still be
+    //                discussed.
+    //
+    // There is no publish button, and its absence is the design: the reader's
+    // website repository is theirs, Discuss never commits or pushes in it, and
+    // the card says that out loud so nobody goes looking for the button.
+    function blogHtml() {
+      const b = D.blog;
+      if (!b) return '';
+      const repo = String(b.root || '');
+      if (b.declined) return '';        // asked once, answered no, never again
+      if (!b.confirmed) {
+        return `<div class="card confirmroot blogroot">
+          <div class="confirmq">Is this your site?</div>
+          <p class="confirmp">This page is being served from <code class="rootpath">${esc(repo)}</code>${
+            b.rel ? ` — rendered from <code class="rootpath">${esc(b.rel)}</code>` : ''}.</p>
+          <p class="confirmp">Say yes and the bots may edit that post and its images when you ask
+            them to, in the source rather than in the page. They will never commit or push anything:
+            you publish your site yourself.</p>
+          <div class="confirmacts">
+            <button class="pbtn yes" data-act="blogroot-yes" type="button">Yes, that is my site</button>
+            <button class="pbtn no" data-act="blogroot-no" type="button">No, leave this page alone</button>
+          </div></div>`;
+      }
+      if (!b.source_path) {
+        return `<div class="card blogsrc unmapped">
+          <div class="blogline">No source file for this page</div>
+          <div class="blognote">${esc(b.why || 'this address maps to no markdown in the repo')}</div>
+          <div class="blognote">The bots can still discuss it — nothing here is writable.</div>
+        </div>`;
+      }
+      return `<div class="card blogsrc">
+        <div class="blogline">Editing the source: <code class="blogpath" title="${esc(b.source_path)}">${esc(b.rel)}</code></div>
+        <div class="blognote">Comments here change the markdown, not the page. Jekyll rebuilds and
+          this tab reloads.${b.git_allowed ? '' : ' Nothing is ever committed or pushed — you publish it yourself.'}</div>
+      </div>`;
+    }
+
     // How many comment threads a "send review" would actually send: the OPEN
     // ones. (workspace.openThreads applies the same rule server-side and is
     // the authority; this count exists so the button can say the number before
@@ -3490,7 +3549,7 @@ ${selPillHtml()}
       const empty = D.project
         ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — plain text goes to both bots, or tag one. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml()
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + blogHtml()
         + projectTaskCardHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         ${body ? `<div class="thread">${body}</div>` : empty}
         ${statusHtml(PAGE_TARGET)}
@@ -3596,6 +3655,21 @@ ${selPillHtml()}
       if (!r || !r.ok) { D.archive.err = (r && r.error) || 'the companion did not answer'; render(); return; }
       if (D.project) D.project.confirmed = !!yes;
       paintProject();
+      render();
+    }
+
+    // The same answer about a blog repo, and the same two outcomes: a yes and
+    // the bots may edit that post; a no and the card never comes back. Kept
+    // beside answerRoot rather than folded into it — they are one gesture
+    // about two different kinds of folder, and the day one of them grows a
+    // condition it must not silently grow on the other.
+    async function answerBlogRoot(yes) {
+      const r = await cb('onConfirmBlogRoot')(!!yes);
+      if (!r || !r.ok) { D.archive.err = (r && r.error) || 'the companion did not answer'; render(); return; }
+      if (D.blog) {
+        D.blog.confirmed = !!yes;
+        D.blog.declined = !yes;
+      }
       render();
     }
 
@@ -4985,6 +5059,8 @@ ${selPillHtml()}
         if (act === 'summarize') { doSummarize(target); return; }
         if (act === 'root-yes') { answerRoot(true); return; }
         if (act === 'root-no') { answerRoot(false); return; }
+        if (act === 'blogroot-yes') { answerBlogRoot(true); return; }
+        if (act === 'blogroot-no') { answerBlogRoot(false); return; }
         if (act === 'arch-list') {
           D.picking = !D.picking;
           if (D.picking && !D.archive.list && !D.archive.loading) { loadArchive(); return; }
@@ -7384,6 +7460,13 @@ ${selPillHtml()}
       return D;
     }
 
+    // content.js asked /blog-page (on every page load where the drawer is up)
+    // and this is the answer: the markdown source behind a locally-served page
+    // of the reader's own site, or null for every other page there is.
+    function setBlog(blog) { D.blog = blog || null; render(); return D; }
+    // …and which repo the confirmation is about, for the callback that asks.
+    function blogRoot() { return (D.blog && D.blog.root) || ''; }
+
     function setOrphans(map) { D.orphans = map || {}; render(); return D; }
     // content.js asked /round on wake (or after a socket came back) and this
     // is the answer — the same payload the broadcast carries, so a tab that
@@ -7657,7 +7740,7 @@ ${selPillHtml()}
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
-      setExportMode, setOwner, setProject, setRound,
+      setExportMode, setOwner, setProject, setRound, setBlog, blogRoot,
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the
       // switch flips in place.

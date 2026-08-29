@@ -227,6 +227,16 @@
                      project-tasks card is absent (the other screenshot
                      state is the default: the card, read-only, above the
                      page's own tasks card).
+    ?blog=1          the page is a DRAFT OF THE READER'S OWN SITE: an ordinary
+                     http page served by `jekyll serve` on localhost, out of a
+                     repo the reader has registered (blog.mjs). The chat tab
+                     names the markdown file the bots will edit.
+                     `?blog=unconfirmed` holds the one-time "is this your site?"
+                     card; `?blog=unmapped` is a page under the registered
+                     origin whose source the companion cannot work out.
+                     `&selftest=1` runs the blog-page assertions — including
+                     that there is no publish control anywhere on the drawer,
+                     which is the design and not an omission.
     ?filein=1        the "File this page in…" picker, open, on an ORDINARY page
                      (an arXiv PDF, not a project artifact): the council's
                      projects with a peek at each one's recent chats and files,
@@ -447,6 +457,42 @@ const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
     { text: 'Re-run the burn with the new mass budget', done: false },
     { text: 'Write up the nozzle trade study', done: false },
   ] }) };
+// ───────────────────────────────────────────────────────────────────────────
+// 0b. ?blog=… — the reader's own site, served locally
+//     An ordinary http page (this is `jekyll serve` on localhost, not a file:
+//     document and not a council artifact) whose SOURCE is a markdown file in
+//     a repo the reader registered and vouched for. __BFP_BLOG is the same
+//     isolated-world escape __BFP_PROJECT is; content.js reads it instead of
+//     asking the companion, so the pose needs no fake round trip.
+// ───────────────────────────────────────────────────────────────────────────
+const BLOG = Q.get('blog') || '';
+const BLOG_ROOT = '/Users/reader/sites/angadhn.github.io';
+const BLOG_PAGE = BLOG ? {
+  serve_origin: 'http://localhost:4000',
+  root: BLOG_ROOT,
+  kind: 'jekyll',
+  url_path: '/large-space-stations/space-balloons/',
+  confirmed: BLOG !== 'unconfirmed',
+  declined: false,
+  git_allowed: false,
+  ...(BLOG === 'unmapped'
+    ? { source_path: '', rel: '', why: 'no markdown source in this repo renders at /large-space-stations/space-balloons/' }
+    : { source_path: BLOG_ROOT + '/_posts/2026-08-20-space-balloons.md',
+        rel: '_posts/2026-08-20-space-balloons.md',
+        title: 'Space balloons', doc_kind: 'post', mapped_by: 'convention',
+        assets: ['assets'] }),
+} : null;
+if (BLOG_PAGE) {
+  window.__BFP_BLOG = BLOG_PAGE;
+  // The bots rewrite the markdown, jekyll rebuilds, and content.js reloads the
+  // tab. Here that would take the harness down mid-selftest, so the reload is
+  // held back and COUNTED instead (window.__bfp.reloads) — the same seam the
+  // project-artifact world already uses, and the only way to assert that a
+  // reload happened at all.
+  window.__BFP_NO_RELOAD = true;
+}
+const blogRootAnswers = [];
+
 // ── filing an ORDINARY page under a council project ─────────────────────
 // Not a project artifact: a PDF of somebody's manuscript, which lives nowhere
 // near the council and never will. Filing it is a READ — the bots get what
@@ -2090,6 +2136,21 @@ function companion(method, path, body) {
     wsRootAnswers.push(!!(body && body.confirm));
     WS_PROJECT.confirmed = !!(body && body.confirm);
     return { ok: true, status: 200, data: { ok: true, root: WS_ROOT, state: WS_PROJECT.confirmed ? 'yes' : 'no' } };
+  }
+  // ---- blog source pages (blog.mjs) ------------------------------------
+  // There is no /blog-publish here because there is none in the companion:
+  // the reader's website repository is theirs and Discuss never commits to it.
+  if (route === '/blog-page') {
+    return { ok: true, status: 200, data: { ok: true, blog: BLOG_PAGE } };
+  }
+  if (route === '/blog-root') {
+    blogRootAnswers.push(!!(body && body.confirm));
+    if (BLOG_PAGE) {
+      BLOG_PAGE.confirmed = !!(body && body.confirm);
+      BLOG_PAGE.declined = !(body && body.confirm);
+    }
+    return { ok: true, status: 200, data: { ok: true, root: BLOG_ROOT,
+      state: (body && body.confirm) ? 'yes' : 'no' } };
   }
   if (route === '/project-sessions') {
     if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
@@ -9318,6 +9379,105 @@ async function selftestWorkspace() {
   console.log(out.join('\n'));
 }
 
+// ?blog=…&selftest=1 — the reader's own site, edited at the source.
+//
+// The claims: the chat tab names the MARKDOWN the bots will edit rather than
+// the page they are looking at; an unvouched-for repo asks first and the
+// answer sticks; a page whose source cannot be worked out says so instead of
+// pretending; the source rewritten during a turn reloads the tab (jekyll has
+// rebuilt by then) while a change elsewhere in the site does not; and there is
+// no publish control anywhere on the drawer, which is the design — the
+// reader's website repository is theirs and Discuss never commits in it.
+async function selftestBlog() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const chat = sel => S.querySelectorAll('.pane[data-pane="chat"] ' + sel);
+
+  d.open('chat');
+  await sleep(160);
+
+  if (BLOG === 'unconfirmed') {
+    check('an unvouched-for site asks before anything else', !!chat('.confirmroot.blogroot').length);
+    check('…and names the repo it is asking about',
+      /sites\/angadhn\.github\.io/.test((chat('.confirmroot.blogroot')[0] || {}).textContent || ''));
+    check('…and promises not to publish it',
+      /never commit or push/.test((chat('.confirmroot.blogroot')[0] || {}).textContent || ''));
+    check('no source card while the question is open', !chat('.blogsrc').length);
+    check('the confirm button is there to click',
+      hit(chat('[data-act="blogroot-yes"]')[0], 'blogroot-yes'));
+    await sleep(200);
+    check('the answer reaches the companion', blogRootAnswers[0] === true);
+    check('and the card gives way to the source line', !!chat('.blogsrc').length);
+  } else if (BLOG === 'unmapped') {
+    check('a page whose source is unknown says so', !!chat('.blogsrc.unmapped').length);
+    check('…in the companion’s own words',
+      /no markdown source in this repo/.test((chat('.blogsrc')[0] || {}).textContent || ''));
+    check('…and nothing claims to be editing a file',
+      !chat('.blogsrc .blogpath').length);
+  } else {
+    check('the chat tab names the source file', !!chat('.blogsrc .blogpath').length);
+    check('…which is the markdown, not the page',
+      /_posts\/2026-08-20-space-balloons\.md/.test((chat('.blogsrc .blogpath')[0] || {}).textContent || ''));
+    check('…and the full path is on the title, for a reader who wants it',
+      /sites\/angadhn\.github\.io/.test((chat('.blogsrc .blogpath')[0] || {}).getAttribute('title') || ''));
+    check('the card says what a comment here does',
+      /markdown, not the page/.test((chat('.blogsrc')[0] || {}).textContent || ''));
+    check('…and that nothing is ever pushed',
+      /committed or pushed/.test((chat('.blogsrc')[0] || {}).textContent || ''));
+    check('no confirmation is asked twice', !chat('.confirmroot').length);
+  }
+
+  // ---- no publish, anywhere ---------------------------------------------
+  // Asserted over the WHOLE drawer rather than the card, because the claim is
+  // about the product and not about one component: there is no button, no
+  // menu item and no label offering to put the site live.
+  check('there is no publish control on the drawer',
+    !S.querySelector('[data-act*="publish"], [data-act*="commit"], [data-act*="push"]'));
+  check('…and nothing offers to',
+    !/\bpublish this\b|\bcommit and push\b|\bpush to github\b/i.test(S.textContent || ''));
+
+  // ---- the loop closes ---------------------------------------------------
+  if (BLOG === '1') {
+    const HREF = window.__bfp.identHref;
+    const before = window.__bfp.reloads;
+    toContent({ t: 'ws', ev: { type: 'blog-files', url: HREF, root: BLOG_ROOT,
+      serve_origin: 'http://localhost:4000', source: '_posts/2026-08-20-space-balloons.md',
+      count: 1, page_changed: false, assets_changed: false,
+      files: ['_posts/2026-08-25-another.md'], at: '2026-08-29T10:00:00.000Z' } });
+    await sleep(80);
+    check('another post changing leaves this page alone', window.__bfp.reloads === before);
+    check('…and says so in the chat instead',
+      /changed 1 file in this site/.test(S.textContent || ''));
+
+    toContent({ t: 'ws', ev: { type: 'blog-files', url: HREF, root: BLOG_ROOT,
+      serve_origin: 'http://localhost:4000', source: '_posts/2026-08-20-space-balloons.md',
+      count: 1, page_changed: true, assets_changed: false,
+      files: ['_posts/2026-08-20-space-balloons.md'], at: '2026-08-29T10:05:00.000Z' } });
+    await sleep(80);
+    check('this post’s own source changing reloads the tab',
+      window.__bfp.reloads === before + 1);
+    toContent({ t: 'ws', ev: { type: 'blog-files', url: HREF, root: BLOG_ROOT,
+      serve_origin: 'http://localhost:4000', source: '_posts/2026-08-20-space-balloons.md',
+      count: 1, page_changed: true, assets_changed: false,
+      files: ['_posts/2026-08-20-space-balloons.md'], at: '2026-08-29T10:05:00.000Z' } });
+    await sleep(80);
+    check('…once, however many pipes carried the news',
+      window.__bfp.reloads === before + 1);
+  }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (blog) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 document.getElementById('h-open').onclick = () => window.__bfp.activate().then(d => d.open('comments'));
 document.getElementById('h-chat').onclick = () => window.__bfp.activate().then(d => d.open('chat'));
 // on a page with no anchored threads to speak of (?gdocs=1), the stream plays
@@ -9362,6 +9522,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : QUESTION_TAB ? selftestMemorize
           : QUESTION_REVISE ? selftestQuestionRevise
             : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
+        : BLOG ? selftestBlog
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration
@@ -9398,6 +9559,9 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // ?filein=chip — the OTHER way in: a bot has said where it thinks the page
     // belongs, and the drawer draws its last line as a confirm chip.
     if (FILEIN === 'chip') setTimeout(() => d.open('chat'), 300);
+    // ?blog=… — the source card lives on the chat tab, so that is the tab a
+    // screenshot of this feature has to be of
+    if (BLOG && Q.get('selftest') !== '1') setTimeout(() => d.open('chat'), 300);
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
     // reader picks a past council chat out of (screenshot state)
     if (WORKSPACE && Q.get('picker') === '1') {

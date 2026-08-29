@@ -1351,6 +1351,12 @@
     // socket dropped) mid-round asks. Owner-only on the companion, so a guest
     // simply gets nothing and the strip stays down.
     loadRound();
+    // …and whether this page is a draft of the reader's OWN SITE, served
+    // locally out of a repo they have registered (blog.mjs). Asked here rather
+    // than at boot, and only once the drawer is up, because the answer is only
+    // ever used to draw a card: an ordinary web page must not cost a companion
+    // round-trip merely for being looked at.
+    loadBlog();
     // …and how much of the FILE's own margin is still outside this record. It
     // is recomputed from the record every load, which is what takes the import
     // card down the moment the last annotation lands.
@@ -1424,6 +1430,27 @@
     const r = await api('GET', '/round?url=' + encodeURIComponent(URL_NOW));
     if (!drawer) return;
     drawer.setRound((r && r.ok && r.data && r.data.round) || null);
+  }
+
+  // The draft behind a locally-served page of the reader's own site.
+  //
+  // Same shape as loadRound and for the same reasons: not awaited by loadPage
+  // (the record must not wait on a nicety), owner-only on the companion (the
+  // answer is an absolute path on this machine, so a guest gets nothing and
+  // the card stays down), and null for every page that is not one — which is
+  // every page in the world except the reader's own site on localhost.
+  //
+  // The harness names its own with __BFP_BLOG, the same isolated-world escape
+  // __BFP_PROJECT uses: a content script's window is not the page's.
+  async function loadBlog() {
+    if (!drawer) return;
+    if (window.__BFP_BLOG && typeof window.__BFP_BLOG === 'object') {
+      drawer.setBlog(window.__BFP_BLOG);
+      return;
+    }
+    const r = await api('GET', '/blog-page?url=' + encodeURIComponent(URL_NOW));
+    if (!drawer) return;
+    drawer.setBlog((r && r.ok && r.data && r.data.blog) || null);
   }
 
   // The document arrived in pieces, and the pieces are still coming.
@@ -2268,6 +2295,21 @@
         if (PROJECT) PROJECT.confirmed = !!confirm;
         return { ok: true, state: (r.data && r.data.state) || '' };
       },
+      // ---- the draft behind a locally-served page of the reader's site ----
+      // The one-time answer about a blog repo — the same contract, the same
+      // consequence and the same wording as a council root: what hangs off a
+      // yes is a bridge child spawned with that directory writable.
+      //
+      // There is deliberately no `onPublish` beside it. The reader's website
+      // repository is theirs: Discuss edits working files and stops there, and
+      // the companion has no route to ask for anything else (blog.mjs).
+      onConfirmBlogRoot: async confirm => {
+        const r = await api('POST', '/blog-root',
+          { root: (drawer && drawer.blogRoot && drawer.blogRoot()) || '', confirm: !!confirm });
+        if (!r.ok) return failure(r);
+        loadBlog();
+        return { ok: true, state: (r.data && r.data.state) || '' };
+      },
       onProjectSessions: async () => {
         const r = await api('GET', '/project-sessions?url=' + encodeURIComponent(URL_NOW));
         if (!r.ok) return failure(r);
@@ -2608,6 +2650,26 @@
     drawer.note(null, `the bots changed ${n} file${n === 1 ? '' : 's'} in this project — not this page`);
   }
 
+  // …and the same thing for a blog draft. Different event, same two outcomes:
+  // the post the reader is reading was rewritten (or a picture in it was
+  // placed) → reload, because jekyll has already rebuilt the page underneath
+  // them; anything else in the repo moved → a line in the chat and nothing
+  // else, because reloading a page whose bytes did not change would throw
+  // away their scroll position to show them what they are already looking at.
+  //
+  // No PROJECT test here: a blog page is an ordinary web page that happens to
+  // have a source file, so the url is the whole of the match.
+  let lastBlogFilesAt = '';
+  function onBlogFiles(ev) {
+    if (!ev || normUrl(ev.url || '') !== URL_NOW) return;
+    if (ev.at && ev.at === lastBlogFilesAt) return;   // SSE and the socket both up
+    lastBlogFilesAt = ev.at || '';
+    if (ev.page_changed) { reloadForArtifact(); return; }
+    if (!drawer) return;
+    const n = ev.count || 0;
+    drawer.note(null, `the bots changed ${n} file${n === 1 ? '' : 's'} in this site — not this post`);
+  }
+
   // The reload, behind one name so the harness can watch it happen without
   // taking the test page down with it. Same seam as __BFP_HREF/__BFP_PROJECT:
   // set __BFP_NO_RELOAD and the reloads are counted instead of performed.
@@ -2671,6 +2733,14 @@
           // the bots changed something under this project during the turn that
           // has just ended (server.mjs reportProjectChanges)
           onProjectFiles(ev);
+        } else if (ev.type === 'blog-files') {
+          // …and the same thing for a draft of the reader's own site: the
+          // markdown behind THIS page was rewritten, jekyll has rebuilt it by
+          // now, and the tab is looking at the old rendering
+          onBlogFiles(ev);
+        } else if (ev.type === 'blog-root') {
+          // the reader answered the confirmation in another tab
+          loadBlog();
         } else if (ev.type === 'page') {
           // the library's record changed (somebody asked it something from
           // another tab, or the phone): re-read that, not this page

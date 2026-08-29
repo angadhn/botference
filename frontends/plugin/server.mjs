@@ -39,6 +39,7 @@ import * as run from './run.mjs';
 import * as keys from '../shared/keys.mjs';
 import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
+import * as blog from './blog.mjs';
 import * as collateral from './collateral.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -74,6 +75,8 @@ const AGENTS_OFF_REASON = 'agents are off on this companion';
 const AGENTS_OFF_ERROR = "agents are off — restart 'botference plugin' with claude/codex CLIs available";
 const UNCONFIRMED_REASON = 'this page is in a council folder you have not confirmed yet';
 const UNCONFIRMED_ERROR = 'confirm the council folder in the drawer before the bots can join this page';
+const BLOG_UNCONFIRMED_REASON = 'this page is served from a repo you have not confirmed yet';
+const BLOG_UNCONFIRMED_ERROR = 'confirm the blog repo in the drawer before the bots can edit this draft';
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
 // article_text rides along with mentions, and a .docx may ride with them too —
@@ -205,6 +208,61 @@ function workspaceChatFor(root, projectId, projectDir) {
   return c;
 }
 
+// --- the blog bridges -------------------------------------------------------
+// A page of the reader's own site, served locally by `jekyll serve`, whose
+// SOURCE is a markdown file in a repo they have vouched for (blog.mjs). Same
+// shape as a workspace bridge and for the same reason: the writable directory
+// is baked into a child's environment when it spawns, so a scope means a
+// child. One child per REPO — the repo is the write root, so it is also the
+// lock, exactly as a project folder is (SPEC: "a lane = the child").
+//
+// Unlike a workspace bridge the working root stays the companion's own: a blog
+// chat is an ordinary page chat filed under "Plugin pages". The reader's blog
+// repo is somewhere the bots may EDIT; it is not somewhere this companion
+// files conversations, and writing session records into a website's git repo
+// would be a surprise nobody asked for.
+const blogChats = new Map();        // repo root → chat
+
+function blogChatFor(root, kind = 'jekyll') {
+  let c = blogChats.get(root);
+  if (c) return c;
+  c = createChat({
+    onEvent: onChatEvent,
+    // …and the commands this child may not run, which for every kind of blog
+    // root is git and gh. The reader publishes their own website; Discuss has
+    // no publish code and its bots are given no way to improvise one. See
+    // blog.mjs — the rule belongs to the KIND and lives in code, so a config
+    // restored onto another machine cannot arrive with it switched off.
+    denyBash: blog.deniedCommands(kind),
+    // the ONE directory this child may write in. chat.mjs hands it to the CLIs
+    // (BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS), so the boundary is theirs to enforce
+    // and not a promise made in a prompt. It is the REPO, because a directory
+    // is the only thing an OS sandbox understands — that the bots touch one
+    // post inside it is the envelope's instruction plus the turn-end census,
+    // and blog.mjs says so out loud.
+    writeRoot: root,
+  });
+  blogChats.set(root, c);
+  return c;
+}
+
+// Which blog page a url is, cached for a moment exactly as artifactOf is: the
+// answer costs a config read plus (on a first hit) a scan of the repo's front
+// matter, and every /reply and page load asks.
+const blogCache = new Map();
+function blogOf(url) {
+  const key = String(url || '');
+  if (!key) return null;
+  const now = Date.now();
+  const hit = blogCache.get(key);
+  if (hit && now - hit.at < ART_TTL) return hit.page;
+  const page = blog.blogPageFor(key);
+  if (blogCache.size > 200) blogCache.clear();
+  blogCache.set(key, { at: now, page });
+  return page;
+}
+const forgetBlogPages = () => blogCache.clear();
+
 // The bridge that owns a page's chat. Everything that submits a turn, asks
 // what is queued or interrupts one goes through here — a project-artifact
 // page must never reach the "Plugin pages" bridge, and an ordinary page must
@@ -235,14 +293,33 @@ function workspaceChatFor(root, projectId, projectDir) {
 // An UNCONFIRMED root falls back to no bridge at all: the reader has not yet
 // said that directory is theirs, and spawning a child against it is precisely
 // what the confirmation exists to gate.
+//
+// …and a THIRD answer since blog source pages: a page of the reader's own
+// site, served locally out of a repo they have confirmed, whose source file
+// this companion can name. Lane = the REPO, for the same reason a project's
+// lane is the project: one repo, one child, one writable directory, one FIFO.
+// A page under a registered origin that maps to NO source file is an ordinary
+// web page on the ordinary pool — it can be discussed, and nothing is
+// writable, which is the honest answer to "I do not know which file this is".
 function chatFor(url) {
   if (!chat) return null;
   const art = artifactOf(url);
-  if (!art) return chat;
-  if (!art.confirmed) return null;
-  return workspaceChatFor(art.root, art.project_id, art.project_dir);
+  if (art) {
+    if (!art.confirmed) return null;
+    return workspaceChatFor(art.root, art.project_id, art.project_dir);
+  }
+  const bg = blogOf(url);
+  // …and a repo the reader has DECLINED is not a blog page at all any more:
+  // "leave this page alone" is about the files, so the page goes back to being
+  // the ordinary web page it looks like — discussable, with nothing writable —
+  // rather than refusing every turn forever over a question already answered.
+  if (bg && bg.source_path && !bg.declined) {
+    if (!bg.confirmed) return null;
+    return blogChatFor(bg.root, bg.kind);
+  }
+  return chat;
 }
-const allChats = () => (chat ? [chat, ...workspaceChats.values()] : []);
+const allChats = () => (chat ? [chat, ...workspaceChats.values(), ...blogChats.values()] : []);
 // Does THIS page have a turn in flight or waiting anywhere? The mirror refill
 // below asks before it rewrites a page chat: a turn owns that conversation
 // until it ends, and refilling underneath one would race the reply about to
@@ -328,7 +405,8 @@ function artifactSnapshot(art) {
 
 function noteTurnStart(url) {
   const art = url ? artifactOf(url) : null;
-  if (!art || !art.confirmed || !art.project_dir) return;
+  if (!art) return noteBlogTurnStart(url);
+  if (!art.confirmed || !art.project_dir) return;
   turnScans.set(url, {
     dir: art.project_dir,
     before: workspace.scanProject(art.project_dir),
@@ -338,6 +416,45 @@ function noteTurnStart(url) {
     text: artifactSnapshot(art),
     at: new Date().toISOString(),
   });
+}
+
+// The same census, over a blog repo. Two differences, both of them about what
+// a Jekyll repo IS:
+//
+//   · the scan skips `_site/` and the caches (blog.SKIP_DIRS). Those are the
+//     RENDERED copy, and they all move a second after the bots save the
+//     source — because jekyll rebuilt, which is the thing we are waiting for.
+//     Counting them would make every turn "42 files changed" and the reload
+//     would be reporting the build, not the edit.
+//   · the document whose bytes are snapshotted for the collateral diff is the
+//     MARKDOWN SOURCE, not the page the reader is looking at. The rendered
+//     page is a photocopy; diffing it would attribute jekyll's own layout
+//     churn to the bots.
+function noteBlogTurnStart(url) {
+  const bg = url ? blogOf(url) : null;
+  if (!bg || !bg.confirmed || !bg.source_path) return;
+  turnScans.set(url, {
+    blog: true,
+    dir: bg.root,
+    source: bg.source_path,
+    before: blog.scanSite(bg.root),
+    // markdown, presented to the diff as one block per paragraph — see
+    // blog.mdDoc: collateral.mjs finds its blocks in HTML tags, and raw
+    // markdown has none, so an unblocked file diffs as one enormous region
+    text: blog.mdDoc(sourceSnapshot(bg.source_path)),
+    at: new Date().toISOString(),
+  });
+}
+
+// One source file's bytes, capped — the same read artifactSnapshot makes, and
+// the same tolerance: a read that fails costs the turn its collateral threads
+// and nothing else.
+function sourceSnapshot(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > collateral.SNAPSHOT_MAX) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch { return ''; }
 }
 
 // ---- the edits nobody commented on ---------------------------------------
@@ -365,9 +482,13 @@ function noteTurnStart(url) {
 // `addressed`, and `workspace.openThreads` excludes addressed threads because a
 // bot has had its go and it is the reader's turn to look — which is exactly
 // what this is.
-function reportCollateral(page, seen, art, ev) {
+// `after` is the document's bytes as the turn ended — the artifact's own HTML,
+// or (on a blog page) the MARKDOWN SOURCE the page was rendered from. The diff
+// basis is deliberately the file the bots edited rather than the page the
+// reader is looking at: the rendered copy is regenerated wholesale by jekyll
+// and diffing it would attribute the build to the bots.
+function reportCollateral(page, seen, after, ev) {
   if (!page || !seen || !seen.text) return 0;
-  const after = artifactSnapshot(art);
   if (!after) return 0;
   const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
   const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
@@ -416,6 +537,7 @@ function reportProjectChanges(ev) {
   const seen = url ? turnScans.get(url) : null;
   if (!seen) return;
   turnScans.delete(url);
+  if (seen.blog) return reportBlogChanges(url, seen, ev);
   const art = artifactOf(url);
   // the project was deleted, or the root un-confirmed, while the turn ran
   if (!art || !art.confirmed || art.project_dir !== seen.dir) return;
@@ -442,7 +564,68 @@ function reportProjectChanges(ev) {
   // tab refetch it).
   if (payload.page_changed) {
     const page = store.readPage(url);
-    if (page && reportCollateral(page, seen, art, ev)) {
+    if (page && reportCollateral(page, seen, artifactSnapshot(art), ev)) {
+      store.savePage(page);
+      payload.collateral = true;
+      broadcast({ type: 'page', url });
+    }
+  }
+  lastChanges.set(url, payload);
+  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
+  broadcast(payload);
+}
+
+// The same report for a blog page, and the loop it closes.
+//
+// The reader commented on a rendered page; the bots edited the markdown behind
+// it; jekyll noticed the save and rebuilt (that is what `jekyll serve` does,
+// with or without --livereload). What is left is telling the TAB, because a
+// browser has no idea a file three directories away has changed: `blog-files`
+// with `page_changed` true means "the post you are reading was rewritten —
+// reload", and the reader sees the regenerated page.
+//
+// A repo with --livereload gets there twice, harmlessly: livereload's own
+// socket reloads the tab, this event reloads it again if it beat the rebuild,
+// and neither can loop because a reload starts no turn.
+//
+// The BUILD IS NOT WAITED FOR, deliberately. A companion that polled for
+// `_site/` to settle would be guessing at somebody else's watcher; the tab is
+// told as soon as the source moved, and a reload that lands a moment early
+// shows the previous render for one keystroke of time and is reloaded again by
+// livereload where it is on. The alternative — hold the reader's page back
+// while we watch a directory — is worse and less honest.
+function reportBlogChanges(url, seen, ev) {
+  const bg = blogOf(url);
+  if (!bg || !bg.confirmed || bg.root !== seen.dir) return;   // un-confirmed mid-turn
+  const changed = workspace.diffScans(seen.before, blog.scanSite(seen.dir));
+  if (!changed.length) return;
+  const own = path.relative(seen.dir, seen.source).split(path.sep).join('/');
+  const payload = {
+    type: 'blog-files',
+    url,
+    root: bg.root,
+    serve_origin: bg.serve_origin,
+    source: own,
+    count: changed.length,
+    // whether the post the reader is reading is one of them
+    page_changed: changed.includes(own),
+    // …and whether anything under assets/ moved, which is the other half of
+    // "the page looks different now": a picture was placed or replaced
+    assets_changed: changed.some(rel => (bg.assets || []).some(a => rel.startsWith(`${a}/`))),
+    files: changed.slice(0, workspace.CHANGED_LIST_MAX),
+    at: new Date().toISOString(),
+  };
+  // an image placed in the post is a change to the page as surely as a
+  // rewritten paragraph is, and the reader wants to look at it
+  if (payload.assets_changed) payload.page_changed = true;
+  if (changed.includes(own)) {
+    const page = store.readPage(url);
+    // …and the edits nobody commented on, diffed on the SOURCE. The threads it
+    // opens carry markdown wording, which anchors on the rendered page for
+    // ordinary prose and does not for a passage that is mostly markup — an
+    // orphaned thread the reader can still read, which is better than a silent
+    // rewrite. (SPEC amendment: the anchoring caveat.)
+    if (page && reportCollateral(page, seen, blog.mdDoc(sourceSnapshot(seen.source)), ev)) {
       store.savePage(page);
       payload.collateral = true;
       broadcast({ type: 'page', url });
@@ -1230,8 +1413,12 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // why — the confirmation card is already on screen asking.
   const c = chatFor(page.url);
   if (!c) {
-    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: UNCONFIRMED_ERROR });
-    return { queued: false, reason: UNCONFIRMED_REASON };
+    // …or a blog page whose repo has not been vouched for, which is the same
+    // refusal about a different folder and must say which one
+    const isBlog = !artifactOf(page.url);
+    const error = isBlog ? BLOG_UNCONFIRMED_ERROR : UNCONFIRMED_ERROR;
+    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error });
+    return { queued: false, reason: isBlog ? BLOG_UNCONFIRMED_REASON : UNCONFIRMED_REASON };
   }
   const thread = target === store.PAGE_CHAT ? null : store.findThread(page, target);
   // ── the council projects this page is filed under ────────────────────
@@ -1252,6 +1439,15 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   const filedContext = attached.length ? workspace.attachedContext(attached) : '';
   const suggestContext = (!attached.length && !artifactOf(page.url))
     ? workspace.suggestBlock(workspace.projectRoster({ peek: false })) : '';
+  // ── the draft behind this page ────────────────────────────────────────
+  // A page of the reader's own site, served locally, whose markdown source
+  // this companion has resolved (blog.mjs). Composed on the same funnel as
+  // everything else here, and for the same reason: the server is what knows.
+  // It rides EVERY turn on that page, like the project write rule and for the
+  // same reason — a resumed session's replayed history is uneven, and the only
+  // thing a turn can rely on carrying is the turn.
+  const bg = blogOf(page.url);
+  const blogContext = (bg && bg.confirmed && bg.source_path) ? blog.blogBlock(bg) : '';
   // ── may this thread be struck through? ────────────────────────────────
   // The offer a bot needs before it can suggest a deletion (store.mjs
   // strikeOfferBlock). Composed here, once, on the same funnel and for the same
@@ -1321,6 +1517,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     history: priorMsgs(page, target),
     ...(filedContext ? { filedContext } : {}),
     ...(suggestContext ? { suggestContext } : {}),
+    ...(blogContext ? { blogContext } : {}),
     ...(strikeContext ? { strikeContext } : {}),
     ...(questionContext ? { questionContext } : {}),
     ...(nearbyContext ? { nearbyContext } : {}),
@@ -1677,7 +1874,7 @@ export function handler(req, res) {
       // (they belong to no page).
       queues: chat ? queueRows() : [],
       bridges: NO_AGENTS ? null
-        : { live: chat.size(), max: chat.cap(), workspace: workspaceChats.size },
+        : { live: chat.size(), max: chat.cap(), workspace: workspaceChats.size, blog: blogChats.size },
       // hosted only: a remote extension has to know its own standing before it
       // can render (or gray out) the owner's controls
       ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),
@@ -1797,6 +1994,84 @@ export function handler(req, res) {
       ok(res, { root: workspace.realish(root), state });
     });
   }
+  // --- blog source pages -------------------------------------------------
+  // The reader's own site, served locally by `jekyll serve`, and the markdown
+  // it was rendered from. Owner-only, all of it: the answers are absolute
+  // paths on this machine, the contents of this reader's drafts folder, and —
+  // at the end — a git push. None of that is a guest's business, and a tunnel
+  // is exactly where it must not be.
+  //
+  // GET /blog-page?url= — is this url a page of a registered local site, which
+  // source file is it from, and has the repo been confirmed? `null` for every
+  // other address in the world, which is nearly all of them.
+  if (req.method === 'GET' && url === '/blog-page') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const bg = u ? blogOf(store.normUrl(u)) : null;
+    if (!bg) return ok(res, { blog: null });
+    return ok(res, { blog: bg });
+  }
+  // GET /blog-sites — every site the owner has declared, and whether each
+  // repo has been vouched for. What the drawer's registration card lists.
+  if (req.method === 'GET' && url === '/blog-sites') {
+    if (notOwner(req, res)) return;
+    return ok(res, {
+      sites: blog.listSites().map(s => ({ ...s, state: blog.rootState(s.root) })),
+    });
+  }
+  // POST /blog-site {serve_origin, root, kind} — declare one. `{remove:true}`
+  // undeclares it. THE OWNER'S ACT, never a bot's and never a page's: this is
+  // the sentence "the site at this address is built from this folder of mine",
+  // and nothing else in the companion is in a position to say it. Declaring is
+  // not confirming — the repo still has to be vouched for (POST /blog-root)
+  // before a write-enabled child is spawned against it.
+  if (req.method === 'POST' && url === '/blog-site') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      if (data.remove) {
+        const gone = blog.removeSite(String(data.serve_origin || ''));
+        if (!gone.ok) return fail(res, 400, gone.error);
+        forgetBlogPages();
+        broadcast({ type: 'blog-sites' });
+        return ok(res, { sites: gone.sites });
+      }
+      const added = blog.addSite({
+        serve_origin: String(data.serve_origin || ''),
+        root: String(data.root || ''),
+        kind: String(data.kind || 'jekyll'),
+      });
+      if (!added.ok) return fail(res, 400, added.error);
+      forgetBlogPages();
+      broadcast({ type: 'blog-sites' });
+      return ok(res, { site: added.site, state: blog.rootState(added.site.root) });
+    });
+  }
+  // POST /blog-root {root, confirm} — the one-time answer to "may the bots
+  // edit this repo?". Kept in the plugin's own config.json, asked once per
+  // repo, and a NO is kept as firmly as a YES. Exactly the council-root
+  // contract, because exactly the same thing hangs off it: a bridge child
+  // spawned with that directory writable.
+  if (req.method === 'POST' && url === '/blog-root') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const root = blog.realish(String(data.root || ''));
+      if (!root || !blog.listSites().some(s => s.root === root)) {
+        return fail(res, 400, 'that folder is not a declared blog site');
+      }
+      const state = blog.setRootState(root, !!data.confirm);
+      forgetBlogPages();
+      // every tab on a page of this site has to stop asking, or start working
+      broadcast({ type: 'blog-root', root, state });
+      return ok(res, { root, state });
+    });
+  }
+  // …and there is NO publish route here, deliberately. The reader's website
+  // repository is theirs: nothing in this companion stages, commits, pushes,
+  // branches or tags anything in a blog root, and the blog child is spawned
+  // with git and gh denied outright (blog.deniedCommands). They put the site
+  // live by their own hand, by their own route. See SPEC, "the site’s
+  // repository is the reader’s alone", and blog.mjs’s header for why this is a
+  // property of the KIND held in code rather than a setting that could travel.
   // The project's chat archive: every council session filed under it, newest
   // first, plus which one this page is currently bound to.
   if (req.method === 'GET' && url === '/project-sessions') {

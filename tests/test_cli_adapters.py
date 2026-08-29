@@ -1407,6 +1407,33 @@ class TestCommandConstruction:
             (tmp_path / "shared").resolve(),
         ]
 
+    def test_no_deny_rules_by_default(self, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PLAN_DENY_BASH", raising=False)
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        assert "deny" not in settings["permissions"]
+
+    def test_denied_commands_become_deny_rules(self, monkeypatch):
+        # The Discuss companion sets this for a BLOG SOURCE PAGE: the reader's
+        # website repository is theirs to publish, so the child that may edit
+        # a post may not run git or gh in it. Deny beats allow, so the bare
+        # "Bash" in the allow list does not reopen them — and .git/ stops being
+        # a writable path at the same time.
+        monkeypatch.setenv("BOTFERENCE_PLAN_DENY_BASH", "git, gh")
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        deny = settings["permissions"]["deny"]
+        assert "Bash(git)" in deny and "Bash(git:*)" in deny
+        assert "Bash(gh:*)" in deny
+        assert any(rule.endswith("/.git/**)") and rule.startswith("Edit(") for rule in deny)
+        assert "Bash" in settings["permissions"]["allow"]
+
+    def test_deny_list_ignores_anything_that_is_not_a_command_name(self, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PLAN_DENY_BASH", "git; rm -rf /,  , gh")
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        deny = settings["permissions"]["deny"]
+        assert "Bash(gh:*)" in deny
+        assert not any(";" in rule or " " in rule.split("(", 1)[1] for rule in deny
+                       if rule.startswith("Bash("))
+
     def test_plan_network_enabled_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
         monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)

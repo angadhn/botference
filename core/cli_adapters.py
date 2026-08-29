@@ -250,6 +250,34 @@ _DEFAULT_PLAN_ALLOWED_HOSTS = (
 )
 
 
+def _plan_denied_commands() -> list[str]:
+    """Shell commands a planner session may not run at all.
+
+    Read from BOTFERENCE_PLAN_DENY_BASH (comma-separated command names) and
+    empty everywhere by default, so nothing that exists today changes. The
+    Discuss companion sets it to "git,gh" for a BLOG SOURCE PAGE: the reader's
+    website repository is theirs to publish and nothing we drive may commit or
+    push in it. Council and review sessions set it to nothing and keep their
+    git powers, which is deliberate — a paper under review is a collaborative
+    working copy; a blog repo is somebody's published identity.
+
+    This is defence in depth, not a sandbox: it is a command-prefix deny that
+    the claude CLI enforces and codex has no equivalent for. The guarantee that
+    actually holds is that Discuss has no publishing code path at all.
+    """
+    raw = os.environ.get("BOTFERENCE_PLAN_DENY_BASH", "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for name in raw.split(","):
+        cleaned = name.strip()
+        # a command NAME, never a whole command line: anything with a shell
+        # metacharacter in it is a rule nobody can reason about
+        if cleaned and cleaned.replace("-", "").replace("_", "").isalnum():
+            out.append(cleaned)
+    return out
+
+
 def _plan_network_enabled() -> bool:
     raw = os.environ.get("BOTFERENCE_PLAN_ALLOW_NETWORK", "").strip().lower()
     if raw == "":
@@ -430,11 +458,27 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
             f"Edit(//{root_abs}/**)",
         ])
 
+    # Commands (and .git/) this session may not touch, where the caller asked
+    # for any — see _plan_denied_commands. Deny beats allow in Claude Code's
+    # permission rules, so the bare "Bash" above does not reopen these.
+    deny_rules: list[str] = []
+    for command in _plan_denied_commands():
+        deny_rules.extend([f"Bash({command})", f"Bash({command}:*)"])
+    if deny_rules:
+        for root in normalized_roots:
+            root_abs = root.as_posix().lstrip("/")
+            for tool in ("Edit", "Write", "MultiEdit"):
+                deny_rules.append(f"{tool}(//{root_abs}/.git/**)")
+
+    permissions: dict = {
+        "defaultMode": "dontAsk",
+        "allow": allow_rules,
+    }
+    if deny_rules:
+        permissions["deny"] = deny_rules
+
     return {
-        "permissions": {
-            "defaultMode": "dontAsk",
-            "allow": allow_rules,
-        },
+        "permissions": permissions,
         "sandbox": sandbox,
     }
 
