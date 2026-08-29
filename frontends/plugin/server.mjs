@@ -117,6 +117,44 @@ function broadcast(ev) {
   for (const res of sseClients) res.write(`data: ${json}\n\n`);
   for (const ws of wsClients) ws.send(json);
 }
+// --- the review's decision log, kept in step ------------------------------
+//
+// A decision was just made on this page — a thread filed, a thread deleted, a
+// strikeout minted, renoted or adopted, a suggestion accepted or turned down —
+// so the log the bots read (store.writeDecisionLog) is now one line out of
+// date. Regenerated WHOLE rather than patched, because it is nothing but a
+// serialization of the record and a patch would be a second implementation of
+// the same truth.
+//
+// DEBOUNCED, and the reason is Accept all: one click applies a stack of cards
+// and would otherwise rewrite the same file once per card. A trailing timer
+// per page collapses a burst into one write, and the record is re-read when it
+// fires so what lands is the state as it finally settled, never a stale copy
+// captured at the first event. The write is skipped entirely when the content
+// has not moved, so a burst that changed nothing costs nothing.
+//
+// This is belt and braces: the log is ALSO written at the front of the turn
+// queue (chat.mjs planSteps), which is what guarantees a turn never names a
+// stale file. What this adds is freshness for a bot reading the file DURING a
+// long turn of its own, and a file on disk that matches the drawer.
+const DECISION_DEBOUNCE_MS = Number(process.env.PLUGIN_DECISION_DEBOUNCE_MS || 100);
+const decisionTimers = new Map();
+function noteDecisions(page) {
+  const url = page && page.url;
+  if (!url) return;
+  const key = store.pageKey(url);
+  if (decisionTimers.has(key)) return;      // a burst writes once, at its end
+  const t = setTimeout(() => {
+    decisionTimers.delete(key);
+    try {
+      const now = store.readPage(url);
+      if (now) store.writeDecisionLog(now);
+    } catch { /* the log is a convenience; it never fails a request */ }
+  }, DECISION_DEBOUNCE_MS);
+  if (typeof t.unref === 'function') t.unref();
+  decisionTimers.set(key, t);
+}
+
 function sseOpen(res) {
   res.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -2257,6 +2295,7 @@ export function handler(req, res) {
         store.setCardState(card, 'needs-manual', { reason: r.reason, detail: r.detail });
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
+        noteDecisions(page);
         // 200, not an error: the request was answered, and the answer is on
         // the card. A 4xx would leave the drawer showing a failed fetch and
         // the reader with no idea the card had changed state.
@@ -2265,6 +2304,7 @@ export function handler(req, res) {
       store.setCardState(card, 'applied');
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      noteDecisions(page);
       announceBlogWrite(page.url, bg, before);
       return ok(res, { card, applied: true });
     });
@@ -2284,6 +2324,7 @@ export function handler(req, res) {
       store.setCardState(card, 'rejected');
       store.savePage(at.page);
       broadcast({ type: 'page', url: at.page.url });
+      noteDecisions(at.page);
       return ok(res, { card });
     });
   }
@@ -2309,6 +2350,8 @@ export function handler(req, res) {
       }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      // the debounce earns its keep here: one click, a stack of cards, ONE log
+      noteDecisions(page);
       if (out.applied.length) announceBlogWrite(page.url, bg, before);
       return ok(res, {
         applied: out.applied.length,
@@ -2751,6 +2794,9 @@ export function handler(req, res) {
       dedupe.remember(thread);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      // a new mark on the document is a new line in the log — and the SECOND
+      // one on a page is what brings the log into being at all
+      noteDecisions(page);
       ok(res, { thread, ...summon(page, thread.id, text, { ...contextExtras(data, docxDigest), routeHint: route }, me) });
     });
   }
@@ -3111,6 +3157,9 @@ export function handler(req, res) {
       }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      // a deleted thread is a decision leaving the review, exactly as a filed
+      // one is a decision entering it
+      noteDecisions(page);
       ok(res, { thread_deleted: gone, ...(found && found.ambiguous ? { ambiguous: true } : {}) });
     });
   }
@@ -3239,6 +3288,7 @@ export function handler(req, res) {
       }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      noteDecisions(page);
       if (data._form) return seeOther(res, backTo(data, page, on ? '' : thread.id));
       ok(res, { thread, ...(queued ? { summarizing: true } : {}) });
     });
@@ -3305,6 +3355,9 @@ export function handler(req, res) {
       if (r.changed) {
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
+        // the passage a decision was about has been rewritten: the log quotes
+        // passages, so it is now quoting one that is no longer there
+        noteDecisions(page);
       }
       ok(res, { thread: r.thread, changed: !!r.changed });
     });
@@ -3356,6 +3409,7 @@ export function handler(req, res) {
       if (changed) {
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
+        noteDecisions(page);
       }
       ok(res, { thread, changed });
     });
@@ -3504,6 +3558,7 @@ export function handler(req, res) {
         }
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
+        noteDecisions(page);
         return ok(res, { thread: already, updated: renoted, ...(adopted ? { adopted: true } : {}) });
       }
       const thread = store.addThread(page, {
@@ -3545,6 +3600,7 @@ export function handler(req, res) {
       });
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      noteDecisions(page);
       ok(res, { thread });
     });
   }

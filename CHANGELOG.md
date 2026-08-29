@@ -2,6 +2,38 @@
 
 ## 2026-08-29
 
+- **The bots can now see what the whole review has already decided.** Editing a
+  long draft, decisions pile up in different threads: you settle a phrasing on
+  page 2, you agree a deletion on page 5. Until now a bot answering a comment on
+  page 9 knew only that one conversation, so it could happily suggest wording
+  that undid something you had settled an hour earlier — and you were the only
+  one who would notice.
+
+- **How it works, and why it is not just more text in every message.** Putting
+  all fifty threads into every turn would bury the one comment the bot was
+  actually asked about. So the companion keeps a short summary of the whole
+  review in a file on your machine — one line per comment, newest decision
+  first, saying what the passage was, what state it is in (still being
+  discussed, a change proposed and waiting on you, struck through, filed,
+  or the passage deleted) and what was decided — and each turn simply tells the
+  bots where that file is. They read it when they need it. It costs no extra
+  bot time to write: every line comes straight off the record.
+
+- **And a bot that disagrees has to say so.** The instruction is not "go along
+  with whatever is in there". If what a bot wants to propose genuinely
+  contradicts something already decided, it is told to name that decision and
+  say why it would decide differently — rather than quietly contradicting it,
+  or quietly going along with something it thinks is wrong. Catching those
+  clashes is the whole reason it has the file.
+
+- **It stays current by itself.** The summary is rewritten whenever a decision
+  changes — you file a thread, delete one, strike a passage through, correct a
+  note, accept or turn down a suggestion — and again just before any bot turn
+  goes out, so a comment you filed while the bots were busy still counts. It
+  appears once a page has two comments on it (with one, there is nothing to be
+  inconsistent with), it never goes into any export or annotated copy, and it is
+  deleted along with the page.
+
 - **One discussion can now end in several changes, not just one.** A bot
   answering a comment on a PDF may propose up to three separate deletions or
   replacements in a single reply — each with its own chip, each with its own

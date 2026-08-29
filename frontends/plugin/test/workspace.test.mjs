@@ -1763,6 +1763,25 @@ console.log('\ncompanion — POST /send-review');
     }
   });
 
+  // A round is a dozen turns about one draft, so it is the place where a bot
+  // is most likely to answer comment 7 with wording that contradicts what
+  // comment 2 settled. Every turn of the round names the review's decision log
+  // (chat.decisionLogBlock) for exactly that reason — the preamble included,
+  // since page chat is where the round's terms are set.
+  await test('…and every turn of the round names the review’s decision log', async () => {
+    const { pageKey } = await import(path.join(PLUGIN, 'store.mjs'));
+    const decisions = path.join(workspaceRoot, '.botference', 'plugin', 'snapshots',
+      `${pageKey(a.url)}-decisions.md`);
+    assert.ok(fs.existsSync(decisions), 'two open comments is a review with decisions in it');
+    const written = fs.readFileSync(decisions, 'utf8');
+    assert.ok(/the truss, not the hull/.test(written) && /the radiator area/.test(written),
+      'and the log holds both of them');
+    for (const t of turns) {
+      assert.ok(/THE REVIEW'S DECISION LOG/.test(t), 'a round has to be internally consistent');
+      assert.ok(t.includes(decisions), 'named by absolute path, like the snapshot');
+    }
+  });
+
   await test('the preamble is a REAL, visible user message in page chat', async () => {
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
     const mine = (page.page_chat || []).filter(m => !/^(claude|codex)/i.test(m.author));

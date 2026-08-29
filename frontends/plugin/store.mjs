@@ -515,6 +515,9 @@ export function deletePage(url) {
   // …and the pictures of its pages, which are the same kind of thing the
   // snapshot is and go the same way
   try { deletePageImages(pageKey(url)); } catch { }
+  // …and the review's decision log, which is the same kind of thing again: a
+  // serialization of this record, worthless the moment the record is gone
+  try { deleteDecisionLog(pageKey(url)); } catch { }
   try { fs.rmSync(runsDir(pageKey(url)), { recursive: true, force: true }); } catch { }
   const idx = readIndex();
   delete idx[pageKey(url)];
@@ -2013,4 +2016,170 @@ export function threadDigest(thread) {
   const body = firstSentence((lastBot || last || {}).text);
   const out = [head, body].filter(Boolean).join(' ');
   return out || 'Resolved.';
+}
+
+// ---- the review's decision log ---------------------------------------------
+//
+// The gap this closes, in the reader's own words: editing a long manuscript,
+// decisions accumulate across threads. A phrasing is settled on page 2, a
+// deletion is agreed on page 5 — and a bot answering a comment on page 9 knows
+// its own thread and the marks beside its own quote (`nearbyMarksBlock`) and
+// NOTHING ELSE. So it proposes wording that contradicts something the reader
+// and another bot settled an hour ago, and the reader is the only one in the
+// room who can notice.
+//
+// WHY A FILE AND NOT THE ENVELOPE. The obvious fix — put every thread in every
+// turn — is the one the reader themselves called unwieldy, and they were right:
+// a manuscript carries fifty threads, each turn would carry all fifty, every
+// turn of every round, and the one comment the bot was actually asked about
+// would be three per cent of what it was handed. The idiom this companion
+// already has is the answer, twice over: the page's full text is not inlined
+// (the envelope names `snapshots/<key>.html` and the bot reads it) and neither
+// are the figures (the envelope names the PNGs). So the decision log is a FILE
+// too, named on the turn and read on demand. The nearby-marks block stays
+// exactly as it is: it is the zero-effort view, the neighbours a bot must see
+// without asking; this is the on-demand whole.
+//
+// MECHANICAL, ALWAYS. Not one line of this costs a bot turn. Every line is
+// derived from the record — the mark, the note, the resolved flag, the summary
+// the reader's own resolve already wrote, the last thing anyone said. A log
+// that had to be written by the agents would be a log nobody could afford to
+// regenerate, and regenerating it on every decision is the whole point.
+export const DECISIONS_MIN = 2;          // 0-1 threads: nothing to be inconsistent WITH
+export const DECISION_QUOTE_MAX = 80;    // chars of each thread's quote
+export const DECISION_NOTE_MAX = 140;    // chars of a strikeout's note
+export const DECISION_SAID_MAX = 160;    // chars of the last thing said, or the summary
+export const DECISION_ROWS_MAX = 400;    // a 300-page book with a thread per page
+
+export const decisionsFile = key => path.join(SNAPS, `${safeKey(key)}-decisions.md`);
+
+const clipTo = (s, n) => {
+  const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
+};
+
+// Is this thread still waiting on the reader's click? Two shapes of pending,
+// and both mean the same thing to a bot about to propose something: a change
+// has been PROPOSED here and nobody has yet said yes or no.
+const pendingCard = thread => ((thread && thread.msgs) || [])
+  .some(m => ((m && m.suggestions) || []).some(c => c && c.state === 'open'));
+const pendingStrike = (page, thread) => {
+  if (!thread || markOf(thread) === 'strike') return false;
+  const offered = (thread.msgs || [])
+    .some(m => strikesOf(m).some(s => s && s.why && !s.rejected));
+  return offered && !broodOf(page, thread.id).length;
+};
+
+// The one word this thread's state is, and the one clause that says what was
+// decided in it. Order matters: a mark on the document outranks a flag on the
+// record, because the mark is what the co-author will actually receive.
+export function decisionStatus(page, thread) {
+  if (markOf(thread) === 'strike') {
+    return thread.from_thread ? 'struck (from a discussion)' : 'struck';
+  }
+  if (thread && thread.deleted_passage) return 'deleted-passage';
+  if (thread && thread.resolved) return 'resolved';
+  if (pendingCard(thread) || pendingStrike(page, thread)) return 'suggestion pending';
+  return 'open';
+}
+
+// …and what was decided, mechanically. A struck thread's note IS the decision
+// (it is the sentence copied onto the document); a resolved thread's summary is
+// the one the reader's own click already wrote — `threadDigest` where the
+// agents' paragraph has not landed; everything else falls back to the last
+// thing anybody actually said, which is the best a machine can honestly do.
+export function decisionSaid(thread) {
+  const msgs = ((thread && thread.msgs) || []).filter(m => m && m.kind !== 'tools');
+  if (markOf(thread) === 'strike') {
+    const note = clipTo((msgs[0] || {}).text, DECISION_NOTE_MAX);
+    return note ? `note: ${note}` : 'no note — the strikeout speaks for itself';
+  }
+  if (thread && thread.deleted_passage) {
+    return 'the passage was deleted from the document';
+  }
+  if (thread && thread.resolved) {
+    return clipTo(thread.summary || threadDigest(thread), DECISION_SAID_MAX);
+  }
+  const last = msgs[msgs.length - 1];
+  return last ? `last — ${last.author}: ${clipTo(last.text, DECISION_SAID_MAX)}` : '';
+}
+
+// When this thread was last DECIDED, for the ordering. Newest first, because
+// the newest decision is the one most likely to be the one nobody else has
+// caught up with — and it is the ordering the reader themselves reads a review
+// in. Every stamp is soft: a record missing all of them sorts last, never
+// throws.
+export function decisionAt(thread) {
+  const msgs = (thread && thread.msgs) || [];
+  const last = msgs.length ? msgs[msgs.length - 1].ts : '';
+  return [thread && thread.resolved_at, thread && thread.updated,
+    thread && thread.healed_at, thread && thread.reanchored_at, last]
+    .map(s => String(s || '')).filter(Boolean).sort().pop() || '';
+}
+
+export function decisionRow(page, thread) {
+  const where = Number(thread && thread.page) > 0 ? ` · p${Number(thread.page)}` : '';
+  const said = decisionSaid(thread);
+  return `- ${decisionStatus(page, thread)}${where} · "${clipTo(thread && thread.quote, DECISION_QUOTE_MAX)}"`
+    + (said ? ` — ${said}` : '');
+}
+
+/**
+ * The whole log, as it is written to disk. Pure: a page record in, markdown
+ * out, no filesystem and no clock. Dense on purpose — this is read by a model,
+ * one line per thread, and a paragraph per thread would defeat the reason it is
+ * a file at all.
+ */
+export function decisionLog(page) {
+  const threads = ((page && page.threads) || [])
+    .filter(t => t && (t.msgs || []).length && String(t.quote || '').trim());
+  const rows = threads
+    .map(t => ({ t, at: decisionAt(t) }))
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+    .slice(0, DECISION_ROWS_MAX)
+    .map(({ t }) => decisionRow(page, t));
+  const more = threads.length - rows.length;
+  return `# Decisions on "${displayTitle(page)}"\n\n`
+    + `${threads.length} comment thread${threads.length === 1 ? '' : 's'} on this document, `
+    + 'newest decision first. One line each: status · page · the passage · what was decided.\n'
+    + 'Statuses: open (still being discussed) · suggestion pending (a change has been proposed '
+    + 'and the reader has not answered) · struck (a strikeout is on the document, and its note is '
+    + 'the wording that was agreed) · resolved (the reader filed it: settled) · deleted-passage '
+    + '(the passage itself is gone from the document).\n\n'
+    + `${rows.join('\n')}\n`
+    + (more > 0 ? `\n(…and ${more} older thread${more === 1 ? '' : 's'}, not listed.)\n` : '');
+}
+
+/**
+ * Write it, and return the path the envelope should name — or '' where there is
+ * nothing worth naming. Cheap by construction: this is a SERIALIZATION of the
+ * record, so it is regenerated whole on every decision rather than patched, and
+ * an unchanged log is not written at all (so its mtime means what it says).
+ * Atomic, like every other file this companion keeps: tmp then rename, so a bot
+ * reading it mid-write reads the old one and never half of either.
+ *
+ * Under DECISIONS_MIN threads there is nothing to be inconsistent with, so the
+ * file is REMOVED rather than left to go stale — a page whose threads were all
+ * deleted must not still name a log listing them.
+ */
+export function writeDecisionLog(page) {
+  const key = pageKey(page && page.url);
+  const file = decisionsFile(key);
+  const threads = ((page && page.threads) || [])
+    .filter(t => t && (t.msgs || []).length && String(t.quote || '').trim());
+  if (threads.length < DECISIONS_MIN) {
+    try { fs.unlinkSync(file); } catch { }
+    return '';
+  }
+  const next = decisionLog(page);
+  try { if (fs.readFileSync(file, 'utf8') === next) return file; } catch { }
+  fs.mkdirSync(SNAPS, { recursive: true });
+  const tmp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, next);
+  fs.renameSync(tmp, file);
+  return file;
+}
+
+export function deleteDecisionLog(key) {
+  try { fs.unlinkSync(decisionsFile(key)); } catch { }
 }

@@ -7439,6 +7439,198 @@ sweep green.
   and it is capped — a card passed back and forth many times keeps the last
   eight hands.
 
+## Amendment (2026-08-29, shipped): the review's decision log
+
+Reported by the reader, editing a long manuscript. **Decisions accumulate across
+threads.** A phrasing is settled in a thread on page 2. A deletion is agreed in a
+thread on page 5. Then a bot answering a comment on page 9 proposes wording that
+contradicts both — and it is not being careless, it is being blind: the turn
+carried its own thread, the marks beside its own quote (`nearbyMarksBlock`, the
+2026-08-26 amendment) and nothing else. Fifty threads of settled business were
+invisible to it. The only person in the room who could notice was the reader,
+which is exactly the clerical work this companion exists to take off them.
+
+### Why a FILE and not the envelope
+
+The reader raised the objection themselves, and it is the right one: inlining
+every thread into every turn would be unwieldy. On a real manuscript that is
+fifty threads riding every turn of every round, with the one comment the turn is
+actually about reduced to three per cent of what the bot was handed — a
+context-stuffing answer that makes the turn worse at the thing it was for.
+
+**The companion already had the idiom, twice.** The page's full text is not
+inlined: the envelope names `snapshots/<key>.html` and the bot reads it
+(2026-08-11). The page's figures are not inlined: the envelope names the PNGs
+and the bot opens them (2026-08-28). Reads are pre-allowed on both CLIs, so a
+named path costs no prompt and no new permission surface. So the whole review's
+state is a **file** too — written to disk, named on the turn, read on demand.
+
+The nearby-marks block stays exactly as it was. The two are not rivals and the
+division is deliberate: **nearby marks is the zero-effort view** — the handful of
+neighbours a bot must see whether or not it thinks to look — and **the log is the
+on-demand whole**, which only matters when the bot is about to commit to wording.
+
+### The file
+
+`.botference/plugin/snapshots/<pageKey>-decisions.md`, beside that page's
+snapshot and its page images, because it is the same kind of thing they are: a
+cache of the current state, replaced whole, never a history. One line per thread,
+**newest decision first** — the newest decision being the one nobody else has
+caught up with yet.
+
+```
+# Decisions on "Adriana manuscript v4"
+
+7 comment threads on this document, newest decision first. One line each:
+status · page · the passage · what was decided.
+Statuses: open (still being discussed) · suggestion pending (a change has been
+proposed and the reader has not answered) · struck (a strikeout is on the
+document, and its note is the wording that was agreed) · resolved (the reader
+filed it: settled) · deleted-passage (the passage itself is gone from the
+document).
+
+- open · p9 · "the tumbling debris field" — last — claude: I would keep it, but tighten the clause.
+- suggestion pending · p7 · "a sentence a bot wants gone" — last — codex: this should go
+- struck (from a discussion) · p5 · "and adds nothing to it" — note: cut: the sentence repeats section 2
+- deleted-passage · p4 · "the block that was deleted" — the passage was deleted from the document
+- struck · p3 · "nflatable-arm literature" — note: replace with: "The inflatable-arm literature is thin."
+- resolved · p2 · "the radiator area was sized for" — Settled: the area stays, the citation goes.
+```
+
+Quotes clip at 80 characters, notes at 140, the last-said clause at 160, the list
+at 400 rows. The page number is omitted where a thread has none (an article).
+
+**Every line is MECHANICAL. Not one of them costs a bot turn**, and that is the
+constraint the whole design is built around: a log that had to be written by the
+agents would be a log nobody could afford to regenerate, and regenerating it on
+every decision is the point of it. So each line is derived from the record and
+from nothing else — the mark, the note (`msgs[0].text` on a strikeout, which IS
+the decision, since it is the sentence copied onto the document), the `resolved`
+flag, the `summary` the reader's own resolve already wrote, `store.threadDigest`
+where that summary has not landed yet, and otherwise the last thing anybody
+actually said. `summarizeThread` is not called and no turn is queued.
+
+**Status precedence**: a mark on the document outranks a flag on the record,
+because the mark is what the co-author will actually receive. So struck (naming
+its parent discussion where it has one) → deleted-passage → resolved →
+suggestion pending → open. "Suggestion pending" is either shape of pending: a
+blog suggestion card still `open`, or a strike chip offered and not yet confirmed
+into a card (`strikesOf` with an empty brood).
+
+**Regenerated whole, never patched.** It is a serialization of the record, so a
+patch would be a second implementation of the same truth, drifting. Written on
+every event that changes what is in it — a thread opened or deleted, a thread
+filed or reopened, a mark converted, a strikeout minted, renoted or adopted, a
+suggestion accepted, refused or turned down, an anchor moved — **debounced**
+(one trailing timer per page, the record re-read when it fires, so Accept all
+writes once for a whole stack), **atomic** (tmp-then-rename: a bot reading it
+mid-write reads the old file, never half of either) and **skipped entirely when
+the content did not move**, so an unchanged log keeps its mtime.
+
+**Below two threads the file is REMOVED, not written.** With one comment on a
+page there is nothing to be inconsistent with, and a page whose threads were all
+deleted must not still name a log that lists them.
+
+**It is also written at the front of the turn queue** (`chat.mjs planSteps`,
+beside the snapshot path and the page images, and asked at the same moment for
+the same reason): a thread filed while this turn sat in the queue is part of the
+review this turn is about. That write is what guarantees a turn never names a
+stale file; the event-driven regeneration is what keeps the file honest for a bot
+reading it *during* a long turn of its own.
+
+### The envelope
+
+Two lines, on every turn of a page with two or more threads, standing beside the
+snapshot path because they are the same kind of promise — the thing you need is
+on disk, here is where:
+
+```
+THE REVIEW'S DECISION LOG. Decisions on this document accumulate across comment
+threads — a phrasing settled on page 2, a deletion agreed on page 5 — and none
+of them is anywhere in the conversation in front of you. Every thread on this
+document and what has been decided in it is on this machine at <path>: one line
+each, newest decision first. READ IT before you propose any wording, and keep
+what you propose consistent with what has already been decided.
+If what you believe in genuinely CONFLICTS with a decision in that log, SAY SO —
+name the decision and say why you would now decide it differently — rather than
+silently contradicting it, and rather than silently conforming to something you
+think is wrong. Catching that conflict is the reason you were given the log.
+```
+
+**Both halves of that instruction are load-bearing.** Told only "be consistent",
+a model conforms to whatever it reads, including a decision it can see is wrong —
+which buries the disagreement instead of surfacing it. Told nothing, it
+contradicts one silently. The thing the reader actually wants is the conflict
+**said out loud**, because noticing it is the one thing only a bot holding the
+whole review can do for them.
+
+**Where it rides.** Quote-bearing turns and page chat, on any page with two or
+more threads: page chat is where the document is discussed as a whole, and a
+proposal made there can contradict a thread just as easily. That includes every
+turn of a **send review** round — the preamble and each per-comment turn — which
+is where it matters most, since a round is a dozen turns about one draft and the
+likeliest place for turn 7 to undo what turn 2 settled. And it includes **blog
+suggest-mode** turns, whose proposals should cohere with each other exactly as
+strike suggestions should; "suggestion pending" is in the log for them.
+
+**Where it is absent**: a page with 0-1 threads (nothing to be inconsistent
+with), a library turn (about no document at all), a summary turn and a question
+card (neither writes a word into the document). The last three are absent by
+construction — those three envelopes return above the line that composes it.
+
+The round preamble does not name the log in its own words: every turn of the
+round already carries it in the envelope, and a second copy in the reader's own
+visible message would be text they did not write about a file they do not read.
+
+### Files
+
+```
+store.mjs                  decisionsFile / decisionLog / decisionRow /
+                           decisionStatus / decisionSaid / decisionAt;
+                           writeDecisionLog (atomic, content-compared, removes
+                           below DECISIONS_MIN); deleteDecisionLog, called from
+                           deletePage; the four clip caps
+chat.mjs                   decisionLogBlock; envelope takes decisionPath and
+                           puts it in `standing`; planSteps writes the log at
+                           the front of the queue and names it
+server.mjs                 noteDecisions — the debounced regeneration — called
+                           from /thread, /delete, /resolve, /mark, /strike-from
+                           (mint, renote and adoption), /reanchor,
+                           /suggest-accept, /suggest-reject, /suggest-accept-all
+```
+
+Nothing in the extension changed: the log is a companion file that only the bots
+ever read.
+
+**Testing.** `test/decisions.test.mjs` (new, 26). Pure: the whole status zoo in
+one record — open, struck with its note, an adopted child naming its discussion,
+resolved with a summary, resolved falling back to the digest, deleted-passage, a
+pending blog card, a pending strike chip — each getting exactly one line with the
+right first word; the newest-decision-first ordering across five different
+stamps; the clips; the header and its legend; a thread with no words or no
+passage counted as no decision. On disk: two threads write the file and one
+writes nothing, a review shrinking back removes it, an unchanged log is not
+rewritten and leaves no `.tmp` behind, `deletePage` takes it, and neither the
+page-image census nor `hasSnapshot` mistakes it for something else. The envelope
+in all five of its states. End to end over the real doors: the second comment
+brings the log into being, filing rewrites it with no bot turn anywhere, a mint
+lands with its note, a renote rewrites the same line rather than adding a second,
+a hand conversion moves its line, a deleted thread leaves, a turn names the file
+by absolute path, a one-comment page names nothing, and a page deleted takes its
+log with it. `test/workspace.test.mjs` (126 → 127): every turn of a send-review
+round names the log, and the log holds both of the round's comments.
+
+#### Known limits (deliberate)
+
+- **The log says what was decided, never why.** One clipped line per thread is
+  the whole point; a bot that needs the argument reads the thread in the page
+  record, which the library turn already knows how to do.
+- **Nothing verifies that the bot read it.** This is context, not enforcement —
+  the same limit the nearby-marks block has, and for the same reason.
+- **A conflict is reported in prose, not lifted into a field.** There is no chip
+  and no state for "this contradicts thread X"; it is a sentence in a reply, and
+  the reader is the one who acts on it.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

@@ -15,7 +15,8 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
   readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle,
-  pageKey, snapshotFile, hasSnapshot, kindOf, findPageImage, pageImagesOf } from './store.mjs';
+  pageKey, snapshotFile, hasSnapshot, kindOf, findPageImage, pageImagesOf,
+  writeDecisionLog } from './store.mjs';
 import { applyEnv as applyKeyEnv } from '../shared/keys.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -325,6 +326,31 @@ export const SPAN_DISCIPLINE =
   + 'EXACTLY the suggestion as you already stated it in this thread, word for word, with no '
   + 'scope growth; "add some of it" means the part they named and nothing else.\n';
 
+// The review's decision log, named on the turn (store.writeDecisionLog keeps
+// the file; server.mjs summon decides whether this turn gets it).
+//
+// Same idiom as the snapshot path above and the figure paths below, and for the
+// same reason: what a bot needs here is the WHOLE review's state, and inlining
+// fifty threads into every turn — which is what "just put it in the envelope"
+// means on a real manuscript — would bury the one comment the turn is actually
+// about. A path costs two lines and the bot reads it when it matters.
+//
+// The instruction has to have BOTH halves. Told only "be consistent", a model
+// conforms to whatever it reads, including a decision it can see is wrong;
+// told nothing, it contradicts one silently. What the reader wants is the
+// disagreement said out loud, because that is the thing only a bot holding the
+// whole review can notice for them.
+export const decisionLogBlock = file =>
+  'THE REVIEW\'S DECISION LOG. Decisions on this document accumulate across comment threads — '
+  + 'a phrasing settled on page 2, a deletion agreed on page 5 — and none of them is anywhere in '
+  + `the conversation in front of you. Every thread on this document and what has been decided in `
+  + `it is on this machine at ${file}: one line each, newest decision first. READ IT before you `
+  + 'propose any wording, and keep what you propose consistent with what has already been decided.\n'
+  + 'If what you believe in genuinely CONFLICTS with a decision in that log, SAY SO — name the '
+  + 'decision and say why you would now decide it differently — rather than silently contradicting '
+  + 'it, and rather than silently conforming to something you think is wrong. Catching that '
+  + 'conflict is the reason you were given the log.\n';
+
 // The picture of a page, in the three states a turn can actually be in.
 // Pure and exported so the suites can hold each of them still:
 //
@@ -370,7 +396,7 @@ export function figureBlock({ pageImage, pageImages, paged, pageNumber }) {
 
 export function envelope({ url, title, target, text, quote, history,
   articleText, articleChanged, first, docxDigest, verbosity, asker, library,
-  snapshotPath, pageImage, pageImages, paged,
+  snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
   blogContext }) {
@@ -484,7 +510,17 @@ export function envelope({ url, title, target, text, quote, history,
   // where the project write rule stands and never beside it: a page cannot be
   // both a council artifact and a blog draft.
   const draft = String(blogContext || '');
-  const standing = `${snap}${figure}${writes}${draft}${filed}`;
+  // …and the review's whole state, where this page has one worth reading (the
+  // path is '' below DECISIONS_MIN threads, so a page with one comment on it
+  // carries nothing). It stands beside the snapshot path because it is the same
+  // kind of promise — the thing you need is on disk, here is where — and it
+  // rides EVERY turn on such a page for the same reason: a quote-bearing turn
+  // is about to propose wording, a page chat is about to discuss the document
+  // as a whole, and both can contradict a decision made in another thread. It
+  // is absent by construction from a summary, a question card and a library
+  // turn: those three return above this line.
+  const decisions = decisionPath ? decisionLogBlock(decisionPath) : '';
+  const standing = `${snap}${decisions}${figure}${writes}${draft}${filed}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`
@@ -1149,7 +1185,17 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // moment and for the same reason: a capture that landed while this turn
     // waited in the queue counts, and one that never happened is a fact this
     // turn has to state rather than hide (envelope → figureBlock).
-    const paged = !isLib && kindOf(readPage(job.url) || { url: job.url }) === 'pdf';
+    const record = isLib ? null : readPage(job.url);
+    const paged = !isLib && kindOf(record || { url: job.url }) === 'pdf';
+    // …and the review's own state, asked at the same moment and kept the same
+    // way. The log is regenerated on every decision (server.mjs noteDecisions),
+    // but it is also written HERE, at the front of the queue, for the reason
+    // everything else on this line is computed here: a thread resolved while
+    // this turn was waiting is part of the review this turn is about, and a
+    // rewrite of an unchanged log costs a read and no write at all. '' when the
+    // page has fewer than two threads — there is nothing to be inconsistent
+    // with — and '' on a library turn, which is about no document at all.
+    const decisionPath = record ? writeDecisionLog(record) : '';
     const pageImage = snapKey ? findPageImage(snapKey, job.pageNumber || 0) : '';
     const pageImages = (snapKey && !(job.pageNumber > 0))
       ? pageImagesOf(snapKey).map(n => ({ n, path: findPageImage(snapKey, n) })).filter(p => p.path)
@@ -1168,7 +1214,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         untaggedAll: !!job.untaggedAll,
         // the thread's sticky address, when the reader's words named nobody
         routeHint: job.routeHint || '',
-        snapshotPath, pageImage, pageImages, paged,
+        snapshotPath, decisionPath, pageImage, pageImages, paged,
         pageNumber: job.pageNumber || 0, mark: job.mark || '',
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
