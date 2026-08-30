@@ -139,11 +139,16 @@
                      account chooser instead of the document — the failure
                      state, with its warning in Page chat (screenshot state)
     ?checklist=1     seed the page chat with a bot checklist (screenshot state
-                     for the interactive checkboxes)
+                     for the interactive checkboxes). `&selftest=1` runs the
+                     seeded-tasks assertions: a card derived at BOOT from a
+                     record loaded cold, which is the one thing the article
+                     pose (which drives a bot into making a list) cannot say.
     ?tasks=1         seed a bot checklist INSIDE a comment thread — the newest
                      list on the page, so the tasks card at the top of both
                      panes shows it and its meta line names the thread it lives
                      in (screenshot state). `&folded=1` holds the card folded.
+                     `&selftest=1` runs the same seeded-tasks pose against the
+                     thread-sourced fixture.
     ?run=1           seed the page chat with a bot reply carrying a runnable
                      ```python block, already run: the Run button, the output
                      and two figure thumbnails (screenshot state)
@@ -278,7 +283,7 @@
                      wrong-answer correction slip, the two quiet exits (present
                      while the card is still being read, not only after it), and
                      the "looks like a duplicate" hint over two cards out of one
-                     discussion.
+                     discussion. `&selftest=1` runs those.
     ?question=revise the OTHER thing a bot can propose about the vault: a
                      REWRITE of a card this discussion already filed. Two chips
                      — one offering it (Revise the card / No) and one the
@@ -469,6 +474,9 @@ if (REVIEWPAGE) {
 //     content script's window, which the page it runs on cannot reach.
 // ───────────────────────────────────────────────────────────────────────────
 const WORKSPACE = Q.get('workspace') === '1';
+// ?tasks=1 and ?checklist=1 both seed a checklist into the record before the
+// drawer ever mounts, so the tasks card is derived at boot. They share a pose.
+const SEEDED_TASKS = Q.get('tasks') === '1' || Q.get('checklist') === '1';
 const WS_ROOT = '/Users/reader/MySiteFromObsidianVault/botference';
 const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
   project_title: 'Spaceship Engineering', rel: 'projects/spaceship-engineering/index.html',
@@ -4062,12 +4070,47 @@ async function selftest() {
   const chatStatusText = () => chatStatus().map(c => c.textContent).join(' | ');
   const chatRing = () => S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring');
 
-  (await until(freeChat, 8000)).value = '@claude how deep is the queue right now?';
+  // The queue is HELD for the first half of this: the fake companion otherwise
+  // starts the turn 350ms after answering the send, and "queued…" is a state
+  // that exists only inside that window. A 50ms poll on a loaded machine walks
+  // straight over it, which made these two checks a coin toss in a sweep and
+  // solid alone — the pose was sampling a transient instead of holding one.
+  // (The race between the two — a {queued} answer arriving AFTER turn-start —
+  // is the bug this section is about, and it is tested deliberately below with
+  // `slowPost`, where it is arranged rather than hoped for.)
+  // …and the pane has to be QUIET first, and quiet for long enough to mean it.
+  // "queued…" is only ever drawn when the send's answer finds no turn running
+  // on this target and none started or ended while the POST was out (drawer.js
+  // queueWindowOpen) — which is the whole point of the line. The section above
+  // leaves a page-chat turn SCHEDULED (the fake companion starts one 350ms
+  // after answering a mention), so a single "no chip on screen" test passes in
+  // the gap before it starts, ours lands inside it, and the drawer is right to
+  // say nothing. Waiting out a beat of continuous quiet is what actually says
+  // "the pane is between turns".
+  const chatBusy = () => !!chatStatus().length
+    || !!S.querySelector('.pane[data-pane="chat"] .reply.streaming');
+  const chatQuiet = async (settle = 900, ms = 25000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (chatBusy()) { await sleep(50); continue; }
+      const until_ = Date.now() + settle;
+      while (Date.now() < until_ && !chatBusy()) await sleep(50);
+      if (!chatBusy()) return true;
+    }
+    return false;
+  };
+  const QUEUED_MSG = '@claude how deep is the queue right now?';
+  check('the pane settles between turns, so a wait can be read at all',
+    await chatQuiet());
+  window.__bfpQueue.hold(true);
+  (await until(freeChat, 8000)).value = QUEUED_MSG;
   chatSend().click();
-  const queuedLine = await until(() => /queued/.test(chatStatusText()) ? chatStatusText() : null, 3000);
+  const queuedLine = await until(() => /queued/.test(chatStatusText()) ? chatStatusText() : null, 6000);
   check('a queued mention says so, at the composer it was sent from', !!queuedLine);
   check('…as a wait, not as a problem',
     !S.querySelector('.pane[data-pane="chat"] .status-chip.err'));
+  window.__bfpQueue.hold(false);
+  window.__bfpQueue.play('__page__', QUEUED_MSG);
   check('the working chip supersedes it at turn-start — never both at once',
     !!await until(() => (chatRing() && !/queued/.test(chatStatusText())) ? true : null, 9000));
   check('and the turn ending takes the indicator away entirely',
@@ -8370,7 +8413,7 @@ async function selftestMemorize() {
       !!line && !!line.querySelector('.rebtn'));
 
     // ---- and it is the way into the tab ----
-    hit(line.querySelector('.rebtn'), 'the memory line\'s view');
+    hit(line && line.querySelector('.rebtn'), 'the memory line\'s view');
     const p = await until(() => (pane() && !pane().hidden ? pane() : null), 3000);
     check('pressing it opens Memorize', !!p);
     const q = await until(() => p.querySelector('.memq'), 3000);
@@ -8460,6 +8503,20 @@ async function selftestMemorize() {
   }
   window.__bfpSelftest = { done: true, out };
   progress(out, 'done');
+
+  // …and the tally, in the one place every other pose writes it. This pose
+  // published its result ONLY as `window.__bfpSelftest` — invisible to
+  // --dump-dom and to any runner that greps #h-log for "SELFTEST" — so a clean
+  // pass and a run that hung looked identical from outside, and a sweep simply
+  // waited out its timeout on it. Same six lines as everywhere else.
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (memorize) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
   console.log(out.join('\n'));
 }
 
@@ -9479,6 +9536,129 @@ async function selftestColledit() {
   console.log(out.join('\n'));
 }
 
+// ?tasks=1&selftest=1 · ?checklist=1&selftest=1 — THE CARD AS THE READER FINDS IT.
+//
+// Both flags seed a checklist into the RECORD, so the drawer derives its tasks
+// card at boot rather than at the end of a turn it just watched. That is the
+// difference from the article pose, which reaches the same card only by driving
+// a bot into producing a list; everything about deriving one from a record
+// loaded cold — the address it carries, the meta line, the ordinals — was
+// untested until here.
+//
+// (These two used to run the ARTICLE pose. Its opening premise is "a page with
+// no checklist anywhere has no tasks card", which is exactly what these
+// fixtures are not, so both scored a false ✗ there, and ?tasks=1 scored two
+// more where the article pose reads thread #2's last human message — a message
+// this fixture appends to. Six hundred assertions about a document these poses
+// are not. Same lesson as ?pdf=scan and ?roundticker=done: a different fixture
+// gets a pose of its own.)
+async function selftestSeededTasks() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  try {
+  // the two fixtures, and everything that differs between them in one place
+  const FROM_THREAD = Q.get('tasks') === '1';
+  const F = FROM_THREAD
+    ? { target: RECORD.threads[1].id, author: 'codex', boxes: 3, done: 1,
+        pane: 'comments', has: /Find the sentence/, prose: /Before it goes anywhere/,
+        where: /structural failure/, open: 1 }
+    : { target: '__page__', author: 'claude', boxes: 4, done: 1,
+        pane: 'chat', has: /Add one table/, prose: /Tick them off as you go/,
+        where: /page chat/, open: 0 };
+
+  const card = p => S.querySelector('.pane[data-pane="' + p + '"] .tasks:not(.ptasks)');
+  const boxesIn = p => [...(card(p) ? card(p).querySelectorAll('.md-tick') : [])];
+  const itemsIn = p => [...(card(p) ? card(p).querySelectorAll('li.md-task') : [])];
+  const meta = p => ((card(p) || {}).querySelector ? (card(p).querySelector('.taskmeta') || {}).textContent || '' : '');
+
+  d.open('chat');
+  await until(() => card('chat'), 5000);
+  check('a list already in the record puts a tasks card up at boot, with no '
+    + 'turn driven to make one', !!card('chat') && !!card('comments'));
+  // "above the conversation", not firstElementChild — the two panes hold their
+  // conversation differently (page chat wraps it, the comments pane is a run of
+  // thread cards) and neither of them is the top row of the pane.
+  check('…above the conversation on both panes', ['chat', 'comments'].every(p => {
+    const kids = [...S.querySelector('.pane[data-pane="' + p + '"]').children];
+    const conv = kids.findIndex(e => e.classList.contains('chatpane') || e.classList.contains('thread')
+      || e.hasAttribute('data-thread'));
+    return card(p) && conv > -1 && kids.indexOf(card(p)) < conv;
+  }));
+  check('…carrying the seeded list', boxesIn('chat').length === F.boxes
+    && F.has.test((card('chat') || {}).textContent || ''));
+  check('…the list only, never the prose it was written in',
+    !F.prose.test((card('chat') || {}).textContent || ''));
+  check('…with the ordinals of the message it came out of, in document order',
+    boxesIn('chat').map(b => b.getAttribute('data-tick')).join(',')
+      === [...Array(F.boxes).keys()].join(','));
+  check('…the ticked one already struck through, from the text and nothing else',
+    itemsIn('chat').filter(li => li.classList.contains('done')).length === F.done);
+  check('…and a count that says so',
+    ((card('chat').querySelector('.tcount') || {}).textContent || '')
+      === F.done + '/' + F.boxes);
+
+  // the card holds an ADDRESS, not a copy: this is what makes its boxes the
+  // transcript's own boxes rather than a second set that drifts from them
+  check('the card addresses the message it is showing, by conversation and author',
+    card('chat').dataset.taskfor === F.target && card('chat').dataset.taskauthor === F.author);
+  const srcTs = card('chat').dataset.taskts;
+  check('…and that address resolves to a message that really has the list',
+    !!msgIn(F.target, srcTs) && F.has.test((msgIn(F.target, srcTs) || {}).text || ''));
+  check('the meta line says who wrote it, how much is done, and where it lives',
+    new RegExp(F.author).test(meta('chat')) && new RegExp(F.done + '/' + F.boxes + ' done').test(meta('chat'))
+    && F.where.test(meta('chat')));
+  check('the boxes are live — this is not a restored council message',
+    boxesIn('chat').length === F.boxes && boxesIn('chat').every(b => !b.disabled));
+
+  // ticking one is an edit the companion performs on the message text
+  const n0 = tickPosts.length;
+  hit(boxesIn('chat')[F.open], 'an open box in the tasks card');
+  check('ticking in the card POSTs /tick at that message and that box',
+    !!await until(() => tickPosts.slice(n0).some(p =>
+      p.thread_id === F.target && p.ts === srcTs && p.index === F.open && p.checked === true)));
+  check('…which the companion writes into the message text',
+    !!await until(() => /\[x\]/.test(
+      (msgIn(F.target, srcTs) || {}).text.split('\n')
+        .filter(l => /\[[ xX]\]/.test(l))[F.open] || '') || null));
+  check('…and the card comes back from that answer with the new count',
+    !!await until(() => ((card('chat') && card('chat').querySelector('.tcount') || {}).textContent
+      === (F.done + 1) + '/' + F.boxes) || null));
+
+  // ↑ source: whatever it takes to put the message on screen
+  hit(card('chat') && card('chat').querySelector('[data-act="tasks-jump"]'), '↑ source');
+  check('↑ source crosses to the tab the list actually lives on',
+    !!await until(() => !S.querySelector('.pane[data-pane="' + F.pane + '"]').hidden));
+  check('…and marks the message itself, so the eye finds it among its neighbours',
+    !!await until(() => S.querySelector('.pane[data-pane="' + F.pane + '"] .reply.tasksrc')));
+
+  // the fold is a reading position, kept for the session
+  const here = () => card(F.pane);
+  hit(here() && here().querySelector('[data-act="tasks-fold"]'), 'fold the tasks card');
+  await sleep(40);
+  check('the card folds to one line', !!here() && here().classList.contains('folded')
+    && !!here().querySelector('.taskbody') && here().querySelector('.taskbody').hidden);
+  d.setPage(RECORD);
+  await sleep(40);
+  check('…and the fold survives the next render', !!here() && here().classList.contains('folded'));
+  hit(here() && here().querySelector('[data-act="tasks-fold"]'), 'unfold it again');
+  await sleep(40);
+  check('…and opens again on the same control', !!here() && !here().classList.contains('folded'));
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (' + (Q.get('tasks') === '1' ? 'tasks' : 'checklist') + ') '
+    + (out.length - bad.length) + '/' + out.length
+    + (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?workspace=1&selftest=1 — the project artifact world.
 //
 // The claims: the page attached at all (a file: document normally gets none of
@@ -9504,7 +9684,17 @@ async function selftestWorkspace() {
   // Not this page's checklist and not derived from any message: a file in the
   // project (projects/<id>/TASKS.md) that the bots extend, tick and prune
   // across every chat in it. Read-only here — nothing in the drawer owns it.
-  {
+  //
+  // It is a function rather than a straight run of checks because the card
+  // DOES NOT EXIST until the root is confirmed (drawer.js projectTasks():
+  // `if (!p || !p.confirmed …) return []`) — reading a project's file list is
+  // one of the things the reader is being asked to vouch for. Under
+  // &unconfirmed=1 this block ran anyway, before the question had been
+  // answered, asserted the card was there, and then died on `pitems()[0]`
+  // being undefined: an unhandled TypeError three checks in, no tally, and
+  // every later assertion in the pose simply never made. It runs after the
+  // confirmation in that pose, and the absence gets an assertion of its own.
+  const projectTasksCard = async () => {
     d.open('chat');
     await sleep(60);
     const pcard = () => S.querySelector('.pane[data-pane="chat"] .tasks.ptasks');
@@ -9527,13 +9717,17 @@ async function selftestWorkspace() {
       check('\u2026holding every item, in the file\u2019s order',
         pitems().length === 3 && /Size the radiator/.test(pitems()[0].textContent)
         && /nozzle trade study/.test(pitems()[2].textContent));
-      check('\u2026with the ticked one struck through', pitems()[0].classList.contains('done'));
+      // \u2026and every reader of the card below is null-safe: one absent card is
+      // one run of failed checks, never an exception that ends the pose.
+      const pin = sel => (pcard() ? pcard().querySelector(sel) : null);
+      check('\u2026with the ticked one struck through',
+        !!pitems()[0] && pitems()[0].classList.contains('done'));
       check('\u2026and a count of what is done', /1\/3/.test(
-        (pcard().querySelector('.tcount') || {}).textContent || ''));
+        (pin('.tcount') || {}).textContent || ''));
       check('the boxes are READ-ONLY \u2014 the drawer does not own that file',
-        [...pcard().querySelectorAll('.md-tick')].every(b => b.disabled));
+        !!pcard() && [...pcard().querySelectorAll('.md-tick')].every(b => b.disabled));
       check('\u2026and it says whose list it is, and where it lives',
-        /Spaceship Engineering/.test(pcard().textContent)
+        !!pcard() && /Spaceship Engineering/.test(pcard().textContent)
         && /TASKS\.md/.test(pcard().textContent));
       // it is on BOTH panes, like every other card pinned to the top
       d.open('comments'); await sleep(40);
@@ -9547,11 +9741,18 @@ async function selftestWorkspace() {
         !!folded && folded.classList.contains('folded')
         && folded.querySelector('.taskbody').hidden);
       hit(folded && folded.querySelector('.taskfold'), 'unfold it again'); await sleep(40);
-      check('\u2026and it comes back',
-        !S.querySelector('.pane[data-pane="comments"] .tasks.ptasks').querySelector('.taskbody').hidden);
+      const back = S.querySelector('.pane[data-pane="comments"] .tasks.ptasks .taskbody');
+      check('\u2026and it comes back', !!back && !back.hidden);
       d.open('chat'); await sleep(40);
     }
-  }
+  };
+  // On a confirmed root the card is there from the first render, so it is read
+  // where it always was. On an unconfirmed one it cannot be, and the pose says
+  // that out loud before answering the question.
+  if (Q.get('unconfirmed') !== '1') await projectTasksCard();
+  else check('an unvouched-for root shows no project-tasks card either \u2014 a file '
+    + 'list is one of the things the reader is being asked to vouch for',
+    !S.querySelector('.tasks.ptasks'));
 
   // ---- the council-web view is the SAME page --------------------------
   // Reached at `/files/<rel>` on a trusted origin rather than at its file:
@@ -9598,6 +9799,10 @@ async function selftestWorkspace() {
     check('\u2026and the conversation appears in its place', chat('.chatpane').length === 1);
     check('\u2026and the header stops hedging',
       !(S.querySelector('.hdr .proj') || { classList: { contains: () => true } }).classList.contains('unconfirmed'));
+    // \u2026and the yes is what buys the project's own list: same card, same
+    // assertions as the confirmed pose, one gesture later.
+    await until(() => S.querySelector('.tasks.ptasks'), 4000);
+    await projectTasksCard();
   } else {
     check('a confirmed root shows no question', !S.querySelector('.card.confirmroot'));
     check('the header names the project this page belongs to',
@@ -10198,6 +10403,9 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : COMMENTERS ? selftestCommenters
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration
+        // ?tasks=1 / ?checklist=1 seed a list into the record, which is a
+        // DIFFERENT DOCUMENT from the article pose's ("no checklist anywhere")
+        : SEEDED_TASKS ? selftestSeededTasks
         : READY ? selftestReady : selftest, 250);
       return;
     }

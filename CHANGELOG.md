@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## 2026-08-30
+
+- **Housekeeping: the Discuss test harness is trustworthy again.** Four of its
+  forty-one self-test poses had been broken for days, and everyone working on
+  the plugin had learnt to step around them. All four were faults in the tests
+  themselves; nothing was wrong with the product.
+
+  - The Memorize-tab pose looked like it hung forever. It had actually been
+    passing all along — it just never wrote its result anywhere a test runner
+    could see it. It writes the same result line as every other pose now.
+  - The pose for a project page whose folder you have not yet vouched for
+    crashed part-way through. It was looking for the project's task list before
+    answering the question that grants permission to read it — which is exactly
+    when that list is not supposed to be there. It now checks that the list is
+    absent before you say yes and present after.
+  - The two checklist poses were being run through the wrong script entirely:
+    six hundred checks meant for a plain article, against a page that has a
+    checklist on it. They have a short script of their own now, about the thing
+    they are actually for — a task card built from a page's saved history the
+    moment it loads.
+  - And a fifth, which only showed up once the whole set was run together: two
+    checks about the "queued…" waiting line went looking for a message that is
+    on screen for a third of a second, and sent it into the tail of the
+    previous check's conversation besides — so they missed it about one run in
+    three on a busy machine. The test now waits for the conversation to be
+    properly idle, and holds the queue still while it looks.
+
+  The whole sweep now passes three runs in a row, and how to run it (the pose
+  list, the timeouts, the window size, the traps) is written down in the
+  plugin's SPEC instead of living in people's heads.
+
 ## 2026-08-29
 
 - **Strikeouts on sideways text now come out right in the exported PDF.** A

@@ -4969,6 +4969,120 @@ is unreachable) and drive it with Playwright, waiting on `#h-log` matching
 /SELFTEST/ and reading `dataset.detail`. Every selftest pose passes headless,
 three runs in a row.
 
+### The sweep, written down (2026-08-30)
+
+The mechanics above lived in agents' heads and were rediscovered — expensively —
+about once a week. They are:
+
+- **Serve it.** Any static server with its docroot at `frontends/plugin`.
+  `test/` as the docroot silently breaks every pose (`../extension/*` 404s).
+- **Drive one pose per navigation**, via CDP or Playwright, and go to
+  `about:blank` between poses. A pose is done when `#h-log` matches `/SELFTEST/`;
+  the whole tally is on `#h-log[data-detail]`, `✓`/`✗` joined by ` | `. Nothing
+  else is a result: a pose that is merely slow and one that died look identical
+  in a screenshot, which is why every pose writes those same six lines.
+- **Budget ~35s per pose** and 60s of patience before calling it a timeout.
+  `chrome --headless=new --virtual-time-budget=25000 --dump-dom` reads `#h-log`
+  cheaply if you only want the tally.
+- **`--window-size=1440,1000`.** `?pdf=1&strike=stack` needs the room; at the
+  headless default its chooser has nowhere to open.
+- **Clear `localStorage` between poses.** The fake extension store is one
+  per-origin key, and a pose that ends on the Page chat tab hands that to the
+  next one. `selftest=1` starts the store empty as well; both belt and braces.
+- **On a timeout, read `#h-prog`** — it names the check the pose is standing on
+  and the first `✗` before it. That is how a hang gets diagnosed without a
+  debugger.
+
+The 41 selftest poses, which is the whole list — nothing else in the harness
+drives a selftest, and every one of them is expected green:
+
+```
+?selftest=1
+?canon=1&selftest=canon
+?gdocs=1&selftest=1
+?pdf=1&selftest=1
+?pdf=scan&selftest=1
+?pdf=local&selftest=1
+?pdf=1&strike=1&selftest=1
+?pdf=1&strike=elsewhere&selftest=1
+?pdf=1&strike=stack&selftest=1
+?pdfannot=1&selftest=1
+?pdfannot=export&selftest=1
+?sendfocus=1&selftest=1
+?reviewpage=1&selftest=1
+?ready=1&selftest=1
+?fresh=1&selftest=1
+?more=1&selftest=1
+?more=open&selftest=1
+?hydrate=1&selftest=1
+?colledit=1&selftest=1
+?orphanheal=1&selftest=1
+?orphanheal=delete&selftest=1
+?roundticker=1&selftest=1
+?roundticker=done&selftest=1
+?workspace=1&selftest=1
+?workspace=1&unconfirmed=1&selftest=1
+?workspace=1&councilweb=1&selftest=1
+?workspace=1&chatopen=1&selftest=1
+?workspace=1&ptasks=0&selftest=1
+?blog=1&selftest=1
+?blog=unconfirmed&selftest=1
+?blog=unmapped&selftest=1
+?suggest=1&selftest=1
+?suggest=states&selftest=1
+?suggest=sweep&selftest=1
+?question=1&selftest=1
+?question=fail&selftest=1
+?question=memorize&selftest=1
+?question=revise&selftest=1
+?commenters=1&selftest=1
+?tasks=1&selftest=1
+?checklist=1&selftest=1
+```
+
+**Amendment (2026-08-30): five more of the same two diseases.** All five were
+the harness's, not the product's.
+
+- **`?question=memorize&selftest=1` "hung at 30 checks".** It never hung: it ran
+  clean and published its tally only as `window.__bfpSelftest`, exactly the bug
+  `?commenters=1` had. A runner grepping `#h-log` waited out its timeout on a
+  passing pose. It writes the standard tally now.
+- **`?workspace=1&unconfirmed=1&selftest=1` died on an undefined `classList`.**
+  The project's `TASKS.md` card cannot exist before the root is confirmed —
+  `projectTasks()` returns `[]` unless `project.confirmed`, because reading a
+  project's files is one of the things the reader is being asked to vouch for —
+  and the pose asserted the card was there anyway, three checks before the
+  question had been answered, then indexed the empty list. The block is a
+  function now: it runs where it always did on a confirmed root, and after the
+  yes on an unconfirmed one, which is also a better assertion (the yes is what
+  buys the list). Its readers are null-safe, and the absence gets a check of
+  its own.
+- **`?tasks=1&selftest=1` and `?checklist=1&selftest=1` ran the ARTICLE pose.**
+  Both flags seed a checklist into the record; the article pose opens with "a
+  page with no checklist anywhere has no tasks card" and reads thread #2's last
+  human message, which `?tasks=1` appends to. Six hundred assertions about a
+  document neither pose is, three of them failing for that reason alone. They
+  share a pose of their own now (`selftestSeededTasks`, 19 checks) about the
+  thing that actually distinguishes them: a tasks card **derived at boot from a
+  record loaded cold** — its address, ordinals, meta line, live `/tick`,
+  `↑ source` and fold — where the article pose only ever reaches that card by
+  driving a bot into making a list. Same lesson as `?pdf=scan` and
+  `?roundticker=done`.
+- **And a fifth, which only a sweep shows.** The article pose's two "queued…"
+  checks passed alone and failed about one run in three under sweep load. Two
+  faults, one line: the pose was reading a state that exists only for the 350ms
+  before the fake companion starts the turn (it holds the queue for the
+  assertion now, `window.__bfpQueue.hold`, the way the wait-reason section right
+  below it already did), AND it was sending into the tail of the PREVIOUS
+  section's turn. That turn is *scheduled* rather than running when the section
+  begins, so "no status chip on screen" is true in the gap before it starts;
+  the send landed inside it and the drawer correctly said nothing, because
+  `queueWindowOpen` is false while a turn is up. It waits for a beat of
+  CONTINUOUS quiet now — the only honest test for "between turns" — which is a
+  shape worth copying anywhere a pose sends into a pane it did not just idle.
+  The genuine race, a `{queued:true}` answer arriving after turn-start, is
+  still tested further down, where `slowPost` arranges it on purpose.
+
 ## Amendment (2026-08-26, shipped): a page filed in a council project
 
 The reader is marking up the second draft of somebody's manuscript. Everything
