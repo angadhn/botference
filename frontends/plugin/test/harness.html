@@ -273,6 +273,13 @@
                      way in — a bot has ended its reply saying where it thinks
                      the page belongs, and the drawer draws it as a confirm chip
                      with a File it / No on it. Nothing files without the click.
+    ?filein=new      the same offer when NOTHING in the roster fits: the bot
+                     proposes a project of its own — "Start a project “Doc Fest
+                     2026” for this page?" — and until Start it is pressed there
+                     is no folder anywhere. `?filein=made` is the far end of the
+                     same road: the page filed, something already made of it,
+                     and the artifacts strip under the review row with the way
+                     back into the file. `&selftest=1` runs both.
     ?question=1      the question vault's two doors on an ordinary article: the
                      card head's `?`, the selection pill's third tool, and a
                      bot's own offer as a File it / No chip. `&selftest=1` runs
@@ -565,6 +572,8 @@ const QUESTION_TAB = QUESTION === 'memorize';
 const QUESTION_REVISE = QUESTION === 'revise';
 let fileFiled = FILEIN ? [{ root: WS_ROOT, id: 'adriana-paper', at: '2026-08-20T09:00:00Z' }] : [];
 const fileCalls = [];
+const projectsMade = [];    // what POST /project-create was asked to start
+const artifactAsks = [];    // …and what POST /make-artifact was asked to make
 
 // every chat the project already has, newest first — what GET
 // /project-sessions answers and the archive list draws
@@ -1043,6 +1052,29 @@ if (FILEIN === 'chip') {
       file_in: { root: WS_ROOT, id: 'adriana-paper', title: "Adriana's paper",
                  why: 'the same manuscript, one draft on' } },
   ]);
+}
+
+// ?filein=new — the OTHER offer the same line can carry: none of the reader's
+// projects fits, and this page deserves one of its own. The bot names a title;
+// nothing is created until the reader presses Start it.
+if (FILEIN === 'new') {
+  fileFiled = [];
+  delete RECORD.projects;
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(2), text: '@claude where does this belong?' },
+    { author: 'claude', ts: iso(1),
+      text: 'Nowhere you already keep — this is a fortnight of screenings to plan, '
+        + 'and it will want a page of its own.',
+      file_in: { new: true, title: 'Doc Fest 2026',
+                 why: 'a fortnight of screenings to plan', roots: [WS_ROOT] } },
+  ]);
+}
+// ?filein=made — the page is filed, and something has been MADE of it: the
+// artifacts strip under the review row, with the way back into the file.
+if (FILEIN === 'made') {
+  RECORD.projects = fileFiled;
+  RECORD.artifacts = [{ root: WS_ROOT, id: 'adriana-paper',
+    rel: 'projects/adriana-paper/doc-fest-planner.html', at: iso(0.5) }];
 }
 
 // ?question=… — a bot has ended a reply saying the reader has not got
@@ -2328,7 +2360,25 @@ function companion(method, path, body) {
   }
   // ---- filing an ordinary page under a council project ------------------
   if (route === '/projects') {
-    return { ok: true, status: 200, data: { ok: true, projects: FILE_ROSTER, filed: fileFiled } };
+    return { ok: true, status: 200,
+      data: { ok: true, projects: FILE_ROSTER, filed: fileFiled, roots: [WS_ROOT] } };
+  }
+  // start a project, and put this page in it. The one act in the drawer that
+  // writes inside the reader's council — here it only records what was asked.
+  if (route === '/project-create') {
+    const title = String((body || {}).title || '');
+    if (!title.trim()) return { ok: false, status: 400, error: 'a project needs a name' };
+    const id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    projectsMade.push({ title, id, root: (body || {}).root || WS_ROOT });
+    fileFiled = fileFiled.concat([{ root: WS_ROOT, id, at: now() }]);
+    RECORD.projects = fileFiled;
+    return { ok: true, status: 200, data: { ok: true, id, title, root: WS_ROOT, filed: fileFiled } };
+  }
+  // and one turn on that project's lane, which writes the page
+  if (route === '/make-artifact') {
+    artifactAsks.push({ id: (body || {}).id, brief: (body || {}).brief || '' });
+    return { ok: true, status: 200, data: { ok: true, route: '@claude', queued: true,
+      root: WS_ROOT, id: (body || {}).id } };
   }
   if (route === '/page-projects') {
     fileCalls.push({ id: body && body.id, attach: (body || {}).attach !== false });
@@ -5130,11 +5180,12 @@ async function selftest() {
     !!card('chat') && !!card('comments'));
   // "at the top" means ABOVE THE CONVERSATION, which is the claim; it has never
   // meant firstElementChild, and reading it that way made this assertion a
-  // hostage to every row of pane chrome added since — the send-review row now
-  // sits above it on an ordinary page, as the archive bar always has on a
-  // project one. (The same correction the workspace pose made, for the same
-  // reason.)
-  const CHROME = /\b(reviewrow|archbar|archlist|offline|warn|blogsrc|nohl)\b/;
+  // hostage to every row of pane chrome added since — the archive bar has
+  // always sat above it on a project page. (The same correction the workspace
+  // pose made, for the same reason.) The send-review row is no longer among
+  // them: since 2026-09-02 it is pinned at the FOOT of the chat pane, inside
+  // the chat card, so it is not a sibling of this one at all.
+  const CHROME = /\b(archbar|archlist|offline|warn|blogsrc|nohl)\b/;
   const topOfPane = p => {
     const kids = [...S.querySelector('.pane[data-pane="' + p + '"]').children];
     const i = kids.indexOf(card(p));
@@ -6322,6 +6373,37 @@ async function selftest() {
     check('an ordinary page carries the send-review row too', !!sendBtn());
     check('…on the Page chat tab, where the round opens',
       !!S.querySelector('.pane[data-pane="chat"] .reviewrow'));
+    // PINNED, since 2026-09-02. At the top of the pane it was at the top of
+    // the SCROLL, which on a chat of any length is somewhere the reader has to
+    // go and look for it. It is the last thing in the scrolling part of the
+    // card and it sticks, so it can never travel below the composer and never
+    // scrolls out of sight above it.
+    {
+      const pane = S.querySelector('.pane[data-pane="chat"]');
+      const body = S.querySelector('.pane[data-pane="chat"] .chatbody');
+      const foot = S.querySelector('.pane[data-pane="chat"] .chatfoot');
+      const comp = S.querySelector('.pane[data-pane="chat"] .card.chatpane > .composer');
+      check('…at the FOOT of the pane, directly above the composer',
+        !!foot && !!body && body.lastElementChild === foot
+        && !!comp && !!(foot.compareDocumentPosition(comp) & Node.DOCUMENT_POSITION_FOLLOWING));
+      check('…and pinned there rather than scrolled away with the chat',
+        !!foot && getComputedStyle(foot).position === 'sticky');
+      if (pane && pane.scrollHeight > pane.clientHeight + 40) {
+        pane.scrollTop = 0;
+        await sleep(40);
+        const fr = foot.getBoundingClientRect(); const pr = pane.getBoundingClientRect();
+        check('…so scrolling to the top of a long chat leaves it in view',
+          fr.bottom <= pr.bottom + 2 && fr.bottom > pr.top);
+        pane.scrollTop = pane.scrollHeight;
+        await sleep(40);
+      }
+      check('and there is exactly one of it', S.querySelectorAll('.reviewrow').length === 1);
+      check('a page filed nowhere cannot make an artifact of itself, and says where to start',
+        !!S.querySelector('[data-act="make-artifact"]')
+        && S.querySelector('[data-act="make-artifact"]').disabled
+        && /file this page in a project first/.test(
+          S.querySelector('[data-act="make-artifact"]').title || ''));
+    }
     check('…counting the comments it would send', openN > 0 &&
       (sendBtn() || {}).textContent === 'send review (' + openN + ')');
     check('…and promising a wrap-up rather than an edit, because nothing here is editable',
@@ -8601,6 +8683,132 @@ async function selftestMemorize() {
   console.log(out.join('\n'));
 }
 
+// ── from a page to a project artifact ────────────────────────────────────
+// Two poses, one function, because they are two steps of one road: a bot
+// offering a project this reader does not have yet (?filein=new), and a page
+// that has already had something made of it (?filein=made). The rule under
+// both is the one this drawer keeps everywhere: a bot may OFFER, and only the
+// reader's click creates a folder, files a page or spends a turn.
+async function selftestProjectArtifact() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  try {
+    d.open('chat');
+    await sleep(120);
+
+    if (FILEIN === 'new') {
+      const chip = await until(() => S.querySelector('.pane[data-pane="chat"] .filechip'), 4000);
+      check('a bot may offer a project that does not exist yet', !!chip);
+      check('…as one sentence naming what it would be called',
+        !!chip && /Start a project/.test(chip.textContent) && /Doc Fest 2026/.test(chip.textContent));
+      check('…carrying its reason, so the reader is not guessing why',
+        !!chip && /a fortnight of screenings to plan/.test(chip.textContent));
+      check('…with a Start it and a No, and nothing else to decide',
+        !!chip && !!chip.querySelector('[data-act="proj-new"]')
+        && !!chip.querySelector('[data-act="file-no"]'));
+      check('and NOTHING was created by the offer itself',
+        projectsMade.length === 0 && fileFiled.length === 0);
+      check('the machinery is not in the words the reader reads',
+        !/file-in:/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''));
+
+      hit(chip && chip.querySelector('[data-act="proj-new"]'), 'Start it');
+      await until(() => projectsMade.length, 3000);
+      check('pressing it starts the project, once', projectsMade.length === 1);
+      check('…under the title the bot proposed', projectsMade[0].title === 'Doc Fest 2026');
+      await until(() => S.querySelector('.filechip.done'), 3000);
+      check('…and the chip says what came of it, with nothing left to press',
+        !!S.querySelector('.filechip.done')
+        && /Started Doc Fest 2026/.test(S.querySelector('.filechip.done').textContent));
+      check('the page is filed in it — a project made for a page holds that page',
+        fileFiled.length === 1 && fileFiled[0].id === 'doc-fest-2026');
+    }
+
+    if (FILEIN === 'made') {
+      const strip = await until(() => S.querySelector('.pane[data-pane="chat"] .artstrip'), 4000);
+      check('what has been made of this page is listed under the review row', !!strip);
+      const row = strip && strip.querySelector('.artrow');
+      check('…one row per artifact, named by its file',
+        !!row && /doc-fest-planner\.html/.test(row.textContent));
+      const open = row && row.querySelector('a.artopen');
+      check('…with a way into it', !!open && open.getAttribute('target') === '_blank');
+      check('…which is the file itself, on this machine',
+        !!open && /^file:\/\//.test(open.getAttribute('href'))
+        && /adriana-paper/.test(open.getAttribute('href')));
+
+      // ---- and the button that made it ----
+      const mk = () => S.querySelector('[data-act="make-artifact"]');
+      check('a filed page carries a make-artifact button, beside send review',
+        !!mk() && !mk().disabled
+        && !!S.querySelector('.reviewrow [data-act="send-review"]'));
+      hit(mk(), 'make artifact');
+      await sleep(60);
+      const brief = S.querySelector('.mkbrief');
+      check('it asks what the page should BE before it spends a turn', !!brief);
+      check('…and suggests the kind of answer it wants',
+        !!brief && /planner of what to watch/.test(brief.getAttribute('placeholder') || ''));
+      check('…with a Make it and a No, inline, like every other confirm here',
+        !!S.querySelector('[data-act="make-artifact-yes"]')
+        && !!S.querySelector('[data-act="make-artifact-no"]'));
+      check('one project, so no question about which one',
+        !S.querySelector('[data-role="artifact-project"]'));
+      brief.value = 'a planner of what to watch and when, with costs';
+      hit(S.querySelector('[data-act="make-artifact-yes"]'), 'Make it');
+      await until(() => artifactAsks.length, 3000);
+      check('confirming asks for exactly one', artifactAsks.length === 1);
+      check('…carrying the reader\'s own words and the project it goes in',
+        artifactAsks[0].brief === 'a planner of what to watch and when, with costs'
+        && artifactAsks[0].id === 'adriana-paper');
+      await sleep(120);
+      check('…and says who was asked, rather than leaving the click unanswered',
+        /asked claude/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''));
+
+      // ---- and the reason the row moved down here ----
+      // A chat long enough to scroll is the only state in which the old
+      // placement was wrong, so the pose makes one rather than hoping the
+      // fixture is tall enough.
+      // …long MESSAGES rather than many of them: page chat folds a long
+      // conversation down to its head and tail, so forty short lines are not a
+      // taller pane. Six paragraphs are.
+      RECORD.page_chat = RECORD.page_chat.concat(
+        Array.from({ length: 6 }, (_, i) => ({
+          author: i % 2 ? 'claude' : 'angadh', ts: iso(0.2),
+          text: 'A paragraph of a long conversation, number ' + (i + 1) + '. '
+            + 'It runs on for a while, the way a real answer does, so that the pane '
+            + 'it is drawn into is taller than the drawer and has to scroll. '.repeat(6),
+        })));
+      d.setPage(RECORD);
+      await sleep(120);
+      const pane = S.querySelector('.pane[data-pane="chat"]');
+      const foot = S.querySelector('.pane[data-pane="chat"] .chatfoot');
+      check('a chat long enough to scroll', !!pane && pane.scrollHeight > pane.clientHeight + 40);
+      pane.scrollTop = 0;
+      await sleep(60);
+      const fr = foot.getBoundingClientRect(); const pr = pane.getBoundingClientRect();
+      check('…and the row is still in view at the top of it',
+        fr.bottom <= pr.bottom + 2 && fr.top >= pr.top - 2 && fr.height > 0);
+      pane.scrollTop = pane.scrollHeight;
+      await sleep(60);
+      const fr2 = foot.getBoundingClientRect();
+      const comp = S.querySelector('.pane[data-pane="chat"] .card.chatpane > .composer');
+      check('…and at the bottom it sits above the message box, never over it',
+        !!comp && fr2.bottom <= comp.getBoundingClientRect().top + 2);
+    }
+    check('nothing threw', window.__bfpErrors.length === 0);
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (' + FILEIN + ') ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ── the question vault ───────────────────────────────────────────────────
 // One click makes a question. That sentence is the whole feature and every
 // assertion here is about protecting it: the reader chooses the passage and
@@ -10462,7 +10670,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // there does not need to be: what is under test is the offer, not the parse
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
-      setTimeout(WORKSPACE ? selftestWorkspace
+      setTimeout(FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
+        : WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
         : STRIKE_STACK ? selftestStackPick
         : STRIKE_ELSEWHERE ? selftestStrikeElsewhere
@@ -10519,7 +10728,9 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     }
     // ?filein=chip — the OTHER way in: a bot has said where it thinks the page
     // belongs, and the drawer draws its last line as a confirm chip.
-    if (FILEIN === 'chip') setTimeout(() => d.open('chat'), 300);
+    if (FILEIN === 'chip' || FILEIN === 'new' || FILEIN === 'made') {
+      setTimeout(() => d.open('chat'), 300);
+    }
     // ?blog=… — the source card lives on the chat tab, so that is the tab a
     // screenshot of this feature has to be of
     // …and where the pose is a suggestion stack, the pane it is IN: a stack

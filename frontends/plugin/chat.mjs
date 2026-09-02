@@ -1123,7 +1123,17 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // command: no session choreography, no envelope, no reply capture — it
     // rides the same queue only so it never interleaves with a turn in flight
     if (job.control) return [{ text: job.control }];
-    const page = readPage(job.url) || {};
+    // A BORROWED turn: this page's own chat belongs to another child in
+    // another root, and this one turn is running here because it needs this
+    // child's write scope (server.mjs POST /make-artifact — the page is filed
+    // in the project, the project's folder is what may be written, and a write
+    // scope is a child). So the page's session is not this child's to resume
+    // and not this child's to overwrite: the turn takes a chat of its own in
+    // the project it is writing into, and records nothing about it on the page.
+    // Resuming a foreign sid here is the exact failure the sid rules exist to
+    // prevent — two children driving one session id.
+    const borrowed = !!job.borrowed;
+    const page = borrowed ? {} : (readPage(job.url) || {});
     // the library is one conversation with a name of its own; everything else
     // about it — /new, /rename, sid capture, /resume — is a page's choreography
     // exactly, because it IS a page record
@@ -1247,7 +1257,10 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       capture: true,
       // the new chat becomes visible to the bridge's own panel only now that
       // it has an entry — this is the first moment its sid can be trusted
-      ...(sid ? {} : { after: () => captureNewSid(job, sidBefore, title) }),
+      // (…and a borrowed turn's chat is the PROJECT's, not the page's: writing
+      // its sid onto the page record would bind the page to a session in a
+      // root its own child cannot resume)
+      ...(sid || borrowed ? {} : { after: () => captureNewSid(job, sidBefore, title) }),
     });
     return steps;
   }

@@ -1311,6 +1311,227 @@ console.log('\ncompanion — untagged page chat on an artifact goes to @all');
 }
 
 
+// --- from a page to a project artifact (2026-09-02) -----------------------
+// Three steps, and the rule they all keep: the bots may offer, and only the
+// reader's click creates a project, files a page or spends a turn. SPEC.md
+// "From a page to a project artifact".
+console.log('\nfrom a page to a project — the bot may offer a NEW one');
+
+const ROSTER = [{ root: '/council', id: 'acta', title: 'Acta paper' }];
+
+await test('a bot may propose a project that does not exist yet', async () => {
+  const hit = ws.parseSuggestion(
+    'This is a fortnight of planning, not a filing.\n'
+    + 'file-in: new "Sheffield Doc Fest 2026" — a fortnight of screenings to plan',
+    ROSTER);
+  assert.ok(hit && hit.new, 'the new shape is read');
+  assert.equal(hit.title, 'Sheffield Doc Fest 2026');
+  assert.equal(hit.why, 'a fortnight of screenings to plan');
+  assert.equal(hit.id, undefined, 'and it names no project id, because there is none');
+});
+
+await test('the quotes are the guard — without them nothing is proposed', async () => {
+  assert.equal(ws.parseSuggestion('file-in: new project for this page', ROSTER), null,
+    'a bot musing about projects must not create folders');
+  assert.equal(ws.parseSuggestion('file-in: new "ab" — too short', ROSTER), null);
+  assert.equal(ws.parseSuggestion(`file-in: new "${'x'.repeat(61)}" — too long`, ROSTER), null);
+  assert.equal(ws.parseSuggestion('I think file-in: new "A Real Title" would suit', ROSTER), null,
+    'only a line of its own counts, exactly as for the id shape');
+});
+
+await test('markdown does not hide it, and the LAST line still wins', async () => {
+  const hit = ws.parseSuggestion(
+    '**file-in: acta — the same manuscript**\nfile-in: new "Film Club" — no, its own thing',
+    ROSTER);
+  assert.ok(hit.new);
+  assert.equal(hit.title, 'Film Club');
+  const back = ws.parseSuggestion(
+    'file-in: new "Film Club" — its own thing\nfile-in: acta — no, this one',
+    ROSTER);
+  assert.equal(back.new, undefined);
+  assert.equal(back.id, 'acta', 'the last line wins in both directions');
+});
+
+await test('the roster block teaches both lines, and forbids guessing at either', async () => {
+  const block = ws.suggestBlock(ROSTER);
+  assert.match(block, /file-in: <project-id>/);
+  assert.match(block, /file-in: new "<Short Title>"/);
+  assert.match(block, /never guess/);
+  assert.match(block, /nothing at all if in doubt/);
+});
+
+{
+  const root = council('newproj');
+  ws.setRootState(root, true);
+
+  await test('starting a project makes the folder, the PROJECT.md and the row', async () => {
+    const made = ws.createProject(root, { title: 'Sheffield Doc Fest 2026', why: 'a fortnight to plan' });
+    assert.equal(made.ok, true);
+    assert.equal(made.id, 'sheffield-doc-fest-2026');
+    const md = fs.readFileSync(path.join(root, 'projects', made.id, 'PROJECT.md'), 'utf8');
+    assert.match(md, /^# Sheffield Doc Fest 2026/);
+    assert.match(md, /\*\*Status:\*\* active/);
+    assert.match(md, /\*\*Cadence:\*\* weekly/);
+    assert.match(md, /## Why This Matters\n\na fortnight to plan/);
+    assert.match(md, /## Desired Outcome\n\nTODO/);
+    assert.match(md, /## Next Action\n\nTODO/);
+    const pf = JSON.parse(fs.readFileSync(path.join(root, 'projects', 'portfolio.json'), 'utf8'));
+    const row = pf.projects.find(p => p.id === made.id);
+    assert.deepEqual(row, {
+      id: made.id, title: 'Sheffield Doc Fest 2026', status: 'active', priority: null,
+      root: `projects/${made.id}`, cadence: 'weekly', why: 'a fortnight to plan',
+      desired_outcome: 'TODO', next_action: 'TODO',
+    });
+    assert.ok(pf.projects.some(p => p.id === 'spaceship-engineering'),
+      'and the rows that were there are still there');
+    assert.ok(ws.listProjects(root).some(p => p.id === made.id),
+      'the picker sees it immediately — the portfolio is the roster');
+  });
+
+  await test('the same title twice is a 409, not a second folder', async () => {
+    const again = ws.createProject(root, { title: 'Sheffield Doc Fest 2026' });
+    assert.equal(again.ok, false);
+    assert.equal(again.status, 409);
+    assert.match(again.error, /already a project/);
+  });
+
+  await test('a title that is not a title is refused before anything is written', async () => {
+    for (const title of ['', 'ab', 'x'.repeat(61)]) {
+      const r = ws.createProject(root, { title });
+      assert.equal(r.ok, false);
+      assert.equal(r.status, 400);
+    }
+  });
+
+  await test('an UNCONFIRMED council is not somewhere a project gets started', async () => {
+    const other = council('newproj-unconfirmed');
+    const r = ws.createProject(other, { title: 'Anything At All' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 400);
+    assert.equal(fs.existsSync(path.join(other, 'projects', 'anything-at-all')), false,
+      'nothing is written in a folder nobody vouched for');
+  });
+}
+
+console.log('\nfrom a page to a project — make artifact');
+
+const artPage = (extra = {}) => ({
+  url: 'https://example.com/brochure', title: 'Doc Fest brochure',
+  threads: [], page_chat: [], ...extra,
+});
+
+await test('the turn names the file to write, the metas, and the line to end with', async () => {
+  const t = ws.artifactTurn({
+    id: 'doc-fest', projectTitle: 'Doc Fest', title: 'Doc Fest brochure',
+    url: 'https://example.com/brochure', page: artPage(),
+  });
+  assert.ok(t.startsWith('@claude '), 'one writer, and claude by default');
+  assert.match(t, /projects\/doc-fest\/<slug>\.html/);
+  assert.match(t, /UPDATE it in place/);
+  assert.match(t, /No external scripts and no external stylesheets/);
+  assert.match(t, /light and dark|BOTH light and dark/);
+  assert.match(t, /<meta name="bfp-source" content="https:\/\/example\.com\/brochure">/);
+  assert.match(t, /<meta name="bfp-source-title" content="Doc Fest brochure">/);
+  assert.match(t, /artifact: projects\/doc-fest\/<slug>\.html/);
+});
+
+await test('the reader\'s own words ride it verbatim, and the snapshot is named', async () => {
+  const t = ws.artifactTurn({
+    id: 'doc-fest', title: 'Brochure', url: 'https://x/y',
+    snapshotPath: '/tmp/snap/abc.html',
+    brief: 'a planner of what to watch and when, with costs',
+    page: artPage(),
+  });
+  assert.match(t, /What I want: a planner of what to watch and when, with costs/);
+  assert.match(t, /\/tmp\/snap\/abc\.html/);
+  const bare = ws.artifactTurn({ id: 'd', title: 'B', url: 'https://x/y', page: artPage() });
+  assert.equal(/What I want/.test(bare), false, 'no brief, no line about one');
+  assert.equal(/on this machine, at/.test(bare), false, 'and no snapshot, no promise of one');
+});
+
+await test('@codex in the brief is the only thing that moves the turn', async () => {
+  const t = ws.artifactTurn({ route: '@codex', id: 'd', title: 'B', url: 'u', page: artPage() });
+  assert.ok(t.startsWith('@codex '));
+});
+
+await test('every thread rides it — quote, page, author lines, and whether it is filed', async () => {
+  const t = ws.artifactTurn({
+    id: 'd', title: 'B', url: 'u',
+    page: artPage({
+      threads: [
+        { id: 'a', quote: 'Chungking Express, Fri 7pm', page: 3,
+          msgs: [{ author: 'angadh', text: 'this one for certain' }] },
+        { id: 'b', quote: 'Members £8', resolved: true,
+          msgs: [{ author: 'angadh', text: 'am I a member?' },
+                 { author: 'claude', text: 'you renewed in March' }] },
+      ],
+      page_chat: [{ author: 'angadh', text: 'which of these clash?' }],
+    }),
+  });
+  assert.match(t, /“Chungking Express, Fri 7pm” \(page 3\)/);
+  assert.match(t, /angadh: this one for certain/);
+  assert.match(t, /“Members £8” \[filed\]/);
+  assert.match(t, /claude: you renewed in March/);
+  assert.match(t, /which of these clash\?/, 'and the tail of the page chat');
+});
+
+await test('the digest is capped, and says how many it left out', async () => {
+  const long = 'x'.repeat(3000);
+  const threads = Array.from({ length: 60 }, (_, i) => ({
+    id: `t${i}`, quote: `quote ${i}`, msgs: [{ author: 'angadh', text: long }],
+  }));
+  const digest = ws.threadDigest({ threads });
+  assert.ok(digest.length < ws.ARTIFACT_DIGEST_CHARS + 2000, 'the budget holds');
+  assert.match(digest, /further comment threads? did not fit/);
+  assert.match(digest, /^\[my comments on that page — \d+ of 60\]/,
+    'and it says out loud how many of them it read');
+});
+
+console.log('\nfrom a page to a project — reading the artifact line back');
+
+{
+  const root = council('artline');
+  fs.mkdirSync(path.join(root, 'projects', 'spaceship-engineering'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'projects', 'spaceship-engineering', 'plan.html'), '<h1>plan</h1>');
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'not in a project');
+  const filed = [{ root, id: 'spaceship-engineering' }];
+
+  await test('a path inside the project that exists becomes the receipt', async () => {
+    const hit = ws.parseArtifact(
+      'Made you a planner.\nartifact: projects/spaceship-engineering/plan.html', filed);
+    assert.ok(hit);
+    assert.equal(hit.rel, 'projects/spaceship-engineering/plan.html');
+    assert.equal(hit.root, root);
+    assert.equal(hit.id, 'spaceship-engineering');
+  });
+
+  await test('markdown around it does not hide it, and the last line wins', async () => {
+    const hit = ws.parseArtifact(
+      '`artifact: projects/spaceship-engineering/gone.html`\n'
+      + '**artifact: projects/spaceship-engineering/plan.html**', filed);
+    assert.equal(hit.rel, 'projects/spaceship-engineering/plan.html');
+  });
+
+  await test('everything else is ignored, and the reply is posted as it stands', async () => {
+    const abs = path.join(root, 'projects', 'spaceship-engineering', 'plan.html');
+    for (const [why, text] of [
+      ['an absolute path', `artifact: ${abs}`],
+      ['a path outside the project', 'artifact: notes.txt'],
+      ['a path out of the project', 'artifact: projects/spaceship-engineering/../../notes.txt'],
+      ['another project', 'artifact: projects/somebody-else/plan.html'],
+      ['a file that is not there', 'artifact: projects/spaceship-engineering/never.html'],
+      ['prose', 'I wrote the artifact: projects/spaceship-engineering/plan.html for you'],
+      ['the project folder itself', 'artifact: projects/spaceship-engineering/'],
+    ]) {
+      assert.equal(ws.parseArtifact(text, filed), null, why);
+    }
+  });
+
+  await test('a page filed nowhere can have no artifact at all', async () => {
+    assert.equal(ws.parseArtifact('artifact: projects/spaceship-engineering/plan.html', []), null);
+  });
+}
+
 // --- send review: the fan-out --------------------------------------------
 // One click hands the reader's WHOLE margin review to the bots as a ROUND: a
 // preamble turn into page chat and then one turn PER OPEN THREAD, each queued
@@ -2009,6 +2230,147 @@ console.log('\ncompanion — POST /send-review on a page with no draft');
     assert.equal(r.json.queued, 0);
     const after = (await GET(base, '/page?url=' + enc(a.url))).json.page_chat.length;
     assert.equal(after, before);
+  });
+}
+
+// --- and the whole of it, over the wire -----------------------------------
+// A page that is filed nowhere, in a council with one project in it: the
+// reader starts a project for it, has an artifact made in that project, and
+// the file that comes out is a project artifact page in its own right. The
+// bridge is the mock throughout, and the ONLY thing that writes the artifact
+// is the mock acting as the bot would.
+console.log('\ncompanion — POST /project-create and POST /make-artifact');
+
+{
+  const root = council('mkart');
+  const workspaceRoot = tmp('mkart-companion');
+  const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const envFile = path.join(workspaceRoot, 'bridge-env.jsonl');
+  const { base } = await startServer({
+    root: workspaceRoot,
+    env: {
+      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+      MOCK_BRIDGE_LOG: logFile,
+      MOCK_ENV_DUMP: envFile,
+    },
+  });
+  const spawnEnvs = () => (fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+  const PAGE = 'https://example.test/doc-fest-brochure';
+  const readPage = async () => (await GET(base, '/page?url=' + enc(PAGE))).json;
+
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: PAGE, title: 'Doc Fest brochure', site: 'example.test' });
+  await POST(base, '/thread', { url: PAGE, quote: 'Chungking Express, Fri 7pm',
+    msg: { text: 'this one for certain' } });
+
+  let projectId = '';
+  const projectDir = () => path.join(root, 'projects', projectId);
+
+  await test('POST /project-create starts the project and files the page in it', async () => {
+    const r = await POST(base, '/project-create', { url: PAGE, root, title: 'Doc Fest 2026',
+      why: 'a fortnight of screenings to plan' });
+    assert.equal(r.status, 200);
+    projectId = r.json.id;
+    assert.equal(projectId, 'doc-fest-2026');
+    assert.ok(fs.existsSync(path.join(projectDir(), 'PROJECT.md')));
+    assert.deepEqual(r.json.filed.map(f => f.id), [projectId], 'and the page is in it');
+    const page = await readPage();
+    assert.deepEqual((page.projects || []).map(p => p.id), [projectId],
+      'which is the ordinary filing record — nothing new was invented for it');
+  });
+
+  await test('…and it cannot be started twice, or in a council nobody vouched for', async () => {
+    const dup = await POST(base, '/project-create', { url: PAGE, root, title: 'Doc Fest 2026' });
+    assert.equal(dup.status, 409);
+    const other = council('mkart-unconfirmed');
+    const bad = await POST(base, '/project-create', { url: PAGE, root: other, title: 'Anything At All' });
+    assert.equal(bad.status, 400);
+    assert.equal(fs.existsSync(path.join(other, 'projects', 'anything-at-all')), false);
+  });
+
+  await test('POST /make-artifact runs ONE turn on the PROJECT\'s lane', async () => {
+    const before = spawnEnvs().length;
+    const out = path.join(projectDir(), 'plan.html');
+    const r = await POST(base, '/make-artifact', {
+      url: PAGE, root, id: projectId,
+      // the mock plays the bot: it writes the file and ends its reply with the
+      // line the turn asked for
+      brief: `a planner of what to watch and when [mock:write:${out}]`
+        + `[mock:says:Here is the planner.\\nartifact: projects/${projectId}/plan.html]`,
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.route, '@claude', 'one writer, and claude unless the brief says codex');
+    assert.equal(r.json.queued, true);
+    await waitFor(() => spawnEnvs().length > before, 'the project\'s own child to spawn');
+    const spawned = spawnEnvs()[spawnEnvs().length - 1];
+    assert.equal((spawned.scope || {}).BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS, projectDir(),
+      'spawned with that project\'s folder as its one writable directory');
+    assert.equal((spawned.scope || {}).BOTFERENCE_PROJECT_ROOT, root,
+      'and the council as its workspace — the same child an artifact page would use');
+  });
+
+  await test('the turn carries the write rule, the comments and the reader\'s words', async () => {
+    const turn = await waitFor(() => inputs(logFile).find(t => /make artifact/.test(t)), 'the turn');
+    assert.ok(turn.includes(`You may create and edit files under ${projectDir()}`),
+      'the write scope is the envelope\'s own, not a second mechanism');
+    assert.match(turn, /Chungking Express, Fri 7pm/, 'the margin comments ride it');
+    assert.match(turn, /a planner of what to watch and when/, 'and the brief, verbatim');
+    assert.match(turn, /artifact: projects\/doc-fest-2026\/<slug>\.html/);
+    const open = inputs(logFile).filter(t => t.trim() === `/project open ${projectId}`);
+    assert.ok(open.length >= 1, 'in that project\'s own chat, opened the ordinary way');
+  });
+
+  await test('the file it wrote becomes the page\'s artifact, and the line comes off the reply', async () => {
+    const page = await waitFor(async () => {
+      const p = await readPage();
+      return (p.artifacts || []).length ? p : null;
+    }, 'the artifact to be recorded');
+    assert.deepEqual(page.artifacts.map(a => ({ id: a.id, rel: a.rel })),
+      [{ id: projectId, rel: `projects/${projectId}/plan.html` }]);
+    assert.equal(page.artifacts[0].root, root);
+    assert.ok(page.artifacts[0].at, 'and when it was made');
+    const reply = page.page_chat.filter(m => /claude/i.test(m.author)).pop();
+    assert.match(reply.text, /Here is the planner\./, 'the reply is posted like any other');
+    assert.equal(/artifact:/.test(reply.text), false, 'with the machinery lifted out of the words');
+    assert.ok(!page.session_id,
+      'and the BORROWED turn wrote no session onto the page: that chat is the '
+      + 'project\'s, in the council\'s own state, and this page\'s own child could not resume it');
+  });
+
+  await test('…and that file is a project artifact page in its own right', async () => {
+    const url = pathToFileURL(path.join(projectDir(), 'plan.html')).href;
+    const r = await GET(base, '/project-page?url=' + enc(url));
+    assert.equal(r.status, 200);
+    assert.ok(r.json.artifact, 'the existing detection finds it — nothing was told about it');
+    assert.equal(r.json.artifact.project_id, projectId);
+    assert.equal(r.json.artifact.confirmed, true,
+      'in a council already confirmed, so it is editable from the moment it exists');
+  });
+
+  await test('a page filed nowhere is refused, and says which button to press', async () => {
+    const loose = 'https://example.test/nowhere';
+    await POST(base, '/page', { url: loose, title: 'Loose', site: 'example.test' });
+    const r = await POST(base, '/make-artifact', { url: loose, brief: 'anything' });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /file this page in a project first/);
+  });
+
+  await test('the page keeps its own lane: its ordinary turns never touch the council', async () => {
+    const before = inputs(logFile).length;
+    await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: '@claude and what is on Sunday?' });
+    await waitFor(() => inputs(logFile).some((t, i) => i >= before && /what is on Sunday/.test(t)),
+      'the ordinary turn');
+    const turn = inputs(logFile).slice(before).find(t => /what is on Sunday/.test(t));
+    assert.equal(/You may create and edit files under/.test(turn), false,
+      'no write scope on the page\'s own lane — filing is a read, and stays one');
+    assert.match(turn, /filed in council projects/,
+      'what it does carry is the digest, which is what filing has always meant');
+    const page = await waitFor(async () => {
+      const p = await readPage();
+      return p.session_id ? p : null;
+    }, 'the page\'s own chat');
+    assert.ok(page.session_id, 'and NOW it has a session, made by its own child');
   });
 }
 

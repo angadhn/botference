@@ -5044,7 +5044,7 @@ about once a week. They are:
   and the first `✗` before it. That is how a hang gets diagnosed without a
   debugger.
 
-The 41 selftest poses, which is the whole list — nothing else in the harness
+The 43 selftest poses, which is the whole list — nothing else in the harness
 drives a selftest, and every one of them is expected green:
 
 ```
@@ -5089,6 +5089,8 @@ drives a selftest, and every one of them is expected green:
 ?commenters=1&selftest=1
 ?tasks=1&selftest=1
 ?checklist=1&selftest=1
+?filein=new&selftest=1
+?filein=made&selftest=1
 ```
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were
@@ -8449,6 +8451,12 @@ unconfirmed artifact root — the confirmation card is the only thing that shoul
 be asking anything there. The disabled state, its tooltip, the count, and the
 one-step inline confirm are unchanged.
 
+**(Superseded the same day, see "from a page to a project artifact": the row is
+no longer at the top of that pane. It is the last thing inside `.chatbody`,
+sticky at the bottom, directly above the composer — at the top of the pane it
+was at the top of the scroll, and on a long chat the reader had to go and look
+for it. `.reviewrow:first-child`'s pull-up went with the move.)**
+
 Two lines of wording follow the register, and the drawer works it out from what
 it already holds (`D.project && D.project.confirmed`) rather than from a new
 endpoint: the button's tooltip promises "…one turn each, answered in the
@@ -8463,6 +8471,10 @@ answers; it does not turn the article into a draft the bots may edit. Filing a
 page into a project, giving it a writable directory and a write scope is a
 different design with a different confirmation step, and quietly growing one out
 of the send-review button would be the wrong door to it.
+
+*(Built later the same day as its own door, with its own confirmation step —
+see "from a page to a project artifact". The send-review button still does not
+do it: `make artifact` is a second button beside it.)*
 
 No settings UI, no per-page choice of register: the register follows from what
 the page IS, which is the only thing that can be right.
@@ -8493,6 +8505,202 @@ the row: "the tasks card is at the very top of each pane" was reading
 `firstElementChild`, which made it a hostage to every row of pane chrome — the
 same correction the workspace pose made in 2026-08-24, for the same reason. All
 41 poses green.
+
+## Amendment (2026-09-02, shipped): from a page to a project artifact
+
+The reader annotates a film festival's brochure — a PDF in Downloads, filed
+nowhere, belonging to nothing — and what they actually want out of it is a
+PAGE: the screenings they chose, the dates, the clashes, the ticket costs, a
+running total. Everything needed to make that existed and none of it could be
+reached from where they were standing. The bots on that PDF have deny-all
+writes; the only place anything may be written is a project folder; and the
+brochure was in no project because no project fitted it.
+
+Three steps, then, each of them one click, and one rule kept whole across all
+three: **the bots may only ever write inside a confirmed project's folder, on
+that project's own lane.** Nothing below widens a write scope, invents a second
+permission mechanism, or lets a bot create, file or write anything on its own.
+
+### 1. A bot may offer a project that does not exist yet
+
+The roster block on an unfiled page (`workspace.suggestBlock`) already taught
+one line. It now teaches two, and says one or the other, never both:
+
+```
+file-in: <project-id> — <one short reason>
+file-in: new "<Short Title>" — <one short reason>
+```
+
+`parseSuggestion` returns `{new:true, title, why, line}` for the second. Every
+rule of the first is kept — a line of its own, markdown stripped, the LAST one
+wins, the line lifted off the reply into `msg.file_in` because it is machinery
+and not prose — plus one this shape needs: **the title must be QUOTED**, and 3
+to 60 characters. Without the quotes `file-in: new project for this` parses as
+a project called "project for this", and a bot musing about projects would be
+creating folders.
+
+The drawer draws the same one-step chip: *Start a project “Doc Fest 2026” for
+this page?* with **Start it** / **No**, and a small select of councils where
+the reader has more than one (the roots ride on the message, ordered by the one
+they last filed in — `confirmedRoots`, kept in the plugin's own config as
+`last_council_root`). The same act is the last row of the projpick popover
+(**+ new project**, with a text field), for a reader who does not want to wait
+to be offered one.
+
+**`POST /project-create {url, root, title, why}`** (owner-only) is the whole of
+it: slugify the title (lowercase, hyphens), refuse a duplicate with **409**,
+create `projects/<id>/PROJECT.md` in the shape botference's own projects have
+(Status active, Cadence weekly, Why / Desired Outcome / Next Action), append one
+row to `projects/portfolio.json` with the fields the existing rows carry, then
+file the page in it through the ordinary `store.filePageInProject`. Only a
+CONFIRMED council root, **400** otherwise.
+
+**This is the first thing the companion has ever written inside a council
+root**, and workspace.mjs's header says so where it used to promise the
+opposite. It edits nothing that was there, it runs only from a click, and the
+portfolio is written temp-then-rename (`fsjson.writeJson`) like every other
+record in this tree.
+
+### 2. "Make artifact" on a filed page
+
+**`POST /make-artifact {url, root, id, brief}`** (owner-only) queues ONE turn
+**in the project's lane** — `workspaceChatFor(root, id, dir)`, the same child an
+artifact page under `projects/<id>/` gets, with the council as its workspace and
+that folder as the one directory in its environment's
+`BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS`. The permission story is therefore
+unchanged, in full: the scope is the child, the child is the lane, the lane is
+the project.
+
+Two seams made that possible without a second mechanism:
+
+- `summon(page, target, text, {lane})` — the child this turn runs on when it is
+  not the page's own. Nothing else sets it.
+- `chat.mjs` `job.borrowed` — the page's own chat lives on another child in
+  another root, so a borrowed turn takes a **chat of its own in the project**
+  (`/project open <id>`, `/new`, `/rename`) and records nothing on the page.
+  Resuming the page's sid on the council's child would be two children driving
+  one session id, which is the exact failure the sid rules exist to prevent
+  ("why a lane never moves off a live child"). The workspace child's
+  `projectOf` answers for a page merely FILED in its project with `path: ''`, so
+  the turn gets the write rule and the project's chat but NOT the
+  `[project artifact: …]` banner — because the source page is not one.
+
+The turn carries (`workspace.artifactTurn`, pure and tested as such): the source
+title and url; the snapshot's absolute path where there is one, plus the inline
+slice the envelope always carries; a digest of EVERY thread on the page — quote,
+page number, author lines, whether it is filed — capped at
+`ARTIFACT_DIGEST_CHARS = 12000` and **saying how many did not fit**; the tail of
+page chat; the reader's `brief` verbatim; and the instruction: ONE self-contained
+HTML file at `projects/<id>/<slug>.html`, UPDATED in place if it is already
+there, no external scripts or stylesheets, readable in light and dark, the source
+written into its `<head>` as `<meta name="bfp-source">` /
+`<meta name="bfp-source-title">`, and a last line of its own reading
+`artifact: projects/<id>/<slug>.html`.
+
+Routed **@claude** by default and @codex only if the brief opens with `@codex`:
+one file, one writer. What the reader SEES asked in page chat is one sentence
+("Make an artifact of this page in <project> — <brief>"), not the three hundred
+words of instruction; the double-click guard is the one every send gets.
+
+`workspace.parseArtifact` reads the line back with the discipline of every other
+lift, plus two checks that make it safe to turn into a link: the path must be
+RELATIVE and under `projects/<id>/` of a project this page is actually filed
+under, and the file must EXIST on disk now (resolved on both sides, so a symlink
+is not a way out either). Anything else is ignored and the reply is posted as it
+stands. On success the line comes off the words and the file is recorded as
+`page.artifacts: [{root, id, rel, at}]` — a list, absent when empty, deduped on
+(root, id, rel), exactly the conventions `page.projects` follows.
+
+In the drawer: a **make artifact** button beside send review, disabled with
+"file this page in a project first — the folder button in the header" until the
+page is filed; a confirm with one text field for the brief and a project select
+where the page is filed in more than one; and an **artifacts strip** under the
+review row, one row per artifact — name, an "open" link to its `file://` url,
+and when it was made. That file is under `projects/<id>/`, so the artifact
+detection that has existed since Phase 1 makes it an editable project artifact
+page with no new code at all; a test asserts exactly that of the file the mock
+bot writes.
+
+### 3. The artifact knows where it came from
+
+`content.js` reads `meta[name="bfp-source"]` and `bfp-source-title` on every
+visit and sends them with `POST /page`; `store.upsertPage` keeps them as
+`page.source = {url, title}` (only ever set from the document, never cleared by
+a visit that scraped nothing). The drawer's header carries one line in the slot
+"part of project X" uses — **made from <title>**, linking back for an `http(s)`
+or `file:` source and stating it plainly for a `bfp-pdf://` one, which is a
+hash and has no address a tab can open.
+
+### And the review row moved to the FOOT of the pane
+
+Same day, same pane, different complaint: the row sat at the top of Page chat,
+which is the top of the SCROLL, so on a chat of any length the reader had to
+scroll away from what they were reading to reach the button whose whole argument
+is that it saves them work. The chat card is now `.chatbody` (everything that
+scrolls) plus the composer, and the row — with the make-artifact button and the
+artifacts strip — is the last thing inside `.chatbody`, `position: sticky;
+bottom: 0`. It therefore cannot travel below the composer's top edge and cannot
+scroll out of sight above it. One copy, in one place. The composer stays a
+direct child of the card, because a stylesheet rule addresses it as one.
+
+### What was NOT built (deliberate)
+
+- **Cross-page artifacts.** One artifact is made from ONE page. A planner drawn
+  from three brochures is a different feature with a different picker.
+- **Bots creating projects, filing pages or making artifacts unprompted.** Every
+  one of the three steps is a button. A bot may offer; it never acts.
+- **Moving the page's lane into the project.** Filing is still a READ, the page
+  still has no write scope of its own, and the borrowed turn is a turn — not a
+  migration.
+- **A second artifact per make-artifact.** The instruction says UPDATE the file
+  in place, and the record dedupes on the path, so asking twice improves one
+  page rather than growing a pile.
+
+### API rows
+
+| Method | Path | Request | Response |
+|---|---|---|---|
+| GET | `/projects?url=` | — | …now also `roots: [<abs council path>…]`, most recently used first |
+| POST | `/project-create` | `{url, root, title, why}` | `{ok, root, id, title, filed}`; 400 unconfirmed/bad title, 409 duplicate id |
+| POST | `/make-artifact` | `{url, root, id, brief}` | `{ok, root, id, route, msg, queued, position}`; 400 filed nowhere, 409 unconfirmed root |
+
+### Testing
+
+`workspace.test.mjs` (141 → 166): the new-project shape accepted and rejected
+(no quotes, too short, too long, embedded in prose, and the last line winning
+in both directions); `createProject` against a fixture council (the folder, the
+PROJECT.md field for field, the portfolio row field for field with the existing
+rows untouched, 409 on a duplicate, 400 on a bad title and on an unconfirmed
+root — which writes nothing); the artifact turn (the file it names, the metas,
+the closing line, the brief verbatim, the snapshot path, `@codex` only from the
+brief, every thread with its page number and filed state, and the digest cap
+saying what it dropped); `parseArtifact` accepted and rejected (absolute,
+outside the project, traversing out, another project, non-existent, prose,
+the folder itself, and a page filed nowhere).
+
+End to end against the mock bridge, in one block: `POST /project-create` makes
+the folder and files the page and cannot be run twice; `POST /make-artifact`
+spawns the PROJECT's child with that folder as its one write root and the
+council as its workspace; the turn carries the write rule, the margin comments
+and the brief, in that project's own chat; the mock writes the file and ends
+with the `artifact:` line, which becomes `page.artifacts` with the line lifted
+off the words; the borrowed turn writes NO session onto the page; the resulting
+`file://` url resolves as a confirmed project artifact; a page filed nowhere is
+refused; and the page's own next turn still has no write scope and still carries
+the filing digest.
+
+In the browser: `?filein=new` (11 checks — the offer, its reason, its two
+buttons, that NOTHING exists until Start it, the machinery not in the words, and
+the chip's done state) and `?filein=made` (16 — the strip, its link, the
+make-artifact button beside send review, the brief it asks for, the one project
+needing no select, the ask arriving with the reader's words, and then the row's
+pinning proved on a chat made long enough to scroll: in view at the top of it,
+and above the message box at the bottom). The base pose
+`?selftest=1` went 659 → 663 with the row's new home: last in `.chatbody`, above
+the composer, `position: sticky`, still in view after a scroll to the top of a
+long chat, exactly one of it, and the make-artifact button disabled with its
+reason on a page filed nowhere. The tasks-card assertion dropped `reviewrow`
+from its chrome list — the row is not a sibling of that card any more.
 
 ## Out of scope for v1 (do not build)
 

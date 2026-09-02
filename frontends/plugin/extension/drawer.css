@@ -294,12 +294,55 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    that looks ready but does nothing is worse than one that says why it cannot. */
 .reviewrow {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-  margin: -4px 0 8px; min-height: 24px;
+  margin: 0; min-height: 24px;
   font: 12px/1.5 var(--sans); color: var(--muted);
 }
-/* …and on a page with no archive bar above it (an article, a PDF) there is
-   nothing to tuck under, so the pull-up comes off. */
-.reviewrow:first-child { margin-top: 0 }
+/* THE FOOT OF THE PAGE-CHAT PANE: the review row, the make-artifact button and
+   whatever they have produced, pinned directly above the composer.
+
+   It used to sit at the top of the pane, which is the top of the SCROLL: on a
+   chat of any length the reader had to scroll away from what they were reading
+   to reach the button whose whole argument is that it saves them work. It is
+   the last thing inside `.chatbody` — the part of the card that scrolls — so
+   `bottom: 0` can never carry it past the composer's top edge, and everywhere
+   above that it holds against the pane's own bottom. Opaque, because content
+   scrolls underneath it. */
+.chatfoot {
+  position: sticky; bottom: 0; z-index: 2;
+  margin: 6px 0 0; padding: 6px 0 2px;
+  background: var(--card);
+  border-top: 1px solid var(--card-line);
+}
+.mkart { margin-left: auto }
+/* the brief, and which project it goes in: one line, and the input takes
+   whatever the buttons leave */
+.mkrow { margin-top: 6px }
+.mkbrief {
+  flex: 1 1 150px; min-width: 0; padding: 4px 7px;
+  font: 12px/1.4 var(--sans); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+}
+.mkbrief::placeholder { color: var(--muted) }
+.mkpick {
+  flex: none; max-width: 130px; padding: 3px 5px;
+  font: 12px/1.3 var(--sans); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+}
+/* what has been made of this page, as links back into it */
+.artstrip { margin: 6px 0 0; display: flex; flex-direction: column; gap: 3px }
+.artrow { display: flex; gap: 8px; align-items: baseline; font: 12px/1.5 var(--sans) }
+.artname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg) }
+.artopen { flex: none; color: var(--accent); text-decoration: none }
+.artopen:hover { text-decoration: underline }
+.artwhen { flex: none; color: var(--muted) }
+/* "+ new project", the row at the bottom of the picker that is not a project */
+.xrow.newproj { display: flex; gap: 6px; align-items: center; flex-wrap: wrap }
+.xrow.newproj.open { cursor: default }
+/* "made from <page>" — the header line on an artifact that came from an
+   annotated page. Same slot and same register as "part of project X". */
+.hdr .madefrom { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.hdr .madefrom a { color: inherit; text-decoration: underline dotted }
+.hdr .madefrom a:hover { color: var(--accent) }
 .archsend { flex: none; padding: 5px 9px; font: 12px/1.3 var(--sans) }
 .archsend:not([disabled]):hover { border-color: var(--accent); color: var(--accent) }
 .archsend[disabled] { opacity: .4; cursor: default }

@@ -1465,9 +1465,24 @@
   let lastPostedTitle = '';
   // The one /page upsert, shared by every path allowed to send it: the refresh
   // of a record that already exists, and the act that brings one into being.
+  // WHERE THIS PAGE CAME FROM, when the page itself says so. A project
+  // artifact the bots made out of an annotated page is told to write the source
+  // into its own <head> (workspace.artifactTurn), so the way back is in the
+  // document rather than in a table somewhere: copy the file, open it from
+  // anywhere, and it still knows. Two metas, read on every visit like the title
+  // is, and absent on every other page in the world.
+  const sourceMeta = () => {
+    const get = n => {
+      const el = document.querySelector(`meta[name="${n}"]`);
+      return el ? String(el.getAttribute('content') || '').trim() : '';
+    };
+    const url = get('bfp-source');
+    return url ? { source_url: url.slice(0, 2000), source_title: get('bfp-source-title').slice(0, 300) } : {};
+  };
   function postPage() {
     lastPostedTitle = headline();
-    return api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME, kind: PAGE_KIND, file_name: FILE_NAME });
+    return api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME,
+      kind: PAGE_KIND, file_name: FILE_NAME, ...sourceMeta() });
   }
   // The record-earning gate. Every action that writes about this page — a
   // thread, a reply, an export — awaits this first, so the record exists (with
@@ -2430,6 +2445,32 @@
         if (!r.ok) throw new Error(failure(r).error);
         await loadPage();
         return { filed: (r.data && r.data.filed) || [] };
+      },
+      // ---- and starting a project that does not exist yet -----------------
+      // The one act in this drawer that writes inside the reader's council: a
+      // new `projects/<id>/` with a PROJECT.md, a row on the portfolio, and
+      // this page filed in it. Only ever from a click — a bot may OFFER it
+      // (`file-in: new "…"`) and can do nothing about it.
+      onCreateProject: async (title, root, why) => {
+        await ensureRegistered();
+        const r = await api('POST', '/project-create', { url: URL_NOW, title, root, why });
+        if (!r.ok) throw new Error(failure(r).error);
+        await loadPage();
+        const d = r.data || {};
+        return { ok: true, id: d.id, title: d.title, filed: d.filed || [] };
+      },
+      // ---- and having a page MADE out of this one -------------------------
+      // One turn on the project's own lane, which is the only place anything
+      // may be written. The answer comes back into page chat like any other
+      // turn, so there is nothing to render from here but what the companion
+      // said about the ask itself.
+      onMakeArtifact: async (root, id, brief) => {
+        await ensureRegistered();
+        const r = await api('POST', '/make-artifact', { url: URL_NOW, root, id, brief });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        const d = r.data || {};
+        return { ok: true, route: d.route, queued: d.queued, reason: d.reason };
       },
 
       // ---- the library --------------------------------------------------

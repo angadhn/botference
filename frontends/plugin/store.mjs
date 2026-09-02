@@ -661,7 +661,7 @@ export function blankPage({ url, title, site, kind, file_name }) {
 // POST /page: create the shell or refresh title/site/kind/file_name. Never
 // touches threads, page_chat, session_id, the reader's own title or their tags
 // — a re-visit must not disturb the conversation, or undo a rename.
-export function upsertPage({ url, title, site, kind, file_name }) {
+export function upsertPage({ url, title, site, kind, file_name, source_url, source_title }) {
   const page = readPage(url) || blankPage({ url, title, site, kind, file_name });
   if (title) page.title = String(title).trim();
   if (site) page.site = String(site);
@@ -675,6 +675,17 @@ export function upsertPage({ url, title, site, kind, file_name }) {
   const k = cleanKind(kind);
   if (k) page.kind = k;
   else if (!cleanKind(page.kind)) page.kind = inferKind(page.url);
+  // Where this page CAME FROM, when the page says so itself. A project
+  // artifact the bots made out of an annotated page carries the source in two
+  // <meta> tags (workspace.artifactTurn writes the instruction; the extension
+  // reads them back on every visit), and the drawer draws one line: "made
+  // from <title>", with a way back. Only ever set from the document — a page
+  // that stops claiming a source keeps the last one it claimed rather than
+  // having the line flicker off on a visit that scraped nothing.
+  const su = String(source_url || '').trim().slice(0, 2000);
+  if (su) {
+    page.source = { url: su, title: String(source_title || '').trim().slice(0, 300) };
+  }
   return savePage(page);
 }
 
@@ -774,6 +785,70 @@ export function filePageInProject(url, { root, id, attach = true }) {
   if (next.length) page.projects = next.slice(0, ATTACH_MAX);
   else delete page.projects;              // back to costing nothing on disk
   return savePage(page);
+}
+
+// --- what this page has had MADE of it ------------------------------------
+//
+// A page filed in a project can be turned into a page IN that project: the
+// reader presses "make artifact", one turn runs on the project's own lane and
+// writes `projects/<id>/<slug>.html`, and the companion records the file here
+// (server.mjs POST /make-artifact and the `artifact:` lift).
+//
+// The record is a LIST for the same reason `projects` is: a brochure can turn
+// into a planner and a shopping list, and a page filed in two projects can
+// have one artifact in each. Same store convention too — written only when it
+// is not the default, so a page that has had nothing made of it costs nothing
+// on disk and no record needs migrating.
+//
+// It is a RECEIPT, never an identity: the artifact is a project artifact page
+// in its own right, by where it lives, and the link here is how the reader
+// gets back to it. Deleting the file leaves a row pointing nowhere, which the
+// drawer draws as an ordinary link that does not open — the honest answer,
+// and cheaper than stat()ing every row on every render.
+export const ARTIFACTS_MAX = 12;
+
+/** Every artifact made from this page, oldest first. */
+export function artifactsOf(page) {
+  const raw = page && page.artifacts;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const root = cleanRoot(entry.root);
+    const id = cleanProjectId(entry.id);
+    const rel = String(entry.rel || '').trim();
+    if (!root || !id || !rel) continue;
+    const key = `${root}\0${id}\0${rel}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ root, id, rel, at: String(entry.at || '') });
+    if (out.length >= ARTIFACTS_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * Record one. Mutates the page and hands it back UNSAVED — the caller is the
+ * reply handler, which saves the record once for the whole message.
+ *
+ * Re-running a make-artifact rewrites the same file (that is what the turn
+ * asks for), so a repeat keeps the first row and its date rather than growing
+ * a second link to one file.
+ */
+export function recordArtifact(page, { root, id, rel }) {
+  const wantRoot = cleanRoot(root);
+  const wantId = cleanProjectId(id);
+  const wantRel = String(rel || '').trim();
+  if (!page || !wantRoot || !wantId || !wantRel) return page;
+  const current = artifactsOf(page);
+  if (current.some(a => a.root === wantRoot && a.id === wantId && a.rel === wantRel)) {
+    page.artifacts = current;
+    return page;
+  }
+  page.artifacts = current.concat([{ root: wantRoot, id: wantId, rel: wantRel, at: nowIso() }])
+    .slice(-ARTIFACTS_MAX);
+  return page;
 }
 
 // Two pages sharing one botference session is proof of the sid-inheritance

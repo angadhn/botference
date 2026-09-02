@@ -2,6 +2,43 @@
 
 ## 2026-09-02
 
+- **A page you have marked up can now become a page of its own, in one of your
+  projects.** You annotate a film festival's brochure sitting in Downloads —
+  which screenings, which nights, what the tickets cost — and what you actually
+  want out of it is a planner. Three steps, one click each, and none of them
+  happens without you:
+
+  - **The bots may suggest a project you do not have yet.** They could already
+    say "this belongs in Adriana's paper" and give you a File it button. Now,
+    when nothing you keep fits, they can say "this deserves a project of its
+    own" and name one — *Start a project "Doc Fest 2026" for this page?* Press
+    Start it and the folder, its PROJECT.md and its row in your portfolio
+    appear, and the page is filed in it. Nothing is created until you press it.
+    The same thing is at the bottom of the folder-button list, if you would
+    rather not wait to be offered one: **+ new project**.
+  - **"Make artifact", beside send review.** Say in one line what the page
+    should be — "a planner of what to watch and when, with costs" — and one
+    bot writes a single self-contained web page into that project's folder,
+    reading your margin comments, your chat about the page and the page itself.
+    It appears as a link under the review row when it is written. The button is
+    dead until the page is filed somewhere, and says so: there is nowhere for a
+    file to go otherwise.
+  - **The page it writes knows where it came from**, and says so in the drawer:
+    *made from <the page you annotated>*, with a way back. And because it lives
+    in the project folder, it is an ordinary project page from then on — open
+    it, comment on it, send a review, and the bots edit it in place.
+
+  Nothing about who may write what has changed. The bots write in one project
+  folder, on that project's own turn, exactly as they have since they were
+  first allowed to write anything.
+
+- **Send review sits at the bottom of the chat now, not the top.** It was at
+  the top of the pane, which is the top of the scroll: on a chat of any length
+  you had to scroll away from what you were reading to find the button whose
+  whole point is saving you work. It — and the new make-artifact button, and
+  the list of what has been made — are pinned above the message box and never
+  scroll away.
+
 - **Comments on a shared paper now show up in Discuss without you setting
   anything up.** The idea was already there: when you read one of your papers
   with the botference extension in the browser, Discuss handles the commenting

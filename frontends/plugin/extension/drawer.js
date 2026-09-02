@@ -176,6 +176,20 @@
 //                                        ones with a turn coming. The companion
 //                                        writes every word of it; nothing is
 //                                        resolved by it
+//   onCreateProject(title, root, why)   → {ok, id, title, filed:[…]}
+//                                        (POST /project-create) — start a NEW
+//                                        council project and file this page in
+//                                        it. Reached two ways and both of them
+//                                        are the reader's: the picker's last
+//                                        row, and a bot's `file-in: new "…"`
+//                                        offer drawn as a chip
+//   onMakeArtifact(root, id, brief)     → {ok, route, queued, reason}
+//                                        (POST /make-artifact) — one turn in
+//                                        that project's lane, which writes one
+//                                        HTML page into the project's folder.
+//                                        The reply lands in page chat like any
+//                                        other turn; the file appears in the
+//                                        artifacts strip when it exists
 //   onClose() / onReconnect() / onSelect()
 //
 // `project` (and `d.setProject(p)`) is the council project behind a PROJECT
@@ -1276,7 +1290,7 @@
       // persisted, exactly like the commenter filter: saying no to a
       // suggestion is not a fact about the page.
       projects: { list: null, filed: [], loading: false, err: '', busy: '',
-                  declined: [] },
+                  declined: [], roots: [], newOpen: false, started: [] },
       projOpen: false,
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
@@ -1428,6 +1442,11 @@
       // "send review": the one-step inline confirm (never window.confirm — see
       // del-thread), the in-flight flag, and whatever the companion said last
       review: { confirm: false, busy: false, err: '', note: '' },
+      // "make artifact": the same one-step inline confirm, plus the two things
+      // this one has to ask — what it should be, and (filed in more than one
+      // project) which project it goes in. `root`/`id` are the answer to the
+      // second, set by the select; empty means "the one project there is".
+      artifact: { confirm: false, busy: false, err: '', note: '', brief: '', root: '', id: '' },
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -1632,6 +1651,7 @@
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
         projpick: shadow.querySelector('.popover.projpick'),
+        madefrom: shadow.querySelector('.hdr .madefrom'),
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
         light: shadow.querySelector('.lightbox'),
@@ -1648,6 +1668,7 @@
       applyWidth(D.width);
       wireEvents();
       paintProject();
+      paintSource();
       paintFiled();
       paintQuiz();
       paintTabs();
@@ -1739,7 +1760,7 @@ ${markPickHtml()}
   <div class="grip" title="Drag to resize · double-click to reset" role="separator" aria-orientation="vertical"></div>
   <div class="hdr">
     <div class="title">—</div>
-    <div class="meta"><span class="site"></span><span class="proj" hidden></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
+    <div class="meta"><span class="site"></span><span class="proj" hidden></span><span class="madefrom" hidden></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
     <div class="acts">
       <button class="iconbtn pages" data-act="pages" type="button" title="All annotated pages" aria-label="All annotated pages" aria-pressed="false">${PAGES_SVG}</button>
       <button class="iconbtn filein" data-act="filein" type="button" title="File in a council project" aria-label="File in a council project" hidden>${FILEIN_SVG}</button>
@@ -3527,15 +3548,24 @@ ${markPickHtml()}
     // the side of the draft, handed over in one click and worked through one
     // comment per turn, without retyping any of it.
     //
-    // Placement, twice decided. It is on the CHAT tab and not on Comments
+    // Placement, three times decided. It is on the CHAT tab and not on Comments
     // where the threads are, because the chat is where the round OPENS (the
     // preamble) and where its receipt is: the answers now land in the threads,
     // but a button whose click showed nothing at all on the tab you are looking
-    // at is a button that seems not to have worked. And it sits in its OWN row under the
-    // archive bar rather than as a third control inside it — partly because
-    // three buttons do not fit across a drawer that is often 320px wide, and
-    // partly because it is not a chat control at all: the bar above says which
-    // conversation you are in, and this says something about the DRAFT.
+    // at is a button that seems not to have worked. And it sits in its OWN row
+    // rather than as a third control in the archive bar — partly because three
+    // buttons do not fit across a drawer that is often 320px wide, and partly
+    // because it is not a chat control at all: the bar says which conversation
+    // you are in, and this says something about the DOCUMENT.
+    //
+    // And it is PINNED TO THE BOTTOM of the pane, directly above the composer,
+    // rather than sitting at the top of it (2026-09-02). At the top it was at
+    // the top of the SCROLL, which on a chat of any length means the reader has
+    // to scroll away from what they are reading to find the button — and the
+    // button's whole argument is that it saves them work. The foot is sticky:
+    // it is the last thing in the scrolling part of the pane, so at the bottom
+    // of the chat it sits where it always sat, and everywhere else it holds
+    // against the pane's own bottom edge. One copy, one place, always in view.
     //
     // On EVERY page that can carry comments, not only on a draft. An article,
     // a PDF on the web, a PDF on this machine: the reader has margins there
@@ -3565,9 +3595,93 @@ ${markPickHtml()}
                    ? `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads`
                    : `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads, then a wrap-up in page chat`)
                  : 'nothing to send yet — this page has no open comments. Highlight a passage and comment on it first.')}"${n ? '' : ' disabled'}>send review${n ? ` (${n})` : ''}</button>`
+            + makeArtifactBtnHtml()
             + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
               : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
-      return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`;
+      return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`
+        + makeArtifactConfirmHtml() + artifactsHtml();
+    }
+
+    // ---- make artifact ---------------------------------------------------
+    //
+    // The other thing to do with a page you have been through with a pen: have
+    // something MADE of it. The brochure becomes a planner, the paper becomes a
+    // summary sheet — one HTML page in the project this page is filed in,
+    // written by one bot in that project's own folder, and thereafter a project
+    // artifact page in its own right (the editable register, the archive bar,
+    // send review) because of where it lives and nothing else.
+    //
+    // Filed FIRST, always. The write scope is a project folder, so a page filed
+    // nowhere has nowhere for the file to go — and rather than making the
+    // button do the filing too (two acts behind one click, one of which writes
+    // in the reader's council) it is plainly disabled and says where the other
+    // button is.
+    const filedProjects = () => (D.projects.filed || []).filter(f => f && f.root && f.id);
+
+    function makeArtifactBtnHtml() {
+      if (!D.owner) return '';
+      const A = D.artifact;
+      if (A.confirm) return '';
+      const filed = filedProjects();
+      const busy = A.busy
+        ? '<span class="rvnote busy">asking for the page…</span>' : '';
+      return `<button class="archsend mkart" data-act="make-artifact" type="button"
+          title="${esc(filed.length
+            ? 'have the bots make a page out of this one — your comments, the chat and whatever you ask for — and put it in the project'
+            : 'file this page in a project first — the folder button in the header')}"${
+        filed.length && !A.busy ? '' : ' disabled'}>make artifact</button>${busy}${
+        A.err ? `<span class="rvnote err">${esc(A.err)}</span>`
+          : A.note ? `<span class="rvnote note">${esc(A.note)}</span>` : ''}`;
+    }
+
+    // The confirm: one line of what it should be, and — where the page is filed
+    // in more than one project — which project it goes in. Inline and one step,
+    // like every other confirm in this drawer.
+    function makeArtifactConfirmHtml() {
+      const A = D.artifact;
+      if (!A.confirm || !D.owner) return '';
+      const filed = filedProjects();
+      const names = filed.map(f => {
+        const known = (D.projects.list || []).find(p => p.root === f.root && p.id === f.id);
+        return { ...f, title: (known && known.title) || f.id };
+      });
+      const pick = names.length > 1
+        ? `<select class="mkpick" data-role="artifact-project">${names.map(f =>
+          `<option value="${esc(f.root)} ${esc(f.id)}"${
+            f.root === A.root && f.id === A.id ? ' selected' : ''}>${esc(f.title)}</option>`).join('')}</select>`
+        : '';
+      return `<div class="reviewrow confirm mkrow">
+        <input class="mkbrief" type="text" data-role="artifact-brief"
+          placeholder="what should it be? e.g. a planner of what to watch and when, with costs"
+          value="${esc(A.brief || '')}">
+        ${pick}
+        <button class="rebtn yes" data-act="make-artifact-yes" type="button">Make it</button>
+        <button class="rebtn no" data-act="make-artifact-no" type="button">No</button>
+      </div>`;
+    }
+
+    // What has been made, as links. One row per artifact: what it is called,
+    // the way into it, and when it was made. `file://` in a new tab — the file
+    // is on this machine and the extension attaches to it there, which is the
+    // whole point of putting it in the project folder.
+    function artifactsHtml() {
+      // owner-only, like everything else here that names a path on this
+      // machine: a `file://` link is no use to a guest and the absolute path
+      // of somebody's council is nobody else's business over a tunnel
+      if (!D.owner) return '';
+      const rows = (D.page && Array.isArray(D.page.artifacts) ? D.page.artifacts : [])
+        .filter(a => a && a.root && a.rel);
+      if (!rows.length) return '';
+      return `<div class="artstrip">${rows.map(a => {
+        const name = String(a.rel).split('/').pop();
+        const abs = String(a.root).replace(/\/$/, '') + '/' + String(a.rel);
+        const href = 'file://' + abs.split('/').map(encodeURIComponent).join('/');
+        return `<div class="artrow">
+          <span class="artname" title="${esc(abs)}">${esc(name)}</span>
+          <a class="artopen" href="${esc(href)}" target="_blank" rel="noopener">open</a>
+          <span class="artwhen">${esc(a.at ? shortAge(a.at) : '')}</span>
+        </div>`;
+      }).join('')}</div>`;
     }
 
     function archiveHtml() {
@@ -3629,10 +3743,19 @@ ${markPickHtml()}
       const empty = D.project
         ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — plain text goes to both bots, or tag one. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + reviewHtml() + blogHtml()
+      // The chat card is in two parts, and the seam is what pins the review
+      // row. Everything that scrolls is inside `.chatbody`; the row (and the
+      // artifacts it has produced) is the LAST thing in it and sticks to the
+      // bottom, so it can never travel further down than the composer's top
+      // edge \u2014 which is where it belongs. The composer stays a direct child of
+      // the card, because a stylesheet elsewhere addresses it as one.
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + blogHtml()
         + projectTaskCardHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
-        ${body ? `<div class="thread">${body}</div>` : empty}
-        ${statusHtml(PAGE_TARGET)}
+        <div class="chatbody">
+          ${body ? `<div class="thread">${body}</div>` : empty}
+          ${statusHtml(PAGE_TARGET)}
+          ${(f => (f ? `<div class="chatfoot">${f}</div>` : ''))(reviewHtml())}
+        </div>
         ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '')}
       </div>`;
     }
@@ -3732,6 +3855,63 @@ ${markPickHtml()}
       paintTabs();
       render();
       if (D.el && D.el.chat) D.el.chat.scrollTop = D.el.chat.scrollHeight;
+    }
+
+    // "Make it." One turn, on the project's own lane, and the reader watches it
+    // in the footbar like any other turn — so there is nothing to render here
+    // but the outcome line, exactly as with a review.
+    async function makeArtifact() {
+      const A = D.artifact;
+      if (A.busy) return;
+      const box = D.shadow.querySelector('.mkbrief');
+      const sel = D.shadow.querySelector('[data-role="artifact-project"]');
+      if (box) A.brief = box.value || '';
+      if (sel && sel.value) {
+        const [root, ...rest] = String(sel.value).split(' ');
+        A.root = root; A.id = rest.join(' ');
+      }
+      A.busy = true; A.err = ''; A.note = ''; A.confirm = false;
+      render();
+      const a = await cb('onMakeArtifact')(A.root, A.id, A.brief);
+      A.busy = false;
+      if (!a || !a.ok) {
+        A.err = (a && a.error) || 'the companion did not answer';
+      } else if (!a.queued && a.reason) {
+        A.note = a.reason;
+      } else {
+        A.brief = '';
+        A.note = `asked ${a.route === '@codex' ? 'codex' : 'claude'} — the page appears in this project when it is written`;
+      }
+      D.tab = 'chat';
+      paintTabs();
+      render();
+      if (D.el && D.el.chat) D.el.chat.scrollTop = D.el.chat.scrollHeight;
+    }
+
+    // Starting a project, from the picker or from a bot's offer. It is the one
+    // act in this drawer that writes inside the reader's council, so it is the
+    // one act that says what it made: the chip goes to "done" and the header's
+    // filed line lights, because the page is filed in it as well.
+    async function createProject(title, root, why) {
+      const want = String(title || '').trim();
+      if (!want) { D.projects.err = 'give the project a name'; paintProjPick(); return; }
+      D.projects.busy = 'new';
+      D.projects.err = '';
+      if (D.projOpen) paintProjPick();
+      render();
+      let r = null;
+      try { r = await cb('onCreateProject')(want, root || '', why || ''); }
+      catch (e) { D.projects.err = (e && e.message) || 'could not start that project'; }
+      D.projects.busy = '';
+      if (r && r.filed) {
+        D.projects.filed = r.filed;
+        D.projects.list = null;        // there is one more of them now
+        D.projects.newOpen = false;
+        D.projects.started = (D.projects.started || []).concat([want]);
+        if (D.projOpen) closeProjPick();
+      } else if (D.projOpen) paintProjPick();
+      paintFiled();
+      render();
     }
 
     async function answerRoot(yes) {
@@ -5067,6 +5247,38 @@ ${markPickHtml()}
       'send-review': () => { D.review.confirm = true; D.review.err = ''; D.review.note = ''; render(); },
       'review-no': () => { D.review.confirm = false; render(); },
       'review-yes': () => sendReview(),
+      // …and its twin, which asks two more things before it spends the turn:
+      // what the page should BE, and (filed in more than one project) which
+      // project it goes in.
+      'make-artifact': () => {
+        const filed = filedProjects();
+        if (!filed.length) return;
+        D.artifact.confirm = true;
+        D.artifact.err = ''; D.artifact.note = '';
+        if (!D.artifact.id) { D.artifact.root = filed[0].root; D.artifact.id = filed[0].id; }
+        render();
+        const box = D.shadow.querySelector('.mkbrief');
+        if (box) box.focus();
+      },
+      'make-artifact-no': () => { D.artifact.confirm = false; render(); },
+      'make-artifact-yes': () => makeArtifact(),
+      // the bot's NEW-project offer, answered. Yes creates the project and
+      // files the page in it; no is the same non-event "No" is on every other
+      // chip — this tab, this reply, remembered nowhere.
+      'proj-new': (btn) => {
+        const sel = btn.closest && btn.closest('.filechip')
+          && btn.closest('.filechip').querySelector('[data-role="new-root"]');
+        createProject(btn.dataset.title, (sel && sel.value) || btn.dataset.root || '',
+          btn.dataset.why || '');
+      },
+      // …and the same act reached by hand, from the bottom of the picker: a
+      // reader who does not want to wait to be offered one.
+      'proj-new-open': () => { D.projects.newOpen = true; paintProjPick(); },
+      'proj-new-go': () => {
+        const box = D.el.projpick && D.el.projpick.querySelector('[data-role="new-title"]');
+        const sel = D.el.projpick && D.el.projpick.querySelector('[data-role="new-root"]');
+        createProject((box && box.value) || '', (sel && sel.value) || '', '');
+      },
       'arch-new': () => openSession(null),
       'del-thread': (btn, target) => { D.confirm = target; render(); },
       'del-thread-no': () => { D.confirm = null; render(); },
@@ -6472,11 +6684,31 @@ ${markPickHtml()}
              <span class="xwhy">${esc(peek || pr.next_action || pr.id)}</span></button>`;
         }).join('');
       }
+      // \u2026and the row that is not a project: start one. Last, because it is the
+      // answer only when none of the rows above is \u2014 and it is the same act the
+      // bots may offer (POST /project-create), reached by hand.
+      const roots = P.roots || [];
+      const rootPick = roots.length > 1
+        ? `<select class="mkpick" data-role="new-root">${roots.map(r =>
+          `<option value="${esc(r)}">${esc(String(r).split('/').pop() || r)}</option>`).join('')}</select>`
+        : '';
+      const newRow = P.newOpen
+        ? `<div class="xrow newproj open">
+             <input class="mkbrief" type="text" data-role="new-title" placeholder="what is the project called?">
+             ${rootPick}
+             <button class="rebtn yes" data-act="proj-new-go" type="button"${
+               D.projects.busy === 'new' ? ' disabled' : ''}>Start it</button>
+           </div>`
+        : `<button class="xrow newproj" type="button" data-act="proj-new-open">
+             <span class="xname">+ new project</span>
+             <span class="xwhy">start one for this page</span></button>`;
       D.el.projpick.innerHTML =
         '<div class="pop-head">File this page in\u2026</div>'
         + body
+        + (P.loading || P.err ? '' : newRow)
         + '<div class="pop-note foot">Filing is a read: the bots get what these '
-        + 'projects already know. Nothing here is moved or written.</div>';
+        + 'projects already know. Nothing here is moved or written \u2014 except a '
+        + 'new project, which is a new folder in your council.</div>';
       D.el.projpick.hidden = false;
     }
     async function openProjPick() {
@@ -6491,6 +6723,7 @@ ${markPickHtml()}
         const r = await cb('onProjects')();
         D.projects.list = (r && r.projects) || [];
         D.projects.filed = (r && r.filed) || [];
+        D.projects.roots = (r && r.roots) || [];
       } catch (e) {
         D.projects.err = (e && e.message) || 'could not read your council';
       }
@@ -6881,6 +7114,34 @@ ${markPickHtml()}
     // warning and the button is the whole of the act.
     function fileChipHtml(msg) {
       const f = msg && msg.file_in;
+      // …and the other offer the same line can carry: none of the reader's
+      // projects fits, and this page deserves one of its own. Same chip, same
+      // one step, same rule — the bot names a title, the reader presses the
+      // button, and nothing exists until they do.
+      if (f && f.new && f.title) {
+        // "was this one started?" is answered by what the companion told us it
+        // made, never by slugifying the title here: one rule for turning a
+        // title into a folder name, and it lives in workspace.mjs
+        const made = (D.projects.started || []).indexOf(f.title) >= 0;
+        if (made) {
+          return chipHtml({ state: 'done', bare: true,
+            body: `Started ${esc(f.title)}, and this page is filed in it.` });
+        }
+        const roots = Array.isArray(f.roots) ? f.roots : [];
+        const pick = roots.length > 1
+          ? `<select class="mkpick" data-role="new-root">${roots.map(r =>
+            `<option value="${esc(r)}">${esc(String(r).split('/').pop() || r)}</option>`).join('')}</select>`
+          : '';
+        return chipHtml({
+          body: `Start a project “<b>${esc(f.title)}</b>” for this page?${
+            f.why ? ` — ${esc(f.why)}` : ''}`,
+          actions: `${pick}<button class="rebtn" type="button" data-act="proj-new"
+              data-title="${esc(f.title)}" data-why="${esc(f.why || '')}"
+              data-root="${esc(roots[0] || '')}"
+              ${D.projects.busy === 'new' ? 'disabled' : ''}>Start it</button>
+            <button class="rebtn no" type="button" data-act="file-no">No</button>`,
+        });
+      }
       if (!f || !f.id) return '';
       const key = `${f.root}\u0000${f.id}`;
       const filed = (D.projects.filed || []).some(x => x.root === f.root && x.id === f.id);
@@ -7809,6 +8070,7 @@ ${markPickHtml()}
         D.el.title.title = title;
         D.el.site.textContent = (page && page.site) || opts.hostname || '';
         paintProject();
+        paintSource();
         paintFiled();
       }
       render();
@@ -7828,6 +8090,28 @@ ${markPickHtml()}
       D.el.proj.textContent = 'part of project ' + name;
       D.el.proj.title = p.path || p.rel || '';
       D.el.proj.classList.toggle('unconfirmed', !p.confirmed);
+    }
+
+    // …and the line for the pages that came the OTHER way. A project artifact
+    // the bots made out of a page the reader had marked up carries the source
+    // in its own <head> (`bfp-source`), the extension reports it on every
+    // visit, and this is the way back to the thing it was made from. One line,
+    // no explanation: the reader knows what they asked for.
+    function paintSource() {
+      const el = D.el && D.el.madefrom;
+      if (!D.mounted || !el) return;
+      const s = (D.page && D.page.source) || null;
+      el.hidden = !(s && s.url);
+      if (el.hidden) return;
+      const name = s.title || s.url;
+      // a `bfp-pdf://` source is a PDF on this machine, keyed by its bytes:
+      // there is no address a tab can open, so the line says what it was made
+      // from and stops there rather than offering a link that goes nowhere
+      const linkable = /^(https?|file):/i.test(s.url);
+      el.innerHTML = 'made from ' + (linkable
+        ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(name)}</a>`
+        : `<b>${esc(name)}</b>`);
+      el.title = s.url;
     }
 
     // content.js learned about the project after the drawer was made, or

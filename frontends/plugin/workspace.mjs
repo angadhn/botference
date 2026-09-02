@@ -21,18 +21,24 @@
 // The path is what is stable here: `projects/<id>/index.html` is the artifact,
 // whatever it currently says.
 //
-// ── NOTHING IS WRITTEN INTO A COUNCIL ROOT BY THIS FILE ───────────────────
-// Every function here reads. The plugin's own state (page records, config,
-// the bridge's task file) stays under the companion's own ROOT; the only
-// thing that ever writes inside a council root is botference itself, saving
-// the session the bridge is driving — and, since Phase 2, the BOTS, inside
-// `projects/<id>/` and nowhere else (chat.mjs spawns the workspace bridge
-// with that one directory as its write root). This file still only reads;
+// ── ALMOST NOTHING IS WRITTEN INTO A COUNCIL ROOT BY THIS FILE ────────────
+// Every function here reads, with ONE exception named below. The plugin's own
+// state (page records, config, the bridge's task file) stays under the
+// companion's own ROOT; the things that write inside a council root are
+// botference itself, saving the session the bridge is driving, and — since
+// Phase 2 — the BOTS, inside `projects/<id>/` and nowhere else (chat.mjs
+// spawns the workspace bridge with that one directory as its write root).
 // `scanProject` below reads mtimes so the companion can tell what the bots
 // changed, which is the other half of Phase 2.
+//
+// The exception is `createProject` (2026-09-02): the reader presses "Start
+// it" and one new `projects/<id>/` with a PROJECT.md appears, plus one row on
+// `projects/portfolio.json`. It edits nothing that was already there, it only
+// ever runs in a CONFIRMED root, and it only ever runs from a click.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { writeJson } from './fsjson.mjs';
 import { readConfig, saveConfig, unwrapLine, clipTo } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
@@ -877,7 +883,43 @@ export function suggestBlock(roster) {
     + 'If — and only if — this page clearly belongs with one of them, END your '
     + `reply with a line of its own reading \`${SUGGEST_MARK} <project-id> — `
     + '<one short reason>`. The reader gets a button; you are not filing '
-    + 'anything. Say nothing at all if none of them fit, and never guess.\n';
+    + 'anything. Say nothing at all if none of them fit, and never guess.\n'
+    // …and the other answer, which used to have nowhere to go. A page that
+    // belongs with none of the projects above is not therefore a page that
+    // belongs nowhere: a festival brochure the reader is about to plan a
+    // fortnight around is a body of work, and the only thing standing between
+    // it and a project was that nothing could say so. A bot may now say it —
+    // and still files nothing, creates nothing and names nothing that exists.
+    + 'If none of them fits but this page plainly deserves a project of its OWN '
+    + '— a body of work the reader will come back to, not a page they are '
+    + `passing through — you may instead end with a line of its own reading \`${SUGGEST_MARK} `
+    + 'new "<Short Title>" — <one short reason>`. Quotes around the title, three '
+    + 'to sixty characters. One line or the other, never both, and nothing at '
+    + 'all if in doubt: a project the reader did not want is a folder they have '
+    + 'to go and delete.\n';
+}
+
+// The NEW-project shape, read back. Same three rules as the id shape — a line
+// of its own, the last one wins, markdown around it stripped — plus one this
+// one needs and that one does not: the title is QUOTED. Without the quotes
+// `file-in: new project for this` parses as a title of "project for this", and
+// a bot musing about projects would create folders.
+const NEW_TITLE_MIN = 3;
+const NEW_TITLE_MAX = 60;
+const NEW_RE = new RegExp(
+  `^\\s*(?:[-*>]\\s*)?${SUGGEST_MARK}\\s*new\\s+["“”']([^"“”']+)["“”']\\s*(?:[—:-]\\s*(.*))?$`,
+  'i',
+);
+
+function pickNew(candidates) {
+  for (const line of candidates) {
+    const m = NEW_RE.exec(line);
+    if (!m) continue;
+    const title = String(m[1] || '').trim().replace(/\s+/g, ' ');
+    if (title.length < NEW_TITLE_MIN || title.length > NEW_TITLE_MAX) continue;
+    return { title, why: m[2] || '' };
+  }
+  return null;
 }
 
 /**
@@ -919,10 +961,214 @@ export function parseSuggestion(text, roster) {
     // `**file-in: acta** - because`, where nothing is paired and the bold
     // marker's tail sticks to the id. First candidate whose id is a project we
     // actually know wins; a candidate that names nothing real is not an answer.
-    const m = pick(re, [unwrapLine(raw), raw.replace(/[`*_]/g, '').trim()], known);
+    const candidates = [unwrapLine(raw), raw.replace(/[`*_]/g, '').trim()];
+    // the NEW-project shape first, because `new` is not a project id and the
+    // id reader would take it for one
+    const fresh = pickNew(candidates);
+    if (fresh) {
+      found = { new: true, title: fresh.title, why: clip(fresh.why, 200), line: raw };
+      continue;
+    }
+    const m = pick(re, candidates, known);
     if (!m) continue;
     found = { id: m.id, root: m.hit.root, title: m.hit.title,
       why: clip(m.why, 200), line: raw };
+  }
+  return found;
+}
+
+// --- from a page to a project ---------------------------------------------
+//
+// THIS IS THE ONE THING IN THIS FILE THAT WRITES INSIDE A COUNCIL ROOT, and
+// the header of the file says the opposite, so here is the exception in full.
+// Everything else here reads; a project is created only when the READER
+// presses a button (server.mjs POST /project-create), only in a root they have
+// already confirmed, and it writes exactly two things: a new `projects/<id>/`
+// with a PROJECT.md in it, and one row appended to `projects/portfolio.json`.
+// Nothing existing is edited, nothing is deleted, and the portfolio is written
+// the way every record in this tree is written — temp file, then rename — so a
+// crash mid-write leaves the reader's portfolio as it was rather than half a
+// document.
+export const PROJECT_TITLE_MIN = NEW_TITLE_MIN;
+export const PROJECT_TITLE_MAX = NEW_TITLE_MAX;
+
+/** A folder name from a title: lowercase, hyphens, nothing exotic. */
+export function slugifyProject(title) {
+  return String(title || '')
+    // decompose, then drop the accents: "Cinéma" is `cinema`, not `cin-ma`
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, PROJECT_TITLE_MAX)
+    .replace(/-+$/g, '');
+}
+
+/**
+ * Create one project in a confirmed council root.
+ *
+ * Returns `{ok:true, id, title, dir}` or `{ok:false, status, error}` — the
+ * status is the endpoint's, so the two never disagree about what a duplicate
+ * is (409) and what an unvouched-for root is (400).
+ */
+export function createProject(root, { title, why = '' } = {}) {
+  const dirRoot = realish(root);
+  if (!dirRoot || !isCouncilRoot(dirRoot) || rootState(dirRoot) !== 'yes') {
+    return { ok: false, status: 400, error: 'that is not a council you have confirmed' };
+  }
+  const want = String(title || '').trim().replace(/\s+/g, ' ');
+  if (want.length < PROJECT_TITLE_MIN || want.length > PROJECT_TITLE_MAX) {
+    return { ok: false, status: 400,
+      error: `a project title is ${PROJECT_TITLE_MIN} to ${PROJECT_TITLE_MAX} characters` };
+  }
+  const id = slugifyProject(want);
+  if (!id) return { ok: false, status: 400, error: 'that title makes no folder name' };
+  const dir = path.join(dirRoot, 'projects', id);
+  if (fs.existsSync(dir)) {
+    return { ok: false, status: 409, error: `there is already a project called “${id}” in that council` };
+  }
+  const reason = clip(String(why || '').trim(), 400) || 'TODO';
+  fs.mkdirSync(dir, { recursive: true });
+  // the same document botference's own `/project new` leaves behind, field for
+  // field, so the TUI's project panel and this one never disagree about what a
+  // project is made of
+  fs.writeFileSync(path.join(dir, 'PROJECT.md'),
+    `# ${want}\n\n**Status:** active\n**Priority:** \n**Cadence:** weekly\n\n`
+    + `## Why This Matters\n\n${reason}\n\n`
+    + `## Desired Outcome\n\nTODO\n\n## Next Action\n\nTODO\n`);
+  const file = path.join(dirRoot, 'projects', 'portfolio.json');
+  const pf = readJson(file, null);
+  const doc = (pf && typeof pf === 'object' && !Array.isArray(pf)) ? pf : { version: 1 };
+  const rows = Array.isArray(doc.projects) ? doc.projects : [];
+  doc.projects = rows.concat([{
+    id, title: want, status: 'active', priority: null, root: `projects/${id}`,
+    cadence: 'weekly', why: reason, desired_outcome: 'TODO', next_action: 'TODO',
+  }]);
+  writeJson(file, doc);
+  return { ok: true, id, title: want, dir };
+}
+
+// --- make artifact: one turn in the project's lane -------------------------
+//
+// The reader has marked up a page that is filed in a project and wants
+// something MADE of it — the brochure becomes a planner, the paper becomes a
+// summary sheet. That is a write, and a write happens in exactly one place in
+// this contract: inside `projects/<id>/`, on the child that was spawned with
+// that folder as its write root. So the turn is queued on the PROJECT's lane
+// (server.mjs POST /make-artifact) and everything below is only what that turn
+// has to SAY: where the page is, what the reader wrote in its margins, what
+// they asked for, and the one file it may leave behind.
+export const ARTIFACT_DIGEST_CHARS = 12000;
+export const ARTIFACT_QUOTE_MAX = 300;
+export const ARTIFACT_MSG_MAX = 400;
+export const ARTIFACT_CHAT_MSGS = 8;
+export const ARTIFACT_MARK = 'artifact:';
+
+// Every thread on the page, as text: the quote, where it is, whether it was
+// filed, and what was said in it. Capped as one budget rather than per thread —
+// twenty short comments and three long ones are the same page — and the cut is
+// always SAID, because a digest that quietly stops is a digest the bot thinks
+// it read to the end.
+export function threadDigest(page, budget = ARTIFACT_DIGEST_CHARS) {
+  const threads = ((page && page.threads) || []).filter(t => t && (t.msgs || []).length);
+  if (!threads.length) return '';
+  const parts = [];
+  let left = budget;
+  let cut = 0;
+  for (const t of threads) {
+    const lines = [`— “${clip(t.quote, ARTIFACT_QUOTE_MAX)}”`
+      + (Number(t.page) > 0 ? ` (page ${Number(t.page)})` : '')
+      + (t.resolved ? ' [filed]' : '')];
+    for (const m of (t.msgs || []).filter(m => m && m.kind !== 'tools')) {
+      lines.push(`   ${m.author || 'someone'}: ${clip(m.text, ARTIFACT_MSG_MAX)}`);
+    }
+    const block = lines.join('\n');
+    if (block.length > left) { cut++; continue; }
+    left -= block.length;
+    parts.push(block);
+  }
+  if (!parts.length) return '';
+  return `[my comments on that page — ${parts.length} of ${threads.length}]\n`
+    + `${parts.join('\n')}\n`
+    + (cut ? `(${cut} further comment thread${cut === 1 ? '' : 's'} did not fit — the page itself has them all.)\n` : '');
+}
+
+/**
+ * The whole make-artifact turn, as text. Pure: what it says, what it caps and
+ * what it asks for is testable with no server, no bridge and no browser — the
+ * same reason reviewFanout is pure.
+ */
+export function artifactTurn({
+  route = '@claude', id, title = '', url = '', snapshotPath = '', brief = '',
+  page = null, projectTitle: pTitle = '',
+} = {}) {
+  const chat = ((page && page.page_chat) || [])
+    .filter(m => m && m.kind !== 'tools')
+    .slice(-ARTIFACT_CHAT_MSGS)
+    .map(m => `   ${m.author || 'someone'}: ${clip(m.text, ARTIFACT_MSG_MAX)}`);
+  const ask = String(brief || '').trim();
+  return `${route} [make artifact · project ${pTitle || id} (${id})]\n`
+    + `Make a page out of what I have been reading and marking up, and put it in this project.\n\n`
+    + `The source page: “${title || url}”\n${url}\n`
+    + (snapshotPath
+      ? `Its full text is on this machine, at ${snapshotPath} — sanitized HTML; a PDF has one `
+        + `<section> per page, each headed "Page N". READ that file: it, and not this message, is `
+        + `the document.\n`
+      : '')
+    + (ask ? `\nWhat I want: ${ask}\n` : '')
+    + (threadDigest(page) ? `\n${threadDigest(page)}` : '')
+    + (chat.length ? `\n[what we said about it in the page chat]\n${chat.join('\n')}\n` : '')
+    + `\nWrite ONE self-contained HTML file at \`projects/${id}/<slug>.html\` — the slug from the `
+    + `source page's title, lowercase and hyphenated, at most 60 characters. If that file is `
+    + `already there, UPDATE it in place; do not make a second one.\n`
+    + `No external scripts and no external stylesheets — everything inline, so the file opens on `
+    + `its own with no network. It has to read well in BOTH light and dark: set the colours you `
+    + `use rather than inheriting them, and give the page an explicit background.\n`
+    + `Put the source in the file's <head>, exactly these two lines, so the page knows where it `
+    + `came from:\n`
+    + `  <meta name="bfp-source" content="${url}">\n`
+    + `  <meta name="bfp-source-title" content="${String(title || '').replace(/"/g, "'")}">\n`
+    + `Then END your reply with a line of its own reading \`${ARTIFACT_MARK} projects/${id}/<slug>.html\` `
+    + `— the path you actually wrote. That line is machinery: the reader's drawer turns it into a `
+    + `link and takes it out of your words, and a path that names no file on disk is ignored.\n`
+    + `Everything else you write is posted into the page chat, so keep it to a sentence or two `
+    + `about what you made.\n`;
+}
+
+/**
+ * Pull the `artifact:` line back out of a reply.
+ *
+ * Returns `{root, id, rel, line}` or null. Same discipline as parseSuggestion —
+ * a line of its own, markdown stripped, the LAST one wins — plus the two checks
+ * that make it safe to believe: the path must be RELATIVE and inside
+ * `projects/<id>/` of a project this page is actually filed under, and the file
+ * must exist on disk NOW. A bot that says it wrote something it did not write
+ * gets no link, rather than a link to nothing.
+ */
+export function parseArtifact(text, filed) {
+  const rows = (Array.isArray(filed) ? filed : []).filter(f => f && f.root && f.id);
+  if (!rows.length) return null;
+  const re = new RegExp(`^\\s*(?:[-*>]\\s*)?${ARTIFACT_MARK}\\s*(\\S+)\\s*$`, 'i');
+  let found = null;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    for (const cand of [unwrapLine(raw), raw.replace(/[`*_]/g, '').trim()]) {
+      const m = re.exec(cand);
+      if (!m) continue;
+      const rel = String(m[1] || '').replace(/[.,;:]+$/, '').replace(/\\/g, '/');
+      if (!rel || rel.startsWith('/') || /^[A-Za-z]:/.test(rel)) break;
+      if (rel.split('/').some(seg => seg === '..' || seg === '.' || !seg)) break;
+      const hit = rows.find(f => rel.startsWith(`projects/${f.id}/`)
+        && rel.length > `projects/${f.id}/`.length);
+      if (!hit) break;
+      const abs = path.join(hit.root, rel);
+      // and it is really inside that folder, resolved on both sides — a
+      // symlink is not a way out of a write scope here either
+      const dir = realish(path.join(hit.root, 'projects', hit.id));
+      if (!isFile(abs) || !within(dir, realish(abs))) break;
+      found = { root: hit.root, id: hit.id, rel, line: raw };
+      break;
+    }
   }
   return found;
 }

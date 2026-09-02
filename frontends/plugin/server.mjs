@@ -241,8 +241,22 @@ function workspaceChatFor(root, projectId, projectDir) {
     // null keeps it out of this project's chats rather than papering over it.
     projectOf: (u) => {
       const a = artifactOf(u);
-      if (!a || a.root !== root || a.project_id !== projectId) return null;
-      return { id: a.project_id, title: a.project_title, path: a.path };
+      if (a && a.root === root && a.project_id === projectId) {
+        return { id: a.project_id, title: a.project_title, path: a.path };
+      }
+      // …or a page that is merely FILED here, borrowing this lane for one
+      // make-artifact turn (server.mjs POST /make-artifact). It is not an
+      // artifact and gets no artifact banner — `path` is empty, and the
+      // envelope reads `[web page: …]` as it does anywhere else — but it IS in
+      // this project for the length of this turn, which is what decides the
+      // chat it lands in and the folder it may write in. Anything filed
+      // NOWHERE near this project still answers null: that would be a routing
+      // bug, and the null keeps it out of this project's chats.
+      const pg = store.readPage(u);
+      if (pg && store.projectsOf(pg).some(p => p.root === root && p.id === projectId)) {
+        return { id: projectId, title: workspace.projectTitle(root, projectId), path: '' };
+      }
+      return null;
     },
   });
   workspaceChats.set(key, c);
@@ -1016,12 +1030,37 @@ function onChatEvent(ev) {
         const hit = workspace.parseSuggestion(
           ev.msg.text, workspace.projectRoster({ peek: false }),
         );
-        if (hit) {
+        if (hit && hit.new) {
+          // …and the OTHER answer: none of these fit, and this page deserves
+          // one of its own. Same lift, same chip, same rule — the bot names a
+          // title and nothing exists until the reader presses the button. The
+          // councils ride along because the button has to start the project
+          // SOMEWHERE, and only the reader knows which when there are two.
+          ev.msg = {
+            ...ev.msg,
+            text: store.liftLines(ev.msg.text, hit.line),
+            file_in: { new: true, title: hit.title, why: hit.why, roots: confirmedRoots() },
+          };
+        } else if (hit) {
           ev.msg = {
             ...ev.msg,
             text: store.liftLines(ev.msg.text, hit.line),
             file_in: { root: hit.root, id: hit.id, title: hit.title, why: hit.why },
           };
+        }
+      }
+      // Did a make-artifact turn say what it wrote? Fifth use of the lift
+      // idiom, and the strictest, because this one becomes a LINK: the path
+      // must be relative, inside `projects/<id>/` of a project this page is
+      // actually filed under, and a file that exists on disk right now
+      // (workspace.parseArtifact). Anything else is ignored and the reply is
+      // posted as it stands — a bot that claims a file it did not write gets
+      // no link rather than a link to nothing.
+      if (ev.msg && ev.target === store.PAGE_CHAT) {
+        const made = workspace.parseArtifact(ev.msg.text, store.projectsOf(page));
+        if (made) {
+          ev.msg = { ...ev.msg, text: store.liftLines(ev.msg.text, made.line) };
+          store.recordArtifact(page, made);
         }
       }
       // …and did the bot conclude the passage should come out? Same idiom,
@@ -1571,7 +1610,12 @@ function refusedRevision(page, thread) {
 }
 
 function summon(page, target, text, extras = {}, me = { owner: true }) {
-  const { forceAll, ...rest } = extras;
+  // `lane` is the child this turn runs on when it is NOT the page's own — the
+  // one caller is POST /make-artifact, which borrows the project's lane
+  // because that is where the write scope lives (chatFor's taxonomy is
+  // otherwise the whole rule, and this does not weaken it: the lane still
+  // decides the scope, and a page cannot ask for a lane it is not filed in).
+  const { forceAll, lane, ...rest } = extras;
   extras = rest;
   const untaggedAll = !!forceAll || untaggedGoesToAll(page, target, text);
   // the thread's own address, resolved by the caller and carried through
@@ -1592,7 +1636,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // A project-artifact page whose council root the reader has not vouched for
   // yet: the comment is kept, the bots are not summoned, and the drawer says
   // why — the confirmation card is already on screen asking.
-  const c = chatFor(page.url);
+  const c = lane || chatFor(page.url);
   if (!c) {
     // …or a blog page whose repo has not been vouched for, which is the same
     // refusal about a different folder and must say which one
@@ -1761,6 +1805,20 @@ function dedupeCheck(parts) {
 }
 
 // --- HTTP helpers -------------------------------------------------------
+// The councils the reader has said yes to, the one they used last at the
+// front. "Used" is filing a page or starting a project — the two acts that
+// pick a council on purpose — and it is remembered in the plugin's own config
+// (`last_council_root`), never in the council.
+function confirmedRoots() {
+  const last = String(store.readConfig().last_council_root || '');
+  const rows = workspace.knownCouncilRoots().filter(r => workspace.rootState(r) === 'yes');
+  return rows.sort((a, b) => (b === last ? 1 : 0) - (a === last ? 1 : 0));
+}
+const rememberRoot = root => {
+  const r = workspace.realish(String(root || ''));
+  if (r && store.readConfig().last_council_root !== r) store.saveConfig({ last_council_root: r });
+};
+
 const ok = (res, obj) => res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...obj }));
 const fail = (res, code, error) => res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error }));
 // /edit, /tick and /delete address a message by timestamp, and a timestamp is
@@ -2222,6 +2280,10 @@ export function handler(req, res) {
     return ok(res, {
       projects: workspace.projectRoster(),
       filed: page ? store.projectsOf(page) : [],
+      // …and the councils themselves, because one thing the picker offers is
+      // not a project at all: starting a NEW one. That needs a root to start
+      // it in, and only the reader knows which when there is more than one.
+      roots: confirmedRoots(),
     });
   }
   // POST /page-projects {url, root, id, attach} — attach or detach one
@@ -2245,8 +2307,110 @@ export function handler(req, res) {
         return fail(res, 400, 'no such project in a confirmed council');
       }
       const saved = store.filePageInProject(page.url, { root, id, attach });
+      if (attach) rememberRoot(root);
       broadcast({ type: 'page', url: saved.url });
       return ok(res, { url: saved.url, filed: store.projectsOf(saved) });
+    });
+  }
+  // POST /project-create {url, root, title} — start a NEW project and file
+  // this page in it.
+  //
+  // The one place this companion writes inside a council root, and it does so
+  // only from a click (workspace.createProject says the rest). Two ways to
+  // this button and both of them are the reader's: the "new project" row at
+  // the bottom of the picker, and a bot's `file-in: new "…"` offer, which is
+  // an OFFER — bots do not create projects any more than they file pages.
+  if (req.method === 'POST' && url === '/project-create') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const target = String(data.url || '');
+      const page = target ? store.readPage(target) : null;
+      if (!page) return fail(res, 404, 'no such page');
+      // one confirmed council and no question to ask; several and the caller
+      // must say which, because the drawer asked the reader
+      const roots = confirmedRoots();
+      const root = workspace.realish(String(data.root || '')) || (roots.length === 1 ? roots[0] : '');
+      if (!root || !roots.includes(root)) {
+        return fail(res, 400, roots.length
+          ? 'say which council to start it in'
+          : 'no council has been confirmed yet — open a file from one of your projects folders first');
+      }
+      const made = workspace.createProject(root, { title: data.title, why: data.why });
+      if (!made.ok) return fail(res, made.status || 400, made.error);
+      forgetArtifacts();          // a new project folder is a new artifact home
+      rememberRoot(root);
+      // …and the page goes into it, through the same door every other filing
+      // goes through: creating a project for a page and not filing the page in
+      // it would leave the reader one click from where they started.
+      const saved = store.filePageInProject(page.url, { root, id: made.id, attach: true });
+      broadcast({ type: 'page', url: saved.url });
+      return ok(res, { root, id: made.id, title: made.title,
+        filed: store.projectsOf(saved) });
+    });
+  }
+  // POST /make-artifact {url, root, id, brief} — turn this page into a page
+  // IN that project.
+  //
+  // ONE TURN, IN THE PROJECT'S LANE. Not a new permission mechanism and not a
+  // second kind of write scope: it is the child an artifact page under
+  // `<root>/projects/<id>/` would use, with the same workspace, the same
+  // per-project FIFO and the same one writable directory baked into its
+  // environment at spawn (workspaceChatFor). The page keeps everything it had
+  // — its own lane for its own turns, its own chat, no write scope of its own
+  // — and this turn is BORROWED (chat.mjs `borrowed`): it takes a chat of its
+  // own in the project rather than dragging the page's session across roots.
+  //
+  // The reply comes back into page chat like any other turn, because the
+  // reader is standing on the page and that is where they are looking.
+  if (req.method === 'POST' && url === '/make-artifact') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const u = store.normUrl(String(data.url || ''));
+      const page = u ? store.readPage(u) : null;
+      if (!page) return fail(res, 404, 'the companion has no record of this page');
+      const filed = store.projectsOf(page);
+      const root = workspace.realish(String(data.root || ''));
+      const id = String(data.id || '');
+      const hit = filed.find(p => p.root === root && p.id === id)
+        // one project and no question to ask, exactly as the drawer draws it
+        || (filed.length === 1 && !root && !id ? filed[0] : null);
+      if (!hit) return fail(res, 400, 'file this page in a project first');
+      if (workspace.rootState(hit.root) !== 'yes') return fail(res, 409, UNCONFIRMED_REASON);
+      const dir = path.join(hit.root, 'projects', hit.id);
+      if (!fs.existsSync(dir)) return fail(res, 400, 'that project is not in that council any more');
+      const brief = String(data.brief || '').slice(0, 1000);
+      // ONE writer. Two bots editing one file is a mess nobody asked for, and
+      // there is no thread here to have addressed either of them — so claude
+      // unless the brief opens by asking for codex.
+      const route = /^\s*@codex\b/i.test(brief) ? '@codex' : '@claude';
+      const key = store.pageKey(page.url);
+      const text = workspace.artifactTurn({
+        route, id: hit.id, root: hit.root,
+        projectTitle: workspace.projectTitle(hit.root, hit.id),
+        title: store.displayTitle(page) || page.title || page.url,
+        url: page.url,
+        snapshotPath: store.hasSnapshot(key) ? store.snapshotFile(key) : '',
+        brief, page,
+      });
+      // What the READER sees they asked for. The turn itself is three hundred
+      // words of instruction about slugs and <meta> tags — machinery, not
+      // prose — so page chat gets the one sentence that is actually the ask,
+      // for the reason the review preamble is visible: a turn nobody can see
+      // asking for something reads as a bot going off on its own.
+      const said = `Make an artifact of this page in ${workspace.projectTitle(hit.root, hit.id)}`
+        + `${brief ? ` — ${brief}` : ''}`;
+      const dedupe = dedupeCheck([key, store.PAGE_CHAT, me.handle, said]);
+      if (dedupe.hit) return ok(res, { msg: dedupe.hit, deduped: true, queued: false });
+      const msg = store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: said });
+      dedupe.remember(msg);
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      const lane = NO_AGENTS || !chat ? null : workspaceChatFor(hit.root, hit.id, dir);
+      const s = summon(page, store.PAGE_CHAT, text,
+        { lane, borrowed: true, routeHint: `${route} ` }, me);
+      return ok(res, { root: hit.root, id: hit.id, route, msg, ...s });
     });
   }
   // The one-time answer to "treat <root> as your council?". Kept in the
@@ -4069,8 +4233,12 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       if (!data.url) return fail(res, 400, 'url required');
       const nu = store.normUrl(data.url);
-      const c = chatFor(nu);
-      ok(res, { interrupted: !!(c && c.interrupt(nu)) });
+      // Asked of EVERY child, not just this page's own. A page's turns are
+      // almost always on its own lane, but a make-artifact turn is borrowed
+      // into the project's (POST /make-artifact) — and a stop button that
+      // cannot stop the turn the reader is watching is a stop button that does
+      // not work. Only the child actually holding this url's turn answers yes.
+      ok(res, { interrupted: allChats().some(c => c.interrupt(nu)) });
     });
   }
   return fail(res, 404, 'not found');
