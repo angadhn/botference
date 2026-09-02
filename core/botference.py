@@ -4548,7 +4548,7 @@ class Botference:
         """If Claude reported a credit/billing exhaustion, tell the user how to
         fall back to the cheaper Claude Opus 5.
 
-        The default Claude participant is Fable 5, which bills at a premium; when
+        The default Claude participant is Fable 5.1, which bills at a premium; when
         its credit balance runs out the raw CLI error is opaque, so surface the
         exact switch command instead. Suppressed once already on Opus 5 (a bare
         balance problem there needs a top-up, not a model switch).

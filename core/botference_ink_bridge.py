@@ -680,7 +680,7 @@ async def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="botference ink bridge")
-    parser.add_argument("--anthropic-model", default="claude-fable-5")
+    parser.add_argument("--anthropic-model", default="claude-fable-5-1")
     # Both participants run at medium effort by default — explicit rather
     # than trusting each CLI's own default to stay "medium" forever.
     parser.add_argument("--claude-effort", default="medium")

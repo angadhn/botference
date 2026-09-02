@@ -559,6 +559,7 @@ class AdapterResponse:
 # ── Context windows (fallback when not reported by CLI) ──────
 
 _CONTEXT_WINDOWS = {
+    "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
     "claude-opus-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
@@ -807,7 +808,7 @@ def _stream_json_user_message(text: str) -> bytes:
 class ClaudeAdapter:
     """Wraps `claude -p` with session continuity via --session-id / --resume."""
 
-    def __init__(self, model: str = "claude-fable-5",
+    def __init__(self, model: str = "claude-fable-5-1",
                  tools: Optional[list] = None,
                  effort: str = "",
                  timeout: Optional[int] = None,
@@ -1179,7 +1180,7 @@ class ClaudeInteractiveTmuxAdapter:
 
     abort_all_on_startup_failure = True
 
-    def __init__(self, model: str = "claude-fable-5",
+    def __init__(self, model: str = "claude-fable-5-1",
                  tools: Optional[list] = None,
                  effort: str = "",
                  timeout: Optional[int] = None,

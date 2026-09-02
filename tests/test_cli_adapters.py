@@ -55,7 +55,7 @@ SPIKE_DIR = Path(__file__).resolve().parent / "fixtures"
 
 class TestIsCreditError:
     def test_default_model_is_fable_5(self):
-        assert ClaudeAdapter().model == "claude-fable-5"
+        assert ClaudeAdapter().model == "claude-fable-5-1"
 
     def test_detects_credit_balance_message(self):
         assert is_credit_error(
