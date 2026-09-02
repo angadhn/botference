@@ -2420,19 +2420,32 @@ function companion(method, path, body) {
   // jobs (server.mjs) — the drawer only asks and then reloads the record — so
   // the fake does the same, minus the caps, which are the node suite's business
   // and not the browser's.
+  // …on ANY page the companion knows, not only on a draft (2026-09-02): what a
+  // page with no draft behind it gets instead is the read-only wording and one
+  // wrap-up turn into page chat after the last comment.
   if (route === '/send-review') {
-    if (!WORKSPACE) return { ok: false, status: 404, error: 'not a project artifact page' };
-    if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
+    if (WORKSPACE && !WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
+    const editable = !!WORKSPACE;
     // workspace.openThreads: not resolved, and not ADDRESSED either — a thread
     // a bot has already replied into is waiting on the reader under "Ready for
     // review", and re-sending it would ask for work already reported
     const open = RECORD.threads.filter(t => !t.resolved && !t.addressed && (t.msgs || []).length);
     if (!open.length) return { ok: false, status: 400, error: 'no open comments to send' };
-    const preamble = 'Review round: I have been down this draft leaving comments in the margins. '
-      + open.length + ' comments follow this message, in page order, one turn each\n\n'
-      + 'For each one: make the change it calls for and say what you changed; where it calls for '
-      + 'no change, answer it. Each of those turns is posted into that comment’s own thread.\n\n'
-      + 'Nothing is resolved by any of this — I file the threads myself once I am satisfied.';
+    const preamble = editable
+      ? 'Review round: I have been down this draft leaving comments in the margins. '
+        + open.length + ' comments follow this message, in page order, one turn each\n\n'
+        + 'For each one: make the change it calls for and say what you changed; where it calls for '
+        + 'no change, answer it. Each of those turns is posted into that comment’s own thread.\n\n'
+        + 'Nothing is resolved by any of this — I file the threads myself once I am satisfied.'
+      : 'Review round: I have been down this page leaving comments in the margins. '
+        + open.length + ' comments follow this message, in page order, one turn each\n\n'
+        + 'Answer each one on its own terms, in that comment’s own thread. Keep each reply short. '
+        + 'Nothing here is a draft of mine and no change to anything is being asked for.\n\n'
+        + 'Nothing is resolved by any of this — I file the threads myself once I am satisfied. '
+        + 'After the last comment I will ask for a short wrap-up here in page chat.';
+    const wrapUp = editable ? null
+      : 'Round wrap-up: the ' + open.length + ' comments above have each been answered in their '
+        + 'own threads. Pull them together here in page chat. Do not repeat the per-thread answers.';
     // workspace.reviewRoute: @all, unless the thread's LAST human message tags
     // one bot — then that bot alone, because the reader already chose
     const routeOfThread = t => {
@@ -2448,22 +2461,30 @@ function companion(method, path, body) {
       text: routeOfThread(t) + ' [review round · comment ' + (i + 1) + ' of ' + open.length + '] '
         + 'This is part of the review round I just opened in the chat, and this turn is this one comment.',
     }));
-    reviewRounds.push({ preamble: preamble, turns: turns });
+    reviewRounds.push({ preamble: preamble, turns: turns, wrapUp: wrapUp });
     sentReviews.push(preamble);
     RECORD.page_chat.push(stampMsg(preamble));
+    // the wrap-up is a real, visible message too — a turn the reader cannot see
+    // asking for something reads as a bot going off on its own
+    if (wrapUp) RECORD.page_chat.push(stampMsg(wrapUp));
     RECORD.updated_at = now();
-    queueDepth += 1 + turns.length;
+    queueDepth += 1 + turns.length + (wrapUp ? 1 : 0);
     // one at a time, in page order, exactly as the bridge drains its queue: the
-    // preamble first, then each thread's own turn when the one before it is done
+    // preamble first, then each thread's own turn when the one before it is
+    // done, and the wrap-up last of all (a page is one FIFO lane)
     if (!HOLD_QUEUE) {
       const chain = i => {
-        if (i >= turns.length) return;
+        if (i >= turns.length) {
+          if (wrapUp) playTurn('__page__', wrapUp, null, null);
+          return;
+        }
         playTurn(turns[i].thread_id, turns[i].text, null, () => chain(i + 1));
       };
       setTimeout(() => playTurn('__page__', preamble, null, () => chain(0)), 350);
     }
     return { ok: true, status: 200, data: { ok: true, sent: open.length, total: open.length,
-      omitted: 0, queued: 1 + turns.length, threads: turns.map(t => t.thread_id) } };
+      omitted: 0, queued: 1 + turns.length + (wrapUp ? 1 : 0),
+      threads: turns.map(t => t.thread_id) } };
   }
   if (method === 'GET' && route === '/index') return { ok: true, status: 200, data: indexMap() };
   // The review round in flight, as the COMPANION sees it. A tab that woke up
@@ -5107,9 +5128,20 @@ async function selftest() {
 
   check('a checklist on the page puts a tasks card in both panes',
     !!card('chat') && !!card('comments'));
+  // "at the top" means ABOVE THE CONVERSATION, which is the claim; it has never
+  // meant firstElementChild, and reading it that way made this assertion a
+  // hostage to every row of pane chrome added since — the send-review row now
+  // sits above it on an ordinary page, as the archive bar always has on a
+  // project one. (The same correction the workspace pose made, for the same
+  // reason.)
+  const CHROME = /\b(reviewrow|archbar|archlist|offline|warn|blogsrc|nohl)\b/;
+  const topOfPane = p => {
+    const kids = [...S.querySelector('.pane[data-pane="' + p + '"]').children];
+    const i = kids.indexOf(card(p));
+    return i > -1 && kids.slice(0, i).every(e => CHROME.test(e.className));
+  };
   check('…at the very top of each pane, above the conversation',
-    S.querySelector('.pane[data-pane="chat"]').firstElementChild === card('chat') &&
-    S.querySelector('.pane[data-pane="comments"]').firstElementChild === card('comments'));
+    topOfPane('chat') && topOfPane('comments'));
   check('…holding the NEWEST list on the page, not the first one it found',
     cboxes('chat').length === 2 && /check the xGA table/.test(card('chat').textContent) &&
     !/structural failure/.test(card('chat').textContent));
@@ -6268,6 +6300,52 @@ async function selftest() {
     tseg[1].classList.contains('on') && !tseg[0].classList.contains('on'));
   tseg[0].click();
   d.closeModels();
+
+  // ---- send review on an ordinary page ----------------------------------
+  // The button was gated on a confirmed project artifact for a year, which
+  // meant a reader could mark up an article all afternoon and then had to
+  // retype the lot into the chat. This page is an ordinary article — no
+  // project, no council root, no draft — and the row belongs here too. What it
+  // must NOT do is promise edits: there is nothing here to edit.
+  {
+    // this pose has been resolving, deleting and answering threads for six
+    // hundred checks, so the round gets a comment of its own rather than
+    // whatever is left standing
+    RECORD.threads.push({ id: 't-review-1', quote: 'the walk back to the tram stop',
+      prefix: '', suffix: '', orphaned: false,
+      msgs: [stampMsg('is this the same walk as the one in the third paragraph?')] });
+    d.setPage(RECORD);
+    d.open('chat');
+    await sleep(80);
+    const sendBtn = () => S.querySelector('[data-act="send-review"]');
+    const openN = RECORD.threads.filter(t => !t.resolved && !t.addressed && (t.msgs || []).length).length;
+    check('an ordinary page carries the send-review row too', !!sendBtn());
+    check('…on the Page chat tab, where the round opens',
+      !!S.querySelector('.pane[data-pane="chat"] .reviewrow'));
+    check('…counting the comments it would send', openN > 0 &&
+      (sendBtn() || {}).textContent === 'send review (' + openN + ')');
+    check('…and promising a wrap-up rather than an edit, because nothing here is editable',
+      /then a wrap-up in page chat/.test((sendBtn() || {}).title || '')
+      && !/edit/.test((sendBtn() || {}).title || ''));
+    // a click on a control that is not there is worth one failed check, never
+    // the whole pose (see hitter)
+    const tap = hitter(check);
+    tap(sendBtn(), 'send review on an ordinary page');
+    await sleep(40);
+    check('it still asks first, inline', !!S.querySelector('.reviewrow.confirm'));
+    tap(S.querySelector('[data-act="review-yes"]'), 'confirm the round');
+    const round = await until(() => reviewRounds[reviewRounds.length - 1], 4000);
+    check('confirming opens a round: a preamble, one turn per comment, and a wrap-up',
+      !!round && round.turns.length === openN && !!round.wrapUp);
+    check('…whose preamble asks for answers, not for changes',
+      !!round && !/make the change/.test(round.preamble)
+      && /no change to anything is being asked for/.test(round.preamble));
+    check('…and the receipt says the round has one more step',
+      /one turn each, answered in the threads, then a wrap-up in the chat/.test(S.textContent || ''));
+    await until(() => /Round wrap-up/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''), 4000);
+    check('the wrap-up is a visible message in page chat, like the preamble',
+      /Round wrap-up/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''));
+  }
 
   const bad = out.filter(l => l[0] === '✗');
   logQuiet = true;

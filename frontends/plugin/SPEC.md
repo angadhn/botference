@@ -2171,6 +2171,11 @@ half-typed draft survives it.
 > placement, its confirm and its gates are exactly as described here, but the
 > ONE-TURN digest this section specifies is gone. A round is now a preamble turn
 > plus one turn per thread, and `workspace.reviewDigest` has been retired.
+>
+> **The "confirmed project artifact page" gate below is superseded** by "send
+> review on every page" (2026-09-02): the button and the endpoint are live on
+> every page the companion knows. An unconfirmed council root is still the one
+> refusal.
 
 A reader reviews a draft the way they always have: down the page, highlighting
 passages and writing in the margins. At the end of that pass they have twenty
@@ -8367,6 +8372,127 @@ reader reaches the drawer while staying in the page's own file. The handback
 strands nothing in either direction. Still one-way, still inherent: a comment
 the owner writes *in Discuss* does not appear in a plugin-less collaborator's
 margin.
+
+## Amendment (2026-09-02, shipped): send review on every page
+
+Send review was gated on a **confirmed project artifact page** from the day it
+shipped, and the gate was never the feature. A reader marking up an article, a
+paper on the web or a PDF off their own disk could leave twenty margin comments
+and then had exactly the problem the button was built to solve: retype the lot
+into the chat, one at a time. Everything under the button was already generic —
+the round is keyed on the page url, `startRound` names threads, `/round` and the
+strip count turn boundaries on a page — so the gate was a line in one endpoint
+and a missing row in one pane.
+
+**The gate now.** `POST /send-review` works on any page the companion has a
+record of: an article, a web PDF, a `bfp-pdf://` PDF on this machine, a project
+artifact. The refusals that stay: a guest **403**, a page the companion has
+never seen **404** (it was "not a project artifact page"), an artifact under an
+**unconfirmed** council root **409**, nothing open **400**, agents off
+`{queued:false, reason}`, and the double-click guard.
+
+### Two registers, because there are two kinds of page
+
+The wording was written for a draft — *make the change; the draft's files are
+yours to edit; the write rules on this turn say where*. On every other page the
+bots have deny-all file writes, so that text asks for something nothing can do,
+and a bot that tries has been set up to fail. So `reviewPreamble` and
+`reviewTurn` take an `editable` flag, passed down from `reviewFanout(page,
+{editable})` and decided in the endpoint by `!!art && art.confirmed`:
+
+- **editable** (a confirmed artifact): the wording that shipped, unchanged byte
+  for byte. A test pins it, because it is what makes "make the change" a thing
+  the bots do rather than a thing they discuss.
+- **not editable** (everything else): answer each comment on its own terms, in
+  its own thread; where a comment is a note the reader was making to themselves
+  rather than a question, say what it implies or flag what they ought to know
+  about that passage; keep each reply short; nothing here is a draft and no
+  change is being asked for. No sentence about writing files appears anywhere in
+  the round.
+
+The flag lives on the pure function, so both registers are testable with no
+server, no bridge and no browser — the same reason `reviewFanout` was pure.
+
+### The wrap-up turn (`reviewWrapUp`), off a draft only
+
+On a draft the round's product is the draft: the reader reads the diff, and the
+answers are scaffolding. On an article the product IS the answers, and twelve of
+them scattered down twelve threads is not something anyone can hold in their
+head. So a round on a non-editable page queues **one more turn into page chat**
+after the last per-thread turn — routed `@all` with `forceAll`, like the
+preamble, and appended as a real visible message, because a turn nobody can see
+asking for something reads as a bot going off on its own. It says: the comments
+above have each been answered in their own threads; pull them together here —
+what they add up to, anything that conflicts, what the reader most likely wants
+next; **do not repeat the per-thread answers**.
+
+**Queued last is run last**, and that needed nothing built: a page's turns are
+one FIFO lane (see "parallel turns" — a page is one session on one child), so
+the wrap-up cannot overtake the comments it is summarising.
+
+**It counts in the strip.** `startRound(url, page, threads, {wrap})` adds 1 to
+`total` and stores `quotes[__page__] = 'wrap-up'`, so the strip reads *"answering
+comment 3 of 3 “wrap-up”"* rather than naming a step with an empty quote. The
+preamble and the wrap-up have the same target, and the only thing that separates
+them is when they run — which the FIFO lane makes decisive: `roundTurn` treats a
+page-chat boundary as the preamble while comments are still pending, and as the
+wrap-up once they are not. A wrap-up that was refused is never counted, or the
+strip would spin for a turn that is not coming. The round now ends when the
+comments AND the wrap-up are done.
+
+### In the drawer
+
+The review row moves out of `archiveHtml` (which only ever renders on a
+confirmed project) and into the Page chat pane in its own right, drawn whenever
+the page can carry comments at all (`CAPS.highlights`). It is still hidden on an
+unconfirmed artifact root — the confirmation card is the only thing that should
+be asking anything there. The disabled state, its tooltip, the count, and the
+one-step inline confirm are unchanged.
+
+Two lines of wording follow the register, and the drawer works it out from what
+it already holds (`D.project && D.project.confirmed`) rather than from a new
+endpoint: the button's tooltip promises "…one turn each, answered in the
+threads, **then a wrap-up in page chat**" off a draft, and the receipt after
+sending says the same. `.reviewrow:first-child` drops the pull-up that tucked
+the row under an archive bar that is not there on an ordinary page.
+
+### Deliberately NOT built
+
+**Creating a project artifact out of an ordinary page.** A round on an article
+answers; it does not turn the article into a draft the bots may edit. Filing a
+page into a project, giving it a writable directory and a write scope is a
+different design with a different confirmation step, and quietly growing one out
+of the send-review button would be the wrong door to it.
+
+No settings UI, no per-page choice of register: the register follows from what
+the page IS, which is the only thing that can be right.
+
+### Testing
+
+`workspace.test.mjs` (120 → 141): the artifact register byte-identical to the
+one that shipped (explicitly, against `reviewPreamble` itself); the read-only
+register carrying no "make the change", no "yours to edit" and no write rules in
+any turn of the round; what it asks for instead; the wrap-up's presence off a
+draft and its absence on one; its singular wording; and, over the wire against
+the mock bridge on its own server, a round on an ordinary page — 200 with no
+project anywhere, `queued: 4` for two comments, four turns reaching the bridge,
+the wrap-up last with the page-chat envelope routed `@all`, both the preamble
+and the wrap-up visible as the reader's own messages, `total: 3` on the round,
+the round ending only when the wrap-up ends, every comment answered in its own
+thread, and a `bfp-pdf://` PDF getting the same round. The 404 test is now about
+a page the companion has no record of.
+
+In the browser, the base pose **`?selftest=1`** — which is an ordinary article,
+no project and no council root — gained the round (650 → 659): the row is there
+at all, on the Page chat tab, with the count, with a tooltip that promises a
+wrap-up and not an edit; the confirm; the round it opens (one turn per comment
+plus a wrap-up, and a preamble that asks for answers); the receipt naming the
+extra step; and the wrap-up landing in page chat as a visible message. The
+harness's fake `/send-review` follows the real gate. One assertion moved with
+the row: "the tasks card is at the very top of each pane" was reading
+`firstElementChild`, which made it a hostage to every row of pane chrome — the
+same correction the workspace pose made in 2026-08-24, for the same reason. All
+41 poses green.
 
 ## Out of scope for v1 (do not build)
 

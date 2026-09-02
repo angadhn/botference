@@ -922,16 +922,23 @@ function broadcastRound(url) {
   if (r) broadcast(roundPayload(url, r));
 }
 
-function startRound(url, page, threadIds) {
+function startRound(url, page, threadIds, { wrap = false } = {}) {
   const quotes = {};
   for (const id of threadIds) {
     const t = store.findThread(page, id);
     quotes[id] = t ? String(t.quote || '').slice(0, 160) : '';
   }
+  // the wrap-up is a step of the round and the strip must say so honestly: it
+  // is counted in the total, and its "quote" is the word wrap-up rather than
+  // the empty string a page-chat target would otherwise leave there
+  if (wrap) quotes[store.PAGE_CHAT] = 'wrap-up';
   rounds.set(url, {
     pending: new Set(threadIds),
+    // 1 while a wrap-up turn is still to come, 0 once it has run (or when the
+    // round has none — every round on an editable draft)
+    wrap_left: wrap ? 1 : 0,
     quotes,
-    total: threadIds.length,
+    total: threadIds.length + (wrap ? 1 : 0),
     answered: 0,
     current: null,
     started_at: new Date().toISOString(),
@@ -945,19 +952,30 @@ function startRound(url, page, threadIds) {
 // A turn boundary that belongs to a live round. The preamble turn (target =
 // page chat) is deliberately NOT one of these: it is the round announcing
 // itself, and the strip already says "starting" while nothing is in flight.
+//
+// The WRAP-UP turn is also aimed at page chat, so the two have the same target
+// and the only thing that tells them apart is when they run. That is enough,
+// and it is not a guess: a page's turns are one FIFO lane (see "parallel turns"
+// — a page is one session on one child), and /send-review queues the preamble,
+// then the per-thread turns, then the wrap-up. So a page-chat boundary while
+// comments are still pending is the preamble; one after they have all been
+// answered is the wrap-up.
 function roundTurn(ev, phase) {
   const r = ev && ev.url ? rounds.get(ev.url) : null;
   if (!r || r.done_at) return;
   const id = ev.target;
-  if (!id || !r.pending.has(id)) return;
+  if (!id) return;
+  const isWrap = !!r.wrap_left && id === store.PAGE_CHAT && !r.pending.size;
+  if (!isWrap && !r.pending.has(id)) return;
   if (phase === 'start') { r.current = id; broadcastRound(ev.url); return; }
-  r.pending.delete(id);
+  if (isWrap) r.wrap_left = 0;
+  else r.pending.delete(id);
   r.answered++;
   r.current = null;
   // The round is over when nothing is left to answer. Note this counts a turn
   // the bridge STRANDED (chat.mjs emits turn-end for every job it drops), which
   // is right: the strip must not spin forever because a bridge died.
-  if (!r.pending.size) {
+  if (!r.pending.size && !r.wrap_left) {
     r.done_at = new Date().toISOString();
     setTimeout(() => {
       const still = rounds.get(ev.url);
@@ -2522,7 +2540,7 @@ export function handler(req, res) {
   }
 
   // --- handing the whole margin review over ------------------------------
-  // The reader has been down the draft leaving comments in the margins. This
+  // The reader has been down the page leaving comments in the margins. This
   // is the one button that gives all of it to the bots at once — and it FANS
   // OUT: one preamble turn into page chat saying a round is starting, then one
   // turn per OPEN thread, each queued AGAINST THAT THREAD, in page order
@@ -2560,10 +2578,23 @@ export function handler(req, res) {
       if (!me) return;
       const u = store.normUrl(String(data.url || ''));
       const art = u ? artifactOf(u) : null;
-      if (!art) return fail(res, 404, 'not a project artifact page');
-      if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
-      const page = store.readPage(u);
-      const fan = page ? workspace.reviewFanout(page) : null;
+      // A round is not a thing only drafts can have. Any page the companion
+      // knows can be reviewed — an article, a web PDF, a PDF on this machine,
+      // a project artifact — because the machinery underneath is keyed on the
+      // page url and never cared. What differs is the WORDING (see below) and
+      // the wrap-up turn, not the gate. The one page that still refuses is an
+      // artifact under a council root the reader has not vouched for: no turn
+      // of any kind is queued there until they do.
+      if (art && !art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+      const page = u ? store.readPage(u) : null;
+      if (!page) return fail(res, 404, 'the companion has no record of this page');
+      // Which register the round is written in, and whether it ends with a
+      // wrap-up: on a confirmed artifact the draft's files are the bots' to
+      // edit and the round asks for edits; everywhere else the bots have
+      // deny-all file writes, so the round asks for answers and then for one
+      // turn that pulls them together.
+      const editable = !!art && art.confirmed;
+      const fan = workspace.reviewFanout(page, { editable });
       if (!fan) {
         return fail(res, 400, 'no open comments to send — highlight something and comment first, or reopen a filed thread');
       }
@@ -2595,15 +2626,31 @@ export function handler(req, res) {
         const s = summon(page, t.thread_id, t.text, { quote: t.quote, history: t.history }, me);
         if (s.queued) threads.push(t.thread_id);
       }
+      // …and, on a page nobody can edit, one last turn into page chat that adds
+      // the answers up. It is queued LAST and that is all it takes to make it
+      // run last: a page's turns are one FIFO lane (see "parallel turns"), so
+      // it cannot overtake the comments it is summarising. Like the preamble it
+      // is a real, visible message — a turn the reader cannot see asking for
+      // something is a bot talking to itself.
+      let wrapped = false;
+      if (fan.wrapUp && threads.length) {
+        store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: fan.wrapUp });
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+        wrapped = !!summon(page, store.PAGE_CHAT, fan.wrapUp, { forceAll: true }, me).queued;
+      }
       // …and the round itself, as a thing with a length and a position in it.
       // Started here rather than on the first turn boundary because THIS is
       // where the queue is known: the strip can say "0 of 12" while the
-      // preamble is still going out.
-      if (threads.length) startRound(page.url, page, threads);
+      // preamble is still going out. The wrap-up is counted (it is a step the
+      // reader is waiting on); a wrap-up that was never queued is not, or the
+      // strip would spin for a turn that is never coming.
+      if (threads.length) startRound(page.url, page, threads, { wrap: wrapped });
       // `queued` is the number of TURNS this round put in the queue — the
-      // preamble plus one per thread — and `threads` names the threads they are
-      // addressed to, which is what lets the drawer spin the right cards.
-      ok(res, { msg, ...counts, queued: threads.length + 1, threads });
+      // preamble, one per thread, and the wrap-up where there is one — and
+      // `threads` names the threads they are addressed to, which is what lets
+      // the drawer spin the right cards.
+      ok(res, { msg, ...counts, queued: threads.length + 1 + (wrapped ? 1 : 0), threads });
     });
   }
 

@@ -169,7 +169,9 @@
 //                                        comment thread on this page to the
 //                                        bots as a ROUND: one preamble turn in
 //                                        page chat, then one turn per thread,
-//                                        each answered IN that thread. `queued`
+//                                        each answered IN that thread — and,
+//                                        on a page with no draft behind it, a
+//                                        wrap-up turn last. `queued`
 //                                        counts the turns; `threads` names the
 //                                        ones with a turn coming. The companion
 //                                        writes every word of it; nothing is
@@ -3534,9 +3536,23 @@ ${markPickHtml()}
     // three buttons do not fit across a drawer that is often 320px wide, and
     // partly because it is not a chat control at all: the bar above says which
     // conversation you are in, and this says something about the DRAFT.
+    //
+    // On EVERY page that can carry comments, not only on a draft. An article,
+    // a PDF on the web, a PDF on this machine: the reader has margins there
+    // too, and the round underneath was always keyed on the page rather than
+    // on the project. What changes off a draft is what the round asks for —
+    // answers rather than edits, and a wrap-up at the end (the server picks the
+    // wording; see /send-review). The one page that still shows nothing is an
+    // artifact under a council root nobody has vouched for yet: the
+    // confirmation card is the only thing that should be asking anything there.
     function reviewHtml() {
+      if (!CAPS.highlights) return '';        // nothing can be commented on here
+      if (D.project && !D.project.confirmed) return '';
       const r = D.review;
       const n = openThreadCount();
+      // what the button may honestly promise: edits only where there is a
+      // draft to edit, which is a confirmed project artifact and nowhere else
+      const editable = !!(D.project && D.project.confirmed);
       const inner = r.busy
         ? `<span class="rvnote busy">handing ${n} comment${n === 1 ? '' : 's'} to the bots…</span>`
         : r.confirm
@@ -3545,7 +3561,9 @@ ${markPickHtml()}
              <button class="rebtn" data-act="review-no" type="button">no</button>`
           : `<button class="archsend" data-act="send-review" type="button"
                title="${esc(n
-                 ? `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads`
+                 ? (editable
+                   ? `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads`
+                   : `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads, then a wrap-up in page chat`)
                  : 'nothing to send yet — this page has no open comments. Highlight a passage and comment on it first.')}"${n ? '' : ' disabled'}>send review${n ? ` (${n})` : ''}</button>`
             + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
               : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
@@ -3564,7 +3582,7 @@ ${markPickHtml()}
           <span class="archnow">${esc(now || 'new chat')}</span><span class="chev">${D.picking ? '▴' : '▾'}</span></button>
         <button class="archnew" data-act="arch-new" type="button"
           title="start a new chat in this project"${a.busy ? ' disabled' : ''}>+ new</button>
-      </div>` + reviewHtml();
+      </div>`;
       if (!D.picking) return bar;
       let body;
       if (a.loading) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
@@ -3611,7 +3629,7 @@ ${markPickHtml()}
       const empty = D.project
         ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — plain text goes to both bots, or tag one. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
-      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + blogHtml()
+      D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + reviewHtml() + blogHtml()
         + projectTaskCardHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         ${body ? `<div class="thread">${body}</div>` : empty}
         ${statusHtml(PAGE_TARGET)}
@@ -3697,9 +3715,13 @@ ${markPickHtml()}
           if (D.running[id]) continue;   // this one is already under way
           D.notes[id] = { text: 'queued in this review round…', transient: true, bots: botsIn(id) };
         }
+        // off a draft the round has one more step, and the receipt says so —
+        // otherwise the wrap-up arriving in page chat looks like a bot going
+        // off on its own
+        const tail = (D.project && D.project.confirmed) ? '' : ', then a wrap-up in the chat';
         r.note = a.omitted
           ? `sent ${a.sent} of ${a.total} comments — one turn each; send review again for the other ${a.omitted}`
-          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads`;
+          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads${tail}`;
       }
       // The round OPENS in page chat (the preamble is the last thing in the
       // pane) and the answers land on Comments. Landing here, where the button

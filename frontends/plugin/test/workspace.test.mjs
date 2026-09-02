@@ -1499,6 +1499,83 @@ await test('one enormous thread still goes: a cap that sends nothing is a dead b
   assert.equal(f.omitted, 0);
 });
 
+// --- the two registers ---------------------------------------------------
+// A round is sent on two kinds of page. On a confirmed project artifact the
+// draft's files are the bots' to edit and the round asks for edits. Everywhere
+// else — an article, a web PDF, a PDF on this machine — the bots have deny-all
+// file writes, so a round that asked for a change would be asking for something
+// nothing can do. `editable` picks the register, and it is a flag on the pure
+// function so both wordings are testable without a server.
+console.log('\nsend review — the read-only register');
+
+// The artifact wording is load-bearing (it is what makes "make the change" a
+// thing the bots do rather than a thing they discuss) and it is the wording
+// that shipped. Nothing about this feature was allowed to move a byte of it.
+await test('the artifact register is unchanged, byte for byte', async () => {
+  const threads = [
+    revThread('the truss', [{ author: 'angadh', text: 'this mass looks wrong' }]),
+    revThread('the radiator', [{ author: 'angadh', text: 'cite a source' }]),
+  ];
+  const before = ws.reviewFanout(revPage(threads));
+  const explicit = ws.reviewFanout(revPage(threads), { editable: true });
+  assert.equal(before.preamble, explicit.preamble, 'editable is the default, and it is the old text');
+  assert.equal(before.turns[0].text, explicit.turns[0].text);
+  assert.equal(before.preamble, ws.reviewPreamble(2, 0), 'and the preamble helper agrees');
+  assert.ok(/make the change it calls for/.test(before.preamble));
+  assert.ok(/files are yours to edit/.test(before.turns[0].text));
+  assert.equal(before.wrapUp, null, 'a draft round ends with the last edit, not with a summary');
+});
+
+await test('off a draft, no turn of the round asks for a change', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('the tunnel', [{ author: 'angadh', text: 'is this the same tunnel as chapter 2?' }]),
+    revThread('a note', [{ author: 'angadh', text: 'check this against the 2019 paper' }]),
+  ]), { editable: false });
+  const every = [f.preamble, ...f.turns.map(t => t.text), f.wrapUp];
+  for (const text of every) {
+    assert.ok(!/make the change/i.test(text), 'nothing here can be changed');
+    assert.ok(!/yours to edit/i.test(text));
+    assert.ok(!/write rules/i.test(text), 'and the write rules on this page are deny-all');
+  }
+});
+
+await test('…it asks for an answer, in that comment’s own thread', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('the tunnel', [{ author: 'angadh', text: 'is this the same tunnel as chapter 2?' }]),
+  ]), { editable: false });
+  assert.ok(/^Review round:/.test(f.preamble));
+  assert.ok(/1 comment follows this message/.test(f.preamble));
+  assert.ok(/comment's own\s+thread/.test(f.preamble.replace(/\n/g, ' ')) || /own thread/.test(f.preamble));
+  assert.ok(/note I was making to myself/.test(f.preamble),
+    'a margin note is not always a question, and the bots are told what to do with one');
+  assert.ok(/Keep each reply\s+short/.test(f.preamble.replace(/\n/g, ' ')) || /short/.test(f.preamble));
+  const t = f.turns[0].text;
+  assert.ok(/review round . comment 1 of 1/.test(t), 'it is still a numbered turn in a round');
+  assert.ok(/Answer this point on its own terms/.test(t));
+  assert.ok(/note I was making to myself/.test(t));
+  assert.ok(/nothing here to change/.test(t));
+});
+
+await test('…and it ends with ONE wrap-up turn that adds the answers up', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('one', [{ author: 'a', text: 'first' }]),
+    revThread('two', [{ author: 'a', text: 'second' }]),
+    revThread('three', [{ author: 'a', text: 'third' }]),
+  ]), { editable: false });
+  assert.ok(f.wrapUp, 'the answers are the product here, and they are scattered down three threads');
+  assert.ok(/^Round wrap-up: the 3 comments above have each been answered/.test(f.wrapUp));
+  assert.ok(/Do not repeat the per-thread answers/.test(f.wrapUp), 'it is a view across them, not a rerun');
+  assert.ok(!/--- comment/.test(f.wrapUp) && !/first/.test(f.wrapUp),
+    'and it carries no comment text: the bots have just answered every one of them');
+  assert.ok(/^Round wrap-up: the comment above has been answered in its own thread/
+    .test(ws.reviewWrapUp(1)), 'one comment reads as one comment');
+});
+
+await test('the preamble promises the wrap-up, so it is not a bot going off on its own', async () => {
+  const f = ws.reviewFanout(revPage([revThread('one', [{ author: 'a', text: 'x' }])]), { editable: false });
+  assert.ok(/wrap-up here in page chat/.test(f.preamble));
+});
+
 console.log('\nsend review — who each turn is addressed to');
 
 await test('a turn is the room’s by default', async () => {
@@ -1576,11 +1653,12 @@ console.log('\ncompanion — POST /send-review');
     assert.equal(inputs(logFile).length, 0);
   });
 
-  await test('a page that is not an artifact is a 404', async () => {
-    const u = 'https://example.test/ordinary';
-    await POST(base, '/page', { url: u, title: 'Ordinary', site: 'example.test' });
-    await POST(base, '/thread', { url: u, quote: 'something', msg: { text: 'a note' } });
-    const r = await POST(base, '/send-review', { url: u });
+  // A page the companion has never seen has no comments to send, and saying
+  // "no open comments" about a page it holds no record of would be a small
+  // lie. (A page it DOES know is a round now, artifact or not — see the
+  // ordinary-page block below.)
+  await test('a page the companion has no record of is a 404', async () => {
+    const r = await POST(base, '/send-review', { url: 'https://example.test/never-seen' });
     assert.equal(r.status, 404);
   });
 
@@ -1777,6 +1855,122 @@ console.log('\ncompanion — POST /send-review');
     const r = await POST(h.base, '/send-review', { url: a.url }, guest);
     assert.equal(r.status, 403);
     h.proc.kill();
+  });
+}
+
+// --- a round on a page with no draft behind it ---------------------------
+// The button was gated on "confirmed project artifact" for a year, which meant
+// the reader could mark up an article or a PDF all afternoon and then had to
+// retype the lot into the chat. Nothing underneath ever needed the gate: the
+// round is keyed on the page url. So the gate is gone, and what a page with no
+// draft gets instead is the read-only register plus one wrap-up turn.
+//
+// Its own server, on purpose: these turns say "review round" too, and the
+// artifact block above counts the lines in a shared bridge log.
+console.log('\ncompanion — POST /send-review on a page with no draft');
+
+{
+  const workspaceRoot = tmp('review-ordinary');
+  const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const { base } = await startServer({
+    root: workspaceRoot,
+    env: {
+      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+      MOCK_BRIDGE_LOG: logFile,
+    },
+  });
+
+  const ART = 'https://example.test/the-long-quarter';
+  let ids = [];
+  let turns = [];
+
+  await test('an ordinary web page with no comments is still a friendly 400', async () => {
+    await POST(base, '/page', { url: ART, title: 'The Long Quarter', site: 'example.test' });
+    const r = await POST(base, '/send-review', { url: ART });
+    assert.equal(r.status, 400);
+    assert.ok(/no open comments/.test(r.json.error));
+  });
+
+  await test('…and with comments it is a ROUND: preamble, one turn each, wrap-up', async () => {
+    fs.writeFileSync(logFile, '');
+    const t1 = (await POST(base, '/thread', { url: ART, quote: 'the tunnel under the river',
+      msg: { text: 'is this the same tunnel as chapter 2?' } })).json.thread;
+    const t2 = (await POST(base, '/thread', { url: ART, quote: 'the second estimate',
+      msg: { text: 'check this against the 2019 paper' } })).json.thread;
+    ids = [t1.id, t2.id];
+    const r = await POST(base, '/send-review', { url: ART });
+    assert.equal(r.status, 200, 'no artifact, no project, no council root — and it goes');
+    assert.equal(r.json.sent, 2);
+    assert.equal(r.json.queued, 4, 'the preamble, one turn per comment, and the wrap-up');
+    assert.deepEqual(r.json.threads, ids);
+    await waitFor(() => inputs(logFile).filter(t => /review round|Round wrap-up/i.test(t)).length === 4,
+      'four turns of the round reaching the bridge');
+    turns = inputs(logFile).filter(t => /review round|Round wrap-up/i.test(t));
+  });
+
+  await test('no turn of that round asks for an edit — there is nothing here to edit', async () => {
+    for (const t of turns) {
+      assert.ok(!/make the change/i.test(t), 'the bots have deny-all writes on this page');
+      assert.ok(!/yours to edit/i.test(t));
+    }
+    assert.ok(/Answer this point on its own terms/.test(turns[1]));
+    assert.ok(/note I was making to myself/.test(turns[1]),
+      'a margin note is not always a question');
+  });
+
+  await test('the wrap-up goes LAST, into page chat, routed @all', async () => {
+    assert.ok(/Round wrap-up/.test(turns[3]), 'queued last is run last: a page is one FIFO lane');
+    assert.ok(/^@all /.test(turns[3]), 'the room, like the preamble');
+    assert.ok(/asked about this page/.test(turns[3]), 'the page-chat envelope, not a thread’s');
+    assert.ok(/Do not repeat the per-thread answers/.test(turns[3]));
+  });
+
+  await test('…and it is a visible message, not a hidden prompt', async () => {
+    const page = (await GET(base, '/page?url=' + enc(ART))).json;
+    const mine = (page.page_chat || []).filter(m => !/^(claude|codex)/i.test(m.author));
+    assert.equal(mine.length, 2, 'the preamble and the wrap-up, both the reader’s own');
+    assert.ok(/Review round:/.test(mine[0].text));
+    assert.ok(/Round wrap-up/.test(mine[1].text));
+  });
+
+  await test('the strip counts the wrap-up as a step, and names it', async () => {
+    const r = (await GET(base, '/round?url=' + enc(ART))).json.round;
+    assert.ok(r);
+    assert.equal(r.total, 3, 'two comments and the wrap-up — the reader is waiting on all three');
+  });
+
+  await test('…and the round ENDS when the wrap-up ends, not before', async () => {
+    const r = await waitFor(async () => {
+      const got = (await GET(base, '/round?url=' + enc(ART))).json.round;
+      return got && !got.running ? got : null;
+    }, 'the round finishing');
+    assert.equal(r.answered, 3, 'the wrap-up is answered like any other step');
+    assert.ok(r.done_at);
+  });
+
+  await test('every comment was answered in its own thread, wrap-up or not', async () => {
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(ART))).json;
+      return ids.every(id => {
+        const t = (page.threads || []).find(x => x.id === id);
+        return t && (t.msgs || []).some(m => /^(claude|codex)/i.test(m.author));
+      });
+    }, 'a bot reply in each thread');
+  });
+
+  // A PDF the reader opened off their own disk is a page like any other, and
+  // the identity is the SHA-256 of its bytes rather than a path. "It is only a
+  // url" is exactly the sort of claim that turns out to have an https regex
+  // hiding behind it, so it is asserted rather than assumed.
+  await test('a local PDF gets a round too — its key is a hash, not an address', async () => {
+    const PDF = 'bfp-pdf://sha256/' + 'a'.repeat(64);
+    await POST(base, '/page', { url: PDF, title: 'The Quiet Machine', site: 'local pdf', kind: 'pdf' });
+    await POST(base, '/thread', { url: PDF, page: 4, quote: 'the radiator area',
+      msg: { text: 'where does this number come from?' } });
+    const r = await POST(base, '/send-review', { url: PDF });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.sent, 1);
+    assert.equal(r.json.queued, 3, 'the preamble, the one comment, and the wrap-up');
   });
 }
 

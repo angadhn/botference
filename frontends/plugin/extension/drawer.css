@@ -297,6 +297,9 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   margin: -4px 0 8px; min-height: 24px;
   font: 12px/1.5 var(--sans); color: var(--muted);
 }
+/* …and on a page with no archive bar above it (an article, a PDF) there is
+   nothing to tuck under, so the pull-up comes off. */
+.reviewrow:first-child { margin-top: 0 }
 .archsend { flex: none; padding: 5px 9px; font: 12px/1.3 var(--sans) }
 .archsend:not([disabled]):hover { border-color: var(--accent); color: var(--accent) }
 .archsend[disabled] { opacity: .4; cursor: default }

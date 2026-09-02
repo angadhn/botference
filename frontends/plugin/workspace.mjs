@@ -1020,11 +1020,32 @@ export function reviewRoute(t) {
 // council's own chat record that a round took place, and it is where any
 // cross-comment context lives (a bot reading comment 7 has the round's terms in
 // the session, not just the one comment in front of it).
-export function reviewPreamble(sent, omitted = 0) {
+//
+// TWO REGISTERS, because a round is sent on two very different kinds of page.
+// On a confirmed project artifact the draft's files are the bots' to edit, and
+// the round asks for edits. Everywhere else — an article, a web PDF, a PDF on
+// this machine — there is no draft and the bots have deny-all file writes, so
+// asking for a change would be asking for something nothing can do. There the
+// round asks for answers, and it says so. (`editable` picks the register; the
+// artifact wording is unchanged, byte for byte, from the day it shipped.)
+export function reviewPreamble(sent, omitted = 0, editable = true) {
   const more = omitted
     ? ` (…and ${omitted} more open comment thread${omitted === 1 ? '' : 's'} did not fit in this `
       + `round — send review again after these.)`
     : '';
+  if (!editable) {
+    return `Review round: I have been down this page leaving comments in the margins. `
+      + `${sent} comment${sent === 1 ? '' : 's'} follow${sent === 1 ? 's' : ''} this message, `
+      + `in page order, one turn each${more}\n\n`
+      + `Answer each one on its own terms. Each of those turns is posted into that comment's own `
+      + `thread, so reply to the comment in front of you and nothing else. Where a comment asks a `
+      + `question, answer it; where it is a note I was making to myself rather than a question, say `
+      + `what it implies, or flag anything I ought to know about that passage. Keep each reply `
+      + `short. Nothing here is a draft of mine and no change to anything is being asked for — the `
+      + `reply is the whole of the work.\n\n`
+      + `Nothing is resolved by any of this — I file the threads myself once I am satisfied. After `
+      + `the last comment I will ask for a short wrap-up here in page chat.`;
+  }
   return `Review round: I have been down this draft leaving comments in the margins. `
     + `${sent} comment${sent === 1 ? '' : 's'} follow${sent === 1 ? 's' : ''} this message, `
     + `in page order, one turn each${more}\n\n`
@@ -1044,7 +1065,7 @@ export function reviewPreamble(sent, omitted = 0) {
 // already ends with "Your reply text is posted directly into the comment
 // thread" — so all this text adds is the one line of round context, and the
 // route tag that decides who answers.
-function reviewTurn(t, n, total) {
+function reviewTurn(t, n, total, editable = true) {
   const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');
   const shown = msgs.slice(-REVIEW_MSGS_PER_THREAD);
   const dropped = msgs.length - shown.length;
@@ -1061,7 +1082,15 @@ function reviewTurn(t, n, total) {
     // one comment is not asking for four thousand to ride every turn of a round
     quote: clip(t.quote, REVIEW_QUOTE_MAX),
     history: shown.map(m => ({ author: m.author, text: clip(m.text, REVIEW_MSG_MAX) })),
-    text: `${reviewRoute(t)} [review round · comment ${n} of ${total}] `
+    text: !editable
+      ? `${reviewRoute(t)} [review round · comment ${n} of ${total}] `
+        + `This is part of the review round I just opened in the chat, and this turn is this one `
+        + `comment. Answer this point on its own terms, here in its thread: where it asks a `
+        + `question, answer it; where it is a note I was making to myself rather than a question, `
+        + `say what it implies, or flag anything I ought to know about the passage above. Keep it `
+        + `short. There is nothing here to change — the reply is the whole of the work.`
+        + `${orph}${cut}`
+      : `${reviewRoute(t)} [review round · comment ${n} of ${total}] `
       + `This is part of the review round I just opened in the chat, and this turn is this one `
       + `comment. Work this point through: where it calls for a change, MAKE the change (the `
       + `draft's files are yours to edit — the write rules on this turn say where) and say what `
@@ -1073,12 +1102,34 @@ function reviewTurn(t, n, total) {
   };
 }
 
-// Returns {preamble, turns, sent, omitted, total} — or null when there is
-// nothing open to send, which the endpoint turns into a friendly 400 rather
+// The last turn of a round on a page nobody can edit.
+//
+// On a draft, the round's product is the draft: the reader reads the diff and
+// the answers are scaffolding. On an article or a PDF there is no diff, so the
+// round's product is the answers — and twelve answers scattered down twelve
+// threads is not something a reader can hold in their head. This turn is where
+// they add up. It goes into page chat, addressed to the room, after every
+// per-thread turn, and it is deliberately told NOT to repeat them.
+export function reviewWrapUp(sent) {
+  const above = sent === 1
+    ? `the comment above has been answered in its own thread`
+    : `the ${sent} comments above have each been answered in their own threads`;
+  return `Round wrap-up: ${above}, and this turn runs after the last of those answers. Pull them `
+    + `together here in page chat: what they add up to, anything in them that conflicts, and what I `
+    + `most likely want next. Do not repeat the per-thread answers — this is the short view across `
+    + `all of them.`;
+}
+
+// Returns {preamble, turns, wrapUp, sent, omitted, total} — or null when there
+// is nothing open to send, which the endpoint turns into a friendly 400 rather
 // than an empty round. Pure, so every rule about which threads go, in what
 // order, addressed to whom and clipped how is testable without a server, a
 // bridge or a browser, and lives in exactly one place.
-export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX } = {}) {
+//
+// `editable` is the register (see reviewPreamble): true on a confirmed project
+// artifact, where the draft's files are the bots' to edit; false everywhere
+// else, where the round asks for answers and ends with the wrap-up turn.
+export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX, editable = true } = {}) {
   const threads = openThreads(page);
   if (!threads.length) return null;
   const total = threads.length;
@@ -1088,8 +1139,11 @@ export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX } = {}) {
     // …and never a silent truncation: the preamble says how many did not fit,
     // because the reader is looking at the same threads in the Comments tab and
     // would otherwise have no way to know which the bots were never shown.
-    preamble: reviewPreamble(taken.length, omitted),
-    turns: taken.map((t, i) => reviewTurn(t, i + 1, taken.length)),
+    preamble: reviewPreamble(taken.length, omitted, editable),
+    turns: taken.map((t, i) => reviewTurn(t, i + 1, taken.length, editable)),
+    // no wrap-up on a draft: there the round ends with the last edit, and the
+    // reader's next move is the diff, not a summary
+    wrapUp: editable ? null : reviewWrapUp(taken.length),
     sent: taken.length,
     omitted,
     total,
