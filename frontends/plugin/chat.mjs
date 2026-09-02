@@ -806,7 +806,10 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
 
   function command() {
     if (process.env.PLUGIN_BRIDGE_CMD) return JSON.parse(process.env.PLUGIN_BRIDGE_CMD);
-    const py = process.env.BOTFERENCE_PYTHON_BIN || 'python3';
+    // the same two names run.mjs's `pythonBin` reads, in the same order of
+    // precedence, so a reader who sets either gets the bridge AND their /run
+    // blocks on one interpreter
+    const py = process.env.BOTFERENCE_PYTHON_BIN || process.env.PLUGIN_PYTHON || 'python3';
     // --task-file is required by the bridge's argparse (exit 2 without it);
     // the task itself is thin — the system prompt carries the role
     const taskFile = path.join(ROOT, '.botference', 'plugin', '.chat-task.md');

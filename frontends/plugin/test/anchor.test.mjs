@@ -9,11 +9,18 @@
 
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const A = require(path.join(here, '..', 'extension', 'anchor.js'));
+
+// Section 9 imports store.mjs to pin the newWording twins against each other,
+// and store.mjs resolves a workspace at import time. A throwaway root keeps
+// even an accidental write out of the developer's real .botference.
+process.env.BOTFERENCE_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-anchor-'));
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -203,6 +210,66 @@ const PAGE = [
     amb.ok === false && amb.reason === 'ambiguous');
 
   ok('the cap is a prose span, not a page', A.WAS_MAX === 600);
+}
+
+// ---- 9. the twins agree — anchor.js vs store.mjs ----------------------------
+// Both files carry this rule and both carry a comment telling the next reader
+// to keep them in step. For most of a year that comment was the only thing
+// holding them together, and it did not: the companion learned three extra
+// phrasings ("rewrote it to:", "changed it to:", "updated to:") and the browser
+// did not, so a bot using one of them produced a re-anchor the companion would
+// happily authorize and the page never offered. The thread orphaned instead of
+// following the rewrite, silently, and no test anywhere could see it — each
+// file's copy was tested only against itself.
+//
+// This is the "▸ more" treatment: the regex source pinned character for
+// character, and then the two implementations run over the same table of
+// messages and required to answer the same. The extension cannot import from
+// store.mjs, so the duplication stays — what changes is that drift now fails a
+// test instead of quietly costing a feature.
+{
+  const Store = await import(path.join(here, '..', 'store.mjs'));
+
+  ok('the regex is the same rule in both files, character for character',
+    A.NEW_WORDING_RE.source === Store.NEW_WORDING_RE.source,
+    'anchor.js  ' + A.NEW_WORDING_RE.source + '\n      store.mjs  ' + Store.NEW_WORDING_RE.source
+    + '\n      they have drifted — bring the copies together, do not fix the test');
+  ok('…and the same flags', A.NEW_WORDING_RE.flags === Store.NEW_WORDING_RE.flags);
+
+  // The seven phrasings the rule accepts, the ones it must not, and the author
+  // and kind gates around it. Every row is asserted against BOTH copies.
+  const W = 'the walk back was quiet, and unhurried';
+  const rows = [
+    ['now reads', [{ author: 'claude', ts: '1', text: 'Done — this passage now reads: "' + W + '"' }], W],
+    ['reads now', [{ author: 'claude', ts: '1', text: 'reads now: "' + W + '"' }], W],
+    ['now says', [{ author: 'codex', ts: '1', text: 'now says "' + W + '"' }], W],
+    ['new wording is', [{ author: 'claude', ts: '1', text: 'new wording is "' + W + '"' }], W],
+    // the three the browser used to miss — this is the bug, pinned
+    ['rewrote it to', [{ author: 'claude', ts: '1', text: 'rewrote it to: "' + W + '"' }], W],
+    ['reworded that line as', [{ author: 'codex', ts: '1', text: 'reworded that line as — "' + W + '"' }], W],
+    ['changed it to', [{ author: 'claude', ts: '1', text: 'changed it to: "' + W + '"' }], W],
+    ['updated to', [{ author: 'claude', ts: '1', text: 'updated to: "' + W + '"' }], W],
+    ['rewritten', [{ author: 'claude', ts: '1', text: 'rewritten, and it is now: “' + W + '”' }], W],
+    ['the last bot word wins', [
+      { author: 'claude', ts: '1', text: 'now reads: "first try"' },
+      { author: 'codex', ts: '2', text: 'rewrote it to: "second try"' },
+    ], 'second try'],
+    ['a reader claims nothing', [{ author: 'angadh', ts: '1', text: 'it now reads: "whatever I like"' }], ''],
+    ['a tools line claims nothing', [{ author: 'claude', ts: '1', kind: 'tools', text: 'now reads: "x y z"' }], ''],
+    ['"claudette" is not a bot', [{ author: 'claudette', ts: '1', text: 'now reads: "not hers to say"' }], ''],
+    ['a quote about a quote claims nothing', [{ author: 'claude', ts: '1',
+      text: 'you asked whether "structural failure of oversight" is a quote. It is a paraphrase.' }], ''],
+    ['a reply about nothing else', [{ author: 'claude', ts: '1', text: 'Fixed the units.' }], ''],
+    ['no messages', [], ''],
+  ];
+  for (const [label, msgs, want] of rows) {
+    const a = A.newWording({ id: 't1', msgs });
+    const s = Store.newWording({ id: 't1', msgs });
+    ok('twins: ' + label + ' — anchor.js', a === want, 'got ' + JSON.stringify(a));
+    ok('twins: ' + label + ' — store.mjs', s === want, 'got ' + JSON.stringify(s));
+  }
+  ok('twins: neither reads a null thread',
+    A.newWording(null) === '' && Store.newWording(null) === '');
 }
 
 // ---- report -----------------------------------------------------------------

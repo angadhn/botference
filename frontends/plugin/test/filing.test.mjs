@@ -309,6 +309,24 @@ await test('markdown around the line does not hide it, and the last one wins', a
     'journal-submissions', 'the last word is the bot’s final answer');
 });
 
+// The bug this closes: the reason was run through a WHOLE-LINE strip of
+// backticks, asterisks and underscores, so a bot naming the file it read or
+// emphasising a word had the markup taken out of `why` before the reader saw
+// it. store.mjs had already fixed this for its own marker lines and written
+// down why; this parser was still carrying the old copy.
+await test('a reason keeps the markdown that is INSIDE it', async () => {
+  const roster = [{ id: 'adriana-paper', root: '/r', title: 'A' }];
+  assert.equal(
+    ws.parseSuggestion('file-in: adriana-paper — it answers `methods.tex`', roster).why,
+    'it answers `methods.tex`');
+  assert.equal(
+    ws.parseSuggestion('file-in: adriana-paper — the *whole* second half', roster).why,
+    'the *whole* second half');
+  // …while the decoration AROUND the line still comes off, both ways round
+  assert.equal(ws.parseSuggestion('- `file-in: adriana-paper — why`', roster).why, 'why');
+  assert.equal(ws.parseSuggestion('**file-in: adriana-paper — why**', roster).why, 'why');
+});
+
 console.log('\nfiling — end to end, against a companion');
 
 {

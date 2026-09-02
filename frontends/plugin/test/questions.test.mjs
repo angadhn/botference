@@ -357,6 +357,14 @@ await test('a line of its own, the last one counting, markdown stripped', () => 
     'the LLN is asymptotic');
   assert.equal(Q.parseQuestionSuggestion('question: first\nmore words\nquestion: second').why, 'second');
 });
+// …stripped off the ENDS. The markup a bot puts inside the reason is part of
+// the reason: this parser used to run a whole-line strip and quietly ate it.
+await test('the markdown INSIDE the reason survives', () => {
+  assert.equal(Q.parseQuestionSuggestion('question: why `p < 0.05` is a convention').why,
+    'why `p < 0.05` is a convention');
+  assert.equal(Q.parseQuestionSuggestion('question: the *asymptotic* part').why,
+    'the *asymptotic* part');
+});
 await test('a bare marker is a model echoing the convention, not concluding anything', () => {
   assert.equal(Q.parseQuestionSuggestion('question:'), null);
   assert.equal(Q.parseQuestionSuggestion('a question: is it though'), null,

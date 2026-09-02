@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readConfig, saveConfig } from './store.mjs';
+import { readConfig, saveConfig, unwrapLine } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
 // and two copies of that rule could disagree about who a thread belongs to
@@ -888,6 +888,19 @@ export function suggestBlock(roster) {
  * that invents a project name gets ignored rather than producing a button that
  * files a page nowhere.
  */
+// One line, two ways of reading it; the first that names a project we know is
+// the answer. See the note at the call site for why there are two.
+function pick(re, candidates, known) {
+  for (const line of candidates) {
+    const m = re.exec(line);
+    if (!m) continue;
+    const id = String(m[1] || '').replace(/[.,;:]+$/, '');
+    const hit = known.get(id);
+    if (hit) return { id, hit, why: m[2] || '' };
+  }
+  return null;
+}
+
 export function parseSuggestion(text, roster) {
   const known = new Map(
     (Array.isArray(roster) ? roster : []).map(p => [String(p.id), p]),
@@ -898,13 +911,18 @@ export function parseSuggestion(text, roster) {
   );
   let found = null;
   for (const raw of String(text || '').split(/\r?\n/)) {
-    const line = raw.replace(/[`*_]/g, '').trim();
-    const m = re.exec(line);
+    // `store.unwrapLine` peels the model's markdown off the ENDS of the line
+    // and leaves the middle alone, so a reason naming a file in backticks keeps
+    // them — this used to be a private whole-line strip that ate the markup out
+    // of `why`. The legacy strip stays as a SECOND candidate and only that: it
+    // is the one thing that reads a half-decorated line like
+    // `**file-in: acta** - because`, where nothing is paired and the bold
+    // marker's tail sticks to the id. First candidate whose id is a project we
+    // actually know wins; a candidate that names nothing real is not an answer.
+    const m = pick(re, [unwrapLine(raw), raw.replace(/[`*_]/g, '').trim()], known);
     if (!m) continue;
-    const id = String(m[1] || '').replace(/[.,;:]+$/, '');
-    const hit = known.get(id);
-    if (!hit) continue;
-    found = { id, root: hit.root, title: hit.title, why: clip(m[2] || '', 200), line: raw };
+    found = { id: m.id, root: m.hit.root, title: m.hit.title,
+      why: clip(m.why, 200), line: raw };
   }
   return found;
 }

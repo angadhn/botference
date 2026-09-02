@@ -1225,8 +1225,22 @@ export const strikeRefusedBlock = (fault, phrase = '', pageNo = 0) =>
 // to be stripped from the whole line, which was fine for "it repeats section 2"
 // and quietly mangled a replacement sentence with an emphasised title or a
 // snippet in it.
-const unwrapLine = raw => String(raw).trim().replace(/^[-*>\s]+/, '')
-  .replace(/^([`*_]+)([\s\S]*?)\1$/, '$2').trim();
+//
+// EXPORTED, because two other parsers had grown their own copy of the whole-line
+// strip and neither had heard about the fix: `workspace.parseSuggestion` and
+// `questions.parseQuestionOffer` both peeled `` ` ``, `*` and `_` out of the
+// middle of the line, so a `file-in:` or `question:` reason that quoted a
+// filename in backticks or emphasised a title lost the markup before the reader
+// ever saw it. One spelling now, here, beside the rule it implements.
+//
+// Three passes, in this order, because a model writes the two decorations in
+// either order: `**strike: …**` wraps the bullet, `- \`strike: …\`` is wrapped
+// by it. Unwrap what is paired, take the bullet off, unwrap what the bullet was
+// hiding. (It used to be bullet-then-unwrap only, which left the closing `**`
+// of a bold marker line stuck to the last word.)
+const unpair = s => s.replace(/^([`*_]+)([\s\S]*?)\1$/, '$2').trim();
+export const unwrapLine = raw =>
+  unpair(unpair(String(raw).trim()).replace(/^[-*>\s]+/, '').trim());
 
 // ALL of them, in the order the bot wrote them.
 //
@@ -1687,7 +1701,10 @@ export function setCheckbox(text, index, checked) {
 // Who is a bot. The handles the bridge speaks under are `claude` and `codex`
 // (sometimes suffixed — "claude (sonnet)"), and three places now need the same
 // answer, so it is written once here rather than as a third copy of the regex.
-export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || ''));
+// (anchor.js's `isBotAuthor` is the browser's copy of this one — it cannot
+// import from here. The `.trim()` is on both so the two are the same predicate
+// and anchor.test.mjs can pin them together.)
+export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || '').trim());
 
 // ---- suggestion cards, as the record keeps them ---------------------------
 //

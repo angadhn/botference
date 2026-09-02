@@ -29,7 +29,16 @@ export const timeoutMs = () => {
   const n = Number(process.env.PLUGIN_RUN_TIMEOUT_MS);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS;
 };
-export const pythonBin = () => process.env.PLUGIN_PYTHON || 'python3';
+// WHICH python, and there are two names for it because two features grew the
+// question separately. `BOTFERENCE_PYTHON_BIN` is the one chat.mjs spawns the
+// bridge with; `PLUGIN_PYTHON` was invented here and never told anyone. A
+// reader on a venv or pyenv who set one of them got the bridge on their
+// interpreter and their /run blocks on the system's, or the reverse — never a
+// message, just two pythons. Both are read here now, the local name first, so
+// setting either is enough and setting both still lets this one be overridden
+// on its own.
+export const pythonBin = () =>
+  process.env.PLUGIN_PYTHON || process.env.BOTFERENCE_PYTHON_BIN || 'python3';
 
 // Each stream is cut at 64KB. The marker is honest about it — a truncated
 // traceback that pretends to be whole is worse than no output at all.

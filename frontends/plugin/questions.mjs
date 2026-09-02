@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { DIR } from './store.mjs';
+import { DIR, unwrapLine } from './store.mjs';
 
 export const VAULT_FILE = path.join(DIR, 'questions.json');
 
@@ -735,9 +735,13 @@ const revisesIn = body => {
 export function parseQuestionSuggestion(text) {
   const lines = String(text == null ? '' : text).split(/\r?\n/);
   let hit = null;
+  const qre = new RegExp(`^${QUESTION_MARK}\\s*(.+)$`, 'i');
   for (const raw of lines) {
-    const line = raw.trim().replace(/^[*_`>\s-]+/, '').replace(/[*_`]+$/, '').trim();
-    const m = new RegExp(`^${QUESTION_MARK}\\s*(.+)$`, 'i').exec(line);
+    // `store.unwrapLine`, the one spelling of "peel the model's markdown off
+    // this line". This used to be a private copy that stripped `` ` ``, `*` and
+    // `_` from the WHOLE line, so a reason emphasising a term or naming a
+    // symbol in backticks arrived at the card with the markup silently gone.
+    const m = qre.exec(unwrapLine(raw));
     if (!m) continue;
     const why = m[1].trim();
     if (why) hit = { line: raw, why: clip(why, 300) };

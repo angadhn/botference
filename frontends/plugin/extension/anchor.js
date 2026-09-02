@@ -112,10 +112,19 @@
   // (store.mjs carries the node-side twin, `store.newWording`, for the one
   // thing the companion must not take a client's word for: which wording a
   // /reanchor is allowed to write. Keep the two in step.)
+  //
+  // THEY HAD DRIFTED, and the drift was a real hole: the companion understood
+  // seven phrasings and this copy understood four, so a bot writing "rewrote it
+  // to: '…'" produced a re-anchor the companion would have authorized and this
+  // file never proposed — the thread simply orphaned instead of following the
+  // rewrite. Both copies are the seven now, and anchor.test.mjs pins the regex
+  // source and the behaviour of the two against each other, so "keep the two in
+  // step" is a test rather than a hope. Change one, change the other.
   const NEW_WORDING_RE =
-    /\b(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?\s*[“"']([\s\S]{4,400}?)[”"']/i;
-  // the same authors the drawer calls bots and store.mjs calls agents
-  const isBotAuthor = a => /^(claude|codex)/i.test(String(a || '').trim());
+    /\b(?:(?:now reads|reads now|now says|new wording(?: is)?)\b\s*[:—-]?|(?:reworded|rewritten|rewrote)\b[^"“\n]{0,80}[:—-]|(?:changed|updated)(?: it)? to\b\s*[:—-]?)\s*[“"']([\s\S]{4,400}?)[”"']/i;
+  // the same authors the drawer calls bots and store.mjs calls agents — with
+  // store's word boundary, so "claudette" is nobody's bot in either file
+  const isBotAuthor = a => /^(claude|codex)\b/i.test(String(a || '').trim());
 
   // The LAST bot word on the wording, or ''. A human writing into the thread
   // after it does not clear this on its own — `addressed` does that, and every

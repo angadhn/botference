@@ -7393,7 +7393,10 @@ async function selftestPdfStrike() {
   // …and the third one, which never became an offer at all
   const refused = () => (disc() || document).querySelector('.filechip.strikechip.refused');
   check('a suggestion whose note pointed back at the conversation is REFUSED, visibly',
-    !!refused() && /not filed/i.test(refused().textContent));
+    // "not CHANGED": a strike is never filed. The chip said "Not filed" until
+    // 2026-09-02, a word carried over from the filing chip it was copied from.
+    !!refused() && /not changed/i.test(refused().textContent)
+    && !/not filed/i.test(refused().textContent));
   check('…saying which words did it, and offering nothing to click',
     !!refused() && /the wording above/.test(refused().textContent)
     && !refused().querySelector('button'));

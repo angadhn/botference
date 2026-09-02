@@ -6067,8 +6067,10 @@ quoted span. Both halves are load-bearing:
 **A refusal is VISIBLE, at both ends.** The line still comes off the reply's
 words (it is machinery), and the message keeps `strike: { why, rejected,
 phrase }`, which `store.appendMsg` now persists. The drawer draws a dashed,
-buttonless chip — *"Not filed — the note refers to this discussion ("the wording
-above"), and the co-author will only see the passage. Nothing was marked up."* —
+buttonless chip — *"Not changed — the note refers to this discussion ("the
+wording above"), and the co-author will only see the passage. Nothing was marked
+up."* — (it said "Not filed" until 2026-09-02, which was the filing chip's verb
+carried across by the copy-paste that made this one; a strike is never filed) —
 and the bot is told on its next turn in that thread
 (`store.strikeRefusedBlock`, composed by `server.mjs refusedStrikeNote`, LAST
 suggestion only, so a bot that fixed it is not lectured). Silence was how the

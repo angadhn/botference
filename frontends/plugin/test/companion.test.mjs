@@ -1957,6 +1957,38 @@ async function main() {
     shared.proc.kill();
   });
 
+  // --- which python, and there was more than one answer -------------------
+  // The bug: two features each invented an env var for "the interpreter", and
+  // neither read the other's. A reader on a venv who exported
+  // BOTFERENCE_PYTHON_BIN got the bridge on their python and every /run block
+  // on the system's, silently. Both names are read in both places now.
+  {
+    const run = await import(path.join(PLUGIN_DIR, 'run.mjs'));
+    const saved = [process.env.PLUGIN_PYTHON, process.env.BOTFERENCE_PYTHON_BIN];
+    const set = (a, b) => {
+      if (a === undefined) delete process.env.PLUGIN_PYTHON; else process.env.PLUGIN_PYTHON = a;
+      if (b === undefined) delete process.env.BOTFERENCE_PYTHON_BIN;
+      else process.env.BOTFERENCE_PYTHON_BIN = b;
+    };
+
+    await test('pythonBin: neither set is the system python', () => {
+      set(undefined, undefined);
+      assert.equal(run.pythonBin(), 'python3');
+    });
+    await test('pythonBin: either name alone is honoured', () => {
+      set('/venv/bin/python', undefined);
+      assert.equal(run.pythonBin(), '/venv/bin/python');
+      set(undefined, '/pyenv/shims/python');
+      assert.equal(run.pythonBin(), '/pyenv/shims/python',
+        'the bridge\'s variable reaches /run too — this is the bug');
+    });
+    await test('pythonBin: the local name wins when both are set', () => {
+      set('/a/python', '/b/python');
+      assert.equal(run.pythonBin(), '/a/python');
+    });
+    set(saved[0], saved[1]);
+  }
+
   // --- a thread remembers who it is talking to ---------------------------
   // The complaint this answers: tag @claude in the first comment, ask the
   // follow-up without retyping the tag, and the follow-up used to become a

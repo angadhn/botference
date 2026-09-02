@@ -5391,7 +5391,10 @@ ${markPickHtml()}
     // frozen wherever the animation happened to be.
     function scrollToThread(id) {
       if (!D.mounted || !id) return;
-      const card = D.shadow.querySelector('.card[data-thread="' + String(id).replace(/"/g, '\\"') + '"]');
+      // `cssq`, like every other attribute-selector site in this file. The
+      // hand-rolled escape here missed the BACKSLASH, so an id containing one
+      // would have built a selector that threw rather than one that missed.
+      const card = D.shadow.querySelector('.card[data-thread="' + cssq(id) + '"]');
       if (!card) return;
       const box = D.el.comments;
       const top = card.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
@@ -6874,8 +6877,12 @@ ${markPickHtml()}
           : s.rejected === 'pageless'
             ? 'it named a page but no wording on it'
           : `the note refers to this discussion${q}, and the co-author will only see the passage`;
+        // "Not CHANGED", not "not filed". "Filed" is the filing chip's verb —
+        // this chip was copy-pasted from it and kept the word, but a strike is
+        // never filed anywhere; it either marks the passage up or it does not.
+        // (questionChipHtml, copied from the same original, got this right.)
         return `<div class="filechip strikechip refused">
-          <span class="fcw">Not filed — ${why}. Nothing was marked up.</span></div>`;
+          <span class="fcw">Not changed — ${why}. Nothing was marked up.</span></div>`;
       }
       // THE PASSAGE, WHEN THE BOT NAMED ITS OWN. The reader's highlight was
       // short by a letter, or the change belongs a line further on; the
