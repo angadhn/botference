@@ -33,11 +33,11 @@ const SNAPSHOT_INLINE = 2500;
 const HISTORY_MAX = 20;
 const DOCX_COMMENTS_MAX = 50;
 const DOCX_DIGEST_MAX = 4000;
-// The bridge's own argparse defaults (--claude-effort high, --openai-effort
-// empty). Nothing on the wire ever tells us the live level — the status event
+// The bridge's own argparse defaults (--claude-effort medium, --openai-effort
+// medium). Nothing on the wire ever tells us the live level — the status event
 // carries models but not effort — so the companion tracks it from the /effort
 // turns it sends, starting from what the child was born with.
-export const EFFORT_DEFAULTS = { claude: 'high', codex: null };
+export const EFFORT_DEFAULTS = { claude: 'medium', codex: 'medium' };
 // How long a reply should be, as the reader set it in config.json. One line,
 // at the end of every envelope: the system prompt defers to it.
 // numeric caps, not just "crisp": models hold a hard word count far better

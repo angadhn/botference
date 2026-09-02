@@ -170,9 +170,9 @@ process.stdin.pipe(stdinFilter);
 
 function parseArgs(argv: string[]) {
   const args = {
-    anthropicModel: "claude-fable-5",
+    anthropicModel: "claude-fable-5-1",
     openaiModel: "gpt-5.4",
-    openaiEffort: "",
+    openaiEffort: "medium",
     systemPromptFile: "",
     taskFile: "",
     debugPanes: false,

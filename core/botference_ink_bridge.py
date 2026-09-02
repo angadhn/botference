@@ -685,7 +685,7 @@ async def main() -> None:
     # than trusting each CLI's own default to stay "medium" forever.
     parser.add_argument("--claude-effort", default="medium")
     parser.add_argument("--openai-model", default="gpt-5.6-sol")
-    parser.add_argument("--openai-effort", default="")
+    parser.add_argument("--openai-effort", default="medium")
     parser.add_argument("--system-prompt-file", required=True)
     parser.add_argument("--task-file", required=True)
     parser.add_argument("--debug-panes", action="store_true")

@@ -2,6 +2,16 @@
 
 ## 2026-09-02
 
+- **Every chat starts at medium effort, in every interface.** The bridge's
+  Codex effort default was empty (whatever the CLI felt like), and the web
+  annotator's companion assumed Claude was born at high. Both now say medium
+  and agree with the launcher, so a new council, plugin or hub chat opens the
+  same way; the pickers and `/effort` still change it per chat.
+- **Fable 5.1 is the default Claude everywhere it was not yet.** The TUI's
+  parsed default, the launcher's fallback, the single-agent runner and the
+  `--help` model list all name `claude-fable-5-1`; the Opus 5 credit fallback
+  is unchanged.
+
 - **A page you have marked up can now become a page of its own, in one of your
   projects.** You annotate a film festival's brochure sitting in Downloads —
   which screenings, which nights, what the tickets cost — and what you actually

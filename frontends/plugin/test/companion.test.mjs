@@ -205,7 +205,7 @@ async function main() {
       ok: true, current: null, options: null, status: null,
       // effort is the exception: the child's argparse defaults are knowable
       // before it exists, and no bridge event ever reports the live level
-      effort: { current: { claude: 'high', codex: null }, options: null },
+      effort: { current: { claude: 'medium', codex: 'medium' }, options: null },
       verbosity: 'short',
       // which auth each agent would spawn with — status, never key material
       keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
@@ -784,7 +784,7 @@ async function main() {
     assert.equal(r.json.status.codex.window, 1050000);
     assert.equal(r.json.status.auto_relay, true);
     // effort options come from the same completion_context the models do
-    assert.deepEqual(r.json.effort.current, { claude: 'high', codex: null });
+    assert.deepEqual(r.json.effort.current, { claude: 'medium', codex: 'medium' });
     assert.deepEqual(r.json.effort.options.claude, ['low', 'medium', 'high', 'xhigh']);
     assert.ok(r.json.effort.options.codex.includes('minimal'));
     assert.equal(r.json.verbosity, 'short');
@@ -1533,7 +1533,7 @@ async function main() {
     assert.deepEqual(inputs(logFile).slice(sentBefore), ['/effort @claude xhigh']);
     const ev = await waitFor(() => stream.events.slice(before)
       .find(e => e.type === 'models' && e.effort.current.claude === 'xhigh'), 'models event');
-    assert.equal(ev.effort.current.codex, null, 'codex is untouched and still unknown');
+    assert.equal(ev.effort.current.codex, 'medium', 'codex is untouched, still at the default it was born with');
     assert.equal(ev.verbosity, 'short', 'the panel event carries verbosity too');
     assert.equal(stream.events.slice(before).filter(e => e.type === 'chat').length, 0,
       'a control turn is not a page turn');
@@ -1578,7 +1578,7 @@ async function main() {
     assert.equal(models.bridge, 'stopped');
     assert.equal(models.current.claude, 'claude-opus-5');
     assert.equal(models.effort.current.codex, 'max');
-    assert.equal(models.effort.current.claude, 'high', "the child's own default, still");
+    assert.equal(models.effort.current.claude, 'medium', "the child's own default, still");
     const cfg = JSON.parse(fs.readFileSync(
       path.join(coldRoot, '.botference', 'plugin', 'config.json'), 'utf8'));
     assert.deepEqual(cfg.agents.model, { claude: 'claude-opus-5', codex: null });
@@ -1634,7 +1634,7 @@ async function main() {
     const models = (await GET(evil.base, '/models')).json;
     assert.equal(models.current.claude, null, 'the smuggled newline is not a model');
     assert.equal(models.current.codex, 'gpt-5.5', 'the honest one beside it still is');
-    assert.equal(models.effort.current.claude, 'high', 'a non-string effort falls back to the default');
+    assert.equal(models.effort.current.claude, 'medium', 'a non-string effort falls back to the default');
     assert.equal(models.options, null, 'a list that is not a list is no list at all');
 
     await POST(evil.base, '/page', { url, title: 'Evil Prefs', site: 'ledger.test' });
