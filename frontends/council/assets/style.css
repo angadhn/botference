@@ -444,6 +444,11 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .msg.card .opts { display: flex; flex-direction: column; gap: .4rem }
 .msg.card .opts button { text-align: left; padding: .55rem .8rem; border-radius: 9px;
   min-height: 42px; font-size: .84rem }
+.msg.card form.newproj { margin-top: .5rem }
+.msg.card form.newproj:not([hidden]) { display: flex; gap: .4rem }
+.msg.card form.newproj input { flex: 1; min-width: 0; padding: .45rem .6rem; border-radius: 8px;
+  min-height: 42px; font-size: .84rem }
+.msg.card form.newproj button { min-height: 42px; padding: .45rem .9rem; border-radius: 9px; white-space: nowrap }
 .msg.card .acts { display: flex; gap: .5rem; margin-top: .3rem }
 .msg.card .acts button { min-height: 42px; padding: .45rem 1.1rem; border-radius: 9px }
 .msg.card button.allow { background: color-mix(in srgb, var(--ok) 14%, var(--card));

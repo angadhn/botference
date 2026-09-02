@@ -2043,8 +2043,9 @@
     if (act === 'inbox') sendInput('/resume');
     if (act === 'resume') switchTo(b.dataset.sid);
     if (act === 'proj-new-chat') {
-      snapshotCurrent();
-      sendInput('/new --project ' + b.dataset.pid);
+      // the same path as the + new chat menu: choosing the project here IS
+      // the answer to "where should this go?", so the card must not ask again
+      startNewChat('/new --project ' + b.dataset.pid);
     }
     if (act === 'proj-github') {
       // the controller preflights gh, then asks — the sidebar gets out of the
@@ -2514,8 +2515,35 @@
       <div class="opts">${live.map(pr =>
         `<button data-pid="${esc(pr.id)}">File under ${esc(pr.title || pr.id)}</button>`
       ).join('')}
-      <button data-pid="">Just a chat (Inbox)</button></div>`;
+      <button data-act="new-proj">New project…</button>
+      <button data-pid="">Just a chat (Inbox)</button></div>
+      <form class="newproj" hidden><input type="text" maxlength="80" placeholder="project name" aria-label="project name">
+        <button type="submit">Create and file</button></form>`;
+    // "New project…" swaps the option for an inline title field — the same
+    // /project create the sidebar sends, which also files THIS chat in the
+    // project it made (the controller's own picker offers the same choice)
+    const form = div.querySelector('form.newproj');
+    const field = form.querySelector('input');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const title = field.value.trim();
+      if (!title || div.classList.contains('answered')) return;
+      state.filingAsked = true;
+      liveCard = div;
+      settleCard(`new project “${title}”`);
+      await sendInput('/project create ' + title);
+      submit();
+    });
+    field.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.stopPropagation(); form.hidden = true; els.input.focus(); }
+      if (e.key === 'Enter') { e.stopPropagation(); }
+    });
     div.addEventListener('click', async e => {
+      if (e.target.closest('button[data-act="new-proj"]')) {
+        if (div.classList.contains('answered')) return;
+        form.hidden = false; field.focus();
+        return;
+      }
       const b = e.target.closest('button[data-pid]');
       if (!b || div.classList.contains('answered')) return;
       const pid = b.dataset.pid;

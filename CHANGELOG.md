@@ -2,6 +2,13 @@
 
 ## 2026-09-02
 
+- **Council web: the "where should this go?" card now offers a new project,
+  and stops asking a chat you started from inside a project.** The card had
+  every existing project and Inbox but no way to start a fresh project, which
+  the TUI's picker has always offered; "New project…" opens a name field and
+  the chat is filed in the project it creates. And "+ new chat" inside a
+  project's row skipped the step that records your answer, so the card asked
+  again on the first message — it now takes the same path as the new-chat menu.
 - **Every chat starts at medium effort, in every interface.** The bridge's
   Codex effort default was empty (whatever the CLI felt like), and the web
   annotator's companion assumed Claude was born at high. Both now say medium
