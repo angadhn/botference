@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## 2026-09-02
+
+- **Three bugs in the web annotator, all of them the same mistake.** Each came
+  from a rule that had been written down in two places, and then fixed or
+  extended in only one of them.
+
+  - **Comments stopped following a sentence a bot had rewritten.** When you ask
+    a bot to reword a passage, the comment thread attached to it is supposed to
+    move onto the new wording so it stays in the margin beside it. That works by
+    reading what the bot said it changed the text to — and the code that reads
+    it exists twice, once in the browser and once in the companion, because the
+    browser extension cannot borrow code from the server. The server understood
+    seven ways of saying it ("now reads…", "rewrote it to…", "changed it to…"
+    and so on); the browser understood only four. If a bot happened to use one
+    of the missing three, the thread quietly lost its place instead of
+    following the rewrite, and nothing said so. Both halves now understand all
+    seven, and there is a test that runs the same sentences through both and
+    fails if they ever disagree again.
+  - **Bots' explanations were losing their formatting.** When a bot suggests
+    filing a page, or offers to make a flashcard, it says why — and if that
+    reason named a file in backticks or emphasised a word, the formatting was
+    stripped out before you saw it. The fix for this had been made months ago in
+    one place and never copied to the other two. It is one shared piece of code
+    now.
+  - **Two settings claimed to choose your Python.** If you work in a virtual
+    environment and told Discuss which Python to use, you had to know which of
+    two differently-named settings to set — and setting the wrong one left half
+    the system running on the system Python, with no warning either way. Either
+    name now works for both halves.
+
+- **Blog pages stopped doing pointless work on every turn.** On a blog post,
+  every single turn was reading the whole source file twice (up to 4 MB each
+  time) and running it through a text conversion, to feed a check that had been
+  switched off for blog pages months ago and threw the results away. It is not
+  read at all now.
+
+- **Two smaller fixes you might notice.** When a bot's suggestion to delete a
+  passage is refused, the note used to say "Not filed" — the wrong verb,
+  borrowed from a different button; a deletion is never filed. It says "Not
+  changed". And after moving between pages on a site that swaps pages without
+  reloading, the "let this page keep its own commenting" switch used to keep
+  answering for the page you had just left.
+
+- **Housekeeping, for the people who work on this.** About 170 lines of dead
+  code deleted, nine test files' worth of duplicated scaffolding merged into
+  one shared file, and the plugin's 28 test suites finally got a single command
+  that runs them all — which is most likely why the nine copies had been
+  drifting apart unnoticed. The performance test that guards the slowest part of
+  the annotator used to pass silently on machines with no browser installed; it
+  now says loudly that it skipped. Net: 1,411 lines removed against 1,582
+  added, most of the additions being the explanations of why things are the way
+  they are.
+
 ## 2026-08-30
 
 - **Housekeeping: the Discuss test harness is trustworthy again.** Four of its

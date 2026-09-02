@@ -8114,6 +8114,207 @@ approximation of it. A key and a button, and no half-working gesture.
   cell is rare enough that the cure is worse than the disease.
 - **Type set on a diagonal** exports as an upright box, as before.
 
+## Amendment (2026-09-02, shipped): the cleanup, and what it found
+
+Three weeks of parallel sprints left this tree in better shape than anybody
+expected and not clean. An audit read the whole of `frontends/plugin/` and this
+is what came of it. Nothing here is a new feature; three of the items are bugs
+that had been shipping for weeks, and every one of the three came from the same
+disease — a rule written down twice, then fixed or extended in one copy only.
+
+### The three bugs, and why the tests could not see them
+
+**Track changes half-worked.** `newWording` is the parse that lets a comment
+thread follow a passage a bot has rewritten. It exists twice, because the
+extension cannot import from the companion: `store.NEW_WORDING_RE` on the server
+and `Anchor.NEW_WORDING_RE` in the browser. Both files carried a comment telling
+the next reader to keep the two in step, and for months that comment was the only
+thing holding them together. It did not: the companion understood seven
+phrasings and the browser four. A bot writing *"rewrote it to: …"*, *"changed it
+to: …"* or *"updated to: …"* produced a re-anchor the companion would have
+authorized and the page never offered, so the thread orphaned instead of
+following the rewrite — silently, and with no test anywhere able to notice,
+because each copy was only ever tested against itself.
+
+Both copies are the seven now, and both use the same author predicate (the word
+boundary `store` had and `anchor.js` lacked — "claudette" was a bot to one file
+and a person to the other). `test/anchor.test.mjs` section 9 is the fix that
+matters: it pins the regex **source** character for character and runs sixteen
+messages through both implementations. Reverting the browser's regex fails seven
+assertions. The comment became a test.
+
+**A bot's reason lost its markdown.** `store.unwrapLine` had already been fixed
+once, with the reason written above it: stripping `` ` ``, `*` and `_` from the
+whole line "quietly mangled a replacement sentence with an emphasised title or a
+snippet in it". Two other parsers — `workspace.parseSuggestion` and
+`questions.parseQuestionOffer` — were still running the unfixed copy, so a
+`file-in:` or `question:` reason that named a file in backticks or emphasised a
+word arrived at the reader with the markup gone. `unwrapLine` is exported now and
+both use it; it also got better on the way (a bold marker line, `**question: …**`,
+used to leave its closing asterisks stuck to the last word).
+
+**Two environment variables, one interpreter.** `PLUGIN_PYTHON` chose the python
+for `/run` blocks and `BOTFERENCE_PYTHON_BIN` chose the one for the bridge, and
+neither read the other. A reader on a venv or pyenv who set one got half their
+system on the wrong interpreter and no message about it. Both names are read in
+both places now, local name first.
+
+### Wasted work on every blog turn
+
+When suggest mode shipped it turned collateral detection off on blog pages — but
+at the last moment. `reportCollateral` bailed on one boolean *after* JavaScript
+had evaluated its arguments, and building those arguments meant a whole-file read
+of the markdown source (up to `collateral.SNAPSHOT_MAX`, 4 MB) plus a transform,
+once at turn start and once at turn end. Every kind in `blog.KIND_RULES` is
+`suggest:true`, so that was every blog turn there is. The gate moved to the top,
+and `withCollateral` takes the snapshot as a **thunk** so the argument cannot be
+built before the boolean that decides whether anyone will read it.
+
+### One spelling each
+
+Rules that were stated once and implemented several times, now stated and
+implemented once:
+
+- `store.liftLines` / `liftBlock` / `healSeam` — the splice that takes a bot's
+  machinery line or fenced block off a reply's words. Four conventions
+  (file-in, strike, question, suggest) had each grown a copy **inside one
+  function**, which is the case this SPEC already calls out: *"if a second
+  matcher ever appears beside this one, that is the bug"*. The pass ORDER is
+  untouched; each still strips its own machinery before the next one parses.
+- `threadOf(res, data)` — page, thread, `unknown thread` 404, written out at
+  eight endpoints. `suggestTargetOf` now opens by calling `addressedMsg`, whose
+  first six lines it had copied character for character.
+- `fsjson.mjs` — one atomic write (tmp + rename) and one constant-time compare
+  for the whole tree, instead of three copies of the first and two of the
+  second. `identity.mjs`'s `mode: 0o600` survives as an argument. A security
+  primitive is the last thing that should exist twice.
+- `publishChanges`, `withCollateral`, `formBool`, `bridgeState`, `refuse` in
+  server.mjs; `readKey`/`writeKey` in drawer.js (five preferences, ten identical
+  try/catch shells, and the code said so three times); `store.clipTo` imported
+  by workspace.mjs instead of copied; `store.fenceRe(name)` for the two
+  ```suggest / ```question block regexes.
+- `test/harness.mjs` — the runner, poller, throwaway root, companion boot and
+  JSON-over-HTTP that **nine** suites each had a private copy of. The `test()`
+  runner was byte-identical in all nine; the SSE `listen()` helper was
+  byte-identical at four sites, two of them in one file. The differences that
+  were real are kept as arguments and explained there: parallel.test.mjs waits
+  15s because it alone drives a three-lane pool, companion.test.mjs waits 8s and
+  pins itself to one bridge child, and the path-sensitive suites resolve their
+  temp root's symlinks because macOS's `/var/folders` is really
+  `/private/var/folders`.
+- `test/run-all.mjs` — the aggregate runner this tree never had. Nothing ever ran
+  the suites together, which is the likeliest reason nine harness copies drifted
+  apart without anyone seeing them side by side.
+
+### Pinned, rather than merged
+
+Some duplication is a contract and stays. What it lacked was enforcement:
+
+- The `@claude|@codex|@all` routing rule exists in three runtimes (companion,
+  drawer, phone) and must, since the extension cannot import from the server and
+  `reader.js` has no build step. `test/mentions.test.mjs` now runs one table of
+  sentences through the drawer's copy and the companion's, and pins reader.js's
+  source against the drawer's — the `⟦route⟧` sentinels, the same device
+  `more.test.mjs` uses.
+- The kind names (`KINDS`/`KIND_NAME`) are duplicated across the same boundary as
+  `normUrl` and `tagHue`, and had drifted: views.mjs derived its singular from
+  its plural ("PDFs" → "pdf") where the drawer had always written "PDF". A table
+  cannot derive itself wrong, so it has one, and the same test pins the pair.
+- `relTime` and `shortAge` in drawer.js look like duplicates and are not — one
+  writes "3d ago" for a reader reading a list, the other "3d" for a chip that has
+  to fit and keeps going into months and years. **Deliberately not merged**; both
+  now say so beside each other.
+
+### The SPA rebind rebinds both switches
+
+See the sticky-address amendment above: `rebindIdentity` re-pointed both per-page
+storage keys and re-read only one, so after a single-page-app navigation the
+margin switch kept the previous document's answer. Both are re-read now.
+`test/adapters.test.mjs` holds it as a source invariant, because content.js
+cannot be loaded in node: a per-page key that is re-pointed must also be re-read.
+
+### The drawer's action vocabulary is a list
+
+`wireEvents` carried a linear `if (act === 'x')` chain a hundred arms long, every
+arm one to three statements and a return — a dispatch table written the long way,
+which meant a new action went in wherever there was room. It is a table now
+(`ACTS`), and the drawer's whole vocabulary reads top to bottom. Every key was
+distinct and every arm returned, so the table is exactly the chain it replaces;
+order among the arms never meant anything. Nine arms that are **not** a name and
+a call stay hand-written under the lookup and say why.
+
+The chip family went the same way: `fileChipHtml`, `oneStrikeChipHtml` and
+`questionChipHtml` all render one state machine (open / done / passed / refused)
+and each had been made by copying the one before it. `chipHtml({kind, state,
+body, actions, bare})` is that shape, once. The class names are unchanged,
+because harness.html asserts on them.
+
+The copy-paste had also left a wording defect: the strike refusal chip said
+*"Not filed"*, which is the filing chip's verb. A strike is never filed. It says
+*"Not changed"* now, as `questionChipHtml` — copied from the same original — had
+always said.
+
+### Designed, NOT done (deliberate; do not treat as an oversight)
+
+- **The `onChatEvent` lift table.** The reply branch runs four sequential lift
+  passes, nine levels deep, and each pass is genuinely `{when, lift, record}` —
+  four declarative rows and one loop would replace about 155 lines, flatten the
+  nesting to three, and call `findThread` once instead of twice on the same
+  page and target. It was designed and **vetoed for now**: this is the hottest
+  correctness path in the companion, `ev.msg` is rewritten in place, and the
+  order of the four passes is load-bearing (each strips its machinery before the
+  next parses). The shared splice was taken (`liftLines`/`liftBlock`); the table
+  was not. If it is ever built: own commit, zero behaviour change, and the
+  ninety comment lines are the design record and must survive into the rows.
+- **The `summon` context table.** The six context blocks in `summon` are a
+  B-grade table candidate at most — 60 flat code lines behind four guard
+  clauses. Skipped for the same reason: the risk is not repaid.
+- **One CSS vocabulary for the chips.** `sgCardHtml` renders the same four
+  states through `.sgcard`/`.sgacts`, an independent vocabulary grown during the
+  suggest sprint, with six rule-pairs in drawer.css near-identical to
+  `.filechip`/`.fcacts`. Merging the two stylesheets is the other half of the
+  chip work and is not done.
+
+### Hazards for the next agent (read this before you grep)
+
+- **`grep` used to lie about three files.** `server.mjs`, `store.mjs` and
+  `test/adapters.test.mjs` contained literal NUL characters inside string and
+  regex literals, which makes `grep` classify the file as binary and report
+  **nothing** — silently. Any automated pass that checked "does this name still
+  have callers" over those files got a false "no". The three NULs are `\0`
+  escapes now and all three files are plain-greppable again, but **use `grep -a`
+  anyway**: it costs nothing, and the next file to acquire a control byte will
+  not announce itself. (The original audit blamed the byte-order marks; those
+  were harmless. The BOMs are `\ufeff` escapes now too, because a byte you
+  cannot see in a diff is not a fixture.)
+- **A green `pdf-perf` run used to prove nothing.** `test/pdf-perf.test.mjs` is
+  the ONLY guard on anchor.js's quadratic-anchoring fix, and on a machine with no
+  Chromium it exited 0 with zero assertions — indistinguishable from a pass. It
+  prints `SKIPPED` three times now, and `test/run-all.mjs` repeats any SKIPPED
+  line it sees and flags a suite that produced no count at all. If you did not
+  see "pdf-perf … 11 passed", the perf path was not tested.
+- **`test/workspace.test.mjs` has one flaky assertion**, *"…and once it is over,
+  the file is the truth again"*, which waits on a deferred session-file refill
+  and fails roughly one run in eight. It predates this cleanup (measured at the
+  commit before it) and is a timing race in the test, not the product. Not fixed
+  here; noted so the next person does not go hunting for a regression.
+
+### What was checked and left alone
+
+The audit's clean list is worth as much as its findings, and spending cleanup
+budget here is waste: drawer.css has zero dead selectors (all 393 emitted
+somewhere); the seven refusal strings in server.mjs are all hoisted to constants
+and used through them; `pool.mjs` has no dead code and no duplication and is the
+best-commented file in the slice; all 19 of `collateral.mjs`'s exports are
+reachable through the live artifact path; every one of the 57 `cb('onX')`
+callbacks is provided and all 60 `onX:` consumed, both directions; and there are
+no dead internal functions anywhere in the server-side modules. The DO-NOT-TOUCH
+list from the audit — the pinned `normUrl`/`tagHue`/"▸ more" copies, the
+anchoring accumulator, the send-hold, the pool's lane-binding invariant,
+`addressOf`'s precedence, the `handler` prologue's order, fence numbering,
+`envelope()`, and the `delete`-vs-`false` record semantics — was honoured in
+full.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

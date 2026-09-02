@@ -4853,6 +4853,204 @@ ${markPickHtml()}
     }
 
     // ---- events ---------------------------------------------------------
+    // ---- WHAT EVERY BUTTON IN THE DRAWER DOES ---------------------------
+    //
+    // One entry per `data-act`, and this list is the drawer's whole action
+    // vocabulary. It was a linear `if (act === 'x')` chain a hundred arms long
+    // — every arm one to three statements and a return, which is a dispatch
+    // table written the long way, and which meant a new action went in wherever
+    // there was room rather than where it belonged.
+    //
+    // The table is exactly the chain it replaces: every key was distinct and
+    // every arm returned, so order among them never meant anything. The arms
+    // that were NOT simple dispatch stay hand-written under the lookup in the
+    // click handler, and say there why.
+    //
+    // A row is called with `(btn, target, e)` — the button, its `data-target`
+    // (resolved once by the caller, since most rows want it), and the click.
+    // Rows take only as many of the three as they use, so a row's signature
+    // says what it reads.
+    const ACTS = {
+      'close': () => close(),
+      'models': () => { if (D.modelsOpen) closeModels(); else openModels(); },
+      'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
+      'verb': (btn) => setVerbosity(btn.dataset.level),
+      'typing': (btn) => setTyping(btn.dataset.typing),
+      'bill': (btn) => doBill(btn.dataset.agent, btn.dataset.bill),
+      'keys': () => cb('onOpenOptions')(null),
+      // "use the page's own commenting" / "let Discuss comment here":
+      // content.js persists the answer per page, swaps which selection pill
+      // is live, and hands the new state back through setReviewHost
+      'page-comments': (btn) => cb('onPageComments')(btn.dataset.want === '1'),
+      'pdf-import': () => doPdfImport(),
+      'pdf-import-no': () => { PDF.dismissed = true; PDF.err = ''; render(); },
+      'pdf-saved-ok': () => { PDF.out = null; render(); },
+      'export': () => { if (D.exportOpen) closeExportPick(); else openExportPick(); },
+      'filein': () => { if (D.projOpen) closeProjPick(); else openProjPick(); },
+      'proj-file': (btn) => fileInProject(btn.dataset.root, btn.dataset.pid, !btn.dataset.on),
+      // the bot's suggestion, answered. Yes files it; no puts the chip away
+      // for this tab and is not remembered anywhere else — the reader may
+      // change their mind on the next reply.
+      'file-yes': (btn) => fileInProject(btn.dataset.root, btn.dataset.pid, true),
+      'file-no': (btn) => {
+        const row = btn.closest && btn.closest('[data-ts]');
+        if (row && row.dataset.ts) D.projects.declined.push(row.dataset.ts);
+        render();
+      },
+      // the mark, changed after the fact — both ways, one click each
+      'set-mark': (btn, target) => doSetMark(target, btn.dataset.mark),
+      // the bot's strike suggestion, answered. Yes mints a strikeout of the
+      // reader's own on the same passage and leaves this thread alone; no puts
+      // the chip away for this tab and is remembered nowhere else.
+      'strike-yes': (btn, target) => {
+        doStrikeFrom(target, btn.dataset.ts, Number(btn.dataset.idx) || 0,
+          btn.dataset.why, btn.dataset.passage || '',
+          Number(btn.dataset.page) || 0);
+      },
+      'strike-no': (btn) => {
+        // ONE CHIP, not the reply: a bot may make three suggestions in one
+        // answer and turning down the first says nothing about the other two.
+        const chip = btn.closest && btn.closest('.strikechip');
+        const y = chip && chip.querySelector('[data-act="strike-yes"]');
+        if (y) D.strikes.declined.push(String(y.dataset.ts) + '#' + (Number(y.dataset.idx) || 0));
+        render();
+      },
+      // …and going to look at it, which IS a deliberate arrival: the hold on
+      // the discussion ends here, because the reader has asked to be somewhere
+      // else (focusThread's own release rule does it).
+      'strike-view': (btn, target) => { focus(target); scrollToThread(target); },
+      // ---- the question vault ------------------------------------------
+      // The reader's button, and the bot's offer answered. Both end in the
+      // same one call, because there is exactly one way a card is made and
+      // the reader's part in it is over the moment they click.
+      'make-q': (btn, target) => doMakeQuestion(target),
+      'q-yes': (btn, target) => doMakeQuestion(target, { from_msg: btn.dataset.ts, hint: btn.dataset.why }),
+      // …and the third thing a confirm can be: not another card, but a
+      // rewrite of one this discussion already filed.
+      'q-revise': (btn, target) => doReviseQuestion(target, btn.dataset.ts),
+      'q-no': (btn) => {
+        const row = btn.closest && btn.closest('[data-ts]');
+        if (row && row.dataset.ts) D.questions.declined.push(row.dataset.ts);
+        render();
+      },
+      'q-note-x': () => { D.questions.note = null; render(); },
+      'quiz': () => cb('onOpenQuiz')(),
+      // ---- the Memorize tab -------------------------------------------
+      'mem-scope': (btn) => { D.memory.scope = btn.dataset.scope || 'page'; loadMemory(); },
+      'mem-answer': (btn) => answerMemory(Number(btn.dataset.choice)),
+      'mem-next': () => nextMemory(),
+      'mem-flag': (btn, target) => retireMemory(target, 'flag'),
+      'mem-drop': (btn, target) => retireMemory(target, 'drop'),
+      'mem-page': (btn) => bg({ t: 'open-here', path: `/p/${btn.dataset.key || ''}` }),
+      // the duplicate hint's three answers: drop the other one, drop this
+      // one, or say they are different (which pins the pair so the hint
+      // never comes back)
+      'mem-dup-drop': (btn, target) => retireMemory(target, 'drop'),
+      'mem-dup-keep': (btn, target) => keepMemoryPair(target, btn.dataset.other),
+      // a thread's own "filed as a memory · view": the tab, opened on the
+      // page this thread is on, which is where its questions are
+      'mem-open': (btn, target) => {
+        holdOff();
+        D.tab = 'memory';
+        D.memory.scope = 'page';
+        // start the sitting on THIS thread's own question, where it is due
+        D.memory.focus = target || '';
+        paintTabs();
+        rememberTab();
+        loadMemory();
+      },
+      'export-run': (btn) => pickExport(btn.dataset.mode),
+      'pages': () => { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); },
+      'pages-back': () => showThreads(),
+      'lib-export': () => doLibraryExport(),
+      'lib-clear': () => { D.library.confirm = true; D.library.note = ''; renderLibrary(); },
+      'lib-clear-no': () => { D.library.confirm = false; renderLibrary(); },
+      'lib-clear-yes': () => doLibraryClear(),
+      'page-open': (btn) => openPageRow(btn.dataset.url),
+      'page-export': (btn) => doExportPage(btn.dataset.url),
+      'filter-by': (btn) => pickCommenter(btn.dataset.by || ''),
+      'filter-kind': (btn) => setKindFilter(btn.dataset.kind || ''),
+      'filter-tag': (btn) => toggleTagFilter(btn.dataset.tag || ''),
+      'filter-clear': () => setFilter('', ''),
+      'page-rename': (btn) => openRowEditor('renaming', btn.dataset.url),
+      'page-tag': (btn) => openRowEditor('tagging', btn.dataset.url),
+      'rename-save': (btn) => saveRename(btn.dataset.url),
+      'tag-save': (btn) => saveTags(btn.dataset.url),
+      'tag-pick': (btn) => completeTag(btn.dataset.tag),
+      'page-del': (btn) => { D.pages.confirm = btn.dataset.url; D.pages.rowErr = null; renderPages(); },
+      'page-del-no': () => { D.pages.confirm = null; renderPages(); },
+      'page-del-yes': (btn) => doDeletePage(btn.dataset.url),
+      // the round strip: its quote is a place on the page, so it behaves
+      // like the quote on a card — scroll there and focus it. Unlike a
+      // card's quote there is no orphan/pending guard, because the thread
+      // named here is one a bot is answering right now.
+      'round-jump': (btn, target) => {
+        focus(target);
+        cb('onJump')(target);
+      },
+      'round-dismiss': () => { D.round = null; paintRound(); },
+      'jump': (btn, target) => {
+        const card = btn.closest('.card');
+        if (card && !card.classList.contains('orphaned') && !card.classList.contains('pending')) {
+          focus(target); cb('onJump')(target);
+        }
+      },
+      'route': (btn, target) => pickRoute(target, btn.dataset.route),
+      'send': (btn, target) => doSend(target),
+      'send-retry': (btn, target) => retrySend(target, btn.dataset.out),
+      'send-discard': (btn, target) => discardSend(target, btn.dataset.out),
+      'cancel-new': () => cancelNew(),
+      'tools': (btn) => { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); },
+      // both ways, unlike the thread fold: a reader who opened the long half
+      // of one answer is reading it, not committing to it
+      'more': (btn) => { const k = btn.dataset.key; D.moreOpen[k] = !D.moreOpen[k]; render(); },
+      'run': (btn) => doRun(btn),
+      'run-stop': (btn) => doRunStop(btn),
+      // one way only: a thread the reader has opened stays open for the
+      // session. Re-folding it under them while they read is not a feature.
+      // both directions are the reader's own decision about this thread, and
+      // both stick for the session — a new reply never undoes either
+      'expand': (btn, target) => { D.expanded[target] = FOLD_OPEN; render(); },
+      'fold': (btn, target) => { D.expanded[target] = FOLD_SHUT; render(); },
+      // the tasks card: its fold is a reading position (session only, like
+      // every other one here), and ↑ source is the way back to the message
+      'tasks-fold': () => { D.tasksOpen = !D.tasksOpen; render(); },
+      'ptasks-fold': () => { D.ptasksOpen = !D.ptasksOpen; render(); },
+      'tasks-jump': () => jumpToTasks(),
+      'interrupt': (btn) => doInterrupt(btn),
+      'retry': () => cb('onReconnect')(),
+      'warn-dismiss': () => setWarning(''),
+      'copy': (btn) => doCopy(btn),
+      'edit': (btn) => startEdit(btn),
+      'del-msg': (btn, target) => doDelete(target, btn.dataset.ts),
+      'resolve': (btn, target) => doResolve(target, true),
+      'reopen': (btn, target) => doResolve(target, false),
+      'not-done': (btn, target) => doNotDone(target),
+      'resolved-toggle': () => { D.resolvedOpen = !D.resolvedOpen; render(); },
+      'ready-toggle': () => { D.readyOpen = !D.readyOpen; render(); },
+      'resolved-card': (btn, target) => { D.resolvedCards[target] = !D.resolvedCards[target]; render(); },
+      'summarize': (btn, target) => doSummarize(target),
+      'root-yes': () => answerRoot(true),
+      'root-no': () => answerRoot(false),
+      'blogroot-yes': () => answerBlogRoot(true),
+      'blogroot-no': () => answerBlogRoot(false),
+      'arch-list': () => {
+        D.picking = !D.picking;
+        if (D.picking && !D.archive.list && !D.archive.loading) { loadArchive(); return; }
+        render();
+      },
+      // one step, inline, like del-thread: the count is the whole of the
+      // warning, because "send" here spends real agent time on a message
+      // nobody typed
+      'send-review': () => { D.review.confirm = true; D.review.err = ''; D.review.note = ''; render(); },
+      'review-no': () => { D.review.confirm = false; render(); },
+      'review-yes': () => sendReview(),
+      'arch-new': () => openSession(null),
+      'del-thread': (btn, target) => { D.confirm = target; render(); },
+      'del-thread-no': () => { D.confirm = null; render(); },
+      'del-thread-yes': (btn, target) => { D.confirm = null; doDelete(target, null); },
+    };
+
     function wireEvents() {
       // One listener on the pill, whichever of its tools is in it: the mousedown
       // guard has to cover the whole thing (a mousedown anywhere in the pill
@@ -4961,17 +5159,13 @@ ${markPickHtml()}
         const act = btn.dataset.act;
         if (act === 'mention') { insertMention(btn.dataset.handle); return; }
         const target = btn.dataset.target;
-        if (act === 'close') { close(); return; }
-        if (act === 'models') { if (D.modelsOpen) closeModels(); else openModels(); return; }
-        if (act === 'relay') { if (!btn.disabled) doRelay(btn.dataset.agent); return; }
-        if (act === 'verb') { setVerbosity(btn.dataset.level); return; }
-        if (act === 'typing') { setTyping(btn.dataset.typing); return; }
-        if (act === 'bill') { doBill(btn.dataset.agent, btn.dataset.bill); return; }
-        if (act === 'keys') { cb('onOpenOptions')(null); return; }
-        // "use the page's own commenting" / "let Discuss comment here":
-        // content.js persists the answer per page, swaps which selection pill
-        // is live, and hands the new state back through setReviewHost
-        if (act === 'page-comments') { cb('onPageComments')(btn.dataset.want === '1'); return; }
+        const doAct = ACTS[act];
+        if (doAct) { doAct(btn, target, e); return; }
+        // …and the arms that are NOT a name and a call, which is why they are
+        // still written out: an optimistic switch that renders before it
+        // reports, three actions that share one handler, two cancels that share
+        // another, and one that is conditional on a second attribute and
+        // deliberately falls through when it is absent.
         if (act === 'track-changes') {
           // optimistic, like every other one-click switch here: content.js
           // repaints the page and hands the same answer straight back
@@ -4980,49 +5174,6 @@ ${markPickHtml()}
           cb('onTrackChanges')(TC.on);
           return;
         }
-        if (act === 'pdf-import') { doPdfImport(); return; }
-        if (act === 'pdf-import-no') { PDF.dismissed = true; PDF.err = ''; render(); return; }
-        if (act === 'pdf-saved-ok') { PDF.out = null; render(); return; }
-        if (act === 'export') { if (D.exportOpen) closeExportPick(); else openExportPick(); return; }
-        if (act === 'filein') { if (D.projOpen) closeProjPick(); else openProjPick(); return; }
-        if (act === 'proj-file') {
-          fileInProject(btn.dataset.root, btn.dataset.pid, !btn.dataset.on);
-          return;
-        }
-        // the bot's suggestion, answered. Yes files it; no puts the chip away
-        // for this tab and is not remembered anywhere else — the reader may
-        // change their mind on the next reply.
-        if (act === 'file-yes') { fileInProject(btn.dataset.root, btn.dataset.pid, true); return; }
-        if (act === 'file-no') {
-          const row = btn.closest && btn.closest('[data-ts]');
-          if (row && row.dataset.ts) D.projects.declined.push(row.dataset.ts);
-          render();
-          return;
-        }
-        // the mark, changed after the fact — both ways, one click each
-        if (act === 'set-mark') { doSetMark(target, btn.dataset.mark); return; }
-        // the bot's strike suggestion, answered. Yes mints a strikeout of the
-        // reader's own on the same passage and leaves this thread alone; no puts
-        // the chip away for this tab and is remembered nowhere else.
-        if (act === 'strike-yes') {
-          doStrikeFrom(target, btn.dataset.ts, Number(btn.dataset.idx) || 0,
-            btn.dataset.why, btn.dataset.passage || '',
-            Number(btn.dataset.page) || 0);
-          return;
-        }
-        if (act === 'strike-no') {
-          // ONE CHIP, not the reply: a bot may make three suggestions in one
-          // answer and turning down the first says nothing about the other two.
-          const chip = btn.closest && btn.closest('.strikechip');
-          const y = chip && chip.querySelector('[data-act="strike-yes"]');
-          if (y) D.strikes.declined.push(String(y.dataset.ts) + '#' + (Number(y.dataset.idx) || 0));
-          render();
-          return;
-        }
-        // …and going to look at it, which IS a deliberate arrival: the hold on
-        // the discussion ends here, because the reader has asked to be somewhere
-        // else (focusThread's own release rule does it).
-        if (act === 'strike-view') { focus(target); scrollToThread(target); return; }
         // ---- the bots' proposed edits to this post -----------------------
         // Accept writes the markdown and the page reloads; Reject writes
         // nothing and is remembered ON THE RECORD, unlike the three chips
@@ -5032,151 +5183,15 @@ ${markPickHtml()}
           doSuggest(act, target, btn.dataset.ts, btn.dataset.sg || '');
           return;
         }
-        // ---- the question vault ------------------------------------------
-        // The reader's button, and the bot's offer answered. Both end in the
-        // same one call, because there is exactly one way a card is made and
-        // the reader's part in it is over the moment they click.
-        if (act === 'make-q') { doMakeQuestion(target); return; }
-        if (act === 'q-yes') {
-          doMakeQuestion(target, { from_msg: btn.dataset.ts, hint: btn.dataset.why });
-          return;
-        }
-        // …and the third thing a confirm can be: not another card, but a
-        // rewrite of one this discussion already filed.
-        if (act === 'q-revise') { doReviseQuestion(target, btn.dataset.ts); return; }
-        if (act === 'q-no') {
-          const row = btn.closest && btn.closest('[data-ts]');
-          if (row && row.dataset.ts) D.questions.declined.push(row.dataset.ts);
-          render();
-          return;
-        }
-        if (act === 'q-note-x') { D.questions.note = null; render(); return; }
-        if (act === 'quiz') { cb('onOpenQuiz')(); return; }
-        // ---- the Memorize tab -------------------------------------------
-        if (act === 'mem-scope') { D.memory.scope = btn.dataset.scope || 'page'; loadMemory(); return; }
-        if (act === 'mem-answer') { answerMemory(Number(btn.dataset.choice)); return; }
-        if (act === 'mem-next') { nextMemory(); return; }
-        if (act === 'mem-flag') { retireMemory(target, 'flag'); return; }
-        if (act === 'mem-drop') { retireMemory(target, 'drop'); return; }
-        if (act === 'mem-page') { bg({ t: 'open-here', path: `/p/${btn.dataset.key || ''}` }); return; }
-        // the duplicate hint's three answers: drop the other one, drop this
-        // one, or say they are different (which pins the pair so the hint
-        // never comes back)
-        if (act === 'mem-dup-drop') { retireMemory(target, 'drop'); return; }
-        if (act === 'mem-dup-keep') { keepMemoryPair(target, btn.dataset.other); return; }
-        // a thread's own "filed as a memory · view": the tab, opened on the
-        // page this thread is on, which is where its questions are
-        if (act === 'mem-open') {
-          holdOff();
-          D.tab = 'memory';
-          D.memory.scope = 'page';
-          // start the sitting on THIS thread's own question, where it is due
-          D.memory.focus = target || '';
-          paintTabs();
-          rememberTab();
-          loadMemory();
-          return;
-        }
-        if (act === 'export-run') { pickExport(btn.dataset.mode); return; }
-        if (act === 'pages') { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); return; }
-        if (act === 'pages-back') { showThreads(); return; }
-        if (act === 'lib-export') { doLibraryExport(); return; }
-        if (act === 'lib-clear') { D.library.confirm = true; D.library.note = ''; renderLibrary(); return; }
-        if (act === 'lib-clear-no') { D.library.confirm = false; renderLibrary(); return; }
-        if (act === 'lib-clear-yes') { doLibraryClear(); return; }
-        if (act === 'page-open') { openPageRow(btn.dataset.url); return; }
-        if (act === 'page-export') { doExportPage(btn.dataset.url); return; }
-        if (act === 'filter-by') { pickCommenter(btn.dataset.by || ''); return; }
-        if (act === 'filter-kind') { setKindFilter(btn.dataset.kind || ''); return; }
-        if (act === 'filter-tag') { toggleTagFilter(btn.dataset.tag || ''); return; }
-        if (act === 'filter-clear') { setFilter('', ''); return; }
-        if (act === 'page-rename') { openRowEditor('renaming', btn.dataset.url); return; }
-        if (act === 'page-tag') { openRowEditor('tagging', btn.dataset.url); return; }
         if (act === 'rename-no' || act === 'tag-no') { closeRowEditors(); return; }
-        if (act === 'rename-save') { saveRename(btn.dataset.url); return; }
-        if (act === 'tag-save') { saveTags(btn.dataset.url); return; }
-        if (act === 'tag-pick') { completeTag(btn.dataset.tag); return; }
-        if (act === 'page-del') { D.pages.confirm = btn.dataset.url; D.pages.rowErr = null; renderPages(); return; }
-        if (act === 'page-del-no') { D.pages.confirm = null; renderPages(); return; }
-        if (act === 'page-del-yes') { doDeletePage(btn.dataset.url); return; }
-        // the round strip: its quote is a place on the page, so it behaves
-        // like the quote on a card — scroll there and focus it. Unlike a
-        // card's quote there is no orphan/pending guard, because the thread
-        // named here is one a bot is answering right now.
-        if (act === 'round-jump') {
-          focus(target);
-          cb('onJump')(target);
-          return;
-        }
-        if (act === 'round-dismiss') { D.round = null; paintRound(); return; }
-        if (act === 'jump') {
-          const card = btn.closest('.card');
-          if (card && !card.classList.contains('orphaned') && !card.classList.contains('pending')) {
-            focus(target); cb('onJump')(target);
-          }
-          return;
-        }
-        if (act === 'route') { pickRoute(target, btn.dataset.route); return; }
-        if (act === 'send') { doSend(target); return; }
-        if (act === 'send-retry') { retrySend(target, btn.dataset.out); return; }
-        if (act === 'send-discard') { discardSend(target, btn.dataset.out); return; }
-        if (act === 'cancel-new') { cancelNew(); return; }
-        if (act === 'tools') { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); return; }
-        // both ways, unlike the thread fold: a reader who opened the long half
-        // of one answer is reading it, not committing to it
-        if (act === 'more') { const k = btn.dataset.key; D.moreOpen[k] = !D.moreOpen[k]; render(); return; }
-        if (act === 'run') { doRun(btn); return; }
-        if (act === 'run-stop') { doRunStop(btn); return; }
         if (act === 'run-more') {
           const a = runAddr(btn);
           if (a) { D.runOpen[a.key] = true; render(); }
           return;
         }
-        // one way only: a thread the reader has opened stays open for the
-        // session. Re-folding it under them while they read is not a feature.
-        // both directions are the reader's own decision about this thread, and
-        // both stick for the session — a new reply never undoes either
-        if (act === 'expand') { D.expanded[target] = FOLD_OPEN; render(); return; }
-        if (act === 'fold') { D.expanded[target] = FOLD_SHUT; render(); return; }
-        // the tasks card: its fold is a reading position (session only, like
-        // every other one here), and ↑ source is the way back to the message
-        if (act === 'tasks-fold') { D.tasksOpen = !D.tasksOpen; render(); return; }
-        if (act === 'ptasks-fold') { D.ptasksOpen = !D.ptasksOpen; render(); return; }
-        if (act === 'tasks-jump') { jumpToTasks(); return; }
-        if (act === 'interrupt') { doInterrupt(btn); return; }
-        if (act === 'retry') { cb('onReconnect')(); return; }
-        if (act === 'warn-dismiss') { setWarning(''); return; }
-        if (act === 'copy') { doCopy(btn); return; }
-        if (act === 'edit') { startEdit(btn); return; }
-        if (act === 'del-msg') { doDelete(target, btn.dataset.ts); return; }
-        if (act === 'resolve') { doResolve(target, true); return; }
-        if (act === 'reopen') { doResolve(target, false); return; }
-        if (act === 'not-done') { doNotDone(target); return; }
-        if (act === 'resolved-toggle') { D.resolvedOpen = !D.resolvedOpen; render(); return; }
-        if (act === 'ready-toggle') { D.readyOpen = !D.readyOpen; render(); return; }
-        if (act === 'resolved-card') { D.resolvedCards[target] = !D.resolvedCards[target]; render(); return; }
-        if (act === 'summarize') { doSummarize(target); return; }
-        if (act === 'root-yes') { answerRoot(true); return; }
-        if (act === 'root-no') { answerRoot(false); return; }
-        if (act === 'blogroot-yes') { answerBlogRoot(true); return; }
-        if (act === 'blogroot-no') { answerBlogRoot(false); return; }
-        if (act === 'arch-list') {
-          D.picking = !D.picking;
-          if (D.picking && !D.archive.list && !D.archive.loading) { loadArchive(); return; }
-          render();
-          return;
-        }
-        // one step, inline, like del-thread: the count is the whole of the
-        // warning, because "send" here spends real agent time on a message
-        // nobody typed
-        if (act === 'send-review') { D.review.confirm = true; D.review.err = ''; D.review.note = ''; render(); return; }
-        if (act === 'review-no') { D.review.confirm = false; render(); return; }
-        if (act === 'review-yes') { sendReview(); return; }
-        if (act === 'arch-new') { openSession(null); return; }
+        // An archive row with no session id is a row that is not a chat: it
+        // falls through to nothing, which a table entry could not express.
         if (act === 'arch-open' && btn.dataset.sid) { openSession(btn.dataset.sid); return; }
-        if (act === 'del-thread') { D.confirm = target; render(); return; }
-        if (act === 'del-thread-no') { D.confirm = null; render(); return; }
-        if (act === 'del-thread-yes') { D.confirm = null; doDelete(target, null); return; }
       });
 
       D.el.tabs.addEventListener('click', e => {
@@ -6805,6 +6820,40 @@ ${markPickHtml()}
         M.note ? `<p class="membeat">${esc(M.note)}</p>` : ''}${memBodyHtml()}`;
     }
 
+    // ---- THE CHIP: one shape, four states, three features -----------------
+    //
+    // A bot cannot file a page, mark up a document or write a card. What it can
+    // do is END A REPLY WITH AN OFFER, which the companion lifts off the words
+    // and the drawer draws as a chip with a button on it. Three features do
+    // this — filing, striking, the question vault — and each of them grew its
+    // own renderer by copying the one before it, comments and all. The shape
+    // was the same in all three and so was the state machine:
+    //
+    //   open      the offer, with what to click
+    //   done      it was taken, and what came of it
+    //   passed    it was not the one chosen, and may still be reached for
+    //   refused   it never became a button, and why — NEVER silence, because a
+    //             chip that simply did not appear is indistinguishable from an
+    //             offer that was never made, and the bot's next sentence would
+    //             be the reader's only account of it
+    //
+    // One builder now. The classes are unchanged and the harness asserts on
+    // them: `.filechip` plus the feature's own class (`.strikechip`, `.qchip`)
+    // plus the state. `body` goes in `.fcw` and `actions` in `.fcacts`, except
+    // where `bare` says the chip is a single sentence with nothing to click —
+    // which is what a `done` chip is.
+    //
+    // NOT the suggestion cards (`sgCardHtml`): those render the same four
+    // states through a CSS vocabulary of their own (`.sgcard`/`.sgacts`, grown
+    // during the suggest sprint). Merging the two stylesheets is the other half
+    // of this and is designed-not-done — see the SPEC amendment.
+    function chipHtml({ kind = '', state = '', body = '', actions = '', bare = false }) {
+      const cls = ['filechip', kind, state].filter(Boolean).join(' ');
+      if (bare) return `<div class="${cls}">${body}</div>`;
+      return `<div class="${cls}"><span class="fcw">${body}</span>${
+        actions ? `<span class="fcacts">${actions}</span>` : ''}</div>`;
+    }
+
     // A bot's suggestion, as a chip under its reply. One step, inline, like
     // every other confirm in this drawer: the sentence is the whole of the
     // warning and the button is the whole of the act.
@@ -6814,18 +6863,17 @@ ${markPickHtml()}
       const key = `${f.root}\u0000${f.id}`;
       const filed = (D.projects.filed || []).some(x => x.root === f.root && x.id === f.id);
       if (filed) {
-        return `<div class="filechip done">Filed in ${esc(f.title || f.id)}.</div>`;
+        return chipHtml({ state: 'done', bare: true,
+          body: `Filed in ${esc(f.title || f.id)}.` });
       }
-      return `<div class="filechip">
-        <span class="fcw">This looks like it belongs in <b>${esc(f.title || f.id)}</b>${
-          f.why ? ` \u2014 ${esc(f.why)}` : ''}</span>
-        <span class="fcacts">
-          <button class="rebtn" type="button" data-act="file-yes"
+      return chipHtml({
+        body: `This looks like it belongs in <b>${esc(f.title || f.id)}</b>${
+          f.why ? ` \u2014 ${esc(f.why)}` : ''}`,
+        actions: `<button class="rebtn" type="button" data-act="file-yes"
             data-root="${esc(f.root)}" data-pid="${esc(f.id)}"
             ${D.projects.busy === key ? 'disabled' : ''}>File it</button>
-          <button class="rebtn no" type="button" data-act="file-no">No</button>
-        </span>
-      </div>`;
+          <button class="rebtn no" type="button" data-act="file-no">No</button>`,
+      });
     }
 
     // The OTHER suggestion a bot can make, in the same shape as the filing one
@@ -6900,8 +6948,8 @@ ${markPickHtml()}
         // this chip was copy-pasted from it and kept the word, but a strike is
         // never filed anywhere; it either marks the passage up or it does not.
         // (questionChipHtml, copied from the same original, got this right.)
-        return `<div class="filechip strikechip refused">
-          <span class="fcw">Not changed — ${why}. Nothing was marked up.</span></div>`;
+        return chipHtml({ kind: 'strikechip', state: 'refused',
+          body: `Not changed — ${why}. Nothing was marked up.` });
       }
       // THE PASSAGE, WHEN THE BOT NAMED ITS OWN. The reader's highlight was
       // short by a letter, or the change belongs a line further on; the
@@ -6927,10 +6975,10 @@ ${markPickHtml()}
       const anyBorn = threads.find(t => t && isStruck(t) && t.from_thread === threadId);
       const mineId = D.strikes.made[key] || (born ? born.id : '');
       if (mineId) {
-        return `<div class="filechip strikechip done">${
-          D.strikes.updated[key] ? 'Note updated on the strikeout, in your name.'
+        return chipHtml({ kind: 'strikechip', state: 'done', bare: true,
+          body: `${D.strikes.updated[key] ? 'Note updated on the strikeout, in your name.'
             : 'Struck through, in your name.'}
-          <button class="rebtn" type="button" data-act="strike-view" data-target="${esc(mineId)}">view</button></div>`;
+          <button class="rebtn" type="button" data-act="strike-view" data-target="${esc(mineId)}">view</button>` });
       }
       // …and the OTHER suggestions, once one has been taken. They no longer
       // RETIRE. That was right while the only thing a second click could do was
@@ -6962,23 +7010,19 @@ ${markPickHtml()}
         + ` data-why="${esc(s.why)}" data-passage="${esc(s.passage || '')}"`
         + ` data-page="${Number(s.page) || 0}"`;
       if (rival) {
-        return `<div class="filechip strikechip passed">
-          <span class="fcw">Not chosen — ${esc(s.why)}${named}</span>
-          <span class="fcacts">
-            <button class="rebtn" type="button" data-act="strike-yes" ${data}
+        return chipHtml({ kind: 'strikechip', state: 'passed',
+          body: `Not chosen — ${esc(s.why)}${named}`,
+          actions: `<button class="rebtn" type="button" data-act="strike-yes" ${data}
               title="put this wording on the strikeout instead — the mark stays where it is"
-              ${D.strikes.busy ? 'disabled' : ''}>Use this note</button>
-          </span>
-        </div>`;
+              ${D.strikes.busy ? 'disabled' : ''}>Use this note</button>`,
+        });
       }
-      return `<div class="filechip strikechip">
-        <span class="fcw">${s.passage ? 'This wording should come out' : 'This passage should come out'} — ${esc(s.why)}${named}</span>
-        <span class="fcacts">
-          <button class="rebtn" type="button" data-act="strike-yes" ${data}
+      return chipHtml({ kind: 'strikechip',
+        body: `${s.passage ? 'This wording should come out' : 'This passage should come out'} — ${esc(s.why)}${named}`,
+        actions: `<button class="rebtn" type="button" data-act="strike-yes" ${data}
             ${D.strikes.busy ? 'disabled' : ''}>Strike it</button>
-          <button class="rebtn no" type="button" data-act="strike-no">No</button>
-        </span>
-      </div>`;
+          <button class="rebtn no" type="button" data-act="strike-no">No</button>`,
+      });
     }
 
     // "Strike it", confirmed. The discussion is left EXACTLY as it is — this is
@@ -7261,9 +7305,9 @@ ${markPickHtml()}
           : q.rejected === 'unparsed'
             ? 'the corrected card could not be read'
             : 'there is no such card in your vault';
-        return `<div class="filechip qchip refused">
-          <span class="fcw">Not changed — ${esc(why)}${
-  q.revises ? ` (${esc(q.revises)})` : ''}. Nothing was filed either.</span></div>`;
+        return chipHtml({ kind: 'qchip', state: 'refused',
+          body: `Not changed — ${esc(why)}${
+            q.revises ? ` (${esc(q.revises)})` : ''}. Nothing was filed either.` });
       }
       // A REVISION OFFERED. Same chip, different verb, and the difference is
       // the whole point: "File it" adds a card, "Revise the card" rewrites the
@@ -7271,31 +7315,29 @@ ${markPickHtml()}
       // exactly where it was.
       if (q.revises) {
         if (D.questions.revised[ts]) {
-          return `<div class="filechip qchip done">Revised — the card keeps its place in the rotation.</div>`;
+          return chipHtml({ kind: 'qchip', state: 'done', bare: true,
+            body: 'Revised — the card keeps its place in the rotation.' });
         }
-        return `<div class="filechip qchip">
-          <span class="fcw">Rewrite the question you already filed — ${esc(q.why || 'a corrected card')}</span>
-          <span class="fcacts">
-            <button class="rebtn" type="button" data-act="q-revise"
+        return chipHtml({ kind: 'qchip',
+          body: `Rewrite the question you already filed — ${esc(q.why || 'a corrected card')}`,
+          actions: `<button class="rebtn" type="button" data-act="q-revise"
               data-target="${esc(threadId)}" data-ts="${esc(ts)}"
               title="rewrite that card where it stands — when it next comes back is unchanged"
               ${D.questions.busy ? 'disabled' : ''}>Revise the card</button>
-            <button class="rebtn no" type="button" data-act="q-no">No</button>
-          </span>
-        </div>`;
+            <button class="rebtn no" type="button" data-act="q-no">No</button>`,
+        });
       }
       if (D.questions.made[ts]) {
-        return `<div class="filechip qchip done">Filed — you will be asked about this.</div>`;
+        return chipHtml({ kind: 'qchip', state: 'done', bare: true,
+          body: 'Filed — you will be asked about this.' });
       }
-      return `<div class="filechip qchip">
-        <span class="fcw">Worth remembering — ${esc(q.why)}</span>
-        <span class="fcacts">
-          <button class="rebtn" type="button" data-act="q-yes"
+      return chipHtml({ kind: 'qchip',
+        body: `Worth remembering — ${esc(q.why)}`,
+        actions: `<button class="rebtn" type="button" data-act="q-yes"
             data-target="${esc(threadId)}" data-ts="${esc(ts)}" data-why="${esc(q.why)}"
             ${D.questions.busy ? 'disabled' : ''}>File it</button>
-          <button class="rebtn no" type="button" data-act="q-no">No</button>
-        </span>
-      </div>`;
+          <button class="rebtn no" type="button" data-act="q-no">No</button>`,
+      });
     }
 
     // "Revise the card", confirmed. Nothing is minted and no bot is summoned:
