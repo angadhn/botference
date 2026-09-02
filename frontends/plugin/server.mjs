@@ -43,6 +43,7 @@ import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as suggest from './suggest.mjs';
+import * as publish from './publish.mjs';
 import * as collateral from './collateral.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -2258,6 +2259,13 @@ export function handler(req, res) {
           ? (t => (t.length ? { tasks: t } : {}))(
               workspace.projectTasks(art.root, art.project_id))
           : {}),
+        // …and where this page would go if the reader published it: the
+        // target's name and the public address of its directory, or null when
+        // config.json names none. The drawer needs both before anything is
+        // pressed — a button that says where it will put the page is a
+        // different button from one that just says "publish".
+        publish: (t => (t ? { name: t.name, url: t.url, push: t.push } : null))(
+          publish.targetNamed('')),
       },
     });
   }
@@ -2411,6 +2419,54 @@ export function handler(req, res) {
       const s = summon(page, store.PAGE_CHAT, text,
         { lane, borrowed: true, routeHint: `${route} ` }, me);
       return ok(res, { root: hit.root, id: hit.id, route, msg, ...s });
+    });
+  }
+  // POST /publish {url, target?} — this project artifact, live on the
+  // reader's own website.
+  //
+  // The end of the road: a page the bots made in a project folder, copied into
+  // the reader's site repo, committed and pushed, and the host rebuilds. It is
+  // three commands and one file copy (publish.mjs, which says at length what it
+  // deliberately does NOT do to the reader's repository), and the only thing
+  // this endpoint decides is that the page is a page it may publish at all: a
+  // project artifact, in a council the reader has confirmed. Everything else is
+  // an ordinary web page or a file loose on the disk, and neither of those is
+  // this button's business.
+  //
+  // The result is REPORTED IN PARTS, because it can genuinely half-succeed: the
+  // page is copied, the commit is made, and the push is the one that fails when
+  // a laptop is off a network. `error` beside `commit` means "it is committed
+  // and it is not pushed" — the state the reader would be in had they run the
+  // commands themselves, and the one they know what to do about.
+  if (req.method === 'POST' && url === '/publish') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const u = data.url ? store.normUrl(String(data.url)) : '';
+      const art = u ? artifactOf(u) : null;
+      if (!art) return fail(res, 400, 'only a project artifact page can be published');
+      if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+      const target = publish.targetNamed(data.target);
+      if (!target) {
+        return fail(res, 400, 'publish target not set up — add it to config.json');
+      }
+      const page = store.readPage(u);
+      const r = publish.publishArtifact({
+        target,
+        srcPath: art.path,
+        title: (page && store.displayTitle(page)) || art.rel,
+      });
+      if (!r.ok) return fail(res, 500, r.error || 'publishing failed');
+      // …and the record remembers it, so the row says "published · 5m ago"
+      // with the link rather than offering the same button again as if
+      // nothing had happened. One target, one row: republishing the same page
+      // updates it (the address does not change), which is the truth.
+      if (page) {
+        page.published = { target: r.target, url: r.public_url, commit: r.commit,
+          at: new Date().toISOString(), ...(r.pushed ? {} : { pushed: false }) };
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+      }
+      return ok(res, r);
     });
   }
   // The one-time answer to "treat <root> as your council?". Kept in the

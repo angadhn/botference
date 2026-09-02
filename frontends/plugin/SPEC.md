@@ -5044,7 +5044,7 @@ about once a week. They are:
   and the first `✗` before it. That is how a hang gets diagnosed without a
   debugger.
 
-The 43 selftest poses, which is the whole list — nothing else in the harness
+The 44 selftest poses, which is the whole list — nothing else in the harness
 drives a selftest, and every one of them is expected green:
 
 ```
@@ -5091,6 +5091,7 @@ drives a selftest, and every one of them is expected green:
 ?checklist=1&selftest=1
 ?filein=new&selftest=1
 ?filein=made&selftest=1
+?workspace=1&nopublish=1&selftest=1
 ```
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were
@@ -8701,6 +8702,166 @@ the composer, `position: sticky`, still in view after a scroll to the top of a
 long chat, exactly one of it, and the make-artifact button disabled with its
 reason on a page filed nowhere. The tasks-card assertion dropped `reviewrow`
 from its chrome list — the row is not a sibling of that card any more.
+
+## Amendment (2026-09-02, shipped): publish to the reader's site
+
+The road ended one step short. The bots make an artifact in a project folder,
+the reader reads it, and then they want to send it to somebody — which means it
+has to be at an address, and the address they already own is their own website.
+That site is a Jekyll repo whose host (Netlify, here) rebuilds on a push to
+`main`, so publishing is three things and nothing else: copy one file in, commit
+it, push.
+
+### The target lives in config.json, and there is no settings UI
+
+```json
+"publish": {
+  "repo": "/Users/you/MySiteFromObsidianVault/angadh.com",
+  "dir": "lff",
+  "url": "https://angadh.com/lff/",
+  "branch": "main",
+  "push": true
+}
+```
+
+**One caveat, and it belongs to the reader's site rather than to this code:
+the `dir` must not be a directory the site's own `_config.yml` excludes.** A
+Jekyll `exclude:` list is what keeps a directory out of the build, and a site
+that is ALSO a council root (this reader's is) excludes `projects`, `work`,
+`sessions` and `.botference` for exactly that reason — publishing into one of
+those would commit a file that never appears on the site. Pick a directory that
+is not on that list (`lff`, say); nothing here edits `_config.yml` to make room,
+and a file with no front matter in an ordinary directory is copied through by
+Jekyll unchanged, which is the whole mechanism.
+
+A map of names to targets is read too (`"publish": {"site": {…}, "notes": {…}}`);
+the flat single target above is called `site`. A target whose `repo` is not an
+absolute directory with a `.git` in it, or whose `dir` is absolute or climbs, is
+skipped — the file is hand-written, so it is checked like every other
+hand-written path here. `push: false` is a real answer: commit, and push it
+yourself later. With no target at all the button is disabled and its tooltip is
+the whole of the instruction — *publish target not set up — add it to
+config.json*.
+
+### `POST /publish {url, target?}` (owner-only)
+
+400 unless the page is a **project artifact** (an article on somebody else's
+site is not the reader's to publish, and a page with no file behind it has
+nothing to copy), 409 on an unconfirmed council root, 400 with the sentence
+above when no target is configured.
+
+What it does, and — as important — what it deliberately does not:
+
+- **The bytes are not touched.** No front matter, no template, no injected
+  header. Jekyll copies a file with no front matter through unchanged, which is
+  exactly what a self-contained artifact wants (the make-artifact instruction
+  forbids external scripts and stylesheets), so the file on the site and the
+  file in the project are the same bytes.
+- **`_config.yml` is not edited, and neither is anything else of the reader's.**
+  One file lands, in the one directory they named. A tool that quietly rewrites
+  a site's configuration is a tool nobody can trust with a repo.
+- **Only our file is committed** (`git add -- <dir>/<file>`, `git commit … --
+  <that path>`). A repo with the reader's own half-finished work in it publishes
+  the artifact and leaves that work exactly where it was.
+- **Nothing is rebased, merged or forced.** `git push origin HEAD:<branch>` runs
+  once, and on failure **git's own words come back verbatim** beside the commit
+  hash: the page is committed and not pushed, which is the state the reader
+  would be in had they typed the commands, and the one they know how to fix.
+- Every git command runs with a **60s timeout** and `GIT_TERMINAL_PROMPT=0`: a
+  push that stops to ask for a password has nobody to answer it.
+- "Nothing to commit" is **not** a failure — the page has not changed since the
+  last publish, the site already has it, and the answer the reader wants is the
+  link (`unchanged: true`).
+
+The answer is `{ok, public_url, rel, target, commit, committed, unchanged,
+pushed, error?}`, and `page.published = {target, url, commit, at}` is written on
+the record so the row becomes a receipt rather than the same button again.
+
+### In the drawer
+
+A **publish** button in the pinned chat foot, beside send review and make
+artifact, on a confirmed project artifact page and nowhere else. The confirm
+names the ADDRESS — *publish to `https://angadh.com/lff/`? This makes the page
+public.* — because "publish" alone is a word about a process while the address
+is the fact the reader is agreeing to. Afterwards the row carries `published ·
+<age>` and the live link; a publish that committed but could not push says so in
+the same line.
+
+### The API row
+
+| Method | Path | Request | Response |
+|---|---|---|---|
+| POST | `/publish` | `{url, target?}` | `{ok, public_url, rel, target, commit, committed, unchanged, pushed, error?}`; 400 not an artifact / no target, 409 unconfirmed root, 403 guest |
+
+`GET /project-page`'s artifact payload also gained `publish: {name, url, push} |
+null`, so the button can say where it would put the page before anything is
+pressed.
+
+### Putting it on a subdomain (one-time, by hand — no code does this)
+
+`https://angadh.com/lff/` works the moment the push lands. If the reader wants
+`https://lff.angadh.com/` instead, that is three settings and no code, and this
+companion does none of them for them:
+
+1. **Netlify** → the site → *Domain management* → *Add a domain alias* →
+   `lff.angadh.com`. (Netlify then issues the certificate for it.)
+2. **Cloudflare** (the DNS for angadh.com) → *DNS* → add a **CNAME**:
+   name `lff`, target the site's Netlify address (`<site-name>.netlify.app`).
+   *DNS only* (grey cloud) is the simplest and is what Netlify's own
+   certificate wants; proxied (orange) also works if the reader prefers it.
+3. **The redirect**, so the subdomain serves the same directory rather than the
+   site's home page: a line in the repo's `_redirects` file (create it at the
+   publishing root if there is none — this is the READER's file, and nothing
+   here writes it):
+
+   ```
+   https://lff.angadh.com/*  /lff/:splat  200
+   ```
+
+   The `200` is a rewrite rather than a redirect, so the address bar keeps
+   saying `lff.angadh.com`.
+
+Nothing in the plugin knows about any of this: `url` in the target is whatever
+address the reader wants the link to say, so once the alias exists they change
+that one line to `https://lff.angadh.com/` and every later publish hands back
+the subdomain.
+
+### Two more lines in the make-artifact turn
+
+Both came from watching the first real one:
+
+- **Updating in place means ADDING.** A planner asked for a second year and
+  rebuilt from the new brief alone loses last year's twenty rows, and the file
+  is the only record they were ever in. The turn now says: keep every row,
+  section and year already there; remove or rewrite only what the reader
+  actually asked to change.
+- **A polished page is a small project, not a paragraph of HTML.** Where the
+  brief asks for something pretty, beautiful or designed, or the build is
+  substantial, the turn tells the bot to hand the BUILD to a subagent (Claude
+  Code's Agent tool, model opus) with the whole brief and the paths, check what
+  it wrote, and finish the reply itself — still ending with the `artifact:`
+  line.
+
+### Testing
+
+`workspace.test.mjs` (166 → 176), against throwaway git repositories in a temp
+directory with a bare "remote" beside them — the developer's own site is never
+opened, written or pushed to: the copy is byte-for-byte with no front matter,
+the commit subject is `publish: <title> (<dir>/<file>)`, the file is really on
+the remote afterwards, the reader's own uncommitted work is left uncommitted and
+out of our commit, the record remembers the address, an unchanged page answers
+with the link rather than an error, a non-artifact is 400, a guest is 403, no
+target is the 400 that says what to add to config.json, `push:false` commits and
+stops, and a push to a remote that does not exist comes back **committed** with
+git's own text on it.
+
+In the browser, the `?workspace=1` pose (88 → 98): the button is there and in
+the pinned row, its tooltip names the site, the confirm names the address and
+says what it means, nothing is published by the asking, confirming publishes
+once, and the result is the public address as a link with when it went.
+`?workspace=1&nopublish=1&selftest=1` is the same pose with no target in
+config.json — the button there is present, dead, and carries the whole of the
+instruction in its tooltip.
 
 ## Out of scope for v1 (do not build)
 

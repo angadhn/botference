@@ -42,6 +42,32 @@
   folder, on that project's own turn, exactly as they have since they were
   first allowed to write anything.
 
+- **And a page the bots made can go straight onto your own website.** A
+  **publish** button beside the other two, on a project page: it copies that
+  one file into your site's repo, commits it and pushes, and your host rebuilds.
+  It asks first, and the question names the address — *publish to
+  https://angadh.com/lff/? This makes the page public* — because that is the
+  fact you are agreeing to. Afterwards the row is a receipt with the live link
+  on it.
+
+  Where it goes is one block in the plugin's `config.json` (there is no settings
+  screen): the repo, the folder inside it, and the public address that folder is
+  at. Until you add it the button is disabled and says so. Your page is copied
+  in exactly as it is — no front matter, no template, no rewriting — and nothing
+  else in that repository is ever written: not `_config.yml`, not your own
+  half-finished work, which stays uncommitted and out of the commit. If the push
+  fails (a laptop off a network), the page is committed and you are told so,
+  with git's own words. SPEC has the one-time steps for putting it on a
+  subdomain like lff.angadh.com instead, which is three settings in Netlify and
+  Cloudflare and no code at all.
+
+- **Two things the bots are now told when they make a page.** Updating a page
+  that already exists means ADDING to it — every row, section and year already
+  there stays, so asking for next year's planner cannot quietly delete last
+  year's. And when you ask for something *pretty* or *polished*, or the build is
+  a big one, the bot hands the building to a subagent rather than typing a whole
+  designed page out in one turn.
+
 - **Send review sits at the bottom of the chat now, not the top.** It was at
   the top of the pane, which is the top of the scroll: on a chat of any length
   you had to scroll away from what you were reading to find the button whose

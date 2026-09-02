@@ -2459,6 +2459,16 @@
         const d = r.data || {};
         return { ok: true, id: d.id, title: d.title, filed: d.filed || [] };
       },
+      // ---- and putting one on the reader's own website --------------------
+      // A project artifact, copied into their site repo, committed and pushed.
+      // The companion does all three; the drawer only asks and reports.
+      onPublish: async (target) => {
+        const r = await api('POST', '/publish', { url: URL_NOW, target: target || '' });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, ...(r.data || {}) };
+      },
+
       // ---- and having a page MADE out of this one -------------------------
       // One turn on the project's own lane, which is the only place anything
       // may be written. The answer comes back into page chat like any other

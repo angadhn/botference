@@ -190,6 +190,13 @@
 //                                        The reply lands in page chat like any
 //                                        other turn; the file appears in the
 //                                        artifacts strip when it exists
+//   onPublish(target)                   → {ok, public_url, commit, pushed,
+//                                          error} | {ok:false, error}
+//                                        (POST /publish) — this project
+//                                        artifact copied into the reader's own
+//                                        website repo, committed and pushed.
+//                                        `error` beside a commit means it is
+//                                        committed and not pushed
 //   onClose() / onReconnect() / onSelect()
 //
 // `project` (and `d.setProject(p)`) is the council project behind a PROJECT
@@ -1447,6 +1454,10 @@
       // project) which project it goes in. `root`/`id` are the answer to the
       // second, set by the select; empty means "the one project there is".
       artifact: { confirm: false, busy: false, err: '', note: '', brief: '', root: '', id: '' },
+      // "publish": the same one-step confirm again, for the one act in this
+      // drawer that puts something on the public internet. The sentence says
+      // where and says that plainly; the button is the whole of the act.
+      publish: { confirm: false, busy: false, err: '', note: '', link: '' },
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -3596,10 +3607,66 @@ ${markPickHtml()}
                    : `hand all ${n} open comment${n === 1 ? '' : 's'} on this page to the bots — one turn each, answered in the threads, then a wrap-up in page chat`)
                  : 'nothing to send yet — this page has no open comments. Highlight a passage and comment on it first.')}"${n ? '' : ' disabled'}>send review${n ? ` (${n})` : ''}</button>`
             + makeArtifactBtnHtml()
+            + publishBtnHtml()
             + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
               : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
       return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`
-        + makeArtifactConfirmHtml() + artifactsHtml();
+        + makeArtifactConfirmHtml() + publishConfirmHtml() + artifactsHtml()
+        + publishedHtml();
+    }
+
+    // ---- publish -----------------------------------------------------------
+    //
+    // The last step, and the only one in this drawer that puts anything on the
+    // public internet: this artifact, copied into the reader's own website
+    // repository, committed and pushed, and their host rebuilds. On a project
+    // artifact page and nowhere else — an article on somebody else's site is
+    // not the reader's to publish, and a page with no file behind it has
+    // nothing to copy.
+    //
+    // The sentence names the ADDRESS. "Publish" alone is a word about a
+    // process; "publish to https://angadh.com/lff/?" is a statement about
+    // where a thing the reader wrote is about to be readable by anybody, which
+    // is the only fact that matters before pressing it.
+    const publishTarget = () => (D.project && D.project.publish) || null;
+
+    function publishBtnHtml() {
+      if (!D.owner || !D.project || !D.project.confirmed) return '';
+      const P = D.publish;
+      if (P.confirm) return '';
+      const t = publishTarget();
+      const busy = P.busy ? '<span class="rvnote busy">publishing…</span>' : '';
+      return `<button class="archsend pubbtn" data-act="publish" type="button"
+          title="${esc(t
+            ? `copy this page into your website (${t.url}), commit it${t.push === false ? '' : ' and push'}`
+            : 'publish target not set up — add it to config.json')}"${
+        t && !P.busy ? '' : ' disabled'}>publish</button>${busy}${
+        P.err ? `<span class="rvnote err">${esc(P.err)}</span>` : ''}`;
+    }
+
+    function publishConfirmHtml() {
+      const P = D.publish;
+      const t = publishTarget();
+      if (!P.confirm || !t || !D.owner) return '';
+      return `<div class="reviewrow confirm pubrow">
+        <span class="rvq">publish to <b>${esc(t.url)}</b>? This makes the page public.</span>
+        <button class="rebtn yes" data-act="publish-yes" type="button">Publish</button>
+        <button class="rebtn no" data-act="publish-no" type="button">No</button>
+      </div>`;
+    }
+
+    // …and afterwards, the address itself. A publish whose only trace was a
+    // line that scrolled away would leave the reader with no way to find the
+    // page they just put on the internet.
+    function publishedHtml() {
+      if (!D.owner) return '';
+      const p = (D.page && D.page.published) || null;
+      if (!p || !p.url) return '';
+      return `<div class="artstrip pubstrip"><div class="artrow">
+        <span class="artname">published${p.at ? ' \u00b7 ' + esc(shortAge(p.at)) : ''}${
+        p.pushed === false ? ' (committed, not pushed)' : ''}</span>
+        <a class="artopen" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>
+      </div></div>`;
     }
 
     // ---- make artifact ---------------------------------------------------
@@ -3886,6 +3953,28 @@ ${markPickHtml()}
       paintTabs();
       render();
       if (D.el && D.el.chat) D.el.chat.scrollTop = D.el.chat.scrollHeight;
+    }
+
+    // Publishing, which is a copy, a commit and a push (server.mjs POST
+    // /publish). It can half-succeed — committed but not pushed, when the
+    // laptop is off a network — and the drawer says which of the two happened
+    // rather than one word for both, because they need different things doing
+    // about them.
+    async function doPublish() {
+      const P = D.publish;
+      if (P.busy) return;
+      P.busy = true; P.err = ''; P.note = ''; P.confirm = false;
+      render();
+      const r = await cb('onPublish')((publishTarget() || {}).name || '');
+      P.busy = false;
+      if (!r || !r.ok) {
+        P.err = (r && r.error) || 'the companion did not answer';
+      } else if (r.error) {
+        // the commit stands; the push is what failed, and git's own words are
+        // the only useful account of why
+        P.err = `committed, but not pushed \u2014 ${r.error}`;
+      }
+      render();
     }
 
     // Starting a project, from the picker or from a bot's offer. It is the one
@@ -5262,6 +5351,15 @@ ${markPickHtml()}
       },
       'make-artifact-no': () => { D.artifact.confirm = false; render(); },
       'make-artifact-yes': () => makeArtifact(),
+      // the one act here that makes something public, and it asks first —
+      // naming the address, because that is the fact the reader is agreeing to
+      'publish': () => {
+        if (!publishTarget()) return;
+        D.publish.confirm = true; D.publish.err = ''; D.publish.note = '';
+        render();
+      },
+      'publish-no': () => { D.publish.confirm = false; render(); },
+      'publish-yes': () => doPublish(),
       // the bot's NEW-project offer, answered. Yes creates the project and
       // files the page in it; no is the same non-event "No" is on every other
       // chip — this tab, this reply, remembered nowhere.

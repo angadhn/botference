@@ -1125,6 +1125,21 @@ export function artifactTurn({
     + `No external scripts and no external stylesheets — everything inline, so the file opens on `
     + `its own with no network. It has to read well in BOTH light and dark: set the colours you `
     + `use rather than inheriting them, and give the page an explicit background.\n`
+    // UPDATE MEANS ADD. The failure this line exists to prevent: a planner
+    // asked for a second year, rebuilt from the new brief alone, and last
+    // year's twenty rows gone — with nothing anywhere saying they were
+    // deleted, because the file is the only record they were in.
+    + `If that file already exists, UPDATING it means ADDING to it: keep every row, section and `
+    + `year already in it, and put the new material beside them. Remove or rewrite something only `
+    + `where I have actually asked you to.\n`
+    // …and the other thing a one-turn build cannot do alone. A page the reader
+    // asked to be BEAUTIFUL is a small project, not a paragraph of HTML, and
+    // one turn's worth of attention shows in the result.
+    + `If I have asked for something polished (pretty, beautiful, designed) or this is a `
+    + `substantial build, hand the BUILD to a subagent — your Agent tool, model opus, with the `
+    + `whole brief and the paths — and integrate what it writes rather than typing the page out `
+    + `in this turn. Check the file it leaves behind, then finish this reply yourself, still `
+    + `ending with the line below.\n`
     + `Put the source in the file's <head>, exactly these two lines, so the page knows where it `
     + `came from:\n`
     + `  <meta name="bfp-source" content="${url}">\n`

@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
@@ -2373,6 +2374,185 @@ console.log('\ncompanion — POST /project-create and POST /make-artifact');
     assert.ok(page.session_id, 'and NOW it has a session, made by its own child');
   });
 }
+
+// --- publishing an artifact to the reader's own site -----------------------
+// The end of the road: a page the bots made in a project folder, copied into
+// the reader's website repo, committed, pushed, and live. Every git command
+// here runs against throwaway repositories made in a temp directory — the
+// developer's own site is never opened, never written and never pushed to.
+console.log('\ncompanion — POST /publish');
+
+{
+  const sh = (cwd, args) => {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@e',
+        GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@e' } });
+    return `${r.stdout || ''}${r.stderr || ''}`;
+  };
+  // a site repo with a bare "remote" beside it, which is a push that really
+  // pushes and really can be read back
+  function site(tag) {
+    const remote = tmp(`${tag}-remote`);
+    sh(remote, ['init', '--bare', '-b', 'main']);
+    const repo = tmp(`${tag}-site`);
+    sh(repo, ['init', '-b', 'main']);
+    sh(repo, ['config', 'user.email', 't@e']);
+    sh(repo, ['config', 'user.name', 'T']);
+    fs.writeFileSync(path.join(repo, '_config.yml'), 'title: A site\n');
+    sh(repo, ['add', '-A']);
+    sh(repo, ['commit', '-m', 'first']);
+    sh(repo, ['remote', 'add', 'origin', remote]);
+    sh(repo, ['push', '-u', 'origin', 'main']);
+    return { repo, remote };
+  }
+  const remoteHas = (remote, rel) => sh(remote, ['show', `main:${rel}`]);
+
+  const root = council('pub');
+  const a = artifact(root, 'spaceship-engineering', 'planner.html', '<h1>What to watch</h1>');
+  const HTML = fs.readFileSync(a.path, 'utf8');
+  const { repo, remote } = site('pub');
+
+  const companionRoot = tmp('pub-companion');
+  const cfgFile = path.join(companionRoot, '.botference', 'plugin', 'config.json');
+  const writeCfg = patch => {
+    fs.mkdirSync(path.dirname(cfgFile), { recursive: true });
+    const cur = fs.existsSync(cfgFile) ? JSON.parse(fs.readFileSync(cfgFile, 'utf8')) : {};
+    fs.writeFileSync(cfgFile, JSON.stringify({ ...cur, ...patch }, null, 2));
+  };
+  writeCfg({ publish: { repo, dir: 'lff', url: 'https://angadh.com/lff/', branch: 'main', push: true } });
+  const { base } = await startServer({ root: companionRoot, args: ['--no-agents'] });
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: a.url, title: 'LFF planner', site: 'spaceship-engineering' });
+
+  await test('publishing copies the page in, commits it and pushes it', async () => {
+    const r = await POST(base, '/publish', { url: a.url });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(r.json.public_url, 'https://angadh.com/lff/planner.html');
+    assert.ok(r.json.commit, 'and says which commit it is');
+    assert.equal(r.json.pushed, true);
+    const landed = fs.readFileSync(path.join(repo, 'lff', 'planner.html'), 'utf8');
+    assert.equal(landed, HTML, 'byte for byte — no front matter, no rewriting, no template');
+    assert.match(remoteHas(remote, 'lff/planner.html'), /What to watch/,
+      'and it is on the remote, which is what the site host rebuilds from');
+    const log = sh(repo, ['log', '-1', '--pretty=%s']);
+    assert.match(log, /^publish: LFF planner \(lff\/planner\.html\)/);
+  });
+
+  await test('…and NOTHING else in the reader\'s repository is touched', async () => {
+    fs.writeFileSync(path.join(repo, 'notes-of-my-own.md'), 'half a draft\n');
+    fs.writeFileSync(a.path, `${HTML}<p>and when</p>`);
+    const r = await POST(base, '/publish', { url: a.url });
+    assert.equal(r.status, 200);
+    const status = sh(repo, ['status', '--porcelain']);
+    assert.match(status, /notes-of-my-own\.md/, 'their own work is still uncommitted…');
+    const show = sh(repo, ['show', '--stat', '--pretty=%s', 'HEAD']);
+    assert.equal(/notes-of-my-own/.test(show), false, '…and was not swept into our commit');
+    assert.match(show, /lff\/planner\.html/, 'which contains one file: ours');
+    fs.unlinkSync(path.join(repo, 'notes-of-my-own.md'));
+  });
+
+  await test('the page record remembers where it went', async () => {
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.equal(page.published.url, 'https://angadh.com/lff/planner.html');
+    assert.equal(page.published.target, 'site');
+    assert.ok(page.published.at && page.published.commit);
+  });
+
+  await test('publishing an unchanged page is not an error — the link is the answer', async () => {
+    const r = await POST(base, '/publish', { url: a.url });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.unchanged, true, 'nothing to commit, and nothing to apologise for');
+    assert.equal(r.json.public_url, 'https://angadh.com/lff/planner.html');
+  });
+
+  await test('a page that is not a project artifact cannot be published', async () => {
+    const u = 'https://example.test/an-article';
+    await POST(base, '/page', { url: u, title: 'An article', site: 'example.test' });
+    const r = await POST(base, '/publish', { url: u });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /only a project artifact page/);
+  });
+
+  await test('a guest may not publish anything at all', async () => {
+    const h = await startServer({
+      root: tmp('pub-hosted'),
+      args: ['--hosted', '--no-agents'],
+      env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' },
+    });
+    const guest = { host: 'annotations.example', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
+    const r = await POST(h.base, '/publish', { url: a.url }, guest);
+    assert.equal(r.status, 403, 'this puts something on the internet from the owner\'s machine');
+    h.proc.kill();
+  });
+}
+
+{
+  // push: false — commit here, push it yourself. And the config with no
+  // target in it at all, which is the ordinary state before anyone sets one up.
+  const root = council('pub2');
+  const a = artifact(root, 'spaceship-engineering', 'plan.html', '<h1>plan</h1>');
+  const companionRoot = tmp('pub2-companion');
+  const cfgFile = path.join(companionRoot, '.botference', 'plugin', 'config.json');
+  const { base } = await startServer({ root: companionRoot, args: ['--no-agents'] });
+  await POST(base, '/council-root', { root, confirm: true });
+  await POST(base, '/page', { url: a.url, title: 'Plan', site: 'spaceship-engineering' });
+
+  await test('with no publish target the answer says exactly what to do', async () => {
+    const r = await POST(base, '/publish', { url: a.url });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /publish target not set up — add it to config\.json/);
+    const pp = (await GET(base, '/project-page?url=' + enc(a.url))).json;
+    assert.equal(pp.artifact.publish, null, 'and the drawer is told there is none');
+  });
+
+  await test('push:false commits and stops there, and says so', async () => {
+    const repo = tmp('pub2-site');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: repo });
+    spawnSync('git', ['config', 'user.email', 't@e'], { cwd: repo });
+    spawnSync('git', ['config', 'user.name', 'T'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'README.md'), 'site\n');
+    spawnSync('git', ['add', '-A'], { cwd: repo });
+    spawnSync('git', ['commit', '-m', 'first'], { cwd: repo });
+    const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    cfg.publish = { repo, dir: 'pages', url: 'https://example.test/pages/', push: false };
+    fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+    const r = await POST(base, '/publish', { url: a.url });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(r.json.pushed, false);
+    assert.equal(r.json.public_url, 'https://example.test/pages/plan.html');
+    assert.ok(fs.existsSync(path.join(repo, 'pages', 'plan.html')));
+  });
+
+  await test('a push that fails is COMMITTED, and git\'s own words come back', async () => {
+    const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    const repo = cfg.publish.repo;
+    spawnSync('git', ['remote', 'add', 'origin', path.join(tmp('pub2-nowhere'), 'gone.git')],
+      { cwd: repo });
+    cfg.publish.push = true;
+    fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(a.path, '<h1>plan, second draft</h1>');
+    const r = await POST(base, '/publish', { url: a.url });
+    assert.equal(r.status, 200, 'the copy and the commit succeeded, and that is the truth');
+    assert.equal(r.json.pushed, false);
+    assert.ok(r.json.commit, 'the commit is named…');
+    assert.ok(r.json.error && /repository|does not|not found|fatal/i.test(r.json.error),
+      `…and git's own account of the failure rides back verbatim: ${r.json.error}`);
+    assert.equal(fs.readFileSync(path.join(repo, 'pages', 'plan.html'), 'utf8'),
+      '<h1>plan, second draft</h1>', 'and the file is in the repo either way');
+  });
+}
+
+console.log('\npublish — the targets, read from config');
+
+await test('a target needs a real repo and a directory inside it', async () => {
+  const pub = await import(path.join(PLUGIN, 'publish.mjs'));
+  assert.equal(pub.publishName('projects/lff/planner.html'), 'planner.html',
+    'the file name, and only the file name');
+  assert.equal(pub.publishName('projects/lff/'), '', 'a directory is not a page');
+  assert.equal(pub.publishName('../../etc/passwd'), '',
+    'basename first, so a traversal cannot survive it — and no extension, no page');
+  assert.equal(pub.publishName('/tmp/x/.hidden.html'), '');
+});
 
 cleanup();
 await sleep(150);

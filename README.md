@@ -665,7 +665,48 @@ projects with a peek at each one's recent chats and files, and ticks the ones
 this page is already in. And on a page filed nowhere, the bots are told the
 project names and may **suggest** one — "this looks like it belongs in
 Adriana's paper" — which the drawer draws as a chip with a **File it**
-button on it. Bots never file anything; you press the button.
+button on it. Bots never file anything; you press the button. And where
+nothing you keep fits, they may say so and name a project you do not have
+yet — *Start a project "Doc Fest 2026" for this page?* — which makes the
+folder, its `PROJECT.md` and its portfolio row when you press it, and files
+the page in it. (**+ new project** at the bottom of the same folder-button
+list does it by hand.)
+
+**Make a page out of the one you marked up.** Beside *send review*, on any
+page filed in a project, there is **make artifact**: say in one line what
+you want — *a planner of what to watch and when, with costs* — and one bot
+writes a single self-contained web page into that project's folder, reading
+your margin comments, the chat about the page, and the page itself. It
+appears as a link under the review row. Because it lives in the project
+folder it is an ordinary project page from then on: open it, comment on it,
+send a review, and the bots edit it in place — and it carries a line saying
+which page it was made from, with the way back.
+
+**And publish it to your own website.** One more button on such a page:
+**publish** copies that one file into your site's repo, commits it and
+pushes, and your host rebuilds. It asks first, and the question names the
+address — *publish to `https://angadh.com/lff/`? This makes the page
+public* — because that is what you are agreeing to. Where it goes is one
+block in `.botference/plugin/config.json` (there is no settings screen):
+
+```json
+"publish": { "repo": "/Users/you/sites/yoursite", "dir": "lff",
+             "url": "https://angadh.com/lff/", "branch": "main", "push": true }
+```
+
+Until that is there the button is disabled and says so. Pick a `dir` your
+site's `_config.yml` does not `exclude:` — if your site folder is also a
+council root it excludes `projects/` and `work/`, and a file published into
+one of those would be committed and never built. Your page goes over
+**exactly as it is** — no front matter, no template, no rewriting — and
+nothing else in that repository is ever written: not `_config.yml`, not your
+own uncommitted work, which stays uncommitted and out of the commit. Only
+that one file is committed, nothing is rebased or forced, and if the push
+fails you are told the page is committed and given git's own words for why.
+`"push": false` commits and leaves the pushing to you. (Putting it on a
+subdomain like `lff.angadh.com` is three settings in your DNS and host and no
+code at all — the exact steps are in `frontends/plugin/SPEC.md`, "publish to
+the reader's site".)
 
 **Message formatting.** Every message renders markdown — yours and the
 bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX
@@ -755,9 +796,13 @@ nobody commented on still opens its own comment thread, as on any
 document.
 
 **It will never publish your site.** Nothing here commits, pushes,
-branches or tags anything in that repository, there is no publish button,
-and the bots are told not to run git in there (the CLI refuses it as
-well). Putting the site live stays yours, by your own route. That is a
+branches or tags anything in *that* repository, there is no publish button
+on a blog page, and the bots are told not to run git in there (the CLI
+refuses it as well). Putting the site live stays yours, by your own route.
+(The **publish** button above is a different thing in a different place: it
+is yours, not the bots'; it acts on a project page rather than on your
+drafts; it writes one new file into the folder you named and never touches
+what is already in the repo. No bot can reach it.) That is a
 rule in the code rather than a setting — it belongs to the kind of folder,
 so a config restored onto another computer brings it along and there is
 nothing to switch off. (Paper review is the deliberate opposite and still

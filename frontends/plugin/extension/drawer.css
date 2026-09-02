@@ -328,6 +328,11 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font: 12px/1.3 var(--sans); color: var(--fg);
   background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
 }
+/* the address a published page is at, in the same register as the artifacts
+   under it — a link and a date, not an announcement */
+.pubstrip .artname { flex: none; color: var(--muted) }
+.pubstrip .artopen { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pubrow { margin-top: 6px }
 /* what has been made of this page, as links back into it */
 .artstrip { margin: 6px 0 0; display: flex; flex-direction: column; gap: 3px }
 .artrow { display: flex; gap: 8px; align-items: baseline; font: 12px/1.5 var(--sans) }

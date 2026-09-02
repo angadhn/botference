@@ -491,6 +491,11 @@ const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
   confirmed: Q.get('unconfirmed') !== '1',
   // projects/<id>/TASKS.md, already parsed by the companion (the drawer never
   // parses markdown for it). `?ptasks=0` is the project that keeps no list.
+  // where this page would go if it were published: the target's name and the
+  // public address of its directory (config.json `publish`). `?nopublish=1` is
+  // the ordinary state before anybody sets one up.
+  ...(Q.get('nopublish') === '1' ? { publish: null }
+    : { publish: { name: 'site', url: 'https://angadh.com/lff/', push: true } }),
   ...(Q.get('ptasks') === '0' ? {} : { tasks: [
     { text: 'Size the radiator for the transit hab', done: true },
     { text: 'Re-run the burn with the new mass budget', done: false },
@@ -572,6 +577,7 @@ const QUESTION_TAB = QUESTION === 'memorize';
 const QUESTION_REVISE = QUESTION === 'revise';
 let fileFiled = FILEIN ? [{ root: WS_ROOT, id: 'adriana-paper', at: '2026-08-20T09:00:00Z' }] : [];
 const fileCalls = [];
+const publishAsks = [];     // every POST /publish the drawer made
 const projectsMade = [];    // what POST /project-create was asked to start
 const artifactAsks = [];    // …and what POST /make-artifact was asked to make
 
@@ -2388,6 +2394,15 @@ function companion(method, path, body) {
     if ((body || {}).attach !== false) fileFiled = fileFiled.concat([{ ...want, at: now() }]);
     RECORD.projects = fileFiled;
     return { ok: true, status: 200, data: { ok: true, url: RECORD.url, filed: fileFiled } };
+  }
+  // publishing that artifact to the reader's own website: one file copied in,
+  // committed and pushed. Here it only records that it was asked.
+  if (route === '/publish') {
+    publishAsks.push({ target: (body || {}).target || '' });
+    const url = 'https://angadh.com/lff/index.html';
+    RECORD.published = { target: 'site', url, commit: 'a1b2c3d', at: now() };
+    return { ok: true, status: 200, data: { ok: true, public_url: url, rel: 'lff/index.html',
+      target: 'site', commit: 'a1b2c3d', committed: true, pushed: true } };
   }
   // ---- project artifact pages (workspace.mjs) --------------------------
   if (route === '/project-page') {
@@ -10433,6 +10448,49 @@ async function selftestWorkspace() {
   await sleep(80);
   check('another project\u2019s changes are ignored',
     window.__bfp.reloads === reloadsBefore + 1);
+
+  // ---- publishing it to the reader's own site --------------------------
+  // The one act in this drawer that puts something on the public internet, so
+  // the sentence it asks with has to name the address rather than the verb.
+  {
+    d.open('chat');
+    await sleep(80);
+    const pub = () => S.querySelector('[data-act="publish"]');
+    check('a project artifact carries a publish button', !!pub());
+    // ?nopublish=1 — the ordinary state before anybody has set a target up.
+    // The button is there and plainly dead, and its tooltip is the whole of
+    // the instruction: a disabled control that does not say why is worse than
+    // no control at all.
+    if (Q.get('nopublish') === '1') {
+      check('…disabled, with no target configured', pub().disabled);
+      check('…and the tooltip is the whole of what to do about it',
+        /publish target not set up — add it to config\.json/.test(pub().title || ''));
+      check('…and nothing can be published by pressing it', publishAsks.length === 0);
+    } else {
+    check('…and it is live where a target is configured', !pub().disabled);
+    check('\u2026in the same pinned row as send review, not somewhere of its own',
+      !!S.querySelector('.chatfoot [data-act="publish"]'));
+    check('\u2026whose tooltip names the site it would go to',
+      /angadh\.com\/lff\//.test((pub() || {}).title || ''));
+    hit(pub(), 'publish');
+    await sleep(60);
+    const q = S.querySelector('.pubrow');
+    check('it asks first, inline, like every other confirm here', !!q);
+    check('\u2026naming the address and saying plainly what it means',
+      !!q && /https:\/\/angadh\.com\/lff\//.test(q.textContent)
+      && /makes the page public/.test(q.textContent));
+    check('and nothing was published by the asking', publishAsks.length === 0);
+    hit(S.querySelector('[data-act="publish-yes"]'), 'Publish');
+    await until(() => publishAsks.length, 3000);
+    check('confirming publishes it, once', publishAsks.length === 1);
+    const link = await until(() => S.querySelector('.pubstrip .artopen'), 3000);
+    check('\u2026and the drawer hands back the public address, as a link',
+      !!link && link.getAttribute('href') === 'https://angadh.com/lff/index.html');
+    check('\u2026with when it went, so the row is a receipt rather than a button again',
+      !!S.querySelector('.pubstrip .artname')
+      && /published/.test(S.querySelector('.pubstrip .artname').textContent));
+    }
+  }
 
   const bad = out.filter(l => l[0] === '\u2717');
   logQuiet = true;
