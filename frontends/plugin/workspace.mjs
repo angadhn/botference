@@ -817,8 +817,6 @@ export function projectDigest(root, id, { fresh = false } = {}) {
   return text;
 }
 
-export function forgetDigests() { digestCache.clear(); }
-
 /**
  * The whole "filed in" context block for a page, or '' when it is filed
  * nowhere. `attached` is the page record's own list (store.projectsOf).

@@ -177,6 +177,17 @@ const origin = 'http://127.0.0.1:' + server.address().port;
 RECORD.url = origin + BOOK_PATH;
 
 // ---- headless Chromium, driven over CDP ------------------------------------
+// A skip here is not a pass: say so in a shape a runner and a human both catch.
+// (test/run-all.mjs greps for the word SKIPPED and repeats the line.)
+function loudSkip(why) {
+  console.log('');
+  console.log('SKIPPED  pdf-perf.test.mjs — ' + why);
+  console.log('SKIPPED  0 assertions ran. This suite is the only guard on the');
+  console.log('SKIPPED  anchoring perf path; treat this run as UNPROVEN, not green.');
+  console.log('');
+  console.log('0 passed, 0 failed  (skipped)');
+}
+
 const CHROMES = [
   process.env.BOTFERENCE_CHROME,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -186,7 +197,10 @@ const CHROMES = [
 ].filter(Boolean);
 const chromePath = CHROMES.find(p => { try { return fs.statSync(p).isFile(); } catch { return false; } });
 if (!chromePath) {
-  console.log('- pdf-perf.test.mjs — skipped (no Chromium found; set BOTFERENCE_CHROME)');
+  // LOUD, deliberately. This suite is the ONLY guard on anchor.js's
+  // quadratic-anchoring fix, so a run that skips it proves nothing about the
+  // perf-critical path — and a quiet `exit 0` reads exactly like a pass.
+  loudSkip('no Chromium found; set BOTFERENCE_CHROME to one');
   server.close();
   process.exit(0);
 }
@@ -216,7 +230,7 @@ for (let i = 0; i < 80 && !targets; i++) {
 }
 const target = (targets || []).find(t => t.type === 'page');
 if (!target) {
-  console.log('- pdf-perf.test.mjs — skipped (Chromium did not open a debuggable page)');
+  loudSkip('Chromium started but opened no debuggable page');
   cleanup();
   process.exit(0);
 }

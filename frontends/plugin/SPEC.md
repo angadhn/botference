@@ -200,6 +200,14 @@ The `reply` event is emitted after the server appends the bot msg to the page fi
 - Lazy start on first bot turn; keep alive after. **Never send `/quit`.**
 - Test escape hatch: env `PLUGIN_BRIDGE_CMD` = JSON argv array replacing the python
   command (mirror `COUNCIL_BRIDGE_CMD`), used by companion.test.mjs with a mock bridge.
+- Two more knobs the server reads at startup and nothing in the tree ever sets.
+  Written down here because a knob nobody has heard of is a knob nobody can
+  reach for at 2am, which is the only hour either would be wanted:
+  - `SSE_HEARTBEAT_MS` (default **15000**, server.mjs:81) — how often an idle
+    event stream sends its keep-alive. Raise it behind a proxy that idles
+    connections out; lower it to see a dead stream sooner.
+  - `PLUGIN_DECISION_DEBOUNCE_MS` (default **100**, server.mjs:140) — how long
+    the decision log waits for a burst to settle before writing.
 - One turn in flight per CHILD, FIFO. `{"type":"ready"}` is the turn boundary
   (note: one startup `ready` arrives before any turn). It was one turn in flight
   for the whole companion until the 2026-08-24 parallel-turns amendment, which
@@ -621,7 +629,7 @@ Contract deltas agreed during live testing — authoritative over the sections a
   · `POST /snapshot {url, html}` — owner-only (a snapshot is what everyone else
     reads). The companion sanitizes on the way in and stores the result at
     `.botference/plugin/snapshots/<pageKey>.html`, replaced whole on refresh,
-    ≤2 MB after sanitizing (`SNAPSHOT_MAX`; larger ⇒
+    ≤2 MB after sanitizing (`sanitize.SNAPSHOT_MAX`; larger ⇒
     `{ok:true, stored:false, reason}`). Answers `{ok, stored, bytes, dropped}`
     and broadcasts a `page` event. Deleting a page deletes its snapshot.
   · The extension sends on the cadence the article TEXT already used: once when
@@ -2317,6 +2325,14 @@ review**, lands in the project's chat and shows up in the pages library. On a
 page the owner is reviewing with their council, the second of those is the only
 one that does anything.
 
+> **Superseded in part** by "one store, and the commenters in it" (2026-08-25),
+> which quotes the paragraph below and then overturns it: the visitor's comments
+> no longer stop in `review/state/users/<handle>.json`. They project into the
+> companion's store (`POST /review-comments`, server.mjs:2829), so the owner's
+> drawer, the bots, send review and the export all see them. What survives here
+> is the *rendering* claim — a plugin-less reader's page is not degraded, and the
+> file on disk is still untouched.
+
 **Nobody else is affected.** A visitor without the extension gets the page's
 built-in commenting exactly as the page ships it — the suppression is a
 stylesheet the content script injects into a page it is already running in, and
@@ -2813,6 +2829,14 @@ moving.
 
 #### Routing: `@all`, unless the reader already chose
 
+> **Superseded in part** by "the sticky address (`chat.stickyRoute`)"
+> (2026-08-24): `workspace.reviewRoute` no longer reads the last human message's
+> tag itself — it CALLS `stickyRoute` (workspace.mjs:997), which answers the same
+> question one way for the whole product. Everything this section says about the
+> rule is still the rule; what it misses is the second way a reader can say it.
+> A thread addressed by clicking a **composer pill**, with no "@codex" ever typed
+> into its words, is that bot's thread in a round too.
+
 Each per-thread turn is addressed by `workspace.reviewRoute`: `@all`, unless the
 thread's **last human message** tags exactly one bot, in which case that bot
 alone. The reader picked who they were talking to in that thread and a round has
@@ -3001,7 +3025,11 @@ and `↺` **reopen / "not done"** — opinions about a *thread*, written to
 struck-through old wording is display-only markup (`del.bfp-was`), inserted by
 `content.js` and shut out of the text index, the snapshot and the article text
 by four separate doors. `grep -n revert` over `server.mjs`, `store.mjs` and
-`workspace.mjs` returns nothing.
+`workspace.mjs` turns up two COMMENTS (store.mjs:975, :1764) and no code: there
+is no revert code path and `POST /revert` is unimplemented. (Use `grep -a` —
+`server.mjs` and `store.mjs` are plain-greppable again since 2026-09-02, but the
+habit is cheap and the next file to acquire a control byte will not announce
+itself.)
 
 So the auto-threads below **accept by being resolved** — the new text is
 already in the file; ✓ is the reader saying they have looked. `↺` puts the
@@ -3058,7 +3086,10 @@ message. A line quoting a wording the diff cannot find is dropped.
 `collateral.mjs` (new, pure, node-side). The census that already runs at the
 turn boundary (`workspace.scanProject`) records mtime and size — enough to say
 THAT the artifact moved, nothing about what moved in it. So `noteTurnStart` now
-also keeps **the artifact's own bytes** (`SNAPSHOT_MAX` 4MB; a read that fails
+also keeps **the artifact's own bytes** (`collateral.SNAPSHOT_MAX` 4MB — a
+DIFFERENT constant from `sanitize.SNAPSHOT_MAX`, which caps a snapshot at 2 MB;
+both are correct and the shared name has trapped more than one reader; a read
+that fails
 is simply no snapshot and costs the turn its collateral threads and nothing
 else) and the turn-start timestamp. At turn-end, where `page_changed` is true,
 the before/after are diffed and every changed region no thread already covers
@@ -3950,7 +3981,9 @@ produce an orphan.
 
 **Resolving travels one way, and once.** Filed over there files the thread here
 — the person who wrote it has said they are done. Reopening here is never
-undone: `origin_filed` is the one bit that remembers we already acted, so a
+undone: `origin_filed` (written and cleared in `server.mjs`, not in store.mjs
+with the rest of the `origin` bookkeeping) is the one bit that remembers we
+already acted, so a
 months-old `resolved: true` cannot close a thread the reader has just reopened,
 and it is cleared when the review record says the comment is open again, so a
 genuine re-file files it again. **Nothing is ever deleted.** A comment
@@ -4623,8 +4656,8 @@ strikeout files a suggestion, it does not ask a question.
 ### Files
 
 ```
-store.mjs                       THREAD_MARKS / cleanMark / markOf /
-                                markForAnnotKind; addThread takes `mark`
+store.mjs                       cleanMark / markOf / markForAnnotKind;
+                                addThread takes `mark`
 server.mjs                      POST /thread takes `mark`, waives the empty
                                 refusal for a strike, and dedupes on it;
                                 POST /pdf-annotations maps the subtype
@@ -6486,7 +6519,7 @@ extension/content.js      capturePage/pageOfThread — the cadence, the hash, th
                           6s race; awaited in onSave and onReply
 server.mjs                POST /page-image (owner-only), PAGE_IMAGE_MAX,
                           pngLike/jpegLike
-store.mjs                 pageImageFile / findPageImage / pageImageInfo /
+store.mjs                 pageImageFile / findPageImage /
                           pageImagesOf / savePageImage / deletePageImages;
                           deletePage takes the pictures too
 chat.mjs                  figureBlock; envelope gains pageImage / pageImages /
@@ -7172,7 +7205,7 @@ brought over rather than invented a second time.
 `import SpanMatch from '../review/assets/span-match.js'`. It runs in node, in
 the companion, so there is nothing to copy across the extension boundary and
 none of the `normUrl` / `tagHue` duplication precedent applies. If a second
-matcher ever appears beside this one, that is the bug — and `test/suggest.mjs`
+matcher ever appears beside this one, that is the bug — and `test/suggest.test.mjs`
 carries the review engine's own edge cases (a wrapped passage matched by a
 single-spaced needle, curly quotes folded to straight, two matches, none)
 precisely so the two cannot drift apart quietly.

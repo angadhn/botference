@@ -20,7 +20,9 @@
 // Env:    PORT, BOTFERENCE_PROJECT_ROOT, BOTFERENCE_HOME,
 //         PLUGIN_PASSWORD (hosted: the shared password),
 //         PLUGIN_OWNER_PASSWORD (hosted, optional: signs the owner in remotely),
-//         PLUGIN_BRIDGE_CMD (tests: JSON argv array replacing the python bridge)
+//         PLUGIN_BRIDGE_CMD (tests: JSON argv array replacing the python bridge),
+//         SSE_HEARTBEAT_MS (default 15000: idle event-stream keep-alive),
+//         PLUGIN_DECISION_DEBOUNCE_MS (default 100: decision-log write settle)
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1053,7 +1055,7 @@ function onChatEvent(ev) {
       // passage and aimed at the gap the line names.
       if (ev.msg && ev.target !== store.PAGE_CHAT) {
         const th = store.findThread(page, ev.target);
-        if (questionable(page, th)) {
+        if (questionable(th)) {
           // …or to CORRECT one this discussion has already filed. A revision
           // is a whole card rather than a one-line offer, so it is the fenced
           // block with a `revises: <card-id>` line in it, and it is checked
@@ -1276,7 +1278,7 @@ function makeCard(page, { thread, quote, page_number, from_msg, hint, model }) {
 // next GET simply starts a new one over the same due cards.
 const quizzes = new Map();          // who → session
 const QUIZ_TTL_MS = 6 * 60 * 60 * 1000;
-const scopeKey = s => `${s.project || ''} ${s.tag || ''}`;
+const scopeKey = s => `${s.project || ''}\0${s.tag || ''}`;
 const quizWho = req => (hosted.identity(req).handle || 'owner');
 function quizSession(req) {
   const who = quizWho(req);
@@ -1371,7 +1373,7 @@ function quizBack(data, reveal, gone) {
 // about an IDEA, and ideas are not a PDF feature — but not a thread the reader
 // has already filed, and not page chat (which sits on no passage, so a card
 // made from it would have no source to link back to).
-const questionable = (page, thread) => !!thread && !thread.resolved;
+const questionable = thread => !!thread && !thread.resolved;
 
 // A guest's mention spends the OWNER's agents on the owner's machine, so it is
 // off by default and metered when on: grants.json is hand-edited, re-read on
@@ -1628,7 +1630,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // where the last block it wrote was refused at the lift, the sentence saying
   // so. A model with no news assumes the correction landed and tells the
   // reader it did, which is the failure this pair of blocks exists to prevent.
-  const questionContext = questionable(page, thread)
+  const questionContext = questionable(thread)
     ? questions.questionOfferBlock(mintedHere(page, thread)) + refusedRevision(page, thread)
     : '';
   // ── what ELSE is marked up on this passage? ───────────────────────────

@@ -740,6 +740,13 @@ export function scanSite(dir) {
 // not eaten as markup and comes back out of `decodeEntities` exactly as it
 // went in. The front matter is a block like any other — a bot that changes the
 // title has changed the document, and the reader should be told.
+//
+// DORMANT BY POLICY, not obsolete (audited 2026-09-02). Every kind in
+// `KIND_RULES` is `suggest:true` today, so nothing edits a blog file directly
+// and the collateral path this feeds is never reached. It is kept, with
+// blog.test.mjs:361-377 keeping it honest, for the day a `suggest:false` kind
+// lands — at which point the backstop has to work on the FIRST post, not after
+// somebody rediscovers why the diff reported the whole file as one region.
 export function mdDoc(text) {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return String(text == null ? '' : text)

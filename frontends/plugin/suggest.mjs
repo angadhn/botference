@@ -219,7 +219,7 @@ const readFile = file => {
  * placed exactly is a card the reader has to settle by hand, which is what the
  * needs-manual state on the card says.
  */
-export function applyCard(file, card, { dryRun = false } = {}) {
+export function applyCard(file, card) {
   if (!card || card.state === 'unreadable') {
     return { ok: false, reason: 'unreadable', detail: 'this block was never readable as a suggestion' };
   }
@@ -231,10 +231,8 @@ export function applyCard(file, card, { dryRun = false } = {}) {
   const at = resolveSpan(read.text, card.current);
   if (!at.ok) return at;
   const after = read.text.slice(0, at.start) + String(card.proposed ?? '') + read.text.slice(at.end);
-  if (!dryRun) {
-    try { fs.writeFileSync(file, after); }
-    catch (e) { return { ok: false, reason: 'gone', detail: `the source file could not be written: ${String(e.message || e)}` }; }
-  }
+  try { fs.writeFileSync(file, after); }
+  catch (e) { return { ok: false, reason: 'gone', detail: `the source file could not be written: ${String(e.message || e)}` }; }
   return { ok: true, before: read.text, after, start: at.start, end: at.end };
 }
 

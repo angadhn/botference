@@ -582,15 +582,6 @@ export function findPageImage(key, n) {
   return '';
 }
 
-export function pageImageInfo(key, n) {
-  const file = findPageImage(key, n);
-  if (!file) return null;
-  try {
-    const st = fs.statSync(file);
-    return { path: file, bytes: st.size, captured_at: new Date(st.mtimeMs).toISOString() };
-  } catch { return null; }
-}
-
 // Which pages of this document have a picture, ascending. Read off the
 // directory rather than out of the record: an image is a file on disk and
 // nothing else, so there is no second place for the truth to live and go stale.
@@ -753,7 +744,7 @@ export function projectsOf(page) {
     const root = cleanRoot(entry.root);
     const id = cleanProjectId(entry.id);
     if (!root || !id) continue;
-    const key = `${root} ${id}`;
+    const key = `${root}\0${id}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ root, id, at: String(entry.at || '') });
@@ -788,20 +779,6 @@ export function filePageInProject(url, { root, id, attach = true }) {
   if (next.length) page.projects = next.slice(0, ATTACH_MAX);
   else delete page.projects;              // back to costing nothing on disk
   return savePage(page);
-}
-
-// Every tag in use anywhere, for a picker to complete against. Read off the
-// index (one file), never by opening every page record.
-export function allTags(idx) {
-  const index = idx || readIndex();
-  const seen = new Map();
-  for (const row of Object.values(index || {})) {
-    for (const t of (Array.isArray(row && row.tags) ? row.tags : [])) {
-      const k = String(t).toLowerCase();
-      if (!seen.has(k)) seen.set(k, String(t));
-    }
-  }
-  return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
 // Two pages sharing one botference session is proof of the sid-inheritance
@@ -871,10 +848,6 @@ export const findOrigin = (page, system, id) =>
     const o = originOf(t);
     return o && o.system === system && o.id === id;
   }) || null;
-// A message the projection wrote — a reply the visitor left over there. Read
-// the other way it is the marker that says "we already know about this one",
-// which is what keeps the companion from mirroring its own mirror back.
-export const isMirrored = m => !!(m && cleanOrigin(m.origin));
 // both comment threads and the page chat are "a list of msgs" to every caller
 // that appends, edits or deletes — resolve once, here
 export function msgsOf(page, threadId) {
@@ -948,7 +921,6 @@ const pageNumber = n => {
 // thread made before this existed — and every thread on an ordinary article,
 // where there is no second tool — is untouched on disk and reads back exactly
 // as it always did. `markOf` is the only thing that should ever ask.
-export const THREAD_MARKS = ['highlight', 'strike'];
 export const cleanMark = m =>
   (String(m == null ? '' : m).trim().toLowerCase() === 'strike' ? 'strike' : '');
 export const markOf = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');

@@ -38,8 +38,6 @@ import { secretsDir } from '../shared/secrets.mjs';
 // has always imported it from.
 export { secretsDir };
 
-export const DEVICE_TTL_MS = 365 * 24 * 3600 * 1000; // hub.mjs's DEVICE_TTL_MS
-
 const readTrimmed = f => {
   try {
     const s = fs.readFileSync(f, 'utf8').trim();

@@ -10,8 +10,7 @@
 //     and drops zero-width junk — while an index map carries every hit back to
 //     TRUE offsets in the raw string, so painting always cuts the original text.
 //
-//   DOM ADAPTERS (thin)         buildTextIndex · offsetsFromRange
-//                               · rangeFromOffsets · textNodesIn · paintOffsets
+//   DOM ADAPTERS (thin)         buildTextIndex · offsetsFromRange · paintOffsets
 //                               · unpaint · setFocus · scrollTo
 //     buildTextIndex flattens the page into { raw, segs } where each seg maps a
 //     slice of `raw` back to a Text node. Everything else is offset arithmetic.
@@ -487,38 +486,6 @@
     return out;
   }
 
-  function locusFor(index, off, atEnd) {
-    const segs = textSegs(index);
-    const from = Math.max(0, segIndexAt(segs, atEnd ? off - 1 : off) - 1);
-    for (let i = from; i < segs.length; i++) {
-      const s = segs[i];
-      if (s.from > off) break;
-      if (atEnd ? (off > s.from && off <= s.to) : (off >= s.from && off < s.to)) {
-        return { node: s.node, offset: off - s.from };
-      }
-    }
-    if (!atEnd) {
-      const nxt = segs.find(s => s.from >= off);
-      if (nxt) return { node: nxt.node, offset: 0 };
-    } else {
-      let prev = null;
-      for (const s of segs) if (s.to <= off) prev = s;
-      if (prev) return { node: prev.node, offset: prev.node.data.length };
-    }
-    const last = segs[segs.length - 1];
-    return last ? { node: last.node, offset: last.node.data.length } : null;
-  }
-
-  function rangeFromOffsets(index, start, end) {
-    const a = locusFor(index, start, false);
-    const b = locusFor(index, end, true);
-    if (!a || !b) return null;
-    const r = (index.root.ownerDocument || document).createRange();
-    r.setStart(a.node, a.offset);
-    r.setEnd(b.node, b.offset);
-    return r;
-  }
-
   // Wrap every text node slice of [start,end) in <mark class="bfp-hl">.
   // Splitting a text node never changes the page's concatenated text, so
   // offsets computed from an earlier index stay valid.
@@ -705,11 +672,6 @@
     }
     return marks.length;
   }
-  const isMarkResolved = id => {
-    const m = marksFor(id)[0];
-    return !!(m && m.classList.contains(DONE_CLASS));
-  };
-
   // Yellow ⇄ amber, the same way and for the same reason: a bot's reply
   // landing in a thread turns its passage amber where the reader is looking,
   // without disturbing the anchor or the focus it already had.
@@ -735,11 +697,6 @@
     }
     return marks.length;
   }
-  const isMarkAddressed = id => {
-    const m = marksFor(id)[0];
-    return !!(m && m.classList.contains(READY_CLASS) && !m.classList.contains(DONE_CLASS));
-  };
-
   // ---- track changes, on the page ----------------------------------------
   // The wording a bot's change REPLACED, shown struck through immediately
   // before the wording that replaced it. A <del> because that is what it is,
@@ -825,13 +782,6 @@
     return marks.length;
   }
 
-  // Is this thread's passage struck? Read off the mark, like every other bit
-  // of a mark's state, so a repaint and the screen can never disagree.
-  const isMarkStruck = id => {
-    const m = marksFor(id)[0];
-    return !!(m && m.classList.contains(STRIKE_CLASS));
-  };
-
   function scrollTo(id) {
     const m = marksFor(id)[0];
     if (m && m.scrollIntoView) m.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -843,21 +793,28 @@
     for (const mark of marksFor(from)) mark.setAttribute('data-bfp', String(to));
   }
 
+  // Everything here has a caller — content.js, drawer.js, the harness or a test.
+  // `offsetOf`, `textNodesIn` and `paintedLen` were on this list with none, and
+  // are internal now; four functions that had none even internally
+  // (rangeFromOffsets, isMarkResolved, isMarkAddressed, isMarkStruck) are gone.
+  // The colour and class constants STAY, callers or not: they are named as this
+  // file's contract in the SPEC and read by eye when a mark's state is argued
+  // about. `NEW_WORDING_RE` stays for the same reason — it is the half of the
+  // twin rule store.mjs's `newWording` has to agree with.
   const api = {
     // pure
     normIndex, normalize, findSpans, buildAnchor, locate, tailOverlap, headOverlap,
-    newWording, NEW_WORDING_RE, CTX, WINDOW, WAS_MAX,
+    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX,
     // dom
-    buildTextIndex, offsetsFromRange, offsetOf, rangeFromOffsets, textNodesIn,
+    buildTextIndex, offsetsFromRange,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
-    marksAtPoint, paintedLen,
-    markResolved, isMarkResolved, markAddressed, isMarkAddressed,
-    markStruck,
+    marksAtPoint,
+    markResolved, markAddressed, markStruck,
     paintWas, unpaintWas, wasFor, wasIds, markInserted,
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,
     DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS, STRIKE_CLASS,
-    STRIKE_LINE, STRIKE_LINE_READY, STRIKE_LINE_DONE, STRIKE_AT, isMarkStruck,
+    STRIKE_LINE, STRIKE_LINE_READY, STRIKE_LINE_DONE, STRIKE_AT,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAnchor = api;

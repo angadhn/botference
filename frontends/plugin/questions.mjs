@@ -335,13 +335,6 @@ export function flagCard(vault, id, note) {
   card.flag = { at: nowIso(), note: clip(note, 300) };
   return card;
 }
-export function unflagCard(vault, id) {
-  const card = findCard(vault, id);
-  if (!card || card.state !== 'flagged') return null;
-  card.state = 'live';
-  delete card.flag;
-  return card;
-}
 export function deleteCard(vault, id) {
   const i = (vault.cards || []).findIndex(c => c.id === String(id || ''));
   if (i < 0) return false;

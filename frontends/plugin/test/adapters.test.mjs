@@ -185,7 +185,7 @@ const ID = '1aBcD_efGH-2026QuietMachine';
     '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">',
     '<html><body>Sign in</body></html>',
     '\n\n  <html>',
-    '﻿<!doctype html>',
+    '\ufeff<!doctype html>',
     '<?xml version="1.0"?><Error/>',
     '<meta http-equiv="refresh" content="0;url=https://accounts.google.com/">',
     '\n<!-- google --><html>',
@@ -194,7 +194,7 @@ const ID = '1aBcD_efGH-2026QuietMachine';
 
   const text = [
     'The Quiet Machine\n\nDraft seven.',
-    '﻿The Quiet Machine',
+    '\ufeffThe Quiet Machine',
     // a doc is allowed to talk about markup — the sniff only reads the opening
     'A draft about the web\n\n' + 'x'.repeat(5000) + '\n<html> is not a document',
     '', null, undefined,
@@ -220,7 +220,7 @@ const ID = '1aBcD_efGH-2026QuietMachine';
 // ---- 5. export body cleaning -------------------------------------------------
 {
   eq('clean: BOM and surrounding whitespace go',
-    A.cleanExport('﻿\n  Heading\n\nBody.\n\n  '), 'Heading\n\nBody.');
+    A.cleanExport('\ufeff\n  Heading\n\nBody.\n\n  '), 'Heading\n\nBody.');
   eq('clean: CRLF normalised', A.cleanExport('a\r\nb'), 'a\nb');
   eq('clean: long blank runs collapse to one blank line',
     A.cleanExport('a\n\n\n\n\nb'), 'a\n\nb');
@@ -256,7 +256,7 @@ const res = (body, extra) => Object.assign({
 
 {
   const url = `https://docs.google.com/document/d/${ID}/edit?tab=t.0#heading=h.9`;
-  const f = stubFetch(res('﻿The Quiet Machine\n\nDraft seven.\n\n'));
+  const f = stubFetch(res('\ufeffThe Quiet Machine\n\nDraft seven.\n\n'));
   const ad = A.pick(url, { fetch: f, documentTitle: () => 'The Quiet Machine - Google Docs' });
 
   ok('adapter: a doc url gets one', !!ad);
@@ -722,7 +722,7 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
   // before anything else does — what matters is that no header can be forged
   eq('handle: newlines cannot inject a header', C.sanitizeHandle('mira\r\nX-Evil: 1'), 'mirax-evil--1');
   ok('handle: …and nothing header-breaking survives at all',
-    !/[\r\n ]/.test(C.sanitizeHandle('a\r\nb c')));
+    !/[\r\n\0]/.test(C.sanitizeHandle('a\r\nb\0c')));
   eq('handle: capped at 40', C.sanitizeHandle('m'.repeat(80)).length, 40);
   eq('handle: the cap is the companion’s', C.HANDLE_MAX, 40);
   eq('handle: empty stays empty', C.sanitizeHandle(''), '');

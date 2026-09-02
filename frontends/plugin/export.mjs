@@ -124,7 +124,6 @@ const readable = msgs => (msgs || []).filter(m => m.kind !== 'tools');
 // The highlight ALWAYS survives, for every thread, whether or not anything is
 // left underneath it: the passage someone marked is the annotation, and a
 // quote with no note under it still says "this mattered".
-export const EXPORT_MODES = ['all', 'comments'];
 export const exportMode = m => (m === 'comments' ? 'comments' : 'all');
 
 export function keptMsgs(msgs, mode) {
