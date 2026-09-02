@@ -1577,9 +1577,24 @@
     TRACK_KEY = 'bfp:track-changes:' + URL_NOW;
     AUTOOPEN_KEY = 'bfp-autoopen:' + URL_NOW;
     forgetPage();
-    // the reader's per-page switches are this page's, not the last one's
+    // The reader's per-page switches are THIS page's, not the last one's —
+    // both of them. Each is reset to its default and then re-read for the new
+    // address, exactly as it would be on a fresh boot.
+    //
+    // `loadPageComments` used to be missing here, and only that one: the key
+    // moved with the identity and was then never consulted, so after an SPA
+    // route change "let the page keep its own commenting" stayed at whatever
+    // the PREVIOUS document had answered. Narrow in practice (this function
+    // returns early wherever a project or an adapter owns the identity, and a
+    // review surface is rarely a single-page app) but it was an answer the
+    // reader gave about one document being applied to another.
     trackChanges = true;
     loadTrackChanges();
+    // the BARE variable, not setPageOwnsMargin: the setter persists, and
+    // persisting "no" here would erase the new page's stored answer a tick
+    // before loadPageComments went to read it. This is what boot does.
+    pageOwnsMargin = false;
+    loadPageComments();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
       // already awake: stay awake, and re-anchor against the new record

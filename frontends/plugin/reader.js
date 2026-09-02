@@ -180,9 +180,12 @@
     for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
     return null;
   }
-  // The tag a message's own words carry, as a pill name: the strict rule the
-  // companion routes by (chat.routePrefix) — one bot named is that bot's, @all
-  // or both named is the room's, nothing named is nothing.
+  // ⟦route⟧ begin — the tag a message's own words carry, as a pill name.
+  // Drawer.js's copy, on the phone; the companion's is chat.routePrefix, which
+  // returns a wire prefix rather than a pill name. See drawer.js's note for why
+  // three copies, and test/mentions.test.mjs for what holds them together.
+  // (`var` and the indexed loop are this file's ES5 house style — the pin
+  // compares the two after normalising exactly that and nothing else.)
   function routeWordOf(text) {
     var found = String(text || '').match(/@(claude|codex|all)\b/gi) || [];
     var tags = [];
@@ -193,6 +196,7 @@
     if (!tags.length) return '';
     return (tags.indexOf('all') >= 0 || tags.length > 1) ? 'all' : tags[0];
   }
+  // ⟦route⟧ end
   // A thread's settled address: the LAST message the reader wrote in it, by
   // what it said or by the `route` the companion stamped on it when a pill said
   // it instead. Bot messages and `tools` narration are not the reader talking.

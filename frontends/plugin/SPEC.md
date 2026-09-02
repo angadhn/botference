@@ -3350,6 +3350,19 @@ is looking at when they send it.
   and the new page is loaded as a fresh injection would have loaded it — dormant
   unless the companion says it is annotated, because activation is still not an
   act.
+- **And the reader's per-page switches are re-READ, not merely re-pointed**
+  (fixed 2026-09-02). Track changes (`bfp:track-changes:<url>`) and the margin
+  switch (`bfp:page-comments:<url>`) are both preferences about a DOCUMENT, so
+  each is reset to its default and loaded again for the new address, exactly as
+  a fresh boot would. Both, together: for a while only track changes was
+  re-read, so the margin key moved to the new document and then kept the
+  PREVIOUS one's answer — an answer the reader gave about a page they had left.
+  Narrow (this function returns early wherever an adapter or a project owns the
+  identity, and a review surface is rarely an SPA) and wrong all the same. The
+  reset uses the bare flag rather than the setter, because the setter persists
+  and persisting "no" would erase the new page's stored answer a tick before it
+  was read. `test/adapters.test.mjs` holds it as a source invariant over
+  `rebindIdentity`: a per-page key that is re-pointed must also be re-read.
 - **Three detectors and a gate.** `history.pushState`/`replaceState` wrapped
   (narrowly, never swallowing the site's own call), `popstate`, and a `<head>`
   MutationObserver as the last resort for a router that does neither — all

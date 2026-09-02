@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readConfig, saveConfig, unwrapLine } from './store.mjs';
+import { readConfig, saveConfig, unwrapLine, clipTo } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
 // and two copies of that rule could disagree about who a thread belongs to
@@ -980,10 +980,9 @@ export const REVIEW_QUOTE_MAX = 300;
 export const REVIEW_MSG_MAX = 800;
 export const REVIEW_MSGS_PER_THREAD = 12;
 
-const clip = (s, n) => {
-  const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
-  return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t;
-};
+// store.mjs's `clipTo`, which this file had a character-for-character copy of
+// under another name — while already importing three other things from it.
+const clip = clipTo;
 
 // What a review sends: the threads that are still WAITING on somebody.
 //

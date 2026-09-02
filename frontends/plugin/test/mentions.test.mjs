@@ -10,11 +10,17 @@
 
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const D = require(path.join(here, '..', 'extension', 'drawer.js'));
+// the routing pin at the foot of this file imports chat.mjs, which pulls in
+// store.mjs, which resolves a workspace at import time — a throwaway keeps even
+// an accidental write out of the live .botference
+process.env.BOTFERENCE_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-mentions-'));
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -104,6 +110,84 @@ const AGENTS = ['claude', 'codex'];
     'so @codex  — what do you think?');
   eq('…and a bare @ completes too', complete('@|', 'all'), '@all ');
 }
+
+// ---- the routing rule, in all three runtimes --------------------------------
+//
+// `@claude`/`@codex`/`@all` decides who a message is for, and the rule is
+// written three times: chat.routePrefix in the companion, routeWordOf in the
+// drawer, routeWordOf in reader.js for the phone. Three runtimes justify three
+// copies — the extension cannot import from the server and the phone's script
+// has no build step — but unlike the "▸ more" trio and the tagHue pair, nothing
+// held them together, and the contracts had already begun to disagree (the
+// author test `isBot` had a word boundary in two of the three, so "claudette"
+// was a bot to the drawer alone).
+//
+// So: one table of messages, run through the drawer's copy and the companion's,
+// and reader.js's source pinned against the drawer's.
+{
+  const chat = await import(path.join(here, '..', 'chat.mjs'));
+
+  // what each copy must say about the same sentence
+  const rows = [
+    ['@claude what is this?', 'claude'],
+    ['@codex you have a look', 'codex'],
+    ['@all — both of you', 'all'],
+    ['@claude @codex both of you', 'all'],
+    ['@codex @claude, order does not matter', 'all'],
+    ['@claude @claude twice is once', 'claude'],
+    ['a note to myself', ''],
+    ['', ''],
+    ['mail me at me@claudeco.example', ''],       // \b: not a tag
+    ['@claudette is a person', ''],
+    ['ask @Claude, capitalised', 'claude'],
+    ['mid-sentence @codex still counts', 'codex'],
+  ];
+  for (const [text, want] of rows) {
+    eq('route: drawer — ' + JSON.stringify(text), D.routeWordOf(text), want);
+    eq('route: companion — ' + JSON.stringify(text),
+      chat.routePrefix(text), want ? '@' + want + ' ' : '');
+  }
+
+  // …and the phone's copy is the drawer's. `var` and the indexed loop are
+  // reader.js's ES5 house style, which is the only licensed difference: the
+  // comparison normalises the declaration keyword and the whitespace, and
+  // nothing else.
+  const blockOf = file => {
+    const src = fs.readFileSync(file, 'utf8');
+    const a = src.indexOf('⟦route⟧ begin'), b = src.indexOf('⟦route⟧ end');
+    if (a < 0 || b < 0) return null;
+    return src.slice(src.indexOf('function routeWordOf', a), b)
+      .replace(/\b(?:const|let|var)\b/g, 'X')
+      .replace(/\s+/g, ' ').trim();
+  };
+  const drawer = blockOf(path.join(here, '..', 'extension', 'drawer.js'));
+  const reader = blockOf(path.join(here, '..', 'reader.js'));
+  ok('route: both files carry the sentinelled block', !!drawer && !!reader);
+  ok('route: reader.js’s copy is the drawer’s, statement for statement',
+    drawer === reader,
+    'drawer  ' + drawer + '\n      reader  ' + reader
+    + '\n      they have drifted — fix the copy, do not fix the test');
+
+  // the author test the routing hangs off, which is the one that HAD drifted
+  ok('route: “claudette” is nobody’s bot, in either runtime',
+    D.isBot('claudette') === false && chat.isBotAuthor('claudette') === false);
+  ok('route: …and claude still is', D.isBot('claude') && chat.isBotAuthor('claude (sonnet)'));
+}
+
+// ---- the kind names, in both runtimes ---------------------------------------
+// The drawer names a document's kind and so does the phone's reading room, and
+// the two had drifted: views.mjs derived its singular from its plural
+// (`PDFs` → `pdf`) where the drawer had always written `PDF`. Same document,
+// two names, depending which screen you were on.
+{
+  const views = await import(path.join(here, '..', 'views.mjs'));
+  eq('kinds: the singular names agree', views.KIND_NAME, D.KIND_NAME);
+  eq('kinds: …and the plural ones, in the same order',
+    D.KINDS.map(([k, label]) => [k, label]),
+    [['article', 'Articles'], ['pdf', 'PDFs'], ['gdocs', 'Docs']]);
+}
+
+fs.rmSync(process.env.BOTFERENCE_PROJECT_ROOT, { recursive: true, force: true });
 
 console.log(`\nmentions: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }

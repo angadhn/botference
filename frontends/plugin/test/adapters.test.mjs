@@ -9,6 +9,7 @@
 
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -892,6 +893,36 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
     canon(SECTION, POST + '?utm_source=newsletter'), POST + '?utm_source=newsletter');
   eq('a canonical differing only by hash is the same page',
     canon(POST, POST + '#appendix-a'), POST + '#appendix-a');
+}
+
+// ---- the SPA rebind rebinds ALL of the reader's per-page switches ------------
+//
+// content.js cannot be loaded in node — it is a content script that wants a
+// document, a `chrome` and a live page — so this is a SOURCE invariant over the
+// one function whose whole job is "the address changed; everything keyed on the
+// old address is now wrong". A per-page storage key that `rebindIdentity`
+// re-points and then never re-reads is the exact shape of the bug this closes:
+// the key moved to the new document and kept the previous one's answer.
+//
+// Two keys are per-page preferences the reader sets by hand. `AUTOOPEN_KEY` is
+// deliberately not in this list — it is written by the drawer opening, not read
+// back on a rebind, and there is nothing about the last page to inherit.
+{
+  const src = fs.readFileSync(path.join(here, '..', 'extension', 'content.js'), 'utf8');
+  const a = src.indexOf('function rebindIdentity(');
+  const body = src.slice(a, src.indexOf('\n  }\n', a));
+  ok('the rebind is where we think it is', a > 0 && body.length > 200);
+
+  for (const [key, loader] of [
+    ['TRACK_KEY', 'loadTrackChanges'],
+    ['PAGE_COMMENTS_KEY', 'loadPageComments'],
+  ]) {
+    ok(`rebind: ${key} is re-pointed at the new page`, body.includes(key + ' ='),
+      'it is a per-page key and the page changed');
+    ok(`rebind: …and ${loader}() is called to re-read it`, body.includes(loader + '()'),
+      'a key that moves and is never read again keeps the LAST document\'s answer — '
+      + 'which is precisely the bug this asserts against');
+  }
 }
 
 // ---- report -------------------------------------------------------------------

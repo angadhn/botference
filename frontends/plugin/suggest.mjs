@@ -47,7 +47,7 @@ import fs from 'node:fs';
 import SpanMatch from '../review/assets/span-match.js';
 // the one spelling of "close the hole a lifted block leaves" — store.mjs owns
 // it, because three other conventions in the reply do exactly the same thing
-import { healSeam } from './store.mjs';
+import { healSeam, fenceRe } from './store.mjs';
 const { findSpans } = SpanMatch;
 
 // ---- the block a bot writes ----------------------------------------------
@@ -76,7 +76,7 @@ export const SUGGEST_FENCE = 'suggest';
 // sentence. So a cut must be SAID: `proposed: (delete)`. An empty value is
 // refused, visibly, rather than silently deleting the reader's prose.
 export const DELETE_MARK = '(delete)';
-const FENCE_RE = /```[ \t]*suggest[ \t]*\r?\n([\s\S]*?)```/gi;
+const FENCE_RE = fenceRe(SUGGEST_FENCE);
 const KEY_RE = /^\s*(current|from|proposed|to|why|because|reason)\s*:\s*(.*)$/i;
 
 export const CURRENT_MAX = 4000;

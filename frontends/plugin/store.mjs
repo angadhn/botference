@@ -1282,6 +1282,18 @@ export const liftLines = (text, lines) => {
   return String(text == null ? '' : text)
     .split(/\r?\n/).filter(l => !drop.has(l)).join('\n').trimEnd();
 };
+// A fenced block a bot writes as machinery: ```<name> … ```
+//
+// Two conventions use one — ```suggest (suggest.mjs) and ```question
+// (questions.mjs) — and each had the regex written out, identical but for the
+// word. A factory, so the next one cannot invent a third spelling of "tolerate
+// the trailing spaces a model leaves after the fence word" or forget that the
+// flags must be `gi` (global, because a reply may carry several).
+//
+// The capture group is the block's BODY, without either fence line.
+export const fenceRe = name =>
+  new RegExp('```[ \\t]*' + String(name) + '[ \\t]*\\r?\\n([\\s\\S]*?)```', 'gi');
+
 export const healSeam = text =>
   String(text == null ? '' : text).replace(/\n{3,}/g, '\n\n').trim();
 export const liftBlock = (text, block) =>
@@ -2200,7 +2212,15 @@ export const DECISION_ROWS_MAX = 400;    // a 300-page book with a thread per pa
 
 export const decisionsFile = key => path.join(SNAPS, `${safeKey(key)}-decisions.md`);
 
-const clipTo = (s, n) => {
+// One line, at most `n` characters, ending in an ellipsis if it had to be cut.
+//
+// EXPORTED because workspace.mjs had the identical function under the name
+// `clip` — and workspace already imports from this file, so it was a copy for
+// no reason at all. It is NOT the same as the `clip` in questions.mjs (which
+// never adds an ellipsis) or the one in suggest.mjs (which keeps newlines);
+// those two are different rules that happen to share a name, and their outputs
+// are pinned byte-exact by their own suites. Do not "unify" the three.
+export const clipTo = (s, n) => {
   const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
 };

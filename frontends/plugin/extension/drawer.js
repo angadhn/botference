@@ -195,7 +195,35 @@
   const esc = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  const isBot = a => /^(claude|codex)/i.test(String(a || '').trim());
+  // The `\b` matters and was missing here alone: chat.isBotAuthor and
+  // anchor.isBotAuthor both have it, so "claudette" was a person to the
+  // companion and to the page, and a bot to the drawer.
+  const isBot = a => /^(claude|codex)\b/i.test(String(a || '').trim());
+  // ⟦route⟧ begin — the tag a message's own words carry, as a pill name.
+  //
+  // THREE RUNTIMES, THREE COPIES, ONE RULE. The companion has it as
+  // `chat.routePrefix` (returning '@claude ' — a prefix for the wire); this
+  // drawer and reader.js have it returning a bare pill name. The extension
+  // cannot import from the server and the phone's script has no build step, so
+  // the duplication is the same one normUrl and tagHue carry — but unlike those
+  // it had no pinning test and no marker, and the three had already begun to
+  // disagree. test/mentions.test.mjs now runs the same table through this copy
+  // and through chat.routePrefix, and pins reader.js's source against this one.
+  //
+  // The rule: one bot named is that bot's, @all or both named is the room's,
+  // nothing named is nothing.
+  function routeWordOf(text) {
+    const found = String(text || '').match(/@(claude|codex|all)\b/gi) || [];
+    const tags = [];
+    for (let i = 0; i < found.length; i++) {
+      const h = found[i].slice(1).toLowerCase();
+      if (tags.indexOf(h) === -1) tags.push(h);
+    }
+    if (!tags.length) return '';
+    return (tags.indexOf('all') >= 0 || tags.length > 1) ? 'all' : tags[0];
+  }
+  // ⟦route⟧ end
+
   // which bot an author name is, or '' for a person. The class it returns is
   // what the per-agent type treatment hangs off (drawer.css --font-claude /
   // --font-codex), so colour and typeface are decided by the same rule.
@@ -287,6 +315,11 @@
   // The kinds of document a record can be, in the order the chips are drawn.
   // The companion decides a page's kind (its adapter declares it); the drawer
   // only names them.
+  //
+  // DUPLICATED IN views.mjs (KIND_LABEL and KIND_NAME) across the same
+  // extension/server boundary normUrl and tagHue are duplicated across: the two
+  // must agree, or the phone and the drawer call the same document different
+  // things. tags.test.mjs holds them together.
   const KINDS = [['article', 'Articles'], ['pdf', 'PDFs'], ['gdocs', 'Docs']];
   const KIND_NAME = { article: 'article', pdf: 'PDF', gdocs: 'Doc' };
   const kindOfRow = p => (KIND_NAME[p && p.kind] ? p.kind : 'article');
@@ -1741,28 +1774,42 @@ ${markPickHtml()}
 <div class="lightbox" role="dialog" aria-label="figure" aria-modal="true" hidden></div>`;
     }
 
+    // ---- one key in extension storage, read and written ------------------
+    //
+    // Five preferences live this way — the tab, the width, the export mode, the
+    // typing mode and the archive filter — and each of them had grown its own
+    // try/catch get/set pair. Ten identical shells, and the code said so three
+    // times over ("the same one-key idiom"). Two helpers now.
+    //
+    // The try/catch is load-bearing and is the reason these are not one-liners
+    // at the call sites: the HARNESS runs this file with no `chrome` at all, so
+    // every read must fall through to the caller's own default and every write
+    // must be a no-op. A preference that cannot be stored is a preference that
+    // stays at its default for the session, which is the right failure.
+    function readKey(key, fn) {
+      try { chrome.storage.local.get(key, r => fn(r && r[key])); }
+      catch { /* no storage (harness fallback) — the caller's default stands */ }
+    }
+    function writeKey(key, val) {
+      try { chrome.storage.local.set({ [key]: val }); } catch { /* ignore */ }
+    }
+
     // ---- tab memory (per hostname) --------------------------------------
     function restoreTab() {
       // per-site memory is overridden, not consulted, where Comments is dead
       if (!CAPS.highlights) return;
       const hn = opts.hostname || 'default';
-      try {
-        chrome.storage.local.get(TAB_KEY, r => {
-          const m = (r && r[TAB_KEY]) || {};
-          if (m[hn] === 'chat' || m[hn] === 'comments') { D.tab = m[hn]; paintTabs(); }
-        });
-      } catch { /* no storage (harness fallback) — keep the default */ }
+      readKey(TAB_KEY, m => {
+        const at = (m || {})[hn];
+        if (at === 'chat' || at === 'comments') { D.tab = at; paintTabs(); }
+      });
     }
     function rememberTab() {
       if (!CAPS.highlights) return;   // never write a forced choice back
       const hn = opts.hostname || 'default';
-      try {
-        chrome.storage.local.get(TAB_KEY, r => {
-          const m = (r && r[TAB_KEY]) || {};
-          m[hn] = D.tab;
-          chrome.storage.local.set({ [TAB_KEY]: m });
-        });
-      } catch { /* ignore */ }
+      // read-modify-write: this one key holds EVERY hostname's choice, so a
+      // blind set would forget every other site the reader has been on
+      readKey(TAB_KEY, m => writeKey(TAB_KEY, { ...(m || {}), [hn]: D.tab }));
     }
 
     // ---- width + page push ----------------------------------------------
@@ -1798,39 +1845,22 @@ ${markPickHtml()}
     }
 
     function restoreWidth() {
-      try {
-        chrome.storage.local.get(WIDTH_KEY, r => {
-          const w = r && Number(r[WIDTH_KEY]);
-          if (w) applyWidth(w);
-        });
-      } catch { /* no storage (harness fallback) — keep the default */ }
+      readKey(WIDTH_KEY, v => { const w = Number(v); if (w) applyWidth(w); });
     }
-    function rememberWidth() {
-      try { chrome.storage.local.set({ [WIDTH_KEY]: D.width }); } catch { /* ignore */ }
-    }
+    function rememberWidth() { writeKey(WIDTH_KEY, D.width); }
 
     // ---- which export, remembered ---------------------------------------
     // The same one-key-in-extension-storage idiom as the tab and the width:
     // a preference this small has no business being a settings screen, and a
     // reader who exports comments-only once almost always means it next time.
-    function restoreExportMode() {
-      try {
-        chrome.storage.local.get(EXPORT_KEY, r => setExportMode(r && r[EXPORT_KEY]));
-      } catch { /* no storage (harness fallback) — 'all', as it always was */ }
-    }
-    function rememberExportMode() {
-      try { chrome.storage.local.set({ [EXPORT_KEY]: D.exportMode }); } catch { /* ignore */ }
-    }
+    function restoreExportMode() { readKey(EXPORT_KEY, v => setExportMode(v)); }
+    function rememberExportMode() { writeKey(EXPORT_KEY, D.exportMode); }
 
     // ---- how answers land, remembered -----------------------------------
     // Same one key again. Default 'type': the paced reveal is what the drawer
     // does now, and 'instant' is the way back for a reader who wants the text
     // the moment the wire has it.
-    function restoreTyping() {
-      try {
-        chrome.storage.local.get(TYPING_KEY, r => setTyping(r && r[TYPING_KEY], true));
-      } catch { /* no storage (harness fallback) — 'type' */ }
-    }
+    function restoreTyping() { readKey(TYPING_KEY, v => setTyping(v, true)); }
     function setTyping(mode, quiet) {
       const want = mode === 'instant' ? 'instant' : 'type';
       if (want === D.typeMode) return;
@@ -1846,29 +1876,22 @@ ${markPickHtml()}
       if (want === 'instant') stopTyping(); else startTyping();
       if (!quiet) { rememberTyping(); syncTyping(); }
     }
-    function rememberTyping() {
-      try { chrome.storage.local.set({ [TYPING_KEY]: D.typeMode }); } catch { /* ignore */ }
-    }
+    function rememberTyping() { writeKey(TYPING_KEY, D.typeMode); }
 
     // ---- which slice of the archive, remembered -------------------------
     // Same idiom again, one key: {kind, tag}. Restored before the list is ever
     // drawn, so the view opens where it was left rather than opening on
     // everything and jumping.
     function restoreFilter() {
-      try {
-        chrome.storage.local.get(FILTER_KEY, r => {
-          const f = (r && r[FILTER_KEY]) || null;
-          if (!f || typeof f !== 'object') return;
-          D.pages.kind = KIND_NAME[f.kind] ? f.kind : '';
-          D.pages.tag = typeof f.tag === 'string' ? f.tag.slice(0, TAG_MAX) : '';
-          if (D.view === 'pages') renderPages();
-        });
-      } catch { /* no storage (harness fallback) — everything, as it was */ }
+      readKey(FILTER_KEY, f => {
+        if (!f || typeof f !== 'object') return;
+        D.pages.kind = KIND_NAME[f.kind] ? f.kind : '';
+        D.pages.tag = typeof f.tag === 'string' ? f.tag.slice(0, TAG_MAX) : '';
+        if (D.view === 'pages') renderPages();
+      });
     }
     function rememberFilter() {
-      try {
-        chrome.storage.local.set({ [FILTER_KEY]: { kind: D.pages.kind, tag: D.pages.tag } });
-      } catch { /* ignore */ }
+      writeKey(FILTER_KEY, { kind: D.pages.kind, tag: D.pages.tag });
     }
 
     // Drag from the left edge. Width is measured off the viewport's right edge
@@ -2266,19 +2289,6 @@ ${markPickHtml()}
         return routeWordOf(m.text) || String(m.route || '').trim().replace(/^@/, '') || 'none';
       }
       return 'none';
-    }
-    // the tag a message's own words carry, as a pill name — the same strict
-    // rule the companion routes by (chat.routePrefix): one bot named is that
-    // bot's, @all or both named is the room's, nothing named is nothing
-    function routeWordOf(text) {
-      const found = String(text || '').match(/@(claude|codex|all)\b/gi) || [];
-      const tags = [];
-      for (const f of found) {
-        const h = f.slice(1).toLowerCase();
-        if (tags.indexOf(h) === -1) tags.push(h);
-      }
-      if (!tags.length) return '';
-      return (tags.indexOf('all') >= 0 || tags.length > 1) ? 'all' : tags[0];
     }
     // What the NEXT message in this composer will do: the pill the reader
     // clicked, else the thread's sticky address — overruled live by a tag
@@ -3403,6 +3413,12 @@ ${markPickHtml()}
 
     // "3d", "2h", "now" — a chat list wants to say how stale a thing is in
     // the width of a chip, not to print a date nobody reads.
+    //
+    // NOT `relTime`, and deliberately not merged with it: that one writes
+    // "3d ago" for a row in a list a reader is reading, and stops at days.
+    // This one is a chip and has to fit, so it drops the word and keeps going
+    // into months and years. Two audiences, two vocabularies; folding them
+    // together would change what one of the two screens says.
     function shortAge(iso) {
       const t = Date.parse(String(iso || ''));
       if (!t) return '';
@@ -4203,6 +4219,9 @@ ${markPickHtml()}
       const v = n / 1000;
       return (a < 10000 ? Math.round(v * 10) / 10 : Math.round(v)) + 'k';
     }
+    // "2h ago" — the age of a page in the archive list, in prose, for a reader
+    // who is reading rather than scanning. `shortAge` above is the chip
+    // vocabulary; see the note there for why they are two.
     function relTime(ts) {
       const t = Date.parse(ts);
       if (!isFinite(t)) return '';
@@ -8240,6 +8259,7 @@ ${markPickHtml()}
     tagHue,                                                 // test/tags.test.mjs
     splitEnvelopes, agentOf,                                // test/envelope.test.mjs
     splitMore, stripMore, MORE_MARK,                        // test/more.test.mjs
+    routeWordOf, KINDS, KIND_NAME,                          // test/mentions.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

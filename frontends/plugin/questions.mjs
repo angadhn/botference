@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { DIR, unwrapLine } from './store.mjs';
+import { DIR, unwrapLine, fenceRe } from './store.mjs';
 
 export const VAULT_FILE = path.join(DIR, 'questions.json');
 
@@ -511,7 +511,7 @@ export function duplicateOf(vault, card) {
 // that shows its working and then writes the card has written one card, and
 // the one it meant is the last one. `why:` may run over several lines; every
 // other field is one line.
-const FENCE_RE = /```[ \t]*question[ \t]*\r?\n([\s\S]*?)```/gi;
+const FENCE_RE = fenceRe('question');
 const OPT_RE = /^\s*([A-E])[).:]\s*(.+)$/;
 const TRUE_FALSE = ['True', 'False'];
 

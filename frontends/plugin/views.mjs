@@ -937,7 +937,18 @@ ${snapshot ? `<script src="/assets/anchor.js" nonce="${n}"></script>
 // ?tag=quantum, or both. That keeps this page scriptless (a filter survives
 // with JavaScript off), makes a filtered archive a link worth sending, and
 // matches the drawer's chips one for one.
+// The kind names, plural for the filter rail and singular for a row's meta
+// line. Duplicated in extension/drawer.js (KINDS and KIND_NAME) across the same
+// extension/server boundary normUrl and tagHue are duplicated across: THE TWO
+// MUST AGREE, or the same document is a "PDF" in the drawer and a "pdf" on the
+// phone. tags.test.mjs holds them together.
+//
+// The singular used to be derived — `KIND_LABEL[k].replace(/s$/, '')
+// .toLowerCase()` — which is exactly how they drifted: it produced "pdf" and
+// "doc" where the drawer had always written "PDF" and "Doc". A table cannot
+// derive itself wrong.
 const KIND_LABEL = { article: 'Articles', pdf: 'PDFs', gdocs: 'Docs' };
+export const KIND_NAME = { article: 'article', pdf: 'PDF', gdocs: 'Doc' };
 export const rowKind = row =>
   (PAGE_KINDS.includes(String(row && row.kind)) ? row.kind : inferKind(row && row.url));
 const rowTags = row => (Array.isArray(row && row.tags) ? row.tags : []);
@@ -990,7 +1001,7 @@ export function pagesView({ index, me, snapshots, library, libraryKey, kind = ''
     // A row whose article we hold opens the article itself; one we do not
     // still opens its conversation, which is all there has ever been.
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
-<div class="meta">${escHtml(rowAddress(row.url))} · ${escHtml(KIND_LABEL[rowKind(row)].replace(/s$/, '').toLowerCase())} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
+<div class="meta">${escHtml(rowAddress(row.url))} · ${escHtml(KIND_NAME[rowKind(row)] || KIND_NAME.article)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
   rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}" style="--th:${tagHue(t)}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
 }</li>`)
     .join('\n');
