@@ -16,40 +16,33 @@
 //   node frontends/plugin/test/questions.test.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import http from 'node:http';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  createHarness, sleep, enc, GET, POST, inputs, FORM, request,
+} from './harness.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(TEST, '..');
 const SERVER = path.join(PLUGIN, 'server.mjs');
 const MOCK = path.join(TEST, 'mock-bridge.mjs');
 
-let passed = 0;
-const failures = [];
-async function test(name, fn) {
-  try { await fn(); passed++; console.log(`  ok   ${name}`); }
-  catch (e) { failures.push(name); console.log(`  FAIL ${name}\n       ${e && e.message}`); }
-}
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function waitFor(pred, what, ms = 10000) {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await pred();
-    if (v) return v;
-    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
-    await sleep(25);
-  }
-}
+// The scaffolding — runner, poller, throwaway root, a companion on a random
+// port, JSON over HTTP — is test/harness.mjs, shared with every other suite
+// that drives a real server. It was a private copy here, as in eight others.
+const {
+  test, waitFor, tmp, startServer, cleanup, passed, failures,
+} = createHarness({
+  server: SERVER, tag: 'q', realpath: true,
+  // every server in this file: one bridge child, the mock in place of python,
+  // and a turn slow enough that a pending card is visible before it settles
+  env: {
+    PLUGIN_BRIDGE_POOL: '1',
+    PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+    MOCK_TURN_DELAY_MS: '40',
+  },
+});
 
-const tmps = [];
-function tmp(tag) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-q-${tag}-`));
-  tmps.push(d);
-  return fs.realpathSync(d);
-}
 
 // store.mjs fixes its root at import time, so this process points at a
 // throwaway before the vault module is ever loaded
@@ -591,59 +584,7 @@ await test('the filter rail is chips with counts, and every chip is a link', () 
 // The doors, against a real companion with a mock bridge.
 console.log('\nquestions — the endpoints');
 
-const spawned = [];
-const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-q-secrets-'));
-function startServer({ root, args = [], env = {} }) {
-  const proc = spawn(process.execPath, [SERVER, ...args], {
-    env: {
-      ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
-      BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
-      PLUGIN_BRIDGE_POOL: '1',
-      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
-      MOCK_TURN_DELAY_MS: '40',
-      ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  spawned.push(proc);
-  let out = '';
-  proc.stdout.on('data', d => { out += d; });
-  proc.stderr.on('data', d => { out += d; });
-  return waitFor(() => {
-    const m = /http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
-    return m ? `http://127.0.0.1:${m[1]}` : null;
-  }, `server to listen (got: ${out.slice(0, 300)})`).then(base => ({ proc, base, out: () => out }));
-}
 
-function request(base, method, urlPath, body, headers = {}, raw) {
-  return new Promise((resolve, reject) => {
-    const data = raw !== undefined ? raw : (body === undefined ? null : JSON.stringify(body));
-    const req = http.request(base + urlPath, {
-      method,
-      headers: {
-        ...(data === null ? {} : {
-          'content-type': raw !== undefined ? 'application/x-www-form-urlencoded' : 'application/json',
-          'content-length': Buffer.byteLength(data),
-        }),
-        ...headers,
-      },
-    }, res => {
-      let buf = '';
-      res.on('data', c => { buf += c; });
-      res.on('end', () => {
-        let json = null; try { json = JSON.parse(buf); } catch { }
-        resolve({ status: res.statusCode, json, body: buf, headers: res.headers });
-      });
-    });
-    req.on('error', reject);
-    if (data !== null) req.write(data);
-    req.end();
-  });
-}
-const GET = (b, p, h) => request(b, 'GET', p, undefined, h);
-const POST = (b, p, body, h) => request(b, 'POST', p, body || {}, h);
-const FORM = (b, p, fields, h) =>
-  request(b, 'POST', p, undefined, h, new URLSearchParams(fields).toString());
 
 const PAGE = 'https://example.com/probability';
 // the mock reads the LAST directive in the turn, and a card turn replays the
@@ -1301,12 +1242,16 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
     env: { PLUGIN_PASSWORD: PW, PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
   const REMOTE = { host: 'discuss.example', authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' };
 
-  await test('a guest is refused at every question door', async () => {
-    for (const [method, p] of [['POST', '/question'], ['GET', '/questions'],
-      ['POST', '/quiz-answer'], ['POST', '/quiz-flag'], ['POST', '/quiz-delete'], ['GET', '/quiz'],
-      // the two doors the revision path added: rewriting a card, and the
-      // duplicate hint's veto. Both write to the owner's own bank.
-      ['POST', '/question-revise'], ['POST', '/quiz-keep'],
+  // The SIX WRITE DOORS ARE NOT HERE. companion.test.mjs keeps the one register
+  // of every owner-only route in the companion (`owner-only endpoints answer a
+  // guest with 403`) and asserts the exact refusal body as well as the status;
+  // this list had six of the same routes with a weaker assertion and a server
+  // boot of its own. What stays is what that register does NOT cover — the
+  // three READS, which are owner-only for a different reason: the vault is the
+  // record of what this reader keeps getting wrong, and reading it is the
+  // privacy question rather than the write question.
+  await test('a guest cannot READ the owner\'s vault, by any of its three doors', async () => {
+    for (const [method, p] of [['GET', '/questions'], ['GET', '/quiz'],
       // the near view is the same vault seen from a page, and just as private
       ['GET', `/memory?url=${encodeURIComponent(PAGE)}`]]) {
       const r = method === 'GET'
@@ -1325,10 +1270,8 @@ const SAYS = '[mock:says:```question\\nQ: What does the LLN promise?\\ncorrect: 
   await sleep(120);
 }
 
-for (const p of spawned) { try { p.kill(); } catch { } }
+cleanup();
 await sleep(150);
-for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
-try { fs.rmSync(SECRETS, { recursive: true, force: true }); } catch { }
 
-console.log(`\nquestions: ${passed} passed, ${failures.length} failed`);
-if (failures.length) { console.log(failures.map(f => '  - ' + f).join('\n')); process.exit(1); }
+console.log(`\nquestions: ${passed()} passed, ${failures().length} failed`);
+if (failures().length) { console.log(failures().map(f => '  - ' + f).join('\n')); process.exit(1); }

@@ -22,93 +22,26 @@
 //   node frontends/plugin/test/strike.test.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import http from 'node:http';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {
+  createHarness, sleep, enc, GET, POST, inputs,
+} from './harness.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(TEST, '..');
 const SERVER = path.join(PLUGIN, 'server.mjs');
 const MOCK = path.join(TEST, 'mock-bridge.mjs');
 
-let passed = 0;
-const failures = [];
-async function test(name, fn) {
-  try { await fn(); passed++; console.log(`  ok   ${name}`); }
-  catch (e) { failures.push(name); console.log(`  FAIL ${name}\n       ${e && e.message}`); }
-}
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function waitFor(pred, what, ms = 10000) {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await pred();
-    if (v) return v;
-    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
-    await sleep(25);
-  }
-}
+// The scaffolding — runner, poller, throwaway root, a companion on a random
+// port, JSON over HTTP — is test/harness.mjs, shared with every other suite
+// that drives a real server. It was a private copy here, as in eight others.
+const {
+  test, waitFor, tmp, startServer, cleanup, passed, failures,
+} = createHarness({ server: SERVER, tag: 'strike', realpath: true, env: { PLUGIN_BRIDGE_POOL: '1' } });
 
-const tmps = [];
-function tmp(tag) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-strike-${tag}-`));
-  tmps.push(d);
-  return fs.realpathSync(d);   // macOS /var vs /private/var — both sides, always
-}
 
-const spawned = [];
-const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-strike-secrets-'));
-function startServer({ root, env = {} }) {
-  const proc = spawn(process.execPath, [SERVER], {
-    env: {
-      ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
-      BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
-      PLUGIN_BRIDGE_POOL: '1', ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  spawned.push(proc);
-  let out = '';
-  proc.stdout.on('data', d => { out += d; });
-  proc.stderr.on('data', d => { out += d; });
-  return waitFor(() => {
-    const m = /http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
-    return m ? `http://127.0.0.1:${m[1]}` : null;
-  }, `server to listen (got: ${out.slice(0, 300)})`).then(base => ({ proc, base, out: () => out }));
-}
-function request(base, method, urlPath, body, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const data = body === undefined ? null : JSON.stringify(body);
-    const req = http.request(base + urlPath, {
-      method,
-      headers: {
-        ...(data === null ? {} : {
-          'content-type': 'application/json', 'content-length': Buffer.byteLength(data),
-        }),
-        ...headers,
-      },
-    }, res => {
-      let buf = '';
-      res.on('data', c => { buf += c; });
-      res.on('end', () => {
-        let json = null; try { json = JSON.parse(buf); } catch { }
-        resolve({ status: res.statusCode, json, body: buf });
-      });
-    });
-    req.on('error', reject);
-    if (data !== null) req.write(data);
-    req.end();
-  });
-}
-const GET = (b, p, h) => request(b, 'GET', p, undefined, h);
-const POST = (b, p, body, h) => request(b, 'POST', p, body, h);
-const enc = encodeURIComponent;
-const inputs = file => (fs.existsSync(file)
-  ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
-    .filter(e => e.type === 'input').map(e => String(e.text))
-  : []);
 
 // store.mjs fixes its ROOT at import time: point THIS process at a throwaway
 // before importing it, so nothing here can touch the developer's own workspace.
@@ -1487,12 +1420,10 @@ console.log('\nstrike — the span rule');
     assert.match(html, /this passage is struck through in the document/);
   });
 
-  for (const p of spawned) { try { p.kill(); } catch { } }
+  cleanup();
   await sleep(150);
 }
 
-for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
-try { fs.rmSync(SECRETS, { recursive: true, force: true }); } catch { }
 
-console.log(`\nstrike: ${passed} passed, ${failures.length} failed`);
-if (failures.length) { console.log(failures.map(f => '  - ' + f).join('\n')); process.exit(1); }
+console.log(`\nstrike: ${passed()} passed, ${failures().length} failed`);
+if (failures().length) { console.log(failures().map(f => '  - ' + f).join('\n')); process.exit(1); }

@@ -20,11 +20,11 @@
 //   node frontends/plugin/test/suggest.test.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import http from 'node:http';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  createHarness, sleep, enc, GET, POST, inputs, listen, request,
+} from './harness.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(TEST, '..');
@@ -32,31 +32,13 @@ const SERVER = path.join(PLUGIN, 'server.mjs');
 const MOCK = path.join(TEST, 'mock-bridge.mjs');
 
 // --- tiny runner ---------------------------------------------------------
-let passed = 0;
-const failures = [];
-async function test(name, fn) {
-  try { await fn(); passed++; console.log(`  ok   ${name}`); }
-  catch (e) { failures.push(name); console.log(`  FAIL ${name}\n       ${e && e.message}`); }
-}
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function waitFor(pred, what, ms = 10000) {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await pred();
-    if (v) return v;
-    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
-    await sleep(25);
-  }
-}
+// The scaffolding — runner, poller, throwaway root, a companion on a random
+// port, JSON over HTTP — is test/harness.mjs, shared with every other suite
+// that drives a real server. It was a private copy here, as in eight others.
+const {
+  test, waitFor, tmp, startServer, cleanup, passed, failures,
+} = createHarness({ server: SERVER, tag: 'suggest', realpath: true });
 
-const tmps = [];
-function tmp(tag) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-sg-${tag}-`));
-  tmps.push(d);
-  // realpath, always: macOS's /var/folders is really /private/var/folders and
-  // blog.mjs resolves both sides of every comparison
-  return fs.realpathSync(d);
-}
 
 // store.mjs fixes its root at import time — point THIS process at a throwaway
 // workspace before any plugin module loads
@@ -365,54 +347,6 @@ await test('suggest mode is a property of the KIND, held in code', async () => {
 console.log('\ncompanion — suggest mode on a blog page');
 
 // --- server harness ------------------------------------------------------
-const spawned = [];
-const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-sg-secrets-'));
-function startServer({ root, args = [], env = {} }) {
-  const proc = spawn(process.execPath, [SERVER, ...args], {
-    env: {
-      ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
-      BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
-      ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  spawned.push(proc);
-  let out = '';
-  proc.stdout.on('data', d => { out += d; });
-  proc.stderr.on('data', d => { out += d; });
-  return waitFor(() => {
-    const m = /http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
-    return m ? `http://127.0.0.1:${m[1]}` : null;
-  }, `server to listen (got: ${out.slice(0, 300)})`).then(base => ({ proc, base, out: () => out }));
-}
-function request(base, method, urlPath, body, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const data = body === undefined ? null : JSON.stringify(body);
-    const req = http.request(base + urlPath, {
-      method,
-      headers: {
-        ...(data === null ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) }),
-        ...headers,
-      },
-    }, res => {
-      let buf = '';
-      res.on('data', c => { buf += c; });
-      res.on('end', () => {
-        let json = null; try { json = JSON.parse(buf); } catch { }
-        resolve({ status: res.statusCode, json, body: buf });
-      });
-    });
-    req.on('error', reject);
-    if (data !== null) req.write(data);
-    req.end();
-  });
-}
-const GET = (b, p, h) => request(b, 'GET', p, undefined, h);
-const POST = (b, p, body, h) => request(b, 'POST', p, body, h);
-const enc = encodeURIComponent;
-const bridgeLog = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8')
-  .split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
-const inputs = file => bridgeLog(file).filter(e => e.type === 'input').map(e => String(e.text));
 
 // The post every test below proposes changes to. Two paragraphs that are
 // unique and one sentence that stands twice — the ambiguity case has to be in
@@ -462,24 +396,6 @@ function jekyll(tag) {
     env: { PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]), MOCK_BRIDGE_LOG: logFile },
   });
 
-  function listen(b) {
-    const seen = [];
-    const req = http.request(b + '/events', { method: 'GET' }, res => {
-      let buf = '';
-      res.on('data', c => {
-        buf += c;
-        let i;
-        while ((i = buf.indexOf('\n\n')) >= 0) {
-          const frame = buf.slice(0, i); buf = buf.slice(i + 2);
-          const m = /^data: (.*)$/m.exec(frame);
-          if (!m) continue;
-          try { seen.push(JSON.parse(m[1])); } catch { }
-        }
-      });
-    });
-    req.end();
-    return { seen, close: () => req.destroy(), of: t => seen.filter(e => e.type === t) };
-  }
   const events = listen(base);
   await sleep(120);
 
@@ -716,10 +632,8 @@ function jekyll(tag) {
   await sleep(120);
 }
 
-for (const p of spawned) { try { p.kill(); } catch { } }
+cleanup();
 await sleep(150);
-for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
-try { fs.rmSync(SECRETS, { recursive: true, force: true }); } catch { }
 
-console.log(`\nsuggest: ${passed} passed, ${failures.length} failed`);
-if (failures.length) { console.log(failures.map(f => '  - ' + f).join('\n')); process.exit(1); }
+console.log(`\nsuggest: ${passed()} passed, ${failures().length} failed`);
+if (failures().length) { console.log(failures().map(f => '  - ' + f).join('\n')); process.exit(1); }

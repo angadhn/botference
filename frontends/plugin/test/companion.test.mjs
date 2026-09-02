@@ -16,6 +16,9 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  createHarness, sleep, request, GET, POST, FORM, getBytes, cookieJar,
+} from './harness.mjs';
 import { createRequire } from 'node:module';
 
 // The reader's length instruction, verbatim (chat.mjs VERBOSITY_LINE): the last
@@ -35,108 +38,26 @@ const PLUGIN_DIR = PLUGIN;
 const Anchor = createRequire(import.meta.url)(path.join(PLUGIN, 'extension', 'anchor.js'));
 const store_hasSnapshot = (dir, key) => fs.existsSync(path.join(dir, 'snapshots', `${key}.html`));
 
-// --- tiny runner --------------------------------------------------------
-let passed = 0;
-const failures = [];
-async function test(name, fn) {
-  try { await fn(); passed++; console.log(`  ok   ${name}`); }
-  catch (e) { failures.push(name); console.log(`  FAIL ${name}\n       ${e && e.message}`); }
-}
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function waitFor(pred, what, ms = 8000) {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await pred(); // predicates may be async (a fetch, a file read)
-    if (v) return v;
-    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
-    await sleep(20);
-  }
-}
+// The scaffolding — runner, poller, throwaway root, a companion on a random
+// port, JSON over HTTP — is test/harness.mjs, shared with every other suite
+// that drives a real server. It was a private copy here, as in eight others.
+//
+// The 8s patience is this file's own, deliberately shorter than the tree's
+// 10s: nothing here waits on more than one bridge child.
+//
+// ONE BRIDGE CHILD, everywhere in this file. Almost every test here is about
+// what a single child is told and in what order — the choreography, the
+// envelope, the sid capture — and it reads that off one shared mock log. A pool
+// would split those lines across processes and prove nothing it was written to
+// prove. `bridge_pool: 1` is also the exact behaviour that shipped before the
+// pool existed, so this file remains the proof that the degenerate case still
+// is what it was. Parallelism itself is test/parallel.test.mjs.
+const {
+  test, waitFor, tmp: tmpRoot, startServer, cleanup, spawned, SECRETS, passed, failures,
+} = createHarness({
+  server: SERVER, tag: 'x', waitMs: 8000, env: { PLUGIN_BRIDGE_POOL: '1' },
+});
 
-// --- server harness -----------------------------------------------------
-const spawned = [];
-function tmpRoot(tag) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-${tag}-`));
-  return d;
-}
-// Every server started by this file gets a throwaway secrets directory. The
-// owner credential is deliberately SHARED with the review hub's
-// (~/.botference/review-paper-secrets.json, identity.mjs), and a test must
-// never read — let alone generate into — the developer's real one.
-const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-secrets-'));
-function startServer({ root, args = [], env = {} }) {
-  const proc = spawn(process.execPath, [SERVER, ...args], {
-    env: {
-      ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
-      BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
-      // ONE BRIDGE CHILD, everywhere in this file. Almost every test here is
-      // about what a single child is told and in what order — the choreography,
-      // the envelope, the sid capture — and it reads that off one shared mock
-      // log. A pool would split those lines across processes and prove nothing
-      // it was written to prove. `bridge_pool: 1` is also the exact behaviour
-      // that shipped before the pool existed, so this file remains the proof
-      // that the degenerate case still is what it was.
-      // Parallelism itself is test/parallel.test.mjs.
-      PLUGIN_BRIDGE_POOL: '1',
-      ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  spawned.push(proc);
-  let out = '';
-  proc.stdout.on('data', d => { out += d; });
-  proc.stderr.on('data', d => { out += d; });
-  return waitFor(() => {
-    const m = /http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
-    return m ? `http://127.0.0.1:${m[1]}` : null;
-  }, `server on ${root} to listen (got: ${out.slice(0, 300)})`).then(base => ({ proc, base, out: () => out }));
-}
-// `headers` carries hosted-mode credentials (and Host, which is what tells the
-// server a request came through a tunnel rather than off the loopback);
-// `raw` sends a form-encoded body, as the reading room's composers do.
-function request(base, method, urlPath, body, headers = {}, raw = null) {
-  return new Promise((resolve, reject) => {
-    const data = raw !== null ? raw : (body === undefined ? null : JSON.stringify(body));
-    const type = raw !== null ? 'application/x-www-form-urlencoded' : 'application/json';
-    const req = http.request(base + urlPath, {
-      method,
-      headers: {
-        ...(data === null ? {} : { 'content-type': type, 'content-length': Buffer.byteLength(data) }),
-        ...headers,
-      },
-    }, res => {
-      let buf = '';
-      res.on('data', c => { buf += c; });
-      res.on('end', () => {
-        let json = null; try { json = JSON.parse(buf); } catch { }
-        resolve({ status: res.statusCode, headers: res.headers, json, body: buf });
-      });
-    });
-    req.on('error', reject);
-    if (data !== null) req.write(data);
-    req.end();
-  });
-}
-const GET = (b, p, h) => request(b, 'GET', p, undefined, h);
-// the same GET, but keeping the BYTES: a favicon is a png, and a png read as
-// utf-8 is a different file
-function getBytes(base, urlPath, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const req = http.get(base + urlPath, { headers }, res => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve({
-        status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks),
-      }));
-    });
-    req.on('error', reject);
-  });
-}
-const POST = (b, p, body, h) => request(b, 'POST', p, body || {}, h);
-const FORM = (b, p, fields, h) =>
-  request(b, 'POST', p, undefined, h, new URLSearchParams(fields).toString());
-// what a browser sends back on the next request after a Set-Cookie
-const cookieJar = res => (res.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
 
 // SSE client: every event lands in `events`, tests wait on predicates
 function openEvents(base, query = '') {
@@ -4396,9 +4317,9 @@ async function main() {
   });
 
   stream.close();
-  for (const p of spawned) { try { p.kill(); } catch { } }
-  console.log(`\n${passed} passed, ${failures.length} failed`);
-  if (failures.length) { console.log(`failed: ${failures.join(', ')}`); process.exit(1); }
+  cleanup();
+  console.log(`\n${passed()} passed, ${failures().length} failed`);
+  if (failures().length) { console.log(`failed: ${failures().join(', ')}`); process.exit(1); }
 }
 
 main().catch(e => {

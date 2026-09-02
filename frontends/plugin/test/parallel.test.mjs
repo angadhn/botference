@@ -17,6 +17,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  createHarness, sleep, enc, GET, POST,
+} from './harness.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(TEST, '..');
@@ -24,22 +27,20 @@ const SERVER = path.join(PLUGIN, 'server.mjs');
 const MOCK = path.join(TEST, 'mock-bridge.mjs');
 
 // --- tiny runner ---------------------------------------------------------
-let passed = 0;
-const failures = [];
-async function test(name, fn) {
-  try { await fn(); passed++; console.log(`  ok   ${name}`); }
-  catch (e) { failures.push(name); console.log(`  FAIL ${name}\n       ${e && e.message}`); }
-}
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function waitFor(pred, what, ms = 15000) {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await pred();
-    if (v) return v;
-    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
-    await sleep(20);
-  }
-}
+// The scaffolding — runner, poller, throwaway root, a companion on a random
+// port, JSON over HTTP — is test/harness.mjs, shared with every other suite
+// that drives a real server. The 15s patience is this file's own and stays:
+// it is the only suite that drives a THREE-LANE pool, and three children
+// starting take longer than one.
+const {
+  test, waitFor, tmp, startServer: boot, cleanup, passed, failures,
+} = createHarness({
+  server: SERVER, tag: 'par', waitMs: 15000, realpath: true,
+  env: {
+    PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+    PLUGIN_BRIDGE_IDLE_MS: '0',
+  },
+});
 
 // ==========================================================================
 // PART ONE — the dispatcher, on a fake bridge
@@ -311,61 +312,11 @@ await test('a nonsense cap is clamped rather than obeyed', () => {
 // ==========================================================================
 // PART TWO — a real companion, several children
 // ==========================================================================
-const spawned = [];
-const tmps = [];
-function tmp(tag) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-par-${tag}-`));
-  tmps.push(d);
-  return fs.realpathSync(d);
-}
-const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-par-secrets-'));
-
-function startServer({ root, logDir, pool = '3', env = {} }) {
-  const proc = spawn(process.execPath, [SERVER], {
-    env: {
-      ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
-      BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
-      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
-      PLUGIN_BRIDGE_POOL: pool,
-      PLUGIN_BRIDGE_IDLE_MS: '0',
-      MOCK_LOG_DIR: logDir,
-      ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  spawned.push(proc);
-  let out = '';
-  proc.stdout.on('data', d => { out += d; });
-  proc.stderr.on('data', d => { out += d; });
-  return waitFor(() => {
-    const m = /http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
-    return m ? `http://127.0.0.1:${m[1]}` : null;
-  }, `server to listen (got: ${out.slice(0, 300)})`).then(base => ({ proc, base, out: () => out }));
-}
-
-function request(base, method, urlPath, body) {
-  return new Promise((resolve, reject) => {
-    const data = body === undefined ? null : JSON.stringify(body);
-    const req = http.request(base + urlPath, {
-      method,
-      headers: data === null ? {}
-        : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) },
-    }, res => {
-      let buf = '';
-      res.on('data', c => { buf += c; });
-      res.on('end', () => {
-        let json = null; try { json = JSON.parse(buf); } catch { }
-        resolve({ status: res.statusCode, json, body: buf });
-      });
-    });
-    req.on('error', reject);
-    if (data !== null) req.write(data);
-    req.end();
-  });
-}
-const GET = (b, p) => request(b, 'GET', p, undefined);
-const POST = (b, p, body) => request(b, 'POST', p, body || {});
-const enc = encodeURIComponent;
+// This suite's own vocabulary over the shared boot: a lane count and a log
+// directory per server, because what it is testing is how many children there
+// are and which of them a turn reached.
+const startServer = ({ root, logDir, pool = '3', env = {} }) =>
+  boot({ root, env: { PLUGIN_BRIDGE_POOL: pool, MOCK_LOG_DIR: logDir, ...env } });
 
 // every event, stamped with when it arrived — overlap is a claim about order
 function openEvents(base) {
@@ -673,7 +624,7 @@ await test('a collateral edit is attributed to the turn that made it, with a pag
 });
 
 // --- done ----------------------------------------------------------------
-for (const p of spawned) { try { p.kill(); } catch { } }
+cleanup();
 await sleep(120);
-console.log(`\n${passed} passed, ${failures.length} failed`);
-if (failures.length) { console.log('failed: ' + failures.join(', ')); process.exit(1); }
+console.log(`\n${passed()} passed, ${failures().length} failed`);
+if (failures().length) { console.log('failed: ' + failures().join(', ')); process.exit(1); }
