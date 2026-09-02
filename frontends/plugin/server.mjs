@@ -368,6 +368,12 @@ const allChats = () => (chat ? [chat, ...workspaceChats.values(), ...blogChats.v
 // (an unconfirmed root routes to none, a confirmed one to its own child).
 const pageBusy = url => allChats().some(c => c.busyFor && c.busyFor(url));
 const anyRunning = () => allChats().some(c => c.state() === 'running');
+// The one word GET /health and GET /models both answer with, and they answered
+// it with a copy each. "disabled" beats everything (--no-agents); after that,
+// ANY bridge being up is "running", because the reader is asking whether the
+// companion is working and it does not matter which child is.
+const bridgeState = () =>
+  (NO_AGENTS ? 'disabled' : (anyRunning() ? 'running' : chat.state()));
 const totalQueue = () => allChats().reduce((n, c) => n + c.queueLength(), 0);
 // Every turn the companion is holding, grouped by the page it is for — across
 // the pool and every council child. `running` is the turn that has the floor;
@@ -434,6 +440,36 @@ const turnScans = new Map();     // page url → {dir, before}
 const lastChanges = new Map();   // page url → the event payload
 const CHANGES_KEEP = 50;
 
+// Remember this page's newest change set and tell every open tab. Three
+// callers, and the three had a copy each — which matters more than the two
+// lines it saves: the eviction is what keeps `lastChanges` from growing without
+// bound, and a fourth caller that forgot it, or a copy that drifted on the
+// bound, would leak quietly and forever.
+// The other half of a change report: the edits nobody left a comment on. Both
+// callers had this block written out, and both had to remember the same two
+// things — save the page the threads were added to, and mark the payload so the
+// tab knows to refetch before it reloads.
+//
+// `after` is a THUNK, and that is the point. Producing it is a whole-file read
+// of up to collateral.SNAPSHOT_MAX (4 MB) plus a transform, and on a page in
+// suggest mode the answer is thrown away — so it must not be computed until
+// after the boolean that decides whether anyone will look at it. Passing the
+// value would put the work back where it was.
+function withCollateral(url, payload, seen, ev, after) {
+  if (seen.noCollateral) return;
+  const page = store.readPage(url);
+  if (!page || !reportCollateral(page, seen, after(), ev)) return;
+  store.savePage(page);
+  payload.collateral = true;
+  broadcast({ type: 'page', url });
+}
+
+function publishChanges(url, payload) {
+  lastChanges.set(url, payload);
+  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
+  broadcast(payload);
+}
+
 // The artifact's own bytes, or '' — capped, and a read that fails is simply no
 // snapshot, which costs the turn its collateral threads and nothing else.
 function artifactSnapshot(art) {
@@ -481,9 +517,17 @@ function noteBlogTurnStart(url) {
     before: blog.scanSite(bg.root),
     // markdown, presented to the diff as one block per paragraph — see
     // blog.mdDoc: collateral.mjs finds its blocks in HTML tags, and raw
-    // markdown has none, so an unblocked file diffs as one enormous region
-    text: blog.mdDoc(sourceSnapshot(bg.source_path)),
-    // …and, in suggest mode, the instruction NOT to diff it. Collateral threads
+    // markdown has none, so an unblocked file diffs as one enormous region.
+    //
+    // …and NOT READ AT ALL in suggest mode, which is why the gate is here and
+    // not only at reportCollateral. Every kind in blog.KIND_RULES is
+    // `suggest:true` today, so this branch is the only branch — and it used to
+    // read the whole source file (up to collateral.SNAPSHOT_MAX, 4 MB) and
+    // transform it, once at turn start and again at turn end, on every blog
+    // turn, so that reportCollateral could look at one boolean and throw both
+    // away. `noCollateral` is decided first now and the work is skipped.
+    text: bg.suggest_mode ? '' : blog.mdDoc(sourceSnapshot(bg.source_path)),
+    // …the instruction NOT to diff it. Collateral threads
     // exist to catch edits nobody commented on — a change that landed silently
     // because no thread stood where it landed. In suggest mode no change lands
     // during a turn at all: the bots propose, the file is untouched until the
@@ -545,6 +589,8 @@ function reportCollateral(page, seen, after, ev) {
   // …and never on a turn that proposed instead of writing (noteBlogTurnStart
   // says why at length). Suggestions are cards by construction; they are not
   // regions discovered in a diff, and they must not be summary-collapsed.
+  // Kept as a BACKSTOP: both callers now check the same boolean before they
+  // build the `after` argument, because building it is a whole-file read.
   if (seen.noCollateral) return 0;
   const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
   const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
@@ -618,17 +664,8 @@ function reportProjectChanges(ev) {
   // comment on. Before the reload event, so the tab that comes back is already
   // carrying the threads (the record is saved here; `project-files` makes the
   // tab refetch it).
-  if (payload.page_changed) {
-    const page = store.readPage(url);
-    if (page && reportCollateral(page, seen, artifactSnapshot(art), ev)) {
-      store.savePage(page);
-      payload.collateral = true;
-      broadcast({ type: 'page', url });
-    }
-  }
-  lastChanges.set(url, payload);
-  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
-  broadcast(payload);
+  if (payload.page_changed) withCollateral(url, payload, seen, ev, () => artifactSnapshot(art));
+  publishChanges(url, payload);
 }
 
 // The same report for a blog page, and the loop it closes.
@@ -675,21 +712,14 @@ function reportBlogChanges(url, seen, ev) {
   // rewritten paragraph is, and the reader wants to look at it
   if (payload.assets_changed) payload.page_changed = true;
   if (changed.includes(own)) {
-    const page = store.readPage(url);
     // …and the edits nobody commented on, diffed on the SOURCE. The threads it
     // opens carry markdown wording, which anchors on the rendered page for
     // ordinary prose and does not for a passage that is mostly markup — an
     // orphaned thread the reader can still read, which is better than a silent
     // rewrite. (SPEC amendment: the anchoring caveat.)
-    if (page && reportCollateral(page, seen, blog.mdDoc(sourceSnapshot(seen.source)), ev)) {
-      store.savePage(page);
-      payload.collateral = true;
-      broadcast({ type: 'page', url });
-    }
+    withCollateral(url, payload, seen, ev, () => blog.mdDoc(sourceSnapshot(seen.source)));
   }
-  lastChanges.set(url, payload);
-  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
-  broadcast(payload);
+  publishChanges(url, payload);
 }
 
 // --- the mirror, kept level with the council ------------------------------
@@ -971,8 +1001,7 @@ function onChatEvent(ev) {
         if (hit) {
           ev.msg = {
             ...ev.msg,
-            text: String(ev.msg.text).split(/\r?\n/)
-              .filter(l => l !== hit.line).join('\n').trimEnd(),
+            text: store.liftLines(ev.msg.text, hit.line),
             file_in: { root: hit.root, id: hit.id, title: hit.title, why: hit.why },
           };
         }
@@ -1032,19 +1061,10 @@ function onChatEvent(ev) {
               }
               return { why: hit.why };
             });
-            ev.msg = {
-              ...ev.msg,
-              text: String(ev.msg.text).split(/\r?\n/)
-                .filter(l => machinery.indexOf(l) < 0).join('\n').trimEnd(),
-              strikes,
-            };
+            ev.msg = { ...ev.msg, text: store.liftLines(ev.msg.text, machinery), strikes };
           } else if (machinery.length) {
             // a `passage:` line that named nothing is machinery too
-            ev.msg = {
-              ...ev.msg,
-              text: String(ev.msg.text).split(/\r?\n/)
-                .filter(l => machinery.indexOf(l) < 0).join('\n').trimEnd(),
-            };
+            ev.msg = { ...ev.msg, text: store.liftLines(ev.msg.text, machinery) };
           }
         }
       }
@@ -1079,7 +1099,7 @@ function onChatEvent(ev) {
                 : (rev.ok ? '' : 'unparsed');
             ev.msg = {
               ...ev.msg,
-              text: String(ev.msg.text).split(rev.block).join('').replace(/\n{3,}/g, '\n\n').trim(),
+              text: store.liftBlock(ev.msg.text, rev.block),
               question: fault
                 ? { revises: rev.id, rejected: fault, ...(rev.error ? { why: rev.error } : {}) }
                 : { revises: rev.id, why: rev.card.question, card: rev.card },
@@ -1087,8 +1107,7 @@ function onChatEvent(ev) {
           } else if (hit) {
             ev.msg = {
               ...ev.msg,
-              text: String(ev.msg.text).split(/\r?\n/)
-                .filter(l => l !== hit.line).join('\n').trimEnd(),
+              text: store.liftLines(ev.msg.text, hit.line),
               question: { why: hit.why },
             };
           }
@@ -1542,15 +1561,16 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // prefix for a message that never typed one
   const routeHint = String(extras.routeHint || '');
   if (!hasMention(text) && !untaggedAll && !routeHint) return {};
-  if (NO_AGENTS) {
-    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: AGENTS_OFF_ERROR });
-    return { queued: false, reason: AGENTS_OFF_REASON };
-  }
+  // The three ways a summon is refused all end the same way — say so in the
+  // thread the reader is looking at, and hand the caller a reason instead of a
+  // queue position. `refuse` is that ending, written once.
+  const refuse = (error, reason = error) => {
+    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error });
+    return { queued: false, reason };
+  };
+  if (NO_AGENTS) return refuse(AGENTS_OFF_ERROR, AGENTS_OFF_REASON);
   const refused = guestRefusal(me);
-  if (refused) {
-    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error: refused });
-    return { queued: false, reason: refused };
-  }
+  if (refused) return refuse(refused);
   // A project-artifact page whose council root the reader has not vouched for
   // yet: the comment is kept, the bots are not summoned, and the drawer says
   // why — the confirmation card is already on screen asking.
@@ -1559,9 +1579,9 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     // …or a blog page whose repo has not been vouched for, which is the same
     // refusal about a different folder and must say which one
     const isBlog = !artifactOf(page.url);
-    const error = isBlog ? BLOG_UNCONFIRMED_ERROR : UNCONFIRMED_ERROR;
-    broadcast({ type: 'chat', url: page.url, target, kind: 'error', error });
-    return { queued: false, reason: isBlog ? BLOG_UNCONFIRMED_REASON : UNCONFIRMED_REASON };
+    return isBlog
+      ? refuse(BLOG_UNCONFIRMED_ERROR, BLOG_UNCONFIRMED_REASON)
+      : refuse(UNCONFIRMED_ERROR, UNCONFIRMED_REASON);
   }
   const thread = target === store.PAGE_CHAT ? null : store.findThread(page, target);
   // ── the council projects this page is filed under ────────────────────
@@ -1803,6 +1823,15 @@ function notOwner(req, res) {
   return true;
 }
 // who is writing. A guest with no name (or one that would impersonate the
+// An HTML form cannot send a boolean: a checked box arrives as "on", an
+// unchecked one does not arrive at all, and the reading room's own buttons post
+// "" or "0". So `false`, `'false'`, `''` and `'0'` are all NO and everything
+// else that is present is YES — with `whenAbsent` naming what a missing field
+// means, because that differs by route and is the only thing that ever did.
+const formBool = (v, whenAbsent) =>
+  (v === undefined ? whenAbsent
+    : !(v === false || v === 'false' || v === '' || v === '0'));
+
 // owner) is refused before anything is stored.
 function authorOf(req, res) {
   const me = hosted.identity(req);
@@ -1821,13 +1850,12 @@ function authorOf(req, res) {
 // the reader accepting a proposal on this page can only ever change the file
 // this page renders from.
 function suggestTargetOf(res, data) {
-  const page = pageOf(res, data);
-  if (!page) return null;
-  const target = data.thread_id || store.PAGE_CHAT;
-  const msgs = store.msgsOf(page, target);
-  if (!msgs) { fail(res, 404, 'unknown thread'); return null; }
-  const found = store.resolveMsg(msgs, pick(data));
-  if (!found) { fail(res, 404, 'unknown message'); return null; }
+  // The first six lines were `addressedMsg` character for character — the same
+  // page, the same target, the same two 404s in the same words. It calls it
+  // now, so the two doors cannot start refusing the same thing differently.
+  const at = addressedMsg(res, data);
+  if (!at) return null;
+  const { page, target, found } = at;
   const bg = blogOf(page.url);
   if (!bg || !bg.confirmed || !bg.source_path) {
     fail(res, 409, 'this page has no confirmed markdown source to change');
@@ -1866,9 +1894,7 @@ function announceBlogWrite(url, bg, before) {
     files: changed.slice(0, workspace.CHANGED_LIST_MAX),
     at: new Date().toISOString(),
   };
-  lastChanges.set(url, payload);
-  if (lastChanges.size > CHANGES_KEEP) lastChanges.delete(lastChanges.keys().next().value);
-  broadcast(payload);
+  publishChanges(url, payload);
 }
 
 // --- running a python block ------------------------------------------------
@@ -1890,6 +1916,20 @@ function addressedMsg(res, data) {
   const found = store.resolveMsg(msgs, pick(data));
   if (!found) { fail(res, 404, 'unknown message'); return null; }
   return { page, target, found };
+}
+
+// …and its twin for the eight routes that want the THREAD and not a message in
+// it. The same three lines — page, thread, 404 in the same words — were written
+// out at every one of them, which is how a tree ends up with more than one
+// spelling of "unknown thread". Returns null having already answered the
+// request, so a caller's whole prologue is `const at = threadOf(res, data); if
+// (!at) return;`.
+function threadOf(res, data) {
+  const page = pageOf(res, data);
+  if (!page) return null;
+  const thread = store.findThread(page, data.thread_id);
+  if (!thread) { fail(res, 404, 'unknown thread'); return null; }
+  return { page, thread };
 }
 
 function startRun(req, res) {
@@ -2078,7 +2118,7 @@ export function handler(req, res) {
     return ok(res, {
       // the WHOLE stable: 'running' the moment any bridge is up (the plugin's
       // own or a council's), and one queue depth across all of them
-      bridge: NO_AGENTS ? 'disabled' : (anyRunning() ? 'running' : chat.state()),
+      bridge: bridgeState(),
       queue: chat ? totalQueue() : 0,
       // …and, since turns run several at a time, WHOSE. A single number could
       // answer "is the companion idle?" and never "is MY page's turn the one
@@ -2571,7 +2611,7 @@ export function handler(req, res) {
   // Both are null until the bridge has started and spoken — the extension
   // renders that as "unknown yet", never as an empty list.
   if (req.method === 'GET' && url === '/models') {
-    return ok(res, { ...modelsPayload(), bridge: NO_AGENTS ? 'disabled' : (anyRunning() ? 'running' : chat.state()) });
+    return ok(res, { ...modelsPayload(), bridge: bridgeState() });
   }
 
   // --- API keys: written from this machine, never read back --------------
@@ -3254,10 +3294,9 @@ export function handler(req, res) {
   }
   if (req.method === 'POST' && url === '/orphan') {
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
       thread.orphaned = !!data.orphaned;
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
@@ -3281,14 +3320,13 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
-      // a form has no booleans: absent/"" from the reading room's reopen
-      // button means reopen, and only an explicit truthy value resolves
-      const on = data.resolved === undefined ? true
-        : !(data.resolved === false || data.resolved === 'false' || data.resolved === '' || data.resolved === '0');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
+      // a form has no booleans — and here ABSENT means true: the reading
+      // room's reopen button posts an empty field, and only an explicit
+      // truthy value resolves
+      const on = formBool(data.resolved, true);
       const { changed } = store.setResolved(thread, on, me.handle);
       // the placeholder goes in the same write as the flag, so the card is
       // never blank for even one frame; the agents' paragraph replaces it
@@ -3322,13 +3360,11 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
       // a form has no booleans: absent/""/"0"/"false" all mean "not done"
-      const on = data.addressed === undefined ? false
-        : !(data.addressed === false || data.addressed === 'false' || data.addressed === '' || data.addressed === '0');
+      const on = formBool(data.addressed, false);
       store.setAddressed(thread, on, on ? me.handle : '');
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
@@ -3356,10 +3392,9 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/reanchor') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
       const r = store.reanchorThread(thread, {
         quote: data.quote, prefix: data.prefix, suffix: data.suffix,
       });
@@ -3401,10 +3436,9 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/mark') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
       const want = store.cleanMark(data.mark);
       // the REVERSE — back to an ordinary highlight — is not gated on the
       // document: undoing a mark that is already on the record must always be
@@ -3451,10 +3485,9 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
-      if (!page) return;
-      const from = store.findThread(page, data.thread_id);
-      if (!from) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread: from } = at;
       if (store.kindOf(page) !== 'pdf') {
         return fail(res, 409, 'a strikethrough is a PDF markup — this page cannot carry one');
       }
@@ -3669,10 +3702,9 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/question-revise') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
       const ts = String(data.from_msg || '');
       const msg = (thread.msgs || []).find(m => m && String(m.ts || '') === ts);
       const q = (msg && msg.question) || null;
@@ -3886,10 +3918,9 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
-      if (!page) return;
-      const thread = store.findThread(page, data.thread_id);
-      if (!thread) return fail(res, 404, 'unknown thread');
+      const at = threadOf(res, data);
+      if (!at) return;
+      const { page, thread } = at;
       if (!summarizeThread(page, thread)) return fail(res, 409, 'the agents are off on this companion');
       ok(res, { summarizing: true });
     });

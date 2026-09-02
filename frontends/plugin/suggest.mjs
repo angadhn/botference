@@ -45,6 +45,9 @@
 import fs from 'node:fs';
 // The review engine's matcher, imported and not forked. See the header.
 import SpanMatch from '../review/assets/span-match.js';
+// the one spelling of "close the hole a lifted block leaves" — store.mjs owns
+// it, because three other conventions in the reply do exactly the same thing
+import { healSeam } from './store.mjs';
 const { findSpans } = SpanMatch;
 
 // ---- the block a bot writes ----------------------------------------------
@@ -169,6 +172,9 @@ export function liftSuggestions(text) {
   let out = src;
   let dropped = 0;
   for (const m of src.matchAll(FENCE_RE)) {
+    // The splice runs per block and the seam is closed ONCE, at the end
+    // (`healSeam`, store.mjs) — a reply carrying ten cards is one hole after
+    // ten cuts, not ten trims of a text still being cut.
     if (cards.length >= CARDS_MAX) { dropped++; out = out.split(m[0]).join(''); continue; }
     const parsed = parseSuggestBlock(m[1]);
     out = out.split(m[0]).join('');
@@ -178,7 +184,7 @@ export function liftSuggestions(text) {
       : { id: newId(), state: 'unreadable', error: parsed.error });
   }
   if (!cards.length) return { text: src, cards: [], dropped: 0 };
-  return { text: out.replace(/\n{3,}/g, '\n\n').trim(), cards, dropped };
+  return { text: healSeam(out), cards, dropped };
 }
 
 // ---- the apply rule, ported whole ----------------------------------------

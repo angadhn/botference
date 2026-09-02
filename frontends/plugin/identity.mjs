@@ -32,6 +32,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { secretsDir } from '../shared/secrets.mjs';
+// tmp + rename, and the constant-time compare — one copy each, in fsjson.mjs.
+// The 0o600 this file needs (it writes a password) rides as an argument.
+import { writeJson, safeEqual } from './fsjson.mjs';
 
 // ~/.botference, or wherever the tests point us. Defined once for every
 // frontend in ../shared/secrets.mjs and re-exported here, where the companion
@@ -72,22 +75,13 @@ export function ownerPassword() {
   s.owner = pw;
   try {
     fs.mkdirSync(secretsDir(), { recursive: true });
-    const file = paperSecretsFile();
-    const tmp = `${file}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    writeJson(paperSecretsFile(), s, { mode: 0o600 });
   } catch (e) {
     // an unwritable home still yields a working password for this process
     console.error(`plugin: could not persist the shared owner password (${e && e.message})`);
   }
   return pw;
 }
-
-const safeEqual = (a, b) => {
-  const ha = crypto.createHash('sha256').update(String(a)).digest();
-  const hb = crypto.createHash('sha256').update(String(b)).digest();
-  return crypto.timingSafeEqual(ha, hb);
-};
 
 // hub.mjs's deviceSession(), byte for byte: exp.deviceId.mac over DEVICE_SECRET.
 // Returns { id } for an approved browser, else null.

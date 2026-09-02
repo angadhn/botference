@@ -8,6 +8,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { sanitizeHandle } from './hosted.mjs';
+// tmp + rename, once, for the whole tree — the atomic-write rule this file's
+// header states was being held in three separate copies of six lines
+import { readJson, writeJson } from './fsjson.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(PLUGIN, '..', '..');
@@ -152,15 +155,7 @@ export function deleteSessionFile(sid) {
 
 const nowIso = () => new Date().toISOString();
 
-function writeJson(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fs.renameSync(tmp, file);
-}
-function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
-}
+
 // url identity: no hash, no campaign params, no trailing slash. Two tabs on
 // the same article — one arriving from a newsletter link — must land on one
 // page file, or half the annotations vanish.
@@ -1256,6 +1251,42 @@ export const unwrapLine = raw =>
 // `passage:` with nothing after it simply names nothing rather than silently
 // re-aiming the suggestion above it. It still comes off the words: it is
 // machinery either way.
+// ---- lifting machinery off a reply's words --------------------------------
+//
+// Four conventions now share one rule: a bot ends a reply with a line (or a
+// fenced block) that is an OFFER — file this page, strike this passage, make a
+// card, propose this edit — and the offer is machinery, not prose. It becomes a
+// button and it comes off the words, so what the reader reads is what the bot
+// SAID and nothing about how the companion is wired.
+//
+// The splice was written out four times inside one function during four
+// parallel sprints (SPEC: "if a second matcher ever appears beside this one,
+// that is the bug"). Two spellings, both here, both used by every site:
+//
+//   liftLines(text, lines)  — take out whole lines, matched exactly as the
+//                             parser handed them back. Trailing whitespace is
+//                             trimmed, because an offer is always at the end.
+//   liftBlock(text, block)  — take out a fenced block wherever it stands, then
+//                             close the hole it leaves with `healSeam`. A block
+//                             can be mid-reply, which is why this one heals the
+//                             seam and the other does not need to.
+//   healSeam(text)          — that closing, on its own, for the one caller
+//                             (suggest.liftSuggestions) that splices several
+//                             blocks in a loop and heals once at the end.
+//
+// ORDER STILL MATTERS at the call sites: each pass strips its own machinery
+// before the next one parses what is left. These helpers are the splice, not
+// the sequence.
+export const liftLines = (text, lines) => {
+  const drop = new Set((Array.isArray(lines) ? lines : [lines]).filter(l => l != null));
+  return String(text == null ? '' : text)
+    .split(/\r?\n/).filter(l => !drop.has(l)).join('\n').trimEnd();
+};
+export const healSeam = text =>
+  String(text == null ? '' : text).replace(/\n{3,}/g, '\n\n').trim();
+export const liftBlock = (text, block) =>
+  healSeam(String(text == null ? '' : text).split(block).join(''));
+
 // A `page:` line binds forward the same way and to the same `strike:`, and may
 // stand on either side of the `passage:` it travels with — a model writes the
 // two in whichever order reads best to it, and they mean one thing together.

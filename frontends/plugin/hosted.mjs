@@ -28,6 +28,8 @@ import { deviceSession, ownerPassword as sharedOwnerPassword } from './identity.
 // second copy of a security test is a second thing to get wrong. Re-exported
 // so every call site here (and in server.mjs) reads exactly as it did.
 import { isLocalDirect, PROXY_HEADERS } from '../shared/local.mjs';
+// the atomic write and the constant-time compare, one copy each for the tree
+import { readJson, writeJson, safeEqual } from './fsjson.mjs';
 export { isLocalDirect, PROXY_HEADERS };
 
 export const AUTH_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days, renewed as you go
@@ -49,20 +51,6 @@ export const CORS_HEADERS = {
 export const sanitizeHandle = h => String(h || '').toLowerCase()
   .replace(/[^\w-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 
-const safeEqual = (a, b) => {
-  const ha = crypto.createHash('sha256').update(String(a)).digest();
-  const hb = crypto.createHash('sha256').update(String(b)).digest();
-  return crypto.timingSafeEqual(ha, hb);
-};
-const readJson = (f, fallback) => {
-  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; }
-};
-function writeJson(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fs.renameSync(tmp, file);
-}
 const escHtml = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export { escHtml };
