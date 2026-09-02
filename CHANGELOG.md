@@ -2,6 +2,43 @@
 
 ## 2026-09-02
 
+- **Comments on a shared paper now show up in Discuss without you setting
+  anything up.** The idea was already there: when you read one of your papers
+  with the botference extension in the browser, Discuss handles the commenting
+  and shows you every comment on that page — including the ones a collaborator
+  typed into the page's own margin from a phone, with no extension at all. When
+  the extension isn't there, the page's own commenting works exactly as it
+  always has. One set of comments either way.
+
+  In practice that only worked on a paper where somebody had gone in and added
+  a few lines to a config file by hand. On the papers nobody had, the drawer
+  said "no comments yet" next to a margin with comments plainly sitting in it.
+  Three things were wrong, and all three are fixed:
+
+  - **You shouldn't have to edit anything.** The review portal is the one thing
+    that knows where Discuss is running and what web address each paper is
+    published at, so it now just tells each paper both, as it starts it. It
+    does this without writing anything into your paper's folder, so your repo
+    stays exactly as you left it — and a copy of that paper on a laptop with no
+    Discuss running still behaves like it always did, entirely on its own.
+  - **The comments already there had to be sent over.** A paper only sent
+    comments across at the moment somebody typed a new one. So an older
+    conversation — every comment already written, nobody currently typing —
+    sent nothing, forever. Papers now hand over everything they already hold as
+    soon as they start.
+  - **Some papers were running old software.** Every paper folder keeps its own
+    copy of the review engine from the day it was set up. One of them was old
+    enough to predate this feature existing. The portal now checks each paper's
+    copy against the current one and refreshes it before starting the paper —
+    which is also why some papers looked a little different from the others.
+    If a refresh fails, it says so loudly and gives you the one command to run,
+    and the paper still comes up.
+
+  Three of your papers are on older engine copies right now: AI-2040-Plan
+  (6 files behind, including the stylesheet — this is the one that looked
+  different), Adriana-Sage-Draft (3), and the Acta collision paper (2). Turning
+  them off and on again in the portal brings each up to date.
+
 - **Three bugs in the web annotator, all of them the same mistake.** Each came
   from a rule that had been written down in two places, and then fixed or
   extended in only one of them.

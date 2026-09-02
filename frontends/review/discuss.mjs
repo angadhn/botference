@@ -35,6 +35,21 @@
 // always had, working exactly as it always has. Unification is what happens
 // when the companion is there to unify with, and never a dependency on it.
 //
+// …OR THE ENVIRONMENT SAYS SO. The block in the file is one of two ways to be
+// told; the other is `REVIEW_DISCUSS_COMPANION` / `REVIEW_DISCUSS_BASE` /
+// `REVIEW_DISCUSS_POLL_MS` in the process environment. The review hub sets
+// those on every paper it starts, because it is the one thing that KNOWS both
+// halves: the companion is running on this machine, and this paper's public
+// address is the one the hub routes to it. Doing it by env rather than by
+// writing into somebody's `review.config.json` keeps their repo exactly as
+// they left it — the unification is a property of how the paper is being
+// served, not a line the owner has to carry in git.
+//
+// Precedence is per key: the config block wins where it speaks, the
+// environment fills in where it does not, and if neither names a companion
+// nothing here runs. A clone started by hand inherits neither, so the
+// standalone guarantee above is untouched.
+//
 // WHAT IS DELIBERATELY NOT DONE HERE:
 //   · nothing is ever DELETED in the companion. A comment withdrawn on the
 //     review page leaves its Discuss thread standing, because that thread may
@@ -169,10 +184,30 @@ export function mergeThreads(threads, extra) {
   return out;
 }
 
-export function createDiscuss({ reviewDir, cfg, onChange = () => { }, fetchImpl = globalThis.fetch }) {
-  const block = (cfg && cfg.discuss) || null;
-  const companion = block && typeof block.companion === 'string'
-    ? block.companion.replace(/\/+$/, '') : '';
+// The two ways of being told, resolved into one block. Config wins per key,
+// env fills in, and a companion origin that is not an http(s) URL is refused
+// rather than half-used — a typo in an env var must not turn into a fetch at
+// something that is not a companion.
+const originOf = s => {
+  const v = String(s || '').trim().replace(/\/+$/, '');
+  if (!v) return '';
+  try {
+    const u = new URL(v);
+    return /^https?:$/.test(u.protocol) ? `${u.protocol}//${u.host}` : '';
+  } catch { return ''; }
+};
+export function resolveDiscuss(cfg, env = process.env) {
+  const block = (cfg && typeof cfg.discuss === 'object' && cfg.discuss) || null;
+  const companion = originOf((block && block.companion) || env.REVIEW_DISCUSS_COMPANION);
+  if (!companion) return null;
+  const base = String((block && block.base) || env.REVIEW_DISCUSS_BASE || '').trim().replace(/\/+$/, '');
+  const poll = Number((block && block.poll_ms) || env.REVIEW_DISCUSS_POLL_MS) || 0;
+  return { companion, base, poll_ms: poll || undefined, from: block && block.companion ? 'config' : 'env' };
+}
+
+export function createDiscuss({ reviewDir, cfg, onChange = () => { }, fetchImpl = globalThis.fetch, env = process.env }) {
+  const block = resolveDiscuss(cfg, env);
+  const companion = block ? block.companion : '';
   const enabled = !!companion;
   const stateFile = path.join(reviewDir, 'state', 'discuss-mirror.json');
   // { base, sections: {slug: {digest, threads:{id: thread_id}}} } — the digest
@@ -211,7 +246,7 @@ export function createDiscuss({ reviewDir, cfg, onChange = () => { }, fetchImpl 
 
   // One pass over every section that has comments. Returns what it did, which
   // is what the tests read; the server ignores it.
-  async function mirror(users, { base, summon = false } = {}) {
+  async function mirror(users, { base, summon = false, titles = null } = {}) {
     if (!enabled) return null;
     const b = (block.base || base || mem.base || '').replace(/\/+$/, '');
     if (!b) return null;
@@ -224,7 +259,11 @@ export function createDiscuss({ reviewDir, cfg, onChange = () => { }, fetchImpl 
       if (prev && prev.digest === digest) continue;
       const r = await post('/review-comments', {
         url: sectionUrl(b, section),
-        title: section,
+        // the name this page goes into the owner's pages library under. The
+        // slug is the fallback, not the intention: a library listing
+        // "01-introduction" beside "02-method" tells nobody which paper they
+        // belong to.
+        title: (titles && titles[section]) || section,
         summon,
         comments,
       });
@@ -261,6 +300,11 @@ export function createDiscuss({ reviewDir, cfg, onChange = () => { }, fetchImpl 
   return {
     enabled,
     companion,
+    // where the "told by" came from, and the address this paper is pinned to.
+    // A pinned base is what makes a projection possible with no request in
+    // hand — which is the whole reason boot-time back-fill can work.
+    from: block ? block.from : '',
+    base: block ? block.base : '',
     mirror,
     pull,
     replies: () => cache,

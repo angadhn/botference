@@ -1311,3 +1311,211 @@ test('unified comments: collect, read-back and merge are pure and say what they 
   assert.equal(merged.c.length, 1);
   assert.deepEqual(D.mergeThreads({ a: [1] }, {}), { a: [1] });
 });
+
+// The block in the file is one of two ways to be told where the companion is;
+// the other is the environment, which is how the review hub turns unification
+// on for every paper it starts without editing anybody's repo. And the
+// comments that were ALREADY THERE have to travel: projection used to happen
+// only on the way out of POST /state, so a paper whose conversation predated
+// all this projected nothing and the owner's drawer said "no comments yet"
+// beside a margin full of them.
+
+const writeUserFile = (dir, handle, decisions) => {
+  const f = path.join(dir, 'review', 'state', 'users', `${handle}.json`);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ handle, updated: new Date().toISOString(), decisions }, null, 1));
+};
+
+test('unified comments: the environment can say where the companion is, and the config still wins', async t => {
+  const dir = scaffold('discuss-env', SINGLE);
+  const companion = await fakeCompanion();
+  const other = await fakeCompanion();
+  t.after(async () => {
+    await companion.close(); await other.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.equal(cfg.discuss, undefined, 'no block in the file — the environment is the only teller');
+
+  const D = await import(path.join(ENGINE, 'discuss.mjs'));
+  // env alone turns it on
+  const fromEnv = D.resolveDiscuss({}, {
+    REVIEW_DISCUSS_COMPANION: 'http://127.0.0.1:4189/', REVIEW_DISCUSS_BASE: 'https://acta.example/',
+  });
+  assert.equal(fromEnv.companion, 'http://127.0.0.1:4189', 'trailing slash trimmed to a bare origin');
+  assert.equal(fromEnv.base, 'https://acta.example');
+  assert.equal(fromEnv.from, 'env');
+  // the config wins per key, the environment fills in the rest
+  const merged = D.resolveDiscuss(
+    { discuss: { companion: 'http://127.0.0.1:4200' } },
+    { REVIEW_DISCUSS_COMPANION: 'http://127.0.0.1:4189', REVIEW_DISCUSS_BASE: 'https://env.example', REVIEW_DISCUSS_POLL_MS: '250' });
+  assert.equal(merged.companion, 'http://127.0.0.1:4200', 'the block in the file outranks the environment');
+  assert.equal(merged.base, 'https://env.example', 'and the environment fills in what the block does not say');
+  assert.equal(merged.poll_ms, 250);
+  assert.equal(merged.from, 'config');
+  // neither = the silo, and a companion that is not an http(s) origin is refused
+  assert.equal(D.resolveDiscuss({}, {}), null);
+  assert.equal(D.resolveDiscuss({}, { REVIEW_DISCUSS_COMPANION: 'not a url' }), null);
+  assert.equal(D.resolveDiscuss({}, { REVIEW_DISCUSS_COMPANION: 'file:///etc/passwd' }), null);
+
+  // …and end to end: a server told only by the environment projects a comment
+  await withServer(dir, async base => {
+    await fetch(base + '/state', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decisions: { 'user-01-introduction-blk-3-9': {
+        status: 'user-comment', section: '01-introduction', anchor: '01-introduction-blk-3',
+        quote: 'Opening text', comment: 'told by the environment' } } }),
+    });
+    const sent = await waitUntil(() => companion.posts.length ? companion.posts : null,
+      'the environment-configured projection');
+    assert.match(sent[0].url, /^https:\/\/paper\.example\/01-introduction\.html$/,
+      'and it is filed under the public address the hub pinned, not the loopback one');
+    assert.equal(other.posts.length, 0);
+  }, { REVIEW_DISCUSS_COMPANION: companion.base, REVIEW_DISCUSS_BASE: 'https://paper.example/' });
+});
+
+test('unified comments: the comments already on the page are projected at boot, with nobody typing', async t => {
+  const dir = scaffold('discuss-backfill', SINGLE);
+  const companion = await fakeCompanion();
+  t.after(async () => { await companion.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  runDetect(dir);
+  installEngine(dir);
+  runBuild(dir);
+  // a conversation that predates the unification entirely: two comments
+  // sitting in a user file, and no browser about to write anything
+  writeUserFile(dir, 'mira', {
+    'user-01-introduction-blk-3-1': { status: 'user-comment', section: '01-introduction',
+      anchor: '01-introduction-blk-3', quote: 'Opening text',
+      comment: 'This was here before anyone unified anything.', ts: '2026-08-01T09:00:00.000Z' },
+    'user-02-system-modeling-blk-1-1': { status: 'user-comment', section: '02-system-modeling',
+      anchor: '02-system-modeling-blk-1', quote: 'Modeling text',
+      comment: 'And so was this.', ts: '2026-08-01T09:05:00.000Z' },
+  });
+
+  await withServer(dir, async () => {
+    const posts = await waitUntil(() => companion.posts.length >= 2 ? companion.posts : null,
+      'both existing pages to be back-filled at boot');
+    const urls = posts.map(p => p.url).sort();
+    assert.match(urls[0], /\/01-introduction\.html$/);
+    assert.match(urls[1], /\/02-system-modeling\.html$/);
+    const first = posts.find(p => /01-introduction/.test(p.url));
+    assert.equal(first.comments[0].author, 'mira', 'authorship is the file it lives in');
+    assert.equal(first.comments[0].ts, '2026-08-01T09:00:00.000Z',
+      'and the moment it was actually written, not the moment the companion first heard of it');
+    assert.match(first.title, /Introduction — Single File Test Paper/,
+      'and it goes into the pages library under a name, not a slug');
+  }, { REVIEW_DISCUSS_COMPANION: companion.base, REVIEW_DISCUSS_BASE: 'https://paper.example' });
+
+  // a restart re-posts nothing: the digest on disk remembers, and the
+  // companion files by origin id anyway
+  const after = companion.posts.length;
+  await withServer(dir, async () => {
+    await new Promise(r => setTimeout(r, 600));
+    assert.equal(companion.posts.length, after, 'nothing new to say, so nothing was said');
+  }, { REVIEW_DISCUSS_COMPANION: companion.base, REVIEW_DISCUSS_BASE: 'https://paper.example' });
+
+  // …and with no base to file under there is nothing to do at boot, which is
+  // exactly why the hub hands one over
+  const solo = await fakeCompanion();
+  t.after(async () => { await solo.close(); });
+  await withServer(dir, async () => {
+    await new Promise(r => setTimeout(r, 600));
+    assert.equal(solo.posts.length, 0, 'no address, no boot projection — the first write does it instead');
+  }, { REVIEW_DISCUSS_COMPANION: solo.base });
+});
+
+test('one theme: a markdown paper and a LaTeX paper build the same page skeleton', async t => {
+  const tex = scaffold('theme-tex', SINGLE);
+  const md = scaffold('theme-md', {
+    'plan.md': '# A Plan\n\n## First Part\n\nProse in the first part.\n\n## Second Part\n\nProse in the second.\n',
+  });
+  t.after(() => { for (const d of [tex, md]) fs.rmSync(d, { recursive: true, force: true }); });
+  for (const d of [tex, md]) { runDetect(d); installEngine(d); runBuild(d); }
+  assert.equal(JSON.parse(fs.readFileSync(path.join(md, 'review', 'review.config.json'), 'utf8')).format,
+    'markdown', 'the fixture really is a markdown-source review');
+
+  // the shell every page is poured into: same nav, same margin, same assets,
+  // same body hook the extension detects a review surface by
+  const skeleton = html => [
+    /<link rel="stylesheet" href="assets\/style\.css">/,
+    /<body data-slug="[^"]+">/,
+    /<nav class="toc"><h2>Sections<\/h2>/,
+    /<button id="export-btn">Export decisions<\/button>/,
+    /<aside id="margin"><\/aside>/,
+    /<script src="assets\/span-match\.js"><\/script>/,
+    /<script src="assets\/review\.js"><\/script>/,
+  ].map(re => re.test(html));
+  const texPage = readSite(tex, htmlPages(tex)[0]);
+  const mdPage = readSite(md, htmlPages(md)[0]);
+  assert.deepEqual(skeleton(mdPage), skeleton(texPage), 'markdown gets the LaTeX shell, exactly');
+  assert.ok(skeleton(mdPage).every(Boolean), 'and every part of it is actually there');
+  // and the same stylesheet bytes, which is where the theme (serif body,
+  // light/dark/system switcher, inline-changes toggle) actually lives
+  const css = d => fs.readFileSync(path.join(d, 'review', 'site', 'assets', 'style.css'));
+  assert.deepEqual(css(md), css(tex), 'one stylesheet, both source kinds');
+  assert.deepEqual(fs.readdirSync(path.join(md, 'review', 'site', 'assets')).sort(),
+    fs.readdirSync(path.join(tex, 'review', 'site', 'assets')).sort());
+});
+
+// `--upgrade` refreshes the engine and then goes on to build and SERVE, which
+// is fine on a laptop and useless to the review hub: the paper it wants to
+// refresh is the one already listening on that port, so the upgrade died of
+// EADDRINUSE and the paper stayed old. `--upgrade-only` is the pure refresh.
+const LAUNCHER = path.join(HOME, 'botference');
+
+test('launcher: --upgrade-only refreshes, rebuilds and exits — safe on a paper that is already up', async t => {
+  const dir = scaffold('upgrade-only', SINGLE);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const setup = spawnSync(LAUNCHER, ['review', dir, '--setup'], { encoding: 'utf8' });
+  assert.equal(setup.status, 0, `--setup failed:\n${setup.stdout}\n${setup.stderr}`);
+
+  // pin it to a port of our own and OCCUPY it — this is the paper "already
+  // running" that the hub has to be able to refresh
+  const cfgFile = path.join(dir, 'review', 'review.config.json');
+  const port = await freePort();
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  cfg.port = port;
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  const squatter = net.createServer();
+  await new Promise(r => squatter.listen(port, '127.0.0.1', r));
+  t.after(() => new Promise(r => squatter.close(r)));
+
+  // age the copy the way a real one ages: a file that did not exist yet, and
+  // a stylesheet from before the theme moved
+  fs.rmSync(path.join(dir, 'review', 'discuss.mjs'));
+  fs.writeFileSync(path.join(dir, 'review', 'assets', 'style.css'), '/* last season */\n');
+  const stamp = path.join(dir, 'review', 'site', 'index.html');
+  const before = fs.statSync(stamp).mtimeMs;
+  await new Promise(r => setTimeout(r, 1100));   // mtime granularity
+
+  const up = spawnSync(LAUNCHER, ['review', dir, '--upgrade-only'], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(up.status, 0, `--upgrade-only failed:\n${up.stdout}\n${up.stderr}`);
+  assert.match(up.stdout, /not serving: --upgrade-only/);
+  assert.doesNotMatch(up.stdout + up.stderr, /EADDRINUSE|address already in use/i,
+    'it must not have gone looking for the port the paper is on');
+
+  assert.equal(fs.readFileSync(path.join(dir, 'review', 'discuss.mjs'), 'utf8'),
+    fs.readFileSync(path.join(ENGINE, 'discuss.mjs'), 'utf8'), 'the missing engine file came back');
+  assert.equal(fs.readFileSync(path.join(dir, 'review', 'assets', 'style.css'), 'utf8'),
+    fs.readFileSync(path.join(ENGINE, 'assets', 'style.css'), 'utf8'), 'and the stylesheet is the current one');
+  // …and the site was rebuilt with them, because new assets nobody rebuilds
+  // with are a page that still looks old
+  assert.ok(fs.statSync(stamp).mtimeMs > before, 'site/ was not rebuilt after the refresh');
+  assert.equal(fs.readFileSync(path.join(dir, 'review', 'site', 'assets', 'style.css'), 'utf8'),
+    fs.readFileSync(path.join(ENGINE, 'assets', 'style.css'), 'utf8'), 'the served copy too');
+  // the per-project files are never in the blast radius
+  assert.equal(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).port, port);
+});
+
+test('launcher: --upgrade-only on a directory that was never set up says so, and scaffolds nothing', async t => {
+  const dir = scaffold('upgrade-only-bare', { 'notes.md': '# Nothing here yet\n' });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const r = spawnSync(LAUNCHER, ['review', dir, '--upgrade-only'], { encoding: 'utf8' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /nothing to upgrade/);
+  assert.match(r.stderr, /--setup/);
+  assert.ok(!fs.existsSync(path.join(dir, 'review')), 'and it did not quietly set one up');
+});

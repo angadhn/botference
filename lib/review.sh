@@ -54,7 +54,13 @@ Options:
   --upgrade    Refresh engine files (build/server/chat/apply/discuss/
                submit/init-config/ws .mjs, bridge-system-prompt.md, SCHEMA.md,
                assets/*) from the framework copy — never touches
-               review.config.json, state/, suggestions.json, or site/
+               review.config.json, state/, suggestions.json, or site/ — and
+               then goes on to build and serve as usual
+  --upgrade-only
+               Refresh those same engine files, rebuild the site so the new
+               assets are actually on the page, and exit. Nothing is served,
+               so it is safe to run against a paper that is already running
+               (which is how the review hub keeps hosted papers current)
   --help, -h   Show this help
 HELP
 }
@@ -89,7 +95,7 @@ review_ensure_gitignore() {
 
 run_review_mode() {
   local dir="" hosted=false share=false service=false agents="auto" upgrade=false port="" arg
-  local setup_only=false service_name=""
+  local setup_only=false service_name="" upgrade_only=false
   # args minus the service-only flags, for the --share --service re-exec below
   local passthrough=() _pt _skip_next=false
   for _pt in "$@"; do
@@ -122,6 +128,7 @@ run_review_mode() {
       --no-agents|--no-chat) agents="off" ;;
       --agents|--chat) agents="on" ;;
       --upgrade) upgrade=true ;;
+      --upgrade-only) upgrade=true; upgrade_only=true ;;
       --port=*) port="${arg#--port=}" ;;
       --port)
         if [ "$#" -eq 0 ]; then
@@ -157,6 +164,10 @@ run_review_mode() {
   fi
   if [ -n "$service_name" ] && ! [[ "$service_name" =~ ^[a-z0-9-]{1,32}$ ]]; then
     echo "Error: invalid --service-name '$service_name' — use [a-z0-9-], 1–32 chars." >&2
+    return 2
+  fi
+  if $upgrade_only && { $share || $service || $setup_only; }; then
+    echo "Error: --upgrade-only refreshes the engine and exits; it cannot be combined with --setup/--share/--service." >&2
     return 2
   fi
   if $setup_only && { $share || $service; }; then
@@ -229,6 +240,13 @@ run_review_mode() {
 
   local review_dir="$dir/review"
   local first_time=false
+  # --upgrade-only refreshes a paper that already exists. Scaffolding one from
+  # nothing is --setup's job, and saying so is better than quietly doing it.
+  if $upgrade_only && [ ! -d "$review_dir" ]; then
+    echo "Error: no review/ in '$dir' — nothing to upgrade." >&2
+    echo "  Set it up first:  botference review '$dir' --setup" >&2
+    return 1
+  fi
   if [ ! -d "$review_dir" ]; then
     first_time=true
     echo "  Installing review engine → $review_dir"
@@ -256,8 +274,18 @@ run_review_mode() {
       \( -name '*.tex' -o -name '*.md' -o -name '*.bib' \) -newer "$stamp" -print 2>/dev/null | head -1)" ]; then
     need_build=true
   fi
+  if $upgrade; then need_build=true; fi   # new assets are only on the page once it is rebuilt
   if $need_build; then
     (cd "$dir" && node review/build.mjs) || return 1
+  fi
+
+  # --upgrade-only stops here, on purpose: refreshing the engine of a paper
+  # that is ALREADY SERVING must not try to serve it a second time (that is
+  # an EADDRINUSE and a failed upgrade). The running server picks the new
+  # site/ up on its own — it watches those files.
+  if $upgrade_only; then
+    echo "  Engine refreshed and site rebuilt in $review_dir (not serving: --upgrade-only)."
+    return 0
   fi
 
   if $first_time; then

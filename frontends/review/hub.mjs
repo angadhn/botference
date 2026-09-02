@@ -503,6 +503,33 @@ function run(bin, args, opts = {}) {
     }));
   });
 }
+// ── the engine each paper is carrying ───────────────────────────────
+// A paper folder owns a COPY of the review engine, taken on the day it was
+// set up. That copy then stays exactly as old as the day it was taken, while
+// the framework's moves on — which is how a hosted paper ends up with no
+// owner login, no `discuss.mjs`, and a page that looks nothing like the one
+// beside it. The hub is the only thing that sees all of them at once, so
+// keeping them current is its job, not the owner's memory.
+//
+// Cheap and exact: a byte comparison of the files the launcher owns (the same
+// list as lib/review.sh's REVIEW_ENGINE_FILES, plus assets/*). Mtimes lie
+// after a copy; hashing a few hundred kilobytes on a start does not.
+const ENGINE_FILES = ['build.mjs', 'server.mjs', 'chat.mjs', 'apply.mjs', 'discuss.mjs',
+  'submit.mjs', 'init-config.mjs', 'ws.mjs', 'bridge-system-prompt.md', 'SCHEMA.md'];
+const sha = f => { try { return crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch { return ''; } };
+// the engine files this paper is missing or carrying an older copy of
+export function staleEngineFiles(dir, engineDir = HERE) {
+  const rd = path.join(dir, 'review');
+  if (!fs.existsSync(rd)) return [];   // not set up: scaffolding is a different step
+  const out = [];
+  const check = rel => { if (sha(path.join(engineDir, rel)) !== sha(path.join(rd, rel))) out.push(rel); };
+  for (const f of ENGINE_FILES) check(f);
+  let assets = [];
+  try { assets = fs.readdirSync(path.join(engineDir, 'assets')); } catch { }
+  for (const a of assets) check(path.join('assets', a));
+  return out;
+}
+
 const shq = s => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
 const cmdLine = (bin, args) => [bin, ...args].map(shq).join(' ');
 const serviceName = slug => `review-${slug}`.replace(/[^a-z0-9-]/g, '-').slice(0, 32);
@@ -532,6 +559,73 @@ function hostFor(cfg, slug) {
   const labels = String(cfg.host || '').toLowerCase().split('.').filter(Boolean);
   const base = cfg.domain || (labels.length >= 3 ? labels.slice(1).join('.') : labels.join('.'));
   return base ? `${slug}.${base}` : '';
+}
+
+// ── the Discuss companion, if there is one ──────────────────────────
+// The rule the owner actually wants: on a review page, if the botference
+// extension is in the browser then Discuss owns commenting AND shows the
+// page's existing comments; without it the page's own margin works as it
+// always has. One record either way. That only holds if the paper's server
+// knows where the companion is and what address the reader has in their bar —
+// and the hub is the one process that knows BOTH: the companion runs beside
+// it on this machine, and the hub itself assigned the paper its hostname.
+//
+// So papers the hub starts get it by default, handed over as environment
+// (REVIEW_DISCUSS_COMPANION / REVIEW_DISCUSS_BASE) rather than written into
+// anybody's review.config.json: the owner's repo stays as they left it, and a
+// clone of it started by hand on a laptop with no companion inherits nothing
+// and runs no discuss code at all.
+//
+// Turn it off for the whole machine with `"discuss": false` in the hub config
+// (or REVIEW_HUB_DISCUSS=off); point it somewhere else with
+// `"discuss": {"companion": "http://127.0.0.1:4200"}`.
+const DEFAULT_COMPANION = 'http://127.0.0.1:4189';
+// the port the installed companion was actually asked to run on, if it was
+// asked for one — lib/plugin.sh writes it into the autostart job
+function installedCompanionPort() {
+  try {
+    const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.botference.plugin-web.plist');
+    const m = fs.readFileSync(plist, 'utf8').match(/<key>PORT<\/key>\s*<string>(\d{2,5})<\/string>/);
+    return m ? Number(m[1]) : 0;
+  } catch { return 0; }
+}
+function companionCandidates(cfg) {
+  if (String(process.env.REVIEW_HUB_DISCUSS || '').toLowerCase() === 'off') return [];
+  if (cfg && cfg.discuss === false) return [];
+  const named = process.env.REVIEW_HUB_DISCUSS_COMPANION
+    || (cfg && cfg.discuss && cfg.discuss.companion) || '';
+  if (named) return [String(named).replace(/\/+$/, '')];
+  const port = installedCompanionPort();
+  return [...(port ? [`http://127.0.0.1:${port}`] : []), DEFAULT_COMPANION]
+    .filter((v, i, a) => a.indexOf(v) === i);
+}
+// is a companion answering there right now? A dead address handed to a paper
+// would be a five-second timer knocking on nothing forever, so the liveness
+// check is what makes "default on" safe rather than merely convenient.
+function companionLive(origin) {
+  return new Promise(resolve => {
+    let u;
+    try { u = new URL(`${origin}/health`); } catch { resolve(false); return; }
+    const r = http.get({ host: u.hostname, port: u.port, path: u.pathname, timeout: 1500 },
+      res => { res.resume(); resolve(res.statusCode > 0 && res.statusCode < 500); });
+    r.on('timeout', () => r.destroy());
+    r.on('error', () => resolve(false));
+  });
+}
+async function discussEnv(cfg, host) {
+  for (const origin of companionCandidates(cfg)) {
+    if (await companionLive(origin)) {
+      return {
+        REVIEW_DISCUSS_COMPANION: origin,
+        // the address the reader has in their bar, which is the key the
+        // extension files that page under. Without it the two surfaces are
+        // two records again — and it is also what lets the paper back-fill
+        // its existing comments at boot, with no request to derive it from.
+        ...(host ? { REVIEW_DISCUSS_BASE: `https://${host}` } : {}),
+      };
+    }
+  }
+  return {};
 }
 
 // in-flight enable/disable jobs, surfaced on the portal and in status.json
@@ -586,18 +680,41 @@ async function enableSteps(cfg, entry, j) {
     }
   }
 
+  // 3b. bring the paper's engine copy up to date BEFORE starting it. An old
+  // copy is not a cosmetic problem: it is the paper with no owner login, no
+  // unified comments and last season's stylesheet. `--upgrade-only` refreshes
+  // and rebuilds without serving, so this is safe on a paper that is already
+  // up (plain `--upgrade` would go on to bind the port and fail).
+  const stale = staleEngineFiles(dir);
+  if (stale.length) {
+    j.steps.push('upgrade');
+    j.stale = stale.length;
+    const upArgs = ['review', dir, '--upgrade-only'];
+    const u = await run(BOTFERENCE_BIN, upArgs, { cwd: dir, env: { BOTFERENCE_PROJECT_ROOT: dir } });
+    if (!u.ok || staleEngineFiles(dir).length) {
+      // loud, and not fatal: a paper on an old engine still serves, and the
+      // owner gets the one command that fixes it.
+      const line = `engine out of date (${stale.length} file(s)) and the refresh did not take — run this yourself: ${cmdLine(BOTFERENCE_BIN, upArgs)}`;
+      j.notes.push(line);
+      console.error(`review hub: ${entry.slug}: ${line}`);
+    }
+  }
+
   // 4. start it hosted, as a managed service, with its own generated guest
   // password and the hub's owner password. New papers get NO collaborators:
   // nobody but the owner can see or reach them until the owner says so.
   j.steps.push('start');
   const args = ['review', dir, '--hosted', '--service', '--port', String(port),
     '--service-name', serviceName(entry.slug)];
+  const discuss = await discussEnv(cfg, host);
+  if (discuss.REVIEW_DISCUSS_COMPANION) j.steps.push('discuss');
   const r = await run(BOTFERENCE_BIN, args, {
     cwd: dir,
     env: {
       REVIEW_PASSWORD: guestPassword(entry.slug),
       REVIEW_OWNER_PASSWORD: ownerPassword(),
       BOTFERENCE_PROJECT_ROOT: dir,
+      ...discuss,
     },
   });
   const already = /already running/i.test(r.stdout + r.stderr);
@@ -1072,10 +1189,16 @@ const server = http.createServer((req, res) => {
 // SSE streams ride through the proxy: never time a request out hub-side
 server.requestTimeout = 0;
 server.headersTimeout = 60000;
-server.listen(PORT, '127.0.0.1', () => {
-  const cfg = config();
-  const found = discover(cfg).length - cfg.papers.length;
-  console.log(`review hub on http://localhost:${PORT}/ — ${cfg.papers.length} paper(s)` +
-    (found > 0 ? `, ${found} more discovered` : '') +
-    (cfg._error ? `  [config error: ${cfg._error}]` : ''));
-});
+// REVIEW_HUB_NO_LISTEN=1 imports this module without opening the port, the
+// same convention server.mjs uses — it is how the pure parts (which paper is
+// on a stale engine, where the companion is) get tested without a hub running.
+if (process.env.REVIEW_HUB_NO_LISTEN !== '1') {
+  server.listen(PORT, '127.0.0.1', () => {
+    const cfg = config();
+    const found = discover(cfg).length - cfg.papers.length;
+    console.log(`review hub on http://localhost:${PORT}/ — ${cfg.papers.length} paper(s)` +
+      (found > 0 ? `, ${found} more discovered` : '') +
+      (cfg._error ? `  [config error: ${cfg._error}]` : ''));
+  });
+}
+export { companionCandidates, companionLive, discussEnv };

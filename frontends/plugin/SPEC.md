@@ -8315,6 +8315,59 @@ anchoring accumulator, the send-hold, the pool's lane-binding invariant,
 `envelope()`, and the `delete`-vs-`false` record semantics — was honoured in
 full.
 
+## Amendment (2026-09-02, shipped): the unified store stops being a thing you remember to switch on
+
+"One store, and the commenters in it" (2026-08-25) got the direction right and
+the default wrong. It shipped **opt-in**: a `discuss` block hand-added to a
+paper's `review.config.json`. So the rule the owner actually wanted —
+
+> on a review page, if the plugin is in the browser Discuss owns commenting
+> **and shows that page's existing comments**; if it is not, the page's own
+> commenting works as before; one record either way
+
+— was true of exactly the papers somebody had remembered to edit. On a live
+paper that nobody had, the drawer said *no comments yet* beside a margin
+holding two threads. Three things were wrong under that, and all three are
+fixed.
+
+**One: nobody should have to edit a repo to get it.** The review hub is the one
+process that knows both halves — the companion runs beside it on this machine,
+and the hub itself assigned the paper its hostname — so every paper it starts
+or wakes is now handed `REVIEW_DISCUSS_COMPANION` (discovered, then probed for
+a live `/health`; nothing answering means nothing handed over) and
+`REVIEW_DISCUSS_BASE` = the paper's own public address. **Environment, never a
+write into the owner's `review.config.json`**: their repo stays as they left
+it, and a clone of it on a laptop with no companion inherits nothing and runs
+no discuss code at all. The config block still wins where it speaks. Off for
+the machine: `"discuss": false` in the hub config, or `REVIEW_HUB_DISCUSS=off`.
+
+**Two: the comments already there have to travel.** Projection only ever
+happened on the way out of `POST /state`, so a conversation that predated the
+unification projected nothing until somebody typed. The paper now projects
+every existing comment once at boot (and again on the first reader, in case the
+companion was asleep), idempotent on the same `origin` ids. This is also why
+`base` had to become settable: at boot there is no request to derive an address
+from, and without an address there is no page key to file under.
+
+**Three: an old engine copy cannot serve a new rule.** Each paper folder
+carries its own copy of the review engine, taken the day it was set up, and one
+of them predated `discuss.mjs` entirely. The hub now compares that copy against
+the framework's before starting a paper and refreshes it first — through a new
+`botference review <dir> --upgrade-only`, which refreshes, rebuilds and exits
+(plain `--upgrade` goes on to serve, which on a paper that is already up is an
+EADDRINUSE and a failed upgrade). A refresh that fails is loud and not fatal:
+the paper serves, and the owner gets the exact command.
+
+**What did not change.** The suppression rule, the marker, the handback switch
+and its narrow stand-down are all exactly as "one margin, and it is Discuss's"
+describes them, and `POST /review-comments` is untouched. Verified end to end
+against a real companion: the drawer shows a pre-existing margin comment, a
+Discuss reply lands back in the margin, and a comment typed by a **plugin-less**
+reader reaches the drawer while staying in the page's own file. The handback
+strands nothing in either direction. Still one-way, still inherent: a comment
+the owner writes *in Discuss* does not appear in a plugin-less collaborator's
+margin.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

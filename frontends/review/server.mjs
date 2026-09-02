@@ -378,7 +378,57 @@ const discuss = createDiscuss({
   // without a reload, and `state` is the event the page already redraws on
   onChange: () => fire('state'),
 });
-if (discuss.enabled) console.log(`unified comments: mirroring the margin into ${discuss.companion}`);
+if (discuss.enabled) {
+  console.log(`unified comments: mirroring the margin into ${discuss.companion}`
+    + ` (${discuss.from === 'env' ? 'from the environment' : 'from review.config.json'}`
+    + `${discuss.base ? `, as ${discuss.base}` : ''})`);
+}
+// The comments that were already here. Projection used to happen only on the
+// way out of `POST /state`, so a paper whose conversation predated the
+// unification — every comment already written, nobody typing — projected
+// NOTHING, and the owner's drawer said "no comments yet" beside a margin full
+// of them. This is the back-fill: one pass over every existing user file,
+// idempotent because the companion files by `origin` id and this side keeps a
+// digest, so a restart with nothing new re-posts nothing.
+//
+// It needs a base, and there is no request to take one from at boot — which
+// is exactly why `base` has to be able to come from the config or the
+// environment. Without one it is a no-op and the first `POST /state` (which
+// does have a request) does the work instead.
+// slug → the name that page should carry into the companion's pages library.
+// The build already wrote them (`BUILD_META.sections` in site/suggestions.js);
+// this reads them back rather than asking the owner to say it twice.
+function sectionTitles() {
+  try {
+    const js = fs.readFileSync(path.join(REVIEW, 'site', 'suggestions.js'), 'utf8');
+    const m = js.match(/window\.BUILD_META=(\{[\s\S]*?\});?\s*$/);
+    const meta = m ? JSON.parse(m[1]) : null;
+    // the paper's own name rides along, because a library listing
+    // "Introduction" next to "Method" tells nobody which paper they are from
+    const paper = String(paperTitle() || '').trim();
+    const out = {};
+    for (const s of (meta && meta.sections) || []) {
+      if (!s || !s.slug) continue;
+      const t = String(s.title || s.slug);
+      out[s.slug] = paper && t !== paper ? `${t} — ${paper}` : t;
+    }
+    return out;
+  } catch { return null; }
+}
+let backfilled = false;
+function backfill(why) {
+  if (!discuss.enabled || backfilled) return;
+  if (!discuss.base && !discuss._state().base) return;  // no address to file under yet
+  backfilled = true;
+  discuss.mirror(allUsers(), { summon: !chat, titles: sectionTitles() })
+    .then(r => {
+      if (r && r.sent.length) {
+        console.log(`unified comments: back-filled ${r.sent.length} page(s) into the companion (${why})`);
+        fire('state');
+      }
+    })
+    .catch(() => { backfilled = false; });
+}
 
 // --- P4: apply / commit / revert (owner-only) ---
 const applyEngine = new ApplyEngine({ reviewDir: REVIEW, cfg: CFG });
@@ -610,7 +660,14 @@ function broadcast(type) { pushAll({ type }); }
 // The Discuss reply poll runs only while somebody is connected: a review page
 // nobody has open is a review page with nothing to refresh, and the companion
 // should not be asked about it every five seconds forever.
-function watchersChanged() { discuss.watch(clients.size + wsClients.size); }
+function watchersChanged() {
+  const n = clients.size + wsClients.size;
+  // a reader arriving is the second chance at the back-fill: at boot the
+  // companion may simply not have been up yet, and this costs one no-op pass
+  // (the digest suppresses the posts) when it already ran.
+  if (n) backfill('a reader connected');
+  discuss.watch(n);
+}
 // heartbeat: keeps tunnel/proxy connections warm and lets dead clients
 // surface — an SSE comment (EventSource ignores it) and a WS ping event
 function ensureHeartbeat() {
@@ -840,7 +897,7 @@ export function handler(req, res) {
         // simply not running must never be something they have to wait for.
         // `summon` only when this paper has no bridge of its own — otherwise
         // the same @claude would be answered twice, once on each surface.
-        discuss.mirror(allUsers(), { base: baseOf(req), summon: !chat })
+        discuss.mirror(allUsers(), { base: baseOf(req), summon: !chat, titles: sectionTitles() })
           .then(r => { if (r && r.sent.length) fire('state'); })
           .catch(() => { });
       } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
@@ -1039,6 +1096,7 @@ if (process.env.REVIEW_NO_LISTEN !== '1') {
   });
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`Review live at http://localhost:${PORT} — you are "${HANDLE}"; state in review/state/users/`);
+    backfill('server start');
     if (HOSTED) {
       console.log(`hosted mode: share the URL + password. Tunnel it with:\n  cloudflared tunnel --url http://localhost:${PORT}`);
       console.log(`owner access (keep private): http://localhost:${PORT}/?owner=${OWNER_TOKEN}`);

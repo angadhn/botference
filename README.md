@@ -175,7 +175,8 @@ One command from your document repo:
 ```bash
 botference review                # set up (first run) + build + serve; agents auto-detected
 botference review --share        # hosted + tunnel: one URL + password to send around
-botference review [dir] [--share] [--hosted] [--port N] [--no-agents] [--upgrade]
+botference review [dir] [--share] [--hosted] [--port N] [--no-agents]
+                 [--upgrade | --upgrade-only]
 ```
 
 The first run copies the engine into `<dir>/review/`, auto-detects the
@@ -191,7 +192,10 @@ forces it on (clear error if impossible), `--hosted` adds
 `REVIEW_PASSWORD` auth for a shared URL (an in-page gate asking for a
 name and the password together, no browser popup; tools can still send
 basic auth with any username), and `--upgrade` refreshes the engine
-files without touching your config, comments, or suggestions. Set
+files without touching your config, comments, or suggestions.
+`--upgrade-only` does that same refresh, rebuilds the site with the new
+assets and exits without serving — safe to run against a paper that is
+already up, which is how the review hub keeps hosted papers current. Set
 `REVIEW_OWNER_PASSWORD` too and that second password signs the *owner*
 in from any device — phone included: whatever name is typed, the gate
 issues the owner's handle and owner token, while the guest password

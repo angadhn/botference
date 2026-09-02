@@ -232,10 +232,11 @@ printf '%s\\n' "$*" >> "$FAKE_LOG"
 mode=$1; shift
 if [ "$mode" = "review" ]; then
   dir=$1; shift
-  setup=no; port=""; svc=""
+  setup=no; port=""; svc=""; upgrade=no
   while [ $# -gt 0 ]; do
     case "$1" in
       --setup) setup=yes ;;
+      --upgrade-only) upgrade=yes ;;
       --port) shift; port=$1 ;;
       --service-name) shift; svc=$1 ;;
     esac
@@ -247,9 +248,19 @@ if [ "$mode" = "review" ]; then
     printf '{"slug":"%s","title":"Scaffolded %s"}\\n' "$b" "$b" > "$dir/review/review.config.json"
     exit 0
   fi
+  if [ "$upgrade" = yes ]; then
+    # the real launcher's --upgrade-only: refresh the engine copy, rebuild,
+    # and exit WITHOUT serving (the paper may already be up on that port)
+    [ -d "$dir/review" ] || exit 1
+    mkdir -p "$dir/review/assets"
+    cp "$FAKE_ENGINE"/*.mjs "$FAKE_ENGINE"/*.md "$dir/review/" 2>/dev/null
+    cp "$FAKE_ENGINE"/assets/* "$dir/review/assets/" 2>/dev/null
+    exit 0
+  fi
   [ -n "$port" ] || exit 1
-  printf 'ENV %s REVIEW_PASSWORD=%s REVIEW_OWNER_PASSWORD=%s CWD=%s\\n' \\
-    "$svc" "$REVIEW_PASSWORD" "$REVIEW_OWNER_PASSWORD" "$(pwd)" >> "$FAKE_LOG"
+  printf 'ENV %s REVIEW_PASSWORD=%s REVIEW_OWNER_PASSWORD=%s CWD=%s DISCUSS=%s BASE=%s\\n' \\
+    "$svc" "$REVIEW_PASSWORD" "$REVIEW_OWNER_PASSWORD" "$(pwd)" \\
+    "$REVIEW_DISCUSS_COMPANION" "$REVIEW_DISCUSS_BASE" >> "$FAKE_LOG"
   node -e "require('http').createServer((q,s)=>{s.writeHead(200,{'content-type':'text/html'});s.end('STUB-$svc')}).listen($port,'127.0.0.1')" >/dev/null 2>&1 &
   printf '%s %s\\n' "$svc" "$!" >> "$FAKE_PIDS"
   sleep 1
@@ -279,6 +290,7 @@ exit 0
 
 describe('hub v2 — discovery, toggles, wake-on-request, device approval', () => {
   let hub2, port2, portC, paperC, root, ws, cfgFile, log, pidFile, answerFile, lo;
+  let companionSrv, companionOrigin;
 
   const cfgJson = () => JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
   const logLines = () => {
@@ -343,6 +355,17 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     paperC = await fakePaper(portC, 'pw-c', 'PAPER-C');
     lo = await freePort();  // base of the hub's auto-assign range
 
+    // A stand-in for the Discuss companion. It exists so the hub's liveness
+    // probe has something honest to find WITHOUT reaching for the real
+    // companion on 4189, which is a live process on the developer's machine.
+    companionSrv = http.createServer((q, s2) => {
+      if (String(q.url).startsWith('/health')) {
+        s2.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}');
+      } else { s2.writeHead(404).end(); }
+    });
+    await new Promise(r => companionSrv.listen(0, '127.0.0.1', r));
+    companionOrigin = `http://127.0.0.1:${companionSrv.address().port}`;
+
     cfgFile = path.join(root, 'hub.json');
     fs.writeFileSync(cfgFile, JSON.stringify({
       port: port2, host: 'review.example.com', name: 'V2 portal',
@@ -359,7 +382,9 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
         REVIEW_HUB_PASSWORD: 'v2-owner-pw', REVIEW_HUB_TUNNEL: 'review',
         REVIEW_HUB_BOTFERENCE: fakeBot, REVIEW_HUB_CLOUDFLARED: fakeCf,
         REVIEW_HUB_OSASCRIPT: fakeOsa,
+        REVIEW_HUB_DISCUSS_COMPANION: companionOrigin,
         FAKE_LOG: log, FAKE_PIDS: pidFile, FAKE_ANSWER: answerFile,
+        FAKE_ENGINE: path.join(HOME, 'frontends', 'review'),
       },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
@@ -373,6 +398,7 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
   after(() => {
     hub2 && hub2.kill();
     paperC && paperC.close();
+    companionSrv && companionSrv.close();
     // every stub server the fake launcher started, by explicit pid only
     let lines = [];
     try { lines = fs.readFileSync(pidFile, 'utf8').split('\n'); } catch { }
@@ -478,6 +504,60 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     const list = await req(port2, { host: 'review.example.com', ip: '198.51.100.21', cookie });
     assert.match(list.text, /Explicit One/);
     assert.doesNotMatch(list.text, /Alpha Set/, 'a private paper is invisible to a guest');
+  });
+
+  // Each paper folder carries its own COPY of the review engine, taken the
+  // day it was set up. Left alone it stays that old — which is how a hosted
+  // paper ends up with no owner login, no unified comments and last season's
+  // stylesheet, beside a paper that has all three. The hub is the only thing
+  // that sees them all, so refreshing them is its job.
+  test('a paper on a stale engine is upgraded before it is started, and rebuilt with it', async () => {
+    const dir = path.join(ws, 'projects', 'alpha-set');
+    const rd = path.join(dir, 'review');
+    // the fake launcher ran --upgrade-only, so the copy is now the canonical one
+    const canon = path.join(HOME, 'frontends', 'review');
+    for (const f of ['server.mjs', 'discuss.mjs', 'build.mjs', 'SCHEMA.md']) {
+      assert.equal(fs.readFileSync(path.join(rd, f), 'utf8'), fs.readFileSync(path.join(canon, f), 'utf8'),
+        `${f} was not refreshed before the paper started`);
+    }
+    assert.ok(fs.existsSync(path.join(rd, 'assets', 'style.css')),
+      'the assets came with it — a refresh nobody rebuilds with is a page that still looks old');
+    // and the upgrade really was a separate, non-serving step: plain --upgrade
+    // would have gone on to bind the port the paper is already on
+    const up = logLines().filter(l => l.includes('--upgrade-only') && l.includes('alpha-set'));
+    assert.equal(up.length, 1, `expected one --upgrade-only for alpha-set, got ${JSON.stringify(up)}`);
+    assert.ok(!logLines().some(l => /(^|\s)--upgrade(\s|$)/.test(l)),
+      'the hub must never run the serving --upgrade against a paper that is up');
+
+    // a second start finds nothing stale and skips the whole step
+    const before = logLines().length;
+    await req(port2, {
+      method: 'POST', url: '/toggle', host: 'localhost',
+      body: new URLSearchParams({ slug: 'alpha-set', action: 'on' }).toString(),
+    });
+    await settle('alpha-set', true);
+    assert.ok(!logLines().slice(before).some(l => l.includes('--upgrade-only')),
+      'a current engine is not upgraded again');
+  });
+
+  // The rule: on a review page, if the extension is in the browser Discuss
+  // owns commenting and shows the page's existing comments; without it the
+  // page's own margin works as before. One record either way — which needs
+  // the paper to know where the companion is and what address the reader has
+  // in their bar. The hub knows both, so papers it starts get it by default.
+  test('the hub hands every paper it starts the live companion and the paper\'s public address', async () => {
+    const env = logLines().filter(l => l.startsWith('ENV review-alpha-set')).pop();
+    assert.ok(env, 'no service env line for alpha-set');
+    assert.ok(env.includes(`DISCUSS=${companionOrigin}`),
+      `the companion was not handed over: ${env}`);
+    assert.ok(env.includes('BASE=https://alpha-set.example.com'),
+      `the paper's own public address was not handed over: ${env}`);
+    // and none of it was written into the owner's repo
+    const rcfg = JSON.parse(fs.readFileSync(
+      path.join(ws, 'projects', 'alpha-set', 'review', 'review.config.json'), 'utf8'));
+    assert.equal(rcfg.discuss, undefined, 'the hub never edits a paper\'s review.config.json');
+    assert.ok(!JSON.stringify(cfgJson()).includes('REVIEW_DISCUSS'),
+      'nor its own config with env names');
   });
 
   test('toggle on a project never set up: scaffolds first, survives a DNS failure', async () => {
@@ -763,5 +843,94 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     });
     assert.equal(r.status, 200);
     assert.match(r.text, /report\.html/);
+  });
+});
+
+// The pure halves of the two new hub jobs, imported directly (the hub opens
+// no port under REVIEW_HUB_NO_LISTEN): which papers are carrying an old
+// engine, and where — if anywhere — the Discuss companion is.
+describe('hub: engine freshness and companion discovery', () => {
+  let mod, tmp;
+
+  before(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-unit-'));
+    process.env.REVIEW_HUB_CONFIG = path.join(tmp, 'hub.json');
+    process.env.REVIEW_HUB_PASSWORD = 'unit-owner-pw';
+    process.env.REVIEW_HUB_NO_LISTEN = '1';
+    fs.writeFileSync(process.env.REVIEW_HUB_CONFIG,
+      JSON.stringify({ port: 0, host: 'review.example.com', papers: [] }));
+    mod = await import(HUB);
+  });
+  after(() => {
+    delete process.env.REVIEW_HUB_NO_LISTEN;
+    delete process.env.REVIEW_HUB_DISCUSS;
+    delete process.env.REVIEW_HUB_DISCUSS_COMPANION;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('a paper with no engine copy at all is not "stale" — that is scaffolding, a different job', () => {
+    const dir = path.join(tmp, 'never-set-up');
+    fs.mkdirSync(dir, { recursive: true });
+    assert.deepEqual(mod.staleEngineFiles(dir), []);
+  });
+
+  test('an old copy names exactly the files that drifted; a current one names none', () => {
+    const canon = path.join(HOME, 'frontends', 'review');
+    const dir = path.join(tmp, 'paper');
+    const rd = path.join(dir, 'review');
+    fs.mkdirSync(path.join(rd, 'assets'), { recursive: true });
+    for (const f of fs.readdirSync(canon)) {
+      if (['assets', 'site', 'state'].includes(f)) continue;
+      fs.copyFileSync(path.join(canon, f), path.join(rd, f));
+    }
+    for (const f of fs.readdirSync(path.join(canon, 'assets'))) {
+      fs.copyFileSync(path.join(canon, 'assets', f), path.join(rd, 'assets', f));
+    }
+    assert.deepEqual(mod.staleEngineFiles(dir), [], 'a fresh copy is current');
+
+    // the shapes that actually bit: an engine copy predating discuss.mjs, and
+    // one whose stylesheet is last season's
+    fs.rmSync(path.join(rd, 'discuss.mjs'));
+    fs.appendFileSync(path.join(rd, 'assets', 'style.css'), '\n/* local hack */\n');
+    const stale = mod.staleEngineFiles(dir);
+    assert.ok(stale.includes('discuss.mjs'), 'a missing engine file is stale');
+    assert.ok(stale.includes(path.join('assets', 'style.css')), 'so is a drifted asset');
+    assert.ok(!stale.includes('server.mjs'), 'and nothing that actually matches is touched');
+  });
+
+  test('the companion is found by liveness, and never guessed into existence', async () => {
+    const srv = http.createServer((q, s) => {
+      if (String(q.url).startsWith('/health')) s.writeHead(200).end('{}');
+      else s.writeHead(404).end();
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const origin = `http://127.0.0.1:${srv.address().port}`;
+    const dead = await freePort();
+    try {
+      process.env.REVIEW_HUB_DISCUSS_COMPANION = origin;
+      assert.deepEqual(mod.companionCandidates({}), [origin]);
+      assert.deepEqual(await mod.discussEnv({}, 'acta.example.com'), {
+        REVIEW_DISCUSS_COMPANION: origin,
+        REVIEW_DISCUSS_BASE: 'https://acta.example.com',
+      });
+      // no hostname yet means no pinned address: the companion still gets the
+      // projection, keyed off whatever the request says
+      assert.deepEqual(await mod.discussEnv({}, ''), { REVIEW_DISCUSS_COMPANION: origin });
+
+      // nothing answering = nothing handed over. A dead address would be a
+      // five-second timer knocking on an empty room forever.
+      process.env.REVIEW_HUB_DISCUSS_COMPANION = `http://127.0.0.1:${dead}`;
+      assert.deepEqual(await mod.discussEnv({}, 'acta.example.com'), {});
+
+      // and both off-switches stop it before any probe
+      process.env.REVIEW_HUB_DISCUSS_COMPANION = origin;
+      assert.deepEqual(mod.companionCandidates({ discuss: false }), []);
+      assert.deepEqual(await mod.discussEnv({ discuss: false }, 'acta.example.com'), {});
+      process.env.REVIEW_HUB_DISCUSS = 'off';
+      assert.deepEqual(await mod.discussEnv({}, 'acta.example.com'), {});
+      delete process.env.REVIEW_HUB_DISCUSS;
+    } finally {
+      await new Promise(r => srv.close(r));
+    }
   });
 });

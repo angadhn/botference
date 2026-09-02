@@ -18,7 +18,7 @@ Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-spe
 | `port` | server port (`PORT` env and `--port` override) |
 | `legacy_storage_keys` | old browser-storage keys to migrate (optional) |
 | `bridge` | bot-bridge block, owned by `init-config.mjs` |
-| `discuss` | **unified comment store** (optional, off by default): `{"companion": "http://127.0.0.1:4189", "base"?: "https://paper.example", "poll_ms"?: 5000}`. See below |
+| `discuss` | **unified comment store** (optional): `{"companion": "http://127.0.0.1:4189", "base"?: "https://paper.example", "poll_ms"?: 5000}`. Off unless this block **or** the environment says otherwise — the review hub sets the env for every paper it starts, so a hosted paper has it on by default without a line in this file. See below |
 
 Figure handling at build: every `<img>` src is resolved against the repo root and each figure dir with LaTeX `\graphicspath` semantics, probing `.png/.jpg/.jpeg/.svg/.gif/.webp/.pdf` for extensionless `\includegraphics` refs. PDF-only and missing figures render as labeled placeholders instead of broken images. `tikzpicture` environments (which pandoc drops) are compiled to SVG at build time — `documentclass[tikz]{standalone}` + the paper's preamble minus page-layout packages, via `pdflatex` then `pdftocairo -svg` (or `dvisvgm --pdf`) — cached by content hash under `site/tikz/`; the wrapping figure/caption/label stay with pandoc so global numbering and refs are unaffected, and a compile failure or missing toolchain degrades to a placeholder plus a build warning, never a broken build.
 
@@ -89,15 +89,31 @@ Hosted mode has three tiers, not two. `{"<handle>": {"agents": true, "daily_cap"
 
 The cap is visible to the granted guest in their own sidebar ("4 of 5 agent calls left today") — it is a budget meant to teach judicious use. Revocation and cap changes are read per request, so they take effect on the very next one. **Apply, Commit, Revert, model switching and permission/choice answers stay owner-only forever; a grant never confers them.**
 
-## Unified comment store (`discuss`, opt-in — `discuss.mjs`)
+## Unified comment store (`discuss` — `discuss.mjs`)
 
-Without the `discuss` block **nothing in `discuss.mjs` runs**: no fetch, no timer, no branch. A clone with no companion, a collaborator's checkout, a static `site/` over `file://` — all keep the silo they have always had. This is what the block turns on:
+### Being told: config, environment, and neither
+
+There are two ways to be told where the botference companion is, and they merge **per key** — the config block wins where it speaks, the environment fills in where it does not:
+
+| | config (`review.config.json`) | environment |
+|---|---|---|
+| companion origin | `discuss.companion` | `REVIEW_DISCUSS_COMPANION` |
+| public address to file pages under | `discuss.base` | `REVIEW_DISCUSS_BASE` |
+| back-poll interval | `discuss.poll_ms` | `REVIEW_DISCUSS_POLL_MS` |
+
+A companion origin that is not an `http(s)` URL is refused rather than half-used. **If neither names a companion, nothing in `discuss.mjs` runs** — no fetch, no timer, no branch. A clone with no companion, a collaborator's checkout, a static `site/` over `file://` all keep the silo they have always had. That is the standalone guarantee, and the environment does not weaken it: a laptop that was handed nothing inherits nothing.
+
+**Under the review hub it is on by default.** The hub is the one process that knows both halves — the companion is running beside it on this machine, and the hub itself assigned the paper its hostname — so every paper it starts or wakes is handed `REVIEW_DISCUSS_COMPANION` (discovered: `REVIEW_HUB_DISCUSS_COMPANION`, else the hub config's `discuss.companion`, else the port the installed companion autostarts on, else `127.0.0.1:4189` — each probed for a live `GET /health`, and nothing is handed over if nothing answers) and `REVIEW_DISCUSS_BASE` = `https://<the paper's host>`. Turn it off machine-wide with `"discuss": false` in the hub config or `REVIEW_HUB_DISCUSS=off`. **The hub never writes into a paper's `review.config.json`** — env keeps the owner's repo exactly as they left it.
+
+### What being told turns on
 
 - **Forward.** After every `POST /state` write, every `user-comment` in every `users/*.json` is projected into the botference companion (`POST /review-comments`, loopback only) grouped by section page. The companion files each one under `origin: {system:"review", id:"<comment id>"}` — so the projection is idempotent and a comment mirrored a hundred times is one thread. Authorship (the file the comment lives in), the original `ts` and the `quote`/anchor cross with it; the visitor's own `thread` replies land once each, keyed by author + `ts`. A **block-level comment has no `quote`** and goes to the companion's page chat rather than minting an anchor onto nothing.
 - **The page key.** `<base>/<section>.html`, where `base` is the origin the mirroring request arrived on (`Host` + `X-Forwarded-Proto`) unless the config pins one. That is deliberately the address the visitor had in their address bar — the same key the botference extension files that page under, which is what makes the owner's drawer and the visitor's margin one record. A paper reachable at two addresses is two records unless `base` pins one.
 - **Back.** A 5s poll (only while a client is connected) reads each mirrored page and folds every message that did *not* come from here into `mergedData().threads` under the comment's own id — the exact shape `state/threads.json` already uses, so the margin renders companion answers with no new code. Mirrored messages carry `origin`, which is what stops the round trip echoing.
 - **Bots.** A paper started with `--chat` answers its own margin mentions and the projection asks for nothing; without that bridge the projection sets `summon`, and the companion applies **its** `grants.json` to the guest exactly as it does everywhere else. One mention, one answer, never two.
 - **Resolving travels one way, once.** Filed over there files the Discuss thread; reopening here is never undone (the companion remembers with `origin_filed`). Nothing is ever deleted in the companion — a withdrawn comment leaves a thread that may by then hold a bot's answer and the owner's reply.
+- **Back-fill at boot.** Projection used to happen only on the way out of `POST /state`, so a paper whose conversation predated all this projected *nothing*: the owner's drawer said "no comments yet" beside a margin full of them. Now every existing `user-comment` is projected once at server start (and again on the first client connect, in case the companion was asleep at boot), idempotent via the same `origin` ids and the digest on disk, so a restart with no news re-posts nothing. It needs an address to file under and there is no request to take one from at boot — which is the practical reason `base` has to be able to come from the config or the environment.
+- **The page's name.** Each projected page carries `<section title> — <paper title>` (read back from the build's `BUILD_META.sections`), so the owner's pages library lists papers rather than slugs.
 - **State:** `state/discuss-mirror.json` (gitignored with the rest of `state/`) holds the base, the per-section digest that suppresses no-news re-posts, and the id → thread map.
 
 ## Task console + Settings (owner-only, desktop-only)
@@ -116,6 +132,13 @@ Without the `discuss` block **nothing in `discuss.mjs` runs**: no fetch, no time
 **Two-way threads:** every card/comment id can carry a conversation. Bot entries live in `state/threads.json[id]` (`{author, ts, text, suggestion_id?}`); each human's replies live in their *own* `users/<handle>.json` under `decisions[id].thread` (`[{ts, text}]`, author implied by the file). The UI merges all sources chronologically by `ts` and offers an inline reply box on every card and thread entry — a reply only ever appends to the viewer's own file.
 
 Apply rules (Task 2+): apply is **author-agnostic** — it acts on bot cards from `suggestions.json` and human suggestions from `users/*.json` through the same code. Accepted cards are applied to LaTeX by unique-span replacement only, atomically with any `bib_entries`; a card carrying `source_json` is applied by parsing that JSON file, setting the key and re-serializing (with a drift guard on the previous value) — a JSON document is never string-replaced. Ambiguous/drifted spans are flagged `needs_manual_resolution`, never guessed. Span matching (shared `assets/span-match.js`, used by both the in-page tracked-changes renderer and apply) is whitespace- and smart-quote-tolerant: `\s+` runs collapse to one space and curly quotes fold to ASCII on both sides for matching *and* uniqueness counting, while the actual wrap/replacement uses true offsets in the raw text.
+
+### The two states on a merged page (verified end to end)
+
+- **Plugin present.** The page's own selection pill is suppressed by the extension (`body[data-slug] > aside#margin` is the marker; the build keeps both halves of it) and Discuss owns commenting. The margin's existing comments are in the drawer, because they were projected; a reply typed in Discuss lands back in the margin's own thread entries within one poll.
+- **Plugin absent** (a phone, a tablet, a collaborator with no extension). The page's own commenting works exactly as it always has, writes exactly the same `users/<handle>.json`, and *also* projects — so the owner sees it in Discuss later without the guest having installed anything.
+- **After "use the page's own commenting"** (the per-page handback). Nothing is stranded in either direction: comments typed into the page's own margin still project into the companion, and Discuss threads already on the page still render and still take replies.
+- **Inherent, not a bug:** the projection is one-way. A comment the owner writes *in Discuss* on a review page does not appear in the review page's own margin for a plugin-less collaborator — only replies to review-origin threads travel back. And an anchor crosses as its quoted words only (no prefix/suffix), so a quote that occurs several times on a page may anchor to the wrong instance in the drawer.
 
 ## Known limitations (accepted for review surface)
 
