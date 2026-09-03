@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-09-03
+
+- **Council web: attach markdown and other text files.** The paper-clip
+  accepted images, PDFs, spreadsheets and Word files and silently ignored a
+  `.md`. Text files have no magic bytes, so the browser now sends the filename
+  with the upload and the server accepts `.md`/`.txt`/`.csv`/`.json` when the
+  bytes are honest UTF-8 text; the bots get a "read this file" line like any
+  other attachment.
+
 ## 2026-09-02
 
 - **Council web: the "where should this go?" card now offers a new project,

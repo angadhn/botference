@@ -1460,8 +1460,8 @@ Three ways to get files to the bots (all support several at once):
 - **Drag files** from Finder into the terminal — the paths are parsed
   (including escaped spaces in screenshot names, quotes, and `file://`
   URLs) and become `[image N]` attachments. PDFs, spreadsheets
-  (`.xlsx`/`.xls`/`.csv`) and Word documents (`.docx`/`.doc`) work the
-  same way and attach as `[file N]`.
+  (`.xlsx`/`.xls`/`.csv`), Word documents (`.docx`/`.doc`) and text files
+  (`.md`/`.txt`/`.json`) work the same way and attach as `[file N]`.
 - **Finder Cmd+C → Cmd+V** — copied files paste as paths and attach the
   same way.
 - **Ctrl+V** — attaches a *raw* image from the clipboard (a screenshot

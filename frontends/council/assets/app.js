@@ -2379,8 +2379,9 @@
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/msword'];
-  const DOC_EXT = /\.(pdf|xlsx?|docx?)$/i;
+    'application/msword',
+    'text/markdown', 'text/x-markdown', 'text/plain', 'text/csv', 'application/json'];
+  const DOC_EXT = /\.(pdf|xlsx?|docx?|md|markdown|txt|csv|json)$/i;
   const isDocFile = f => DOC_MIMES.includes(f.type) || DOC_EXT.test(f.name || '');
   const docLabel = name => ((/\.(\w+)$/.exec(name || '') || [])[1] || 'file').toUpperCase();
   function renderAtts() {
@@ -2410,7 +2411,9 @@
       try {
         const resp = await fetch('/upload', {
           method: 'POST',
-          headers: { 'content-type': f.type || 'application/octet-stream' },
+          // the filename rides along: a text file has no magic bytes, so the
+          // server needs the name to tell a .md from a .csv
+          headers: { 'content-type': f.type || 'application/octet-stream', 'x-filename': encodeURIComponent(f.name || '') },
           body: f,
         });
         if (resp.status === 401) { location.reload(); return; }

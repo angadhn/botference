@@ -125,7 +125,7 @@ _STAGING_DIR = _REPO_ROOT / ".botference" / "tmp" / "attachments"
 
 
 def stage_attachments(attachments: list[dict]) -> tuple[list[str], list[str]]:
-    """Copy attached files (images, PDFs) to a repo-local staging dir.
+    """Copy attached files (images, PDFs, documents, text) to a repo-local staging dir.
 
     Returns (staged_paths, missing_paths). Staged names are
     content-addressed; Claude can read them with its Read tool — no
@@ -4608,6 +4608,8 @@ class Botference:
                             "hand back an edited version, write a new file "
                             "into the workspace (textutil converts txt/html "
                             "to docx) and tell the user where it is]")
+                if low.endswith((".md", ".markdown", ".txt", ".json")):
+                    return f"[Attached text file: {p} — read it with your file-reading tool]"
                 return f"[Attached image: {p} — view it with your file-reading tool]"
             refs = "\n".join(_ref(p) for p in staged)
             body = f"{body}\n\n{refs}"

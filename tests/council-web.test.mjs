@@ -797,6 +797,32 @@ test('xlsx upload roundtrip: sniffed as a zip with xl/ entries, typed "file", se
   assert.equal(att[0].type, 'file');
 });
 
+test('markdown upload: no magic bytes, so the filename (x-filename) names the kind; UTF-8 text is typed "file" and served as text', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  const MD = Buffer.from('# notes\n\nsome *markdown* for the council\n');
+  const up = await postRaw(s.base, '/upload', MD, { 'content-type': 'text/markdown', 'x-filename': encodeURIComponent('My notes.md') });
+  const body = await up.json();
+  assert.equal(up.status, 200, JSON.stringify(body));
+  const { ok, attachment } = body;
+  assert.equal(ok, true);
+  assert.match(attachment.url, /\.md$/);
+  assert.equal(attachment.type, 'file');
+  const back = await fetch(s.base + attachment.url);
+  assert.match(back.headers.get('content-type'), /^text\/plain/);
+  assert.equal(await back.text(), MD.toString());
+  // a bare .txt by name alone, no declared type
+  const txt = await postRaw(s.base, '/upload', Buffer.from('plain words'), { 'x-filename': 'a.txt' });
+  assert.equal(txt.status, 200);
+  assert.match((await txt.json()).attachment.url, /\.txt$/);
+  // binary junk that CLAIMS to be markdown is refused: text must be honest UTF-8 with no NUL
+  const junk = await postRaw(s.base, '/upload', Buffer.from([0x00, 0xff, 0xfe, 0x41]), { 'content-type': 'text/markdown', 'x-filename': 'x.md' });
+  assert.equal(junk.status, 400);
+  // and unnamed, untyped bytes are still refused as before
+  const anon = await postRaw(s.base, '/upload', Buffer.from('hello'));
+  assert.equal(anon.status, 400);
+});
+
 test('Word uploads: a word/ zip is a docx, an OLE2 with a WordDocument stream is a doc (not an xls)', async t => {
   const s = await startServer();
   try {
@@ -1155,7 +1181,7 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   // camera + library + Files (accept includes image/* and PDFs, no
   // capture attr), plus multiple
   const file = doc.getElementById('file');
-  assert.equal(file.getAttribute('accept'), 'image/*,application/pdf,.xlsx,.xls,.docx,.doc');
+  assert.equal(file.getAttribute('accept'), 'image/*,application/pdf,.xlsx,.xls,.docx,.doc,.md,.markdown,.txt,.csv,.json,text/markdown,text/plain');
   assert.equal(file.hasAttribute('capture'), false, 'no capture attr — keeps the library option on iOS');
   assert.ok(file.hasAttribute('multiple'));
   assert.ok(doc.getElementById('attach'), 'attach button present');

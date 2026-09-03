@@ -580,6 +580,7 @@ const MIME = {
   '.doc': 'application/msword',
   '.pdf': 'application/pdf', '.md': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8', '.json': 'application/json', '.csv': 'text/csv',
+  '.markdown': 'text/plain; charset=utf-8',
 };
 function serveFile(res, file) {
   fs.readFile(file, (err, buf) => {
@@ -623,6 +624,24 @@ function sniffImage(buf) {
     && /^(heic|heix|hevc|mif1|msf1)/.test(buf.subarray(8, 12).toString('latin1'))) return 'heic';
   return null;
 }
+// Text files have no magic bytes, so content alone cannot tell a .md from a
+// .txt — the browser's declared type and filename (x-filename) name the kind,
+// and the bytes only have to be honest UTF-8 text with no NUL in them.
+const TEXT_EXT = /\.(md|markdown|txt|csv|json)$/i;
+const TEXT_MIME = /^(text\/(markdown|plain|csv|x-markdown)|application\/json)\b/i;
+function sniffText(buf, contentType, filename) {
+  const byName = (TEXT_EXT.exec(String(filename || '')) || [])[1];
+  const byType = TEXT_MIME.test(String(contentType || ''));
+  if (!byName && !byType) return null;
+  if (buf.includes(0)) return null;
+  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { return null; }
+  const ext = (byName || '').toLowerCase();
+  if (ext === 'markdown') return 'md';
+  if (ext) return ext;
+  const ct = String(contentType || '').toLowerCase();
+  return /markdown/.test(ct) ? 'md' : /csv/.test(ct) ? 'csv' : /json/.test(ct) ? 'json' : 'txt';
+}
+const FILE_EXT = /\.(pdf|xlsx?|docx?|md|txt|csv|json)$/i;
 const uploadUrl = abs => '/uploads/' + path.relative(UPLOADS, abs).split(path.sep).map(encodeURIComponent).join('/');
 function uploadEndpoint(req, res) {
   const chunks = [];
@@ -638,9 +657,9 @@ function uploadEndpoint(req, res) {
       return;
     }
     const buf = Buffer.concat(chunks);
-    const ext = sniffImage(buf);
+    const ext = sniffImage(buf) || sniffText(buf, req.headers['content-type'], req.headers['x-filename']);
     if (!ext) {
-      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image, PDF, spreadsheet or Word file (png/jpeg/gif/webp/heic · pdf · xlsx/xls · docx/doc)' }));
+      res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'not an image, PDF, spreadsheet, Word or text file (png/jpeg/gif/webp/heic · pdf · xlsx/xls · docx/doc · md/txt/csv/json)' }));
       return;
     }
     const month = new Date().toISOString().slice(0, 7); // yyyy-mm
@@ -656,7 +675,7 @@ function uploadEndpoint(req, res) {
     }
     res.writeHead(200, JSON_HEAD).end(JSON.stringify({
       ok: true,
-      attachment: { id, path: abs, type: /^(pdf|xlsx?|docx?)$/.test(ext) ? 'file' : 'image', url: uploadUrl(abs) },
+      attachment: { id, path: abs, type: FILE_EXT.test('.' + ext) ? 'file' : 'image', url: uploadUrl(abs) },
     }));
   });
 }
@@ -672,7 +691,7 @@ function cleanAttachments(raw) {
     const p = path.resolve(String((a && a.path) || ''));
     const rel = path.relative(UPLOADS, p);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(p)) return null;
-    const type = /\.(pdf|xlsx?|docx?)$/i.test(p) ? 'file' : 'image';
+    const type = FILE_EXT.test(p) ? 'file' : 'image';
     out.push({ id: String((a && a.id) || path.basename(p)), path: p, type });
   }
   return out;
