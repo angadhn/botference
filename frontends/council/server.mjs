@@ -693,6 +693,10 @@ function cleanAttachments(raw) {
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(p)) return null;
     const type = FILE_EXT.test(p) ? 'file' : 'image';
     out.push({ id: String((a && a.id) || path.basename(p)), path: p, type });
+    // the reader's own filename, for the echo only (see /input) — never a
+    // path, never long, never part of what the bridge receives
+    const name = String((a && a.name) || '').split(/[\\/]/).pop().replace(/[\u0000-\u001f]/g, '').slice(0, 120);
+    if (name) out[out.length - 1].name = name;
   }
   return out;
 }
@@ -843,7 +847,8 @@ export function handler(req, res) {
         type: 'user_echo', text, ts: new Date().toISOString(),
         attachments: attachments.map(a => ({ ...a, url: uploadUrl(a.path) })),
       });
-      bridge.send({ type: 'input', text, attachments });
+      // the bridge gets exactly the Ink schema — {id, path, type} — no name
+      bridge.send({ type: 'input', text, attachments: attachments.map(({ id, path: p, type }) => ({ id, path: p, type })) });
       res.writeHead(200, JSON_HEAD).end('{"ok":true}');
     });
     return;

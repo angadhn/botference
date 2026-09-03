@@ -1467,12 +1467,20 @@
   }
   if (els.tasksJump) els.tasksJump.addEventListener('click', jumpToTaskSrc);
 
+  // Anything that is not an image is a chip: its kind in capitals and the
+  // name the reader gave it (the stored id only when no name survived), a
+  // link to the file. Drawing a .md as an <img> gave a broken picture with
+  // "attached image" under it.
   const attThumbs = atts => (atts && atts.length)
     ? `<div class="att-row">${atts.map(a => {
-      const m = /\.(pdf|xlsx?|docx?)(\?|$)/i.exec(a.url || '');
-      return m
-        ? `<a class="att-doc-link" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(m[1].toUpperCase())} · ${esc((a.url || '').split('/').pop())}</a>`
-        : `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`;
+      const m = /\.(pdf|xlsx?|docx?|md|markdown|txt|csv|json)(\?|$)/i.exec(a.url || '');
+      const isFile = a.type === 'file' || !!m;
+      if (isFile) {
+        const name = a.name || (a.url || '').split('/').pop().split('?')[0];
+        const kind = (m ? m[1] : ((/\.(\w+)$/.exec(name) || [])[1] || 'file')).toUpperCase();
+        return `<a class="att-doc-link" href="${esc(a.url)}" target="_blank" rel="noopener" title="${esc(name)}">${esc(kind)} · ${esc(name)}</a>`;
+      }
+      return `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img class="att-img" src="${esc(a.url)}" alt="attached image" loading="lazy"></a>`;
     }).join('')}</div>`
     : '';
 
@@ -2592,7 +2600,9 @@
     refreshCompletions();
     refreshPresendWarn();
     // exact bridge attachment schema — what the Ink TUI sends: {id, path, type:'image'}
-    sendInput(text, ready.map(a => ({ id: a.id, path: a.path, type: 'image' })));
+    // the original filename rides along so the echoed message can name the
+    // file the way the reader knows it, not by the stored id
+    sendInput(text, ready.map(a => ({ id: a.id, path: a.path, type: a.kind === 'doc' ? 'file' : 'image', name: a.name || '' })));
     clearAtts();
     syncSend();
   }

@@ -1166,6 +1166,15 @@ test('links are clickable, text stays selectable, passwords get a copy chip',
   const img = doc.querySelector('.msg.user .att-img');
   assert.ok(img, 'sent message shows the image');
   assert.equal(img.getAttribute('src'), '/uploads/2026-07/x.png');
+  // a text file is a named chip, never a broken <img>: kind in capitals and
+  // the reader's own filename, linking to the stored file
+  C.handle({ type: 'user_echo', text: 'read this', attachments: [{ id: 'y', path: '/tmp/y.md', type: 'file', name: 'My notes.md', url: '/uploads/2026-07/y.md' }] });
+  const chips = doc.querySelectorAll('.msg.user .att-doc-link');
+  const last = chips[chips.length - 1];
+  assert.ok(last, 'sent message shows a file chip');
+  assert.equal(last.textContent, 'MD · My notes.md');
+  assert.equal(last.getAttribute('href'), '/uploads/2026-07/y.md');
+  assert.equal(doc.querySelectorAll('.msg.user .att-img').length, 1, 'the .md did not become an image');
   // nothing in the stylesheet blocks selection on message text (the only
   // user-select:none allowed is the decorative avatar mark), and the
   // transcript explicitly opts into selection for iOS long-press
