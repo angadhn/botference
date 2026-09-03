@@ -8863,6 +8863,93 @@ once, and the result is the public address as a link with when it went.
 config.json — the button there is present, dead, and carries the whole of the
 instruction in its tooltip.
 
+## Amendment (2026-09-03, shipped): the drawer may never paint without its styles
+
+**The bug.** On council.botference.com the drawer would now and then appear as
+raw text down the left of the page, on top of the site's own sidebar: the
+header, both tab labels, the contents of *every* pane at once, the "Companion
+offline" card and the new-project form, all stacked in document order. A reload
+fixed it. The companion was up the whole time.
+
+**Why.** The drawer's markup lives in a shadow root, and the shadow root got
+its CSS from a `<link>` to `drawer.css`. **A shadow root's `<link>` does not
+block paint** the way a document's does — the shadow tree is drawn the instant
+it is inserted and re-drawn when the stylesheet lands. With no CSS the host is a
+full-viewport `position:fixed` box (its geometry is pinned inline), so its
+children lay out as ordinary blocks from the top-left corner, and nothing that
+is normally hidden — the closed panel, the pane that is not on, the popovers —
+is hidden, because every one of those is a CSS fact. That is precisely the
+screenshot.
+
+On a heavy single-page app the window between the two is long enough to see.
+And it does not close at all when the stylesheet never arrives, which is the
+same event as the "companion offline" card in that screenshot rather than a
+second one: **the extension had been reloaded under an open tab**. An orphaned
+content script's `chrome.runtime.getURL` answers nothing, so the drawer fell
+back to a *relative* `'drawer.css'` — resolved against council.botference.com,
+where an SPA answers its own `index.html` to everything — while every
+`sendMessage` through the same dead bridge failed, three failures in a row said
+"offline", and the reader was told to go and start a server that was already
+running. One cause, both symptoms, permanent for the life of that tab.
+
+**The fix**, in three parts:
+
+- **`cssPlan(opts)`** (drawer.js, pure) decides where the styling comes from
+  *before* a single node is made: text in hand → one synchronous `<style>` and
+  no race at all; a url → the link; **nothing → `mode:'none'`, and mount()
+  returns without mounting.** There is no relative fallback anywhere any more,
+  in content.js or in drawer.js. No stylesheet, no drawer — the alternative is
+  the drawer's whole markup over somebody's reading.
+- **`makeStyleGate(show, hide, ask)`** (drawer.js, pure) hides the host before
+  it is ever attached and reveals it only when the styles are confirmed: the
+  link's `load`, or the stylesheet arriving as text. On the link's `error` — or
+  after `CSS_WAIT_MS` (2s) of neither event — it asks content.js for the text
+  (`onCssFail`), which fetches `drawer.css` through the runtime once per tab and
+  hands it back (`d.setCssText`). That fetch is lazy on purpose — on every
+  ordinary boot the link answers and it never runs — and it goes through the
+  runtime url, so the SPA's own `index.html` (what the relative url used to
+  fetch) is recognised and refused rather than inlined. A last look 2s later
+  reveals anyway if the styling turns out to be in force regardless (`.panel`
+  computed `position:fixed`, which only drawer.css can make true) — a drawer
+  left invisible over a stylesheet that loaded would be this bug's mirror
+  image.
+- **The orphan guard finishes the job.** `activate()` refuses outright when
+  `chrome.runtime.id` is gone (it says the existing one line and mounts
+  nothing), and the context guard's stop() now calls `d.contextLost()`: the
+  detach/head observers are disconnected (they were fighting the page for a host
+  that can never work again), an *unstyled* drawer removes itself from the page,
+  and a styled one stops lying about the companion — the header chip reads
+  **"reload this tab"** and the card where "Companion offline" was says
+  *"Discuss was updated — reload this tab to reconnect. / the companion is fine;
+  this tab's copy of the extension is not"*, with no steps and no retry button,
+  because there is nothing to retry.
+
+`mount()` can now refuse, so every caller that reaches into `D.el` right after
+it (`open`, `showSel`, `showPicks`, `beginNew`, `showPages`, `showThreads`)
+returns `D` when it did.
+
+### Testing
+
+`test/styles.test.mjs` (new, 30 checks): `cssPlan` over text, url, the
+harness's relative url, `''`, no key, no options, whitespace, a non-string; the
+gate's hide-before-anything, reveal-once, ask-at-most-once, never-ask-after-open
+and never-reveal-on-ask; a `show`/`hide` that throws is not a reason to paint;
+and two greps that keep the exact regressions out — no relative `|| 'drawer.css'`
+in content.js, and `.panel { position: fixed }` still in drawer.css, which is
+what the last-resort probe reads.
+
+In the browser, `?selftest=1` (13 more checks): a drawer with no stylesheet url
+does not mount, and open/setPage/showSel on it are nothing rather than a throw;
+a drawer waiting on its link is mounted and invisible until the stylesheet lands;
+a drawer whose link will fail starts hidden and is revealed by the text, which is
+really in the shadow root ahead of the markup; and `contextLost()` leaves a
+styled drawer on the page saying "reload this tab" while an unstyled one takes
+itself off.
+
+**Not reproducible here, and named as such:** the real invalidation. The harness
+has no extension to reload, so the orphan half is tested through the injected
+seams (`contextLost`, `cssUrl:''`) exactly as the context guard already was.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

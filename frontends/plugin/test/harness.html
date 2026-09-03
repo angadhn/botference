@@ -5538,6 +5538,80 @@ async function selftest() {
   check('and this page’s own guard has never tripped: the extension is right here',
     G.lost === false);
 
+  // ---- the drawer may never paint without its styles ---------------------
+  // A shadow root's <link> does NOT block paint: the markup is drawn the
+  // instant it is inserted, styled or not. On a heavy SPA that gap was long
+  // enough to see — the whole drawer, every pane at once, as raw text down the
+  // left of the page — and when the extension had been reloaded under the tab
+  // it never closed, because the old fallback href ('drawer.css', relative)
+  // resolved against the SITE. So: nothing is visible until the styles are
+  // confirmed, and with no stylesheet to be had there is no drawer at all.
+  //
+  // Each case below builds its OWN drawer and takes it off the page again —
+  // this page's real one is mid-session and must not be disturbed.
+  const roots = () => document.querySelectorAll('#bfp-root').length;
+  const rootsBefore = roots();
+
+  const refused = BFPDrawer.create({ hostname: 'x', cssUrl: '', katexCssUrl: '' });
+  refused.mount();
+  check('with no stylesheet url the drawer does not mount at all',
+    refused.isOpen() === false && roots() === rootsBefore);
+  check('…and asking it to open is not an error, it is simply nothing',
+    refused.open('chat') === refused && roots() === rootsBefore);
+  check('…nor is being told a page, or handed a selection',
+    refused.setPage({ url: 'about:blank', threads: [] }) === refused &&
+    refused.showSel(10, 10) === refused && roots() === rootsBefore);
+
+  // the ordinary path, one page-load late: the <link> has not answered yet
+  const linked = BFPDrawer.create({ hostname: 'x', cssUrl: '../extension/drawer.css', katexCssUrl: '' });
+  linked.mount();
+  const lhost = document.querySelectorAll('#bfp-root')[roots() - 1];
+  check('a drawer waiting on its stylesheet is mounted but invisible',
+    !!lhost && lhost.style.visibility === 'hidden' && linked.stylesReady() === false);
+  check('…and nothing of it is on screen',
+    !!lhost && lhost.getBoundingClientRect().width >= 0 &&
+    getComputedStyle(lhost).visibility === 'hidden');
+  check('…until the stylesheet lands, and then it is',
+    !!(await until(() => linked.stylesReady() && lhost.style.visibility === 'visible', 8000)));
+  // contextLost() first, always: it is what stops the drawer's own observer
+  // from putting the host straight back (which is its job on a live page)
+  linked.contextLost(); lhost.remove();
+
+  // …and the repair: the text, handed over by content.js after a link failed
+  const textd = BFPDrawer.create({ hostname: 'x', cssUrl: 'bfp://nothing-here', katexCssUrl: '' });
+  textd.setCssText('');   // nothing is not a stylesheet
+  const thost = (() => { textd.mount(); return document.querySelectorAll('#bfp-root')[roots() - 1]; })();
+  check('a drawer whose link will fail starts hidden too',
+    !!thost && thost.style.visibility === 'hidden' && textd.stylesReady() === false);
+  textd.setCssText('.panel { position: fixed }');
+  check('…and the stylesheet arriving as TEXT is what reveals it',
+    textd.stylesReady() === true && thost.style.visibility === 'visible');
+  check('…with the text really in the shadow root, before the markup',
+    textd.shadow.firstChild && textd.shadow.firstChild.getAttribute &&
+    textd.shadow.firstChild.getAttribute('data-bfp-css') === 'text');
+  textd.contextLost(); thost.remove();
+
+  // an orphaned tab says the true thing: the companion is fine, this tab is not
+  const lost = BFPDrawer.create({ hostname: 'x', cssText: '.panel{position:fixed}', katexCssUrl: '' });
+  lost.mount();
+  const xhost = document.querySelectorAll('#bfp-root')[roots() - 1];
+  check('a drawer handed its styles as text is visible from the first frame',
+    lost.stylesReady() === true && xhost.style.visibility === 'visible');
+  lost.setConn(true);
+  lost.contextLost();
+  check('a styled drawer whose extension went away stays on the page',
+    xhost.isConnected === true);
+  check('…and stops saying the companion is down, because it is not',
+    lost.shadow.querySelector('.hdr .conn .ctext').textContent === 'reload this tab');
+  xhost.remove();   // its observers went with contextLost()
+
+  const bare = BFPDrawer.create({ hostname: 'x', cssUrl: 'bfp://nothing-here', katexCssUrl: '' });
+  bare.mount();
+  const bhost = document.querySelectorAll('#bfp-root')[roots() - 1];
+  bare.contextLost();
+  check('…but an UNSTYLED one takes itself off the page rather than paint raw',
+    bhost.isConnected === false && roots() === rootsBefore);
+
   // ---- per-mention context refresh --------------------------------------
   // The page can change under a live session — that is the whole point of a
   // document. Every mention re-reads it; only a DIFFERENT page travels, and it

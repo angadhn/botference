@@ -377,6 +377,68 @@
     return Math.max(W_MIN, Math.min(Math.round(w) || W_DEFAULT, hi));
   }
 
+  // ── the drawer may never paint without its styles ──────────────────────
+  //
+  // The drawer's markup goes into a shadow root, and the shadow root used to
+  // get its CSS the obvious way: a <link> to drawer.css. A shadow root's
+  // <link> DOES NOT BLOCK PAINT the way a document's does — the shadow tree is
+  // drawn the moment it is inserted, styled or not — so for as long as that
+  // fetch takes, every pane, every popover and every "hidden" card of the
+  // drawer is laid out as raw block-level text over the page. On a heavy
+  // single-page app (council.botference.com) that window is long enough to
+  // see, and it does not close at all when the fetch FAILS: the extension
+  // reloaded under the tab and chrome.runtime.getURL now answers nothing, so
+  // the href was a relative 'drawer.css' resolved against the site, which
+  // answers the app's own index.html with the wrong content type. That is the
+  // "unstyled drawer over the sidebar" bug, and it is permanent for that tab.
+  //
+  // Two rules fix it, and both are here so they can be tested without a DOM:
+  //
+  //   cssPlan      — where the styling is coming from, decided BEFORE anything
+  //                  is put in the shadow root. Text in hand beats a link;
+  //                  nothing at all is a refusal to mount, not a relative url.
+  //   makeStyleGate — the host is hidden until something confirms the styles
+  //                  arrived. A drawer nobody can see is a bug; a drawer
+  //                  painted raw over somebody's page is a worse one.
+  function cssPlan(opts) {
+    const o = opts || {};
+    const text = typeof o.cssText === 'string' ? o.cssText.trim() : '';
+    if (text) return { mode: 'inline' };
+    const url = typeof o.cssUrl === 'string' ? o.cssUrl.trim() : '';
+    if (url) return { mode: 'link', href: url };
+    return { mode: 'none' };
+  }
+
+  // show()/hide() move the host; ask() is the one repair available — go and
+  // fetch the stylesheet's TEXT instead (content.js owns that, because only it
+  // has a runtime to fetch through). Asked at most once, and never after the
+  // styles have already landed.
+  function makeStyleGate(show, hide, ask) {
+    let ready = false, asked = false;
+    try { hide(); } catch (_) { /* no host yet is not a reason to paint */ }
+    return {
+      get ready() { return ready; },
+      get asked() { return asked; },
+      ok() {
+        if (ready) return false;
+        ready = true;
+        try { show(); } catch (_) { /* the host went away under us */ }
+        return true;
+      },
+      fail() {
+        if (ready || asked) return false;
+        asked = true;
+        if (ask) { try { ask(); } catch (_) { /* nowhere to ask */ } }
+        return true;
+      },
+    };
+  }
+
+  // How long a <link> gets to fire either of its events before the gate goes
+  // asking for the text instead. A stylesheet that neither loads nor errors is
+  // rare and entirely possible (a worker restart mid-fetch).
+  const CSS_WAIT_MS = 2000;
+
   // ── markdown, for every message ────────────────────────────────────────
   // Bot output is untrusted text; so, for these purposes, is the user's own
   // (another person's, on a shared companion). Every node below is built with
@@ -1483,6 +1545,9 @@
       library: { page: null, loading: false, err: '', confirm: false, note: '' },
       connected: false,
       connKnown: false,    // false until the background has told us either way
+      // the extension was reloaded under this tab: nothing here can reach the
+      // companion again, however healthy the companion is (see contextLost)
+      reloadNeeded: false,
       bridge: '',
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
@@ -1510,6 +1575,16 @@
     // the observer that puts the host back when the page takes it away — one
     // per drawer, installed with the first attach (see watchDetach below)
     let detachWatch = null, detachRoot = null;
+    // the gate that keeps the host invisible until drawer.css is in (mount)
+    let styleGate = null;
+    // Did the styling actually land, whatever the events said? drawer.css is
+    // the only thing that makes the panel position:fixed.
+    function stylesInForce() {
+      try {
+        const p = D.el && D.el.panel;
+        return !!p && window.getComputedStyle(p).position === 'fixed';
+      } catch (_) { return false; }
+    }
     // …and the one that puts the KaTeX font link back (see repairExternals)
     let headWatch = null, headRoot = null;
 
@@ -1604,6 +1679,14 @@
       if (D.mounted && D.host && D.host.isConnected) return D;
       // mounted, and taken off the page by the page: put it back as it was
       if (D.mounted && D.host) { attach(D.host); return D; }
+      // WHERE THE STYLING IS COMING FROM — decided before a single node is
+      // made. `none` means the extension was reloaded out from under this tab
+      // and there is no url left to load anything from; the honest answer then
+      // is no drawer at all, because the alternative is the drawer's whole
+      // markup drawn raw across somebody's page. content.js says the line.
+      const plan = cssPlan(opts);
+      if (plan.mode === 'none') return D;
+
       const host = document.createElement('div');
       host.id = 'bfp-root';
       // the host lives in the page's tree, so its own critical geometry is
@@ -1616,22 +1699,59 @@
       for (const k in pin) host.style.setProperty(k, pin[k], 'important');
       if (opts.theme) host.setAttribute('data-theme', opts.theme);
 
+      // …and nothing is visible until the styles are confirmed. The hide runs
+      // inside makeStyleGate, before the host is ever attached, so there is no
+      // frame in which an unstyled drawer exists on the page.
+      const gate = makeStyleGate(
+        // visible-!important rather than removing the property: the host's
+        // inline `all: initial` has already written a visibility of its own,
+        // and so might the page — the drawer's own geometry is never left to
+        // either of them (see `pin` above)
+        () => host.style.setProperty('visibility', 'visible', 'important'),
+        () => host.style.setProperty('visibility', 'hidden', 'important'),
+        () => { if (typeof opts.onCssFail === 'function') opts.onCssFail(); });
+      styleGate = gate;
+
       const shadow = host.attachShadow({ mode: 'open' });
       // KaTeX's own stylesheet goes in FIRST so drawer.css keeps the last word
       // on anything the two both style. Its @font-face rules are inert in here
       // — a shadow root does not register fonts — which is why content.js also
       // links katex-fonts.css into the page document; without that half every
-      // formula draws in fallback serif.
+      // formula draws in fallback serif. It is a <link> and stays one: math
+      // arriving late is a glyph falling back, not a drawer over the page.
       if (opts.katexCssUrl) {
         const kl = document.createElement('link');
         kl.rel = 'stylesheet';
         kl.href = opts.katexCssUrl;
         shadow.appendChild(kl);
       }
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = opts.cssUrl || 'drawer.css';
-      shadow.appendChild(link);
+      if (plan.mode === 'inline') {
+        // the whole stylesheet as text, in one synchronous node: there is no
+        // window between the markup and its styling at all
+        const st = document.createElement('style');
+        st.setAttribute('data-bfp-css', 'text');
+        st.textContent = opts.cssText;
+        shadow.appendChild(st);
+        gate.ok();
+      } else {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = plan.href;
+        link.addEventListener('load', () => gate.ok(), { once: true });
+        link.addEventListener('error', () => gate.fail(), { once: true });
+        shadow.appendChild(link);
+        // A link that fires NEITHER event still has to end somewhere: go and
+        // ask for the text — and then look once more, because a stylesheet CAN
+        // be in force with neither event having reached us, and a drawer left
+        // invisible over a stylesheet that loaded would be this bug's mirror
+        // image. `.panel` is position:fixed in drawer.css and static in the
+        // absence of it, which is the whole test.
+        setTimeout(() => {
+          if (gate.ready) return;
+          gate.fail();
+          setTimeout(() => { if (!gate.ready && stylesInForce()) gate.ok(); }, CSS_WAIT_MS);
+        }, CSS_WAIT_MS);
+      }
 
       const wrap = document.createElement('div');
       wrap.innerHTML = shell();
@@ -2959,7 +3079,15 @@ ${markPickHtml()}
     // that is the single most important thing on screen — so it gets the actual
     // steps, in order, with the commands as copyable code, not a name-drop and
     // not a 12px grey dot.
-    const offlineHtml = () => (D.connKnown && !D.connected)
+    // …but "offline" is the wrong word for the other way this can fail. When
+    // the EXTENSION was reloaded under an open tab, the companion is running
+    // perfectly and nothing in this tab can reach it — telling that reader to
+    // go and start a server they already started is a wild goose chase. One
+    // sentence, no steps, no retry button (there is nothing to retry).
+    const offlineHtml = () => D.reloadNeeded
+      ? `<div class="notice"><b>Discuss was updated — reload this tab to reconnect.</b>` +
+        `<div class="sub">the companion is fine; this tab's copy of the extension is not</div></div>`
+      : (D.connKnown && !D.connected)
       ? `<div class="notice"><b>Companion offline — the plugin needs its local server:</b>` +
         `<ol class="steps">` +
         `<li>open Terminal</li>` +
@@ -4398,11 +4526,13 @@ ${markPickHtml()}
 
     function paintConn() {
       if (!D.mounted) return;
-      const off = D.connKnown && !D.connected;
+      const off = D.reloadNeeded || (D.connKnown && !D.connected);
       D.el.conn.classList.toggle('off', off);
-      D.el.conn.classList.toggle('pending', !D.connKnown);
+      D.el.conn.classList.toggle('pending', !D.reloadNeeded && !D.connKnown);
       D.el.conn.querySelector('.ctext').textContent =
-        !D.connKnown ? 'connecting…' : (D.connected ? 'connected' : 'companion offline — retry');
+        D.reloadNeeded ? 'reload this tab'
+          : !D.connKnown ? 'connecting…'
+          : (D.connected ? 'connected' : 'companion offline — retry');
     }
 
     // ---- the review round strip -----------------------------------------
@@ -8001,6 +8131,7 @@ ${markPickHtml()}
 
     function showPages() {
       mount();
+      if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
       D.view = 'pages';
       paintView();
       if (!D.pages.list) renderPages();
@@ -8063,7 +8194,11 @@ ${markPickHtml()}
       delete D.expanded[LIBRARY_TARGET];
       renderLibrary();
     }
-    function showThreads() { mount(); D.view = 'threads'; paintTabs(); return D; }
+    function showThreads() {
+      mount();
+      if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
+      D.view = 'threads'; paintTabs(); return D;
+    }
     // live: `page` events land here while the list is up, and nowhere else
     function refreshPages() { if (D.view === 'pages') loadPages(true); return D; }
 
@@ -8072,6 +8207,9 @@ ${markPickHtml()}
     // ---- public surface -------------------------------------------------
     function open(tab) {
       mount();
+      // mount() can now REFUSE — there is no stylesheet to be had, so there is
+      // no drawer. Everything below reads D.el, which is empty in that case.
+      if (!D.mounted) return D;
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
@@ -8116,6 +8254,7 @@ ${markPickHtml()}
 
     function beginNew(anchor) {
       mount();
+      if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
       if (!CAPS.highlights) return D;   // nothing can be anchored here
       if (standDown()) return D;        // …and no new threads on a review page
       D.pending = anchor;
@@ -8298,6 +8437,7 @@ ${markPickHtml()}
 
     function showSel(x, y) {
       mount();
+      if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
       if (!CAPS.highlights) return D;   // no pill where nothing can be marked
       if (standDown()) return D;        // …nor beside the page's own pill
       const b = D.el.selpill;
@@ -8358,6 +8498,7 @@ ${markPickHtml()}
     }
     function showPicks(x, y, ids) {
       mount();
+      if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
       const rows = (ids || []).map(threadById).filter(Boolean);
       // one thread, or none we know about, is not a choice — the caller's own
       // single-mark path has already run, so this simply shows nothing
@@ -8666,6 +8807,49 @@ ${markPickHtml()}
       // and false for ever for a guest — the button is not drawn at all.
       // (a METHOD named canRun would clobber the flag itself — see `opened`)
       setCanRun: on => { D.canRun = !!on; render(); return D; },
+
+      // ---- styles, late ---------------------------------------------------
+      // The repair for a <link> that failed or never answered: content.js
+      // fetches drawer.css as TEXT and hands it over. Also the way a drawer
+      // that refused to mount (no url at all) gets a second chance.
+      setCssText(text) {
+        const css = typeof text === 'string' ? text.trim() : '';
+        if (!css) return D;
+        opts.cssText = css;
+        if (!D.mounted) { mount(); return D; }
+        if (styleGate && styleGate.ready) return D;   // the link won the race
+        try {
+          const st = document.createElement('style');
+          st.setAttribute('data-bfp-css', 'text');
+          st.textContent = css;
+          D.shadow.insertBefore(st, D.shadow.firstChild);
+        } catch (_) { return D; }
+        if (styleGate) styleGate.ok();
+        return D;
+      },
+      // is anything on screen allowed to be? (the harness asserts on it)
+      stylesReady: () => !!(styleGate && styleGate.ready),
+
+      // ---- the extension went away ---------------------------------------
+      // An orphaned content script cannot fetch, cannot message and cannot
+      // recover; only reloading the tab puts a live one back. So the drawer
+      // stops fighting the page for its host, says the one line where the
+      // "companion offline" card would be — the companion is fine, this tab is
+      // not — and, if it never got its styles, takes itself off the page
+      // rather than sit there as raw text over somebody's reading.
+      contextLost() {
+        D.reloadNeeded = true;
+        try { if (detachWatch) detachWatch.disconnect(); } catch (_) { /* gone already */ }
+        try { if (headWatch) headWatch.disconnect(); } catch (_) { /* gone already */ }
+        detachWatch = headWatch = detachRoot = headRoot = null;
+        if (D.mounted && !(styleGate && styleGate.ready)) {
+          try { D.host.remove(); } catch (_) { /* not on the page anyway */ }
+          D.mounted = false;
+          return D;
+        }
+        if (D.mounted) { paintConn(); render(); }
+        return D;
+      },
       // One Esc, one layer. content.js's document-level handler asks this
       // first, so a lightbox closes instead of the whole drawer.
       escape: () => {
@@ -8697,6 +8881,7 @@ ${markPickHtml()}
   const api = {
     create, authorColor, isBot, HINT, PAGE_TARGET,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
+    cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
     scanMath, protectMath,                                  // test/math.test.mjs
     msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs

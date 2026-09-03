@@ -566,6 +566,13 @@
       waitTimer = null;
       portTimer = null;
       port = null;
+      // …and the drawer stops pretending. It cannot reach the companion again
+      // however healthy the companion is, so it says THAT rather than drawing
+      // the "start your local server" card at somebody whose server is up —
+      // and if it never got its stylesheet (getURL is exactly what dies here)
+      // it takes itself off the page instead of standing there as raw text.
+      try { if (drawer && drawer.contextLost) drawer.contextLost(); }
+      catch (_) { /* a drawer that will not be told is not the emergency */ }
     });
   const alive = (fn, fallback) => GUARD.run(fn, fallback);
   // chrome.runtime.getURL that cannot throw. '' means "no extension any more",
@@ -1656,6 +1663,10 @@
   }
 
   async function activate(openTab) {
+    // An orphaned script has no runtime: no stylesheet url, no messages, no
+    // way back. Mounting here would put an unstyled drawer over the page and
+    // then tell the reader their companion was down. Say the line, do nothing.
+    if (!extensionAlive()) { GUARD.lose(); return null; }
     if (!active) {
       active = true;
       whoami();
@@ -1848,6 +1859,43 @@
     (document.head || document.documentElement).appendChild(link);
   }
 
+  // ---- drawer.css, as TEXT ---------------------------------------------------
+  //
+  // The drawer's shadow root used to get its styling from a <link>, and a
+  // shadow root's <link> does not block paint: the markup is drawn the instant
+  // it is inserted and re-drawn when the CSS lands, so a slow fetch is a
+  // window in which the whole drawer is raw text over the page. Worse, the
+  // fetch can simply never land — an orphaned content script's getURL answers
+  // nothing, and the old relative fallback ('drawer.css') resolved against the
+  // SITE, where a single-page app answers index.html to everything. That flash
+  // then never ends.
+  //
+  // So the drawer keeps itself INVISIBLE until its styling is confirmed, and
+  // this is the repair it asks for when the link never confirms: the same
+  // stylesheet fetched as text, once per tab, handed over to be inlined. It is
+  // deliberately lazy — on every ordinary boot the link answers and this never
+  // runs at all — and it goes through the runtime, so an SPA's index.html
+  // (which is what a relative url used to fetch) is recognised and refused.
+  let cssText = null;
+  let cssWanted = null;
+  function ensureCss() {
+    if (cssText || cssWanted) return cssWanted;
+    const url = extUrl('drawer.css');
+    if (!url) return null;                       // no extension left to ask
+    cssWanted = fetch(url)
+      .then(r => (r && r.ok ? r.text() : ''))
+      .then(t => {
+        const css = String(t || '').trim();
+        // an SPA answering index.html to a 404 is not a stylesheet
+        if (!css || /^\s*</.test(css)) return null;
+        cssText = css;
+        try { if (drawer && drawer.setCssText) drawer.setCssText(css); } catch (_) { /* no drawer yet */ }
+        return css;
+      })
+      .catch(() => null);
+    return cssWanted;
+  }
+
   // ---- drawer wiring ---------------------------------------------------------
   function makeDrawer() {
     ensureMathFonts();
@@ -1885,9 +1933,17 @@
       // of the tab. ensureMathFonts is by-id idempotent, so this costs a
       // lookup on the ordinary path.
       onAttach: () => ensureMathFonts(),
-      cssUrl: extUrl('drawer.css') || 'drawer.css',
+      // NO relative fallback on either of these. '' means the extension was
+      // reloaded under this tab, and a relative href would be resolved against
+      // the SITE — which on a single-page app answers its own index.html and
+      // leaves the drawer painting for ever without styles.
+      cssUrl: extUrl('drawer.css'),
+      // …and the same stylesheet as text, if the fetch has already answered
+      cssText,
+      // the drawer's link failed, or never said either way: go and get the text
+      onCssFail: () => ensureCss(),
       // the rest of KaTeX's stylesheet, inside the shadow root (see above)
-      katexCssUrl: extUrl('vendor/katex/katex.min.css') || 'vendor/katex/katex.min.css',
+      katexCssUrl: extUrl('vendor/katex/katex.min.css'),
 
       onSelect: kind => commitSelection(kind),
 
