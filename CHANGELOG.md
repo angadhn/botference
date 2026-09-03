@@ -2,6 +2,11 @@
 
 ## 2026-09-03
 
+- **GPT-6 Astra is in the Codex model pickers** (TUI, council web, plugin),
+  with its 1.05M context window. It only answers when Codex bills an OpenAI
+  API key — on a ChatGPT plan the CLI refuses it with "not supported when
+  using Codex with a ChatGPT account" — so flip the council's billing switch
+  to a key before picking it. Codex CLI itself must be 0.153 or newer.
 - **Council web: attach markdown and other text files.** The paper-clip
   accepted images, PDFs, spreadsheets and Word files and silently ignored a
   `.md`. Text files have no magic bytes, so the browser now sends the filename

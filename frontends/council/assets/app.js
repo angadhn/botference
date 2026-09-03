@@ -190,7 +190,7 @@
   // fallback model lists if completion_context never arrived (offline-ish boot)
   const FALLBACK_MODELS = {
     claude: ['claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+    codex: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
   };
   // fallback completion context: the bridge emits completion_context exactly
   // once at startup, so a client that connects after the server's history was

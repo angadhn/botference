@@ -563,6 +563,7 @@ Supported models:
   claude-opus-4-7       Anthropic Opus 4.7  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
   claude-haiku-4-5      Anthropic Haiku 4.5  (200k context)
+  gpt-6-astra           OpenAI GPT-6 Astra   (1.05M context; needs an OpenAI API key — codex refuses it on a ChatGPT plan)
   gpt-5.6-sol           OpenAI GPT-5.6 Sol   (1.05M context; default Codex participant)
   gpt-5.6-terra         OpenAI GPT-5.6 Terra (1.05M context, cheaper)
   gpt-5.6-luna          OpenAI GPT-5.6 Luna  (1.05M context, fastest)
