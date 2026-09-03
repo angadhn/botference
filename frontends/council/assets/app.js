@@ -342,7 +342,10 @@
     return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
   }
   function agentCard(a) {
-    const cur = state.models[a] || '';
+    // the bridge reports the model as the CLI names it — "claude-fable-5[1m]"
+    // for a 1M-context run — while the picker lists plain ids. Match on the
+    // plain id, or a live Fable 5 shows as whatever option comes first.
+    const cur = String(state.models[a] || '').replace(/\[1m\]$/, '');
     const ex = state.exhausted[a];
     const st = state.ctxStat[a];
     const pct = st && st.pct != null ? Math.max(0, Math.min(100, st.pct)) : null;
