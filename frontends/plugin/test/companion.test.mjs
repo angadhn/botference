@@ -2128,20 +2128,51 @@ async function main() {
       assert.equal(sent().length, 0, 'no tag, no pill, no history: no bots');
     });
 
-    await test('PAGE CHAT is untouched by any of it', async () => {
+    // PAGE CHAT has the same memory now (2026-09-04). It used to be excluded,
+    // and what that cost was the tag: every page-chat question to one bot had
+    // to carry "@claude" again or fall back to nobody.
+    await test('PAGE CHAT remembers who it is talking to, exactly as a thread does', async () => {
       fs.writeFileSync(stickyLog, '');
       await POST(sticky.base, '/reply', { url: SU, thread_id: '__page__', text: '@claude a page question' });
       assert.ok((await turnFor('a page question')).startsWith('@claude '));
       fs.writeFileSync(stickyLog, '');
-      // an ordinary page's page chat has no sticky address and never grows one
       const r = await POST(sticky.base, '/reply', { url: SU, thread_id: '__page__', text: 'and a plain one' });
-      assert.ok(!r.json.queued, 'page chat keeps its own rule');
-      await sleep(300);
-      assert.equal(sent().length, 0);
-      // …and a route on the wire cannot talk it into one
+      assert.equal(r.json.queued, true, 'the untagged follow-up is not a note to self');
+      const plain = await turnFor('and a plain one');
+      assert.ok(plain.startsWith('@claude '), `the page chat's address held — got ${JSON.stringify(plain.slice(0, 40))}`);
+      assert.ok(!/@claude and a plain one/.test(plain), 'and the reader\'s words are untouched');
+    });
+
+    await test('…and a route on the wire aims it, and sticks', async () => {
+      fs.writeFileSync(stickyLog, '');
       const forced = await POST(sticky.base, '/reply',
-        { url: SU, thread_id: '__page__', text: 'nor this one', route: 'claude' });
-      assert.ok(!forced.json.queued);
+        { url: SU, thread_id: '__page__', text: 'and now this one', route: 'codex' });
+      assert.equal(forced.json.queued, true);
+      assert.ok((await turnFor('and now this one')).startsWith('@codex '), 'the pill routed it');
+      const p = (await GET(sticky.base, `/page?url=${encodeURIComponent(SU)}`)).json;
+      const mine = (p.page_chat || []).filter(m => m.text === 'and now this one');
+      assert.equal(mine.length, 1);
+      assert.equal(mine[0].route, '@codex ', 'the record remembers where it went');
+      // a bot's own answer in the page chat is not the reader re-aiming it
+      await waitFor(async () => {
+        const q = (await GET(sticky.base, `/page?url=${encodeURIComponent(SU)}`)).json;
+        return (q.page_chat || []).some(m => m.author === 'codex');
+      }, 'codex to have answered in the page chat');
+      fs.writeFileSync(stickyLog, '');
+      await POST(sticky.base, '/reply', { url: SU, thread_id: '__page__', text: 'one more page thing' });
+      assert.ok((await turnFor('one more page thing')).startsWith('@codex '));
+    });
+
+    await test('…and Note in the page chat summons nobody, and unsticks it', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const r = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: '__page__', text: 'a note to myself about this page', route: 'none' });
+      assert.ok(!r.json.queued, 'Note is a real choice here too');
+      await sleep(300);
+      assert.equal(sent().length, 0, 'and no turn was sent');
+      const again = await POST(sticky.base, '/reply',
+        { url: SU, thread_id: '__page__', text: 'and another note' });
+      assert.ok(!again.json.queued, 'an ordinary page with no address left is a notebook again');
       await sleep(300);
       assert.equal(sent().length, 0);
     });

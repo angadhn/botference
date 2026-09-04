@@ -1275,6 +1275,33 @@ console.log('\ncompanion — untagged page chat on an artifact goes to @all');
     assert.ok(turn.startsWith('@codex '), `still strict routing — got ${JSON.stringify(turn.slice(0, 40))}`);
   });
 
+  // The memory (2026-09-04): page chat carries the pill row now, and the room
+  // is its DEFAULT, not its only answer. A reader who tagged one bot goes on
+  // talking to that bot without retyping the tag.
+  await test('…and the untagged message after it goes to that bot, not to the room', async () => {
+    fs.writeFileSync(logFile, '');
+    const r = await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: 'and in vacuum?' });
+    assert.equal(r.json.queued, true);
+    await waitFor(() => inputs(logFile).some(t => /and in vacuum\?/.test(t)), 'the turn');
+    const turn = inputs(logFile).find(t => /and in vacuum\?/.test(t));
+    assert.ok(turn.startsWith('@codex '), `the memory beats the artifact default — got ${JSON.stringify(turn.slice(0, 40))}`);
+  });
+
+  await test('Note on an artifact page chat summons nobody, and the room is the default again', async () => {
+    fs.writeFileSync(logFile, '');
+    const r = await POST(base, '/reply',
+      { url: a.url, thread_id: '__page__', text: 'jotting this down', route: 'none' });
+    assert.ok(!r.json.queued, 'Note is a real choice, artifact or not');
+    await sleep(400);
+    assert.equal(inputs(logFile).length, 0, 'and no turn was sent');
+    // …and with nobody addressed any more, the artifact rule is what is left
+    const again = await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: 'so what next?' });
+    assert.equal(again.json.queued, true);
+    await waitFor(() => inputs(logFile).some(t => /so what next\?/.test(t)), 'the turn');
+    const turn = inputs(logFile).find(t => /so what next\?/.test(t));
+    assert.ok(turn.startsWith('@all '), `back to the room — got ${JSON.stringify(turn.slice(0, 40))}`);
+  });
+
   await test('an untagged COMMENT THREAD on the same page still summons nobody', async () => {
     fs.writeFileSync(logFile, '');
     const r = await POST(base, '/thread', {

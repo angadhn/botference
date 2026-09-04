@@ -3699,12 +3699,37 @@ async function selftest() {
     card.querySelector('.rpill[data-route="none"]').click();
     await sleep(60);
   }
-  // Page chat has a routing rule of its own (untaggedGoesToAll) and must not
-  // grow a second, contradictory one.
+  // PAGE CHAT HAS THE ROW TOO (2026-09-04). It was withheld here on the
+  // reasoning that page chat's untagged rule is a different one; what that
+  // actually cost was the memory and the sight of it — the one composer where
+  // the reader could not see who their next sentence would reach. This page
+  // chat's last human message tagged claude, so claude is who it is talking to.
   d.open('chat');
   await sleep(60);
-  check('page chat has no pill row',
-    !S.querySelector('.pane[data-pane="chat"] .composer .routes'));
+  {
+    const row = S.querySelector('.pane[data-pane="chat"] .composer .routes');
+    check('page chat carries a pill row', !!row);
+    check('\u2026the same four, in the same order',
+      [...row.querySelectorAll('.rpill')].map(b => b.dataset.route).join(',') === 'none,claude,codex,all');
+    const lit = () => [...row.querySelectorAll('.rpill.on')].map(b => b.dataset.route).join(',');
+    check('\u2026lit at the bot this page chat last addressed', lit() === 'claude');
+    const box = S.querySelector('.pane[data-pane="chat"] .composer textarea');
+    box.value = '@codex what do you think?';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(40);
+    check('typing a tag in page chat lights that bot at once', lit() === 'codex');
+    box.value = '';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(40);
+    check('\u2026and clearing it hands the row back to the conversation', lit() === 'claude');
+    S.querySelector('.pane[data-pane="chat"] .rpill[data-route="all"]').click();
+    await sleep(60);
+    const row2 = S.querySelector('.pane[data-pane="chat"] .composer .routes');
+    check('clicking a pill in page chat aims the next message',
+      [...row2.querySelectorAll('.rpill.on')].map(b => b.dataset.route).join(',') === 'all');
+    S.querySelector('.pane[data-pane="chat"] .rpill[data-route="claude"]').click();
+    await sleep(60);
+  }
   d.open('comments');
   await sleep(60);
 

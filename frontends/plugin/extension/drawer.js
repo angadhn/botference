@@ -56,7 +56,7 @@
 //   onSave({quote,prefix,suffix,text,route})  new anchored thread committed
 //   onCancelNew()                       the pending new-thread card dismissed
 //   onReply(threadId, text, route)      threadId '__page__' = page chat
-//     `route` (threads only) is the composer pill: 'none'|'claude'|'codex'|
+//     `route` is the composer pill: 'none'|'claude'|'codex'|
 //     'all' — who this message is for when its words tag nobody
 //   onEdit(threadId, ts, text)
 //   onDelete(threadId, ts|null)         null ts = delete the whole thread
@@ -123,7 +123,7 @@
 //   onLibrary()                         → {ok, page|null}   the library record
 //                                         (GET /page on the reserved url).
 //                                         page:null = nothing said in it yet
-//   onLibraryReply(text)                → same answers as onReply — it IS a
+//   onLibraryReply(text, route)         → same answers as onReply — it IS a
 //                                         reply, on a page nobody is standing
 //                                         on, so the url travels instead of
 //                                         being assumed
@@ -297,16 +297,22 @@
   // steps out of a conversation. It is also the default of a thread nobody has
   // ever addressed, which is Discuss's original rule, unmoved.
   //
-  // Threads only. Page chat's routing is a different rule with a different
-  // reason (server.mjs untaggedGoesToAll) and two pill rows disagreeing about
-  // what plain text means would be worse than no pills at all.
+  // EVERY composer, page chat and the library included (2026-09-04). The row
+  // was withheld from page chat on the reasoning that its untagged rule is a
+  // different one (server.mjs untaggedGoesToAll) and a second row would
+  // contradict it. In use that got it backwards: page chat is the one place
+  // where the reader could NOT see who their next sentence would reach — the
+  // room on a project artifact, nobody anywhere else — and the answer to two
+  // rules is to draw the address, not to hide it. So page chat has the row,
+  // lit at All on a confirmed artifact and at Note elsewhere, and it remembers
+  // who the reader last wrote to exactly as a thread does.
   const ROUTE_LABEL = { none: 'Note', all: 'All' };
   const routeLabel = h => ROUTE_LABEL[h] || (h.charAt(0).toUpperCase() + h.slice(1));
   const ROUTE_TIP = {
-    none: 'a note in this thread — no bot is summoned',
-    all: 'both bots answer this thread',
+    none: 'a note here — no bot is summoned',
+    all: 'both bots answer',
   };
-  const routeTip = h => ROUTE_TIP[h] || `@${h} answers this thread — and untagged replies keep going to @${h}`;
+  const routeTip = h => ROUTE_TIP[h] || `@${h} answers — and untagged messages keep going to @${h}`;
   // ⧉ is the same overlap glyph the council's copy button draws as an SVG.
   // A glyph and not a word: the drawer's message controls are a 24px row in
   // the corner of a 420px column, and "copy" would not fit beside ✎ and ✕.
@@ -2443,14 +2449,24 @@ ${markPickHtml()}
     // is not an instruction from the reader), `tools` narration counts for
     // nothing, and a message says where it went either in its words or in the
     // `route` the companion stamped on it when a pill said it instead.
+    //
+    // Where a conversation with no address of its own STARTS. Everywhere in
+    // Discuss that is Note — except page chat on a confirmed project artifact,
+    // which is a council chat, and the council's rule is that plain text is
+    // the room's (server.mjs untaggedGoesToAll). The pill has to say so or it
+    // lies about the very message it sits under.
+    function defaultRouteOf(target) {
+      return (target === PAGE_TARGET && D.project && D.project.confirmed) ? 'all' : 'none';
+    }
     function stickyRouteOf(target) {
       const msgs = realMsgs(target);
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
         if (!m || m.kind === 'tools' || isBot(m.author)) continue;
-        return routeWordOf(m.text) || String(m.route || '').trim().replace(/^@/, '') || 'none';
+        return routeWordOf(m.text) || String(m.route || '').trim().replace(/^@/, '')
+          || defaultRouteOf(target);
       }
-      return 'none';
+      return defaultRouteOf(target);
     }
     // What the NEXT message in this composer will do: the pill the reader
     // clicked, else the thread's sticky address — overruled live by a tag
@@ -3959,7 +3975,7 @@ ${markPickHtml()}
           ${statusHtml(PAGE_TARGET)}
           ${(f => (f ? `<div class="chatfoot">${f}</div>` : ''))(reviewHtml())}
         </div>
-        ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '')}
+        ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '', true)}
       </div>`;
     }
 
@@ -4407,7 +4423,7 @@ ${markPickHtml()}
             : `<div class="empty"><b>Ask about everything you've read</b>The bots read your saved pages, quotes and comments to answer — mention one to begin.</div>`}
           ${note}
           ${statusHtml(T)}
-          ${composerHtml(T, 'Ask about everything you’ve read…')}
+          ${composerHtml(T, 'Ask about everything you’ve read…', '', '', true)}
         </div>`;
       // The whole shadow root, not just this pane: fillMarkdown empties the
       // slot map as it goes, so filling a subtree would strand every slot the
@@ -5997,7 +6013,13 @@ ${markPickHtml()}
         // also SETTLES the row — a message that typed "@codex" leaves Codex lit,
         // so the next untagged reply goes where the reader can see it will.
         const route = routeNow(target);
-        D.routes[target] = route;
+        // …with one honest exception. On a confirmed artifact's page chat a
+        // Note is a choice about THIS message only: the companion has no way to
+        // stamp "nobody" on the record, so the next untagged message there goes
+        // to the room again (untaggedGoesToAll). The row must show what will
+        // actually happen, not what the reader last clicked.
+        D.routes[target] = (route === 'none' && defaultRouteOf(target) === 'all')
+          ? 'all' : route;
         // …and the thread the reader just wrote in becomes the one they are
         // looking at, and stays it while the answer arrives (holdOn). The
         // spotlight is the focus the drawer already has; a new thread is
@@ -6056,7 +6078,7 @@ ${markPickHtml()}
           // the library is a page chat on a page nobody is standing on, so the
           // send says WHICH page rather than letting content.js assume this one
           : target === LIBRARY_TARGET
-            ? await cb('onLibraryReply')(entry.text)
+            ? await cb('onLibraryReply')(entry.text, entry.route)
             : await cb('onReply')(target, entry.text, entry.route);
       } catch (e) {
         res = { ok: false, error: String((e && e.message) || e) };

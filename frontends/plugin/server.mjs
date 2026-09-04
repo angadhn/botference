@@ -1498,17 +1498,25 @@ function untaggedGoesToAll(page, target, text) {
 // not an absent one, which is how a reader steps out of a conversation and
 // writes a plain note under a passage they had been discussing.
 //
-// COMMENT THREADS ONLY. Page chat is untouched by any of this: its untagged
-// rule is the one `untaggedGoesToAll` states (the room on a project artifact,
-// nobody anywhere else) and a sticky address there would quietly rewrite it.
+// PAGE CHAT TOO (2026-09-04). It was excluded on the reasoning that
+// `untaggedGoesToAll` was already its rule and a second one would rewrite it.
+// What that actually cost the reader was the memory: every page-chat message
+// to one bot had to carry the tag again, or fall back to the room (or to
+// nobody, on an ordinary page). So the precedence above runs there as well and
+// the artifact rule becomes what it always was underneath — the DEFAULT of a
+// page chat nobody has addressed yet, applied last, after the words, the pill
+// and the memory have all said nothing.
 const PILL_ROUTE = { claude: '@claude ', codex: '@codex ', all: '@all ', none: '' };
-function addressOf(target, text, pill, msgs) {
-  if (target === store.PAGE_CHAT) return '';
+function addressOf(target, text, pill, msgs, page = null) {
   const tagged = routePrefix(text);
   if (tagged) return tagged;
   const p = String(pill || '').trim().toLowerCase().replace(/^@/, '');
+  // `none` is a real answer and stops here: it is how a reader writes a note
+  // in a conversation they have been having, on a project artifact included.
   if (p && Object.prototype.hasOwnProperty.call(PILL_ROUTE, p)) return PILL_ROUTE[p];
-  return stickyRoute(msgs);
+  const sticky = stickyRoute(msgs);
+  if (sticky) return sticky;
+  return (page && untaggedGoesToAll(page, target, text)) ? '@all ' : '';
 }
 
 // an @-mention in any message — first comment or tenth reply — summons the
@@ -1616,9 +1624,14 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
   // because that is where the write scope lives (chatFor's taxonomy is
   // otherwise the whole rule, and this does not weaken it: the lane still
   // decides the scope, and a page cannot ask for a lane it is not filed in).
-  const { forceAll, lane, ...rest } = extras;
+  const { forceAll, lane, addressed, ...rest } = extras;
   extras = rest;
-  const untaggedAll = !!forceAll || untaggedGoesToAll(page, target, text);
+  // `addressed` is the caller saying "I have already resolved this one"
+  // (addressOf, which now applies the artifact rule itself as the LAST word,
+  // after the words, the pill and the conversation's memory). Without it the
+  // flag would overrule them all — and a reader who picked Note on an artifact
+  // page would be answered by the room they had just stepped out of.
+  const untaggedAll = !!forceAll || (!addressed && untaggedGoesToAll(page, target, text));
   // the thread's own address, resolved by the caller and carried through
   // `extras` into the job, where chat.routeOf turns it into the envelope's
   // prefix for a message that never typed one
@@ -3355,7 +3368,7 @@ export function handler(req, res) {
       const target = data.thread_id || store.PAGE_CHAT;
       // read the thread BEFORE this message joins it: the sticky address is who
       // the reader was talking to up to now, and appendMsg is one line below
-      const route = addressOf(target, text, data.route, store.msgsOf(page, target));
+      const route = addressOf(target, text, data.route, store.msgsOf(page, target), page);
       const docxDigest = docxDigestOf(res, data, text, route);
       if (docxDigest === null) return;
       const dedupe = dedupeCheck([store.pageKey(page.url), target, me.handle, text.trim()]);
@@ -3370,7 +3383,8 @@ export function handler(req, res) {
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      const summoned = summon(page, target, text, { ...contextExtras(data, docxDigest), routeHint: route }, me);
+      const summoned = summon(page, target, text,
+        { ...contextExtras(data, docxDigest), routeHint: route, addressed: true }, me);
       // the reading room posted a form: back to the page, carrying any refusal
       if (data._form) return seeOther(res, backTo(data, page, anchor, summoned.reason));
       ok(res, { msg, ...summoned });

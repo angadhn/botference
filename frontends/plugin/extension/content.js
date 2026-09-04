@@ -2550,9 +2550,9 @@
         LIBRARY = (d && d.url) ? d : null;
         return { ok: true, page: LIBRARY };
       },
-      onLibraryReply: async text => {
+      onLibraryReply: async (text, route) => {
         const r = await api('POST', '/reply',
-          { url: LIBRARY_URL, thread_id: PAGE_TARGET, text });
+          { url: LIBRARY_URL, thread_id: PAGE_TARGET, text, ...(route ? { route } : {}) });
         if (!r.ok) return failure(r);
         const d = r.data || {};
         if (d.msg) pushLibraryMsg(d.msg);
