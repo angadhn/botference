@@ -217,7 +217,7 @@ class TestRequestShape:
         )
         assert result.ok
         assert seen[0]["headers"]["x-goog-api-key"] == "k-123"
-        assert seen[0]["url"].endswith("/gemini-2.5-flash:generateContent")
+        assert seen[0]["url"].endswith(f"/{vw.DEFAULT_MODEL}:generateContent")
         assert seen[0]["timeout"] == 120
 
 
@@ -342,3 +342,18 @@ class TestFormatReport:
     def test_a_failure_says_so_out_loud(self):
         text = vw.format_report(vw.WatchResult(url=URL, error="It is private."))
         assert text == f"[Video not watched: {URL} — It is private.]"
+
+
+def test_503_falls_through_the_model_chain(tmp_path):
+    import video_watch as vw
+    seen = []
+    def http(url, body, headers, timeout):
+        seen.append(url)
+        if len(seen) < 3:
+            return 503, b'{"error":{"message":"high demand"}}'
+        return 200, b'{"candidates":[{"content":{"parts":[{"text":"Report."}]}}]}'
+    r = vw.watch("https://www.youtube.com/watch?v=jNQXAC9IVRw", key="k", http=http,
+                 cache_dir=tmp_path, use_cache=False)
+    assert not r.error and r.text == "Report."
+    assert [s.split("/")[-1].split(":")[0] for s in seen] == [vw.DEFAULT_MODEL, *vw.FALLBACK_MODELS]
+    assert r.model == vw.FALLBACK_MODELS[-1]

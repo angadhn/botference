@@ -28,7 +28,13 @@ from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# Google retires numbered Flash models for new keys (2.5 answered 404 "no
+# longer available to new users" on 2026-09-04) and single models answer 503
+# "high demand" for minutes at a time. So: the newest Flash that watched a
+# video on that date, then the alias, then the lite model, tried in turn on a
+# 503. GEMINI_WATCH_MODEL overrides the first.
+DEFAULT_MODEL = os.environ.get("GEMINI_WATCH_MODEL", "gemini-3.8-flash")
+FALLBACK_MODELS = ("gemini-flash-latest", "gemini-3.5-flash-lite")
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 
@@ -362,6 +368,11 @@ def _error_for(status: int, payload: dict, raw: bytes, url: str) -> str:
             "videos can be watched."
         )
     if status == 404:
+        if "model" in (detail or "").lower():
+            return (
+                f"Gemini says the model is not available to this key: {detail} "
+                "Set GEMINI_WATCH_MODEL to a current model name."
+            )
         return f"Gemini could not find {url}. Check the link."
     snippet = detail or (raw[:200].decode("utf-8", "replace") if raw else "")
     return f"Gemini could not watch the video (HTTP {status}). {snippet}".strip()
@@ -377,6 +388,7 @@ def watch(
     http: Optional[HttpFn] = None,
     cache_dir: Optional[Path] = None,
     use_cache: bool = True,
+    _fallbacks: Optional[tuple] = None,
 ) -> WatchResult:
     """Have Gemini watch *url* and write a report.
 
@@ -388,6 +400,8 @@ def watch(
             url=url, model=model, question=question,
             error=f"That is not a YouTube link: {url or '(nothing)'}",
         )
+    if _fallbacks is None:
+        _fallbacks = FALLBACK_MODELS if model == DEFAULT_MODEL else ()
     api_key = key if key is not None else gemini_key()
     if not api_key:
         return WatchResult(
@@ -430,6 +444,13 @@ def watch(
     except (ValueError, UnicodeDecodeError):
         payload = {}
 
+    if status == 503 and _fallbacks:
+        # "high demand" on this model: the next one usually answers
+        nxt, rest = _fallbacks[0], _fallbacks[1:]
+        log.info("video-watch: %s busy (503), trying %s", model, nxt)
+        return watch(url, question, model=nxt, timeout=timeout, key=api_key,
+                     http=http, cache_dir=cache_dir, use_cache=use_cache,
+                     _fallbacks=rest)
     if status != 200:
         return WatchResult(
             url=url, model=model, question=question,
