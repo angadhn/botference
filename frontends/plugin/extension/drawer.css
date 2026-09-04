@@ -307,13 +307,20 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    `bottom: 0` can never carry it past the composer's top edge, and everywhere
    above that it holds against the pane's own bottom. Opaque, because content
    scrolls underneath it. */
-.chatfoot {
+/* The dock: the action row and the composer, one opaque block pinned to the
+   bottom of the pane. Sticky, so it takes its own room at the end of the card
+   and can never hide the last message or a chip under it. */
+.pane[data-pane="chat"] { padding-bottom: 0 }
+.card.chatpane { margin-bottom: 0; padding-bottom: 0 }
+.chatpane .chatdock {
   position: sticky; bottom: 0; z-index: 2;
-  margin: 6px 0 0; padding: 6px 0 2px;
+  margin: 8px -12px 0; padding: 6px 12px 12px;
   background: var(--card);
   border-top: 1px solid var(--card-line);
+  border-radius: 0 0 10px 0;
 }
-.mkart { margin-left: auto }
+.chatfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 0 6px }
+.mkart { margin-left: 0 }
 /* the brief, and which project it goes in: one line, and the input takes
    whatever the buttons leave */
 .mkrow { margin-top: 6px }
@@ -1975,7 +1982,8 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .composer[data-target="__edit__"] .crow { display: flex }
 /* while a message in this card is being edited, the card's own Reply box is
    dead weight — the editor replaces it until save/cancel re-renders */
-.card:has(.composer[data-target="__edit__"]) > .composer { display: none }
+.card:has(.composer[data-target="__edit__"]) > .composer,
+.card:has(.composer[data-target="__edit__"]) > .chatdock > .composer { display: none }
 .composer .hint { flex: 1 1 190px; min-width: 0; font: 12px/1.35 var(--sans); color: var(--muted) }
 .composer .send { background: var(--accent); color: #fff; border-color: var(--accent); flex: none }
 .composer .send:hover { background: var(--accent-hover); color: #fff; border-color: var(--accent-hover) }

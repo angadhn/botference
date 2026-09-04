@@ -3962,20 +3962,25 @@ ${markPickHtml()}
       const empty = D.project
         ? `<div class="empty"><b>A new chat in ${esc(D.project.project_title || D.project.project_id)}</b>Ask about this page — plain text goes to both bots, or tag one. It files with the project\u2019s other chats.</div>`
         : `<div class="empty"><b>Ask about this page</b>Anything at all — mention a bot to get an answer.</div>`;
-      // The chat card is in two parts, and the seam is what pins the review
-      // row. Everything that scrolls is inside `.chatbody`; the row (and the
-      // artifacts it has produced) is the LAST thing in it and sticks to the
-      // bottom, so it can never travel further down than the composer's top
-      // edge \u2014 which is where it belongs. The composer stays a direct child of
-      // the card, because a stylesheet elsewhere addresses it as one.
+      // The chat card is in two parts. Everything that scrolls is inside
+      // `.chatbody`. The DOCK — the review/artifact row AND the composer, as one
+      // opaque block — is the card's last child and sticks to the bottom of the
+      // pane, so the box to type in is always in view and nothing in the list
+      // is ever hidden under it (a sticky block takes its own room at the end,
+      // so scrolling to the bottom shows the last message above the dock).
+      // The row used to sit alone inside `.chatbody`: it floated over the
+      // messages with the composer below the fold, and covered the offer
+      // chips that end a bot's reply — the reader could not click "Start it".
       D.el.chat.innerHTML = offlineHtml() + warnHtml() + archiveHtml() + blogHtml()
         + projectTaskCardHtml() + taskCardHtml() + `<div class="card chatpane" data-thread="${PAGE_TARGET}" style="--author:${MY_COLOR}">
         <div class="chatbody">
           ${body ? `<div class="thread">${body}</div>` : empty}
           ${statusHtml(PAGE_TARGET)}
-          ${(f => (f ? `<div class="chatfoot">${f}</div>` : ''))(reviewHtml())}
         </div>
-        ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '', true)}
+        <div class="chatdock">
+          ${(f => (f ? `<div class="chatfoot">${f}</div>` : ''))(reviewHtml())}
+          ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '', true)}
+        </div>
       </div>`;
     }
 

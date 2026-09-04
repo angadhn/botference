@@ -6493,15 +6493,20 @@ async function selftest() {
     // card and it sticks, so it can never travel below the composer and never
     // scrolls out of sight above it.
     {
+      // …and since 2026-09-04 the row and the composer are ONE dock: the card's
+      // last child, sticky as a whole, so the box to type in is always in view
+      // and a chip at the end of the list is never hidden under the row.
       const pane = S.querySelector('.pane[data-pane="chat"]');
-      const body = S.querySelector('.pane[data-pane="chat"] .chatbody');
-      const foot = S.querySelector('.pane[data-pane="chat"] .chatfoot');
-      const comp = S.querySelector('.pane[data-pane="chat"] .card.chatpane > .composer');
+      const card = S.querySelector('.pane[data-pane="chat"] .card.chatpane');
+      const dock = S.querySelector('.pane[data-pane="chat"] .card.chatpane > .chatdock');
+      const foot = S.querySelector('.pane[data-pane="chat"] .chatdock > .chatfoot');
+      const comp = S.querySelector('.pane[data-pane="chat"] .chatdock > .composer');
       check('…at the FOOT of the pane, directly above the composer',
-        !!foot && !!body && body.lastElementChild === foot
-        && !!comp && !!(foot.compareDocumentPosition(comp) & Node.DOCUMENT_POSITION_FOLLOWING));
+        !!dock && !!card && card.lastElementChild === dock && !!foot && !!comp
+        && dock.lastElementChild === comp
+        && !!(foot.compareDocumentPosition(comp) & Node.DOCUMENT_POSITION_FOLLOWING));
       check('…and pinned there rather than scrolled away with the chat',
-        !!foot && getComputedStyle(foot).position === 'sticky');
+        !!dock && getComputedStyle(dock).position === 'sticky');
       if (pane && pane.scrollHeight > pane.clientHeight + 40) {
         pane.scrollTop = 0;
         await sleep(40);
