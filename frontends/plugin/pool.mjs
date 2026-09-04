@@ -66,8 +66,14 @@ export const laneOf = url => `pg:${String(url || '')}`;
 
 // `make` is the seam the tests use: a fake chat with the same surface, so the
 // dispatcher's rules can be proved without spawning anything.
+// Pool children serve ORDINARY pages, whose bots may write nothing — and,
+// since 2026-09-04, may run neither `git` nor `gh`: their working directory is
+// the companion's own workspace, and a bot that "helpfully" committed a page it
+// had built there swept the developer's half-finished files into its commit.
+// Project lanes (workspaceChatFor) keep git and gh, inside their own folders.
+export const POOL_DENY_BASH = ['git', 'gh'];
 export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT_IDLE_MS,
-  make = createChat, now = Date.now } = {}) {
+  make = createChat, now = Date.now, denyBash = POOL_DENY_BASH } = {}) {
   const cap = Math.max(1, Math.min(POOL_MAX, Math.floor(Number(max)) || 1));
   const idle = Math.max(0, Math.floor(Number(idleMs)) || 0);
   const members = [];
@@ -86,6 +92,7 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
     const m = { chat: null, at: now() };
     m.chat = make({
       root,
+      denyBash: denyBash.slice(),
       onEvent: ev => {
         // a child that exited cannot finish anything it held, and chat.mjs has
         // already told every waiting page so; what is left is to stop sending

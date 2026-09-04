@@ -628,3 +628,19 @@ cleanup();
 await sleep(120);
 console.log(`\n${passed()} passed, ${failures().length} failed`);
 if (failures().length) { console.log('failed: ' + failures().join(', ')); process.exit(1); }
+
+// Ordinary pages run on pool children, and those children may run neither git
+// nor gh: their cwd is the companion's own workspace, and a bot that committed
+// there swept a developer's half-finished files into its commit (2026-09-04).
+await test('every pool child is made with git and gh denied', () => {
+  const f = fakeFactory();
+  const seen = [];
+  const pool = createPool({ onEvent() {}, make: o => { seen.push(o); return f.make(o); }, now: () => 0 });
+  assert.ok(seen.length >= 1, 'the primary child is made at once');
+  for (const o of seen) assert.deepEqual(o.denyBash, ['git', 'gh']);
+  pool.submit({ url: 'https://d.test/four', target: '__page__', text: 'hi' });
+  assert.ok(seen.every(o => Array.isArray(o.denyBash) && o.denyBash.includes('git')));
+  const relaxed = [];
+  createPool({ onEvent() {}, make: o => { relaxed.push(o); return f.make(o); }, now: () => 0, denyBash: [] });
+  assert.deepEqual(relaxed[0].denyBash, [], 'a caller may relax it, in code, on purpose');
+});
