@@ -20,6 +20,16 @@
   all read out of the publish targets you already have. An ordinary web page's
   chat still writes nothing at all.
 
+- **Page chat remembers who you are talking to, and shows it.** The pill row
+  (`Note · Claude · Codex · All`) that comment threads got now sits above the
+  page-chat composer and the library composer in the plugin drawer, lit with
+  the address the next message will actually reach. An untagged follow-up goes
+  to whoever you last addressed there, so a question to one bot no longer needs
+  the tag retyped every turn; clicking a pill aims the next message without
+  typing, and typing a tag lights it as you type. On a project artifact's page
+  the row is lit at All by default — the room, as before — and Note is a real
+  choice that summons nobody.
+
 - **The bots can have a YouTube video watched for them.** Claude and Codex
   cannot take video; Gemini can. Paste a public YouTube link and the video is
   watched before the message reaches the bots, with the report — title and

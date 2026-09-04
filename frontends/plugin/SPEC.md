@@ -3269,6 +3269,10 @@ and it unsticks the thread for the next message too.
 else), a `route` on the wire cannot talk it into a second one, and the composer
 there grows no pills.
 
+> **Reversed on 2026-09-04** — see "the pill row goes where the reader could not
+> see" below. Page chat has the row, the sticky address and the `route` field
+> now; the artifact rule survives as its DEFAULT rather than its only answer.
+
 The resolved address rides the turn as `routeHint`, the third and weakest
 register of `chat.routeOf` — `untaggedAll`/`forceAll` first, then the text's own
 tag, then the hint. The reader's words are never rewritten: the prefix is the
@@ -3315,6 +3319,70 @@ tagged nobody, a typed tag lighting that bot and only that bot, clearing it
 handing the row back to the thread, a click aiming the next message with the
 draft surviving, and page chat with no row at all. `?routes=1` is the screenshot
 pose.
+
+### Amendment (2026-09-04, shipped): the pill row goes where the reader could not see
+
+The row above was withheld from page chat on this reasoning: page chat already
+has a routing rule of its own (`untaggedGoesToAll` — the room on a project
+artifact, nobody anywhere else), and a second row saying something different
+about what plain text means would be worse than no row at all.
+
+In use that was exactly backwards. Page chat is the ONE composer where the rule
+is invisible: a thread wears its conversation above the box, but a page chat
+sentence reaches the room on one page and nobody on the next, and nothing on
+screen says which. And it had no memory: a reader who asked `@claude` a question
+about the page had to type the tag again for every follow-up, or watch it become
+a note. "I can't tag every time — there should be some memory of who we are
+talking to" is the complaint, and it is the same one that made threads sticky.
+
+**So the whole rule moved down one level.** `addressOf` no longer returns early
+for `PAGE_CHAT`; the precedence it states runs there in full —
+
+1. an **@-mention in the words**
+2. the **pill on the wire** (`route`, now sent by page chat and the library too)
+3. the **conversation's sticky address** (`chat.stickyRoute`, unchanged, and the
+   `route` stamped on a page-chat message is what makes it stick)
+4. the **artifact default** — `untaggedGoesToAll`, applied LAST, as the answer
+   for a page chat nobody has addressed yet
+5. **nobody**
+
+`untaggedGoesToAll` therefore stops being a flag that overrules everything and
+becomes the bottom of the ladder. `summon` takes `addressed: true` from the one
+caller that has already run the ladder (`POST /reply`) and skips the flag for
+it; `forceAll` (send review, the fan-out's preamble and wrap-up) is untouched
+and still outranks the lot. The consequence that matters: **Note is a real
+choice on an artifact page too.** It stamps nothing, summons nobody — and,
+because it stamps nothing, the NEXT untagged message there is the room's again,
+which is the artifact rule doing exactly what it says.
+
+**In the drawer.** `composerHtml(…, pills)` is now true for page chat and for
+the library. `defaultRouteOf(target)` is the client's copy of step 4 — `all` on
+a confirmed project artifact's page chat, `none` everywhere else — and
+`stickyRouteOf` falls back to it instead of to a hard-coded `none`, so the lit
+pill matches what the companion will do before any round trip. Sending settles
+the row as it always did, with one honest exception: a Note sent on an artifact
+page chat settles the row back on **All**, because that is where the next
+untagged message will actually go and the row must not promise otherwise.
+`onReply` already carried `route` for page chat; `onLibraryReply` now takes one.
+
+**The phone reading room is deliberately unchanged.** `reader.js` knows nothing
+about projects, so it cannot draw step 4 honestly; its page-chat composer stays
+as it was and sends no `route`, which is precisely the case the companion
+decides on its own. The memory still works there — an untagged page-chat message
+from the phone goes wherever the reader last addressed one.
+
+**Testing.** `companion.test.mjs` — the old "PAGE CHAT is untouched by any of
+it" became three: the untagged follow-up reaching the bot the page chat was
+last addressed to (with the reader's words untouched), a `route` on the wire
+aiming it and sticking (with `route` on the record, and a bot's own answer not
+re-aiming it), and Note summoning nobody and handing an ordinary page back to
+being a notebook. `workspace.test.mjs` adds the artifact half: the untagged
+message after a tagged one going to that bot rather than to the room, and Note
+summoning nobody with the room the default again straight after. Harness
+`?selftest=1` drives the row in page chat — it is there, the same four pills in
+the same order, lit at the bot this page chat last addressed, a typed tag
+lighting that bot live, clearing it handing the row back, and a click aiming the
+next message. (The old assertion "page chat has no pill row" is what flipped.)
 
 ### Amendment (2026-08-24, shipped): a single-page app moved the reader
 

@@ -991,6 +991,133 @@ test('replay lands pinned at the bottom — heuristics suppressed mid-replay, la
   assert.equal(doc.getElementById('jump').hasAttribute('hidden'), false, 'jump pill offers the way down');
 });
 
+// ------------------------------------------------- UI: the pill row
+
+// The council routes by tag, and until now the box said nothing about which
+// one the next sentence would carry — nor remembered the last one, so a reader
+// talking to one bot had to retype "@claude" every single turn.
+test('composer pill row: the address is drawn, remembered, and prefixed on send',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const row = doc.getElementById('route-row');
+  const pills = () => [...row.querySelectorAll('.rpill')];
+  const lit = () => pills().filter(b => b.classList.contains('on')).map(b => b.dataset.route).join(',');
+  const input = doc.getElementById('input');
+  const type = v => { input.value = v; input.dispatchEvent(new doc.defaultView.Event('input')); };
+  const send = async () => {
+    input.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { key: 'Enter' }));
+    await new Promise(r => setTimeout(r, 10));
+    return posts[posts.length - 1];
+  };
+
+  // the row: the live roster, plus the room
+  assert.ok(row, 'the row is in the composer');
+  assert.equal(pills().length, 3, 'one pill per bot, plus All');
+  assert.deepEqual(pills().map(b => b.dataset.route), ['claude', 'codex', 'all']);
+  assert.deepEqual(pills().map(b => b.textContent), ['Claude', 'Codex', 'All']);
+  assert.equal(lit(), 'all', 'with nothing said yet, the room is the default');
+
+  // the room's default comes from the status snapshot, not from a guess
+  C.handle({ type: 'status', route: '@claude' });
+  assert.equal(lit(), 'claude', 'the lit pill is the route /status reports');
+  C.handle({ type: 'status', route: '@all' });
+  assert.equal(lit(), 'all');
+
+  // a tag typed into the box is the sentence about to be sent, and lights live
+  type('@codex what about the mass budget?');
+  assert.equal(lit(), 'codex', 'a typed tag lights that bot at once');
+  assert.equal(pills().filter(b => b.getAttribute('aria-pressed') === 'true').length, 1);
+  type('');
+  assert.equal(lit(), 'all', 'clearing it hands the row back to the chat');
+
+  // clicking a pill types NOTHING; the tag is added on send instead
+  type('and the second half?');
+  row.querySelector('.rpill[data-route="claude"]').click();
+  assert.equal(lit(), 'claude', 'the click aims the next message');
+  assert.equal(input.value, 'and the second half?', 'and leaves the draft alone');
+  let p = await send();
+  assert.equal(p.url, '/input');
+  assert.equal(p.body.text, '@claude and the second half?', 'the tag is prefixed for the controller');
+
+  // THE MEMORY. The controller echoes the turn back; the next untagged message
+  // goes to the same bot without the reader retyping anything.
+  C.handle({ type: 'user_echo', text: '@claude and the second half?' });
+  assert.equal(lit(), 'claude', 'the chat is still talking to claude');
+  type('in kilos, please');
+  p = await send();
+  assert.equal(p.body.text, '@claude in kilos, please', 'the untagged follow-up carries the address');
+
+  // a new tag re-aims it; a bot answering does not
+  C.handle({ type: 'user_echo', text: '@codex your turn on this' });
+  assert.equal(lit(), 'codex', 'the last word the reader wrote is the address');
+  C.handle({ type: 'room', speaker: 'claude', text: 'over to you, @claude' });
+  assert.equal(lit(), 'codex', 'a bot writing a tag is narration, not the reader');
+
+  // a message that IS the room's default needs no tag: the controller does
+  // that by itself, and the reader's words stay their own
+  row.querySelector('.rpill[data-route="all"]').click();
+  type('what do you both think?');
+  p = await send();
+  assert.equal(p.body.text, 'what do you both think?', 'no tag where the room is already the default');
+  C.handle({ type: 'user_echo', text: 'what do you both think?' });
+  assert.equal(lit(), 'all', 'an untagged turn is the room\'s, and the row says so');
+
+  // slash commands are control traffic and are never rewritten
+  row.querySelector('.rpill[data-route="codex"]').click();
+  type('/status');
+  p = await send();
+  assert.equal(p.body.text, '/status', 'a command is never given a tag');
+});
+
+test('composer pill row: the memory is per chat, and survives a reload',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const row = doc.getElementById('route-row');
+  const lit = () => [...row.querySelectorAll('.rpill.on')].map(b => b.dataset.route).join(',');
+  const projects = active => ({
+    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
+    projects: [{
+      id: 'p1', title: 'P', active: true, session_count: 2,
+      sessions: [
+        { session_id: 'aaa11111', title: 'One', updated_at: '2026-01-02T00:00:00Z', active: active === 'aaa11111' },
+        { session_id: 'bbb22222', title: 'Two', updated_at: '2026-01-01T00:00:00Z', active: active === 'bbb22222' },
+      ],
+    }],
+  });
+  C.handle(projects('aaa11111'));
+  C.handle({ type: 'user_echo', text: '@codex only you, in this chat' });
+  row.querySelector('.rpill[data-route="claude"]').click();
+  assert.equal(lit(), 'claude', 'this chat has been aimed at claude');
+
+  // switching chats takes neither the click nor the memory with it
+  C.switchTo('bbb22222');
+  assert.equal(lit(), 'all', 'a different chat starts at the room again');
+  C.handle({ type: 'hello', bridge_id: 'b2' });
+  C.handle(projects('bbb22222'));
+
+  // …and the RELOAD case: a fresh page whose only knowledge of the chat is the
+  // replay it is handed. The memory is derived from that, not stored anywhere.
+  const fresh = await mkHarness(t);
+  fresh.C.handle({ type: 'hello', bridge_id: 'b1' });
+  fresh.C.handle({ type: 'user_echo', text: '@codex the replayed question' });
+  fresh.C.handle({ type: 'room', speaker: 'codex', text: 'the replayed answer' });
+  fresh.C.handle({ type: 'replay_done' });
+  const litFresh = () => [...fresh.doc.getElementById('route-row').querySelectorAll('.rpill.on')]
+    .map(b => b.dataset.route).join(',');
+  assert.equal(litFresh(), 'codex', 'a reload reads who the chat was talking to out of the replay');
+  const input = fresh.doc.getElementById('input');
+  input.value = 'and one more thing';
+  input.dispatchEvent(new fresh.doc.defaultView.Event('input'));
+  input.dispatchEvent(new fresh.doc.defaultView.KeyboardEvent('keydown', { key: 'Enter' }));
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(fresh.posts[fresh.posts.length - 1].body.text, '@codex and one more thing',
+    'and the first message after a reload still reaches them');
+});
+
 test('chat switch: reattach to the target bridge, optimistic cached render, offscreen reconcile, never a blank transcript',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { doc, C, transcript, wsUrls } = await mkHarness(t);

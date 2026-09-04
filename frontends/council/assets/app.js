@@ -32,6 +32,7 @@
     input: $('input'), send: $('send'), stop: $('stop'), complete: $('complete'),
     queueNote: $('queue-note'),
     attach: $('attach'), file: $('file'), attStrip: $('att-strip'),
+    routeRow: $('route-row'),
     toast: $('toast'), sync: $('sync'),
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -270,6 +271,13 @@
     gemini: { phase: null, url: '', timer: null },
     facts: { mode: '', lead: '', route: '', project: '' },  // session facts (from status)
     lastUserText: '',                          // last human turn, for "retry with @other"
+    // ── who this chat is talking to ──
+    // `routePick` is the pill the reader clicked, per chat (a choice about THIS
+    // chat, dropped when they leave it). `routeSticky` is the memory: the tag
+    // on the last thing the reader actually sent here, rebuilt from the replay
+    // on every attach, so a reload does not forget the conversation.
+    routePick: new Map(),                      // sid -> 'claude'|'codex'|'all'
+    routeSticky: '',                           // derived from the transcript
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
     projects: null,
     openProjects: new Set(),   // expanded projects (any project, active or not)
@@ -709,7 +717,10 @@
     const explicit = AGENTS.filter(a =>
       new RegExp('@' + a + '\\b', 'i').test(t) && state.exhausted[a]);
     if (explicit.length) return explicit;
-    const reach = mentionedAgents(t);
+    // an untagged message is not necessarily the room's any more: the pill row
+    // may be aiming it at one bot, and that is the one it would reach
+    const aimed = routeWordOf(t) ? '' : routeNow();
+    const reach = (aimed && aimed !== 'all') ? [aimed] : mentionedAgents(t);
     return reach.every(a => state.exhausted[a]) ? reach.filter(a => state.exhausted[a]) : [];
   }
   function refreshPresendWarn() {
@@ -2262,6 +2273,11 @@
     snapshotCurrent();
     state.filingAsked = false;   // a different chat, a different question
     state.pendingSwitch = sid;
+    // …and a different conversation: the pill belongs to the chat it was
+    // clicked in and the memory is rebuilt from the incoming replay, so
+    // neither of them travels across the switch
+    state.routeSticky = '';
+    renderRoutes();
     syncHash(sid);                          // reflect the target chat in the URL now
     const cached = cacheGet(sid);
     if (cached) {
@@ -2447,6 +2463,71 @@
     if (o) { e.preventDefault(); acceptCompletion(Number(o.dataset.i)); }
   });
 
+  // ── the pill row: who the next message is for ────────────────────────────
+  //
+  // The council routes by tag: "@claude …" is claude's alone, "@codex …" is
+  // codex's, and anything else is the room's (`Route: @all`, as /status says).
+  // That rule was invisible and unremembered — the box looked identical
+  // whoever the sentence was about to reach, and a reader talking to one bot
+  // had to retype the tag on every single turn or watch the answer come back
+  // from both. "I can't tag every time — there should be some memory of who we
+  // are talking to."
+  //
+  // So: a row of pills above the box, lit at the address the next message will
+  // actually carry, and a memory behind it. Clicking one types NOTHING (the
+  // draft and the caret are the reader's); the tag is added to the text on
+  // send, and only when the words carry none of their own — so the controller
+  // sees exactly what it always saw and no protocol moved.
+  const ROUTE_PILLS = () => AGENTS.concat(['all']);
+  const routeLabel = h => (h === 'all' ? 'All' : cap(h));
+  const routeTip = h => (h === 'all'
+    ? 'both bots answer — the room'
+    : `@${h} answers this one, and the messages after it`);
+  // the tag a message's own words carry, as a pill name ('' = none). Two bots
+  // named, or @all, is the room — the same reading `mentionedAgents` does.
+  function routeWordOf(text) {
+    const t = String(text || '');
+    if (/@all\b/i.test(t)) return 'all';
+    const hit = AGENTS.filter(a => new RegExp('@' + a + '\\b', 'i').test(t));
+    if (!hit.length) return '';
+    return hit.length > 1 ? 'all' : hit[0];
+  }
+  // the ROOM's own default, as the status snapshot reports it ("@all", "all",
+  // "@claude" — /lead can move it). Anything unrecognised is the room.
+  function defaultRoute() {
+    const r = String((state.facts && state.facts.route) || '').trim().toLowerCase().replace(/^@/, '');
+    return (r === 'all' || AGENTS.includes(r)) ? r : 'all';
+  }
+  // a pill choice belongs to the chat it was made in, and the chat being
+  // switched TO is the one a click during a switch is about
+  const routeKey = () => state.pendingSwitch || state.currentSid || '';
+  // Where the next message goes: a tag actually typed in the box (that is the
+  // sentence about to be sent, and the row must not claim otherwise while it
+  // is being written), else the pill this chat clicked, else who this chat was
+  // last talking to, else the room's default.
+  function routeNow() {
+    const typed = routeWordOf(els.input ? els.input.value : '');
+    if (typed) return typed;
+    return state.routePick.get(routeKey()) || state.routeSticky || defaultRoute();
+  }
+  function renderRoutes() {
+    if (!els.routeRow) return;
+    const now = routeNow();
+    els.routeRow.innerHTML = ROUTE_PILLS().map(h =>
+      `<button type="button" class="rpill${h === now ? ' on' : ''}" data-route="${esc(h)}"` +
+      ` aria-pressed="${h === now}" title="${esc(routeTip(h))}">${esc(routeLabel(h))}</button>`).join('');
+  }
+  if (els.routeRow) {
+    els.routeRow.addEventListener('click', e => {
+      const b = e.target.closest('[data-route]');
+      if (!b) return;
+      state.routePick.set(routeKey(), b.dataset.route);
+      renderRoutes();
+      els.input.focus();
+    });
+  }
+  renderRoutes();
+
   // ── composer ──
   function autosize() {
     els.input.style.height = 'auto';
@@ -2548,7 +2629,7 @@
 
   els.input.addEventListener('input', () => {
     state.sendOverride = false; // editing invalidates a prior "send anyway"
-    autosize(); refreshCompletions(); syncSend(); refreshPresendWarn();
+    autosize(); refreshCompletions(); syncSend(); refreshPresendWarn(); renderRoutes();
   });
   // the @-menu follows the caret, not just the text: moving into or out of a
   // fragment opens/closes it. While the menu is open the arrows are ITS
@@ -2670,6 +2751,19 @@
       return;
     }
     state.sendOverride = false;
+    // WHERE THIS ONE GOES. The row has been promising an address; this is
+    // where the promise is kept. A slash command is control traffic and is
+    // never touched, words that already name a bot are the reader's own last
+    // word, and an address that IS the room's default needs no tag at all —
+    // the controller does that by itself. Everything else gets the tag the row
+    // was lit with, prefixed to the text the controller already knows how to
+    // read. The choice then sticks to this chat.
+    let outText = text;
+    if (text && !text.startsWith('/')) {
+      const route = routeNow();
+      if (!routeWordOf(text) && route !== defaultRoute()) outText = `@${route} ` + text;
+      state.routePick.set(routeKey(), route);
+    }
     if (text && !text.startsWith('/')) state.lastUserText = text;
     els.input.value = '';
     autosize();
@@ -2678,9 +2772,10 @@
     // exact bridge attachment schema — what the Ink TUI sends: {id, path, type:'image'}
     // the original filename rides along so the echoed message can name the
     // file the way the reader knows it, not by the stored id
-    sendInput(text, ready.map(a => ({ id: a.id, path: a.path, type: a.kind === 'doc' ? 'file' : 'image', name: a.name || '' })));
+    sendInput(outText, ready.map(a => ({ id: a.id, path: a.path, type: a.kind === 'doc' ? 'file' : 'image', name: a.name || '' })));
     clearAtts();
     syncSend();
+    renderRoutes();
   }
   els.send.addEventListener('click', submit);
   els.stop.addEventListener('click', () => post('/interrupt', {}));
@@ -2773,7 +2868,19 @@
         if (ev.kind === 'tool_start' || ev.kind === 'tool_done') laneEvent(ev);
         break;
       case 'user_echo':
-        if (ev.text && !String(ev.text).startsWith('/')) state.lastUserText = ev.text;
+        // The memory, and it is derived rather than remembered: every human
+        // turn in this chat passes through here, on a live send AND on the
+        // replay a reload or a chat switch brings, so who the chat is talking
+        // to survives both. An untagged turn is the room's by the controller's
+        // own rule, and clears it back to the default.
+        if (ev.text && !String(ev.text).startsWith('/')) {
+          state.lastUserText = ev.text;
+          // a message that has actually been sent settles the row: the pill
+          // clicked before it was a promise about THIS message, and this is it
+          state.routePick.delete(routeKey());
+          state.routeSticky = routeWordOf(ev.text);
+          renderRoutes();
+        }
         addMsg('user', ev.text, { attachments: ev.attachments || [] });
         setBusy(true);
         break;
@@ -2782,6 +2889,7 @@
           mode: ev.mode || '', lead: ev.lead || '',
           route: ev.route || '', project: ev.project || '',
         };
+        renderRoutes();   // /lead can move the room's default under the row
         for (const a of AGENTS) {
           state.ctxStat[a] = {
             pct: ev[`${a}_pct`], tokens: ev[`${a}_tokens`], window: ev[`${a}_window`],
@@ -3025,6 +3133,7 @@
     noteAgentTurn, exhaustReason, modelsFor, effortsFor,
     laneEvent, hashSid, syncHash, routeHash, chatParam,
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
+    renderRoutes, routeNow, routeWordOf, defaultRoute,
     projectTasks: () => ptasks,
     renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
     // the typewriter: the setting, the switch, and the drain's own clock —

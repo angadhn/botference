@@ -81,6 +81,11 @@
       <div id="presend-warn" role="alert" hidden></div>
       <div id="queue-note" hidden></div>
       <div class="composer-box">
+        <!-- who the next message is for: the tag it will carry (or the room's
+             own default) drawn instead of remembered. Clicking a pill types
+             nothing — the tag is added on send, and only when the text has
+             none of its own. -->
+        <div id="route-row" class="routes" role="group" aria-label="who this message is for"></div>
         <div id="att-strip" aria-label="attached images" hidden></div>
         <textarea id="input" rows="1" enterkeyhint="send"
           placeholder="Message the council…" aria-label="message"></textarea>

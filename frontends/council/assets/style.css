@@ -535,6 +535,24 @@ main { position: relative }
 .composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--card-line)) }
 .composer-box.drag { border-color: var(--accent); border-style: dashed }
 
+/* ── the pill row: who the next message is for ─────────────────────────────
+   Above the box, always visible (a council message ALWAYS reaches somebody, so
+   there is no idle state worth hiding it for), and wrapping on a phone rather
+   than pushing the composer wider than the screen. */
+#route-row { display: flex; flex-wrap: wrap; gap: .35rem; padding: .6rem 1rem 0 }
+#route-row .rpill {
+  font: 11px/1 var(--sans, ui-sans-serif, system-ui, sans-serif); letter-spacing: .01em;
+  padding: .3rem .55rem; border-radius: 999px; max-width: 100%;
+  border: 1px solid var(--card-line); background: transparent; color: var(--muted);
+  cursor: pointer;
+}
+#route-row .rpill:hover { color: var(--fg); border-color: var(--line, var(--card-line)) }
+#route-row .rpill.on {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  font-weight: 600;
+}
+
 /* attachment thumbnails above the input, ✕ each until sent */
 #att-strip { display: flex; flex-wrap: wrap; gap: .55rem; padding: .7rem 1rem 0 }
 #att-strip[hidden] { display: none }
