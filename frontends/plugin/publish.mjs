@@ -51,6 +51,8 @@ export const GIT_TIMEOUT_MS = 60000;
 // in this tree is: relative, descending, no traversal, no absolutes.
 const cleanDir = d => {
   const s = String(d == null ? '' : d).trim().replace(/^\/+|\/+$/g, '');
+  // "." is the repo root: a site of its own, where the page IS the site
+  if (s === '.') return '.';
   if (!s || s.includes('\0') || path.isAbsolute(s)) return '';
   if (s.split('/').some(seg => !seg || seg === '.' || seg === '..')) return '';
   return s;
@@ -99,6 +101,13 @@ export function publishTargets() {
       branch: String(t.branch || 'main').trim() || 'main',
       // `push: false` is a real answer: commit here, push it yourself later
       push: t.push !== false,
+      // a fixed name on the site ("index.html" for a site that is one page),
+      // instead of the artifact's own file name
+      file: publishName(t.file) || '',
+      // a command run in the repo after the push — `["netlify","deploy","--prod","--dir","."]`
+      // deploys from this machine, so a private repo never has to be handed to a host
+      deploy: Array.isArray(t.deploy) && t.deploy.every(x => typeof x === 'string') && t.deploy.length
+        ? t.deploy.slice() : null,
     });
   }
   return out;
@@ -137,14 +146,15 @@ const git = (repo, args) => {
 export function publishArtifact({ target, srcPath, title = '' }) {
   const t = target;
   if (!t) return { ok: false, error: 'no publish target is set up' };
-  const name = publishName(srcPath);
+  const name = t.file || publishName(srcPath);
   if (!name) return { ok: false, error: 'that file has no name a website could use' };
   let bytes = null;
   try { bytes = fs.readFileSync(srcPath); } catch (e) {
     return { ok: false, error: `could not read the page: ${e && e.message}` };
   }
-  const rel = `${t.dir}/${name}`;
-  const dest = path.join(t.repo, t.dir, name);
+  const root = t.dir === '.';
+  const rel = root ? name : `${t.dir}/${name}`;
+  const dest = path.join(t.repo, root ? '' : t.dir, name);
   try {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     // AS IT IS. No front matter, no rewriting: a file Jekyll finds with no
@@ -170,7 +180,8 @@ export function publishArtifact({ target, srcPath, title = '' }) {
   const sha = head.ok ? head.text.split('\n').pop().trim() : '';
   const out = {
     ok: true,
-    public_url: `${t.url}${name}`,
+    // a site whose page is index.html is addressed by its folder
+    public_url: name === 'index.html' ? t.url : `${t.url}${name}`,
     rel,
     target: t.name,
     commit: sha,
@@ -178,8 +189,24 @@ export function publishArtifact({ target, srcPath, title = '' }) {
     unchanged: nothing,
     pushed: false,
   };
-  if (!t.push) return out;
-  const push = git(t.repo, ['push', 'origin', `HEAD:${t.branch}`]);
-  if (!push.ok) return { ...out, error: push.text || 'git push failed' };
-  return { ...out, pushed: true };
+  let result = out;
+  if (t.push) {
+    const push = git(t.repo, ['push', 'origin', `HEAD:${t.branch}`]);
+    if (!push.ok) return { ...out, error: push.text || 'git push failed' };
+    result = { ...out, pushed: true };
+  }
+  if (!t.deploy) return result;
+  // The deploy runs even when nothing changed: a host that has never seen this
+  // commit still needs it, and a re-deploy of the same page costs nothing.
+  const [cmd, ...args] = t.deploy;
+  const dep = spawnSync(cmd, args, {
+    cwd: t.repo, encoding: 'utf8', timeout: 180_000,
+    env: { ...process.env, CI: '1' },
+  });
+  const text = `${dep.stdout || ''}${dep.stderr || ''}`.trim();
+  if (dep.error || dep.status !== 0) {
+    return { ...result, deployed: false,
+      error: `${cmd} failed: ${(dep.error && dep.error.message) || text.split('\n').slice(-6).join('\n') || `exit ${dep.status}`}` };
+  }
+  return { ...result, deployed: true, deploy_output: text.split('\n').slice(-12).join('\n') };
 }

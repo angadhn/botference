@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
@@ -2586,3 +2587,36 @@ await sleep(150);
 
 console.log(`\nworkspace: ${passed()} passed, ${failures().length} failed`);
 if (failures().length) { console.log(failures().map(f => '  - ' + f).join('\n')); process.exit(1); }
+
+
+// A site of its own: the page is the site. dir "." puts the file at the repo
+// root, `file` fixes its name to index.html, and `deploy` runs a command in
+// the repo after the push — the way a private repo reaches a host without
+// being handed to it.
+await test('publish to a repo root as index.html, then run the deploy command', async () => {
+  const { publishArtifact } = await import(pathToFileURL(path.join(PLUGIN, 'publish.mjs')).href);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-pub-root-'));
+  const repo = path.join(tmp, 'site'); const remote = path.join(tmp, 'remote.git');
+  const g = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  g(tmp, ['init', '-q', '--bare', remote]);
+  fs.mkdirSync(repo); g(repo, ['init', '-q', '-b', 'main']);
+  g(repo, ['config', 'user.email', 't@t']); g(repo, ['config', 'user.name', 't']);
+  fs.writeFileSync(path.join(repo, 'README.md'), 'x\n'); g(repo, ['add', '.']); g(repo, ['commit', '-q', '-m', 'init']);
+  g(repo, ['remote', 'add', 'origin', remote]); g(repo, ['push', '-q', 'origin', 'HEAD:main']);
+  const src = path.join(tmp, 'planner.html'); fs.writeFileSync(src, '<h1>What to watch</h1>');
+  const target = { name: 'lff', repo, dir: '.', url: 'https://lff.angadh.com/', branch: 'main', push: true,
+    file: 'index.html', deploy: ['sh', '-c', 'echo deployed-from-$(pwd)'] };
+  const r = publishArtifact({ target, srcPath: src, title: 'LFF planner' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.rel, 'index.html');
+  assert.equal(r.public_url, 'https://lff.angadh.com/', 'an index page is addressed by its folder');
+  assert.equal(fs.readFileSync(path.join(repo, 'index.html'), 'utf8'), '<h1>What to watch</h1>');
+  assert.equal(r.pushed, true);
+  assert.equal(r.deployed, true);
+  assert.match(r.deploy_output, /deployed-from-.*site$/, 'the deploy ran inside the repo');
+  const bad = publishArtifact({ target: { ...target, deploy: ['sh', '-c', 'echo host-said-no >&2; exit 3'] }, srcPath: src });
+  assert.equal(bad.ok, true, 'the copy and commit stood…');
+  assert.equal(bad.deployed, false);
+  assert.match(bad.error, /host-said-no/, '…and the host\'s own words are the error');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
