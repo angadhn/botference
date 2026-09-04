@@ -244,6 +244,13 @@ class TestVideoWatchNote:
         from room_prompts import video_watch_note
         note = video_watch_note()
         assert "cannot watch video" in note
-        assert "watch: <the youtube url>" in note
+        assert "watch: <youtube url>" in note
+        assert "ask gemini: <question>" in note
         assert "witness" in note
         assert "/watch" in note
+
+    def test_states_the_budget_and_the_depth_limit(self):
+        from room_prompts import video_watch_note
+        note = video_watch_note()
+        assert "two questions to Gemini per user turn" in note
+        assert "not acted on" in note   # the wake-up is the end of the chain

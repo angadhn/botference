@@ -184,6 +184,16 @@ function input(text) {
     // …optionally naming the path it wants, so a test can ask for one INSIDE
     // the project folder and prove the companion refuses that too (a yes here
     // grants a whole extra write root, never one file — see chat.mjs)
+    // [mock:video] — the controller having Gemini watch a YouTube link for
+    // the bots mid-turn (core/botference.py _watch_one_video): its own event
+    // type, start then done, which the companion must relay to the drawer.
+    if (/\[mock:video\]/.test(text)) {
+      const url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+      emit({ type: 'video_watch', state: 'start', url, model: 'gemini-3.8-flash' });
+      emit({ type: 'video_watch', state: 'done', url, model: 'gemini-3.8-flash', seconds: 3.2 });
+      // …and the report itself, in the watcher's own voice
+      room('gemini', `Gemini · watched ${url} in 3s (gemini-3.8-flash)\n\nA talk about night trains.`);
+    }
     const perm = /\[mock:perm(?::([^\]]+))?\]/.exec(text);
     if (perm) {
       const p = perm[1] || '/tmp/notes-from-the-page.md';

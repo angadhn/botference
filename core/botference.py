@@ -1112,6 +1112,9 @@ class UIPort(Protocol):
     ) -> None: ...
     def set_status(self, status: StatusSnapshot) -> None: ...
     def set_projects(self, state: ProjectPanelState) -> None: ...
+    # Optional (frontends that draw a Gemini indicator implement it; the
+    # controller calls it defensively, so an older UI simply misses out).
+    # def video_watch(self, event: dict) -> None: ...
     def set_mode(self, mode: RoomMode) -> None: ...
     def clear_panes(self) -> None: ...
     async def request_write_permission(
@@ -1342,6 +1345,10 @@ class Botference:
         self._ff_writer_votes: dict[str, str] = {}  # model → "claude"/"codex" writer vote
         # Said once per chat, so a keyless user is told, not nagged.
         self._video_no_key_told: bool = False
+        # The last video watched in this chat — what `ask gemini:` is about.
+        self._last_watched_url: str = ""
+        # model -> questions put to Gemini during the current user turn.
+        self._gemini_asks: dict[str, int] = {}
         self._restoring_session: bool = False
 
         self._claude_pct: Optional[float] = None
@@ -2780,11 +2787,29 @@ class Botference:
         setting = (os.environ.get("BOTFERENCE_VIDEO_WATCH") or "").strip().lower()
         return setting not in ("off", "0", "false", "no")
 
+    @staticmethod
+    def _emit_video_watch(ui: UIPort, event: dict) -> None:
+        """Structured watch event for frontends that draw a Gemini indicator.
+
+        Optional on the UI: a frontend that has no such indicator simply does
+        not implement it, and the room notes carry the news instead.
+        """
+        sink = getattr(ui, "video_watch", None)
+        if sink is None:
+            return
+        try:
+            sink(event)
+        except Exception:  # an indicator must never break a turn
+            log.debug("video_watch event sink failed", exc_info=True)
+
     async def _watch_one_video(
         self, url: str, question: Optional[str], ui: UIPort,
     ) -> "video_watch.WatchResult":
         """Watch one video off the event loop, narrating start and duration."""
         self._show_room_notice(ui, "system", f"Watching {url} …")
+        self._emit_video_watch(ui, {
+            "state": "start", "url": url, "model": video_watch.DEFAULT_MODEL,
+        })
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(video_watch.watch, url, question)
@@ -2795,13 +2820,18 @@ class Botference:
                 error=f"The video watcher itself failed: {exc}",
             )
         took = time.monotonic() - started
-        if result.cached:
-            note = f"Report for {url} came from the local cache."
-        elif result.error:
-            note = f"Gave up on {url} after {took:.0f}s."
-        else:
-            note = f"Watched {url} in {took:.0f}s."
-        self._show_room_notice(ui, "system", note)
+        result.seconds = took
+        # What it saw is posted as its own message (see _post_video_report),
+        # which carries the duration — a second "watched it in 12s" note here
+        # would only say it twice.
+        self._emit_video_watch(ui, {
+            "state": "error" if result.error else "done",
+            "url": url,
+            "model": result.model,
+            "seconds": round(took, 1),
+            "cached": bool(result.cached),
+            "error": result.error or "",
+        })
         return result
 
     async def _append_video_reports(self, body: str, ui: UIPort) -> str:
@@ -2823,6 +2853,10 @@ class Botference:
         blocks: list[str] = []
         for url in urls[:self._VIDEO_WATCH_CAP]:
             result = await self._watch_one_video(url, None, ui)
+            self._last_watched_url = url
+            # the reader sees the report as Gemini's own message; the bots get
+            # the same report inside the message they are about to answer
+            self._post_video_report(result, ui, for_the_bots=False)
             blocks.append(video_watch.format_report(result))
         if len(urls) > self._VIDEO_WATCH_CAP:
             blocks.append(
@@ -2856,34 +2890,126 @@ class Botference:
             self._add_room_entry(ui, "system", video_watch.NO_KEY_MESSAGE)
             return
         result = await self._watch_one_video(url, question, ui)
+        self._last_watched_url = url
         self._post_video_report(result, ui)
+        if result.error:
+            return
+        # /watch is not a filing cabinet: the reader asked for a video to be
+        # watched because they want the room to talk about it, so the bots get
+        # their turn without the user having to type "so, thoughts?".
+        prompt = (
+            f"Gemini has just watched {url} (report above). Discuss what "
+            "matters in it for this chat; if you need something checked in "
+            "the footage, ask Gemini."
+        )
+        await self._send_message(
+            ParsedInput(kind=InputKind.MESSAGE, body=prompt, target="@all"),
+            ui, watch_links=False,   # the report is already in the room
+        )
 
     def _post_video_report(
         self, result: "video_watch.WatchResult", ui: UIPort,
+        *, for_the_bots: bool = True, asked_by: str = "",
     ) -> None:
-        """Put a report (or an honest failure) in the room AND the transcript."""
-        text = video_watch.format_report(result)
+        """Show the report to the READER, and give the bots their copy.
+
+        Two audiences, two texts. The reader gets a `gemini` room entry — a
+        message from the thing that did the watching, so nobody thinks Claude
+        watched it. The bots get the bracketed envelope in the transcript,
+        which says in words that a report is a witness account. When the report
+        already travels inside the user's own turn (the automatic watch), the
+        bots' copy is skipped rather than sent twice.
+        """
+        self._add_room_entry(
+            ui, "gemini", video_watch.format_entry(result, asked_by))
+        if for_the_bots:
+            self.transcript.add("system", video_watch.format_report(result))
+        self._persist_session()
+
+    #: How many questions one bot may put to Gemini in a single user turn.
+    _GEMINI_ASK_BUDGET = 2
+
+    def _video_note(self, text: str, ui: UIPort) -> None:
+        """One honest line, to the reader and to the bots."""
         self._add_room_entry(ui, "system", text)
         self.transcript.add("system", text)
         self._persist_session()
 
-    async def _maybe_watch_for_bot(self, reply_text: str, ui: UIPort) -> None:
-        """Honour a `watch: <url>` line a bot ended its reply with.
+    async def _maybe_watch_for_bot(
+        self, reply_text: str, ui: UIPort, model: str = "", *, depth: int = 0,
+    ) -> None:
+        """Honour a `watch:` or `ask gemini:` line a bot ended its reply with.
 
         The line stays in the reply — it is honest about what was asked for.
+        A question gets an answer AND the floor back: the asking bot (only the
+        asking bot) is woken with the answer in front of it. That wake-up is
+        the end of the chain — a request inside it is not acted on, or two
+        bots could keep a video conversation going without the user.
         """
-        url = video_watch.parse_watch_request(reply_text)
-        if not url:
+        if depth:
             return
+        req = video_watch.parse_video_request(reply_text)
+        if not req:
+            return
+        asking = model or ""
+        question = req.get("question") or ""
+
+        if req["kind"] == "ask":
+            if not self._last_watched_url:
+                self._video_note(
+                    "[A bot asked Gemini about a video, but nothing has been "
+                    "watched in this chat yet. Send a YouTube link, or use "
+                    "/watch <url>.]", ui)
+                return
+            url = self._last_watched_url
+        else:
+            url = req["url"]
+
+        if question:
+            used = self._gemini_asks.get(asking, 0)
+            if used >= self._GEMINI_ASK_BUDGET:
+                self._video_note(
+                    f"[{asking.capitalize() or 'A bot'} has already put "
+                    f"{self._GEMINI_ASK_BUDGET} questions to Gemini this turn "
+                    "— the rest is for the user to ask.]", ui)
+                return
+            self._gemini_asks[asking] = used + 1
+
         if not video_watch.gemini_key():
-            note = ("[A bot asked for " + url + " to be watched, but no Gemini "
-                    "key is set. Add one to ~/.botference/gemini-key.]")
-            self._add_room_entry(ui, "system", note)
-            self.transcript.add("system", note)
-            self._persist_session()
+            self._video_note(
+                f"[A bot asked for {url} to be watched, but no Gemini key is "
+                "set. Add one to ~/.botference/gemini-key.]", ui)
             return
-        result = await self._watch_one_video(url, None, ui)
-        self._post_video_report(result, ui)
+
+        result = await self._watch_one_video(url, question or None, ui)
+        self._last_watched_url = url
+        self._post_video_report(result, ui, asked_by=asking if question else "")
+        if question and asking:
+            await self._wake_after_gemini(asking, ui)
+
+    async def _wake_after_gemini(self, model: str, ui: UIPort) -> None:
+        """Give the floor back to the bot whose question Gemini just answered.
+
+        Only that bot: the other one has not asked anything and does not need
+        a turn to read someone else's answer.
+        """
+        # The message reaches the bot through the shared transcript (a resume
+        # carries the room's own backfill, not an out-of-band prompt), so the
+        # nudge is a room entry — which also lets the reader see why the bot
+        # spoke again.
+        nudge = (f"[Gemini answered {model.capitalize()}'s question (above). "
+                 f"{model.capitalize()}, continue.]")
+        self.transcript.add("system", nudge)
+        resp = await self._send_to_model(model, "", ui)
+        if resp is None:
+            return
+        self.transcript.add(model, resp.text, resp.tool_summaries)
+        self.transcript.mark_seen(model)
+        self._update_pct(model, resp, ui)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+        # depth 1: a further request in this reply is not acted on
+        await self._maybe_watch_for_bot(resp.text, ui, model, depth=1)
 
     # ── /help ─────────────────────────────────────────────
 
@@ -2937,7 +3063,8 @@ class Botference:
             "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
             "  /agents [on|off]    — Grant/revoke Claude's subagent (Task) tool (off by default, per-chat; Claude may suggest it)",
             "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
-            "  /watch <url> [question] — Have Gemini watch a YouTube video and post what it saw",
+            "  /watch <url> [question] — Have Gemini watch a YouTube video, post what it saw,"
+            " and let the bots discuss it",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
@@ -2964,9 +3091,11 @@ class Botference:
             "attach by path — several at once. Ctrl+V attaches a raw copied image (screenshot).",
             "",
             "YouTube links you send are watched for you by Gemini (needs a key in",
-            "~/.botference/gemini-key); the report is added to your message. A bot can",
-            "ask for one too, with a `watch: <url>` line. BOTFERENCE_VIDEO_WATCH=off",
-            "turns the automatic watching off; /watch still works.",
+            "~/.botference/gemini-key); the report is posted as a message from Gemini",
+            "and travels with your turn. A bot can ask for one too — `watch: <url>`,",
+            "`watch: <url> — <question>` or `ask gemini: <question>` about the last",
+            "video watched. BOTFERENCE_VIDEO_WATCH=off turns the automatic watching",
+            "off; /watch still works.",
             "",
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows estimated occupancy (exact after tool-free turns).",
@@ -4715,9 +4844,12 @@ class Botference:
 
     async def _send_message(
         self, parsed: ParsedInput, ui: UIPort,
-        *, attachments: list | None = None,
+        *, attachments: list | None = None, watch_links: bool = True,
     ) -> None:
         route = self.router.resolve(parsed)
+        # each user turn buys each bot a fresh (small) allowance of questions
+        # to Gemini — the budget is per turn, not per chat
+        self._gemini_asks = {}
 
         prefix = f"{route} " if parsed.target else f"(→{route}) "
         self._add_room_entry(ui, "user", prefix + parsed.body)
@@ -4755,7 +4887,8 @@ class Botference:
 
         # A YouTube link is watched for the bots (they cannot take video) and
         # the report travels with the message.
-        body = await self._append_video_reports(body, ui)
+        if watch_links:
+            body = await self._append_video_reports(body, ui)
 
         self.transcript.add("user", body)
         self._persist_session()
@@ -4794,7 +4927,7 @@ class Botference:
                 self._update_pct(model, resp, ui)
                 ui.set_status(self.status_snapshot())
                 self._persist_session()
-                await self._maybe_watch_for_bot(resp.text, ui)
+                await self._maybe_watch_for_bot(resp.text, ui, model)
                 last_speaker, last_resp = model, resp
 
         if (
@@ -4920,7 +5053,7 @@ class Botference:
             self._update_pct(target, next_resp, ui)
             ui.set_status(self.status_snapshot())
             self._persist_session()
-            await self._maybe_watch_for_bot(next_resp.text, ui)
+            await self._maybe_watch_for_bot(next_resp.text, ui, target)
 
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp

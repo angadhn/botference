@@ -63,7 +63,7 @@ export const hasMention = text => MENTION_RE.test(String(text || ''));
 // the agent's own name (chat.handle stamps 'claude'/'codex' from the bridge's
 // speaker), so one list answers both questions and there is no second place
 // for the agent names to drift.
-export const isBotAuthor = a => /^(claude|codex)\b/i.test(String(a || '').trim());
+export const isBotAuthor = a => /^(claude|codex|gemini)\b/i.test(String(a || '').trim());
 
 // strict routing: a comment that tags exactly one bot is that bot's alone;
 // @all (or both tagged) engages the room
@@ -988,6 +988,16 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       }
       return;
     }
+    if (ev.type === 'video_watch') {
+      // Gemini watching a YouTube link for the bots (core/botference.py
+      // _watch_one_video). It belongs to the turn in flight, so it goes to
+      // that turn's page/thread and the drawer says so in its status line.
+      if (current) {
+        chat(current.job, { kind: 'video-watch', state: String(ev.state || ''),
+          url: String(ev.url || '') });
+      }
+      return;
+    }
     if (ev.type === 'stream') {
       if (!current || !current.capturing) return;
       if (ev.kind === 'text_delta') {
@@ -1003,7 +1013,12 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // claude/codex entries become thread messages
       if (!current || !current.capturing || ev.restored) return;
       const speaker = String(ev.speaker || '').toLowerCase();
-      const author = speaker.startsWith('claude') ? 'claude' : speaker.startsWith('codex') ? 'codex' : null;
+      // `gemini` is the video watcher's own voice (core/botference.py
+      // _post_video_report): a message in the thread like any other, so the
+      // reader sees what was watched instead of concluding a bot watched it.
+      const author = speaker.startsWith('claude') ? 'claude'
+        : speaker.startsWith('codex') ? 'codex'
+          : speaker.startsWith('gemini') ? 'gemini' : null;
       if (!author || !String(ev.text || '').trim()) return;
       // tool activity is kept, not dropped — the drawer collapses it, the
       // Obsidian note leaves it out

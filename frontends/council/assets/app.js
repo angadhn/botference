@@ -165,6 +165,9 @@
   const MARKS = {
     claude: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>',
     codex: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>',
+    // Gemini's four-point sparkle, drawn rather than fetched (no external
+    // image ever reaches this page). Only the video watcher uses it.
+    gemini: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 0c0 6.627 5.373 12 12 12-6.627 0-12 5.373-12 12 0-6.627-5.373-12-12-12C6.627 12 12 6.627 12 0Z"/></svg>',
   };
   const AGENTS = ['claude', 'codex'];
   const other = a => (a === 'claude' ? 'codex' : 'claude');
@@ -261,6 +264,10 @@
     ctxStat: { claude: null, codex: null },    // {pct, tokens, window} per agent (from status)
     relay: { claude: null, codex: null },      // {at, tier} last-relay provenance (from status)
     activity: { claude: null, codex: null },   // latest tool label while an agent works
+    // The video watcher, which is NOT a participant: the mark exists only
+    // while a watch is in flight, plus a moment afterwards so the outcome is
+    // seen. `phase` is 'watching' | 'done' | 'error' | null (no mark at all).
+    gemini: { phase: null, url: '', timer: null },
     facts: { mode: '', lead: '', route: '', project: '' },  // session facts (from status)
     lastUserText: '',                          // last human turn, for "retry with @other"
     sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
@@ -317,7 +324,42 @@
       const ex = state.exhausted[a];
       const tip = ex ? `${name} is out of credits — ${ex}` : `${name}${on ? ' is working…' : ' — idle'}`;
       return `<span class="avatar-ring${on ? ' working' : ''}${ex ? ' exhausted' : ''}" style="--author:var(--${a})" title="${esc(tip)}">${avatarHtml(a)}${ex ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</span>`;
-    }).join('');
+    }).join('') + geminiMarkHtml();
+  }
+
+  const geminiAvatarHtml = () =>
+    `<span class="avatar" style="--author:var(--gemini)" aria-hidden="true">${MARKS.gemini}</span>`;
+
+  // The video watcher's mark — present only while it is working, plus a beat
+  // afterwards so the reader sees how it went. Gemini is a tool the room used,
+  // not a third participant, so nothing lingers in the header once it is done.
+  const GEMINI_HOLD = { done: 1500, error: 4000 };  // ms the outcome stays up
+  function geminiMarkHtml() {
+    const g = state.gemini;
+    if (!g.phase) return '';
+    const tip = g.phase === 'watching' ? `Gemini is watching ${g.url}`
+      : g.phase === 'error' ? `Gemini could not watch ${g.url}`
+        : `Gemini watched ${g.url}`;
+    const cls = g.phase === 'watching' ? ' working'
+      : g.phase === 'error' ? ' warn' : ' done';
+    const badge = g.phase === 'error' ? '<span class="warn-badge" aria-hidden="true">⚠</span>'
+      : g.phase === 'done' ? '<span class="tick-badge" aria-hidden="true">✓</span>' : '';
+    return `<span class="avatar-ring gemini${cls}" style="--author:var(--gemini)" title="${esc(tip)}" data-mark="gemini">`
+      + `<span class="avatar" style="--author:var(--gemini)" aria-hidden="true">${MARKS.gemini}</span>`
+      + badge + '</span>';
+  }
+  // Move the mark to a phase, and (for the two settled phases) arrange its
+  // disappearance. A watch is an act with an end, not a member of the room.
+  function geminiPhase(phase, url) {
+    const g = state.gemini;
+    if (g.timer) { clearTimeout(g.timer); g.timer = null; }
+    g.phase = phase;
+    if (url) g.url = url;
+    if (phase && phase !== 'watching') {
+      g.timer = setTimeout(() => { g.timer = null; g.phase = null; renderAvatars(); },
+        GEMINI_HOLD[phase] || 1500);
+    }
+    renderAvatars();
   }
   renderAvatars();
 
@@ -1128,6 +1170,14 @@
   els.chat.addEventListener('click', e => {
     const copyBtn = e.target.closest('.msg-copy');
     if (copyBtn) { copyMessage(copyBtn.closest('.msg')); return; }
+    // a folded video report: delegated, so it survives a cached re-render
+    const moreBtn = e.target.closest('[data-act="gemini-more"]');
+    if (moreBtn) {
+      const body = moreBtn.parentNode.querySelector('.body');
+      const open = body.classList.toggle('clipped');
+      moreBtn.textContent = open ? 'show more' : 'show less';
+      return;
+    }
     // The draft box's own copy: the blockquote's text alone, button excluded.
     // Read innerText from the LIVE node (a detached clone loses the line
     // breaks between paragraphs) with the button display:none'd for the read.
@@ -1556,6 +1606,19 @@
       div.innerHTML = `<div class="who">${avatarHtml(who)}<span>${who}</span></div>` +
         `<div class="body"></div>${copyBtnHtml}`;
       paint(div, text);
+    } else if (who === 'gemini') {
+      // The video watcher's own report. Its own bubble, because a reader who
+      // sees it inside their own message (or as a system whisper) concludes
+      // Claude watched the video — and long reports are folded, because a
+      // 600-word transcript of a video is not what the eye wants next.
+      const head = String(text || '').split('\n')[0];
+      const body = String(text || '').split('\n').slice(1).join('\n').replace(/^\n+/, '');
+      div.className = 'msg gemini';
+      div.innerHTML = `<div class="who">${geminiAvatarHtml()}<span>${esc(head)}</span></div>`
+        + '<div class="body clipped"></div>'
+        + '<button class="more" type="button" data-act="gemini-more">show more</button>'
+        + copyBtnHtml;
+      paint(div, body);
     } else {
       // multi-line system output (/help, /status, resume lists) reads better
       // as a left-aligned block than a centered whisper
@@ -2677,6 +2740,15 @@
       case 'restore':
         for (const e of ev.entries || []) addMsg(e.speaker, e.text);
         break;
+      case 'video_watch':
+        // start / done / error for one Gemini video watch (core/botference.py
+        // _watch_one_video). The report itself arrives as a `gemini` room
+        // entry; this is only the header's working light.
+        geminiPhase(
+          ev.state === 'start' ? 'watching' : ev.state === 'error' ? 'error' : 'done',
+          ev.url || 'a video',
+        );
+        break;
       case 'stream':
         setBusy(true);
         if (ev.kind === 'text_delta') { streamDelta(ev); break; }
@@ -2757,6 +2829,10 @@
           else if (state.pendingSwitch) { state.pendingSwitch = null; setSyncing(false); }
           if (state.replaying) { state.replaying = false; settleBottom(); }
         }
+        // a watch always ends inside the turn it started in; if its 'done'
+        // was lost (history trimmed, tab joined mid-watch) the idle boundary
+        // settles the mark rather than leaving it spinning forever
+        if (state.gemini.phase === 'watching') geminiPhase(null);
         setBusy(false);
         settleCard();
         freezeLanes();

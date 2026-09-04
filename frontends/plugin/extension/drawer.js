@@ -221,7 +221,7 @@
   // The `\b` matters and was missing here alone: chat.isBotAuthor and
   // anchor.isBotAuthor both have it, so "claudette" was a person to the
   // companion and to the page, and a bot to the drawer.
-  const isBot = a => /^(claude|codex)\b/i.test(String(a || '').trim());
+  const isBot = a => /^(claude|codex|gemini)\b/i.test(String(a || '').trim());
   // ⟦route⟧ begin — the tag a message's own words carry, as a pill name.
   //
   // THREE RUNTIMES, THREE COPIES, ONE RULE. The companion has it as
@@ -252,7 +252,8 @@
   // --font-codex), so colour and typeface are decided by the same rule.
   function agentOf(name) {
     const a = String(name || '').toLowerCase().trim();
-    return a.startsWith('claude') ? 'claude' : a.startsWith('codex') ? 'codex' : '';
+    return a.startsWith('claude') ? 'claude' : a.startsWith('codex') ? 'codex'
+      : a.startsWith('gemini') ? 'gemini' : '';
   }
   // per-author identity, same rule as the review UI: bots get theme colors,
   // humans a deterministic muted hue from their handle
@@ -1329,6 +1330,10 @@
       // very object and carries a `typing()` reader, which would eat the field.
       typeMode: 'type',
       running: {},         // target -> true while a turn is in flight
+      // target -> the YouTube url Gemini is watching for this turn, if any.
+      // Neither bot can watch video; while one is being watched for them the
+      // turn genuinely is waiting on something, and the status line says so.
+      watching: {},
       turnAgents: {},      // target -> ['claude'|'codex'] as announced by turn-start
       liveAgents: {},      // target -> agents actually seen streaming this turn
       speaker: {},         // target -> the agent whose stream arrived most recently
@@ -2400,10 +2405,13 @@ ${markPickHtml()}
       const noteHtml = note
         ? `<div class="status-chip${note.err ? ' err' : ''}">` +
           `${note.transient ? '<span class="spin">◐</span>' : ''}${esc(note.text)}</div>` : '';
+      const watchHtml = D.watching[target]
+        ? '<div class="status-chip"><span class="spin">◐</span>Gemini is watching the video…</div>' : '';
       if (D.running[target]) {
         return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>`
-          + (note && note.transient ? '' : noteHtml);
+          + watchHtml + (note && note.transient ? '' : noteHtml);
       }
+      if (watchHtml) return watchHtml + noteHtml;
       return noteHtml;
     }
 
@@ -8610,8 +8618,14 @@ ${markPickHtml()}
       const target = isLibraryUrl(ev.url) ? LIBRARY_TARGET : (ev.target || PAGE_TARGET);
       D.heard[target] = Date.now();   // this turn is demonstrably still being reported
       switch (ev.kind) {
+        case 'video-watch':
+          if (ev.state === 'start') D.watching[target] = ev.url || 'a video';
+          else delete D.watching[target];
+          render();
+          break;
         case 'turn-start':
           D.running[target] = true;
+          delete D.watching[target];
           bumpTurn(target);   // closes the "queued…" window for any send still in flight
           // an older companion sends no `agents`; the chip then stays generic
           D.turnAgents[target] = Array.isArray(ev.agents) ? ev.agents.filter(Boolean) : [];
@@ -8667,6 +8681,7 @@ ${markPickHtml()}
           break;
         case 'turn-end':
           delete D.running[target];
+          delete D.watching[target];
           bumpTurn(target);
           clearWaiting(target);   // never leave "queued…" (or "stopping…") behind a finished turn
           delete D.turnAgents[target];

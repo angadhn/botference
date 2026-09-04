@@ -883,6 +883,31 @@ async function main() {
     assert.equal(idx[crypto.createHash('sha1').update(PAGE1).digest('hex')].threads, 0);
   });
 
+  await test('a Gemini video watch is relayed to the page it belongs to', async () => {
+    const url = 'https://ledger.test/2026/the-clip';
+    await POST(base, '/page', { url, title: 'The Clip', site: 'ledger.test' });
+    const before = stream.events.length;
+    const r = await POST(base, '/thread', {
+      url, quote: 'the clip', prefix: '', suffix: '',
+      msg: { text: '@claude what does this clip say? [mock:video]' },
+    });
+    assert.equal(r.json.queued, true);
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'turn-end');
+    const watches = stream.events.slice(before).filter(e => e.kind === 'video-watch');
+    assert.deepEqual(watches.map(e => e.state), ['start', 'done'],
+      'both edges of the watch reach the drawer');
+    assert.match(watches[0].url, /youtube\.com\/watch\?v=/);
+    assert.equal(watches[0].url, watches[1].url);
+    // …and the report reaches the thread as a message from the watcher itself
+    const replies = stream.events.slice(before).filter(e => e.kind === 'reply');
+    const g = replies.find(e => e.msg && e.msg.author === 'gemini');
+    assert.ok(g, 'the gemini report is a message in the thread');
+    assert.match(g.msg.text, /Gemini · watched/);
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    assert.ok(page.threads[0].msgs.some(m => m.author === 'gemini'),
+      'and it is stored with the thread, not dropped');
+  });
+
   await test('deleting a thread\'s last message deletes the thread', async () => {
     const url = 'https://ledger.test/2026/solo-comment';
     await POST(base, '/page', { url, title: 'Solo Comment', site: 'ledger.test' });

@@ -2821,3 +2821,73 @@ test('typewriter: a reader who asked for less motion gets instant, whatever the 
   assert.equal(doc.querySelector('#typing-toggle .seg-btn.on').dataset.typingOpt, 'instant');
   assert.ok([...seg.querySelectorAll('.seg-btn')].every(b => b.disabled), 'and stops offering it');
 });
+
+test('the Gemini mark works only while it works: spins, shows the outcome, then goes',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  C.handle({ type: 'replay_done' });
+  const mark = () => doc.querySelector('#avatars .avatar-ring.gemini');
+  const YT = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+  // Gemini is not a participant: no mark at all until it is actually working
+  assert.equal(mark(), null, 'no Gemini mark before a watch');
+  assert.equal(doc.querySelectorAll('#avatars .avatar-ring').length, 2);
+
+  C.handle({ type: 'video_watch', state: 'start', url: YT, model: 'gemini-3.8-flash' });
+  assert.ok(mark(), 'the mark appears when the watch starts');
+  assert.ok(mark().classList.contains('working'), 'and spins while it runs');
+  assert.match(mark().getAttribute('title'), /Gemini is watching https:\/\/www\.youtube\.com/);
+  assert.ok(mark().querySelector('svg'), 'the mark is inline SVG — no external image');
+
+  // done: a tick, briefly, then nothing — no idle mark, no running count
+  C.handle({ type: 'video_watch', state: 'done', url: YT, seconds: 12.4 });
+  assert.equal(mark().classList.contains('working'), false);
+  assert.ok(mark().classList.contains('done'));
+  assert.ok(mark().querySelector('.tick-badge'), 'the outcome is shown');
+  await new Promise(r => setTimeout(r, 1700));
+  assert.equal(mark(), null, 'and the mark leaves the header');
+
+  // an error stays up longer, and warns
+  C.handle({ type: 'video_watch', state: 'start', url: YT });
+  C.handle({ type: 'video_watch', state: 'error', url: YT, error: 'private video' });
+  assert.ok(mark().classList.contains('warn'), 'a failed watch warns');
+  assert.match(mark().getAttribute('title'), /Gemini could not watch/);
+  await new Promise(r => setTimeout(r, 1700));
+  assert.ok(mark(), 'a warning outlives a tick');
+
+  // a watch whose ending never arrived must not spin forever
+  C.handle({ type: 'video_watch', state: 'start', url: YT });
+  assert.ok(mark().classList.contains('working'));
+  C.handle({ type: 'ready' });
+  assert.equal(mark(), null, 'an idle turn takes a stranded watch down');
+});
+
+test('a Gemini video report is its own message — folded, with the watcher’s mark',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  C.handle({ type: 'replay_done' });
+  const YT = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  const report = `Gemini · watched ${YT} in 12s (gemini-3.8-flash)\n\n`
+    + 'A talk about night trains.\n\n' + [...Array(20)].map((_, i) => `00:0${i % 10} section ${i}`).join('\n');
+  C.handle({ type: 'room', speaker: 'gemini', text: report });
+
+  const msg = doc.querySelector('.msg.gemini');
+  assert.ok(msg, 'the report is a message of its own, not a system whisper');
+  assert.match(msg.querySelector('.who').textContent, /Gemini · watched https:\/\/www\.youtube\.com/);
+  assert.ok(msg.querySelector('.who svg'), 'wearing the watcher’s mark');
+  const body = msg.querySelector('.body');
+  assert.match(body.textContent, /A talk about night trains/);
+  assert.doesNotMatch(body.textContent, /Watched video:/, 'the bots’ envelope is not shown to the reader');
+  assert.ok(body.classList.contains('clipped'), 'a long report is folded');
+
+  // …and unfolds on demand, both ways
+  const more = msg.querySelector('[data-act="gemini-more"]');
+  assert.equal(more.textContent, 'show more');
+  more.click();
+  assert.equal(msg.querySelector('.body').classList.contains('clipped'), false);
+  assert.equal(msg.querySelector('[data-act="gemini-more"]').textContent, 'show less');
+  msg.querySelector('[data-act="gemini-more"]').click();
+  assert.ok(msg.querySelector('.body').classList.contains('clipped'));
+});

@@ -1489,12 +1489,23 @@ instruction, because it describes a page nobody in the room can check.
 - **Set the key once:** put a Google AI Studio key in
   `~/.botference/gemini-key` (`chmod 600` it) or set `GEMINI_API_KEY`. With no
   key, a YouTube link is noted once per chat and nothing is watched.
-- **`/watch <url> [question]`** watches on demand and posts the report into the
-  chat, so the bots read it on their next turn. With a question, it is answered
-  first and the summary follows.
+- **You see what Gemini saw.** Every report is posted as its own message from
+  `gemini` — the header says what was watched, how long it took and by which
+  model — folded after a few lines in the web UI with a "show more". The bots
+  get the same report in their own copy of the turn.
+- **`/watch <url> [question]`** watches on demand, posts the report, and then
+  hands the room to both bots to discuss it — no "so, thoughts?" needed. With a
+  question, Gemini answers it first and the summary follows.
 - **A bot can ask.** Ending a reply with a line of its own reading
-  `watch: <youtube-url>` has the video watched and the report posted; the line
-  stays in the reply.
+  `watch: <youtube-url>`, `watch: <youtube-url> — <question>` or
+  `ask gemini: <question>` (about the video most recently watched here) has the
+  video watched or the question put; the line stays in the reply. A question
+  gets the asking bot — only that bot — the floor straight back with the answer
+  in front of it, once; and each bot may ask at most two questions per turn, so
+  a video cannot become a conversation the user is not in.
+- **A working light.** While a watch is running, a Gemini mark spins beside the
+  Claude and Codex marks in the web UI's header, shows the outcome for a moment,
+  and then goes — it is a tool the room used, not a third participant.
 - Up to three links per message are watched automatically, reports are cached
   for 30 days (a re-sent link costs nothing), and `BOTFERENCE_VIDEO_WATCH=off`
   turns the automatic watching off while leaving `/watch` working.

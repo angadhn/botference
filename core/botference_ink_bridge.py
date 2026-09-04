@@ -305,6 +305,15 @@ class InkBridge:
         for payload in buffered:
             emit(payload)
 
+    def video_watch(self, event: dict) -> None:
+        """A Gemini video watch starting, finishing or failing.
+
+        Its own event rather than a status field: a watch is a short-lived act
+        with a start and an end, and every frontend that draws a "Gemini is
+        working" mark wants both edges, not a flag it has to poll.
+        """
+        emit({"type": "video_watch", **event})
+
     def set_status(self, status: StatusSnapshot) -> None:
         emit({
             "type": "status",

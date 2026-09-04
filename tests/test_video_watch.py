@@ -147,6 +147,51 @@ class TestParseWatchRequest:
         assert vw.parse_watch_request("No video here.") is None
 
 
+class TestParseVideoRequest:
+    def test_a_plain_watch_line(self):
+        assert vw.parse_video_request(f"watch: {URL}") == {
+            "kind": "watch", "url": URL, "question": ""}
+
+    def test_a_watch_line_with_an_em_dash_question(self):
+        req = vw.parse_video_request(f"watch: {URL} — what is at 04:10?")
+        assert req == {"kind": "watch", "url": URL, "question": "what is at 04:10?"}
+
+    def test_a_watch_line_with_a_hyphen_question(self):
+        req = vw.parse_video_request(f"watch: {URL} - does she name a figure?")
+        assert req["question"] == "does she name a figure?"
+
+    def test_ask_gemini_needs_no_url(self):
+        assert vw.parse_video_request("ask gemini: what does the chart show?") == {
+            "kind": "ask", "url": "", "question": "what does the chart show?"}
+
+    def test_ask_gemini_must_be_its_own_line(self):
+        assert vw.parse_video_request(
+            "I could ask gemini: what the chart shows, if that helps") is None
+
+    def test_the_last_request_wins(self):
+        text = f"ask gemini: first?\nwatch: {URL} — second?"
+        req = vw.parse_video_request(text)
+        assert req["kind"] == "watch" and req["question"] == "second?"
+
+    def test_a_fenced_request_is_code(self):
+        assert vw.parse_video_request("```\nask gemini: what?\n```") is None
+
+    def test_bullets_and_bold_are_peeled_off_either_shape(self):
+        assert vw.parse_video_request("- **ask gemini: how long is it?**") == {
+            "kind": "ask", "url": "", "question": "how long is it?"}
+
+    def test_an_empty_question_is_not_a_request(self):
+        assert vw.parse_video_request("ask gemini:") is None
+
+    def test_a_report_labels_who_asked(self):
+        text = vw.format_entry(
+            vw.WatchResult(url=URL, text="A bar chart.", question="what is at 04:10?"),
+            asked_by="claude",
+        )
+        assert text.startswith("Gemini · asked by Claude: what is at 04:10?")
+        assert "A bar chart." in text
+
+
 # ── the key ────────────────────────────────────────────────
 
 

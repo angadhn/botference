@@ -54,7 +54,7 @@
      mark, but each value is picked against ITS OWN theme's paper rather than
      reused across both — which is why they are set again in every theme block
      below and the mark's are not. */
-  --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8; --bad: #b3403a;
+  --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8; --gemini: #5b58d6; --bad: #b3403a;
   /* Each agent owns a TYPEFACE as well as a colour, the council's pairing:
      Claude speaks in the serif, Codex in the grotesque, everyone human in the
      drawer's own sans. Colour alone dies on a greyscale screen and at the
@@ -84,7 +84,7 @@
     --strike-line: rgba(232, 96, 88, 0.95);
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
-    --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
+    --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2; --gemini: #9a92f2;
     --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
     color-scheme: dark;
   }
@@ -99,14 +99,14 @@
   --strike-line: rgba(232, 96, 88, 0.95);
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
-  --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2;
+  --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2; --gemini: #9a92f2;
   --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
   color-scheme: dark;
 }
 :host([data-theme="light"]) {
   --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
-  --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8;
+  --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8; --gemini: #5b58d6;
   --author-l: 0.52; --tag-fg-l: 30%; --tag-bg-l: 93%; --tag-line-l: 72%;
   color-scheme: light;
 }

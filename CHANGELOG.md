@@ -17,6 +17,19 @@
   the automatic watching off while `/watch` keeps working. Private, unlisted or
   region-blocked videos and an exhausted daily allowance are reported in the
   room in plain words.
+- **You can see what Gemini saw, and the bots can ask it things.** A report is
+  posted as its own message from `gemini` (header: what was watched, how long
+  it took, which model), folded after a few lines in the council web with a
+  "show more", and rendered in the plugin drawer and the TUI too — before, it
+  was hidden inside the user's own turn and readers concluded Claude had
+  watched the video. `/watch` now hands the room to both bots to discuss the
+  report instead of ending in silence. A bot may follow up with
+  `watch: <url> — <question>` or `ask gemini: <question>` about the video last
+  watched; the answer goes up as a Gemini message and the asking bot — only
+  that one — gets the floor back once to read it, at most twice per turn. While
+  a watch runs, a Gemini mark spins in the council web header beside Claude and
+  Codex, shows the outcome for a moment and then leaves; the plugin drawer says
+  "Gemini is watching the video…" for the same span.
 
 ## 2026-09-03
 

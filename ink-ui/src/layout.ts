@@ -403,6 +403,8 @@ export const SPEAKER_COLORS: Record<string, string> = {
   codex: "greenBright",
   system: "yellow",
   summary: "magenta",
+  // the video watcher: not a participant, but it speaks in the room
+  gemini: "magentaBright",
 };
 
 /** Muted body-text colors — softer than the bold label colors. */
@@ -412,6 +414,7 @@ export const SPEAKER_BODY_COLORS: Record<string, string> = {
   codex: "green",
   system: "yellow",
   summary: "magenta",
+  gemini: "magenta",
 };
 
 export const SPEAKER_LABELS: Record<string, string> = {
@@ -420,6 +423,7 @@ export const SPEAKER_LABELS: Record<string, string> = {
   codex: "[Codex] ",
   summary: "[Summary] ",
   system: "System: ",
+  gemini: "[Gemini] ",
 };
 
 // ── Flat-line pre-rendering (Howler pattern) ───────────────

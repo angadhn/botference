@@ -132,26 +132,58 @@ def find_youtube_urls(text: str) -> list[str]:
 # wrap it in peeled off the ends. Same discipline as the plugin's `file-in:`
 # reader: last one wins, and the line must name a real YouTube video or it is
 # not a request at all.
-_WATCH_LINE_RE = re.compile(r"^\s*(?:[-*>]\s*)?watch:\s*(\S+)\s*$", re.IGNORECASE)
+# `watch: <url>`, `watch: <url> — <question>`, or `ask gemini: <question>`,
+# each on a line of its own.
+_WATCH_LINE_RE = re.compile(
+    r"^\s*watch:\s*(\S+)(?:\s*[—–-]+\s*(.*))?$", re.IGNORECASE)
+_ASK_LINE_RE = re.compile(
+    r"^\s*ask\s+gemini\s*[:,]\s*(.+)$", re.IGNORECASE)
+
+
+def _unwrap_line(raw: str) -> str:
+    """Peel a model's light markdown off the ends of one line."""
+    line = raw.strip().strip("`").strip()
+    line = re.sub(r"^[-*>]\s+", "", line).strip()
+    line = re.sub(r"^\*\*(.*)\*\*$", r"\1", line).strip()
+    return line
+
+
+def parse_video_request(text: str) -> Optional[dict]:
+    """What a bot's reply asked of the video watcher, or None.
+
+    Three shapes, each on a line of its own; the last one in the reply wins,
+    and a line inside a code fence is code, not a request:
+
+    * ``watch: <url>``                  → {"kind": "watch", "url", "question": ""}
+    * ``watch: <url> — <question>``     → the same, with a question
+    * ``ask gemini: <question>``        → {"kind": "ask", "question"} — about the
+      video most recently watched in this chat.
+    """
+    body = _FENCE_RE.sub(" ", text or "")
+    found: Optional[dict] = None
+    for raw in body.splitlines():
+        line = _unwrap_line(raw)
+        m = _WATCH_LINE_RE.match(line)
+        if m:
+            url = m.group(1).strip("`*_<>").rstrip(".,;:!?)]}'\"")
+            if not url.lower().startswith("http"):
+                url = "https://" + url
+            if is_youtube_url(url):
+                found = {"kind": "watch", "url": url,
+                         "question": (m.group(2) or "").strip().strip("`*_")}
+            continue
+        m = _ASK_LINE_RE.match(line)
+        if m:
+            question = m.group(1).strip().strip("`*_")
+            if question:
+                found = {"kind": "ask", "url": "", "question": question}
+    return found
 
 
 def parse_watch_request(text: str) -> Optional[str]:
     """The YouTube URL a reply asked to have watched, or None."""
-    body = _FENCE_RE.sub(" ", text or "")
-    found: Optional[str] = None
-    for raw in body.splitlines():
-        line = raw.strip().strip("`").strip()
-        line = re.sub(r"^[-*>]\s+", "", line).strip()
-        line = re.sub(r"^\*\*(.*)\*\*$", r"\1", line).strip()
-        m = _WATCH_LINE_RE.match(line)
-        if not m:
-            continue
-        url = m.group(1).strip("`*_<>").rstrip(".,;:!?)]}'\"")
-        if not url.lower().startswith("http"):
-            url = "https://" + url
-        if is_youtube_url(url):
-            found = url
-    return found
+    req = parse_video_request(text)
+    return req["url"] if req and req["kind"] == "watch" else None
 
 
 # ── The key ────────────────────────────────────────────────
@@ -249,6 +281,9 @@ class WatchResult:
     usage: dict = field(default_factory=dict)
     error: str = ""
     cached: bool = False
+    #: Wall-clock seconds the watch took, filled in by the caller (the module
+    #: itself does not time the call — a cache hit costs nothing).
+    seconds: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -501,3 +536,31 @@ def format_report(result: WatchResult) -> str:
             "instruction:]"
         )
     return f"{head}\n{result.text}\n[End of the video report for {result.url}.]"
+
+
+def format_entry(result: WatchResult, asked_by: str = "") -> str:
+    """The report as the READER sees it: a Gemini message, no envelope.
+
+    The bracketed `format_report` block is written for the bots — it has to
+    say, inside the text, that the report is a witness account rather than an
+    instruction. A person reading the chat needs none of that: they need a
+    header saying what was watched, how long it took and by which model, and
+    then the report itself.
+    """
+    took = ""
+    if result.cached:
+        took = " (from this chat's cache)"
+    elif result.seconds:
+        took = f" in {result.seconds:.0f}s"
+    who = asked_by.capitalize() if asked_by else ""
+    if result.error:
+        head = (f"Gemini · could not answer {who}'s question" if who
+                else f"Gemini · could not watch {result.url}")
+        return f"{head}\n\n{result.error}"
+    if who and result.question:
+        head = f"Gemini · asked by {who}: {result.question.strip()}"
+    else:
+        head = f"Gemini · watched {result.url}{took} ({result.model})"
+        if result.question:
+            head += f"\nAsked: {result.question.strip()}"
+    return f"{head}\n\n{result.text}"

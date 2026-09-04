@@ -434,9 +434,19 @@ or
 Any YouTube link in a message is watched automatically (up to three per
 message, cached for 30 days); set
 .B BOTFERENCE_VIDEO_WATCH=off
-to turn that off while keeping this command. A bot can ask for a video
+to turn that off while keeping this command. Every report is posted as its
+own message from
+.BR gemini ,
+and after a
+.B /watch
+the bots are handed the room to discuss it. A bot can ask for a video
 itself by ending a reply with a line reading
-.BR "watch: <url>" .
+.BR "watch: <url>" ,
+.BR "watch: <url> \(em <question>" ,
+or
+.B "ask gemini: <question>"
+about the video last watched here; a question gets that bot (only that
+bot) one turn back with the answer, twice per turn at most.
 .PP
 Plain text is auto-routed;
 .BR @claude ,

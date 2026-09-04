@@ -19,7 +19,7 @@
   --font-claude: var(--serif);
   --font-codex: "Avenir Next", "Segoe UI", Inter, "Helvetica Neue",
     ui-sans-serif, system-ui, sans-serif;
-  --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61;
+  --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61; --gemini: #5b58d6;
   --bad: #b3403a; --ok: rgba(46, 160, 67, 0.75);
   --shadow: 0 4px 14px rgba(0, 0, 0, .1);
   color-scheme: light;
@@ -29,7 +29,7 @@
     --bg: #17140f; --fg: #e9e0d2; --heading: #f7efe0; --muted: #a2977f;
     --line: rgba(217, 119, 87, 0.2); --accent: #e0805e; --accent-hover: #ee9678;
     --card: #221d16; --card-line: rgba(226, 190, 160, 0.16); --rail: #1d1913;
-    --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0;
+    --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0; --gemini: #9a92f2;
     --ok: rgba(63, 185, 80, 0.8); --shadow: 0 6px 20px rgba(0, 0, 0, .45);
     color-scheme: dark;
   }
@@ -40,7 +40,7 @@
   --bg: #faf7f0; --fg: #2a2419; --heading: #1c1710; --muted: #786d5c;
   --line: rgba(217, 119, 87, 0.22); --accent: #cf6640; --accent-hover: #b04f2e;
   --card: #fffdf8; --card-line: #e6ddcd; --rail: #f3ecdf;
-  --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61;
+  --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61; --gemini: #5b58d6;
   --ok: rgba(46, 160, 67, 0.75); --shadow: 0 4px 14px rgba(0, 0, 0, .1);
   color-scheme: light;
 }
@@ -48,7 +48,7 @@
   --bg: #17140f; --fg: #e9e0d2; --heading: #f7efe0; --muted: #a2977f;
   --line: rgba(217, 119, 87, 0.2); --accent: #e0805e; --accent-hover: #ee9678;
   --card: #221d16; --card-line: rgba(226, 190, 160, 0.16); --rail: #1d1913;
-  --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0;
+  --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0; --gemini: #9a92f2;
   --ok: rgba(63, 185, 80, 0.8); --shadow: 0 6px 20px rgba(0, 0, 0, .45);
   color-scheme: dark;
 }
@@ -753,6 +753,32 @@ body.agents-open #agents-panel { transform: translateX(0) }
     display: block; width: 264px; flex: none; z-index: auto; box-shadow: none }
   #agents-toggle { display: none }
 }
+
+/* the video watcher: a third mark, only once Gemini has actually watched
+   something in this chat. Smaller than a participant's — it is a tool the
+   room used, not a member of it — and it spins on the same ring animation. */
+.avatar-ring.gemini { width: 28px; height: 28px; align-self: center; opacity: 1 }
+.avatar-ring.gemini.working::before { border-color: var(--gemini); animation: spin 1s linear infinite }
+.avatar-ring.gemini.done::before { border-color: var(--ok) }
+.avatar-ring.gemini.warn::before { border-color: var(--bad) }
+.avatar-ring .tick-badge { position: absolute; right: -2px; bottom: -2px; color: var(--ok);
+  background: var(--card); border-radius: 50%; font-size: .7rem; line-height: 1; padding: 1px;
+  box-shadow: 0 0 0 1px var(--card-line) }
+
+/* the video watcher's report: its own bubble, folded — a 600-word account of
+   a video is reference material, not the next thing to read */
+.msg.gemini { --author: var(--gemini); align-self: flex-start; max-width: min(760px, 94%);
+  background: color-mix(in srgb, var(--gemini) 7%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--gemini) 28%, var(--card-line));
+  border-radius: 14px; padding: .6rem .85rem; position: relative }
+.msg.gemini .who { color: var(--gemini); font-size: .82rem; gap: .35rem }
+.msg.gemini .who .avatar { width: 18px; height: 18px; flex: none }
+.msg.gemini .body.clipped { max-height: 12.5em; overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent);
+  mask-image: linear-gradient(180deg, #000 70%, transparent) }
+.msg.gemini .more { display: block; margin-top: .3rem; background: none; border: 0;
+  color: var(--gemini); font: inherit; font-size: .82rem; cursor: pointer; padding: 0 }
+.msg.gemini .more:hover { text-decoration: underline }
 
 /* out-of-credits: dimmed avatar + a ⚠ corner badge */
 .avatar-ring.exhausted { opacity: .45 }
