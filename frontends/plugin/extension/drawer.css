@@ -461,7 +461,12 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
    asks the same shape of question — a short list, one click each. It differs
    in one way only, and it is the way that matters: these rows are TOGGLES, so
    a filed project is ticked and stays clickable to unfile. */
-.popover.projpick { min-width: 262px; max-width: 340px; padding: 9px 9px 10px }
+/* Twelve projects, each with a peek of its chats and files, is taller than a
+   phone or a laptop drawer. A popover that cannot scroll is clipped by the panel,
+   and the row that matters most — "+ new project" — sits at the bottom of it. */
+.popover.projpick { min-width: 262px; max-width: 340px; padding: 9px 9px 10px;
+  max-height: calc(100vh - 72px); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain }
 .popover.projpick .xwhy { white-space: pre-line; opacity: .9 }
 .projrow.on { border-color: var(--done-line) }
 .projrow.on .xname { color: var(--done-line) }
