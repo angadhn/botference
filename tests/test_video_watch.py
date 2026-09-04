@@ -413,3 +413,15 @@ def test_request_sends_the_canonical_url_not_the_phone_one():
     body = vw.build_request_body(raw)
     assert body["contents"][0]["parts"][0]["file_data"]["file_uri"] == "https://www.youtube.com/watch?v=NXs3QpkYm7g"
     assert vw.canonical_url("not a link") == "not a link"
+
+
+def test_display_url_and_preamble_stripping():
+    import video_watch as vw
+    raw = "https://m.youtube.com/watch?v=cLMLzpdgWgo&pp=ugUHEgVlbi1VUw%3D%3D"
+    assert vw.display_url(raw) == "youtube.com/watch?v=cLMLzpdgWgo"
+    assert vw.strip_preamble("Certainly! Here is a report on the video, following your instructions:\n\n**Title**") == "**Title**"
+    assert vw.strip_preamble("Here is the answer:\nIt is 42.") == "It is 42."
+    assert vw.strip_preamble("**Title**\nplain") == "**Title**\nplain"
+    r = vw.WatchResult(url=raw, text="body", model="m", seconds=51.2)
+    assert vw.format_entry(r).split("\n")[0] == "Gemini · watched youtube.com/watch?v=cLMLzpdgWgo in 51s (m)"
+    assert "no preamble" in vw.SUMMARY_PROMPT.lower() or "No greeting" in vw.SUMMARY_PROMPT

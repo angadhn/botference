@@ -2806,7 +2806,7 @@ class Botference:
         self, url: str, question: Optional[str], ui: UIPort,
     ) -> "video_watch.WatchResult":
         """Watch one video off the event loop, narrating start and duration."""
-        self._show_room_notice(ui, "system", f"Watching {url} …")
+        self._show_room_notice(ui, "system", f"Watching {video_watch.display_url(url)} …")
         self._emit_video_watch(ui, {
             "state": "start", "url": url, "model": video_watch.DEFAULT_MODEL,
         })

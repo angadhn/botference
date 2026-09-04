@@ -788,7 +788,8 @@ class TestVideoWatch:
         # and the reader sees it as Gemini's own message, without the envelope
         gemini = [t for sp, t in ui.room_entries if sp == "gemini"]
         assert len(gemini) == 1
-        assert gemini[0].startswith(f"Gemini · watched {self.YT}")
+        import video_watch as vw
+        assert gemini[0].startswith(f"Gemini · watched {vw.display_url(self.YT)}")
         assert "Report: it is a song." in gemini[0]
         assert "[Watched video:" not in gemini[0]
         # the bots are not handed the same report twice

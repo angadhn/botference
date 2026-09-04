@@ -771,7 +771,12 @@ body.agents-open #agents-panel { transform: translateX(0) }
   background: color-mix(in srgb, var(--gemini) 7%, var(--card));
   border: 1px solid color-mix(in srgb, var(--gemini) 28%, var(--card-line));
   border-radius: 14px; padding: .6rem .85rem; position: relative }
-.msg.gemini .who { color: var(--gemini); font-size: .82rem; gap: .35rem }
+.msg.gemini { min-width: 0; overflow-wrap: anywhere }
+.msg.gemini .who { color: var(--gemini); font-size: .82rem; gap: .35rem; align-items: flex-start }
+/* the header names a video address: readable case, and it wraps rather than
+   pushing the bubble (and the page) sideways */
+.msg.gemini .who span { text-transform: none; letter-spacing: 0; min-width: 0;
+  overflow-wrap: anywhere; word-break: break-word }
 .msg.gemini .who .avatar { width: 18px; height: 18px; flex: none }
 .msg.gemini .body.clipped { max-height: 12.5em; overflow: hidden;
   -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent);

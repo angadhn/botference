@@ -1173,9 +1173,18 @@
     // a folded video report: delegated, so it survives a cached re-render
     const moreBtn = e.target.closest('[data-act="gemini-more"]');
     if (moreBtn) {
+      // Unfolding grows the transcript, and the bottom-follower would read
+      // that growth as "new content" and pin the view to the bottom — so the
+      // reader who pressed "show more" lands past the report they opened.
+      // Hold the button where it is on screen and tell the follower to sit out.
       const body = moreBtn.parentNode.querySelector('.body');
+      const before = moreBtn.getBoundingClientRect().top;
+      holdFollowUntil = Date.now() + 800;
       const open = body.classList.toggle('clipped');
       moreBtn.textContent = open ? 'show more' : 'show less';
+      const after = moreBtn.getBoundingClientRect().top;
+      if (open) els.chat.scrollTop += after - before;   // folding: keep the button under the finger
+      else els.chat.scrollTop = Math.max(0, els.chat.scrollTop - 0); // unfolding: view stays where it was
       return;
     }
     // The draft box's own copy: the blockquote's text alone, button excluded.
@@ -1238,8 +1247,10 @@
     pinBottom();
     raf(() => raf(pinBottom));
   }
+  let holdFollowUntil = 0;   // a deliberate layout change (unfolding a report) is not new content
   function follow(wasPinned) {
     if (replayBuffer) return; // offscreen render: nothing to scroll
+    if (Date.now() < holdFollowUntil) return;
     if (wasPinned) pinBottom();
     else els.jump.hidden = false;
   }
@@ -1249,6 +1260,7 @@
   // long as the user hasn't deliberately scrolled up (jump pill hidden)
   if (typeof ResizeObserver === 'function') {
     new ResizeObserver(() => {
+      if (Date.now() < holdFollowUntil) return;
       if (replayActive() || els.jump.hidden) {
         if (!atBottom()) pinBottom();
       }

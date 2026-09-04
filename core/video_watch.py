@@ -90,6 +90,13 @@ def canonical_url(url: str) -> str:
     return f"https://www.youtube.com/watch?v={vid}" if vid else (url or "").strip()
 
 
+def display_url(url: str) -> str:
+    """The short form a reader sees: youtube.com/watch?v=<id>. A phone's share
+    link is 90 characters of tracking; nobody needs to read that in a header."""
+    vid = video_id(url)
+    return f"youtube.com/watch?v={vid}" if vid else (url or "").strip()
+
+
 def is_youtube_url(url: str) -> bool:
     """True when the whole string is one YouTube link and nothing else."""
     text = (url or "").strip()
@@ -226,6 +233,7 @@ def gemini_key(*, key_file: Optional[Path] = None) -> Optional[str]:
 
 SUMMARY_PROMPT = (
     "Watch this video and write a report for someone who cannot watch it.\n"
+    "Begin with the report itself. No greeting, no preamble such as \"Certainly\" or \"Here is\", no closing remark.\n"
     "Include, in this order:\n"
     "1. The title and channel, if either is visible.\n"
     "2. One paragraph saying what the video is and what it is for.\n"
@@ -251,7 +259,8 @@ def build_prompt(question: Optional[str] = None) -> str:
         "(mm:ss) section lines) so the reader knows the context of your "
         "answer. Quote anything decisive word for word with its timestamp, and "
         "say plainly if the video does not answer the question. Keep the whole "
-        "reply under about 600 words."
+        "reply under about 600 words. Begin with the answer itself: no "
+        "greeting, no preamble such as \"Certainly\" or \"Here is\"."
     )
 
 
@@ -366,6 +375,18 @@ def _urlopen_http(
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
+
+
+_PREAMBLE_RE = re.compile(
+    r"^\s*(certainly|sure|absolutely|of course|okay|ok)?[!.,]?\s*"
+    r"(here(?:'s| is| are)\b[^\n]{0,120}:|following your instructions:)\s*\n",
+    re.IGNORECASE,
+)
+
+
+def strip_preamble(text: str) -> str:
+    """Drop a 'Certainly! Here is a report…:' opener. The report is the point."""
+    return _PREAMBLE_RE.sub("", text or "", count=1).lstrip("\n")
 
 
 def _parse_text(payload: dict) -> str:
@@ -503,7 +524,7 @@ def watch(
             error=_error_for(status, payload, raw, url),
         )
 
-    text = _parse_text(payload)
+    text = strip_preamble(_parse_text(payload))
     if not text:
         return WatchResult(
             url=url, model=model, question=question,
@@ -555,12 +576,12 @@ def format_entry(result: WatchResult, asked_by: str = "") -> str:
     who = asked_by.capitalize() if asked_by else ""
     if result.error:
         head = (f"Gemini · could not answer {who}'s question" if who
-                else f"Gemini · could not watch {result.url}")
+                else f"Gemini · could not watch {display_url(result.url)}")
         return f"{head}\n\n{result.error}"
     if who and result.question:
         head = f"Gemini · asked by {who}: {result.question.strip()}"
     else:
-        head = f"Gemini · watched {result.url}{took} ({result.model})"
+        head = f"Gemini · watched {display_url(result.url)}{took} ({result.model})"
         if result.question:
             head += f"\nAsked: {result.question.strip()}"
     return f"{head}\n\n{result.text}"
