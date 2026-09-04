@@ -568,7 +568,7 @@ _CONTEXT_WINDOWS = {
     "claude-sonnet-4-6": 1_000_000,
     "claude-haiku-4-5": 200_000,
     "gpt-5-latest": 272_000,
-    "gpt-6-astra": 1_050_000,    # API-key billing only (not on a ChatGPT plan yet)
+    "gpt-6-astra": 1_050_000,    # default Codex participant since 2026-09-04
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
@@ -1637,7 +1637,7 @@ class ClaudeInteractiveTmuxAdapter:
 class CodexAdapter:
     """Wraps `codex exec` with session continuity via thread_id resume."""
 
-    def __init__(self, model: str = "gpt-5.6-sol",
+    def __init__(self, model: str = "gpt-6-astra",
                  sandbox: str = "read-only",
                  cwd: str = "",
                  add_dirs: Optional[list[str]] = None,

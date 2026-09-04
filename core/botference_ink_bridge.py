@@ -693,7 +693,7 @@ async def main() -> None:
     # Both participants run at medium effort by default — explicit rather
     # than trusting each CLI's own default to stay "medium" forever.
     parser.add_argument("--claude-effort", default="medium")
-    parser.add_argument("--openai-model", default="gpt-5.6-sol")
+    parser.add_argument("--openai-model", default="gpt-6-astra")
     parser.add_argument("--openai-effort", default="medium")
     parser.add_argument("--system-prompt-file", required=True)
     parser.add_argument("--task-file", required=True)

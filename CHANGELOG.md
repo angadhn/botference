@@ -2,6 +2,10 @@
 
 ## 2026-09-04
 
+- **GPT-6 Astra is the default Codex participant.** It opened to ChatGPT plans
+  today (yesterday it was API-key only), so new council, plugin and TUI chats
+  start Codex on `gpt-6-astra`; `OPENAI_MODEL`, the pickers and `/model` still
+  choose anything else.
 - **A site of your own, built by the bots.** On a project artifact page you can
   ask for a page to live at an address of its own and they do it themselves, in
   `<council root>/sites/<name>/`: a git repo, a **private** GitHub repo, a
