@@ -44,6 +44,7 @@ import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as suggest from './suggest.mjs';
 import * as publish from './publish.mjs';
+import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
@@ -236,6 +237,11 @@ function workspaceChatFor(root, projectId, projectDir) {
     // project's folder: chat.mjs hands it to the CLIs as their write root, so
     // the enforcement is the CLIs' own and not a promise made in a prompt.
     writeRoot: projectDir || '',
+    // …and the second writable folder, which belongs to the ROOT rather than to
+    // this project: `<root>/sites/<name>/`, a site of the reader's own
+    // (sites.mjs). Project lanes only — every other bridge passes nothing here
+    // and keeps exactly the write scope it had.
+    sitesRoot: sites.sitesRoot(root),
     // which project THIS page's chat is filed under. Still asked per turn —
     // the child is per project now, so the answer never changes, but a page
     // from ANOTHER project reaching this child would be a routing bug and the
@@ -649,6 +655,27 @@ function reportCollateral(page, seen, after, ev) {
 
 
 
+// The turn built a site — now the publish button can point at it.
+//
+// Same shape as the census above and for the same reason: nothing runs while
+// the reader is reading, and nothing runs unless a turn actually happened on a
+// project artifact page in a confirmed root. A site counts once it is a git
+// repo with an `origin` remote AND a host that can serve it (a Netlify site id
+// in `.netlify/state.json`, or GitHub Pages by CNAME / docs / gh-pages), which
+// is exactly the moment there is an address worth putting on a button.
+//
+// An existing target of that name is never overwritten — see
+// sites.registerSiteTargets. The `page` event is what makes the drawer refetch
+// and offer the new target without a reload.
+function registerNewSites(ev) {
+  const url = ev && ev.url;
+  const art = url ? artifactOf(url) : null;
+  if (!art || !art.confirmed || !art.root) return;
+  let added = [];
+  try { added = sites.registerSiteTargets(art.root); } catch { return; }
+  if (added.length) broadcast({ type: 'page', url });
+}
+
 function reportProjectChanges(ev) {
   const url = ev && ev.url;
   const seen = url ? turnScans.get(url) : null;
@@ -1015,6 +1042,7 @@ function onChatEvent(ev) {
     // after the turn-end, always: the drawer stops spinning first and only
     // then hears that the file moved
     reportProjectChanges(ev);
+    registerNewSites(ev);
     return;
   }
   if (ev.type === 'chat' && ev.kind === 'reply') {

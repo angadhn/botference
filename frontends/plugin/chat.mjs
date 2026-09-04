@@ -18,6 +18,15 @@ import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSes
   pageKey, snapshotFile, hasSnapshot, kindOf, findPageImage, pageImagesOf,
   writeDecisionLog } from './store.mjs';
 import { applyEnv as applyKeyEnv } from '../shared/keys.mjs';
+import { commandDecision, protectedTokens, sitesDomain } from './sites.mjs';
+
+// A write root that does not exist is an `--add-dir` the CLIs refuse at spawn,
+// so the sites folder is made before the child is started. One empty directory
+// beside `projects/` and `work/`, and never anything inside it: what goes in
+// there is the bots' to make.
+const ensureDir = dir => {
+  try { fs.mkdirSync(dir, { recursive: true }); return dir; } catch { return ''; }
+};
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = path.join(PLUGIN, 'bridge-system-prompt.md');
@@ -487,6 +496,20 @@ export function envelope({ url, title, target, text, quote, history,
       + 'thread is opened at each of those passages so the reader can review the change; '
       + 'the document is diffed across your turn either way, so an edit you do not mention '
       + 'still gets its thread — without your reason on it.\n'
+      // …and the SECOND writable folder, which is not this project's and is
+      // not a document: it is a website. It rides the same standing block for
+      // the same reason the write rule does — a bot that does not know it may
+      // build a site will offer to write the reader some instructions instead.
+      + (project.sites_dir
+        ? `You may ALSO create and edit files under ${project.sites_dir}/<name>/ — a site of `
+          + 'the reader\'s own, one folder per site, the name lowercase letters, digits and '
+          + `hyphens. When the reader asks for a page of theirs to live at its own address${
+            project.sites_domain ? ` (<name>.${project.sites_domain})` : ''}, BUILD it there `
+          + 'yourself — git repo, private GitHub repo, Netlify site, deploy — and then tell them '
+          + 'the one step that is theirs, which is the DNS record. System prompt rule 16 has the '
+          + 'commands. Nothing else on this machine is writable, and the reader\'s own blog repo '
+          + 'and its host account are never touched.\n'
+        : '')
     : '';
   // Filed under council projects (store.projectsOf → workspace.attachedContext).
   // This rides on EVERY turn, for the same reason the snapshot path and the
@@ -747,8 +770,15 @@ const activeSessionOf = ev => {
 // `permission_request` branch in handle(). That request is not a per-file
 // prompt: answering yes grants a whole additional write ROOT for the rest of
 // the session, which is precisely the widening this feature refuses.
+//   sitesRoot `<root>/sites` — the SECOND writable folder, and the only one
+//             that is not a document: a site of the reader's own, one folder
+//             per site (sites.mjs). Set on PROJECT lanes only; '' everywhere
+//             else, which is every other bridge in this companion and is what
+//             keeps an ordinary web page's chat exactly as write-less as it
+//             was. It also switches the command gate on: with no sites root
+//             the permission branch below denies everything, as it always did.
 export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot = '',
-  denyBash = [] }) {
+  sitesRoot = '', denyBash = [] }) {
   let proc = null;
   let available = false;      // a live child we can write to
   let ready = false;          // bridge is between turns
@@ -843,7 +873,15 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // Phase 2: the one writable directory, or none at all. Set — never
         // set empty — because an empty value reads as "unset" to the
         // controller and would fall back to the project's own write_roots.
-        ...(writeRoot ? { BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: writeRoot } : {}),
+        // …and, on a project lane, `<root>/sites` beside it, comma-separated
+        // (core/cli_adapters.py planner_write_roots_for_env splits on commas;
+        // the FIRST is the child's cwd, so the project folder stays first).
+        // The folder is created if it is not there: a write root that does not
+        // exist is an --add-dir the CLIs refuse at spawn.
+        ...(writeRoot
+          ? { BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS:
+            [writeRoot, sitesRoot ? ensureDir(sitesRoot) : ''].filter(Boolean).join(',') }
+          : {}),
         // …and the commands this child may not run at all. Blog source pages
         // (blog.mjs) spawn with `git,gh` here: the reader's website repository
         // is theirs to publish, and nothing Discuss drives may commit or push
@@ -1041,7 +1079,35 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // which is exactly the widening Phase 2 refuses. The project folder is
       // already writable without asking, because the child was SPAWNED that
       // way; anything that has to ask is by definition outside it.
+      //
+      // ONE exception, and it is not a file: a COMMAND, in a site folder, on a
+      // project lane. A site of the reader's own is built with git, gh and
+      // netlify (sites.mjs), and answering one of those is not the widening
+      // above — it grants nothing beyond the command that was asked about, and
+      // the next one is asked again. The allowance is a list of verbs decided
+      // on the parsed argv; everything else, including every request that
+      // carries no command line (which is all of them today), falls through to
+      // the deny that has always been here.
+      const d = commandDecision({
+        tool: ev.tool || ev.tool_name || '',
+        command: ev.command || '',
+        cwd: ev.cwd || ev.cwd_path || '',
+        sites: sitesRoot,
+        protect: sitesRoot ? protectedTokens(sitesRoot) : [],
+      });
+      if (d.allow) {
+        send({ type: 'permission_response', allow: true });
+        return;
+      }
       send({ type: 'permission_response', allow: false });
+      if (d.kind === 'command') {
+        if (current) {
+          chat(current.job, { kind: 'error',
+            error: `${String(ev.model || '').trim() || 'an agent'} tried to run \`${
+              String(ev.command || '').slice(0, 160)}\` — refused: ${d.why}` });
+        }
+        return;
+      }
       const who = String(ev.model || '').trim() || 'an agent';
       if (current) {
         chat(current.job, { kind: 'error',
@@ -1250,7 +1316,14 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // where this page came from, when it came from a project of the
         // reader's own council (workspace.mjs) — carrying the one directory
         // this child may write in, which is this project's folder or nothing
-        project: proj ? { ...proj, write_dir: writeRoot || '' } : null,
+        // …and the SECOND writable folder, where this lane has one: a site of
+        // the reader's own, plus the domain such a site hangs under, so the
+        // envelope can name the address before anything is built.
+        project: proj
+          ? { ...proj, write_dir: writeRoot || '',
+            sites_dir: (writeRoot && sitesRoot) ? sitesRoot : '',
+            sites_domain: (writeRoot && sitesRoot) ? sitesDomain(path.dirname(sitesRoot)) : '' }
+          : null,
         // the council projects this page is FILED under (server.mjs summon):
         // a digest of what they already know, or — filed nowhere — the roster
         // so a bot can say where the page belongs. Computed at submit, not

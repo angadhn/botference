@@ -8950,6 +8950,158 @@ itself off.
 has no extension to reload, so the orphan half is tested through the injected
 seams (`contextLost`, `cssUrl:''`) exactly as the context guard already was.
 
+## Amendment (2026-09-04, shipped): a site of the reader's own, made by the bots
+
+The publish amendment assumed the site already existed. This one is what
+happens when it does not: the reader says *put this at `lff.angadh.com`* and
+the bots BUILD the site — a folder, a git repo, a private GitHub repo, a
+Netlify site, a deploy — leaving exactly one step for the reader, which is a
+DNS record and is theirs because nothing on this machine has a token for their
+DNS provider.
+
+### The folder, and the second write scope
+
+`<root>/sites/<name>/` under a **confirmed council root**. One folder per site.
+`<name>` is a DNS label — `^[a-z0-9][a-z0-9-]{1,39}$` — because it is the
+subdomain, the folder name and the GitHub repo name all at once.
+
+A PROJECT lane's write allowance becomes TWO directories rather than one:
+`BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS` is now `<root>/projects/<id>,<root>/sites`.
+The project folder stays FIRST, so it is still the child's cwd; the sites
+folder rides along as an `--add-dir` with Edit rules of its own
+(core/cli_adapters.py planner_write_config splits on commas and has always
+handled several). The folder is created at spawn — a write root that does not
+exist is an `--add-dir` the CLIs refuse. **Ordinary-page lanes and blog lanes
+pass nothing here and keep exactly the write scope they had: none, and the
+one repo, respectively.** The envelope states the new folder in words on every
+turn, beside the project write rule and for the same reason.
+
+### The command gate
+
+Building a site is not a file edit; it is `git`, `gh` and `netlify`. So the
+companion's `permission_request` branch — deny-all since Phase 2 — grows ONE
+exception, and only for a request that carries a command line.
+
+The distinction is the whole safety argument. A bare write-permission request
+is answered by the CONTROLLER granting an additional write ROOT for the rest of
+the session (`botference.py _handle_write_access_request`), which is the
+widening Phase 2 refuses and which stays refused. A command request grants
+nothing beyond the command it names, and the next one is asked again.
+
+Today's bridge sends `{type, request_id, model, path, reason}` and no command,
+so today every request still falls through to the deny that was always there.
+The gate is written against `{tool, command, cwd}` so that it is correct on the
+day the bridge sends them.
+
+**Everything is decided on the parsed argv** (sites.mjs `splitArgv`), never on
+a substring — a substring rule reads `--data '{"note":"do not use --public"}'`
+as a request to publish. The parser understands single quotes, double quotes
+with their four escapes, backslashes and `&&`. It understands nothing else: a
+pipe, a semicolon, a redirect, a subshell, a `$`, a backtick or a newline makes
+the command **unreadable, and unreadable is denied** — which is also what
+yesterday did with every command, so an unparseable command is never a
+widening.
+
+| Allowed, in `<root>/sites/<name>/`, on a project lane | |
+|---|---|
+| `git <anything>` | except a push carrying `--force`, `--force-with-lease`, `-f`, `--mirror`, `--delete` or a `+` refspec; and no global option before the subcommand (`-C`, `--git-dir`, `-c`) |
+| `gh repo create <owner>/<name> --private …` | `--private` is REQUIRED; `--public` and `--internal` are refused; `--source` must stay inside the folder |
+| `gh repo view …` | |
+| `gh api repos/<owner>/<name>/pages` | Pages enablement and its custom domain; exactly one endpoint, and never `-X DELETE` |
+| `netlify sites:create` · `link` · `deploy` · `status` | `deploy --dir` must stay inside the folder |
+| `netlify api getSite\|updateSite\|createSiteInTeam` | how the custom domain is set |
+
+Everything else is denied, including `netlify env:*`, `sites:delete`,
+`gh repo delete` and `rm` — which is not on the list at all. The cwd must be
+`<root>/sites/<name>/` or below; `<root>/sites/` itself is not a site. Where a
+request carries **no cwd**, the command must `cd` into a site folder first
+(`cd <dir> && …`), each `&&` step is checked in turn, and a `cd` back out
+half way through denies the rest.
+
+**The reader's own site is protected by name, and the protection is DERIVED
+rather than typed in.** `protectedTokens()` reads the publish targets already
+in `config.json` and refuses any command whose argv mentions a target's repo
+path, its GitHub `owner/name` (from `.git/config`) or its Netlify site id (from
+`.netlify/state.json`). So the reader's blog is off limits because it is a
+publish target, a second site they configure tomorrow is off limits tomorrow,
+and a copy of this companion on another machine protects THAT machine's site.
+A target that lives inside `sites/` is deliberately not protected — those are
+the ones the bots made and are expected to keep deploying. `sites_protect` in
+config.json is the escape hatch for something that is off limits without being
+a publish target.
+
+A refusal is SAID, in the thread that asked, with the command and the reason:
+silence would look like the bot ignoring it.
+
+### The target that appears when the site does
+
+At turn-end on a project lane the companion looks at each
+`<root>/sites/<name>/` that is a git repo **with an `origin` remote**, and asks
+how it is hosted:
+
+- a `siteId` in `.netlify/state.json` → Netlify;
+- otherwise a `CNAME` file, a `docs/` folder or a `gh-pages` branch → GitHub
+  Pages.
+
+A folder with neither has no address yet and is not registered. One that has
+one becomes a publish target under its own name:
+
+```json
+"lff": { "repo": "<root>/sites/lff", "dir": ".", "file": "index.html",
+         "url": "https://lff.angadh.com/", "branch": "main", "push": true,
+         "deploy": ["netlify","deploy","--prod","--dir","."] }
+```
+
+with the `deploy` line **absent** for GitHub Pages, where the push is the
+deploy. **An existing target of that name is never overwritten** — the reader
+may have edited the url, the branch or the deploy command by hand, and a census
+that quietly rewrites a hand-edited config is a census nobody can leave on. A
+`page` event is broadcast so the drawer offers the new target without a reload.
+
+`sites_domain` (new config key) is what a site hangs under. Unset, it is the
+host of the first publish target that is not itself one of these sites — for a
+reader with a blog configured that is their blog's domain and is right every
+time — and it is written back the first time a site is registered, so a later
+site cannot be named after an earlier one's host.
+
+### What the bots are told (bridge-system-prompt rule 16)
+
+Build it, do not describe it. `git init -b main`; the page as ONE
+self-contained `index.html`; `gh repo create <owner>/<name> --private --source
+. --push`, or, **if a repo of that name already exists, reuse it** — `git
+remote add origin` and push — rather than making a second one. Prefer Netlify
+(`sites:create`, `link --id`, `deploy --prod --dir .`, `api updateSite` with
+the `custom_domain`), because it deploys from this machine and a private repo
+is never handed to a host; GitHub Pages is acceptable where it can serve that
+custom domain from a private repo. Then tell the reader the ONE step that is
+theirs — a CNAME `<name>` → `<site>.netlify.app` (or `<owner>.github.io`) at
+their DNS provider — and give them the host address the page is already live
+at. Never touch the reader's blog repo or its host account. Later updates are
+the same four commands, or the reader presses publish.
+
+### Testing
+
+`test/sites.test.mjs` (new, 73 passed): the gate as a table — every allowed
+command, `--public`, a missing `--private`, five shapes of force push, `gh api`
+off the Pages endpoint, `netlify env:*` and `sites:delete`, `rm -rf`, a
+pipeline, a substitution, a backtick, a redirect, an unterminated quote, a cwd
+outside `sites/`, a relative cwd, `cd` in and `cd` back out, every step of an
+`&&` chain; the reader's blog refused by site id, by `owner/name` and by path,
+while a site under `sites/` stays deployable; the parser; and registration —
+Netlify and all three Pages conventions, the flat publish target becoming the
+map entry `site` untouched, no second registration, and a hand-edited target
+left exactly as the reader wrote it. It runs against a throwaway
+`BOTFERENCE_PROJECT_ROOT` set before `store.mjs` is ever imported, and no git,
+gh, netlify or network is used anywhere in it — the fixtures are hand-written
+`.git/config` and `.netlify/state.json` files, which is all the code reads.
+
+`test/workspace.test.mjs` (176 → 183) carries the wiring: the project lane is
+spawned with both write roots and the sites folder is really created, an
+ordinary page still gets none, the envelope names the sites folder and what it
+is for, a `git push` in a site folder is allowed over the wire while a force
+push in the same folder is refused with the reason in the thread, and a
+finished site becomes a publish target at turn-end.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

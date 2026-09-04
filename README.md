@@ -708,6 +708,24 @@ subdomain like `lff.angadh.com` is three settings in your DNS and host and no
 code at all — the exact steps are in `frontends/plugin/SPEC.md`, "publish to
 the reader's site".)
 
+**Or ask for a site of its own, and the bots build it.** On a project page
+you can say *put this at `lff.angadh.com`* and they do the whole thing
+themselves, in `<council root>/sites/lff/`: a git repo, a **private** GitHub
+repo, a Netlify site, a deploy — and then they tell you the one step that is
+yours, which is a CNAME record at your DNS provider (the page is already live
+at the host's own address meanwhile). When it is finished the companion
+notices and adds it to `publish` in `config.json` by itself, so the publish
+button can point at it from then on; a target already there is never
+overwritten. `sites_domain` says what the sites hang under, and is worked out
+from your existing publish target when you do not set it. This is a *narrow*
+allowance and it is enforced in code, not asked for in a prompt: writes only
+under `sites/`, and only on a project lane; commands only `git`, four shapes
+of `gh` and five of `netlify`, decided on the parsed command line. `--public`
+is refused, force pushes and `repo delete` and `sites:delete` and
+`netlify env:*` are refused, and anything naming your own blog — its folder,
+its GitHub name, its Netlify site id — is refused outright. An ordinary web
+page's chat can still write nothing at all.
+
 **Message formatting.** Every message renders markdown — yours and the
 bots' alike — with links, code, and tickable `- [ ]` checklists. LaTeX
 maths renders too: `$…$` inline and `$$…$$` on its own line for display

@@ -913,11 +913,14 @@ console.log('\ncompanion — Phase 2: writes and the reload');
     await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: '@claude hello' });
     await waitFor(() => spawnEnvs().length >= 1, 'the workspace child to spawn');
     const e = spawnEnvs()[0];
-    assert.equal(writeRootOf(e), projectDir,
-      `the write root is this project's folder — got ${JSON.stringify(e.scope)}`);
+    assert.equal(writeRootOf(e), `${projectDir},${path.join(root, 'sites')}`,
+      `the write root is this project's folder, and the sites folder beside it — `
+      + `got ${JSON.stringify(e.scope)}`);
     assert.equal((e.scope || {}).BOTFERENCE_PROJECT_ROOT, root,
       'and the workspace is still the council root, so the chat files where it belongs');
     assert.ok(!writeRootOf(e).includes('..'), 'absolute, with nothing to walk out of');
+    assert.ok(fs.statSync(path.join(root, 'sites')).isDirectory(),
+      'the sites folder is made at spawn — a write root that does not exist is one the CLIs refuse');
   });
 
   await test('the envelope states the rule in words as well', async () => {
@@ -927,13 +930,15 @@ console.log('\ncompanion — Phase 2: writes and the reload');
     assert.ok(/nothing outside it/.test(turn), 'and the boundary is named');
   });
 
+
   await test('a second project in the same council gets its own child and its own folder', async () => {
     fs.mkdirSync(path.join(root, 'projects', 'ai-futures'), { recursive: true });
     const b = artifact(root, 'ai-futures');
     await POST(base, '/page', { url: b.url, title: 'Futures', site: 'ai-futures' });
     await POST(base, '/reply', { url: b.url, thread_id: '__page__', text: '@claude hello there' });
     await waitFor(() => spawnEnvs().length >= 2, 'the second workspace child');
-    const roots = spawnEnvs().map(writeRootOf).filter(Boolean);
+    const roots = spawnEnvs().map(writeRootOf).filter(Boolean)
+      .map(v => v.split(',')[0]);
     assert.deepEqual([...new Set(roots)].sort(),
       [path.join(root, 'projects', 'ai-futures'), projectDir].sort(),
       'one child per project, each writable only in its own folder');
@@ -967,6 +972,74 @@ console.log('\ncompanion — Phase 2: writes and the reload');
     assert.ok(answers.length >= 1);
     assert.ok(answers.every(e => e.allow === false),
       'a yes here would grant a whole extra write ROOT — the folder is already writable without asking');
+  });
+
+  // ── a site of the reader's own (sites.mjs) ───────────────────────────────
+  // The write scope has a SECOND folder on a project lane, and it is not a
+  // document: `<root>/sites/<name>/` is a website the bots build. The gate
+  // table itself is test/sites.test.mjs; what is asserted here is the wiring —
+  // that the envelope says so, that a command request really reaches the gate,
+  // and that a finished site turns into a publish target at turn-end.
+  const sitesDir = path.join(root, 'sites');
+
+  await test('the envelope names the sites folder too', async () => {
+    const turn = await waitFor(() => inputs(logFile).find(t => t.includes('@claude hello')), 'the turn');
+    assert.ok(turn.includes(`You may ALSO create and edit files under ${sitesDir}/<name>/`),
+      `the second write scope is spelled out — got:\n${turn}`);
+    assert.match(turn, /a site of the reader's own/, 'and what it is FOR is said');
+    assert.match(turn, /the DNS record/, 'including the one step that stays the reader\'s');
+  });
+
+  await test('a command in a site folder is allowed by the gate', async () => {
+    const dir = path.join(sitesDir, 'lff');
+    fs.mkdirSync(dir, { recursive: true });
+    const before = bridgeLog(logFile).filter(e => e.type === 'permission_response').length;
+    await POST(base, '/reply', { url: a.url, thread_id: '__page__',
+      text: `@claude [mock:cmd:${dir}|git push origin HEAD:main] ship it` });
+    await waitFor(() => bridgeLog(logFile).filter(e => e.type === 'permission_response').length > before,
+      'the answer');
+    const answers = bridgeLog(logFile).filter(e => e.type === 'permission_response');
+    assert.equal(answers[answers.length - 1].allow, true,
+      'git push, in a site folder, on a project lane');
+  });
+
+  await test('…and a force push in the same folder is not', async () => {
+    const dir = path.join(sitesDir, 'lff');
+    const before = bridgeLog(logFile).filter(e => e.type === 'permission_response').length;
+    await POST(base, '/reply', { url: a.url, thread_id: '__page__',
+      text: `@claude [mock:cmd:${dir}|git push --force origin main] fix it` });
+    await waitFor(() => bridgeLog(logFile).filter(e => e.type === 'permission_response').length > before,
+      'the answer');
+    const answers = bridgeLog(logFile).filter(e => e.type === 'permission_response');
+    assert.equal(answers[answers.length - 1].allow, false);
+    // and the refusal is SAID, in the thread that asked — silence would look
+    // like the bot ignoring it
+    await waitFor(() => events.of('chat').some(e => e.kind === 'error'
+      && /force push/.test(e.error || '')), 'the refusal in the thread');
+  });
+
+  await test('a finished site becomes a publish target at turn-end', async () => {
+    const cfgFile = path.join(workspaceRoot, '.botference', 'plugin', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    fs.writeFileSync(cfgFile, JSON.stringify({ ...cfg, sites_domain: 'angadh.com' }));
+    const dir = path.join(sitesDir, 'lff');
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.git', 'config'),
+      '[remote "origin"]\n\turl = git@github.com:angadhn/lff.git\n');
+    fs.mkdirSync(path.join(dir, '.netlify'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.netlify', 'state.json'),
+      JSON.stringify({ siteId: 'aaaa1111-2222-3333-4444-555566667777' }));
+    await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: '@claude done?' });
+    await waitFor(() => {
+      const c = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+      return c.publish && c.publish.lff;
+    }, 'the new publish target');
+    const t0 = JSON.parse(fs.readFileSync(cfgFile, 'utf8')).publish.lff;
+    assert.equal(t0.repo, dir);
+    assert.equal(t0.dir, '.');
+    assert.equal(t0.file, 'index.html');
+    assert.equal(t0.url, 'https://lff.angadh.com/');
+    assert.deepEqual(t0.deploy, ['netlify', 'deploy', '--prod', '--dir', '.']);
   });
 
   await test('a turn that rewrites the artifact broadcasts one project-files event', async () => {
@@ -2333,8 +2406,8 @@ console.log('\ncompanion — POST /project-create and POST /make-artifact');
     assert.equal(r.json.queued, true);
     await waitFor(() => spawnEnvs().length > before, 'the project\'s own child to spawn');
     const spawned = spawnEnvs()[spawnEnvs().length - 1];
-    assert.equal((spawned.scope || {}).BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS, projectDir(),
-      'spawned with that project\'s folder as its one writable directory');
+    assert.equal((spawned.scope || {}).BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS.split(',')[0], projectDir(),
+      'spawned with that project\'s folder as its first writable directory (sites/ is the second)');
     assert.equal((spawned.scope || {}).BOTFERENCE_PROJECT_ROOT, root,
       'and the council as its workspace — the same child an artifact page would use');
   });
@@ -2582,13 +2655,6 @@ await test('a target needs a real repo and a directory inside it', async () => {
   assert.equal(pub.publishName('/tmp/x/.hidden.html'), '');
 });
 
-cleanup();
-await sleep(150);
-
-console.log(`\nworkspace: ${passed()} passed, ${failures().length} failed`);
-if (failures().length) { console.log(failures().map(f => '  - ' + f).join('\n')); process.exit(1); }
-
-
 // A site of its own: the page is the site. dir "." puts the file at the repo
 // root, `file` fixes its name to index.html, and `deploy` runs a command in
 // the repo after the push — the way a private repo reaches a host without
@@ -2620,3 +2686,11 @@ await test('publish to a repo root as index.html, then run the deploy command', 
   assert.match(bad.error, /host-said-no/, '…and the host\'s own words are the error');
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+
+cleanup();
+await sleep(150);
+
+console.log(`\nworkspace: ${passed()} passed, ${failures().length} failed`);
+if (failures().length) { console.log(failures().map(f => '  - ' + f).join('\n')); process.exit(1); }
+

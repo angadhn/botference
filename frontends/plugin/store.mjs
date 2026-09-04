@@ -94,6 +94,17 @@ export const DEFAULT_CONFIG = {
   // How long a child beyond the first may sit idle before it is retired. 0
   // never retires one.
   bridge_idle_ms: 15 * 60 * 1000,
+  // The domain a site of the reader's own hangs under: a site called `lff` in
+  // `<root>/sites/lff/` is `lff.angadh.com` (sites.mjs). Empty means "work it
+  // out from the first publish target's url", which for a reader with a blog
+  // configured is right every time; it is written back the first time a site is
+  // registered, so a later site cannot be named after an earlier one's host.
+  sites_domain: '',
+  // Extra names no command in a site folder may mention. The reader's own
+  // publish targets — repo path, GitHub owner/name, Netlify site id — are
+  // protected already and are not listed here; this is for something that is
+  // off limits without being a publish target.
+  sites_protect: [],
 };
 export const BRIDGE_POOL_MAX = 8;
 export const VERBOSITY_LEVELS = ['short', 'long'];

@@ -200,6 +200,18 @@ function input(text) {
       emit({ type: 'permission_request', model: models[0], tool: 'Write',
         path: p, description: `Write ${p}` });
     }
+    // …and the OTHER kind of permission request: a COMMAND, with the directory
+    // it would run in. `[mock:cmd:<cwd>|<command line>]`. The real bridge does
+    // not send these yet; the companion's gate is written to answer them when
+    // it does (sites.mjs), and this is how that answer is exercised end to end.
+    // …and it is the LAST one that counts, for the same reason mock:write
+    // takes the last: the envelope replays the thread above the new message, so
+    // the first match in the turn is the OLDEST directive, not this ask.
+    const cmdReq = [...String(text).matchAll(/\[mock:cmd:([^\]|]*)\|([^\]]+)\]/g)].pop();
+    if (cmdReq) {
+      emit({ type: 'permission_request', model: models[0], tool: 'Bash',
+        cwd: cmdReq[1], command: cmdReq[2], description: cmdReq[2] });
+    }
     // an agent that actually wrote a file mid-turn. The real thing does it
     // through the CLI's own sandbox; here it is one fs call, which is all the
     // companion's change census can see of it either way.

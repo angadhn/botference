@@ -2,6 +2,24 @@
 
 ## 2026-09-04
 
+- **A site of your own, built by the bots.** On a project artifact page you can
+  ask for a page to live at an address of its own and they do it themselves, in
+  `<council root>/sites/<name>/`: a git repo, a **private** GitHub repo, a
+  Netlify site, a deploy — and then they tell you the one step that stays
+  yours, a CNAME record at your DNS provider, while the page is already live at
+  the host's own address. When the site is finished the companion registers it
+  in `publish` in `config.json` by itself (`sites_domain` says what such sites
+  hang under, worked out from your existing publish target when unset), so the
+  publish button points at it from then on; a target already there is never
+  overwritten. The allowance is narrow and enforced in code, not asked for in a
+  prompt: writes only under `sites/`, and only on a project lane; commands only
+  `git`, four shapes of `gh` and five of `netlify`, decided on the parsed
+  command line and never on a substring. `--public`, force pushes,
+  `repo delete`, `sites:delete` and `netlify env:*` are refused, as is anything
+  naming your own blog — its folder, its GitHub name or its Netlify site id,
+  all read out of the publish targets you already have. An ordinary web page's
+  chat still writes nothing at all.
+
 - **The bots can have a YouTube video watched for them.** Claude and Codex
   cannot take video; Gemini can. Paste a public YouTube link and the video is
   watched before the message reaches the bots, with the report — title and
