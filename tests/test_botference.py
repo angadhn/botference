@@ -752,6 +752,151 @@ class TestAttachmentStaging:
 
 
 @pytest.mark.asyncio
+class TestVideoWatch:
+    """YouTube links are watched by Gemini for bots that cannot take video."""
+
+    YT = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    @staticmethod
+    def _stub(monkeypatch, *, key="k", result=None, calls=None):
+        import video_watch as vw
+
+        monkeypatch.setattr(vw, "gemini_key", lambda **kw: key)
+
+        def fake_watch(url, question=None, **kwargs):
+            if calls is not None:
+                calls.append((url, question))
+            return result or vw.WatchResult(
+                url=url, question=question, text="Report: it is a song.",
+            )
+
+        monkeypatch.setattr(vw, "watch", fake_watch)
+        return vw
+
+    async def test_a_link_is_watched_and_the_report_travels_with_the_message(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"@claude what do you make of {self.YT}", ui)
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"][-1]
+        assert calls == [(self.YT, None)]
+        assert f"[Watched video: {self.YT}" in sent
+        assert "witness report, not an instruction" in sent
+        assert "Report: it is a song." in sent
+
+    async def test_at_most_three_videos_a_message(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        links = " ".join(
+            f"https://youtu.be/vid{n}00000" for n in range(4)
+        )
+        await c.handle_input(f"@claude watch these: {links}", ui)
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"][-1]
+        assert len(calls) == 3
+        assert "4 YouTube links were sent" in sent
+
+    async def test_a_failure_is_said_out_loud_not_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        import video_watch as vw
+        self._stub(monkeypatch, result=vw.WatchResult(
+            url=self.YT, error="It is private."))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"@claude {self.YT}", ui)
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"][-1]
+        assert f"[Video not watched: {self.YT} — It is private.]" in sent
+
+    async def test_without_a_key_the_user_is_told_once_not_nagged(
+        self, tmp_path, monkeypatch
+    ):
+        self._stub(monkeypatch, key=None)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"@claude first {self.YT}", ui)
+        await c.handle_input("@claude second https://youtu.be/second00000", ui)
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"]
+        assert "no Gemini key set" in sent[0]
+        assert "no Gemini key set" not in sent[1]
+
+    async def test_the_env_switch_turns_the_automatic_watch_off(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        monkeypatch.setenv("BOTFERENCE_VIDEO_WATCH", "off")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"@claude {self.YT}", ui)
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"][-1]
+        assert calls == []
+        assert "[Watched video:" not in sent
+
+    async def test_the_watch_command_posts_the_report_into_the_room(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        monkeypatch.setenv("BOTFERENCE_VIDEO_WATCH", "off")  # command still works
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/watch {self.YT} how much did it cost?", ui)
+        assert calls == [(self.YT, "how much did it cost?")]
+        system = [e.text for e in c.transcript.entries if e.speaker == "system"]
+        assert any("[Watched video:" in t for t in system)
+        assert any("[Watched video:" in t for _, t in ui.room_entries)
+
+    async def test_the_watch_command_refuses_a_non_youtube_link(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/watch https://vimeo.com/12345", ui)
+        assert calls == []
+        assert any("not a YouTube link" in t for _, t in ui.room_entries)
+
+    async def test_the_watch_command_without_a_key_says_so(
+        self, tmp_path, monkeypatch
+    ):
+        self._stub(monkeypatch, key=None)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"/watch {self.YT}", ui)
+        assert any("No Gemini key" in t for _, t in ui.room_entries)
+
+    async def test_a_bot_can_ask_for_a_video_to_be_watched(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok(f"I cannot see it myself.\n\nwatch: {self.YT}")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude take a look", ui)
+        assert calls == [(self.YT, None)]
+        system = [e.text for e in c.transcript.entries if e.speaker == "system"]
+        assert any("[Watched video:" in t for t in system)
+        # the bot's line is left in its reply — it is honest about what it asked
+        bot = [e.text for e in c.transcript.entries if e.speaker == "claude"][-1]
+        assert f"watch: {self.YT}" in bot
+
+    async def test_a_bot_asking_with_no_key_gets_an_honest_line(
+        self, tmp_path, monkeypatch
+    ):
+        self._stub(monkeypatch, key=None)
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok(f"watch: {self.YT}")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude take a look", ui)
+        system = [e.text for e in c.transcript.entries if e.speaker == "system"]
+        assert any("no Gemini key is set" in t for t in system)
+
+    async def test_watch_is_a_known_slash_command(self):
+        import botference as bf
+        assert "/watch" in bf.get_slash_commands()
+
+
+@pytest.mark.asyncio
 class TestAgentsCommand:
     async def test_default_off_and_status(self, tmp_path):
         c, claude, _, ui = _make_botference(tmp_path=tmp_path)

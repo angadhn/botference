@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,11 +73,13 @@ from room_prompts import (
     room_preamble,
     project_skill_context,
     subagents_note,
+    video_watch_note,
     web_access_note,
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
 from render_blocks import parse_render_blocks
+import video_watch
 from session_store import (
     SessionStore,
     SessionSummary,
@@ -189,6 +192,7 @@ class InputKind(Enum):
     EFFORT = "effort"
     CURRENT = "current"
     ALLOW_HOST = "allow_host"
+    WATCH = "watch"
 
 
 @dataclass(frozen=True)
@@ -225,6 +229,7 @@ _SLASH_COMMANDS = {
     "/current-model": InputKind.CURRENT,
     "/current": InputKind.CURRENT,
     "/allow-host": InputKind.ALLOW_HOST,
+    "/watch": InputKind.WATCH,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -1335,6 +1340,8 @@ class Botference:
         self.auto_relay: bool = bool(load_user_settings().get("auto_relay", True))
         self._room_history: list[DisplayRecord] = []
         self._ff_writer_votes: dict[str, str] = {}  # model → "claude"/"codex" writer vote
+        # Said once per chat, so a keyless user is told, not nagged.
+        self._video_no_key_told: bool = False
         self._restoring_session: bool = False
 
         self._claude_pct: Optional[float] = None
@@ -2697,6 +2704,10 @@ class Botference:
             self._run_allow_host(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.WATCH:
+            await self._run_watch_cmd(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.UNARCHIVE:
             await self._run_unarchive(parsed.body, ui)
             return
@@ -2752,6 +2763,128 @@ class Botference:
             f"next turn. Granted this workspace: {', '.join(granted)}",
         )
 
+    # ── Watching YouTube videos (via Gemini) ──────────────
+    #
+    # Claude and Codex cannot take video. Gemini can, so a YouTube link in a
+    # message — or one a bot asks for with a `watch:` line — is handed to
+    # Gemini and what comes back is put in the chat as a written report.
+
+    _VIDEO_WATCH_CAP = 3   # videos watched automatically per message
+
+    @staticmethod
+    def _video_watch_auto_enabled() -> bool:
+        """BOTFERENCE_VIDEO_WATCH=off turns OFF only the automatic watching.
+
+        /watch and a bot's `watch:` line are explicit requests and keep working.
+        """
+        setting = (os.environ.get("BOTFERENCE_VIDEO_WATCH") or "").strip().lower()
+        return setting not in ("off", "0", "false", "no")
+
+    async def _watch_one_video(
+        self, url: str, question: Optional[str], ui: UIPort,
+    ) -> "video_watch.WatchResult":
+        """Watch one video off the event loop, narrating start and duration."""
+        self._show_room_notice(ui, "system", f"Watching {url} …")
+        started = time.monotonic()
+        try:
+            result = await asyncio.to_thread(video_watch.watch, url, question)
+        except Exception as exc:  # never let a watch kill the turn
+            log.exception("Video watch failed")
+            result = video_watch.WatchResult(
+                url=url, question=question,
+                error=f"The video watcher itself failed: {exc}",
+            )
+        took = time.monotonic() - started
+        if result.cached:
+            note = f"Report for {url} came from the local cache."
+        elif result.error:
+            note = f"Gave up on {url} after {took:.0f}s."
+        else:
+            note = f"Watched {url} in {took:.0f}s."
+        self._show_room_notice(ui, "system", note)
+        return result
+
+    async def _append_video_reports(self, body: str, ui: UIPort) -> str:
+        """Append a Gemini report for each YouTube link the user sent."""
+        if not self._video_watch_auto_enabled():
+            return body
+        urls = video_watch.find_youtube_urls(body)
+        if not urls:
+            return body
+        if not video_watch.gemini_key():
+            if self._video_no_key_told:
+                return body
+            self._video_no_key_told = True
+            note = ("[YouTube link noticed — no Gemini key set, so nobody "
+                    "watched it; see /watch]")
+            self._add_room_entry(ui, "system", note)
+            return f"{body}\n\n{note}"
+
+        blocks: list[str] = []
+        for url in urls[:self._VIDEO_WATCH_CAP]:
+            result = await self._watch_one_video(url, None, ui)
+            blocks.append(video_watch.format_report(result))
+        if len(urls) > self._VIDEO_WATCH_CAP:
+            blocks.append(
+                f"[{len(urls)} YouTube links were sent; the first "
+                f"{self._VIDEO_WATCH_CAP} were watched. Ask for the rest with "
+                "/watch <url>.]"
+            )
+        return body + "\n\n" + "\n\n".join(blocks)
+
+    async def _run_watch_cmd(self, body: str, ui: UIPort) -> None:
+        """/watch <url> [question] — have Gemini watch a video for the room."""
+        raw = body.strip()
+        if not raw:
+            self._show_room_notice(ui, "system", (
+                "Usage: /watch <youtube-url> [question]\n"
+                "Gemini watches the video and its report is posted here, so "
+                "Claude and Codex can read it on their next turn. Needs a "
+                "Google AI Studio key in ~/.botference/gemini-key (or "
+                "GEMINI_API_KEY)."
+            ))
+            return
+        parts = raw.split(None, 1)
+        url, question = parts[0], (parts[1].strip() if len(parts) > 1 else None)
+        if not video_watch.is_youtube_url(url):
+            self._add_room_entry(ui, "system", (
+                f"'{url}' is not a YouTube link. "
+                "Usage: /watch <youtube-url> [question]"
+            ))
+            return
+        if not video_watch.gemini_key():
+            self._add_room_entry(ui, "system", video_watch.NO_KEY_MESSAGE)
+            return
+        result = await self._watch_one_video(url, question, ui)
+        self._post_video_report(result, ui)
+
+    def _post_video_report(
+        self, result: "video_watch.WatchResult", ui: UIPort,
+    ) -> None:
+        """Put a report (or an honest failure) in the room AND the transcript."""
+        text = video_watch.format_report(result)
+        self._add_room_entry(ui, "system", text)
+        self.transcript.add("system", text)
+        self._persist_session()
+
+    async def _maybe_watch_for_bot(self, reply_text: str, ui: UIPort) -> None:
+        """Honour a `watch: <url>` line a bot ended its reply with.
+
+        The line stays in the reply — it is honest about what was asked for.
+        """
+        url = video_watch.parse_watch_request(reply_text)
+        if not url:
+            return
+        if not video_watch.gemini_key():
+            note = ("[A bot asked for " + url + " to be watched, but no Gemini "
+                    "key is set. Add one to ~/.botference/gemini-key.]")
+            self._add_room_entry(ui, "system", note)
+            self.transcript.add("system", note)
+            self._persist_session()
+            return
+        result = await self._watch_one_video(url, None, ui)
+        self._post_video_report(result, ui)
+
     # ── /help ─────────────────────────────────────────────
 
     def _show_help(self, ui: UIPort) -> None:
@@ -2804,6 +2937,7 @@ class Botference:
             "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
             "  /agents [on|off]    — Grant/revoke Claude's subagent (Task) tool (off by default, per-chat; Claude may suggest it)",
             "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
+            "  /watch <url> [question] — Have Gemini watch a YouTube video and post what it saw",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
@@ -2828,6 +2962,11 @@ class Botference:
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
             "Images, PDFs, spreadsheets & Word files: drag them in (or Finder Cmd+C → Cmd+V) to",
             "attach by path — several at once. Ctrl+V attaches a raw copied image (screenshot).",
+            "",
+            "YouTube links you send are watched for you by Gemini (needs a key in",
+            "~/.botference/gemini-key); the report is added to your message. A bot can",
+            "ask for one too, with a `watch: <url>` line. BOTFERENCE_VIDEO_WATCH=off",
+            "turns the automatic watching off; /watch still works.",
             "",
             "Claude context shows prompt occupancy / context window size.",
             "Codex shows estimated occupancy (exact after tool-free turns).",
@@ -4614,6 +4753,10 @@ class Botference:
             refs = "\n".join(_ref(p) for p in staged)
             body = f"{body}\n\n{refs}"
 
+        # A YouTube link is watched for the bots (they cannot take video) and
+        # the report travels with the message.
+        body = await self._append_video_reports(body, ui)
+
         self.transcript.add("user", body)
         self._persist_session()
         await self._maybe_suggest_project(body, ui)
@@ -4651,6 +4794,7 @@ class Botference:
                 self._update_pct(model, resp, ui)
                 ui.set_status(self.status_snapshot())
                 self._persist_session()
+                await self._maybe_watch_for_bot(resp.text, ui)
                 last_speaker, last_resp = model, resp
 
         if (
@@ -4776,6 +4920,7 @@ class Botference:
             self._update_pct(target, next_resp, ui)
             ui.set_status(self.status_snapshot())
             self._persist_session()
+            await self._maybe_watch_for_bot(next_resp.text, ui)
 
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp
@@ -4968,6 +5113,7 @@ class Botference:
             parts.append(agents_note)
         parts.append(deliverables_note())
         parts.append(recommendations_note())
+        parts.append(video_watch_note())
         tasks_note = self._project_tasks_note()
         if tasks_note:
             parts.append(tasks_note)

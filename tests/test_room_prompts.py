@@ -234,3 +234,16 @@ class TestCheckpointPreamble:
         result = checkpoint_preamble("# Plan")
         assert "Knowledge State" in result
         assert "Next Task" in result
+
+
+# -- video_watch_note -------------------------------------------------------
+
+
+class TestVideoWatchNote:
+    def test_tells_the_bots_the_line_to_write(self):
+        from room_prompts import video_watch_note
+        note = video_watch_note()
+        assert "cannot watch video" in note
+        assert "watch: <the youtube url>" in note
+        assert "witness" in note
+        assert "/watch" in note

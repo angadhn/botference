@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 2026-09-04
+
+- **The bots can have a YouTube video watched for them.** Claude and Codex
+  cannot take video; Gemini can. Paste a public YouTube link and the video is
+  watched before the message reaches the bots, with the report — title and
+  channel, a summary, timestamped sections, the key claims and numbers, quotes
+  word for word, and what is on screen that the narration does not say —
+  appended to what they receive, labelled as a witness report rather than an
+  instruction. `/watch <url> [question]` does it on demand and posts the report
+  into the chat; a bot can ask for one itself by ending a reply with a line
+  reading `watch: <url>`. Put a Google AI Studio key in
+  `~/.botference/gemini-key` (or set `GEMINI_API_KEY`); with no key, a link is
+  noted once per chat instead of being silently ignored. Up to three links a
+  message, reports cached for 30 days, and `BOTFERENCE_VIDEO_WATCH=off` turns
+  the automatic watching off while `/watch` keeps working. Private, unlisted or
+  region-blocked videos and an exhausted daily allowance are reported in the
+  room in plain words.
+
 ## 2026-09-03
 
 - **GPT-6 Astra is in the Codex model pickers** (TUI, council web, plugin),

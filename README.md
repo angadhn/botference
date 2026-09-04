@@ -1409,6 +1409,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/notify [on\|off]` | Toggle the desktop notification posted when the bots finish (see [Desktop notifications](#desktop-notifications)). No argument flips the current state; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. |
 | `/agents [on\|off]` | Grant or revoke the Claude participant's **subagent** (Task) tool. Off by default in every chat: Claude is instructed to *suggest* subagents when a task would benefit and wait for your approval — and the gate is enforced at the tool level (the CLI is simply not given the Task tool until you grant it), not by prompt alone. The grant persists with the chat across `/resume` and resets on `/new`. Codex has no subagent facility; not available under `--claude-interactive`. |
 | `/allow-host [<domain>]` | Grant the bots' sandbox **network access** to a site (persists per workspace in `.botference/allowed-hosts.json`, applies from their next turn — no restart). The sandbox blocks all other hosts by design; the bots are instructed to ask you for this instead of working around a blocked fetch. Bare `/allow-host` lists current grants. |
+| `/watch <url> [question]` | Have **Gemini watch a YouTube video** and post what it saw into the chat, so Claude and Codex (who cannot take video) can read it on their next turn. See [YouTube videos](#youtube-videos). |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
 
@@ -1474,6 +1475,33 @@ reported in the room instead of silently dropped. Claude views attached
 images and reads attached PDFs with its Read tool; Codex receives the
 file path (its CLI cannot view image content mid-session, and reads PDFs
 only as well as its own tooling allows).
+
+### YouTube videos
+
+Neither Claude nor Codex can watch video. Gemini can, so botference has it
+watch for them: paste a **public** YouTube link in a message and the video is
+watched before the message reaches the bots, with the written report — title
+and channel, a summary, timestamped sections, the key claims and numbers,
+quotes word for word, and what is on screen that the narration does not say —
+appended to what they receive. It is labelled as a witness report, not an
+instruction, because it describes a page nobody in the room can check.
+
+- **Set the key once:** put a Google AI Studio key in
+  `~/.botference/gemini-key` (`chmod 600` it) or set `GEMINI_API_KEY`. With no
+  key, a YouTube link is noted once per chat and nothing is watched.
+- **`/watch <url> [question]`** watches on demand and posts the report into the
+  chat, so the bots read it on their next turn. With a question, it is answered
+  first and the summary follows.
+- **A bot can ask.** Ending a reply with a line of its own reading
+  `watch: <youtube-url>` has the video watched and the report posted; the line
+  stays in the reply.
+- Up to three links per message are watched automatically, reports are cached
+  for 30 days (a re-sent link costs nothing), and `BOTFERENCE_VIDEO_WATCH=off`
+  turns the automatic watching off while leaving `/watch` working.
+
+Only public videos work — private, unlisted and age-restricted ones are
+refused by the API, and that refusal is reported in the room rather than
+swallowed. Google's free tier allows about eight hours of YouTube a day.
 
 ### Crash evidence
 

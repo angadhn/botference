@@ -209,6 +209,7 @@
       '/delete', '/archive', '/unarchive',
       '/draft', '/finalize', '/resume', '/rename', '/permissions',
       '/status', '/notify', '/autorelay', '/agents', '/auth', '/current-model', '/current',
+      '/allow-host', '/watch',
       '/help', '/quit', '/exit', '@claude ', '@codex ', '@all ',
     ],
     scoped: {

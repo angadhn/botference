@@ -422,6 +422,21 @@ Grant the bots' sandbox network access to a site (e.g.
 Persists per workspace and applies from each bot's next turn \- no
 restarts. Without arguments, lists current grants. The bots are
 instructed to ask for this instead of working around a blocked fetch.
+.TP
+.B /watch <url> [question]
+Have Gemini watch a public YouTube video and post the report into the
+chat, so Claude and Codex \- neither of which can take video \- can read
+it on their next turn. With a question, it is answered first. Needs a
+Google AI Studio key in
+.I ~/.botference/gemini-key
+or
+.BR GEMINI_API_KEY .
+Any YouTube link in a message is watched automatically (up to three per
+message, cached for 30 days); set
+.B BOTFERENCE_VIDEO_WATCH=off
+to turn that off while keeping this command. A bot can ask for a video
+itself by ending a reply with a line reading
+.BR "watch: <url>" .
 .PP
 Plain text is auto-routed;
 .BR @claude ,
@@ -440,6 +455,11 @@ Project-local state: sessions, projects, plans, logs.
 .TP
 .I ~/.botference/settings.json
 Per-user preferences (e.g. notifications).
+.TP
+.I ~/.botference/gemini-key
+Google AI Studio key used to have YouTube videos watched (see
+.BR /watch ).
+Keep it readable only by you.
 .TP
 .I <cwd>/.botference/services.json, <cwd>/.botference/logs/service-<name>.log
 Managed-service ledger and per-service logs (see
@@ -560,7 +580,9 @@ a sandbox CSP with an opaque origin.
 .BR PLUGIN_OWNER_PASSWORD ,
 .BR BOTFERENCE_PLUGIN_HOSTNAME ,
 .BR BOTFERENCE_PLUGIN_LEGACY_HOSTNAME ,
-.BR BOTFERENCE_PLUGIN_TUNNEL .
+.BR BOTFERENCE_PLUGIN_TUNNEL ,
+.BR GEMINI_API_KEY ,
+.BR BOTFERENCE_VIDEO_WATCH .
 See \fBbotference --help\fR for details.
 .SH EXAMPLES
 .TP
