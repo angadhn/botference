@@ -30,6 +30,18 @@
   the row is lit at All by default — the room, as before — and Note is a real
   choice that summons nobody.
 
+- **The council web says who your next message is for.** A row of pills sits
+  above the composer — `Claude · Codex · All`, from the room's own roster —
+  lit with the address the message you are typing will actually carry: the tag
+  in your words as you type it, else the bot you last wrote to in this chat,
+  else the room's default route (`/status`'s `Route:`, which `/lead` can move).
+  Clicking a pill types nothing into the box; the tag is added to the text on
+  send, and only when your words carry none of their own, so the controller
+  routes it exactly as it always did. The memory is read back out of the chat's
+  own transcript, so a reload — or a switch away and back — still knows who you
+  were talking to, and a different chat starts on its own footing. Slash
+  commands are never given a tag.
+
 - **The bots can have a YouTube video watched for them.** Claude and Codex
   cannot take video; Gemini can. Paste a public YouTube link and the video is
   watched before the message reaches the bots, with the report — title and
