@@ -357,3 +357,14 @@ def test_503_falls_through_the_model_chain(tmp_path):
     assert not r.error and r.text == "Report."
     assert [s.split("/")[-1].split(":")[0] for s in seen] == [vw.DEFAULT_MODEL, *vw.FALLBACK_MODELS]
     assert r.model == vw.FALLBACK_MODELS[-1]
+
+
+def test_request_sends_the_canonical_url_not_the_phone_one():
+    import video_watch as vw
+    raw = "https://m.youtube.com/watch?v=NXs3QpkYm7g&pp=ygUVYmljZXBzIGZlbW9yaXMgdGVuZG9u0gcJCYsCo7VqN5tD&ra=m"
+    assert vw.canonical_url(raw) == "https://www.youtube.com/watch?v=NXs3QpkYm7g"
+    assert vw.canonical_url("https://youtu.be/NXs3QpkYm7g?si=abc") == "https://www.youtube.com/watch?v=NXs3QpkYm7g"
+    assert vw.canonical_url("https://www.youtube.com/shorts/NXs3QpkYm7g") == "https://www.youtube.com/watch?v=NXs3QpkYm7g"
+    body = vw.build_request_body(raw)
+    assert body["contents"][0]["parts"][0]["file_data"]["file_uri"] == "https://www.youtube.com/watch?v=NXs3QpkYm7g"
+    assert vw.canonical_url("not a link") == "not a link"

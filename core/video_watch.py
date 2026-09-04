@@ -79,6 +79,17 @@ def video_id(url: str) -> str:
     return ""
 
 
+def canonical_url(url: str) -> str:
+    """The plain https://www.youtube.com/watch?v=<id> form of any YouTube link.
+
+    Gemini refuses what a phone hands over — m.youtube.com, a `pp=` tracking
+    blob, `ra=`, share suffixes — with the same 400 it gives a private video
+    (seen 2026-09-04). The id is all it needs, so the id is all it gets.
+    """
+    vid = video_id(url)
+    return f"https://www.youtube.com/watch?v={vid}" if vid else (url or "").strip()
+
+
 def is_youtube_url(url: str) -> bool:
     """True when the whole string is one YouTube link and nothing else."""
     text = (url or "").strip()
@@ -218,7 +229,7 @@ def build_request_body(url: str, question: Optional[str] = None) -> dict:
         "contents": [
             {
                 "parts": [
-                    {"file_data": {"file_uri": url}},
+                    {"file_data": {"file_uri": canonical_url(url)}},
                     {"text": build_prompt(question)},
                 ]
             }
