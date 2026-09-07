@@ -274,6 +274,63 @@ async function main() {
     assert.equal(r.json.url, PAGE1, 'messy url must resolve to the same record');
   });
 
+  // --- a file the bots made ----------------------------------------------
+  // A bot saved two plots under `work/artifacts/` and linked them the way the
+  // council web UI does — `/files/work/artifacts/tail.svg`. The companion had
+  // no such route, so the link resolved against the ARTICLE's own origin and
+  // 404'd, and the reader saw nothing. It answers now, under three top folders
+  // and no others.
+  {
+    const artdir = path.join(root, 'work', 'artifacts');
+    fs.mkdirSync(artdir, { recursive: true });
+    fs.writeFileSync(path.join(artdir, 'tail.svg'),
+      '<svg xmlns="http://www.w3.org/2000/svg"><title>tail</title></svg>');
+    fs.mkdirSync(path.join(root, 'projects', 'p1'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'projects', 'p1', 'notes.md'), '# notes\n');
+    fs.writeFileSync(path.join(root, 'secret.txt'), 'not yours');
+    fs.mkdirSync(path.join(root, '.botference', 'plugin'), { recursive: true });
+
+    await test('GET /files serves a plot the bots saved, with its own type', async () => {
+      const r = await getBytes(base, '/files/work/artifacts/tail.svg');
+      assert.equal(r.status, 200);
+      assert.equal(r.headers['content-type'], 'image/svg+xml');
+      assert.equal(r.headers['cache-control'], 'no-store');
+      assert.match(r.buf.toString(), /<title>tail<\/title>/);
+    });
+
+    await test('…and a file under projects/, and as a data url for the drawer', async () => {
+      const md = await GET(base, '/files/projects/p1/notes.md');
+      assert.equal(md.status, 200);
+      assert.match(md.headers['content-type'], /^text\/plain/);
+      const j = await GET(base, '/files/work/artifacts/tail.svg?as=json');
+      assert.equal(j.json.ok, true);
+      assert.equal(j.json.mime, 'image/svg+xml');
+      assert.equal(j.json.name, 'tail.svg');
+      assert.match(j.json.data_url, /^data:image\/svg\+xml;base64,/);
+      assert.match(Buffer.from(j.json.data_url.split(',')[1], 'base64').toString(),
+        /<title>tail<\/title>/);
+    });
+
+    await test('…and refuses everything that is not under one of the three folders', async () => {
+      for (const bad of [
+        '/files/../secret.txt',
+        '/files/work/../../secret.txt',
+        '/files/%2e%2e/secret.txt',
+        '/files/work/artifacts/%2e%2e/%2e%2e/%2e%2e/secret.txt',
+        '/files/.botference/plugin/config.json',
+        '/files/.git/config',
+        '/files/secret.txt',
+        '/files/',
+        '/files/work/artifacts/nope.svg',
+      ]) {
+        const r = await GET(base, bad);
+        assert.ok(r.status === 403 || r.status === 404,
+          bad + ' must not be served (got ' + r.status + ')');
+        assert.notEqual(r.body, 'not yours', bad + ' escaped the workspace');
+      }
+    });
+  }
+
   // --- threads & replies ------------------------------------------------
   let t1 = null;
   await test('POST /thread creates a thread with the first message', async () => {
@@ -2344,6 +2401,18 @@ async function main() {
     const ownerThread = (await POST(hb, '/thread', {
       url: PAGE1, quote: QUOTE1, prefix: '', suffix: '', msg: { text: 'The whole argument.' },
     })).json.thread;
+
+    // /files/ serves bytes off the owner's disk. A guest is somebody with a
+    // password to write comments, not somebody with a shell.
+    await test('a guest cannot read the owner\'s files', async () => {
+      fs.mkdirSync(path.join(hostRoot, 'work', 'artifacts'), { recursive: true });
+      fs.writeFileSync(path.join(hostRoot, 'work', 'artifacts', 'tail.svg'), '<svg/>');
+      const guest = await GET(hb, '/files/work/artifacts/tail.svg', ADA);
+      assert.equal(guest.status, 403);
+      assert.equal(guest.json.error, 'owner only — ask the owner to do that');
+      const owner = await GET(hb, '/files/work/artifacts/tail.svg');
+      assert.equal(owner.status, 200, 'the owner on the loopback still gets it');
+    });
 
     await test('hosted mode keeps localhost the owner, with no auth at all', async () => {
       const me = await GET(hb, '/whoami');

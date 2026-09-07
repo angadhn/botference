@@ -297,6 +297,9 @@
                      companion refused at the lift because its `revises:` named
                      nothing in the vault, which must be visible and must never
                      become a second card. `&selftest=1` runs those.
+    ?files=1         a bot's reply with `![…](/files/…)` in it — a plot it saved
+                     under work/artifacts, drawn inline, and a link to a file
+                     that is not a picture. `&selftest=1` runs those.
     ?where=1         the same sentence twice, under two headings, with the same
                      words either side of both — the shape that used to orphan
                      the second thread on it. `&selftest=1` runs those.
@@ -1120,6 +1123,26 @@ if (WHERE) {
   ];
   RECORD.page_chat = [];
 }
+// ?files=1 — A PLOT THE BOTS MADE, and the link they wrote to it.
+//
+//   THE REPORT. Claude made two SVG plots on an ordinary article, saved them
+//   under `work/artifacts/`, and referenced them the way the council web UI
+//   does: `[1. the thin tail](/files/work/artifacts/thin-tail.svg)`. In the
+//   drawer that relative href resolved against the ARTICLE's own origin — a
+//   404 on somebody else's website — the companion had no `/files/` route at
+//   all, and it was a plain link besides. The reader saw nothing.
+//
+//   The pose is that message in shape: an image reference, a plain link whose
+//   target is an image, and a link to a file that is not one.
+if (Q.get('files') === '1') {
+  RECORD.page_chat = [
+    { author: 'angadh', ts: iso(2), text: '@claude plot the tail against the correction.' },
+    { author: 'claude', ts: iso(1), text: 'Two plots, saved beside the notes.\n\n'
+      + '![1. the thin tail, with the outlier marked](/files/work/artifacts/thin-tail.svg)\n\n'
+      + '[2. fat-tail correction](/files/work/artifacts/fat-tail-correction.svg)\n\n'
+      + 'The numbers are in [the table](/files/work/artifacts/tails.csv).' },
+  ];
+}
 // ?filein=1 — this page is already filed under one project, so the picker has
 // a tick in it and the header button is lit.
 if (FILEIN === '1') RECORD.projects = fileFiled;
@@ -1649,6 +1672,11 @@ let runEnabled = Q.get('norun') !== '1';
 let runLatency = 0;          // ms POST /run takes to answer (the spinner state)
 const runPosts = [];         // every /run body, code smuggling included
 const runCancels = [];       // …and every /run-cancel
+const filesAsked = [];       // …and every /files/<rel> the drawer asked for
+// The companion's own origin, as the background worker reports it on `hello`.
+// The drawer needs it to write a link to a file the bots made — a `/files/…`
+// href left relative would resolve against whatever website this page is.
+const COMPANION_BASE = 'http://127.0.0.1:4189';
 // a real png of a plausible line chart (260×150), so the drawer has something
 // to actually decode, scale and open in the lightbox
 const TINY_PNG = 'data:image/png;base64,'
@@ -2867,6 +2895,15 @@ function companion(method, path, body) {
   if (method === 'GET' && route === '/run-figure') {
     return { ok: true, status: 200, data: { ok: true, mime: 'image/png', data_url: TINY_PNG } };
   }
+  // …and a file the bots SAVED, which is owner-only for the same reason and
+  // comes back the same way. `route` is the path with the query already cut off.
+  if (method === 'GET' && route.startsWith('/files/')) {
+    filesAsked.push(route.slice('/files/'.length));
+    if (!/\.(svg|png|jpe?g|gif|webp)$/i.test(route)) {
+      return { ok: false, status: 403, error: 'no such file under work/, projects/ or sites/' };
+    }
+    return { ok: true, status: 200, data: { ok: true, mime: 'image/png', data_url: TINY_PNG } };
+  }
   if (method === 'POST' && route === '/tick') {
     tickPosts.push({ thread_id: body.thread_id, ts: body.ts, index: body.index, checked: body.checked });
     if (tickFail) return { ok: false, status: 500, error: 'simulated tick failure' };
@@ -3391,11 +3428,13 @@ window.chrome = {
         switch (msg && msg.t) {
           case 'hello':
             helloUrls.push(msg.url);
-            if (OFFLINE) return { ok: true, known: false, threads: 0, connected: false, index: {} };
+            // `base` is the companion's own origin, which only the worker knows
+            // — the drawer needs it to WRITE a `/files/…` link that opens
+            if (OFFLINE) return { ok: true, known: false, threads: 0, connected: false, index: {}, base: COMPANION_BASE };
             // a page with no record is not "known": it stays dormant on a
             // revisit exactly as a never-annotated page always has
-            if (!freshKnown) return { ok: true, known: false, threads: 0, connected: true, index: {} };
-            return { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {} };
+            if (!freshKnown) return { ok: true, known: false, threads: 0, connected: true, index: {}, base: COMPANION_BASE };
+            return { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {}, base: COMPANION_BASE };
           case 'get-index': return companion('GET', '/index');
           case 'api':
             // the proxy only ever talks to the companion; a site adapter that
@@ -8159,6 +8198,80 @@ async function selftestStackPick() {
   console.log(out.join('\n'));
 }
 
+// ?files=1&selftest=1 — A PLOT THE BOTS MADE, IN THE DRAWER.
+//
+//   Three shapes in one message, and the three answers: `![…](/files/…)` and a
+//   plain link whose target is an image both become a picture, drawn from bytes
+//   that came back through the background worker (the only path that carries
+//   the owner's credentials — an <img src> at the companion would be
+//   unauthenticated and, on a page with a strict CSP, not even attempted); a
+//   link to anything else becomes a link AT THE COMPANION, because the same
+//   href left relative pointed at whatever website the reader was standing on.
+async function selftestFiles() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  d.open('chat');
+  await sleep(120);
+  const pane = () => S.querySelector('.pane[data-pane="chat"]');
+  const figs = () => [...pane().querySelectorAll('img.filefig-img')];
+  await until(() => figs().length >= 2, 4000);
+
+  check('an image reference becomes a picture, not a link',
+    figs().some(i => i.getAttribute('data-file') === 'work/artifacts/thin-tail.svg'));
+  check('\u2026and so does a plain link whose target is an image',
+    figs().some(i => i.getAttribute('data-file') === 'work/artifacts/fat-tail-correction.svg'));
+  check('\u2026no /files/ link is left as a bare link to an image',
+    [...pane().querySelectorAll('a')].every(a => !/\.svg$/i.test(a.getAttribute('href') || '')));
+
+  // the bytes, and where they came from
+  await until(() => figs().every(i => i.getAttribute('src')), 4000);
+  check('the picture is drawn from bytes the worker fetched',
+    figs().every(i => (i.getAttribute('src') || '').startsWith('data:image/')));
+  check('\u2026asked for by its path under work/, once each',
+    filesAsked.indexOf('work/artifacts/thin-tail.svg') !== -1
+    && filesAsked.indexOf('work/artifacts/fat-tail-correction.svg') !== -1);
+  check('\u2026and the caption the bot wrote is under it', (() => {
+    const fig = figs()[0].closest('figure.filefig');
+    const cap = fig && fig.querySelector('figcaption');
+    return !!cap && /the thin tail, with the outlier marked/.test(cap.textContent);
+  })());
+  check('a picture is never wider than the column it is in',
+    figs().every(i => getComputedStyle(i).maxWidth === '100%'));
+
+  // …and the one that is not a picture
+  const csv = [...pane().querySelectorAll('a')]
+    .find(a => /tails\.csv$/.test(a.getAttribute('href') || ''));
+  check('a link to a file that is not an image stays a link', !!csv);
+  check('\u2026pointed at the COMPANION, not at the website this page is',
+    !!csv && csv.getAttribute('href') === COMPANION_BASE + '/files/work/artifacts/tails.csv');
+  check('\u2026and it opens in a tab of its own, like every other link here',
+    !!csv && csv.getAttribute('target') === '_blank'
+    && /noopener/.test(csv.getAttribute('rel') || ''));
+
+  // clicking a picture opens the lightbox the run figures already use
+  figs()[0].click();
+  await sleep(160);
+  const light = S.querySelector('.lightbox');
+  check('clicking a picture opens it at full size', !!light && !light.hidden);
+  d.escape();
+  await sleep(120);
+  check('\u2026and Esc puts it away', (() => {
+    const l = S.querySelector('.lightbox');
+    return !l || l.hidden;
+  })());
+
+  const bad = out.filter(l => l[0] === '\u2717');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (files) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  \u2014  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?where=1&selftest=1 — WHERE A PASSAGE IS, ON A PAGE WITH NO PAGE NUMBERS.
 //
 //   The reported failure and the whole of the fix, in one pose. The article
@@ -11032,6 +11145,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
       setTimeout(FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
         : WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
+        : Q.get('files') === '1' ? selftestFiles
         : WHERE ? selftestWhere
         : STRIKE_STACK ? selftestStackPick
         : STRIKE_ELSEWHERE ? selftestStrikeElsewhere

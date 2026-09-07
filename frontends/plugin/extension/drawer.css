@@ -1733,6 +1733,16 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   background: #fff; cursor: zoom-in; display: block;
 }
 .runfigs:has(.runfig + .runfig) .runfig { max-width: calc(50% - 3px) }
+/* …and a picture the bots SAVED rather than plotted: `![caption](/files/…)`.
+   Same rule as a run's figure — never wider than the column, click to enlarge —
+   with the caption the bot wrote under it, because a figure with no caption in
+   a margin note is a picture nobody can refer to. */
+.filefig { margin: 8px 0; padding: 0 }
+.filefig-img {
+  max-width: 100%; height: auto; border: 1px solid var(--card-line); border-radius: 7px;
+  background: #fff; cursor: zoom-in; display: block;
+}
+.filefig figcaption { margin-top: 4px; font-size: 11.5px; color: var(--muted) }
 /* The lightbox covers the WINDOW, not the drawer: a plot the size of a 420px
    column is the thing the lightbox exists to fix. It is still ours — a child of
    the shadow host, which is already fixed over the whole viewport — so the page

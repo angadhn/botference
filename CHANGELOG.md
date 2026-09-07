@@ -2,6 +2,19 @@
 
 ## 2026-09-07
 
+- **A plot the bots make is a plot you can see.** Claude made two SVG plots on
+  an article, saved them in the workspace and linked them — and the drawer
+  showed a link that went nowhere: it resolved against the article's own site,
+  the companion had no route to serve the file, and it was a link rather than a
+  picture. The companion now answers `/files/<path>` for anything under `work/`,
+  `projects/` or `sites/` (owner only, no dot-segments, no escaping upwards),
+  and the drawer draws `![caption](/files/…)` — and a plain link to an image —
+  as a picture at column width with the caption under it and click-to-enlarge.
+  A `/files/` link to something that is not a picture stays a link, pointed at
+  the companion instead of at whatever site you are reading. The bots are told
+  about both ways to show a plot: python in a ```python block, which the Run
+  button runs and shows inline, or a saved figure referenced as an image.
+
 - **A comment card says where its passage is, on an ordinary web page.** A card
   on a PDF has always said "p. 12"; on a web page it said nothing, so the same
   phrase commented in two places in one article gave you two cards you could

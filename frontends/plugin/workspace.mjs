@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeJson } from './fsjson.mjs';
-import { readConfig, saveConfig, unwrapLine, clipTo } from './store.mjs';
+import { readConfig, saveConfig, unwrapLine, clipTo, ROOT } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
 // and two copies of that rule could disagree about who a thread belongs to
@@ -317,6 +317,73 @@ export function councilWebPaths(u) {
   }
   return out;
 }
+
+// ---- serving a file the bots made ------------------------------------------
+//
+// THE REPORT. A bot on an ordinary web page made two plots, saved them under
+// `work/artifacts/`, and linked them the way the council web UI does —
+// `[1. the tail](/files/work/artifacts/thin-tail.svg)`. In the drawer that
+// relative link resolved against the ARTICLE's own origin (404), this companion
+// had no `/files/` route at all, and it was a plain link rather than a picture.
+// The reader saw nothing.
+//
+// So the companion answers `/files/` too, and by exactly the rule the council
+// server does — `councilWebPaths` above is that rule, and this is the same
+// walk starting from a relative path instead of a url. What it adds is WHERE it
+// looks: this companion's own workspace first, then every council root the
+// reader has already been asked about (confirmed first), because a project
+// artifact page's files live under the root that page belongs to.
+//
+// Three top folders and no others. Everything a bot writes goes to one of them,
+// and naming them here is what keeps `/files/` off `.botference`, `.git`, a
+// dotfile, or anything else in a root the reader never meant to publish over
+// the loopback. `.` and `..` are refused per segment, after decoding, because
+// `%2e%2e%2f` is the same traversal spelled differently.
+export const FILES_TOPS = ['work', 'projects', 'sites'];
+// …and a council root that is not this workspace is somebody's project folder,
+// not this companion's scratch space: the artifact and the site, never `work/`.
+const FILES_TOPS_OTHER = ['projects', 'sites'];
+
+// Split a `/files/` remainder into safe segments, or [] if it is not one.
+export function filesSegs(rel) {
+  let s = String(rel || '');
+  try { s = decodeURIComponent(s); } catch { return []; }
+  if (!s || s.includes('\0') || path.isAbsolute(s) || /^[A-Za-z]:/.test(s)) return [];
+  const segs = s.split(/[\\/]+/);
+  if (segs.some(seg => !seg || seg.startsWith('.'))) return [];
+  return segs;
+}
+
+// Every existing file a `/files/<rel>` path could name here, this workspace
+// first. [] means "nothing this companion will serve" — a traversal, a dot
+// segment, a top folder that is not one of ours, or simply no such file.
+export function filesPaths(rel, root = ROOT) {
+  const segs = filesSegs(rel);
+  if (!segs.length) return [];
+  const out = [];
+  const tryRoot = (dir, tops) => {
+    if (!dir || tops.indexOf(segs[0]) === -1) return;
+    const abs = path.resolve(dir, ...segs);
+    if (!within(dir, abs)) return;         // belt and braces
+    if (isFile(abs) && out.indexOf(abs) === -1) out.push(abs);
+  };
+  tryRoot(realish(root), FILES_TOPS);
+  for (const r of knownCouncilRoots()) tryRoot(r, FILES_TOPS_OTHER);
+  return out;
+}
+
+// What to call the bytes. Small and closed on purpose: a route that will serve
+// any file under three folders must not also guess a content type for one, and
+// anything not on this list is handed over as a download rather than rendered.
+const FILE_MIME = {
+  svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  webp: 'image/webp', gif: 'image/gif', pdf: 'application/pdf',
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
+  csv: 'text/csv; charset=utf-8', json: 'application/json; charset=utf-8',
+  txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8',
+};
+export const fileMime = name =>
+  FILE_MIME[String(name || '').split('.').pop().toLowerCase()] || 'application/octet-stream';
 
 // The whole question in one call: is this url a project artifact page, and if
 // so whose? Returns null for everything else — an ordinary http page, a local

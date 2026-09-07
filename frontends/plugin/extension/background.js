@@ -845,8 +845,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await refreshIndex(false);
         const entry = indexEntryFor(nu);
         if (tabId != null) setBadge(tabId, entry ? (entry.threads || 0) : 0);
+        // `base` rides along because the drawer needs to be able to WRITE a
+        // link to the companion (`/files/…`, the route the bots save plots
+        // under). The configuration lives here and nowhere else in the page's
+        // world, so a content script has no other way to learn it.
+        await configReady;
         return { ok: true, known: !!entry, threads: entry ? (entry.threads || 0) : 0,
-                 connected: wsState === 'open', index: indexCache };
+                 connected: wsState === 'open', index: indexCache, base: CONF.base };
       }
       case 'get-index': {
         await refreshIndex(false);

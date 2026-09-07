@@ -581,6 +581,18 @@
     () => (chrome.runtime.getURL ? chrome.runtime.getURL(p) : ''), '');
 
   // ---- background API proxy ----------------------------------------------
+  // The companion's origin, learned from the background worker (the only part
+  // of the extension that holds the configuration) on the `hello` that wakes
+  // this page. It is not needed to TALK to the companion — every request goes
+  // through the worker — only to WRITE a link to it, which is what a bot's
+  // `/files/…` reference becomes in the drawer.
+  let FILES_BASE = '';
+  function noteBase(r) {
+    if (!r || !r.base || r.base === FILES_BASE) return;
+    FILES_BASE = String(r.base);
+    if (drawer && drawer.setFilesBase) drawer.setFilesBase(FILES_BASE);
+  }
+
   function bg(msg) {
     return new Promise(resolve => {
       if (GUARD.gone || !extensionAlive()) {
@@ -1619,6 +1631,7 @@
     loadPageComments();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
+      noteBase(r);
       // already awake: stay awake, and re-anchor against the new record
       if (active) { loadPage().then(() => connSocket(!!r.connected)); return; }
       if (r.known) activate(false).then(() => connSocket(!!r.connected));
@@ -1676,7 +1689,7 @@
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
       // `connected` here is the SOCKET, which a freshly woken worker has not
       // opened yet — so it may confirm, never deny (see connHttp/connSocket)
-      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) connSocket(!!r.connected); });
+      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) { noteBase(r); connSocket(!!r.connected); } });
       await loadPage();
       // a page that already earned its record gets the scraped title, kind and
       // file name refreshed on every visit, exactly as before; a page that
@@ -1945,6 +1958,10 @@
       // the rest of KaTeX's stylesheet, inside the shadow root (see above)
       katexCssUrl: extUrl('vendor/katex/katex.min.css'),
 
+      // where the companion is, so a `/files/…` link the bots write opens at it
+      // rather than resolving against whatever website this is
+      filesBase: FILES_BASE,
+
       onSelect: kind => commitSelection(kind),
 
       onSave: async ({ quote, prefix, suffix, text, route, mark }) => {
@@ -2100,6 +2117,17 @@
       // A figure is served under the same owner-only gate as the run, so it
       // cannot be an <img src> in somebody else's page: the bytes come back
       // through the background worker as a data: url.
+      // A file the bots made — a plot saved under work/artifacts, a table, a
+      // page. Same route out as a run's figure and for the same reason: the
+      // drawer lives inside somebody else's page and only the background worker
+      // carries the owner's credentials, so the bytes come back as a data: url.
+      onFile: async (rel) => {
+        const r = await api('GET', '/files/' + String(rel).split('/').map(encodeURIComponent).join('/')
+          + '?as=json');
+        if (!r.ok) return failure(r);
+        return { ok: true, data_url: r.data && r.data.data_url, mime: r.data && r.data.mime };
+      },
+
       onRunFigure: async (target, runId, name) => {
         const url = target === LIBRARY_TARGET ? LIBRARY_URL : URL_NOW;
         const r = await api('GET', '/run-figure?url=' + encodeURIComponent(url)
@@ -3079,6 +3107,7 @@
     startLiveness();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
+      noteBase(r);
       // A project artifact is never dormant. The dormancy rule exists because
       // <all_urls> puts this script on the whole web and almost none of it is
       // annotated; a page the reader's own council wrote, opened deliberately

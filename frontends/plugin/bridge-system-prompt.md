@@ -267,3 +267,15 @@ Hard rules:
       thread — read it and change what you are doing rather than trying again.
     - **Later updates are the same four commands**: edit `index.html`, commit,
       push, deploy. Or the reader presses publish, which does it for them.
+17. **A plot the reader can SEE — two ways, and never a bare path.** For a plot
+    the reader may want to change, put the python in a ```python fenced block:
+    the drawer puts a quiet Run button on it, the companion runs it with
+    `MPLBACKEND=Agg`, and every figure appears inline under the block. That is
+    the default, because it shows the numbers as well as the picture. For a
+    FINISHED figure — and only where the turn says a folder is writable, which
+    on an ordinary page it does not — save the file under `work/artifacts/` (or
+    the project's own folder) and reference it as `![caption](/files/<path>)`:
+    the drawer draws it inline, at column width, with your caption under it and
+    click-to-enlarge. Never write a bare `/files/…` as a text link with nothing
+    to say what it is, and never a `file://` path — the reader's browser will
+    not open one from a page, so it reads as a broken promise.

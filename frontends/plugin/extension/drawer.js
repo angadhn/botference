@@ -458,6 +458,33 @@
   // What is STORED is always the raw text. This is a rendering, and the editor
   // reads the record (findMsg) rather than reading a rendering back.
   const SAFE_URL = /^https?:\/\//i;
+  // ---- a file the bots made, linked the way the council web UI links one ----
+  //
+  // THE REPORT. A bot saved two plots under `work/artifacts/` and wrote
+  // `[1. the tail](/files/work/artifacts/thin-tail.svg)`. In the drawer that
+  // relative href resolved against the ARTICLE's own origin — a 404 on somebody
+  // else's website — and it was a plain link besides, so a reader who clicked
+  // it got nothing and a reader who did not never knew there was a plot.
+  //
+  // `/files/…` is the companion's own route (server.mjs), so it is read here as
+  // an address at the COMPANION and never as one on the page. A picture becomes
+  // a picture — the bytes arrive as a data: url through the background worker,
+  // exactly as a run's figures do, because that is the only path that carries
+  // the owner's credentials — and anything else becomes a link at the
+  // companion's origin, which is a link that actually opens.
+  const FILES_HREF = /^\/files\/(.+)$/;
+  const FILE_IMG = /\.(svg|png|jpe?g|gif|webp)$/i;
+  const filesRel = href => {
+    const m = FILES_HREF.exec(String(href || '').split(/[?#]/)[0]);
+    return m ? m[1] : '';
+  };
+  // Where the companion is. content.js learns it from the background worker —
+  // which is the only part of the extension that holds the configuration — and
+  // hands it over at create(). Until it does, a /files/ link is left exactly as
+  // the bot wrote it, which is what it was before any of this.
+  let FILES_BASE = '';
+  const filesUrl = rel =>
+    FILES_BASE + '/files/' + String(rel).split('/').map(encodeURIComponent).join('/');
   const FENCE = /^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)\s*$/;
   // Any indent, not the usual ≤3: the companion counts a message's checkboxes
   // with the same line-anchored rule, and a nested "    - [ ] …" it counted but
@@ -712,7 +739,37 @@
         c.textContent = m[2].replace(/^ (.*) $/, '$1');
         out.appendChild(c);
       } else if (m[3] !== undefined) {
-        if (SAFE_URL.test(m[4])) {
+        // `![caption](/files/…)` — the `!` is one character of plain text in
+        // front of an ordinary link match, so it is read off the source rather
+        // than given the INLINE regex a fifth alternative to get wrong.
+        const bang = m.index > 0 && s.charAt(m.index - 1) === '!'
+          && out.lastChild && out.lastChild.nodeType === 3
+          && out.lastChild.data.slice(-1) === '!';
+        if (bang) out.lastChild.data = out.lastChild.data.slice(0, -1);
+        const rel = filesRel(m[4]);
+        if (rel && (bang || FILE_IMG.test(rel))) {
+          const fig = mk('figure', 'filefig');
+          const img = mk('img', 'filefig-img');
+          img.alt = m[3] || rel.split('/').pop();
+          img.title = 'Click to enlarge';
+          img.setAttribute('data-file', rel);
+          fig.appendChild(img);
+          if (m[3]) {
+            const cap = mk('figcaption');
+            cap.textContent = m[3];
+            fig.appendChild(cap);
+          }
+          out.appendChild(fig);
+        } else if (rel) {
+          // not a picture: a link that opens, at the companion rather than at
+          // whatever website the reader happens to be standing on
+          const a = mk('a');
+          a.setAttribute('href', filesUrl(rel));
+          a.setAttribute('target', '_blank');
+          a.setAttribute('rel', 'noopener noreferrer');
+          a.textContent = m[3] || rel;
+          out.appendChild(a);
+        } else if (SAFE_URL.test(m[4])) {
           const a = mk('a');
           a.setAttribute('href', m[4]);
           a.setAttribute('target', '_blank');
@@ -1325,6 +1382,8 @@
   function create(opts) {
     opts = opts || {};
     const cb = name => (...args) => (typeof opts[name] === 'function' ? opts[name](...args) : undefined);
+    // the companion's origin, for the one kind of link that names a file on it
+    if (opts.filesBase) FILES_BASE = String(opts.filesBase).replace(/\/+$/, '');
 
     // Site capabilities (content.js's adapter). Only `highlights` so far, and
     // everything that reads it is one branch — the shape is here so the next
@@ -5695,7 +5754,7 @@ ${markPickHtml()}
       D.shadow.addEventListener('click', e => {
         // a figure from a code-block run: the thumbnail is a link to the size
         // the plot was actually drawn at
-        const fig = e.target.closest && e.target.closest('img.runfig');
+        const fig = e.target.closest && e.target.closest('img.runfig, img.filefig-img');
         if (fig && fig.getAttribute('src')) { openLight(fig.getAttribute('src'), fig.alt); return; }
         if (D.el.light && !D.el.light.hidden && e.target.closest &&
             e.target.closest('.lightbox')) { closeLight(); return; }
@@ -6594,6 +6653,38 @@ ${markPickHtml()}
             D.figs[k] = r.data_url;
             if (!D.mounted) return;
             D.shadow.querySelectorAll('img.runfig[data-fig="' + cssq(name) + '"][data-run="' + cssq(run) + '"]')
+              .forEach(el => { el.src = r.data_url; });
+          })
+          .catch(() => { delete D.figLoading[k]; });
+      });
+      loadFiles(scope);
+    }
+
+    // …and the same trick for a picture the bots SAVED rather than plotted:
+    // `![caption](/files/work/artifacts/tail.svg)`. Same route out (the
+    // background worker, which holds the credentials), same cache, same
+    // fallback — a page whose own CSP forbids data: images shows the caption
+    // instead of the picture, and the file is still there.
+    function loadFiles(scope) {
+      scope.querySelectorAll('img.filefig-img[data-file]').forEach(img => {
+        const rel = img.getAttribute('data-file');
+        const k = 'file|' + rel;
+        img.addEventListener('error', () => {
+          if (!img.getAttribute('src')) return;
+          const note = mk('div', 'runstat');
+          note.textContent = img.alt + ' — this page will not display it';
+          if (img.parentNode) img.parentNode.replaceChild(note, img);
+        });
+        if (D.figs[k]) { img.src = D.figs[k]; return; }
+        if (D.figLoading[k]) return;
+        D.figLoading[k] = true;
+        Promise.resolve(cb('onFile')(rel))
+          .then(r => {
+            delete D.figLoading[k];
+            if (!r || r.ok === false || !r.data_url) return;
+            D.figs[k] = r.data_url;
+            if (!D.mounted) return;
+            D.shadow.querySelectorAll('img.filefig-img[data-file="' + cssq(rel) + '"]')
               .forEach(el => { el.src = r.data_url; });
           })
           .catch(() => { delete D.figLoading[k]; });
@@ -8984,6 +9075,17 @@ ${markPickHtml()}
       setLibrary: page => { D.library.page = page || null; if (D.view === 'pages') renderLibrary(); },
       refreshLibrary: () => { if (D.view === 'pages') loadLibrary(); },
       libraryTarget: () => LIBRARY_TARGET,
+      // Where the companion is, learned from the background worker after the
+      // drawer already exists (the `hello` that wakes a page can land either
+      // side of create()). Repaint, because a /files/ link already drawn was
+      // drawn relative and would open nowhere.
+      setFilesBase: base => {
+        const b = String(base || '').replace(/\/+$/, '');
+        if (!b || b === FILES_BASE) return D;
+        FILES_BASE = b;
+        if (D.mounted) render();
+        return D;
+      },
       isOpen: () => D.opened,
       isPagesOpen: () => D.view === 'pages',
       // Is anything on this page waiting on the bots? content.js polls the

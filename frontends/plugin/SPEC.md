@@ -5112,7 +5112,7 @@ about once a week. They are:
   and the first `✗` before it. That is how a hang gets diagnosed without a
   debugger.
 
-The 45 selftest poses, which is the whole list — nothing else in the harness
+The 46 selftest poses, which is the whole list — nothing else in the harness
 drives a selftest, and every one of them is expected green:
 
 ```
@@ -5126,6 +5126,7 @@ drives a selftest, and every one of them is expected green:
 ?pdf=1&strike=elsewhere&selftest=1
 ?pdf=1&strike=stack&selftest=1
 ?where=1&selftest=1
+?files=1&selftest=1
 ?pdfannot=1&selftest=1
 ?pdfannot=export&selftest=1
 ?sendfocus=1&selftest=1
@@ -9266,6 +9267,79 @@ and which copy; and that the chooser's two rows on the same words are not the
 same row twice. The article pose (`?selftest=1`, 681 → 682) carries the other
 half of the rule: three threads under no heading whose words occur once draw no
 location line at all.
+
+## Amendment (2026-09-07, shipped): plots and files in the drawer
+
+**The report.** On an ordinary article Claude made two SVG plots, saved them to
+the companion workspace at `work/artifacts/`, and referenced them the way the
+council web UI references a file: `[1. the thin tail](/files/work/artifacts/
+thin-tail.svg)`. Three things went wrong at once, and the reader saw nothing at
+all: that relative href resolved against **the article's own origin** (a 404 on
+somebody else's website), this companion had **no `/files/` route**, and it was
+a **plain link** rather than a picture, so even a working link would have been a
+plot nobody looked at.
+
+**`GET /files/<rel>`** (server.mjs) now serves a file from the workspace, by
+exactly the rule the council server uses — `workspace.filesPaths` is that walk,
+starting from a relative path instead of a url:
+
+- **Owner-only** (`notOwner`). It serves bytes off the owner's disk; a guest in
+  hosted mode gets 403 and nothing on a page can widen it.
+- **Three top folders and no others**: `work/`, `projects/`, `sites/` under this
+  workspace, and `projects/`, `sites/` under every council root the reader has
+  already been asked about (confirmed first) — because a project artifact page's
+  files live under the root that page belongs to. `work/` is this companion's
+  scratch space and is not read out of somebody else's council root.
+- **Every segment refused if it is empty or begins with a dot**, checked AFTER
+  decoding, so `.botference`, `.git`, a dotfile, `../` and `%2e%2e%2f` are all
+  the same refusal. A `within()` check stands behind it as belt and braces.
+- A small closed **MIME table** (svg/png/jpg/webp/gif/pdf/html/csv/json/txt/md);
+  anything else is `application/octet-stream`. `Cache-Control: no-store`.
+- `?as=json` answers `{mime, name, bytes, data_url}` instead of the bytes — the
+  same shape `/run-figure` already had, and for the same reason.
+
+**In the drawer** (drawer.js, in the markdown painter). A link whose href starts
+with `/files/` is read as an address at the COMPANION and never as one on the
+page. `![caption](/files/…)`, and a plain link whose target ends `.svg`, `.png`,
+`.jpg`, `.jpeg`, `.gif` or `.webp`, become an inline `<figure class="filefig">`:
+never wider than the column, the link text as the caption under it,
+click-to-enlarge into the lightbox the run figures already use. The bytes arrive
+as a `data:` url through the background worker, exactly as a run's figures do —
+an `<img src>` at the companion would carry no credentials and, on a page with a
+strict CSP, would not even be attempted. A `/files/` link to anything that is
+not a picture stays a link, with its href rewritten to the companion's own
+origin, which the background worker reports on `hello` (`base`) and content.js
+passes in at `create()` and again through `setFilesBase` if the handshake lands
+after the drawer exists. Every other link in a message is untouched.
+
+**The bots are told** (bridge-system-prompt.md, rule 17), because the reason
+Claude went off and saved SVGs at all is that nothing told it there were two
+ways to show a plot. Both are named in one paragraph: for a plot the reader may
+want to change, put the python in a ```python block — the drawer's Run button
+runs it with `MPLBACKEND=Agg` and shows every figure inline; for a finished
+figure, and only where the turn says a folder is writable, save it under
+`work/artifacts/` (or the project's folder) and write `![caption](/files/…)`.
+Never a bare `/files/` text link, never `file://`.
+
+### Testing
+
+`test/companion.test.mjs` (220 → 224): the route serves a saved plot with
+`image/svg+xml` and `no-store`, a `.md` under `projects/` as text, and the same
+plot as a `data:` url under `?as=json`; nine refusals in one table — `..` in
+three spellings, a dot-segment (`.botference`, `.git`), a file outside the three
+folders, the bare route and a file that is not there — each asserted not to have
+leaked the bytes; and, in hosted mode, a guest with a valid password refused
+while the owner on the loopback still gets it.
+
+`test/harness.html` `?files=1&selftest=1` (new pose, 12 checks): the reported
+message in shape — an image reference, a plain link whose target is an image,
+and a link to a `.csv`. Pinned: both images become pictures and no `/files/`
+image is left as a bare link; the bytes came through the worker as a `data:` url
+and were asked for by path; the bot's caption is under the picture; a picture is
+never wider than its column; the `.csv` stays a link and points at the
+companion's origin rather than at the website the reader is standing on, opening
+in a tab of its own; and clicking a picture opens the lightbox, which Esc puts
+away.
 
 ## Out of scope for v1 (do not build)
 

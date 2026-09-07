@@ -3057,6 +3057,43 @@ export function handler(req, res) {
       });
     });
   }
+  // ---- a file the bots made ------------------------------------------------
+  //
+  // THE REPORT. A bot on an ordinary web page made two plots, saved them under
+  // `work/artifacts/`, and linked them the way the council web UI does —
+  // `[1. the tail](/files/work/artifacts/thin-tail.svg)`. In the drawer that
+  // relative link resolved against the ARTICLE's own origin (404), this
+  // companion had no `/files/` route at all, and it was a plain link rather
+  // than a picture. The reader saw nothing, and the bot had no way to know.
+  //
+  // So the companion answers `/files/` too, by exactly the rule the council
+  // server uses (workspace.filesPaths): three top folders and no others, every
+  // segment refused if it is empty or begins with a dot, checked AFTER
+  // decoding, and resolved against this workspace first and then every council
+  // root the reader has already been asked about — because a project artifact
+  // page's files live under the root that page belongs to.
+  //
+  // OWNER-ONLY. This serves bytes off the owner's disk; a guest in hosted mode
+  // gets nothing from it, and nothing on the page can be made to widen it.
+  // `as=json` answers with a data: url instead, which is how the drawer gets a
+  // picture into somebody else's page — the same trick /run-figure uses, and
+  // for the same reason: only the background worker holds the credentials.
+  if (req.method === 'GET' && url.startsWith('/files/')) {
+    if (notOwner(req, res)) return;
+    const rel = url.slice('/files/'.length);
+    const hit = workspace.filesPaths(rel)[0];
+    if (!hit) return fail(res, 403, 'no such file under work/, projects/ or sites/');
+    const q = new URLSearchParams(String(req.url || '').split('?')[1] || '');
+    return fs.readFile(hit, (err, buf) => {
+      if (err) return fail(res, 404, 'no such file');
+      const mime = workspace.fileMime(hit);
+      if (q.get('as') === 'json') {
+        return ok(res, { mime, name: path.basename(hit), bytes: buf.length,
+          data_url: `data:${mime};base64,${buf.toString('base64')}` });
+      }
+      res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-store' }).end(buf);
+    });
+  }
   // the article view's two scripts: the extension's own anchoring code (so the
   // phone anchors exactly as the Mac does) and the reader UI
   if (req.method === 'GET' && url.startsWith('/assets/')) {
