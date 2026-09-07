@@ -1460,7 +1460,11 @@ class TestCommandConstruction:
         assert "*.github.com" in hosts
         assert settings["sandbox"]["enabled"] is True
 
-    def test_plan_network_custom_host_list_is_honored(self, monkeypatch):
+    def test_plan_network_custom_host_list_is_honored(self, monkeypatch, tmp_path):
+        # the user's own grants (.botference/allowed-hosts.json under the
+        # project root) ride along with the list; point the root at an empty
+        # folder so this test sees the custom list alone
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
         monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "1")
         monkeypatch.setenv(
             "BOTFERENCE_PLAN_ALLOWED_HOSTS",
@@ -2253,3 +2257,48 @@ class TestTmuxSteering:
         adapter = ClaudeInteractiveTmuxAdapter(session_name="session")
         adapter._turn_active = True
         assert adapter.steer("x") is False
+
+
+
+def test_codex_commentary_before_the_answer_is_dropped():
+    """Codex's harness has it announce a skill "in the commentary channel" — a
+    first agent_message before the answer. Only the last message is the reply."""
+    async def _test():
+        adapter = CodexAdapter(model="gpt-6-astra", stream_callback=lambda e: None)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        jsonl = (
+            '{"type":"thread.started","thread_id":"t1"}\n'
+            '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"I am applying the plain-speech skill to keep this brief."}}\n'
+            '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"The answer is four."}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}\n'
+        )
+        mock_proc.stdout = _make_reader(jsonl)
+        mock_proc.stderr = _make_reader("")
+        mock_proc.wait = AsyncMock(return_value=0)
+        mock_proc.kill = MagicMock()
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            resp = await adapter.send("test")
+        assert resp.text == "The answer is four."
+
+    asyncio.run(_test())
+
+
+def test_codex_single_message_is_untouched():
+    async def _test():
+        adapter = CodexAdapter(model="gpt-6-astra", stream_callback=lambda e: None)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        jsonl = (
+            '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Only one thing to say."}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}\n'
+        )
+        mock_proc.stdout = _make_reader(jsonl)
+        mock_proc.stderr = _make_reader("")
+        mock_proc.wait = AsyncMock(return_value=0)
+        mock_proc.kill = MagicMock()
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            resp = await adapter.send("test")
+        assert resp.text == "Only one thing to say."
+
+    asyncio.run(_test())

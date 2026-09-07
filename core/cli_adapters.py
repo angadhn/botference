@@ -1817,6 +1817,7 @@ class CodexAdapter:
             )
 
         text_parts = []
+        agent_texts = []   # agent_message items only, in order
         tool_summaries = []
         raw_lines = []
         completed_tool_call_ids: set[str] = set()
@@ -1843,6 +1844,7 @@ class CodexAdapter:
                         text = item.get("text", "")
                         if text:
                             text_parts.append(text)
+                            agent_texts.append(text)
                             if not isolated:
                                 self._emit_stream({
                                     "kind": "text_delta",
@@ -1999,6 +2001,14 @@ class CodexAdapter:
                         seen[ts.id] = ts
                     deduped.append(ts)
 
+            # Codex's own harness tells it to announce a skill "in the commentary
+            # channel", and `codex exec --json` hands commentary and the answer
+            # over as separate agent_message items with no phase field. Glued
+            # together they read as "I'm applying the plain-speech skill… <answer>"
+            # every turn. The LAST message is the answer; earlier ones are asides.
+            if len(agent_texts) > 1:
+                asides = set(agent_texts[:-1])
+                text_parts = [t for t in text_parts if t not in asides]
             response.text = "\n".join(text_parts) if text_parts else ""
             response.tool_summaries = deduped
             response.raw_output = "\n".join(raw_lines)
