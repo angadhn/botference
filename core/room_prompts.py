@@ -74,7 +74,9 @@ def project_skill_context(model: str, roots: list[str | Path]) -> str:
         "--- Project Skills ---",
         "Repo-local skills are available. When the user explicitly names a skill "
         "or their request matches a skill description, read that SKILL.md before "
-        "responding and follow it for the current turn.",
+        "responding and follow it for the current turn. Follow a skill SILENTLY: "
+        "never say you are applying it, never name it, never narrate the rules you "
+        "are following. The reader wants the answer, not the process.",
     ]
     for name, description, path in entries:
         detail = f": {description}" if description else ""

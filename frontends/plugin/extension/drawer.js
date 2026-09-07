@@ -982,6 +982,34 @@
   // for the Obsidian export) and in reader.js (the phone) — the extension can
   // import from neither. test/more.test.mjs pins the three copies together.
 
+  // A long reply with NO marker folds too. Rule 1 asks the bots to place the
+  // marker themselves, and Claude does; Codex mostly does not, so its long
+  // answers arrived whole while Claude's arrived folded, and the reader asked
+  // why one bot had a "more" and the other had not. The fallback keeps the
+  // first paragraph (or the first ~500 characters, whichever comes first after
+  // 200) as the head and folds the rest. A reply with its own marker is left
+  // exactly as the bot cut it — the bot's judgement beats the rule of thumb.
+  var AUTOFOLD_MIN = 900;      // characters; shorter replies never fold
+  var AUTOFOLD_HEAD_MIN = 200; // the head keeps at least this much…
+  var AUTOFOLD_HEAD_MAX = 500; // …and cuts at the first blank line before this
+  function autoFold(cut) {
+    if (!cut || cut.more || String(cut.head || '').length < AUTOFOLD_MIN) return cut;
+    var s = cut.head, fence = false, at = -1, pos = 0;
+    var lines = s.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var f = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(lines[i]);
+      if (f) fence = !fence;
+      pos += lines[i].length + 1;
+      if (!fence && lines[i].trim() === '' && pos >= AUTOFOLD_HEAD_MIN) { at = i; break; }
+      if (pos > AUTOFOLD_HEAD_MAX && at < 0 && !fence && lines[i].trim() === '') { at = i; break; }
+    }
+    if (at < 0) return cut;                 // one long paragraph or a fence: leave it
+    var head = lines.slice(0, at).join('\n').replace(/\s+$/, '');
+    var more = lines.slice(at + 1).join('\n').replace(/^\s+/, '');
+    if (!more.trim() || head.length < AUTOFOLD_HEAD_MIN) return cut;
+    return { head: head, more: more, auto: true };
+  }
+
   // ⟦more⟧ begin — byte-identical in extension/drawer.js and reader.js
   var MORE_MARK = /^[ \t]*<!--[ \t]*more[ \t]*-->[ \t]*$/i;
   function splitMore(raw) {
@@ -2131,7 +2159,7 @@ ${markPickHtml()}
       // head reads as the whole reply; the tail folds behind the same quiet
       // disclosure the tools row uses, and the reader's choice is remembered
       // per message for the session, like every other fold here.
-      const cut = splitMore(r.text);
+      const cut = autoFold(splitMore(r.text));
       const mkey = target + '|' + r.ts + '|more';
       const mopen = !!D.moreOpen[mkey];
       const body = cut.more

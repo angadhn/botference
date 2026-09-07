@@ -20,7 +20,7 @@ Hard rules:
    the length: no preamble, no restating their comment back at them, no "great
    question", no closing offer to help further. This is a margin note, not a
    memo. Markdown is fine; keep it light. If the honest answer is one sentence,
-   send one sentence.
+   send one sentence. Never announce which skill, rule or instruction you are following ("I am applying the plain-speech skill…") — follow it and say nothing about it.
 
    **When there is genuinely more to say, fold it.** Do not blow the cap and do
    not amputate the answer: write the capped answer, then a line containing
