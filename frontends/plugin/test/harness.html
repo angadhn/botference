@@ -1904,6 +1904,9 @@ function indexMap() {
 // with its tool activity stored out of order behind it
 // ?checklist=1 — a checklist already on screen at load, one item done, so the
 // ticked/unticked treatment is screenshotable without driving a turn
+// ?run=long — a twenty-line python block, folded: the header line, the Run
+// button on it, and the first three lines faded under it. The screenshot state
+// for the fold (the selftest drives the toggling).
 // ?run=1 — a bot reply with a runnable python block that has already been run:
 // the button, the output and the figures, all on screen at load
 // (?run=figure seeds the same thing and then opens the lightbox on it)
@@ -1923,6 +1926,20 @@ if (Q.get('run')) {
   RECORD.page_chat.push({ author: 'angadh', ts: iso(7),
     text: 'And the one that failed:\n\n```python\nxga = table["xGA"]\nraise RuntimeError("boom")\n```',
     runs: { 0: runResultFor('boom') } });
+}
+// …and the long one, folded, which is a state of its own to look at
+if (Q.get('run') === 'long') {
+  RECORD.page_chat.push({ author: 'claude', ts: iso(6),
+    text: 'The whole fit, if you want to change it:\n\n```python\n'
+      + ['import numpy as np', 'import pandas as pd', '',
+         'def load(path):', '    df = pd.read_csv(path)',
+         "    df = df.dropna(subset=['xGA'])", '    return df', '',
+         'def fit(df):', "    x = df['minute'].to_numpy()",
+         "    y = df['xGA'].to_numpy()", '    a, b = np.polyfit(x, y, 1)',
+         '    return a, b', '', "df = load('seasons.csv')", 'a, b = fit(df)',
+         "print('slope', round(a, 4))", "print('intercept', round(b, 4))",
+         "print('n', len(df))", "print('done')"].join('\n')
+      + '\n```\n\nthe slope is the answer.' });
 }
 
 // ?more=1 — the "▸ more" fold: a bot's capped answer with the long version
@@ -5470,6 +5487,11 @@ async function selftest() {
   // exit 0, 79ms, nothing printed — the run that has to be visible anyway
   RECORD.page_chat.push({ author: 'codex', ts: iso(2.4),
     text: 'And this one says nothing:\n\n```python\ndoubling_time = log(2)/0.61\n```' });
+  // A LONG BLOCK — twenty lines of it, which in a 420px column is a scroll
+  // through somebody else's working to reach the sentence after it
+  const LONG_CODE = 'import numpy as np\nimport pandas as pd\n\ndef load(path):\n    df = pd.read_csv(path)\n    df = df.dropna(subset=[\'xGA\'])\n    return df\n\ndef fit(df):\n    x = df[\'minute\'].to_numpy()\n    y = df[\'xGA\'].to_numpy()\n    a, b = np.polyfit(x, y, 1)\n    return a, b\n\ndf = load(\'seasons.csv\')\na, b = fit(df)\nprint(\'slope\', round(a, 4))\nprint(\'intercept\', round(b, 4))\nprint(\'n\', len(df))\nprint(\'done\')';
+  RECORD.page_chat.push({ author: 'claude', ts: iso(2.55),
+    text: 'And this one is long:\n\n```python\n' + LONG_CODE + '\n```\n\nthe slope is the answer.' });
   // …and the same run as it comes back from the companion on a LATER visit:
   // stored on the message, rendered with nothing clicked
   RECORD.page_chat.push({ author: 'codex', ts: iso(2.5),
@@ -5556,6 +5578,47 @@ async function selftest() {
   check('…and nothing red about it: exit 0 is not a failure',
     !silentRow().querySelector('.runbox .runstat.bad'));
   check('…and it really did run', runPosts.length === silentBefore + 1);
+
+  // ---- a long block folds -------------------------------------------------
+  // Twenty lines of python in a 420px margin column is a scroll through
+  // somebody else's working to reach the sentence after it. Past twelve lines
+  // the block arrives folded — and the Run button rides up into the header, so
+  // a reader who trusts the code never has to unfold it to press it.
+  const bigRow = () => rowSaying(/this one is long/i);
+  const fold = () => { const r = bigRow(); return r ? r.querySelector('.codefold') : null; };
+  check('a block past twelve lines arrives folded',
+    !!fold() && !fold().classList.contains('open'));
+  check('…under a header saying what it is and how long it is',
+    !!fold() && fold().querySelector('.clang').textContent === 'python · 20 lines');
+  check('…with the code itself out of the way',
+    getComputedStyle(fold().querySelector('pre.md-code')).display === 'none');
+  check('…and the first three lines of it showing as a reminder which block this is',
+    fold().querySelector('pre.codepeek').textContent.split('\n').length === 3);
+  check('the Run button is on the header, so a block can be run without unfolding',
+    !!fold().querySelector('.codehead [data-act="run"]'));
+  check('…and the block that button addresses is the one it always was',
+    fold().querySelector('pre.md-code').getAttribute('data-block') === '0');
+  const codeToggle = () => fold().querySelector('.codetoggle');
+  check('the toggle offers to show it', /^▸ show$/.test(codeToggle().textContent.trim()));
+  codeToggle().click();
+  await sleep(80);
+  check('…and one click does',
+    fold().classList.contains('open')
+    && getComputedStyle(fold().querySelector('pre.md-code')).display !== 'none');
+  check('…the peek gone, because the whole thing is there now',
+    getComputedStyle(fold().querySelector('pre.codepeek')).display === 'none');
+  check('…and it offers to hide it again', /^▾ hide$/.test(codeToggle().textContent.trim()));
+  // the choice is remembered per block for the session, like the "▸ more" fold
+  await window.__bfp.loadPage();
+  await sleep(150);
+  check('a re-render keeps it open', !!fold() && fold().classList.contains('open'));
+  codeToggle().click();
+  await sleep(80);
+  await window.__bfp.loadPage();
+  await sleep(150);
+  check('…and keeps it shut once it is folded again',
+    !!fold() && !fold().classList.contains('open'));
+  check('a short block is left exactly as it was', !codeRow().querySelector('.codefold'));
 
   // …and the same result on a LATER visit, where nothing was clicked at all:
   // the receipt rides on the message, so a refetch renders it like any other

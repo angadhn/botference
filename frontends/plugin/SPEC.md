@@ -9341,6 +9341,46 @@ companion's origin rather than at the website the reader is standing on, opening
 in a tab of its own; and clicking a picture opens the lightbox, which Esc puts
 away.
 
+## Amendment (2026-09-07, shipped): a long code block folds
+
+A bot's answer with a forty-line script in it is a scroll through somebody
+else's working to reach the sentence after it. In a 420px margin column that is
+most of the drawer, and the reader who wanted the ANSWER travels through the
+whole of the method to find it.
+
+Past **12 lines** a fenced block arrives folded: one header line saying what it
+is and how long it is (`python · 48 lines`), the first **3 lines** faded under
+it so the reader can tell which block this is, and the rest behind a `▸ show`
+toggle (`▾ hide` when open). Short blocks are byte-for-byte what they were.
+
+**The Run button rides up into the header**, which is the reason `foldCode` runs
+AFTER `decorateRuns` rather than before it: the bar already exists and is simply
+carried. A reader who trusts the block does not have to unfold forty lines to
+press Run, and whatever the last run printed stays below the fold either way —
+the output is the answer, the code is the working.
+
+The reader's choice is remembered per block for the session (`D.codeOpen`, keyed
+`target|ts|block`, exactly like `D.moreOpen`), so a re-render — an event, a
+refetch, another turn landing — keeps every block as the reader left it. The
+toggle itself repaints in place rather than through `render()`: rebuilding every
+markdown slot on the page to show three more lines of python would also replace
+the box a Run in flight is living in.
+
+**Nothing about the fences moves.** `data-block` is the address `run.mjs` uses,
+it is read off the same `<pre>` in the same order, and the wrapper is inserted
+around that `<pre>` rather than in place of it. The phone reader is untouched:
+it renders a message as plain text and has never had a Run button.
+
+### Testing
+
+`test/harness.html` `?selftest=1` (682 → 695): a twenty-line python block in
+page chat arrives folded, under a header reading `python · 20 lines`, with the
+code `display:none` and exactly three lines of peek under it; the Run button is
+in the header and still addresses block 0; the toggle reads `▸ show`, opens on
+one click, hides the peek and then reads `▾ hide`; the choice survives a
+`loadPage()` in both directions; and a short block is left with no fold at all.
+`?run=long` is the screenshot state for it.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.

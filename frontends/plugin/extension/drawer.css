@@ -1686,6 +1686,41 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   display: block; background: none; padding: 0; white-space: pre;
   font: 12.5px/1.5 var(--mono); color: var(--fg);
 }
+/* ── a long code block folds ───────────────────────────────────────────── */
+/* A forty-line script in a 420px margin column is a scroll through somebody
+   else's working to reach the sentence after it. Past twelve lines a block
+   arrives folded: one header line saying what it is and how long, the first
+   three lines faded under it so the reader can tell which block this is, and
+   the rest behind a toggle. The Run bar rides in the header, so a block can be
+   run without being unfolded, and whatever it printed stays below either way —
+   the output is the answer, the code is the working. */
+.codefold { margin: 6px 0 8px }
+.codehead {
+  display: flex; align-items: center; gap: 8px; min-height: 22px;
+  font: 12px/1.4 var(--sans); color: var(--muted);
+  -webkit-user-select: none; user-select: none;
+}
+.codehead .clang { flex: none }
+/* the Run bar, carried up here by foldCode — it keeps its own layout and takes
+   the space between the label and the toggle */
+.codehead .runbar { flex: 1 1 auto; min-width: 0 }
+.codehead .codetoggle { flex: none; margin-left: auto; padding: 0 4px; font-size: 12px }
+/* the peek: the same block, three lines of it, unmistakably not the whole
+   thing — no border, faded, and never selectable, because it is a label */
+.codefold > pre.codepeek {
+  margin: 2px 0 0; padding: 0 10px; overflow: hidden;
+  opacity: .5; -webkit-user-select: none; user-select: none;
+  -webkit-mask-image: linear-gradient(#000 70%, transparent);
+  mask-image: linear-gradient(#000 70%, transparent);
+}
+.codefold > pre.codepeek code {
+  display: block; background: none; padding: 0; white-space: pre;
+  font: 12.5px/1.5 var(--mono); color: var(--fg);
+}
+.codefold:not(.open) > pre.md-code { display: none }
+.codefold.open > pre.codepeek { display: none }
+.ctext.md .codefold > pre.md-code { margin-top: 4px }
+
 /* ── running a code block ──────────────────────────────────────────────── */
 /* The button is quiet on purpose: it sits under the block, in the tools row's
    register rather than the composer's, because running code is something the

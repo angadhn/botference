@@ -1522,6 +1522,7 @@
       copied: null,
       toolsOpen: {},       // tool-activity disclosure key -> expanded
       moreOpen: {},        // "▸ more" disclosure key (target|ts|more) -> expanded
+      codeOpen: {},        // a long code block's fold (target|ts|block) -> unfolded
       // ---- running a ```python block (setCanRun / onRun) ----------------
       // The button exists only where the companion says it does: owner, and
       // not switched off in config.json. Guests never see it and would be
@@ -5588,6 +5589,18 @@ ${markPickHtml()}
       // both ways, unlike the thread fold: a reader who opened the long half
       // of one answer is reading it, not committing to it
       'more': (btn) => { const k = btn.dataset.key; D.moreOpen[k] = !D.moreOpen[k]; render(); },
+      // A long code block's fold. Toggled in place rather than through
+      // render(): re-rendering would rebuild every markdown slot on the page to
+      // show three more lines of python, and a Run in flight sits in the very
+      // box being replaced. The key is remembered all the same, so the choice
+      // survives the next real render — which is the point of remembering it.
+      'code-fold': (btn) => {
+        const k = btn.dataset.key;
+        const wrap = btn.closest('.codefold');
+        const open = !(wrap && wrap.classList.contains('open'));
+        if (k) D.codeOpen[k] = open;
+        if (wrap) setCodeFold(wrap, open);
+      },
       'run': (btn) => doRun(btn),
       'run-stop': (btn) => doRunStop(btn),
       // one way only: a thread the reader has opened stays open for the
@@ -6517,6 +6530,90 @@ ${markPickHtml()}
         });
       });
       loadFigures(scope);
+      foldCode(scope);
+    }
+
+    // ---- a long code block folds -------------------------------------------
+    //
+    // THE REPORT. A bot's answer with a forty-line script in it is a scroll
+    // through somebody else's python to reach the sentence after it. In a
+    // 420px margin column that is most of the drawer, and the reader who wanted
+    // the ANSWER has to travel through the working to find it.
+    //
+    // So past CODE_FOLD_MAX lines a block arrives folded: one header line
+    // saying what it is and how long it is, the first CODE_PEEK lines faded
+    // under it as a reminder of which block this is, and the rest behind a
+    // toggle. The reader's choice is remembered per block for the session,
+    // exactly like the "▸ more" fold.
+    //
+    // THE RUN BUTTON MOVES UP INTO THE HEADER, and that is the point of doing
+    // it this way round — foldCode runs AFTER decorateRuns, so the bar already
+    // exists and can simply be carried. A reader who trusts the block does not
+    // have to unfold forty lines to press Run, and whatever the last run
+    // printed stays below, visible, folded or not: the OUTPUT is the answer,
+    // the code is the working.
+    //
+    // Nothing about the fences moves: `data-block` is the address run.mjs uses
+    // and it is read off the same <pre>, in the same order, wrapped or not.
+    const CODE_FOLD_MAX = 12;    // lines before a block folds
+    const CODE_PEEK = 3;         // lines of it shown while it is folded
+
+    function setCodeFold(wrap, open) {
+      wrap.classList.toggle('open', !!open);
+      const btn = wrap.querySelector('.codetoggle');
+      if (!btn) return;
+      btn.textContent = open ? '▾ hide' : '▸ show';
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    function foldCode(scope) {
+      if (!scope) return;
+      scope.querySelectorAll('pre.md-code[data-block]').forEach(pre => {
+        if (pre.parentNode && pre.parentNode.classList
+            && pre.parentNode.classList.contains('codefold')) return;   // already done
+        const code = pre.querySelector('code');
+        const lines = String((code && code.textContent) || '').replace(/\n+$/, '').split('\n');
+        if (lines.length <= CODE_FOLD_MAX) return;
+        const i = pre.getAttribute('data-block');
+        // the same address a Run carries, so the fold and the run agree about
+        // which block this is; a message with no timestamp yet (an unsent one)
+        // has no address, folds anyway, and simply does not remember
+        const reply = pre.closest('.reply[data-ts]');
+        const card = pre.closest('.card[data-thread]');
+        const key = (reply && card)
+          ? card.getAttribute('data-thread') + '|' + reply.getAttribute('data-ts') + '|' + i
+          : '';
+        const wrap = mk('div', 'codefold');
+        wrap.setAttribute('data-block', i);
+        pre.parentNode.insertBefore(wrap, pre);
+
+        const head = mk('div', 'codehead');
+        const lang = String(pre.getAttribute('data-lang') || '').trim();
+        const what = mk('span', 'clang');
+        what.textContent = (lang ? lang + ' · ' : '') + lines.length + ' lines';
+        head.appendChild(what);
+        const btn = mk('button', 'rebtn codetoggle');
+        btn.type = 'button';
+        btn.setAttribute('data-act', 'code-fold');
+        if (key) btn.setAttribute('data-key', key);
+        head.appendChild(btn);
+        wrap.appendChild(head);
+
+        const peek = mk('pre', 'codepeek');
+        peek.appendChild(mk('code')).textContent = lines.slice(0, CODE_PEEK).join('\n');
+        peek.setAttribute('aria-hidden', 'true');
+        wrap.appendChild(peek);
+        wrap.appendChild(pre);
+        // …and whatever decorateRuns already put after the block comes with it:
+        // the Run bar rides up into the header, the results stay under the code
+        const box = wrap.nextSibling;
+        if (box && box.classList && box.classList.contains('runbox')) {
+          wrap.appendChild(box);
+          const bar = box.querySelector('.runbar');
+          if (bar) head.insertBefore(bar, btn);   // the toggle stays last, at the right
+        }
+        setCodeFold(wrap, !!(key && D.codeOpen[key]));
+      });
     }
 
     function runBar(key, runnable, result) {

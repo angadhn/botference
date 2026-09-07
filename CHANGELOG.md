@@ -15,6 +15,14 @@
   about both ways to show a plot: python in a ```python block, which the Run
   button runs and shows inline, or a saved figure referenced as an image.
 
+- **A long code block folds.** A forty-line script in a bot's reply used to be a
+  scroll through somebody else's working to reach the sentence after it. Past
+  twelve lines a block now arrives collapsed: one line saying what it is and how
+  long (`python · 48 lines`), the first three lines faded under it, and `▸ show`
+  to open it. The Run button sits on that header, so a block can be run without
+  being unfolded, and whatever it printed stays visible either way. Your choice
+  is remembered per block for the session. Short blocks are unchanged.
+
 - **A comment card says where its passage is, on an ordinary web page.** A card
   on a PDF has always said "p. 12"; on a web page it said nothing, so the same
   phrase commented in two places in one article gave you two cards you could
