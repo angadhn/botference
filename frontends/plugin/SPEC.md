@@ -5112,7 +5112,7 @@ about once a week. They are:
   and the first `✗` before it. That is how a hang gets diagnosed without a
   debugger.
 
-The 44 selftest poses, which is the whole list — nothing else in the harness
+The 45 selftest poses, which is the whole list — nothing else in the harness
 drives a selftest, and every one of them is expected green:
 
 ```
@@ -5125,6 +5125,7 @@ drives a selftest, and every one of them is expected green:
 ?pdf=1&strike=1&selftest=1
 ?pdf=1&strike=elsewhere&selftest=1
 ?pdf=1&strike=stack&selftest=1
+?where=1&selftest=1
 ?pdfannot=1&selftest=1
 ?pdfannot=export&selftest=1
 ?sendfocus=1&selftest=1
@@ -9169,6 +9170,102 @@ ordinary page still gets none, the envelope names the sites folder and what it
 is for, a `git push` in a site folder is allowed over the wire while a force
 push in the same folder is refused with the reason in the thread, and a
 finished site becomes a publish target at turn-end.
+
+## Amendment (2026-09-07, shipped): where a passage is, on a web page
+
+**The report.** A card on a PDF says "p. 12". On an ordinary web page a card
+said nothing at all about where its passage was — so the same phrase commented
+in two places in one article produced two cards nobody could tell apart in the
+panel. And where the words either side of both copies were identical too, the
+prefix/suffix tiebreak had nothing to work with: re-anchoring returned
+`ambiguous`, and the second thread showed as **orphaned**. A comment about a
+passage plainly still on the page, reported as lost.
+
+**What a web-page thread now remembers.** Two soft fields, captured once, at the
+moment of selection, and stored beside `quote`/`prefix`/`suffix` the same way
+`page` is:
+
+- `section` — the text of the nearest preceding heading (`h1`–`h6`, or anything
+  wearing `role="heading"` with an `aria-level`), nearest in **document order**
+  walking backwards: each previous sibling, or the last heading inside it, then
+  up to the parent, and so on to the root. Collapsed, trimmed, cut at 80
+  characters, because it is a label on a card and not a copy of the heading.
+- `ordinal` of `occurrences` — which occurrence of the exact quote text this
+  selection is within the page's normalised text, 1-based, and how many there
+  are. Past 200 occurrences nothing is claimed: a count that would be a lie is
+  worse than no count.
+
+Neither is computed on a PDF — a paged document says "p. 12" and needs neither —
+and both ride the `POST /thread` payload only when they say something, so an
+article's request and its record on disk are the ones they always were until a
+heading or a repeat actually exists to record. `store.mjs` sanitizes on the way
+in: a non-string heading is not a heading, and an ordinal that is not a positive
+integer inside its own count is not written down.
+
+**Anchoring is unchanged, with one last resort.** `locate()` is the same
+whitespace-tolerant text search it has always been. What changed is what happens
+when it gives up: where prefix/suffix cannot tell several matches apart — no
+context stored, or a genuine tie on the overlap score — a thread carrying an
+`ordinal` gets that occurrence instead of orphaning. It is consulted **after**
+context has failed and never before: context is evidence about the page as it is
+now, an ordinal is a memory of the page as it was. Two guards keep the memory
+honest — the ordinal has to be in range, and where the thread also remembers how
+many there were, that count has to still hold. A paragraph added or deleted
+moves every occurrence after it, so a count that no longer matches means the
+memory is about a different page and the thread orphans exactly as it did before.
+
+**Where it shows.** One quiet grey line under the quote, in the register of the
+provenance lines below it (`.where` in `drawer.css`), on the open card and the
+filed card alike: `§ Results`, or `§ Results · 2nd of 3` where the words repeat.
+Nothing to say draws nothing, which is every card that existed before this. The
+same line rides the **overlap chooser** (one row per marking where marks stack),
+because that is the other place two identical quotes used to read as the same
+row twice over. The phone reader shows it as the attribution inside the
+blockquote, where a PDF's `— p. 12` already went. The Obsidian export writes
+`(§ Results, 2nd of 3)` inside the blockquote on the same rule; a PDF thread
+keeps `— p. 12` and is never given both.
+
+`whereParts` — the formatter, plus the `1st/2nd/3rd/…` word — is the fourth
+piece of code in this plugin that has to exist in three byte-identical copies
+(`store.mjs`, `extension/drawer.js`, `reader.js`), for the same reason
+`<!--more-->` does: the extension cannot import from the companion and the
+phone's script has no build step. `⟦where⟧ begin`/`end` sentinels mark it and
+`test/where.test.mjs` pins all three to the same source text and the same
+answers, the way `test/more.test.mjs` does.
+
+### Testing
+
+`test/where.test.mjs` (new, 48 passed): the formatter (a heading alone, a
+heading with a count, a count with no heading, nothing at all, "1st of 1" as
+noise, an ordinal past its own count, collapsing and the 80-character cut, the
+ordinal words through 111th); the three copies, in source and in behaviour; what
+the record keeps and what it refuses; and the note in the vault, including that
+a PDF thread keeps its page attribution and is never given the other one too.
+
+`test/anchor.test.mjs` (85 → 101): the reported shape — one sentence twice with
+identical context — is a tie without an ordinal and anchors to the right copy
+with one; out of range is `ambiguous` as before, and so is a count that no
+longer holds; the ordinal settles a contextless duplicate too; prefix/suffix
+still decide first where they can; a single match is still unique; and
+`occurrenceAt` over a phrase three times, once, not at all, selected off leading
+whitespace, and past the cap.
+
+`test/companion.test.mjs` (217 → 220): `POST /thread` stores the heading
+collapsed and the position with it, echoes both back off disk, and stores
+nothing where there is nothing to say — no heading, one occurrence, a non-string
+heading, an ordinal past its count.
+
+`test/harness.html` `?where=1&selftest=1` (new pose, 15 checks): the article
+grows the reported shape — one sentence twice, same words either side, under two
+headings — and three threads sit on it (the first copy filed, the second copy,
+and a wider passage overlapping the second). Pinned: that the tie is real, so
+the pose cannot rot into one prefix/suffix could settle by itself; that each
+thread anchored to its OWN copy, read back by asking the page which heading its
+mark sits under; that the open card and the filed card both say which heading
+and which copy; and that the chooser's two rows on the same words are not the
+same row twice. The article pose (`?selftest=1`, 681 → 682) carries the other
+half of the rule: three threads under no heading whose words occur once draw no
+location line at all.
 
 ## Out of scope for v1 (do not build)
 

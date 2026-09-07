@@ -290,6 +290,55 @@ async function main() {
     assert.equal(r.json.queued, undefined, 'no mention → no bot turn');
   });
 
+  // WHERE A PASSAGE IS, on a document with no page numbers. A PDF thread sends
+  // `page`; a thread made on an ordinary article sends the heading it sat under
+  // and which copy of the words it is. Both are soft, both are stored only when
+  // they say something, and a client that sends neither writes exactly the
+  // record it always did.
+  const WPAGE = 'https://ledger.test/where-a-passage-is';
+  await test('POST /thread stores where an article passage is', async () => {
+    const r = await POST(base, '/thread', {
+      url: WPAGE, quote: 'the same sentence twice', prefix: 'a', suffix: 'b',
+      section: '  What the numbers   say  ', ordinal: 2, occurrences: 3,
+      msg: { text: 'the second one.' },
+    });
+    const t = r.json.thread;
+    assert.equal(t.section, 'What the numbers say', 'the heading is stored, collapsed');
+    assert.equal(t.ordinal, 2);
+    assert.equal(t.occurrences, 3);
+    const page = (await GET(base, `/page?url=${encodeURIComponent(WPAGE)}`)).json;
+    const back = page.threads.find(x => x.id === t.id);
+    assert.equal(back.section, 'What the numbers say', 'and echoed back off disk');
+    assert.equal(back.ordinal, 2);
+  });
+
+  await test('…and stores nothing where there is nothing to say', async () => {
+    const r = await POST(base, '/thread', {
+      url: WPAGE, quote: 'a passage under no heading', prefix: 'a', suffix: 'b',
+      msg: { text: 'no heading here.' },
+    });
+    const t = r.json.thread;
+    assert.equal('section' in t, false, 'no heading, no field');
+    assert.equal('ordinal' in t, false);
+    assert.equal('occurrences' in t, false);
+    // …nor a position that is not a position: one occurrence, or an ordinal
+    // past its own count, is dropped rather than written down
+    const one = (await POST(base, '/thread', {
+      url: WPAGE, quote: 'a passage that occurs once', prefix: 'a', suffix: 'b',
+      section: 'Method', ordinal: 1, occurrences: 1,
+      msg: { text: 'only once.' },
+    })).json.thread;
+    assert.equal(one.section, 'Method');
+    assert.equal('ordinal' in one, false, 'one occurrence is not a position');
+    const junk = (await POST(base, '/thread', {
+      url: WPAGE, quote: 'a passage with a nonsense position', prefix: 'a', suffix: 'b',
+      section: { evil: 1 }, ordinal: 'two', occurrences: 99999,
+      msg: { text: 'nonsense.' },
+    })).json.thread;
+    assert.equal('section' in junk, false, 'a non-string heading is not a heading');
+    assert.equal('ordinal' in junk, false);
+  });
+
   await test('POST /reply appends to a thread and to the page chat', async () => {
     const a = await POST(base, '/reply', { url: PAGE1, thread_id: t1.id, text: 'Second thought.' });
     assert.equal(a.json.msg.text, 'Second thought.');

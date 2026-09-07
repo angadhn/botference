@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 2026-09-07
+
+- **A comment card says where its passage is, on an ordinary web page.** A card
+  on a PDF has always said "p. 12"; on a web page it said nothing, so the same
+  phrase commented in two places in one article gave you two cards you could
+  not tell apart — and if the words either side of both copies matched too, the
+  second thread was reported **orphaned** even though the passage was plainly
+  still there. A comment made on a web page now remembers the heading it sat
+  under and which copy of the words it was, and the card shows one quiet line
+  under the quote: `§ Results`, or `§ Results · 2nd of 3` where the words
+  repeat. The same line rides the chooser you get when two markings overlap, the
+  phone reader, and the Obsidian note. When the words around a passage cannot
+  tell two copies apart, that remembered position is now the tiebreak instead of
+  an orphaned thread — but only while the page still looks like the page the
+  comment was made on: an out-of-range position, or a count of copies that no
+  longer holds, orphans exactly as before. Nothing changes for a PDF, which has
+  a page number, or for a passage under no heading whose words occur once.
+
 ## 2026-09-04
 
 - **GPT-6 Astra is the default Codex participant.** It opened to ChatGPT plans

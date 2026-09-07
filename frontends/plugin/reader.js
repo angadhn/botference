@@ -78,6 +78,41 @@
   }
   // ⟦more⟧ end
 
+  // WHERE A PASSAGE IS, on a document with no page numbers: the heading it sits
+  // under, and which copy of the words it is where the words repeat. The
+  // phone's half of the drawer's own line, byte for byte as the drawer and the
+  // companion carry it (extension/drawer.js, ../store.mjs). Pinned by
+  // test/where.test.mjs.
+
+  // ⟦where⟧ begin — byte-identical in extension/drawer.js and reader.js
+  var WHERE_SMALL = ['', '1st', '2nd', '3rd'];
+  function nthWord(n) {
+    n = Number(n) || 0;
+    if (n < 1) return '';
+    if (n < 4) return WHERE_SMALL[n];
+    var teen = n % 100, unit = n % 10;
+    return n + (teen > 10 && teen < 14 ? 'th'
+      : unit === 1 ? 'st' : unit === 2 ? 'nd' : unit === 3 ? 'rd' : 'th');
+  }
+  function whereParts(t) {
+    var out = [];
+    var sec = String((t && t.section) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (sec) out.push('\u00a7 ' + sec);
+    var occ = Number(t && t.occurrences) || 0;
+    var ord = Number(t && t.ordinal) || 0;
+    if (occ > 1 && ord > 0 && ord <= occ) out.push(nthWord(ord) + ' of ' + occ);
+    return out;
+  }
+  // ⟦where⟧ end
+
+  // The one attribution line, whichever kind of document this is: a PDF says
+  // its page, an article says its heading and — only where the words repeat —
+  // which copy this is. Nothing to say draws nothing, exactly as before.
+  function whereText(t) {
+    if (Number(t && t.page) > 0) return 'p. ' + Number(t.page);
+    return whereParts(t).join(' \u00b7 ');
+  }
+
   function post(path, body) {
     return fetch(path, {
       method: 'POST', credentials: 'same-origin',
@@ -259,7 +294,7 @@
       // …and whether it was struck through: a suggested deletion and a passage
       // merely pointed at are different remarks, so the sheet says which
       html = '<blockquote' + (t.mark === 'strike' ? ' class="struck"' : '') + '>' + esc(t.quote)
-        + (t.page > 0 ? '<cite> — p. ' + esc(String(t.page)) + '</cite>' : '') + '</blockquote>'
+        + (whereText(t) ? '<cite> — ' + esc(whereText(t)) + '</cite>' : '') + '</blockquote>'
         + (t.mark === 'strike' ? '<span class="struck-note">a suggested deletion — this passage is struck through in the document</span>' : '')
         + (t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : '')
         // a filed thread leads with what it settled, exactly as its card does

@@ -183,6 +183,35 @@
     return { quote, prefix, suffix };
   }
 
+  // WHICH OCCURRENCE a selection is, and how many there are.
+  //
+  // Counted at the moment a thread is made, on an ordinary web page, and stored
+  // beside quote/prefix/suffix. It is not a second way of FINDING the words —
+  // locate() still searches text and only text — it is the tiebreak for the one
+  // case the search cannot settle on its own: the same phrase, twice, with the
+  // same words around it. Before this, that thread simply orphaned.
+  //
+  // `start` is the raw offset the anchor was cut at. The quote is the collapsed
+  // form of raw[start,end), so the span the reader meant is the one whose start
+  // is nearest to it — leading whitespace inside the selection is the only
+  // thing that can move it, and that is a handful of characters against a whole
+  // quote-length gap to any other occurrence.
+  //
+  // Past ORD_MAX occurrences the count would be a lie (findSpans stops there),
+  // so nothing is claimed at all: {ordinal:0, occurrences:0} reads as "unknown"
+  // everywhere downstream, exactly as a thread made before this existed does.
+  const ORD_MAX = 200;
+  function occurrenceAt(raw, quote, start) {
+    const spans = findSpans(raw, quote, ORD_MAX);
+    if (!spans.length || spans.length >= ORD_MAX) return { ordinal: 0, occurrences: 0 };
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < spans.length; i++) {
+      const d = Math.abs(spans[i].start - start);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return { ordinal: best + 1, occurrences: spans.length };
+  }
+
   // Re-anchor. Returns {ok:true, start, end, unique} or
   // {ok:false, reason:'orphan'|'ambiguous'} (both mean "orphan it" to callers
   // that don't care why).
@@ -192,9 +221,30 @@
     if (!spans.length) return { ok: false, reason: 'orphan' };
     if (spans.length === 1) return { ok: true, start: spans[0].start, end: spans[0].end, unique: true };
 
+    // THE LAST RESORT, and only ever that: the occurrence the thread was made
+    // on. It is consulted after prefix/suffix have failed to tell the copies
+    // apart, never before — context is evidence about the words on the page
+    // now, an ordinal is a memory of the page as it was.
+    //
+    // Two guards, because a remembered position is worth nothing on a page that
+    // has changed underneath it: the ordinal has to be in range, and where the
+    // thread also remembers HOW MANY there were, that count has to still hold.
+    // A paragraph added or deleted moves every occurrence after it, so a count
+    // that no longer matches means the memory is about a different page and the
+    // thread orphans exactly as it did before any of this existed.
+    const byOrdinal = () => {
+      const n = Number(anchor.ordinal) || 0;
+      const occ = Number(anchor.occurrences) || 0;
+      if (!(n >= 1 && n <= spans.length)) return null;
+      if (occ && occ !== spans.length) return null;
+      return { ok: true, start: spans[n - 1].start, end: spans[n - 1].end,
+        unique: false, ordinal: n };
+    };
+    const giveUp = () => byOrdinal() || { ok: false, reason: 'ambiguous' };
+
     const wantPre = normalize(anchor.prefix || '');
     const wantSuf = normalize(anchor.suffix || '');
-    if (!wantPre && !wantSuf) return { ok: false, reason: 'ambiguous' };
+    if (!wantPre && !wantSuf) return giveUp();
 
     const scored = spans.map(s => {
       const pre = normalize(raw.slice(Math.max(0, s.start - WINDOW), s.start));
@@ -202,8 +252,8 @@
       return { s, score: tailOverlap(pre, wantPre) + headOverlap(suf, wantSuf) };
     }).sort((a, b) => b.score - a.score);
 
-    if (scored[0].score === 0) return { ok: false, reason: 'ambiguous' };
-    if (scored[1] && scored[1].score === scored[0].score) return { ok: false, reason: 'ambiguous' };
+    if (scored[0].score === 0) return giveUp();
+    if (scored[1] && scored[1].score === scored[0].score) return giveUp();
     return { ok: true, start: scored[0].s.start, end: scored[0].s.end, unique: false, score: scored[0].score };
   }
 
@@ -462,6 +512,53 @@
     const start = offsetOf(index, range.startContainer, range.startOffset, false);
     const end = offsetOf(index, range.endContainer, range.endOffset, true);
     return start <= end ? { start, end } : { start: end, end: start };
+  }
+
+  // ---- WHICH SECTION a passage is in ---------------------------------------
+  //
+  // A PDF says "p. 12". An ordinary web page has nothing to say at all, so two
+  // cards quoting the same sentence from two places in a long article were
+  // indistinguishable in the panel. The nearest thing a web page has to a page
+  // number is the heading the passage sits under, and every article already
+  // carries them.
+  //
+  // "Nearest preceding heading" means nearest in DOCUMENT ORDER walking
+  // backwards: each previous sibling (or the last heading INSIDE it — a
+  // heading is usually wrapped in a <section> or a <header>), then up to the
+  // parent, which may itself be a heading, and so on to the root. That is the
+  // same rule a reader applies with their eye, and it costs one walk.
+  //
+  // A heading is h1–h6, or anything wearing role="heading" with an aria-level —
+  // the ARIA form real sites use when the tag is a <div>. Trimmed, collapsed,
+  // and cut at SECTION_MAX, because this is a label on a card and not a copy of
+  // the heading.
+  const SECTION_MAX = 80;
+  const HEADING_SEL = 'h1,h2,h3,h4,h5,h6,[role="heading"][aria-level]';
+  function isHeadingEl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (/^H[1-6]$/.test(el.tagName)) return true;
+    return el.getAttribute && el.getAttribute('role') === 'heading'
+      && el.getAttribute('aria-level') != null;
+  }
+  function headingText(el) {
+    return String((el && el.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, SECTION_MAX);
+  }
+  function sectionOf(node) {
+    let el = node && node.nodeType === 1 ? node : (node && node.parentElement) || null;
+    while (el) {
+      for (let p = el.previousElementSibling; p; p = p.previousElementSibling) {
+        if (isHeadingEl(p)) return headingText(p);
+        // …or the last heading inside it, which is what a wrapped <section>
+        // looks like from the outside
+        let inner = null;
+        try { const hs = p.querySelectorAll(HEADING_SEL); inner = hs[hs.length - 1] || null; }
+        catch (_) { inner = null; }
+        if (inner) return headingText(inner);
+      }
+      el = el.parentElement;
+      if (isHeadingEl(el)) return headingText(el);
+    }
+    return '';
   }
 
   // `index.segs` is contiguous and ascending by construction — every segment
@@ -813,9 +910,9 @@
   const api = {
     // pure
     normIndex, normalize, findSpans, buildAnchor, locate, tailOverlap, headOverlap,
-    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX,
+    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX, occurrenceAt, ORD_MAX,
     // dom
-    buildTextIndex, offsetsFromRange,
+    buildTextIndex, offsetsFromRange, sectionOf,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
     marksAtPoint,
     markResolved, markAddressed, markStruck,

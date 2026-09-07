@@ -5,7 +5,7 @@ import path from 'node:path';
 // the routing rules, reused rather than re-guessed: what counts as a mention
 // and who counts as a bot are decided in exactly one place
 import { hasMention, isBotAuthor } from './chat.mjs';
-import { isLibrary, pageKey, runDir, displayTitle, tagsOf } from './store.mjs';
+import { isLibrary, pageKey, runDir, displayTitle, tagsOf, whereParts } from './store.mjs';
 // the same block parser the runner and the drawer use: a result is written
 // under the fence it came out of, found by line number rather than re-guessed
 import { codeBlocks } from './run.mjs';
@@ -33,7 +33,17 @@ const blockquote = q => String(q || '').split('\n')
 // it rides inside the blockquote as its attribution line — the shape Obsidian
 // (and everyone else) already renders as one. Articles have no pages and get
 // nothing, which is why this is a suffix rather than a second renderer.
-const attribution = t => (t && Number(t.page) > 0 ? `\n> — p. ${Number(t.page)}` : '');
+// …and the same line for a document with no pages: the heading the passage sat
+// under, and which copy of the words it was where the words repeat. Articles
+// used to get nothing here, which is why two notes quoting the same sentence
+// from two places in one piece read as duplicates. A thread with neither still
+// gets nothing, so every note written before this is byte-for-byte the one it
+// always was.
+const attribution = t => {
+  if (t && Number(t.page) > 0) return `\n> — p. ${Number(t.page)}`;
+  const w = whereParts(t).join(', ');
+  return w ? `\n> (${w})` : '';
+};
 // …and WHAT WAS DONE to it. A struck passage is a suggested deletion, and the
 // note has to say so or a year later it reads as an ordinary highlight. The
 // quote itself is wrapped in `~~`, which is what every markdown renderer

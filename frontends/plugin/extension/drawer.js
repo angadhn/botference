@@ -1040,6 +1040,45 @@
   }
   // ⟦more⟧ end
 
+  // WHERE A PASSAGE IS, on a document with no page numbers.
+  //
+  // A PDF card can say "p. 12"; an ordinary web page could say nothing at all,
+  // so two cards quoting the same sentence from two places in a long article
+  // were indistinguishable in the panel — and where the words around them were
+  // identical too, the second thread simply orphaned. A thread made on a web
+  // page now remembers the heading it sat under and which copy of the words it
+  // was, and this is how that reads. Byte-identical in ../store.mjs (which
+  // sanitizes it on the way in) and reader.js; pinned by test/where.test.mjs.
+
+  // ⟦where⟧ begin — byte-identical in extension/drawer.js and reader.js
+  var WHERE_SMALL = ['', '1st', '2nd', '3rd'];
+  function nthWord(n) {
+    n = Number(n) || 0;
+    if (n < 1) return '';
+    if (n < 4) return WHERE_SMALL[n];
+    var teen = n % 100, unit = n % 10;
+    return n + (teen > 10 && teen < 14 ? 'th'
+      : unit === 1 ? 'st' : unit === 2 ? 'nd' : unit === 3 ? 'rd' : 'th');
+  }
+  function whereParts(t) {
+    var out = [];
+    var sec = String((t && t.section) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (sec) out.push('\u00a7 ' + sec);
+    var occ = Number(t && t.occurrences) || 0;
+    var ord = Number(t && t.ordinal) || 0;
+    if (occ > 1 && ord > 0 && ord <= occ) out.push(nthWord(ord) + ' of ' + occ);
+    return out;
+  }
+  // ⟦where⟧ end
+
+  // The one line, whichever kind of document it came off: a paged one says the
+  // page, an unpaged one says the heading and — only where the words repeat —
+  // which copy this is. Nothing to say is nothing drawn, which is what every
+  // card that existed before this shows.
+  const whereText = t => (Number(t && t.page) > 0
+    ? 'p. ' + Number(t.page)
+    : whereParts(t).join(' \u00b7 '));
+
   // The renderers below build HTML strings; markdown must not. Each bot reply
   // parks its text in this slot map and gets an empty <div data-md="…">, which
   // render() fills from the DOM side once the string has landed.
@@ -2725,6 +2764,12 @@ ${markPickHtml()}
         (t.msgs || []).some(m => m && m.kind !== 'tools' && String(m.text || '').trim())
           ? 'struck' : 'suggested deletion'}</span>`
       : '');
+    // …drawn under the quote, in the register of the provenance lines below it:
+    // one grey line, no control, no colour of its own.
+    const whereHtml = t => {
+      const w = whereText(t);
+      return w ? `<div class="where" title="${esc('where this passage is in the document')}">${esc(w)}</div>` : '';
+    };
     const quoteHtml = (t, orph, extra) =>
       `<div class="quote${isStruck(t) ? ' struck' : ''}" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : (isStruck(t) ? 'scroll to this strikeout' : 'scroll to this highlight')}">“${esc(t.quote)}”${strikeBadge(t)}${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}${extra || ''}</div>`;
 
@@ -3042,6 +3087,7 @@ ${markPickHtml()}
           ${quoteHtml(t, orph, badge)}
           ${head}
         </div>
+        ${whereHtml(t)}
         ${fromDiscussionHtml(t)}
         ${broodHtml(t)}
         ${memoryLineHtml(t)}
@@ -3077,6 +3123,7 @@ ${markPickHtml()}
           ${quoteHtml(t, orph)}
           ${reopenBtn(t)}
         </div>
+        ${whereHtml(t)}
         ${broodHtml(t)}
         ${memoryLineHtml(t)}
         <p class="digest${pending ? ' provisional' : ''}">${esc(t.summary || '')}</p>
@@ -8557,7 +8604,10 @@ ${markPickHtml()}
       // swatch of it: the strike's red rule, or the highlight's own stage
       const paint = struck ? 'strike'
         : isResolved(t) ? 'done' : isAddressed(t) ? 'ready' : 'open';
-      return { kind, what, state, struck, paint };
+      // …and WHERE it is, which is the whole reason two rows can otherwise be
+      // the same row: the same phrase commented in two places under two
+      // headings produces two markings whose kind, note and state all match.
+      return { kind, what, state, struck, paint, where: whereText(t) };
     }
     function showPicks(x, y, ids) {
       mount();
@@ -8572,7 +8622,8 @@ ${markPickHtml()}
         return `<button class="pickrow${r.struck ? ' struck' : ''}" type="button" role="menuitem"
   data-thread="${esc(t.id)}"><span class="pdot ${esc(r.paint)}" aria-hidden="true"></span><span
   class="pkind">${esc(r.kind)}</span><span class="pwhat">${esc(r.what)}</span>${
-  r.state ? `<span class="pstate">${esc(r.state)}</span>` : ''}</button>`;
+  r.state ? `<span class="pstate">${esc(r.state)}</span>` : ''}${
+  r.where ? `<span class="pwhere">${esc(r.where)}</span>` : ''}</button>`;
       }).join('');
       box.classList.add('on');
       // measured after it is displayable, so a three-row chooser near the foot
@@ -8960,6 +9011,7 @@ ${markPickHtml()}
     tagHue,                                                 // test/tags.test.mjs
     splitEnvelopes, agentOf,                                // test/envelope.test.mjs
     splitMore, stripMore, MORE_MARK,                        // test/more.test.mjs
+    whereParts, nthWord, whereText,                        // test/where.test.mjs
     routeWordOf, KINDS, KIND_NAME,                          // test/mentions.test.mjs
   };
   root.BFPDrawer = api;

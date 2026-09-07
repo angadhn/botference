@@ -1969,6 +1969,14 @@
         // this document has. Absent everywhere else, so nothing about an
         // article's payload changes.
         if (pendingSel && pendingSel.page > 0) body.page = pendingSel.page;
+        // …and where it is on a document that has no pages. Same rule: each
+        // field rides only when it says something, so a passage under no
+        // heading whose words occur once sends exactly what it always sent.
+        if (pendingSel && pendingSel.section) body.section = pendingSel.section;
+        if (pendingSel && pendingSel.occurrences > 1 && pendingSel.ordinal > 0) {
+          body.ordinal = pendingSel.ordinal;
+          body.occurrences = pendingSel.occurrences;
+        }
         // an empty answer is NOT sent as an empty field: no article_text at
         // all, and the flag stays down so the next mention tries again
         const ctx = await mentionContext(text, route);
@@ -2776,8 +2784,22 @@
       ? (() => { try { return SITE.pageOf(sel.getRangeAt(0).startContainer) | 0; } catch { return 0; } })()
       : 0;
 
+    // …and the same question on a document that has NO pages, which is every
+    // ordinary web page: the heading this passage sits under, and which copy of
+    // the words it is where the words repeat. A paged document says "p. 12" and
+    // needs neither, so this is computed only where `page` is 0 — and, like the
+    // page number, it is an extra field on the payload and never a second way
+    // of finding the text.
+    const where = page > 0 ? { section: '', ordinal: 0, occurrences: 0 } : (() => {
+      let section = '';
+      try { section = Anchor.sectionOf(sel.getRangeAt(0).startContainer); } catch (_) { section = ''; }
+      let occ = { ordinal: 0, occurrences: 0 };
+      try { occ = Anchor.occurrenceAt(index.raw, a.quote, start); } catch (_) { /* leave it unknown */ }
+      return { section, ordinal: occ.ordinal, occurrences: occ.occurrences };
+    })();
+
     Anchor.unpaint('__new__');
-    pendingSel = { ...a, start, end, page, mark };
+    pendingSel = { ...a, start, end, page, mark, ...where };
     Anchor.paintOffsets(index, start, end, '__new__', false, mark);
     sel.removeAllRanges();
     drawer.hideSel();

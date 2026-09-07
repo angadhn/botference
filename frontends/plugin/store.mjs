@@ -985,6 +985,56 @@ const pageNumber = n => {
   return Number.isInteger(v) && v > 0 && v < 1e6 ? v : 0;
 };
 
+// ---- where a passage is, on a page with no page numbers --------------------
+//
+// The web-page half of `page`. A thread made on an ordinary article stores two
+// soft facts about WHERE its passage was: `section`, the heading it sat under,
+// and `ordinal` of `occurrences`, which copy of the words it was when the same
+// words occur more than once. Neither is ever used to FIND the passage on its
+// own — anchoring is the same text search it always was — and a thread without
+// them (every thread made before this existed, and every PDF thread, which has
+// a page number instead) behaves exactly as it did.
+//
+// Sanitized here, on the way in: a number that is not a positive integer, or an
+// ordinal past its own count, is simply not written down.
+const SECTION_MAX = 80;
+const OCCUR_MAX = 200;
+const sectionText = s => (typeof s === 'string'
+  ? s.replace(/\s+/g, ' ').trim().slice(0, SECTION_MAX) : '');
+const countOf = n => {
+  if (typeof n !== 'number' && typeof n !== 'string') return 0;
+  const v = Number(n);
+  return Number.isInteger(v) && v > 0 && v <= OCCUR_MAX ? v : 0;
+};
+
+// How it READS, on a card, on a phone and in the vault. Three copies of this
+// exist byte for byte — here, extension/drawer.js and reader.js — for the same
+// reason the `<!--more-->` parser has three: the extension cannot import from
+// the companion and the phone's script has no build step. test/where.test.mjs
+// pins all three to the same source text and the same answers.
+
+// ⟦where⟧ begin — byte-identical in extension/drawer.js and reader.js
+var WHERE_SMALL = ['', '1st', '2nd', '3rd'];
+function nthWord(n) {
+  n = Number(n) || 0;
+  if (n < 1) return '';
+  if (n < 4) return WHERE_SMALL[n];
+  var teen = n % 100, unit = n % 10;
+  return n + (teen > 10 && teen < 14 ? 'th'
+    : unit === 1 ? 'st' : unit === 2 ? 'nd' : unit === 3 ? 'rd' : 'th');
+}
+function whereParts(t) {
+  var out = [];
+  var sec = String((t && t.section) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (sec) out.push('\u00a7 ' + sec);
+  var occ = Number(t && t.occurrences) || 0;
+  var ord = Number(t && t.ordinal) || 0;
+  if (occ > 1 && ord > 0 && ord <= occ) out.push(nthWord(ord) + ' of ' + occ);
+  return out;
+}
+// ⟦where⟧ end
+export { nthWord, whereParts };
+
 // `route` is where the FIRST message of the thread was addressed — '@claude ',
 // '@codex ', '@all ' or nothing at all. It is stamped here rather than derived
 // from the words later because a reader may now address a message with a pill
@@ -1750,7 +1800,7 @@ export function resolvePassage(page, thread, passage, html, wantPage) {
   };
 }
 
-export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, route, origin, ts, mark, from_thread, from_msg, from_idx, passage_named }) {
+export function addThread(page, { quote, prefix, suffix, text, author, index, page_number, section, ordinal, occurrences, route, origin, ts, mark, from_thread, from_msg, from_idx, passage_named }) {
   const thread = {
     id: newThreadId(),
     quote: String(quote || ''),
@@ -1800,6 +1850,16 @@ export function addThread(page, { quote, prefix, suffix, text, author, index, pa
   if (passage_named) thread.passage_named = true;
   const p = pageNumber(page_number);
   if (p) thread.page = p;
+  // …and the same thing for a document that has no pages: the heading the
+  // passage sits under, and which of the identical copies of it this one is.
+  // Written only when they are not the default, exactly like `mark` above, so
+  // an article's record on disk is the one it always was until the day a
+  // heading or a repeat actually exists to record.
+  const sec = sectionText(section);
+  if (sec) thread.section = sec;
+  const occ = countOf(occurrences);
+  const ord = countOf(ordinal);
+  if (occ > 1 && ord >= 1 && ord <= occ) { thread.ordinal = ord; thread.occurrences = occ; }
   // the extension knows the page order of its highlights; when it tells us
   // where the new one sits we honor it, otherwise the thread appends
   const at = Number.isInteger(index) && index >= 0 && index <= page.threads.length

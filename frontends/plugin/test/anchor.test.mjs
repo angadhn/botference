@@ -272,6 +272,91 @@ const PAGE = [
     A.newWording(null) === '' && Store.newWording(null) === '');
 }
 
+// ---- 10. the ordinal: which copy of the words this thread was made on --------
+// THE REPORT. The same phrase commented in two places on one page, with the
+// same words around both, is a tie prefix/suffix cannot break — so the second
+// thread orphaned, silently, and the reader had no way to see why. A thread
+// made on a web page now remembers which occurrence it was, and that memory is
+// the LAST resort: consulted only after context has failed, and only while the
+// page still looks like the page it was made on.
+{
+  // two identical sentences, in identical surroundings, under two headings
+  const TWICE = [
+    '\nMethod\n',
+    '\nThe sample was drawn at random. The effect is small but real. It holds under every specification we tried.\n',
+    '\nResults\n',
+    '\nThe sample was drawn at random. The effect is small but real. It holds under every specification we tried.\n',
+  ].join('');
+  const Q = 'The effect is small but real';
+  const PRE = 'The sample was drawn at random.';
+  const SUF = 'It holds under every';
+  eq('ordinal: the quote really does occur twice', A.findSpans(TWICE, Q).length, 2);
+
+  const tie = A.locate(TWICE, { quote: Q, prefix: PRE, suffix: SUF });
+  ok('ordinal: without one, identical context is still ambiguous',
+    !tie.ok && tie.reason === 'ambiguous', JSON.stringify(tie));
+
+  const first = A.locate(TWICE, { quote: Q, prefix: PRE, suffix: SUF, ordinal: 1, occurrences: 2 });
+  ok('ordinal: 1 anchors to the first copy', first.ok, JSON.stringify(first));
+  eq('ordinal: …which is the one under Method', first.ok && first.start, TWICE.indexOf(Q));
+  const second = A.locate(TWICE, { quote: Q, prefix: PRE, suffix: SUF, ordinal: 2, occurrences: 2 });
+  ok('ordinal: 2 anchors to the second copy', second.ok, JSON.stringify(second));
+  eq('ordinal: …which is the one under Results', second.ok && second.start, TWICE.lastIndexOf(Q));
+  ok('ordinal: an ordinal anchor never claims to be unique',
+    second.ok && second.unique === false && second.ordinal === 2, JSON.stringify(second));
+
+  // out of range: the page has changed under the thread, so it orphans exactly
+  // as it always did rather than landing on whichever copy is left
+  const gone = A.locate(TWICE, { quote: Q, prefix: PRE, suffix: SUF, ordinal: 3, occurrences: 3 });
+  ok('ordinal: out of range is ambiguous, as before',
+    !gone.ok && gone.reason === 'ambiguous', JSON.stringify(gone));
+  // …and so is a count that no longer matches: a paragraph was added or removed
+  // between the copies, so "the second of three" names nothing here
+  const drifted = A.locate(TWICE, { quote: Q, prefix: PRE, suffix: SUF, ordinal: 2, occurrences: 3 });
+  ok('ordinal: a count that no longer holds is not trusted',
+    !drifted.ok && drifted.reason === 'ambiguous', JSON.stringify(drifted));
+
+  // with NO context at all — the other ambiguous branch — the ordinal still
+  // decides, because it is the only thing there is
+  const blind = A.locate(TWICE, { quote: Q, prefix: '', suffix: '', ordinal: 2, occurrences: 2 });
+  ok('ordinal: it settles a contextless duplicate too',
+    blind.ok && blind.start === TWICE.lastIndexOf(Q), JSON.stringify(blind));
+
+  // context still WINS: an ordinal is never consulted while the words around
+  // the passage can tell the copies apart
+  const third = A.locate(PAGE, { quote: 'The mood in the stands was flat',
+    prefix: '', suffix: 'only in memory.', ordinal: 1, occurrences: 3 });
+  ok('ordinal: prefix/suffix decide first and the ordinal is not reached',
+    third.ok && third.start > PAGE.indexOf('By the hour mark'), JSON.stringify(third));
+
+  // …and a single match is a single match: no ordinal, no count, no argument
+  const only = A.locate(TWICE, { quote: 'It holds under every specification we tried. Results',
+    ordinal: 9, occurrences: 9 });
+  ok('ordinal: one match is still unique and the ordinal is ignored',
+    only.ok && only.unique === true, JSON.stringify(only));
+}
+
+// ---- 11. counting the occurrence a selection is -----------------------------
+{
+  const raw = 'alpha beta. gamma. alpha beta. delta. alpha beta.';
+  const at = i => A.occurrenceAt(raw, 'alpha beta', i);
+  eq('occurrenceAt: the first', at(raw.indexOf('alpha beta')), { ordinal: 1, occurrences: 3 });
+  eq('occurrenceAt: the middle', at(raw.indexOf('alpha beta', 12)), { ordinal: 2, occurrences: 3 });
+  eq('occurrenceAt: the last', at(raw.lastIndexOf('alpha beta')), { ordinal: 3, occurrences: 3 });
+  eq('occurrenceAt: a phrase that occurs once', A.occurrenceAt(raw, 'gamma', raw.indexOf('gamma')),
+    { ordinal: 1, occurrences: 1 });
+  eq('occurrenceAt: a phrase that is not there at all', A.occurrenceAt(raw, 'omega', 0),
+    { ordinal: 0, occurrences: 0 });
+  // leading whitespace in the selection does not move the answer
+  const padded = '\n\n  alpha beta. gamma.';
+  eq('occurrenceAt: a selection that began on whitespace still counts as its own',
+    A.occurrenceAt(padded, 'alpha beta', 0), { ordinal: 1, occurrences: 1 });
+  // past the cap nothing is claimed rather than a count that would be a lie
+  const many = ('x '.repeat(1) + 'ab. ').repeat(A.ORD_MAX + 5);
+  eq('occurrenceAt: past the cap it claims nothing',
+    A.occurrenceAt(many, 'ab', 0), { ordinal: 0, occurrences: 0 });
+}
+
 // ---- report -----------------------------------------------------------------
 if (fail) {
   console.error('\nFAILED (' + fail + '):');

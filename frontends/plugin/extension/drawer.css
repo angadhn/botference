@@ -228,6 +228,13 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   grid-column: 2 / -1; grid-row: 2; min-width: 0; color: var(--fg);
   overflow-wrap: anywhere;
 }
+/* …and a third line, only where the document can say where a marking IS: the
+ * heading it sits under, and which copy of a repeated phrase it is. Without it
+ * the same sentence commented twice makes two rows that read identically. */
+.pickrow .pwhere {
+  grid-column: 2 / -1; grid-row: 3; min-width: 0;
+  font-size: 12px; color: var(--muted); overflow-wrap: anywhere;
+}
 
 /* ── panel ─────────────────────────────────────────────────────────────── */
 .panel {
@@ -551,6 +558,15 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   margin: -2px 0 8px; font-size: 11.5px; color: var(--muted);
 }
 .fromdisc .rebtn { padding: 0 4px; font-size: 11.5px }
+/* WHERE THE PASSAGE IS, on a document with no page numbers: the heading above
+   it, and which copy of a repeated phrase it is. The same quiet grey line as
+   the provenance above, because it is the same kind of thing — a fact about
+   the passage, not a control — and it must never compete with the quote it
+   sits under. Absent entirely on a card that has nothing to say. */
+.where {
+  margin: -2px 0 8px; font-size: 11.5px; color: var(--muted);
+  overflow-wrap: anywhere;
+}
 .fromdisc .rebtn:not([disabled]):hover { color: var(--strike-line) }
 /* …and the same line for the OTHER thing a thread can leave behind: a memory
    in the vault. Filing a question paints nothing on the document by design, so

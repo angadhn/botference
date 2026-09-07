@@ -297,6 +297,9 @@
                      companion refused at the lift because its `revises:` named
                      nothing in the vault, which must be visible and must never
                      become a second card. `&selftest=1` runs those.
+    ?where=1         the same sentence twice, under two headings, with the same
+                     words either side of both — the shape that used to orphan
+                     the second thread on it. `&selftest=1` runs those.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -1002,6 +1005,51 @@ const iso = mins => new Date(Date.now() - mins * 60000).toISOString();
 const FRESH = Q.get('fresh') === '1';
 let freshKnown = !FRESH;
 
+// ───────────────────────────────────────────────────────────────────────────
+// ?where=1 — WHERE A PASSAGE IS, ON A PAGE WITH NO PAGE NUMBERS.
+//
+//   THE REPORT. A card on a PDF can say "p. 12". On an ordinary web page a card
+//   said nothing about location at all, so the same phrase commented in two
+//   places in one article made two cards nobody could tell apart in the panel —
+//   and where the words either side of both copies were identical too, the
+//   prefix/suffix tiebreak had nothing to work with, the second thread came
+//   back `ambiguous`, and it showed as orphaned. A comment on a passage that is
+//   plainly still there, reported as gone.
+//
+//   So the article grows the reported shape: one sentence, twice, with the same
+//   words around both, under two different headings. Three threads sit on it —
+//   the first copy (filed, so the resolved card is exercised too), the second
+//   copy, and a wider passage overlapping the second so the overlap chooser has
+//   two rows to tell apart. What the selftest pins is the whole of the feature:
+//   that the ordinal saves the second thread from orphaning, that both cards
+//   say which copy they are and under which heading, and that the chooser says
+//   the same thing per row.
+const WHERE = Q.get('where') === '1';
+const WHERE_QUOTE = 'Nothing in the shape has changed since August';
+const WHERE_PRE = 'comes back every spring.';
+const WHERE_SUF = '. The players say so';
+const WHERE_SEC1 = 'What the numbers actually say';
+const WHERE_SEC2 = 'Where the same sentence turns up twice';
+const WHERE_WIDE = 'has changed since August. The players say so themselves, and the manager';
+if (WHERE) {
+  const art = document.querySelector('article');
+  const add = (tag, text) => {
+    const el = document.createElement(tag);
+    el.textContent = text;
+    art.appendChild(el);
+    return el;
+  };
+  // the tail of the existing section — so the FIRST copy sits under the
+  // heading the article already had
+  add('p', 'The same objection comes back every spring. ' + WHERE_QUOTE
+    + '. The players say so themselves.');
+  add('h2', WHERE_SEC2);
+  // …and the second copy under a heading of its own, word for word the same
+  // sentence with the same words either side of it
+  add('p', 'The same objection comes back every spring. ' + WHERE_QUOTE
+    + '. The players say so themselves, and the manager does not contradict them.');
+}
+
 const RECORD = {
   version: 1,
   url: PAGE_URL,
@@ -1041,6 +1089,37 @@ const RECORD = {
 };
 // a fresh page has no history: the record the first act creates starts empty
 if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }
+// ?where=1 — the three threads on the repeated sentence. The two copies carry
+// the SAME quote and the SAME prefix and suffix, which is the tie; what tells
+// them apart is `ordinal` of `occurrences`, stamped when each was made.
+if (WHERE) {
+  RECORD.threads = [
+    { id: 't-1754700100-w1',
+      quote: WHERE_QUOTE, prefix: WHERE_PRE, suffix: WHERE_SUF,
+      section: WHERE_SEC1, ordinal: 1, occurrences: 2,
+      orphaned: false, resolved: true, resolved_by: 'angadh', summary_by: 'claude',
+      summary: 'The sentence is a refrain the piece uses twice on purpose; left as written.',
+      msgs: [
+        { author: 'angadh', ts: iso(30), text: 'Is this the same line as the one further down, or am I imagining it?' },
+        { author: 'claude', ts: iso(29), text: 'The same line, word for word. It is used as a refrain.' },
+      ] },
+    { id: 't-1754700200-w2',
+      quote: WHERE_QUOTE, prefix: WHERE_PRE, suffix: WHERE_SUF,
+      section: WHERE_SEC2, ordinal: 2, occurrences: 2,
+      orphaned: false,
+      msgs: [
+        { author: 'angadh', ts: iso(10), text: 'The second time it lands better than the first.' },
+      ] },
+    { id: 't-1754700300-w3',
+      quote: WHERE_WIDE, prefix: 'Nothing in the shape', suffix: 'does not contradict them.',
+      section: WHERE_SEC2,
+      orphaned: false,
+      msgs: [
+        { author: 'angadh', ts: iso(9), text: 'This whole clause could go.' },
+      ] },
+  ];
+  RECORD.page_chat = [];
+}
 // ?filein=1 — this page is already filed under one project, so the picker has
 // a tick in it and the header button is lit.
 if (FILEIN === '1') RECORD.projects = fileFiled;
@@ -3633,6 +3712,10 @@ async function selftest() {
   // the tasks card is derived from the record, so a page whose conversations
   // hold no checklist has no card at all — not an empty one
   check('a page with no checklist anywhere has no tasks card', q('.tasks').length === 0);
+  // …and the same rule for the location line under a quote: these three threads
+  // sit under no heading and their words occur once, so there is nothing to say
+  // and nothing at all is drawn (?where=1 is the pose where there is)
+  check('a card with nothing to say about location draws no line', q('.where').length === 0);
   check('highlights painted', document.querySelectorAll('mark.bfp-hl').length >= 3);
   check('export button shows the Obsidian mark', !!S.querySelector('[data-act="export"] svg.obs polygon'));
 
@@ -8076,6 +8159,120 @@ async function selftestStackPick() {
   console.log(out.join('\n'));
 }
 
+// ?where=1&selftest=1 — WHERE A PASSAGE IS, ON A PAGE WITH NO PAGE NUMBERS.
+//
+//   The reported failure and the whole of the fix, in one pose. The article
+//   carries one sentence twice, with the same words either side of both copies,
+//   under two different headings. Before this, the second thread on it came back
+//   `ambiguous` and showed as orphaned — a comment reported as lost about a
+//   passage plainly still on the page.
+//
+//   Four things are pinned: that the tie is real (so the pose cannot rot into
+//   one prefix/suffix could settle by itself and quietly stop testing
+//   anything); that the ordinal anchors each thread to its OWN copy and not
+//   merely to some copy; that the card — open and filed alike — says under
+//   which heading and which copy; and that the overlap chooser says the same
+//   per row, which is the other place two identical quotes used to be one row
+//   twice over.
+async function selftestWhere() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const A = window.BFPAnchor;
+  const W1 = 't-1754700100-w1', W2 = 't-1754700200-w2', W3 = 't-1754700300-w3';
+  const hit0 = hitter(check);
+  const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const lineOf = sel => {
+    const el = S.querySelector(sel);
+    return el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+  };
+  await until(() => markFor(W2), 4000);
+
+  // ---- the pose is the reported one --------------------------------------
+  const idx = A.buildTextIndex(document.body);
+  check('the sentence really does occur twice on the page',
+    A.findSpans(idx.raw, WHERE_QUOTE).length === 2);
+  check('\u2026and prefix/suffix genuinely cannot tell the two apart',
+    A.locate(idx.raw, { quote: WHERE_QUOTE, prefix: WHERE_PRE, suffix: WHERE_SUF }).ok === false);
+
+  // ---- the ordinal is what saves the second thread -----------------------
+  check('both threads on the sentence are anchored', !!markFor(W1) && !!markFor(W2));
+  check('\u2026so nothing on this page is badged orphaned',
+    S.querySelectorAll('.badge.orphan-badge').length === 0);
+  // …and anchored to its OWN copy, which is the claim that matters: the
+  // headings above the two marks are read back off the page itself
+  check('the first thread landed under the first heading',
+    A.sectionOf(markFor(W1)) === WHERE_SEC1);
+  check('\u2026and the second under the second', A.sectionOf(markFor(W2)) === WHERE_SEC2);
+  check('\u2026in that order down the document',
+    !!(markFor(W1).compareDocumentPosition(markFor(W2)) & Node.DOCUMENT_POSITION_FOLLOWING));
+  check('counting an occurrence agrees with where the marks landed', (() => {
+    const o1 = A.occurrenceAt(idx.raw, WHERE_QUOTE, A.findSpans(idx.raw, WHERE_QUOTE)[1].start);
+    return o1.ordinal === 2 && o1.occurrences === 2;
+  })());
+
+  // ---- the card says it --------------------------------------------------
+  check('the open card says under which heading, and which copy',
+    lineOf('.card[data-thread="' + W2 + '"] .where')
+      === '\u00a7 ' + WHERE_SEC2 + ' \u00b7 2nd of 2');
+  // the archive is folded by default, and the only way into it is the control
+  const arch = S.querySelector('[data-act="resolved-toggle"]');
+  hit0(arch, 'the Resolved section header');
+  await sleep(160);
+  check('the filed card carries the same line',
+    lineOf('.card.resolved[data-thread="' + W1 + '"] .where')
+      === '\u00a7 ' + WHERE_SEC1 + ' \u00b7 1st of 2');
+  check('a passage whose words occur once says only where it is',
+    lineOf('.card[data-thread="' + W3 + '"] .where') === '\u00a7 ' + WHERE_SEC2);
+
+  // ---- the chooser says it too -------------------------------------------
+  // Aimed by point rather than by element: content.js reads clientX/clientY and
+  // anchor.js tests the point, so the click has to land somewhere BOTH markings
+  // are actually painted.
+  d.focus(null);
+  await sleep(80);
+  const hit = (() => {
+    for (const el of document.querySelectorAll('mark.bfp-hl')) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      for (let f = 1; f < 10; f++) {
+        const x = Math.round(r.left + (r.width * f) / 10);
+        const y = Math.round(r.top + r.height / 2);
+        const ids = A.marksAtPoint(el, x, y);
+        if (ids.indexOf(W2) !== -1 && ids.indexOf(W3) !== -1) {
+          el.dispatchEvent(new MouseEvent('click',
+            { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+          return { x, y };
+        }
+      }
+    }
+    return null;
+  })();
+  check('(pose) the two markings really do overlap somewhere', !!hit);
+  await sleep(240);
+  const rows = [...S.querySelectorAll('.markpick .pickrow')];
+  check('a click where they overlap opens the chooser', rows.length === 2);
+  const whereRow = id => {
+    const r = rows.find(x => x.getAttribute('data-thread') === id);
+    const w = r && r.querySelector('.pwhere');
+    return w ? w.textContent.replace(/\s+/g, ' ').trim() : '';
+  };
+  check('each row says where its marking is',
+    whereRow(W2) === '\u00a7 ' + WHERE_SEC2 + ' \u00b7 2nd of 2');
+  check('\u2026so two rows on the same words are not the same row twice',
+    whereRow(W3) === '\u00a7 ' + WHERE_SEC2 && whereRow(W2) !== whereRow(W3));
+
+  const bad = out.filter(l => l[0] === '\u2717');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (where) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  \u2014  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // Everything the web-PDF selftest asserts is true here too and is not repeated;
 // what is asserted here is the one thing that differs, which is also the one
 // thing that could quietly ruin the feature: WHAT THE PAGE IS.
@@ -10835,6 +11032,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
       setTimeout(FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
         : WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
+        : WHERE ? selftestWhere
         : STRIKE_STACK ? selftestStackPick
         : STRIKE_ELSEWHERE ? selftestStrikeElsewhere
         : STRIKE ? selftestPdfStrike : PDF_SCAN ? selftestPdfScan : PDFV ? selftestPdf

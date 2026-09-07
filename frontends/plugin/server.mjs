@@ -3148,6 +3148,10 @@ export function handler(req, res) {
         // documents with pages (a web PDF) say which one the passage came off;
         // everything else omits it and nothing downstream requires it
         text, author: me.handle, index: data.index, page_number: data.page,
+        // …and where it is on a document that has no pages: the heading above
+        // it, and which copy of the words it is where the words repeat. Both
+        // soft, both omitted by every client that does not send them.
+        section: data.section, ordinal: data.ordinal, occurrences: data.occurrences,
         // stamped so the next untagged reply here knows who is being talked to
         route,
       });
