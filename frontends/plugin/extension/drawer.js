@@ -275,14 +275,15 @@
       : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
-  const HINT = '@claude, @codex or @all to bring in the bots';
+  const HINT = '@claude, @codex or @all to bring in the bots · Enter sends, Shift+Enter for a new line';
   // …except on a project artifact's page chat, which IS a council chat: the
   // council's own rule is that plain text goes to the room, and the companion
   // routes an untagged message there (server.mjs untaggedGoesToAll). The line
   // has to say so, or the reader types a sentence expecting a note and gets
   // two bots. Threads on the same page keep the ordinary rule and the ordinary
   // hint — the difference is real, so it is stated where it applies.
-  const COUNCIL_HINT = 'plain text goes to @all — or tag one bot';
+  const COUNCIL_HINT = 'plain text goes to @all — or tag one bot · Enter for a new line, Shift+Enter sends';
+  const CHAT_HINT = '@claude, @codex or @all to bring in the bots · Enter for a new line, Shift+Enter sends';
   // THE PILL ROW, and the rule it draws.
   //
   // A thread is a conversation with somebody: once the reader has tagged a bot
@@ -4126,7 +4127,7 @@ ${markPickHtml()}
         </div>
         <div class="chatdock">
           ${(f => (f ? `<div class="chatfoot">${f}</div>` : ''))(reviewHtml())}
-          ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : '', true)}
+          ${composerHtml(PAGE_TARGET, 'Ask about this page\u2026', '', councilChat ? COUNCIL_HINT : CHAT_HINT, true)}
         </div>
       </div>`;
     }
@@ -5902,7 +5903,7 @@ ${markPickHtml()}
         if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) syncMention(ta);
       });
 
-      // ⌘/Ctrl+Enter sends; plain Enter stays a newline (comments run long)
+      // Enter/⌘↩ send rules live below; see the comment at the send branch
       D.shadow.addEventListener('keydown', e => {
         // While the @-menu is open it owns the arrows, Enter, Tab and Esc —
         // and nothing else. ⌘↩ still sends: finishing a mention is not a
@@ -5978,11 +5979,20 @@ ${markPickHtml()}
           else close();
           return;
         }
-        if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return;
+        if (e.key !== 'Enter') return;
         const c = e.target.closest && e.target.closest('.composer');
         if (!c) return;
-        e.preventDefault();
         const target = c.getAttribute('data-target');
+        // A COMMENT is usually one line, so in a thread composer plain Enter
+        // sends and Shift+Enter makes a new line. Page chat and the library
+        // are conversations, often long and often typed on a phone, so there
+        // plain Enter is a new line and sending is deliberate: Shift+Enter or
+        // ⌘/Ctrl+Enter — the same rule as the council web. ⌘/Ctrl+Enter sends
+        // everywhere. (The reader asked for exactly this swap on 2026-09-09.)
+        const chatty = target === PAGE_TARGET || target === LIBRARY_TARGET || target === '__edit__';
+        const sends = (e.metaKey || e.ctrlKey) || (chatty ? e.shiftKey : !e.shiftKey);
+        if (!sends) return;
+        e.preventDefault();
         // the inline edit composer has its own save handler; ⌘↩ must hit that,
         // not post a fresh reply to a thread called "__edit__"
         if (target === '__edit__') { const b = c.querySelector('.send'); if (b) b.click(); return; }

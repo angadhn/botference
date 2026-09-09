@@ -615,7 +615,7 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   input.value = '/status';
   input.dispatchEvent(new w.Event('input'));
   assert.equal(pop.hasAttribute('hidden'), true, 'no popover on an exact command');
-  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
+  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
   await new Promise(r => setTimeout(r, 10));
   assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: 'b1', text: '/status', attachments: [] } });
 
@@ -1007,7 +1007,7 @@ test('composer pill row: the address is drawn, remembered, and prefixed on send'
   const input = doc.getElementById('input');
   const type = v => { input.value = v; input.dispatchEvent(new doc.defaultView.Event('input')); };
   const send = async () => {
-    input.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { key: 'Enter' }));
+    input.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
     await new Promise(r => setTimeout(r, 10));
     return posts[posts.length - 1];
   };
@@ -1112,7 +1112,7 @@ test('composer pill row: the memory is per chat, and survives a reload',
   const input = fresh.doc.getElementById('input');
   input.value = 'and one more thing';
   input.dispatchEvent(new fresh.doc.defaultView.Event('input'));
-  input.dispatchEvent(new fresh.doc.defaultView.KeyboardEvent('keydown', { key: 'Enter' }));
+  input.dispatchEvent(new fresh.doc.defaultView.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
   await new Promise(r => setTimeout(r, 10));
   assert.equal(fresh.posts[fresh.posts.length - 1].body.text, '@codex and one more thing',
     'and the first message after a reload still reaches them');
@@ -1696,7 +1696,7 @@ test('credit exhaustion flags the agent (avatar + notice), clears on a normal tu
   assert.match(warn.textContent, /out of credits/);
   // pressing Enter holds the message rather than sending into a void
   const n = posts.length;
-  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
+  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
   await new Promise(r => setTimeout(r, 5));
   assert.equal(posts.length, n, 'message is held, not sent');
   assert.equal(input.value, '@claude please take a look', 'the composed text is preserved');
@@ -1704,7 +1704,7 @@ test('credit exhaustion flags the agent (avatar + notice), clears on a normal tu
   warn.querySelector('.pw-tag').click();
   assert.match(input.value, /@codex/);
   assert.equal(warn.hasAttribute('hidden'), true, 'warning clears once the mention no longer targets the exhausted agent');
-  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
+  input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
   await new Promise(r => setTimeout(r, 5));
   assert.match(posts.pop().body.text, /@codex/, 'retagged message sends to the healthy agent');
 });

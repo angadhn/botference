@@ -2648,7 +2648,11 @@
       if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); acceptCompletion(compSel); return; }
       if (e.key === 'Escape') { compItems = []; renderCompletions(); return; }
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // A council message is often long, and on a phone Enter is the only way to
+    // a new line — so Enter is a newline here, and sending is deliberate:
+    // Shift+Enter or ⌘/Ctrl+Enter (and the button). The plugin's comment boxes
+    // are the other way round, because a comment is usually one line.
+    if (e.key === 'Enter' && (e.shiftKey || e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       submit();
     }
