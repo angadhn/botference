@@ -5112,7 +5112,7 @@ about once a week. They are:
   and the first `✗` before it. That is how a hang gets diagnosed without a
   debugger.
 
-The 47 selftest poses, which is the whole list — nothing else in the harness
+The 48 selftest poses, which is the whole list — nothing else in the harness
 drives a selftest, and every one of them is expected green:
 
 ```
@@ -5163,6 +5163,7 @@ drives a selftest, and every one of them is expected green:
 ?filein=new&selftest=1
 ?filein=made&selftest=1
 ?workspace=1&nopublish=1&selftest=1
+?lasso=1&selftest=1
 ```
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were
