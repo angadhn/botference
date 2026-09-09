@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 2026-09-09
+
+- **A local page of your own site is a page.** A hand-written HTML page, a
+  scrollytelling piece or an SVG figure sitting in the repo of a site you have
+  registered is now commentable and editable — opened straight off the disk
+  (`file:///…/yoursite/assets/…/page.html`) or at the address your local server
+  copies it through to. There is no markdown behind it: the file IS the page, so
+  a comment changes that file. Same lane, same write scope and the same promise
+  as a rendered post — nothing there is ever committed or pushed. A page built
+  out of positioned steps rather than paragraphs also stops handing the bots an
+  empty `<main>`.
+
 ## 2026-09-07
 
 - **A plot the bots make is a plot you can see.** Claude made two SVG plots on

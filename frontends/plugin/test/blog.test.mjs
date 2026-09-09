@@ -268,6 +268,78 @@ await test('an unmappable page under a declared origin is an ANSWER, not a silen
   assert.match(p.why, /no markdown source/);
 });
 
+await test('a local file inside a declared root is a page, and its source is itself', async () => {
+  const root = blog.listSites().find(s => s.serve_origin === 'http://localhost:4000').root;
+  fs.mkdirSync(path.join(root, 'assets', 'imgs', 'ai-2040'), { recursive: true });
+  const scrolly = path.join(root, 'assets', 'imgs', 'ai-2040', 'plan-a-scrolly.html');
+  fs.writeFileSync(scrolly, '<h1>Plan A</h1><section class="step">A step.</section>');
+  const p = blog.blogPageFor('file://' + scrolly);
+  assert.ok(p, 'a file inside the declared root is a blog page');
+  assert.equal(p.source_path, blog.realish(scrolly), 'the source IS the file');
+  assert.equal(p.rel, 'assets/imgs/ai-2040/plan-a-scrolly.html');
+  assert.equal(p.same_file, true, 'there is no rendering step to explain');
+  assert.equal(p.mapped_by, 'path');
+  assert.equal(p.root, root);
+  // …and the markdown of the same repo is still resolved exactly as before
+  assert.equal(blog.blogPageFor('http://localhost:4000/pinned-forever/').rel,
+    '_posts/2026-08-21-pinned.md');
+  assert.ok(!blog.blogPageFor('http://localhost:4000/pinned-forever/').same_file);
+});
+
+await test('…and the same file served by jekyll passthrough resolves to it too', async () => {
+  const p = blog.blogPageFor('http://localhost:4000/assets/imgs/ai-2040/plan-a-scrolly.html');
+  assert.ok(p);
+  assert.equal(p.rel, 'assets/imgs/ai-2040/plan-a-scrolly.html');
+  assert.equal(p.mapped_by, 'passthrough');
+  assert.equal(p.same_file, true);
+  // a url-encoded path is the same file
+  assert.equal(blog.blogPageFor('http://localhost:4000/assets/imgs/ai-2040/plan-a-scrolly.html?x=1').rel,
+    'assets/imgs/ai-2040/plan-a-scrolly.html');
+});
+
+await test('the build output, the dot directories and anything outside are refused', async () => {
+  const root = blog.listSites().find(s => s.serve_origin === 'http://localhost:4000').root;
+  const rendered = path.join(root, '_site', 'large-space-stations', 'inflatables',
+    'space-balloons', 'index.html');
+  assert.equal(blog.blogPageFor('file://' + rendered), null, '_site/ is the photocopy');
+  assert.equal(blog.blogPageFor('http://localhost:4000/_site/index.html').source_path, '',
+    'and it is not reachable through the origin either');
+  fs.writeFileSync(path.join(root, '.git', 'HEAD.html'), '<p>no</p>');
+  assert.equal(blog.blogPageFor('file://' + path.join(root, '.git', 'HEAD.html')), null);
+  const outside = tmp('outside-root');
+  fs.writeFileSync(path.join(outside, 'loose.html'), '<p>a file of nobody’s site</p>');
+  assert.equal(blog.blogPageFor('file://' + path.join(outside, 'loose.html')), null,
+    'a loose local file is not a page — the whole reason the file: gate exists');
+  // a walk out of the repo dressed as a path inside it
+  assert.equal(blog.passthroughFor(root, '/../../etc/hosts'), null);
+  // and a file of the right place with the wrong kind
+  assert.equal(blog.blogPageFor('file://' + path.join(root, 'assets', 'images', 'balloon.png')),
+    null, 'a picture is not a page');
+});
+
+await test('a file of a DECLARED but unconfirmed root is still a page, and says so', async () => {
+  const root = blog.listSites().find(s => s.serve_origin === 'http://localhost:4000').root;
+  const f = path.join(root, 'assets', 'imgs', 'ai-2040', 'plan-a-scrolly.html');
+  blog.setRootState(root, false);
+  const no = blog.blogPageFor('file://' + f);
+  assert.equal(no.declined, true, 'a NO is kept as firmly as a YES');
+  blog.setRootState(root, true);
+  assert.equal(blog.blogPageFor('file://' + f).confirmed, true);
+});
+
+await test('the envelope block for a file that is its own source says so', async () => {
+  const root = blog.listSites().find(s => s.serve_origin === 'http://localhost:4000').root;
+  const f = path.join(root, 'assets', 'imgs', 'ai-2040', 'plan-a-scrolly.html');
+  const block = blog.blogBlock(blog.blogPageFor('file://' + f));
+  assert.match(block, /THIS VERY FILE/, 'no photocopy story on a page that is its own source');
+  assert.ok(!/photocopy/.test(block));
+  assert.match(block, /DO NOT RUN GIT/, 'the no-git rule is a property of the root, not the page');
+  assert.match(block, /_site\//, 'and so is the build output');
+  // the HTML is handed to the collateral blocker as HTML, not wrapped in <p>
+  assert.equal(blog.sourceDoc('<p>One.</p>', 'x.html'), '<p>One.</p>');
+  assert.match(blog.sourceDoc('One.\n\nTwo.', 'x.md'), /<p>One\.<\/p>/);
+});
+
 await test('the envelope block names the source, the assets and what to leave alone', async () => {
   const p = blog.blogPageFor('http://localhost:4000/pinned-forever/');
   const block = blog.blogBlock(p);
@@ -320,6 +392,10 @@ console.log('\ncompanion — blog source pages');
   const ORIGIN = 'http://localhost:4055';
   const POST_URL = `${ORIGIN}/large-space-stations/inflatables/space-balloons/`;
   const SOURCE = path.join(root, '_posts', '2026-08-20-space-balloons.md');
+  // a page of the site that is its OWN source: a scrollytelling file under
+  // assets/, opened straight off the disk
+  const SCROLLY = path.join(root, 'assets', 'imgs', 'ai-2040', 'plan-a-scrolly.html');
+  const SCROLLY_URL = 'file://' + SCROLLY;
 
   const workspaceRoot = tmp('srv-companion');
   const logFile = path.join(workspaceRoot, 'bridge.jsonl');
@@ -409,6 +485,56 @@ console.log('\ncompanion — blog source pages');
     await waitFor(() => inputs(logFile).some(t => t.includes('a word here')), 'the turn');
     assert.equal(spawnEnvs().filter(e => writeRootOf(e) === root).length, 1,
       'one repo, one child, one FIFO — the child IS the write lock');
+  });
+
+  // ---- a local file of the reader's own site ------------------------------
+  // The gate content.js asks on a `file:` document, and the lane behind it.
+  await test('GET /project-page carries the blog answer for a file of the site', async () => {
+    fs.mkdirSync(path.join(root, 'assets', 'imgs', 'ai-2040'), { recursive: true });
+    fs.writeFileSync(SCROLLY, '<h1>Plan A</h1>\n<section class="step">A step.</section>\n');
+    const r = await GET(base, '/project-page?url=' + enc(SCROLLY_URL));
+    assert.equal(r.status, 200);
+    assert.equal(r.json.artifact, null, 'it is not a council artifact');
+    assert.ok(r.json.blog, 'but it IS a page of the declared site');
+    assert.equal(r.json.blog.rel, 'assets/imgs/ai-2040/plan-a-scrolly.html');
+    assert.equal(r.json.blog.source_path, SCROLLY);
+    assert.equal(r.json.blog.same_file, true);
+    assert.equal(r.json.blog.confirmed, true);
+  });
+
+  await test('…and says nothing at all for a local file outside every declared root', async () => {
+    const loose = path.join(tmp('loose-file'), 'notes.html');
+    fs.writeFileSync(loose, '<p>somebody else\u2019s file</p>');
+    const r = await GET(base, '/project-page?url=' + enc('file://' + loose));
+    assert.equal(r.json.artifact, null);
+    assert.equal(r.json.blog, null, 'nothing attaches to a loose local file');
+    const inSite = await GET(base, '/blog-page?url=' + enc('file://' + path.join(root, '_site', 'index.html')));
+    assert.equal(inSite.json.blog, null, 'and not to the build output either');
+  });
+
+  await test('a turn on that file gets the repo as its write root and is told the file is the page',
+    async () => {
+      await POST(base, '/page', { url: SCROLLY_URL, title: 'Plan A', site: 'file' });
+      await POST(base, '/reply',
+        { url: SCROLLY_URL, thread_id: '__page__', text: '@claude widen the second step' });
+      await waitFor(() => inputs(logFile).some(t => t.includes('widen the second step')), 'the turn');
+      const turn = inputs(logFile).find(t => t.includes('widen the second step'));
+      assert.ok(turn.includes(SCROLLY), 'the envelope names the file');
+      assert.match(turn, /THIS VERY FILE/, 'and does not tell a photocopy story about it');
+      assert.match(turn, /DO NOT RUN GIT/);
+      assert.equal(spawnEnvs().filter(e => writeRootOf(e) === root).length, 1,
+        'the same one child as the served pages: one repo, one lane');
+    });
+
+  await test('rewriting that file reloads the file: tab', async () => {
+    const before = events.of('blog-files').length;
+    await POST(base, '/reply', { url: SCROLLY_URL, thread_id: '__page__',
+      text: `@claude [mock:write:${SCROLLY}] widen it` });
+    await waitFor(() => events.of('blog-files').length > before, 'the census to report');
+    const ev = events.of('blog-files').slice(-1)[0];
+    assert.equal(ev.url, SCROLLY_URL, 'addressed to the file: tab, by the url it is filed under');
+    assert.equal(ev.page_changed, true, 'the page IS the file that moved');
+    assert.equal(ev.source, 'assets/imgs/ai-2040/plan-a-scrolly.html');
   });
 
   await test('a page under the origin that maps to nothing gets no write root', async () => {

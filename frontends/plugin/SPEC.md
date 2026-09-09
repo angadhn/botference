@@ -5112,7 +5112,7 @@ about once a week. They are:
   and the first `✗` before it. That is how a hang gets diagnosed without a
   debugger.
 
-The 46 selftest poses, which is the whole list — nothing else in the harness
+The 47 selftest poses, which is the whole list — nothing else in the harness
 drives a selftest, and every one of them is expected green:
 
 ```
@@ -5149,6 +5149,7 @@ drives a selftest, and every one of them is expected green:
 ?blog=1&selftest=1
 ?blog=unconfirmed&selftest=1
 ?blog=unmapped&selftest=1
+?blog=file&selftest=1
 ?suggest=1&selftest=1
 ?suggest=states&selftest=1
 ?suggest=sweep&selftest=1
@@ -9380,6 +9381,114 @@ in the header and still addresses block 0; the toggle reads `▸ show`, opens on
 one click, hides the peek and then reads `▾ hide`; the choice survives a
 `loadPage()` in both directions; and a short block is left with no fold at all.
 `?run=long` is the screenshot state for it.
+
+## Amendment (2026-09-09, shipped): a local file of the reader's own site
+
+A page of the reader's site is not always rendered from markdown. A
+scrollytelling piece, a d3 explainer, a hand-written HTML page, an SVG figure:
+the reader writes the file, drops it under `assets/`, jekyll copies it through
+untouched, and there is nothing to map — **the page IS its source**. Until now
+none of it attached. The `file:` address returned early at content.js's gate
+(no council artifact, no page), and the served address fell through
+`resolvePath` to "no markdown source in this repo renders at /assets/…".
+
+Both are now blog source pages, on the same lane, with the same write scope and
+the same no-git rule as a rendered post.
+
+### 1. Two addresses, one file, one answer
+
+`blog.blogPageFor` answers for both:
+
+- **`file:///…/<root>/assets/imgs/x/plan.html`** — `blog.sourceInRoot` realpaths
+  both sides and asks whether the path lies inside a declared `blog_sites[].root`.
+  Refused: anything outside the root, `SKIP_DIRS` (`_site/` above all, plus
+  `_layouts/`, `_includes/`, `node_modules/`, `vendor/`…), every dot directory
+  (`.git/`), dot-segments, and any extension but `.html/.htm/.md/.markdown/.svg`.
+  No declared root contains it → `null`, which is what keeps the file: gate shut
+  on the reader's downloads folder.
+- **`http://<serve_origin>/assets/imgs/x/plan.html`** — `blog.passthroughFor`:
+  a file that exists at that exact relative path in the source tree was copied
+  through by the build, so it is the page. It answers where the markdown
+  resolver found nothing, and it **beats the slug fallback** (a file sitting at
+  exactly this path is a fact; a post with a similar last segment is a guess) —
+  never a front-matter permalink or a template match, which are the document's
+  own word about where it is served.
+
+The record carries `same_file: true`, `mapped_by: 'path'` or `'passthrough'`.
+Markdown resolution is untouched: a permalink, a template and a convention all
+answer exactly as before, and the passthrough is only consulted where they did
+not.
+
+### 2. Identity is the path, and the artifact's rationale is why
+
+content.js refuses `file:` documents because a path is not an identity: a record
+filed under `file:///Users/me/Downloads/paper.pdf` is stranded the moment the
+file moves, which is why a local PDF is identified by the SHA-256 of its bytes.
+The exception this joins is the **project artifact's**, for the same reason and
+in the same words: a file the reader's own tools REGENERATE IN PLACE. A council
+artifact is rewritten by the bots; a page of the reader's declared site is
+rewritten by the bots and rebuilt by jekyll. Hashing the bytes would strand
+every comment at the next save — the failure the hash exists to prevent,
+arriving from the other direction. So the `file:` case is filed under its
+`file:` url, and a rebuild strands nothing.
+
+What makes the path trustworthy here is not the path: it is the DECLARATION
+(`blog_sites`, the owner's own sentence, refused for anything that is not an
+http(s) origin over a Jekyll tree) plus the one-time yes (`blog_roots`). Both
+gates stand exactly as they did.
+
+### 3. The gate is one round trip
+
+`GET /project-page` now answers `{artifact, blog}`. content.js's `FILE_DOC`
+gate takes both from the one await its boot has ever had, and attaches when
+EITHER says yes — a repo already answered `no` counting as neither, exactly as
+a declined council root does. `loadBlog()` reuses that answer instead of asking
+a second time. Chrome's PDF shell and the non-HTML content-type guard stand
+ahead of the question, unchanged.
+
+### 4. Lane, writes and the loop
+
+Identical to a rendered post, and deliberately: `blogChatFor(root, kind)` — one
+repo, one child, one FIFO — `writeRoot` the whole repository, `denyBash
+['git','gh']`, suggest mode, the turn-end census over `blog.scanSite`, and the
+`blog-files` broadcast the tab matches by `normUrl`. A `file:` url normalizes to
+itself, so the reload lands on the file: tab as it does on a served one.
+
+Two things say something different because the document is different:
+`blog.blogBlock` opens with "the reader is looking at THIS VERY FILE" instead of
+the photocopy paragraph (the write scope, the no-git rule and the proposal
+contract are properties of the ROOT and are word for word the same), and
+`blog.sourceDoc` hands an `.html`/`.svg` source to `collateral.docBlocks` as
+HTML rather than wrapping it a paragraph at a time the way markdown needs.
+
+### 5. The drawer, and the thin landmark
+
+The source card says "Editing this file" over the same path line, and the
+confirmation card says "this page is a file in <repo>". Nothing else moves.
+
+One product fix rides with it, in `content.js articleRoot()`: a `<main>` or
+`<article>` holding under 200 characters on a document holding four times that
+is **not** the prose container — which is exactly the shape of a scrollytelling
+page, where the landmark holds the sticky graphic and every word lives in the
+steps positioned around it. Trusting the landmark there handed the bots a page
+with no prose on it and produced no error anywhere. Anchoring was never
+affected (it indexes `document.body`), and neither was the selection pill, which
+has no article test at all.
+
+### Testing
+
+`blog.test.mjs` (50 → 54 unit + companion checks): a file under a declared root
+resolves to itself; the same file through the origin resolves by passthrough;
+`_site/`, `.git/`, an outside-root file, a picture and a `..` walk are all
+refused; markdown resolution is asserted unchanged beside them; `GET
+/project-page` carries the blog answer for a file of the site and `null` for a
+loose one; a turn on that file gets the repo as its write root and an envelope
+that does not tell a photocopy story; and rewriting it broadcasts a
+`blog-files` addressed to the `file:` url with `page_changed`.
+`test/harness.html` `?blog=file&selftest=1` (14 checks) is the pose: the drawer
+names the file, a selection on a page of positioned steps still raises the
+comment pill, the step text is what `articleText()` returns rather than the
+empty `<main>`, and the reload lands.
 
 ## Out of scope for v1 (do not build)
 

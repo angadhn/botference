@@ -813,6 +813,13 @@ about to edit, so you always know what is about to change — and a rewrite
 nobody commented on still opens its own comment thread, as on any
 document.
 
+Not every page of a site is built from markdown, and those work too: a
+hand-written HTML page, a scrollytelling piece or an SVG figure sitting in
+your repo is **its own source**, so opening it straight off the disk
+(`file:///…/yourblog/assets/…/page.html`) — or at the address the local
+server copies it through to — attaches Discuss to the file itself, and a
+comment there changes that file.
+
 **It will never publish your site.** Nothing here commits, pushes,
 branches or tags anything in *that* repository, there is no publish button
 on a blog page, and the bots are told not to run git in there (the CLI

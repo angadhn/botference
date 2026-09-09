@@ -249,7 +249,13 @@
                      names the markdown file the bots will edit.
                      `?blog=unconfirmed` holds the one-time "is this your site?"
                      card; `?blog=unmapped` is a page under the registered
-                     origin whose source the companion cannot work out.
+                     origin whose source the companion cannot work out;
+                     `?blog=file` is a LOCAL FILE of that same site — a
+                     scrollytelling page under `assets/`, opened at its file:
+                     address, which is its own source: the drawer names the
+                     file rather than a markdown three directories away, and
+                     the comment pill still comes up on a page made of
+                     positioned steps rather than paragraphs.
                      `&selftest=1` runs the blog-page assertions — including
                      that there is no publish control anywhere on the drawer,
                      which is the design and not an omission.
@@ -523,7 +529,35 @@ const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
 const SUGGEST = Q.get('suggest') || '';
 const BLOG = Q.get('blog') || (SUGGEST ? '1' : '');
 const BLOG_ROOT = '/Users/reader/sites/angadhn.github.io';
-const BLOG_PAGE = BLOG ? {
+// `?blog=file` — a page of the same site that IS ITS OWN SOURCE: a
+// scrollytelling HTML file under assets/, opened straight off the disk. The
+// address is a file: url (named with __BFP_HREF, the same isolated-world
+// escape the project artifact uses) and the record carries `same_file`, so the
+// drawer must say "editing this file" and not tell a photocopy story. In a
+// real browser the file: GATE decides whether this script runs at all —
+// content.js asks the companion once (GET /project-page, which carries the
+// blog answer) — and that half is asserted in blog.test.mjs, because a harness
+// that sets __BFP_HREF is by definition not a file: document.
+const BLOG_FILE_REL = 'assets/imgs/ai-2040/plan-a-scrolly.html';
+const BLOG_FILE_PATH = BLOG_ROOT + '/' + BLOG_FILE_REL;
+const BLOG_PAGE = BLOG ? (BLOG === 'file' ? {
+  serve_origin: 'http://localhost:4000',
+  root: BLOG_ROOT,
+  kind: 'jekyll',
+  url_path: '/' + BLOG_FILE_REL,
+  confirmed: true,
+  declined: false,
+  git_allowed: false,
+  suggest_mode: true,
+  source_path: BLOG_FILE_PATH,
+  rel: BLOG_FILE_REL,
+  title: 'plan-a-scrolly.html',
+  doc_kind: 'file',
+  mapped_by: 'path',
+  same_file: true,
+  via: 'file',
+  assets: ['assets'],
+} : {
   serve_origin: 'http://localhost:4000',
   root: BLOG_ROOT,
   kind: 'jekyll',
@@ -537,7 +571,8 @@ const BLOG_PAGE = BLOG ? {
         rel: '_posts/2026-08-20-space-balloons.md',
         title: 'Space balloons', doc_kind: 'post', mapped_by: 'convention',
         assets: ['assets'] }),
-} : null;
+}) : null;
+if (BLOG === 'file') window.__BFP_HREF = 'file://' + BLOG_FILE_PATH;
 if (BLOG_PAGE) {
   window.__BFP_BLOG = BLOG_PAGE;
   // The bots rewrite the markdown, jekyll rebuilds, and content.js reloads the
@@ -11106,6 +11141,74 @@ async function selftestBlog() {
     await sleep(200);
     check('the answer reaches the companion', blogRootAnswers[0] === true);
     check('and the card gives way to the source line', !!chat('.blogsrc').length);
+  } else if (BLOG === 'file') {
+    // A page of the site that IS its own source. The claims: the drawer names
+    // the FILE the bots will change and does not pretend there is a markdown
+    // behind it; the reload broadcast still reaches a file: address; and a
+    // page built out of positioned steps rather than paragraphs still raises
+    // the ordinary comment pill on a selection, which is the whole point of
+    // being able to comment on a scrollytelling piece at all.
+    check('the chat tab names the file itself', !!chat('.blogsrc.samefile .blogpath').length);
+    check('…which is the HTML the reader is looking at',
+      /assets\/imgs\/ai-2040\/plan-a-scrolly\.html/.test((chat('.blogsrc .blogpath')[0] || {}).textContent || ''));
+    check('…with the full path on the title',
+      /sites\/angadhn\.github\.io/.test((chat('.blogsrc .blogpath')[0] || {}).getAttribute('title') || ''));
+    check('the card says the page is its own source',
+      /its own source/.test((chat('.blogsrc')[0] || {}).textContent || ''));
+    check('…and nothing claims a markdown three directories away',
+      !/markdown/.test((chat('.blogsrc')[0] || {}).textContent || ''));
+    check('no confirmation is asked twice', !chat('.confirmroot').length);
+
+    // ---- the scrolly page's own text, and the pill on it ------------------
+    // The shape of the thing: a <main> holding only the sticky graphic, and
+    // every word of the piece in the steps positioned around it. The harness's
+    // own <article> is lifted out for the length of this check, because a page
+    // cannot be two documents at once and the pose is posing as this one.
+    const lifted = [...document.querySelectorAll('article, main, [role="main"]')]
+      .map(el => ({ el, at: el.nextSibling, in: el.parentNode }));
+    for (const h of lifted) h.el.remove();
+    const scrolly = document.createElement('div');
+    scrolly.id = 'h-scrolly';
+    scrolly.innerHTML = '<main><figure id="h-sticky">a sticky chart</figure></main>'
+      + '<section class="step"><p id="h-step">Compute per dollar keeps doubling, and the '
+      + 'plan assumes it stops in 2031 for reasons the piece never gives.</p>'
+      + '<p>The second step asks what happens if it does not stop, which is the '
+      + 'whole argument of the scrollytelling piece and the reason it exists.</p>'
+      + '<p>The third step is where the reader is meant to disagree, and where '
+      + 'they will want to leave a comment saying exactly why they do.</p></section>';
+    document.body.appendChild(scrolly);
+    const step = document.getElementById('h-step');
+    const range = document.createRange();
+    range.selectNodeContents(step);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    const pill = await until(() => S.querySelector('.selpill'), 2000);
+    check('a selection on a page of positioned steps still raises the comment pill', !!pill);
+    check('…with the comment tool on it', !!(pill && pill.querySelector('.selbtn')));
+    d.hideSel();
+    sel.removeAllRanges();
+    const read = await window.__bfp.articleText();
+    check('…and the step text is what the bots would be handed, not the empty <main>',
+      /Compute per dollar keeps doubling/.test(read));
+    check('…which is the thin-landmark rule doing it: a sticky chart is not the piece',
+      !/^\s*a sticky chart\s*$/.test(read));
+    scrolly.remove();
+    for (const h of lifted) h.in.insertBefore(h.el, h.at);
+
+    // ---- the loop closes on a file: address -------------------------------
+    const FHREF = window.__bfp.identHref;
+    check('the page is filed under its file: path, so a rebuild strands nothing',
+      /^file:/.test(String(FHREF)));
+    const before = window.__bfp.reloads;
+    toContent({ t: 'ws', ev: { type: 'blog-files', url: FHREF, root: BLOG_ROOT,
+      serve_origin: 'http://localhost:4000', source: BLOG_FILE_REL,
+      count: 1, page_changed: true, assets_changed: false,
+      files: [BLOG_FILE_REL], at: '2026-09-09T10:00:00.000Z' } });
+    await sleep(80);
+    check('the file being rewritten reloads the tab, as a served page would',
+      window.__bfp.reloads === before + 1);
   } else if (BLOG === 'unmapped') {
     check('a page whose source is unknown says so', !!chat('.blogsrc.unmapped').length);
     check('…in the companion’s own words',

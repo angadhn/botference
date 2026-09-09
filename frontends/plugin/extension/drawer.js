@@ -3806,8 +3806,8 @@ ${markPickHtml()}
       if (!b.confirmed) {
         return `<div class="card confirmroot blogroot">
           <div class="confirmq">Is this your site?</div>
-          <p class="confirmp">This page is being served from <code class="rootpath">${esc(repo)}</code>${
-            b.rel ? ` — rendered from <code class="rootpath">${esc(b.rel)}</code>` : ''}.</p>
+          <p class="confirmp">This page ${b.same_file ? 'is a file in' : 'is being served from'} <code class="rootpath">${esc(repo)}</code>${
+            b.rel ? ` — ${b.same_file ? 'the file itself is' : 'rendered from'} <code class="rootpath">${esc(b.rel)}</code>` : ''}.</p>
           <p class="confirmp">Say yes and the bots may edit that post and its images when you ask
             them to, in the source rather than in the page. They will never commit or push anything:
             you publish your site yourself.</p>
@@ -3821,6 +3821,18 @@ ${markPickHtml()}
           <div class="blogline">No source file for this page</div>
           <div class="blognote">${esc(b.why || 'this address maps to no markdown in the repo')}</div>
           <div class="blognote">The bots can still discuss it — nothing here is writable.</div>
+        </div>`;
+      }
+      // A page that IS its own source (an HTML explainer under assets/, an SVG
+      // figure, a markdown file opened off the disk) says so differently: there
+      // is no markdown three directories away and no render step to explain.
+      // The line under the title is the same line either way — the path of the
+      // file the bots will change — because that is the fact the reader needs.
+      if (b.same_file) {
+        return `<div class="card blogsrc samefile">
+          <div class="blogline">Editing this file: <code class="blogpath" title="${esc(b.source_path)}">${esc(b.rel)}</code></div>
+          <div class="blognote">This page is its own source — comments change the file you are
+            looking at, and the tab reloads.${b.git_allowed ? '' : ' Nothing is ever committed or pushed — you publish it yourself.'}</div>
         </div>`;
       }
       return `<div class="card blogsrc">

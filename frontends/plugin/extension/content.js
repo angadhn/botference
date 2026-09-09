@@ -162,6 +162,21 @@
   // page's).
   let PROJECT = (window.__BFP_PROJECT && typeof window.__BFP_PROJECT === 'object')
     ? window.__BFP_PROJECT : null;
+  // ── …AND A PAGE OF THE READER'S OWN DECLARED SITE ──────────────────────
+  // The second kind of local file whose PATH is its identity, and for the same
+  // reason: it is regenerated in place. A scrollytelling page, an SVG figure
+  // or a markdown file living inside a repo the reader has declared as their
+  // site (`blog_sites` in the companion's config) is a page of that site
+  // whether it is opened off the disk or served by `jekyll serve` — the source
+  // and the page are one document, and the bots edit the file itself. Only the
+  // companion can say a path is inside a declared root; see blog.mjs.
+  //
+  // The answer arrives on the SAME round trip as the artifact's, because this
+  // is the one await in the boot and there is no reason for it to be two. It
+  // is kept here so `loadBlog()` — which the drawer calls later, and which is
+  // the served page's route to the same record — does not ask a second time.
+  let BLOG_AT_BOOT = (window.__BFP_BLOG && typeof window.__BFP_BLOG === 'object')
+    ? window.__BFP_BLOG : null;
   if (FILE_DOC) {
     if ((document.contentType || 'text/html') !== 'text/html') return;
     if (document.querySelector('body > embed[type="application/pdf"]')) return;
@@ -169,13 +184,19 @@
     // or, since the council-web view, an http page under `/files/`. An async
     // function body runs synchronously until its first await, so every other
     // page still wires itself up in one turn exactly as before.
-    PROJECT = await askProjectPage(location.href);
-    if (!PROJECT) return;
+    const said = await askProjectPage(location.href);
+    PROJECT = said.artifact;
+    BLOG_AT_BOOT = said.blog;
+    // Neither a council artifact nor a page of a declared site: an ordinary
+    // local file, and nothing attaches to those. A repo the reader has already
+    // said NO about counts as neither — the question was asked once and once
+    // is the whole promise, exactly as it is for a council root.
+    if (!PROJECT && !(BLOG_AT_BOOT && !BLOG_AT_BOOT.declined)) return;
   } else if (FILES_DOC && !PROJECT) {
     // A `no` here is not the end of the page, unlike above: an http document
     // that is not an artifact is still an ordinary web page and gets the
     // ordinary treatment.
-    PROJECT = await askProjectPage(HREF);
+    PROJECT = (await askProjectPage(HREF)).artifact;
   }
 
   // GET /project-page, asked before anything else in this file exists — so it
@@ -184,24 +205,32 @@
   // older than this feature, or belongs to somebody else all answer the same
   // way as "no": nothing attaches. Function declaration, so the gate above can
   // call it from further up the file.
+  // Resolves to {artifact, blog} — never null, so neither caller has to guard
+  // the shape. `blog` is the reader's-own-site answer for the same address and
+  // rides along for free (server.mjs /project-page).
   function askProjectPage(href) {
     return new Promise(resolve => {
       let done = false;
-      const answer = art => { if (!done) { done = true; resolve(art); } };
+      const answer = out => { if (!done) { done = true; resolve(out); } };
+      const nothing = { artifact: null, blog: null };
       // a worker that never answers must not leave the page half-booted
-      setTimeout(() => answer(null), 8000);
+      setTimeout(() => answer(nothing), 8000);
       try {
         chrome.runtime.sendMessage(
           { t: 'api', method: 'GET', path: '/project-page?url=' + encodeURIComponent(href) },
           r => {
             void chrome.runtime.lastError;
-            const art = r && r.ok && r.data && r.data.artifact;
-            // a root the reader has already refused stays refused: the drawer
-            // asked once, and once is the whole promise
-            answer(art && !art.declined ? art : null);
+            const d = (r && r.ok && r.data) || null;
+            const art = d && d.artifact;
+            answer({
+              // a root the reader has already refused stays refused: the drawer
+              // asked once, and once is the whole promise
+              artifact: art && !art.declined ? art : null,
+              blog: (d && d.blog) || null,
+            });
           },
         );
-      } catch { answer(null); }
+      } catch { answer(nothing); }
     });
   }
 
@@ -724,7 +753,14 @@
   // the most direct <p> text — the standard "largest text block" heuristic.
   function articleRoot() {
     const direct = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]');
-    if (direct) return direct;
+    // …unless it is nearly empty, which is what a SCROLLYTELLING page looks
+    // like: <main> (or <article>) holds the sticky graphic and every word of
+    // the piece lives in the steps positioned around it. Trusting the landmark
+    // there hands the bots a page with no prose on it and no error anywhere.
+    // The test is deliberately blunt — a landmark holding almost nothing while
+    // the document holds a great deal is not the prose container, whatever it
+    // is called — and every ordinary article passes it on the first branch.
+    if (direct && !tooThin(direct)) return direct;
     const score = new Map();
     for (const p of document.querySelectorAll('p')) {
       const len = (p.textContent || '').trim().length;
@@ -735,7 +771,19 @@
     }
     let best = null, bestLen = 0;
     for (const [el, len] of score) if (len > bestLen) { best = el; bestLen = len; }
-    return best || document.body;
+    return best || direct || document.body;
+  }
+
+  // A landmark with under 200 characters in it, on a document carrying more
+  // than four times that, is not where the text is.
+  const THIN_ROOT_CHARS = 200;
+  function tooThin(el) {
+    try {
+      const inner = ((el.innerText || el.textContent) || '').trim().length;
+      if (inner >= THIN_ROOT_CHARS) return false;
+      const body = ((document.body && (document.body.innerText || document.body.textContent)) || '').trim().length;
+      return body > inner * 4 && body > THIN_ROOT_CHARS;
+    } catch (_) { return false; }
   }
 
   function genericArticleText() {
@@ -1463,8 +1511,14 @@
   // __BFP_PROJECT uses: a content script's window is not the page's.
   async function loadBlog() {
     if (!drawer) return;
-    if (window.__BFP_BLOG && typeof window.__BFP_BLOG === 'object') {
-      drawer.setBlog(window.__BFP_BLOG);
+    // The boot already asked, on a file: document (and the harness names its
+    // own with __BFP_BLOG). Used once and then dropped, so a later call — the
+    // reader answered the confirmation in another tab — asks the companion
+    // for the state as it now is.
+    if (BLOG_AT_BOOT) {
+      const b = BLOG_AT_BOOT;
+      if (!window.__BFP_BLOG) BLOG_AT_BOOT = null;
+      drawer.setBlog(b);
       return;
     }
     const r = await api('GET', '/blog-page?url=' + encodeURIComponent(URL_NOW));

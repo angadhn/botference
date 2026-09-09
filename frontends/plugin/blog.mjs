@@ -59,6 +59,7 @@
 // NOTHING IN THIS FILE WRITES ANYTHING, anywhere. Every function here reads.
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readConfig, saveConfig } from './store.mjs';
 
 const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
@@ -643,6 +644,133 @@ export function resolvePath(root, urlPath) {
   return { doc: null, why: `no markdown source in this repo renders at ${p}` };
 }
 
+// ---- a file of the repo that IS the page ---------------------------------
+//
+// Not every page of a site is rendered from markdown. A scrollytelling piece,
+// a d3 explainer, an SVG figure — the reader writes the HTML itself, drops it
+// under `assets/`, and Jekyll copies it through untouched. There are then two
+// addresses for it and BOTH are the same document:
+//
+//   file:///…/site/assets/imgs/x/plan.html   opened straight off the disk
+//   http://localhost:4000/assets/imgs/x/plan.html   copied through by jekyll
+//
+// and in both cases the thing worth editing is the file itself. There is no
+// photocopy here and no mapping to do: the source IS what the reader is
+// looking at.
+//
+// WHY A PATH IS AN IDENTITY HERE, when it is not for a loose local file.
+// content.js refuses to attach to `file:` documents at all, because
+// `file:///Users/me/Downloads/paper.pdf` says where something is this morning
+// and a record filed under it is stranded the moment the file moves. The
+// exception this joins is the project artifact's: a file the reader's own
+// tools REGENERATE IN PLACE. A council artifact is rewritten by the bots; a
+// page of the reader's declared site is rewritten by the reader and rebuilt by
+// jekyll. Hashing the bytes would strand every comment at the next save, which
+// is the failure the hash exists to prevent arriving from the other direction.
+// The path is what is stable, and the declaration (`blog_sites`) plus the
+// one-time yes (`blog_roots`) are what make it the reader's own path rather
+// than any path at all.
+
+/** The extensions a file of the site can be read AS A PAGE at. */
+export const SOURCE_RE = /\.(md|markdown|html?|svg)$/i;
+
+/** The path a file: url names, or '' for every other kind of address. */
+export function filePathOf(url) {
+  const s = String(url || '');
+  if (!/^file:/i.test(s)) return '';
+  try { return fileURLToPath(new URL(s)); } catch { return ''; }
+}
+
+/**
+ * Is this absolute path a source file of this repo? `{rel, path}` if so, and
+ * `{why}` if not — never a throw and never a guess.
+ *
+ * Both sides are realpath'd (the rule the whole module keeps: macOS hands out
+ * /var/… which is really /private/var/…), so a symlink into the repo resolves
+ * INTO the repo and a symlink out of it resolves out.
+ *
+ * Refused: anything outside the root, the build output and machinery
+ * (`SKIP_DIRS` — `_site/` above all), every dot directory (`.git/` included),
+ * dot-segments, and any file that is not one of `SOURCE_RE`.
+ */
+export function sourceInRoot(root, abs) {
+  const r = realish(root);
+  const f = realish(abs);
+  if (!r || !f) return { why: 'no such file' };
+  if (!isFile(f)) return { why: 'that is not a file on this disk' };
+  const rel = path.relative(r, f);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return { why: 'that file is outside the site’s repository' };
+  }
+  const segs = rel.split(path.sep);
+  for (const s of segs.slice(0, -1)) {
+    if (s === '.' || s === '..') return { why: 'that path walks out of the repository' };
+    if (s.startsWith('.')) return { why: `${s}/ is a dot directory, not a page of the site` };
+    if (SKIP_DIRS.has(s)) return { why: `${s}/ is build output or site machinery, not a page` };
+  }
+  const name = segs[segs.length - 1];
+  if (!SOURCE_RE.test(name)) {
+    return { why: `${name} is not a page (only .html, .md, .markdown and .svg are)` };
+  }
+  return { rel: segs.join('/'), path: f };
+}
+
+/**
+ * A url path under a declared origin that is a PASSTHROUGH: a file jekyll
+ * copied through to `_site/` unchanged, which therefore exists at the same
+ * relative path in the source tree. `null` when nothing is there — the
+ * markdown resolver's answer stands in that case, which is nearly always.
+ */
+export function passthroughFor(root, urlPath) {
+  let p = String(urlPath || '');
+  try { p = decodeURIComponent(p); } catch { /* keep it raw rather than throw */ }
+  p = p.replace(/^\/+/, '');
+  if (!p || p.endsWith('/')) return null;          // a directory is not a file
+  if (p.split('/').some(s => s === '.' || s === '..' || !s)) return null;
+  const r = realish(root);
+  if (!r) return null;
+  const hit = sourceInRoot(r, path.join(r, p));
+  return hit.rel ? hit : null;
+}
+
+/**
+ * The record for a file: address that lies inside a DECLARED site root. Null
+ * for every other local file in the world — which is what keeps content.js's
+ * file: gate shut on the reader's downloads folder.
+ */
+function fileBlogPage(abs) {
+  const f = realish(abs);
+  let site = null;
+  let hit = null;
+  for (const s of listSites()) {
+    if (!isDir(s.root)) continue;
+    const r = sourceInRoot(s.root, f);
+    if (r.rel) { site = s; hit = r; break; }
+  }
+  if (!site) return null;
+  const state = rootState(site.root);
+  return {
+    serve_origin: site.serve_origin,
+    root: site.root,
+    kind: site.kind,
+    url_path: `/${hit.rel}`,
+    confirmed: state === 'yes',
+    declined: state === 'no',
+    git_allowed: gitAllowed(site.kind),
+    suggest_mode: suggestMode(site.kind),
+    source_path: hit.path,
+    rel: hit.rel,
+    title: path.basename(hit.rel),
+    doc_kind: 'file',
+    mapped_by: 'path',
+    // THE PAGE IS THE FILE. Every consumer that says "the rendered page is a
+    // photocopy" has to say something else here, and this is the flag it asks.
+    same_file: true,
+    via: 'file',
+    assets: assetDirs(site.root).map(d => path.relative(site.root, d)),
+  };
+}
+
 // ---- the page record's answer --------------------------------------------
 
 /**
@@ -653,6 +781,10 @@ export function resolvePath(root, urlPath) {
  * costs a config read and a string compare to establish.
  */
 export function blogPageFor(url) {
+  // A local file first, because a file: address has no origin to match: the
+  // question is which declared root it lies inside.
+  const abs = filePathOf(url);
+  if (abs) return fileBlogPage(abs);
   const site = siteFor(url);
   if (!site) return null;
   let u = null;
@@ -677,6 +809,28 @@ export function blogPageFor(url) {
     return { ...base, source_path: '', rel: '', why: `the repo is gone: ${site.root}` };
   }
   const r = resolvePath(site.root, u.pathname);
+  // THE PASSTHROUGH. A file that exists at this exact relative path in the
+  // source tree was copied through by jekyll, so it is the page and there is
+  // nothing to map. It answers where the markdown resolver found nothing —
+  // and it also BEATS the slug fallback, because "a file is sitting at exactly
+  // this path" is a fact and "some post has a similar last segment" is a
+  // guess. It never beats a permalink or a convention match: those are the
+  // document's own word about where it is served.
+  if (!r.doc || r.how === 'slug') {
+    const thru = passthroughFor(site.root, u.pathname);
+    if (thru) {
+      return {
+        ...base,
+        source_path: thru.path,
+        rel: thru.rel,
+        title: path.basename(thru.rel),
+        doc_kind: 'file',
+        mapped_by: 'passthrough',
+        same_file: true,
+        assets: assetDirs(site.root).map(d => path.relative(site.root, d)),
+      };
+    }
+  }
   if (!r.doc) return { ...base, source_path: '', rel: '', why: r.why };
   return {
     ...base,
@@ -757,6 +911,18 @@ export function mdDoc(text) {
     .join('\n');
 }
 
+/**
+ * The source, in whatever shape collateral.docBlocks can find blocks in.
+ * Markdown has no tags, so it is blocked a paragraph at a time (`mdDoc`
+ * above); a page that is its own source is already HTML (or SVG) and the
+ * blocker finds its own regions in it — wrapping THAT in <p> would bury the
+ * markup it needs.
+ */
+export function sourceDoc(text, name) {
+  return /\.(html?|svg)$/i.test(String(name || '')) ? String(text == null ? '' : text)
+    : mdDoc(text);
+}
+
 // ---- the envelope's write rules ------------------------------------------
 
 /**
@@ -784,15 +950,32 @@ export function blogBlock(blog) {
   const dirs = (blog.assets || []).length ? blog.assets : ['assets'];
   const assets = dirs.map(a => `${blog.root}/${a}/`).join(', ');
   const first = `${blog.root}/${dirs[0]}/`;
-  return `[blog draft: ${blog.url_path} · source ${blog.source_path}]\n`
-    + `The reader is looking at this post RENDERED by a local Jekyll server at `
-    + `${blog.serve_origin}${blog.url_path}. The rendered HTML is a photocopy — it is rebuilt `
-    + `from source on every save and editing it achieves nothing. The document is the markdown `
-    + `file named above; READ it before you change anything.\n`
-    + `Quotes in this conversation come from the RENDERED page, so the wording you are given is `
-    + `the prose without its markdown. Find the matching passage in the source yourself and quote `
-    + `it back EXACTLY as the file has it — the front matter, the markdown body and the image `
-    + `lines are all in scope, and all of them are changed the same way.\n`
+  // WHICH DOCUMENT THE READER IS LOOKING AT — the one thing that differs
+  // between a rendered post and a page of the site that is its own source (an
+  // HTML explainer under assets/, an SVG figure, a markdown file opened
+  // straight off the disk). Everything after this pair of paragraphs is the
+  // same in both cases, and deliberately so: the write scope, the no-git rule
+  // and the proposal contract are properties of the ROOT, not of the page.
+  const opening = blog.same_file
+    ? `[blog page: ${blog.rel} · source ${blog.source_path}]\n`
+      + `The reader is looking at THIS VERY FILE — the page and its source are one document, `
+      + `opened either straight off the disk or copied through unchanged by the local server at `
+      + `${blog.serve_origin}. There is no rendering step and nothing is generated from anything: `
+      + `the file named above IS the page. READ it before you change anything.\n`
+      + `Quotes in this conversation are the text as a BROWSER lays it out, so the wording you `
+      + `are given is without the markup around it. Find the matching text in the file yourself `
+      + `and quote it back EXACTLY as the file has it — attributes, script and style included if `
+      + `that is what the change touches.\n`
+    : `[blog draft: ${blog.url_path} · source ${blog.source_path}]\n`
+      + `The reader is looking at this post RENDERED by a local Jekyll server at `
+      + `${blog.serve_origin}${blog.url_path}. The rendered HTML is a photocopy — it is rebuilt `
+      + `from source on every save and editing it achieves nothing. The document is the markdown `
+      + `file named above; READ it before you change anything.\n`
+      + `Quotes in this conversation come from the RENDERED page, so the wording you are given is `
+      + `the prose without its markdown. Find the matching passage in the source yourself and quote `
+      + `it back EXACTLY as the file has it — the front matter, the markdown body and the image `
+      + `lines are all in scope, and all of them are changed the same way.\n`;
+  return opening
     + `YOU DO NOT EDIT THIS FILE. You propose a change and the reader accepts or refuses it; the `
     + `block below says how a proposal is written. Nothing you say moves a single byte of the `
     + `post until the reader presses Accept.\n`
@@ -821,8 +1004,9 @@ export function blogBlock(blog) {
     + `configured to refuse these commands as well; this paragraph is why, so you do not waste `
     + `the turn discovering it.) If the reader asks you to publish, tell them Discuss does not `
     + `do that and they publish it themselves.\n`
-    + `When the reader accepts a proposal the companion makes the change, jekyll rebuilds by `
-    + `itself and their tab reloads. That is the only way this post changes, and it is not `
-    + `something you do — so never report an edit as done.\n`;
+    + `When the reader accepts a proposal the companion makes the change`
+    + (blog.same_file ? ` and their tab reloads` : `, jekyll rebuilds by itself and their tab reloads`)
+    + `. That is the only way this page changes, and it is not something you do — so never `
+    + `report an edit as done.\n`;
 }
 

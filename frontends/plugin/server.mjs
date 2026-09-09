@@ -547,7 +547,7 @@ function noteBlogTurnStart(url) {
     // transform it, once at turn start and again at turn end, on every blog
     // turn, so that reportCollateral could look at one boolean and throw both
     // away. `noCollateral` is decided first now and the work is skipped.
-    text: bg.suggest_mode ? '' : blog.mdDoc(sourceSnapshot(bg.source_path)),
+    text: bg.suggest_mode ? '' : blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel),
     // …the instruction NOT to diff it. Collateral threads
     // exist to catch edits nobody commented on — a change that landed silently
     // because no thread stood where it landed. In suggest mode no change lands
@@ -759,7 +759,8 @@ function reportBlogChanges(url, seen, ev) {
     // ordinary prose and does not for a passage that is mostly markup — an
     // orphaned thread the reader can still read, which is better than a silent
     // rewrite. (SPEC amendment: the anchoring caveat.)
-    withCollateral(url, payload, seen, ev, () => blog.mdDoc(sourceSnapshot(seen.source)));
+    withCollateral(url, payload, seen, ev,
+      () => blog.sourceDoc(sourceSnapshot(seen.source), seen.source));
   }
   publishChanges(url, payload);
 }
@@ -2264,12 +2265,23 @@ export function handler(req, res) {
   //
   // GET /project-page is the question content.js asks before it will attach to
   // a file: document at all — no artifact, no extension on that page.
+  //
+  // …and it carries the BLOG answer with it, in the same round trip. One kind
+  // of local file that is not a council artifact is still a page: an HTML
+  // explainer, an SVG figure or a markdown file sitting inside a site the
+  // reader has DECLARED as theirs (blog.mjs — a `file:` url whose real path
+  // lies inside a `blog_sites[].root`). content.js needs both answers before
+  // it will decide whether to exist on a file: document at all, and asking
+  // twice would double the only await in its boot.
   if (req.method === 'GET' && url === '/project-page') {
     if (notOwner(req, res)) return;
     const u = queryUrl(req.url);
-    const art = u ? artifactOf(store.normUrl(u)) : null;
-    if (!art) return ok(res, { artifact: null });
+    const key = u ? store.normUrl(u) : '';
+    const art = key ? artifactOf(key) : null;
+    const bgu = key ? blogOf(key) : null;
+    if (!art) return ok(res, { artifact: null, blog: bgu });
     return ok(res, {
+      blog: bgu,
       artifact: {
         root: art.root,
         project_id: art.project_id,
