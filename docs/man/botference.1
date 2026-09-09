@@ -447,6 +447,33 @@ or
 .B "ask gemini: <question>"
 about the video last watched here; a question gets that bot (only that
 bot) one turn back with the answer, twice per turn at most.
+.TP
+.B /lasso <words>
+Search everything you have already read and said \- the pages you have
+annotated with the browser companion, the chats in every council you have
+vouched for, and any folder listed as
+.B lasso_folders
+in the companion's
+.I config.json
+\- and offer the matches. Nothing is attached until you say so.
+.B /lasso <path>
+attaches a file of your own directly (a path is not a search);
+.B /lasso attach <n>
+or
+.B /lasso attach all
+takes one of the offers;
+.B /lasso detach <n>
+takes one off; bare
+.B /lasso
+lists what this chat is carrying. An attachment is a FILE the bots read on
+demand: every later turn names it by its path, never by its contents. A
+bot can ask for a search itself by ending a reply with a line reading
+.BR "lasso: <what to look for>" ,
+which shows you the matches and attaches nothing. Without the companion
+running, the search falls back to this council's own chats and says so.
+PDF text needs
+.B pdftotext
+(poppler); without it a PDF is found by its filename.
 .PP
 Plain text is auto-routed;
 .BR @claude ,

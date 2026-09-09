@@ -1435,6 +1435,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/agents [on\|off]` | Grant or revoke the Claude participant's **subagent** (Task) tool. Off by default in every chat: Claude is instructed to *suggest* subagents when a task would benefit and wait for your approval — and the gate is enforced at the tool level (the CLI is simply not given the Task tool until you grant it), not by prompt alone. The grant persists with the chat across `/resume` and resets on `/new`. Codex has no subagent facility; not available under `--claude-interactive`. |
 | `/allow-host [<domain>]` | Grant the bots' sandbox **network access** to a site (persists per workspace in `.botference/allowed-hosts.json`, applies from their next turn — no restart). The sandbox blocks all other hosts by design; the bots are instructed to ask you for this instead of working around a blocked fetch. Bare `/allow-host` lists current grants. |
 | `/watch <url> [question]` | Have **Gemini watch a YouTube video** and post what it saw into the chat, so Claude and Codex (who cannot take video) can read it on their next turn. See [YouTube videos](#youtube-videos). |
+| `/lasso <words>` | **Search everything you have already read and said** — the pages you have annotated in the browser, your past council chats, and any folders you have named — and offer the matches. Nothing is attached until you say so. `/lasso <path>` attaches a file of your own directly; `/lasso attach <n>` (or `all`) takes one of the offers; `/lasso detach <n>` takes one off; bare `/lasso` lists what this chat is carrying. See [Lasso](#lasso). |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
 
@@ -1538,6 +1539,45 @@ instruction, because it describes a page nobody in the room can check.
 Only public videos work — private, unlisted and age-restricted ones are
 refused by the API, and that refusal is reported in the room rather than
 swallowed. Google's free tier allows about eight hours of YouTube a day.
+
+### Lasso
+
+The thing that would settle the question is often something you have already
+read or already said — a chat from July, a paper you marked up in the browser
+in August, a PDF sitting in `~/Downloads`. None of it is in the conversation
+in front of you, and until now the only way in was to remember a file path.
+
+`/lasso <words>` searches all of it and shows you the matches. Nothing is
+attached until you press a button (or type `/lasso attach <n>`), and an
+attachment is a **file the bots read on demand**: every later turn names it by
+its path with one sentence about what it is, and the bots open it when it
+matters. A forty-page transcript pasted into every turn would bury the turn.
+
+- **What is searched.** Pages you have annotated with the browser companion
+  (their titles, your highlights and comments, and the saved text of the page),
+  every chat in the councils you have vouched for, and any folder you list in
+  the companion's `config.json` as `lasso_folders` (e.g. `["~/Downloads"]` —
+  PDFs, markdown, text and HTML, by filename and their first couple of thousand
+  characters; PDF text needs `pdftotext`, from poppler).
+- **Ranking is deliberately simple**: a word in the title counts three, in a
+  highlight or comment two, in the body one; matching every word beats matching
+  most of them; recency breaks ties. The index is built lazily and cached
+  against file times — there is no daemon and nothing to start.
+- **Without the browser companion running**, `/lasso` in the council falls back
+  to searching this council's own chats, and says so on the card.
+- **`/lasso ~/papers/kalman.pdf`** attaches that file directly — a path is not a
+  search. The file is copied into the workspace (with its extracted text beside
+  it where a PDF allows), so tidying your Downloads later does not break the
+  chat. Your original is never moved or changed, and `/lasso detach` only ever
+  deletes botference's own copy.
+- **The bots can ask.** A reply may end with a line of its own reading
+  `lasso: <what to look for>`. The search runs and you get the matches; nothing
+  is read and nothing is attached by the asking. Same discipline as `file-in:`
+  and `watch:` — a bot may offer, and only your click does anything.
+
+In the browser, the same thing lives in the companion's drawer: type `/lasso`
+in any composer and the matches appear above it as chips, with what is attached
+shown as small chips with a ✕ from then on.
 
 ### Crash evidence
 

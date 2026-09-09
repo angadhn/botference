@@ -2,6 +2,28 @@
 
 ## 2026-09-09
 
+- **Lasso: bring what you have already read and said into the chat.** The thing
+  that would settle the question is usually something you already have — a
+  council chat from July, a paper you marked up in the browser in August, a PDF
+  in `~/Downloads` — and until now the only way in was to remember its file
+  path. `/lasso <words>`, in the drawer and in the council, searches all of it:
+  the pages you have annotated (their titles, your highlights, your comments and
+  the saved text), every chat in the councils you have vouched for, and any
+  folder you name in `config.json` as `lasso_folders`. The matches come back as
+  chips (or a card) and **nothing is attached until you press one**. What you
+  attach becomes a FILE the bots read on demand: every later turn names it by
+  path with a sentence about what it is, so a forty-page transcript never gets
+  pasted into a conversation it was supposed to inform. `/lasso ~/papers/x.pdf`
+  attaches a file directly — a path is not a search — and the copy lives in the
+  workspace, so tidying your Downloads later does not break the chat; your own
+  file is never moved, changed or deleted. Ranking is deliberately explainable:
+  title ×3, highlight or comment ×2, body ×1, every word beating most words,
+  recency breaking ties. And the bots can ask: a reply ending `lasso: <what to
+  look for>` runs the search and hands you the matches, and attaches nothing.
+  In the council, the search goes to the browser companion when it is running —
+  one index on the machine, not two — and falls back to this council's own chats
+  when it is not, saying so rather than looking as though you own nothing.
+
 - **Reloading the extension no longer loses your open PDFs.** Chrome closes an
   extension's own pages on reload, and the PDF viewer is one; the worker now
   remembers which PDFs were open, in which window and position, and reopens

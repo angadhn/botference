@@ -9490,6 +9490,213 @@ names the file, a selection on a page of positioned steps still raises the
 comment pill, the step text is what `articleText()` returns rather than the
 empty `<main>`, and the reload lands.
 
+## Amendment (2026-09-09, shipped): lasso — bringing what you have read and said into a chat
+
+THE PROBLEM, stated as the reader states it. They are three months into a body
+of work. The thing that would settle the question in front of them was said in
+a council chat in July, or is highlighted on a PDF they annotated in August, or
+is a paper sitting in `~/Downloads` that nobody has opened yet. None of it is in
+this conversation, and the only way in was to remember a file path — which is
+exactly the thing a reader working in a browser never wants to know.
+
+`/lasso <words>` searches all of it. The matches come back as OFFERS. What they
+attach becomes a FILE the bots read on demand.
+
+### The two rules everything here follows from
+
+1. **The bots never get walls of text inline.** An attachment is a file, and the
+   envelope carries its PATH plus one sentence about what is at the end of it.
+   This is the page-snapshot pattern exactly (`chat.mjs` `snap`,
+   `store.snapshotFile`, "BOTS READ THE WHOLE DOCUMENT"): a forty-page transcript
+   inlined into every turn buries the turn it is supposed to inform.
+2. **Nothing attaches without a click.** A bot may ASK for a search (`lasso:`,
+   below) and still attaches nothing. Same discipline as `file-in:`; deliberately
+   NOT `watch:`'s, which does act — watching a video reads nothing of the
+   reader's, and this reads their own things.
+
+### 1. The search (`frontends/plugin/lasso.mjs`)
+
+`search(query, {limit = 8})` over everything the owner has:
+
+| source | title | quotes/comments | body |
+| --- | --- | --- | --- |
+| **page** — a record this companion holds | `displayTitle` | every thread quote, every comment, all page chat | the snapshot's text |
+| **chat** — a council session (`sessions/*.json` and `work/sessions/*.json`, both layouts, work/ winning a duplicate sid) | the chat's name | — | the transcript, `speaker: text` per line, the reader's own turns run back through `stripEnvelope` |
+| **file** — a watched folder | the filename | — | the first `FILE_HEAD_CHARS` (2000) |
+
+**Ranking, and why it is this simple.** Title ×3, quote or comment ×2, body ×1;
+matching EVERY term beats matching most of them by a thousand points; recency
+breaks the tie. A reader who cannot predict what a search will return stops
+using it, so there is no scoring anybody has to take on trust.
+
+**Watched folders** are `config.json` `lasso_folders` (default `[]` — absent in
+every config written before this, which reads as none). `~` expands. Two levels
+deep, 400 files per folder, and only documents (`FILE_EXTS`). PDF text comes
+from **`pdftotext` where this machine has one, and from the filename where it
+does not** — there is no server-side PDF extractor in this tree (the extension's
+pdf.js runs in the browser), and `fileHead()` reports which route ran rather than
+letting a name-only index look like a text one.
+
+**Only councils the reader has VOUCHED FOR** are read (`searchableRoots`): a
+root they were asked about and said no to is not searched, for the same reason
+nothing else in this tree reads it.
+
+**The index is lazy and cached against mtimes** — one signature over the page
+index, the session files and the watched files. No daemon, no watcher, no
+staleness window.
+
+### 2. Attachments
+
+`POST /attach {url, kind, id}` (owner-only) builds a digest under
+`.botference/plugin/attachments/<pageKey>/<slug>.md`:
+
+- **page** — title, url, the whole saved text, then every thread as quote +
+  messages, then page chat.
+- **chat** — title, project, then the transcript, `**speaker:** text`.
+- **file** — the file COPIED (tidying `~/Downloads` later must not break the
+  chat), plus an extracted-text sidecar where a PDF allows one.
+
+The record grows `page.attachments: [{kind, id, title, path, at, summary}]` —
+absent when empty, capped at 20. `summary` is one paragraph the COMPANION writes
+heuristically out of what the thing contains; it is never a bot turn, because
+asking a model to summarize something before the reader has decided to use it
+spends a turn on a decision nobody has made.
+
+`POST /detach {url, path}` removes the row and deletes the digest **we** wrote.
+It never touches the reader's own file: the unlink is guarded on the path lying
+inside the attachments directory.
+
+**The envelope** (`chat.mjs`, `attachContext`) gains one block wherever a chat
+has attachments — page chat, a comment thread, and the library, which is a page
+record like any other:
+
+```
+[Attached for this chat — read with your file tool when relevant, never inline them back:]
+- <title> (<kind>) — <path> — <summary>
+```
+
+Budget 2500 characters; past it the summaries go and the paths stay. It rides
+EVERY turn, beside the snapshot path and the decision log, for the reason those
+two do: a resumed session's replayed history is uneven and a bridge restart
+drops it whole, so the only thing a turn can rely on carrying is the turn.
+
+"never inline them back" is not politeness. Without it a model reads the digest
+and quotes half of it into a reply the reader has to scroll past — which is the
+failure the file-on-disk pattern exists to prevent.
+
+### 3. `/lasso` in both interfaces
+
+**The drawer.** A message starting `/lasso` is a COMMAND, not a message: the
+composer empties (the words were acted on), `GET /lasso?q=…&url=…` runs, and the
+matches render as chips above the composer — title · kind · the matching line ·
+`attach`, plus `attach all` and `dismiss`. Nothing is sent to anybody. What is
+attached shows as small chips with a ✕ above the page-chat (and library)
+composer from then on, because it is on the record. `/lasso ~/path/to/a.pdf`
+attaches that file with no chip to click: a reader who has typed a path has
+already chosen.
+
+**The council.** `/lasso` is a controller command (`core/lasso.py`,
+`InputKind.LASSO`) with the same behaviour, drawn as a card with attach buttons
+and a chip strip above the composer. **Every button sends the same
+`/lasso attach <n>` a person could type**, so the browser gets no private door
+into the controller and there is one code path to be right.
+
+**ONE INDEX, TWO RECORDS.** The controller is Python and the index is Node, so
+the controller ASKS the companion over HTTP (`BOTFERENCE_COMPANION`, else
+`http://127.0.0.1:4189`) rather than growing a second, differently-ranked search:
+two searches over one machine that disagree is worse than one search that is
+sometimes unavailable. It asks the same door to build the digest, too
+(`POST /attach {sid}` builds under `attachments/council-<sid>/` and records
+nothing) — so there is one digest writer, and a page the reader annotated in the
+browser is reachable from a council chat at all.
+
+When the companion is not running there is a **fallback**: a search over this
+council's own transcripts, with the same weights, and the card SAYS SO. A search
+that quietly covered less than the reader expected is how they conclude they
+have nothing. A `page` has no fallback and says that too — nothing in the
+controller has ever held those records.
+
+The council's own record is `attachments` on the session payload (absent when
+empty, restored on `/resume`, the offers deliberately NOT restored — a search is
+a menu, not a fact), and one block in the envelope on the initial prompt and on
+every resume.
+
+### 4. The bots may lasso
+
+A line of its own at the end of a reply:
+
+```
+lasso: <what to look for>
+```
+
+Three rules, the same three every reply-line protocol here keeps: a line of its
+own, the LAST one wins, a line inside a code fence is code. The companion lifts
+it off the words (`store.liftLines`, as `file-in:` is lifted — it is machinery,
+and a reply ending "lasso: tether release" reads as a bot talking to itself),
+runs the search, and puts the matches on the message as `msg.lasso`. The drawer
+draws them under that reply; the controller shows the card. Nothing is attached.
+
+Taught in `bridge-system-prompt.md` rule 18 and `room_prompts.lasso_note()`.
+The parsers are mutually exclusive by construction and the suites pin it:
+`file-in:`, `watch:`, `ask gemini:`, `strike:`, `passage:`, `page:` and
+`artifact:` are not `lasso:`, and a reply carrying two of them keeps both.
+
+### Files
+
+| file | what changed |
+| --- | --- |
+| `frontends/plugin/lasso.mjs` | new — the index, the ranking, the digests, the envelope block, `parseLasso` |
+| `frontends/plugin/store.mjs` | `lasso_folders` in `DEFAULT_CONFIG` |
+| `frontends/plugin/chat.mjs` | `attachContext` on the envelope; read off the record at the front of the queue |
+| `frontends/plugin/server.mjs` | `GET /lasso`, `POST /attach` (page or `{sid}`), `POST /detach`; the `lasso:` lift |
+| `frontends/plugin/bridge-system-prompt.md` | rule 18 |
+| `extension/drawer.js`, `drawer.css`, `content.js` | the command, the chips, the strip, three callbacks |
+| `core/lasso.py` | new — companion client, fallback search, digests, the block, the reply line |
+| `core/botference.py` | `/lasso`, `attachments` on the session, the envelope block, the bot's ask |
+| `core/room_prompts.py` | `lasso_note()` |
+| `core/botference_ink_bridge.py` | the `lasso` event sink |
+| `frontends/council/assets/*` | the card, the strip |
+
+### Testing
+
+- `test/lasso.test.mjs` — 34: ranking on fixtures, watched-folder indexing, a
+  declined council never searched, the cache busting on a new chat, path attach
+  and its three refusals, digest shapes for page/chat/file, the cap of 20,
+  "absent, not empty", the envelope block and its budget, and the reply line
+  (including that the other protocols and this one ignore each other).
+- `test/companion.test.mjs` — the three doors, the owner gate, and the one thing
+  only a real server and a real bridge can show: the envelope names the digest
+  by PATH and never carries its contents.
+- `?lasso=1&selftest=1` — 24 checks: a bot's ask and dismissing it, `/lasso` as
+  a command (searched, not sent), the chips, the attach, the strip, the ✕, and
+  the path form. `?lasso=strip` is the far end for a screenshot.
+- `tests/test_lasso.py` — 28: the command, the reply line, the fallback search's
+  ranking, the companion winning when it is running, digests, the record's
+  rules, the envelope block, and the controller end to end.
+- `tests/council-web.test.mjs` — the card, the click, the strip, the ✕, and an
+  empty search that says how far it looked.
+
+### Two the harness caught, both real
+
+- A search in flight left the LAST search's matches on screen under a
+  "looking…" line — attach on a row about to be replaced. The busy row has its
+  own class now and the two are never drawn together.
+- `setPage` cleared the offer list on every refresh, and attaching refetches the
+  record — so taking one of five offers threw the other four away. The clear
+  happens only on a change of page.
+
+### Deliberately NOT built
+
+- **No automatic attaching, ever**, by a bot or by a heuristic. The reader's
+  click is the whole of the permission model here, exactly as it is for filing,
+  striking and the question vault.
+- **No summary written by a bot.** The one-paragraph `summary` is heuristic
+  (first lines and counts). A turn spent describing something the reader has not
+  chosen is a turn wasted, and a bot-written summary of an unread file is a
+  claim nobody checked.
+- **No second index in Python.** See "one index, two records" above.
+- **No re-indexing daemon.** The mtime signature is the whole freshness story.
+
 ## Out of scope for v1 (do not build)
 
 Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
