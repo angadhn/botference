@@ -17,6 +17,10 @@ import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSes
   readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle,
   pageKey, snapshotFile, hasSnapshot, kindOf, findPageImage, pageImagesOf,
   writeDecisionLog } from './store.mjs';
+// the attachments the reader lassoed into a chat, as one line each. The block
+// is composed here rather than at submit for the same reason the decision log
+// is: a chip attached while this turn waited in the queue counts.
+import { attachmentsBlock, attachmentsOf } from './lasso.mjs';
 import { applyEnv as applyKeyEnv } from '../shared/keys.mjs';
 import { commandDecision, protectedTokens, sitesDomain } from './sites.mjs';
 
@@ -408,11 +412,21 @@ export function envelope({ url, title, target, text, quote, history,
   snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
-  blogContext }) {
+  blogContext, attachContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
   const route = routeOf(text, untaggedAll, routeHint);
+  // What the READER lassoed into this chat (lasso.mjs attachmentsBlock): past
+  // discussions of theirs, other pages they have annotated, papers out of
+  // their own folders. One line each — title, kind, path, one sentence — and
+  // never the contents: an attachment is a FILE the bot reads on demand,
+  // exactly as the page snapshot is. Computed here rather than beside the rest
+  // of the standing block because the LIBRARY needs it too, and the library
+  // turn returns three lines below (a summary and a question card do not: one
+  // files a resolved thread, the other writes a flashcard, and neither is a
+  // conversation an attachment could inform).
+  const lassoed = String(attachContext || '');
   // filing a resolved thread: no page context, no verbosity line, no "your
   // reply is posted into the thread" — none of that is true of this turn
   if (summary) {
@@ -430,7 +444,7 @@ export function envelope({ url, title, target, text, quote, history,
       ? `Earlier in this conversation:\n${historyLines(history)}\n\n` : '';
     const who = asker ? String(asker) : 'The user';
     return route
-      + `${libraryPrompt(library)}\n---\n`
+      + `${libraryPrompt(library)}\n${lassoed}---\n`
       + `${who} asked:\n${prior}${text}\n\nReply in this turn.\n${verbosityLine(verbosity)}`;
   }
   const article = String(articleText || '').slice(0, snapshotPath ? SNAPSHOT_INLINE : ARTICLE_MAX);
@@ -543,7 +557,11 @@ export function envelope({ url, title, target, text, quote, history,
   // is absent by construction from a summary, a question card and a library
   // turn: those three return above this line.
   const decisions = decisionPath ? decisionLogBlock(decisionPath) : '';
-  const standing = `${snap}${decisions}${figure}${writes}${draft}${filed}`;
+  // `lassoed` (computed at the top of this function, because the library turn
+  // needs it too) stands with the snapshot path and the decision log: same
+  // kind of promise — what you need is on disk, here is where — and it rides
+  // EVERY turn for the same reason the others do.
+  const standing =`${snap}${decisions}${figure}${writes}${draft}${filed}${lassoed}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`
@@ -1290,6 +1308,14 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // page has fewer than two threads — there is nothing to be inconsistent
     // with — and '' on a library turn, which is about no document at all.
     const decisionPath = record ? writeDecisionLog(record) : '';
+    // …and what the reader has lassoed into this chat, asked at the same
+    // moment and for the same reason: a chip attached while this turn sat in
+    // the queue is part of the conversation this turn is about. Read straight
+    // off the record (the library has one too — it is a page record — and a
+    // BORROWED turn has none, because that chat belongs to the project).
+    const attachRecord = borrowed ? null : (isLib ? readPage(job.url) : record);
+    const attachContext = attachRecord
+      ? attachmentsBlock(attachmentsOf(attachRecord)) : '';
     const pageImage = snapKey ? findPageImage(snapKey, job.pageNumber || 0) : '';
     const pageImages = (snapKey && !(job.pageNumber > 0))
       ? pageImagesOf(snapKey).map(n => ({ n, path: findPageImage(snapKey, n) })).filter(p => p.path)
@@ -1308,7 +1334,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         untaggedAll: !!job.untaggedAll,
         // the thread's sticky address, when the reader's words named nobody
         routeHint: job.routeHint || '',
-        snapshotPath, decisionPath, pageImage, pageImages, paged,
+        snapshotPath, decisionPath, attachContext, pageImage, pageImages, paged,
         pageNumber: job.pageNumber || 0, mark: job.mark || '',
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely

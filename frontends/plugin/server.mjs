@@ -46,6 +46,7 @@ import * as suggest from './suggest.mjs';
 import * as publish from './publish.mjs';
 import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
+import * as lasso from './lasso.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // The article view's scripts. anchor.js is the extension's own file, served
@@ -1076,6 +1077,30 @@ function onChatEvent(ev) {
             ...ev.msg,
             text: store.liftLines(ev.msg.text, hit.line),
             file_in: { root: hit.root, id: hit.id, title: hit.title, why: hit.why },
+          };
+        }
+      }
+      // …and did the bot ask for something of the reader's to be FOUND?
+      // `lasso: <words>` on a line of its own (lasso.parseLasso) — the same
+      // discipline as `file-in:` and `watch:`: a line of its own, the last one
+      // wins, and it is an OFFER. The search runs here, because the companion
+      // is what holds the index; nothing is attached and nothing is read. The
+      // reader gets chips and clicks, or does not.
+      //
+      // The line comes off the words for the reason every lifted line does: it
+      // is machinery, and a reply that ends "lasso: kalman filter" reads as a
+      // bot talking to itself. `results: []` still lifts the line and still
+      // shows a chip row, saying so — a search that quietly found nothing is
+      // indistinguishable from one that never ran.
+      if (ev.msg && ev.msg.kind !== 'tools') {
+        const asked = lasso.parseLasso(ev.msg.text);
+        if (asked) {
+          let results = [];
+          try { results = lasso.search(asked.query); } catch { results = []; }
+          ev.msg = {
+            ...ev.msg,
+            text: store.liftLines(ev.msg.text, asked.line),
+            lasso: { query: asked.query, results },
           };
         }
       }
@@ -2371,6 +2396,72 @@ export function handler(req, res) {
       if (attach) rememberRoot(root);
       broadcast({ type: 'page', url: saved.url });
       return ok(res, { url: saved.url, filed: store.projectsOf(saved) });
+    });
+  }
+  // --- lasso: bringing what the reader has read and said into a chat -----
+  //
+  // OWNER-ONLY, all three. The answers are the titles of this reader's
+  // conversations and absolute paths on their machine, which is nobody's
+  // business over a tunnel — the same reason the project routes above are
+  // owner-only.
+  //
+  // GET /lasso?q=…&url=… — search everything the owner has (lasso.mjs). The
+  // answer is OFFERS: chips the reader may click. Nothing is attached, nothing
+  // is copied, and a search that finds nothing is `{results: []}` and not an
+  // error. `url` is the page whose chat is asking, and is used only to say
+  // which of the results are already on it.
+  if (req.method === 'GET' && url === '/lasso') {
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const target = q.get('url') || '';
+    const page = target ? store.readPage(target) : null;
+    const attached = page ? lasso.attachmentsOf(page) : [];
+    const query = String(q.get('q') || '');
+    // A PATH the owner typed is not a search: `/lasso ~/papers/kalman.pdf`
+    // means that file, and the drawer offers it as a single chip rather than
+    // searching for the word "kalman.pdf" and finding nothing.
+    if (lasso.looksLikePath(query)) {
+      const r = lasso.resolveOwnerPath(query);
+      if (r.error) return ok(res, { query, results: [], attached, error: r.error });
+      return ok(res, { query, attached, path: r.path, results: [{
+        kind: 'file', id: r.path, title: path.basename(r.path),
+        url_or_path: r.path, hit: r.path, when: '',
+      }] });
+    }
+    const results = lasso.search(query, { limit: Number(q.get('limit')) || undefined });
+    return ok(res, { query, results, attached });
+  }
+  // POST /attach {url, kind, id} — build the digest and put it on the chat.
+  //
+  // The digest is a FILE (`.botference/plugin/attachments/<pageKey>/<slug>.md`)
+  // and the envelope carries its PATH — the pattern the page snapshot set. The
+  // `summary` on each row is written by this companion, heuristically, out of
+  // what the thing actually contains; it is never a bot turn, because asking a
+  // model to summarize something before the reader has decided to use it
+  // spends a turn on a decision that has not been made.
+  if (req.method === 'POST' && url === '/attach') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const target = String(data.url || '');
+      if (!store.readPage(target)) return fail(res, 404, 'no such page');
+      const r = lasso.attach(target, { kind: String(data.kind || ''), id: data.id });
+      if (r.error) return fail(res, 400, r.error);
+      broadcast({ type: 'page', url: r.page.url });
+      return ok(res, { url: r.page.url, attachment: r.attachment,
+        attachments: lasso.attachmentsOf(r.page) });
+    });
+  }
+  // POST /detach {url, path} — take one off. The digest this companion wrote
+  // is deleted with it; the reader's own file it was copied from is not.
+  if (req.method === 'POST' && url === '/detach') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const target = String(data.url || '');
+      if (!store.readPage(target)) return fail(res, 404, 'no such page');
+      const r = lasso.detach(target, String(data.path || ''));
+      if (r.error) return fail(res, 400, r.error);
+      broadcast({ type: 'page', url: r.page.url });
+      return ok(res, { url: r.page.url, attachments: r.attachments });
     });
   }
   // POST /project-create {url, root, title} — start a NEW project and file

@@ -105,6 +105,14 @@ export const DEFAULT_CONFIG = {
   // protected already and are not listed here; this is for something that is
   // off limits without being a publish target.
   sites_protect: [],
+  // WHICH FOLDERS ON THIS MACHINE `/lasso` MAY SEARCH (lasso.mjs). Absolute or
+  // `~`-relative, e.g. ["~/Downloads", "~/papers"]. Empty — which is what every
+  // config written before this reads as — means the search covers the pages
+  // this companion holds and the reader's council chats, and nothing on the
+  // filesystem at all. Indexing is by filename plus the first couple of
+  // thousand characters; nothing is copied anywhere until the reader attaches
+  // something.
+  lasso_folders: [],
 };
 export const BRIDGE_POOL_MAX = 8;
 export const VERBOSITY_LEVELS = ['short', 'long'];
