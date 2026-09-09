@@ -957,7 +957,57 @@ chrome.alarms.onAlarm.addListener(a => {
   if (wsState === 'open') refreshIndex(true);
 });
 
-chrome.runtime.onInstalled.addListener(() => { ensureSocket(); refreshIndex(true); });
+chrome.runtime.onInstalled.addListener(() => { ensureSocket(); refreshIndex(true); reopenViewerTabs(); });
+
+// ---- the PDFs that were open when the extension reloaded --------------------
+// Reloading an extension closes every page it owns, and pdf/viewer.html is one
+// of those pages: a reader with three brochures open in two windows came back
+// from a reload to find them gone, with nothing to say they had ever been
+// there. Chrome offers no way to keep them. What it does offer is memory: this
+// worker keeps the list of viewer tabs — address, window, position — in
+// storage.local (which survives a reload; storage.session does not) and, on the
+// install/update event a reload fires, opens every one of them again where it
+// was, inactive, so the reader's windows look the way they left them.
+const VIEWER_TABS_KEY = 'bfp:viewer-tabs';
+let viewerTabsTimer = null;
+async function rememberViewerTabs() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({}); } catch { return; }
+  const base = viewerBase();
+  const open = tabs
+    .filter(t => t && typeof t.url === 'string' && t.url.startsWith(base))
+    .map(t => ({ url: t.url, windowId: t.windowId, index: t.index, pinned: !!t.pinned }));
+  try { await chrome.storage.local.set({ [VIEWER_TABS_KEY]: { at: Date.now(), open } }); } catch { /* best effort */ }
+}
+function noteViewerTabs() {
+  if (viewerTabsTimer) clearTimeout(viewerTabsTimer);
+  viewerTabsTimer = setTimeout(() => { viewerTabsTimer = null; rememberViewerTabs(); }, 400);
+}
+async function reopenViewerTabs() {
+  let saved = null;
+  try { saved = (await chrome.storage.local.get(VIEWER_TABS_KEY))[VIEWER_TABS_KEY]; } catch { return; }
+  const open = (saved && Array.isArray(saved.open)) ? saved.open : [];
+  if (!open.length) return;
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({}); } catch { tabs = []; }
+  const present = new Set(tabs.map(t => t && t.url).filter(Boolean));
+  const windows = new Set(tabs.map(t => t && t.windowId).filter(v => v != null));
+  for (const t of open) {
+    if (!t || typeof t.url !== 'string' || !t.url.startsWith(viewerBase()) || present.has(t.url)) continue;
+    const opts = { url: t.url, active: false, pinned: !!t.pinned };
+    // the window may have been closed since; then the tab goes wherever Chrome puts it
+    if (t.windowId != null && windows.has(t.windowId)) { opts.windowId = t.windowId; if (Number.isInteger(t.index)) opts.index = t.index; }
+    try { await chrome.tabs.create(opts); } catch { try { await chrome.tabs.create({ url: t.url, active: false }); } catch { /* give up on this one */ } }
+  }
+  // the list is rebuilt from the tabs that actually exist now
+  rememberViewerTabs();
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => { if (info && (info.url || info.status === 'complete')) noteViewerTabs(); });
+chrome.tabs.onRemoved.addListener(() => noteViewerTabs());
+chrome.tabs.onMoved.addListener(() => noteViewerTabs());
+chrome.tabs.onAttached.addListener(() => noteViewerTabs());
+chrome.windows.onRemoved.addListener(() => noteViewerTabs());
+noteViewerTabs();
 chrome.runtime.onStartup.addListener(() => { ensureSocket(); refreshIndex(true); });
 
 ensureSocket();

@@ -2,6 +2,10 @@
 
 ## 2026-09-09
 
+- **Reloading the extension no longer loses your open PDFs.** Chrome closes an
+  extension's own pages on reload, and the PDF viewer is one; the worker now
+  remembers which PDFs were open, in which window and position, and reopens
+  them there when it comes back.
 - **A local page of your own site is a page.** A hand-written HTML page, a
   scrollytelling piece or an SVG figure sitting in the repo of a site you have
   registered is now commentable and editable — opened straight off the disk
