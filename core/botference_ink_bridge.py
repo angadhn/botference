@@ -314,6 +314,17 @@ class InkBridge:
         """
         emit({"type": "video_watch", **event})
 
+    def lasso(self, event: dict) -> None:
+        """What a `/lasso` (or a bot's `lasso:` line) turned up.
+
+        Its own event so a frontend can draw the matches as a card with attach
+        buttons. Optional, exactly like `video_watch`: the controller also posts
+        the same offers as a numbered room note, which is what the Ink TUI reads
+        — and the card's buttons send `/lasso attach <n>`, so there is one code
+        path and the browser is not given a private door.
+        """
+        emit({"type": "lasso", **event})
+
     def set_status(self, status: StatusSnapshot) -> None:
         emit({
             "type": "status",

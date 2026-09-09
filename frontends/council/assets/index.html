@@ -87,6 +87,11 @@
              none of its own. -->
         <div id="route-row" class="routes" role="group" aria-label="who this message is for"></div>
         <div id="att-strip" aria-label="attached images" hidden></div>
+        <!-- what has been LASSOED into this chat: past discussions, pages read
+             in the browser, papers of the reader's own. Not the composer's
+             attachments above — those ride one message; these are files the
+             bots read on every turn until the ✕ takes one off. -->
+        <div id="lasso-strip" aria-label="attached to this chat" hidden></div>
         <textarea id="input" rows="1" enterkeyhint="send"
           placeholder="Message the council…" aria-label="message"></textarea>
         <div class="composer-row">

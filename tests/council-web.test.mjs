@@ -996,6 +996,70 @@ test('replay lands pinned at the bottom — heuristics suppressed mid-replay, la
 // The council routes by tag, and until now the box said nothing about which
 // one the next sentence would carry — nor remembered the last one, so a reader
 // talking to one bot had to retype "@claude" every single turn.
+test('lasso: the card offers, the click attaches, the strip says what is carried',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const sent = posts.length;   // whatever booting already posted
+
+  // ---- the card is OFFERS ----
+  // `/lasso <words>` runs in the controller; the browser only draws what it
+  // found. Nothing here attaches anything — every button sends the same
+  // `/lasso attach <n>` a person could type, so there is no private door.
+  C.handle({ type: 'lasso', query: 'tether release', source: 'companion', results: [
+    { kind: 'chat', id: 's1', title: 'Tether release timing',
+      hit: 'claude: the libration angle has to be through zero' },
+    { kind: 'page', id: 'abc', title: 'A spinning tether', hit: 'released early' },
+  ] });
+  const card = doc.querySelector('.msg.card.lasso');
+  assert.ok(card, 'a card, in the transcript');
+  assert.match(card.textContent, /2 matches for “tether release”/);
+  assert.match(card.textContent, /Tether release timing/);
+  assert.match(card.textContent, /libration angle has to be through zero/);
+  assert.equal(card.querySelectorAll('.lassorow').length, 2, 'one row per match');
+  assert.match(card.querySelector('.lassokind').textContent, /chat/);
+  assert.ok(card.querySelector('[data-n="all"]'), 'and an attach-all');
+  assert.equal(posts.length, sent, 'a card sends nothing by itself');
+
+  // ---- one click attaches one thing, through the ordinary command ----
+  card.querySelector('.lassorow button[data-n]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts[posts.length - 1],
+    { url: '/input', body: { bridge: 'b1', text: '/lasso attach 1', attachments: [] } });
+  assert.equal(card.querySelector('.lassorow button[data-n]').disabled, true,
+    'and the button it came from cannot be pressed twice');
+
+  // ---- the strip is STATE, and it is not the card ----
+  assert.equal(doc.getElementById('lasso-strip').hasAttribute('hidden'), true,
+    'nothing is carried until the controller says so');
+  C.handle({ type: 'lasso', attachments: [
+    { kind: 'chat', title: 'Tether release timing',
+      path: '/w/.botference/lasso/s1/chat-tether.md', summary: 'A council chat.' },
+  ] });
+  const strip = doc.getElementById('lasso-strip');
+  assert.equal(strip.hasAttribute('hidden'), false);
+  assert.equal(strip.querySelectorAll('.lassochip').length, 1);
+  assert.match(strip.textContent, /Tether release timing/);
+  assert.equal(doc.querySelectorAll('.msg.card.lasso').length, 1,
+    'the standing list is not a second card');
+
+  // ---- and the ✕ takes it off, through the ordinary command ----
+  strip.querySelector('button[data-lasso-x]').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts[posts.length - 1],
+    { url: '/input', body: { bridge: 'b1', text: '/lasso detach 1', attachments: [] } });
+  C.handle({ type: 'lasso', attachments: [] });
+  assert.equal(strip.hasAttribute('hidden'), true, 'the strip goes with the last chip');
+
+  // ---- a search with nothing in it says so, and says how far it looked ----
+  C.handle({ type: 'lasso', query: 'quasars', source: 'local', results: [] });
+  const empty = [...doc.querySelectorAll('.msg.card.lasso')].pop();
+  assert.match(empty.textContent, /nothing of yours matches “quasars”/);
+  assert.match(empty.textContent, /companion is not running/);
+  assert.equal(empty.querySelectorAll('.lassorow').length, 0);
+});
+
 test('composer pill row: the address is drawn, remembered, and prefixed on send',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { doc, C, posts } = await mkHarness(t);

@@ -74,12 +74,14 @@ from room_prompts import (
     project_skill_context,
     subagents_note,
     video_watch_note,
+    lasso_note,
     web_access_note,
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
 from render_blocks import parse_render_blocks
 import video_watch
+import lasso
 from session_store import (
     SessionStore,
     SessionSummary,
@@ -193,6 +195,7 @@ class InputKind(Enum):
     CURRENT = "current"
     ALLOW_HOST = "allow_host"
     WATCH = "watch"
+    LASSO = "lasso"
 
 
 @dataclass(frozen=True)
@@ -230,6 +233,7 @@ _SLASH_COMMANDS = {
     "/current": InputKind.CURRENT,
     "/allow-host": InputKind.ALLOW_HOST,
     "/watch": InputKind.WATCH,
+    "/lasso": InputKind.LASSO,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -1349,6 +1353,18 @@ class Botference:
         self._last_watched_url: str = ""
         # model -> questions put to Gemini during the current user turn.
         self._gemini_asks: dict[str, int] = {}
+        # ---- lasso (core/lasso.py) ------------------------------------
+        # What this chat has had brought INTO it: past discussions, pages the
+        # user annotated in the browser, papers out of their own folders. Each
+        # row is {kind, id, title, path, summary, at} and the envelope names it
+        # by PATH on every turn — the contents are a file the bots read, never
+        # something inlined into the conversation.
+        self._attachments: list[dict] = []
+        # …and the OFFERS behind the last card, so "attach 2" means the second
+        # row the user is actually looking at. Not persisted: a search is not a
+        # fact about anything, and a card from three days ago is not a menu.
+        self._lasso_offer: list[dict] = []
+        self._lasso_query: str = ""
         self._restoring_session: bool = False
 
         self._claude_pct: Optional[float] = None
@@ -2023,6 +2039,10 @@ class Botference:
                 for entry in self._room_history
             ],
             "writer_votes": dict(self._ff_writer_votes),
+            # What has been lassoed into this chat. Written only when there is
+            # something, so a chat that never used it costs nothing on disk and
+            # no session written before this needs migrating.
+            **({"attachments": list(self._attachments)} if self._attachments else {}),
             "transcript": [
                 {
                     "speaker": entry.speaker,
@@ -2256,6 +2276,15 @@ class Botference:
                 str(model): str(vote)
                 for model, vote in (payload.get("writer_votes", {}) or {}).items()
             }
+            # A resumed chat keeps what was lassoed into it — that is the whole
+            # point of it being on the record rather than in memory. The last
+            # search's OFFERS are not restored: they were a menu, not a fact.
+            self._attachments = [
+                row for row in (payload.get("attachments", []) or [])
+                if isinstance(row, dict) and row.get("path") and row.get("title")
+            ][:lasso.ATTACHMENTS_MAX]
+            self._lasso_offer = []
+            self._lasso_query = ""
 
             self.transcript = Transcript()
             transcript_entries = payload.get("transcript", []) or []
@@ -2389,6 +2418,10 @@ class Botference:
             return
         for speaker, text, blocks in room:
             self._emit_room_entry(ui, speaker, text, blocks, restored=True)
+        # …and what this chat is CARRYING, so a browser landing on a resumed
+        # conversation sees its attachment strip rather than an empty box that
+        # happens to be sending paths to the bots.
+        self._emit_lasso_strip(ui)
 
     @staticmethod
     def _is_routine_restored_system_entry(entry: DisplayRecord) -> bool:
@@ -2715,6 +2748,10 @@ class Botference:
             await self._run_watch_cmd(parsed.body, ui)
             return
 
+        if parsed.kind is InputKind.LASSO:
+            self._run_lasso_cmd(parsed.body, ui)
+            return
+
         if parsed.kind is InputKind.UNARCHIVE:
             await self._run_unarchive(parsed.body, ui)
             return
@@ -2907,6 +2944,187 @@ class Botference:
             ui, watch_links=False,   # the report is already in the room
         )
 
+    # ── /lasso ────────────────────────────────────────────
+    #
+    # THREE SHAPES, one command:
+    #
+    #   /lasso <words>          search everything the user has
+    #   /lasso <path>           attach that file, no card, no clicking
+    #   /lasso attach <n|all>   take one (or all) of the last card's offers
+    #   /lasso detach <n>       take one off again
+    #   /lasso                  what this chat is carrying
+    #
+    # A search shows a CARD and changes nothing. That is the rule the whole
+    # feature rests on and it is the same rule the plugin keeps: bots may ask
+    # for a search (`lasso:`), the user does the attaching, and an attachment
+    # is a file on disk that the envelope names by path.
+
+    @staticmethod
+    def _emit_lasso(ui: UIPort, event: dict) -> None:
+        """The card, for a frontend that can draw one.
+
+        Optional on the UI, like the video-watch indicator: a frontend without
+        it simply does not implement the sink and the room note below carries
+        the same offers as text, which the TUI reads perfectly well.
+        """
+        sink = getattr(ui, "lasso", None)
+        if sink is None:
+            return
+        try:
+            sink(event)
+        except Exception:  # a card must never break a turn
+            log.debug("lasso event sink failed", exc_info=True)
+
+    def _emit_lasso_strip(self, ui: UIPort) -> None:
+        """What this chat is carrying, for a frontend that draws a strip.
+
+        Separate from the search event because they are different things: one
+        is a menu that goes away, the other is state that does not.
+        """
+        self._emit_lasso(ui, {"attachments": [
+            {"kind": a.get("kind", ""), "title": a.get("title", ""),
+             "path": a.get("path", ""), "summary": a.get("summary", "")}
+            for a in self._attachments
+        ]})
+
+    def _lasso_rows_text(self, rows: list[dict]) -> str:
+        out = []
+        for i, r in enumerate(rows, 1):
+            hit = str(r.get("hit") or "").strip()
+            out.append(f"  {i}. [{r.get('kind', '?')}] {r.get('title') or r.get('id')}"
+                       + (f"\n     {hit}" if hit else ""))
+        return "\n".join(out)
+
+    def _lasso_carrying(self) -> str:
+        if not self._attachments:
+            return ("This chat is carrying nothing. `/lasso <words>` searches what you "
+                    "have read and said; `/lasso <path>` attaches a file of your own.")
+        rows = "\n".join(
+            f"  {i}. [{a.get('kind', '?')}] {a.get('title')} — {a.get('path')}"
+            for i, a in enumerate(self._attachments, 1))
+        return (f"Attached to this chat ({len(self._attachments)}):\n{rows}\n"
+                "The bots read these when they matter. `/lasso detach <n>` takes one off.")
+
+    def _lasso_show(self, result: "lasso.SearchResult", ui: UIPort) -> None:
+        self._lasso_offer = list(result.results)
+        self._lasso_query = result.query
+        # WHERE THE ANSWER CAME FROM, always. The fallback covers this council's
+        # own chats and nothing else; a user who thought their annotated pages
+        # were searched and got silence would conclude they had nothing.
+        scope = ("" if not result.narrow else
+                 "  (the browser companion is not running, so this searched this "
+                 "council's own chats only)")
+        self._emit_lasso(ui, {
+            "query": result.query, "results": result.results,
+            "source": result.source, "carrying": len(self._attachments),
+        })
+        if not result.results:
+            self._show_room_notice(
+                ui, "system", f"Nothing of yours matches “{result.query}”.{scope}")
+            return
+        self._show_room_notice(ui, "system", (
+            f"{len(result.results)} match"
+            f"{'' if len(result.results) == 1 else 'es'} for “{result.query}”:{scope}\n"
+            f"{self._lasso_rows_text(result.results)}\n"
+            "Attach one with /lasso attach <n> (or `all`). Nothing is attached until you do."))
+
+    def _lasso_attach_rows(self, rows: list[dict], ui: UIPort) -> None:
+        """Build and record each of `rows`, saying what came of every one."""
+        done, failed = [], []
+        for row in rows:
+            built = lasso.attach(self.paths.project_root, self.session_id,
+                                 str(row.get("kind") or ""), str(row.get("id") or ""))
+            if built.get("error"):
+                failed.append(f"{row.get('title') or row.get('id')}: {built['error']}")
+                continue
+            built["at"] = _dt.now(_tz.utc).isoformat()
+            kept, why = lasso.add_attachment(self._attachments, built)
+            self._attachments = kept
+            if why:
+                failed.append(why)
+                break
+            done.append(built)
+        if done:
+            self._persist_session()
+            self._emit_lasso_strip(ui)
+            lines = "\n".join(f"  · {a['title']} — {a['path']}" for a in done)
+            # The bots are told IN THE ROOM, not only in the envelope: an
+            # attachment arriving mid-conversation is news, and a model that
+            # only meets it as a standing block may not notice it is new.
+            note = (f"[{len(done)} attachment{'' if len(done) == 1 else 's'} added to this "
+                    f"chat — read the file when it is relevant, never paste it back:\n{lines}]")
+            self._add_room_entry(ui, "system", note)
+            self.transcript.add("system", note)
+            self._persist_session()
+        for why in failed:
+            self._add_room_entry(ui, "system", f"Not attached — {why}")
+
+    def _run_lasso_cmd(self, body: str, ui: UIPort) -> None:
+        """/lasso — search what you have already read and said, and attach it."""
+        raw = (body or "").strip()
+        if not raw:
+            self._add_room_entry(ui, "system", self._lasso_carrying())
+            return
+
+        low = raw.lower()
+        if low == "list" or low == "carrying":
+            self._add_room_entry(ui, "system", self._lasso_carrying())
+            return
+
+        if low.startswith("detach"):
+            which = raw.split(None, 1)[1].strip() if len(raw.split(None, 1)) > 1 else ""
+            kept, gone = lasso.detach(self._attachments, which)
+            if gone is None:
+                self._add_room_entry(ui, "system", (
+                    "Nothing to detach there. `/lasso` lists what this chat is carrying."))
+                return
+            self._attachments = kept
+            self._persist_session()
+            self._emit_lasso_strip(ui)
+            self._add_room_entry(ui, "system", f"Detached {gone.get('title')}.")
+            return
+
+        if low.startswith("attach"):
+            which = raw.split(None, 1)[1].strip() if len(raw.split(None, 1)) > 1 else ""
+            if not self._lasso_offer:
+                self._add_room_entry(ui, "system", (
+                    "There is nothing on offer — run `/lasso <words>` first, or "
+                    "`/lasso <path>` to attach a file of your own directly."))
+                return
+            if which.lower() in ("all", "*"):
+                self._lasso_attach_rows(list(self._lasso_offer), ui)
+                return
+            if not which.isdigit() or not (1 <= int(which) <= len(self._lasso_offer)):
+                self._add_room_entry(ui, "system", (
+                    f"Say which one: /lasso attach 1…{len(self._lasso_offer)}, or `all`."))
+                return
+            self._lasso_attach_rows([self._lasso_offer[int(which) - 1]], ui)
+            return
+
+        # A PATH is not a search: the user who typed one has already chosen.
+        if lasso.looks_like_path(raw):
+            p, why = lasso.resolve_owner_path(raw)
+            if p is None:
+                self._add_room_entry(ui, "system", f"Not attached — {why}.")
+                return
+            self._lasso_attach_rows([{"kind": "file", "id": str(p), "title": p.name}], ui)
+            return
+
+        self._lasso_show(lasso.search(self.paths.project_root, raw), ui)
+
+    def _maybe_lasso_for_bot(self, reply_text: str, ui: UIPort) -> None:
+        """Honour a `lasso:` line a bot ended its reply with.
+
+        It runs the SEARCH and shows the user the card. It never attaches
+        anything — same discipline as `watch:` (which does act, because
+        watching a video reads nothing of the user's) and as the plugin's
+        `file-in:` (which does not, for exactly this reason).
+        """
+        query = lasso.parse_lasso_request(reply_text)
+        if not query:
+            return
+        self._lasso_show(lasso.search(self.paths.project_root, query), ui)
+
     def _post_video_report(
         self, result: "video_watch.WatchResult", ui: UIPort,
         *, for_the_bots: bool = True, asked_by: str = "",
@@ -3065,6 +3283,13 @@ class Botference:
             "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
             "  /watch <url> [question] — Have Gemini watch a YouTube video, post what it saw,"
             " and let the bots discuss it",
+            "  /lasso <words>      — Search everything you have read and said (annotated pages,"
+            " past chats, your own folders) and offer the matches",
+            "  /lasso <path>       — Attach a file of your own to this chat, directly",
+            "  /lasso attach <n|all> | /lasso detach <n> | /lasso"
+            "                     — Take one of the offers, take one off, or list what this"
+            " chat is carrying. Attachments are FILES the bots read on demand;"
+            " a bot may ask for a search with a `lasso:` line and still attaches nothing",
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
@@ -4928,6 +5153,7 @@ class Botference:
                 ui.set_status(self.status_snapshot())
                 self._persist_session()
                 await self._maybe_watch_for_bot(resp.text, ui, model)
+                self._maybe_lasso_for_bot(resp.text, ui)
                 last_speaker, last_resp = model, resp
 
         if (
@@ -5054,6 +5280,7 @@ class Botference:
             ui.set_status(self.status_snapshot())
             self._persist_session()
             await self._maybe_watch_for_bot(next_resp.text, ui, target)
+            self._maybe_lasso_for_bot(next_resp.text, ui)
 
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp
@@ -5129,6 +5356,14 @@ class Botference:
             # by _send_message before dispatch), so context_since picks it
             # up.  Passing "" avoids injecting the user message twice.
             context = self.transcript.context_since(model, "")
+            # …and the attachments block on EVERY turn, not only the first: a
+            # resumed session's replayed history is uneven and a relay drops it
+            # whole, so the only thing a turn can rely on carrying is the turn.
+            # It is cheap (one line per attachment, capped) and it is the whole
+            # of how a bot knows the file is there to be read.
+            block = lasso.attachments_block(self._attachments)
+            if block:
+                context = f"{block}\n{context}"
             try:
                 resp = await self._run_adapter_streamed(
                     adapter,
@@ -5247,6 +5482,7 @@ class Botference:
         parts.append(deliverables_note())
         parts.append(recommendations_note())
         parts.append(video_watch_note())
+        parts.append(lasso_note())
         tasks_note = self._project_tasks_note()
         if tasks_note:
             parts.append(tasks_note)
@@ -5267,6 +5503,13 @@ class Botference:
             )
         else:
             backfill = self.transcript.context_since(model, "")
+        # What the user has lassoed into this chat: one line each — title,
+        # kind, PATH, a sentence — and never the contents. An attachment is a
+        # file the bots open when it matters, exactly as the plugin's page
+        # snapshot is (SPEC "BOTS READ THE WHOLE DOCUMENT").
+        block = lasso.attachments_block(self._attachments)
+        if block:
+            parts.append(block)
         parts.extend(["--- Room History ---", backfill])
         return "\n\n".join(parts)
 

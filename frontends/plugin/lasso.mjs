@@ -573,6 +573,62 @@ export function attachmentsOf(page) {
 }
 
 /**
+ * BUILD one attachment's digest into `dir`, and describe it.
+ *
+ * The whole of what makes an attachment, with no record in sight — because
+ * there are two records. A page's attachments live on the page (`attach`
+ * below); the COUNCIL's live on the controller's own session record, in
+ * Python, and it reaches this through `POST /attach {sid}` rather than
+ * growing a second search index of its own (SPEC: do not duplicate the
+ * index). Both get the same digest, written the same way.
+ *
+ * Answers `{kind, id, title, path, summary}` or `{error}`.
+ */
+export function buildAttachment(dir, { kind, id, notPage = '' }) {
+  if (kind === 'page') {
+    const src = readPageByKey(String(id || ''));
+    if (!src) return { error: 'no such page' };
+    if (notPage && pageKey(src.url) === notPage) return { error: 'that is this page' };
+    const d = pageDigest(src);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${slugify(`page-${displayTitle(src)}`)}.md`);
+    fs.writeFileSync(file, d.text);
+    return { kind: 'page', id: String(id), title: displayTitle(src), path: file, summary: d.summary };
+  }
+  if (kind === 'chat') {
+    const sid = String(id || '');
+    let found = null;
+    for (const root of searchableRoots()) {
+      const hit = sessionFilesIn(root).find(s => s.sid === sid);
+      if (hit) { found = { ...hit, root }; break; }
+    }
+    if (!found) return { error: 'no such chat' };
+    const d = chatDigest(found);
+    if (!d) return { error: 'that chat could not be read' };
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${slugify(`chat-${d.title}`)}.md`);
+    fs.writeFileSync(file, d.text);
+    return { kind: 'chat', id: sid, title: d.title, path: file, summary: d.summary };
+  }
+  if (kind === 'file') {
+    const r = resolveOwnerPath(id);
+    if (r.error) return { error: r.error };
+    const slug = slugify(`file-${path.basename(r.path, path.extname(r.path))}`);
+    fs.mkdirSync(dir, { recursive: true });
+    let d;
+    try { d = fileDigest(r.path, dir, slug); }
+    catch (e) { return { error: `that file could not be copied (${(e && e.code) || 'error'})` }; }
+    return { kind: 'file', id: r.path, title: path.basename(r.path),
+      path: d.path, summary: d.summary, ...(d.sidecar ? { text_path: d.sidecar } : {}) };
+  }
+  return { error: 'unknown kind' };
+}
+
+/** Where a council chat's digests are kept — the controller records the path. */
+export const councilDir = sid =>
+  path.join(ATTACH_DIR, `council-${String(sid).replace(/[^\w.-]/g, '')}`);
+
+/**
  * Attach one thing to one page's chat.
  *
  * `{kind, id}` names what — a page key, a council sid, or (kind 'file') an
@@ -586,56 +642,17 @@ export function attach(url, { kind, id }) {
   const key = pageKey(page.url);
   const dir = path.join(ATTACH_DIR, key);
   const existing = attachmentsOf(page);
-
-  let built = null;
-  if (kind === 'page') {
-    const src = readPageByKey(String(id || ''));
-    if (!src) return { error: 'no such page' };
-    if (pageKey(src.url) === key) return { error: 'that is this page' };
-    const slug = slugify(`page-${displayTitle(src)}`);
-    const already = existing.find(a => a.kind === 'page' && a.id === String(id));
-    if (already) return { ok: true, attachment: already, page };
-    const d = pageDigest(src);
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `${slug}.md`);
-    fs.writeFileSync(file, d.text);
-    built = { kind: 'page', id: String(id), title: displayTitle(src), path: file, summary: d.summary };
-  } else if (kind === 'chat') {
-    const sid = String(id || '');
-    let found = null;
-    for (const root of searchableRoots()) {
-      const hit = sessionFilesIn(root).find(s => s.sid === sid);
-      if (hit) { found = { ...hit, root }; break; }
-    }
-    if (!found) return { error: 'no such chat' };
-    const already = existing.find(a => a.kind === 'chat' && a.id === sid);
-    if (already) return { ok: true, attachment: already, page };
-    const d = chatDigest(found);
-    if (!d) return { error: 'that chat could not be read' };
-    const slug = slugify(`chat-${d.title}`);
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `${slug}.md`);
-    fs.writeFileSync(file, d.text);
-    built = { kind: 'chat', id: sid, title: d.title, path: file, summary: d.summary };
-  } else if (kind === 'file') {
-    const r = resolveOwnerPath(id);
-    if (r.error) return { error: r.error };
-    const already = existing.find(a => a.kind === 'file' && a.id === r.path);
-    if (already) return { ok: true, attachment: already, page };
-    const slug = slugify(`file-${path.basename(r.path, path.extname(r.path))}`);
-    fs.mkdirSync(dir, { recursive: true });
-    let d;
-    try { d = fileDigest(r.path, dir, slug); }
-    catch (e) { return { error: `that file could not be copied (${(e && e.code) || 'error'})` }; }
-    built = { kind: 'file', id: r.path, title: path.basename(r.path),
-      path: d.path, summary: d.summary, ...(d.sidecar ? { text_path: d.sidecar } : {}) };
-  } else {
-    return { error: 'unknown kind' };
-  }
-
+  // already on this chat? then the click has already happened and nothing
+  // needs writing — answer with what is there
+  const same = a => a.kind === kind && (kind === 'file'
+    ? a.id === (resolveOwnerPath(id).path || String(id)) : a.id === String(id));
+  const already = existing.find(same);
+  if (already) return { ok: true, attachment: already, page };
   if (existing.length >= ATTACHMENTS_MAX) {
     return { error: `this chat already carries ${ATTACHMENTS_MAX} attachments — detach one first` };
   }
+  const built = buildAttachment(dir, { kind, id, notPage: key });
+  if (built.error) return { error: built.error };
   built.at = new Date().toISOString();
   page.attachments = [...existing, built];
   savePage(page);

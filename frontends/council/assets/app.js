@@ -32,6 +32,7 @@
     input: $('input'), send: $('send'), stop: $('stop'), complete: $('complete'),
     queueNote: $('queue-note'),
     attach: $('attach'), file: $('file'), attStrip: $('att-strip'),
+    lassoStrip: $('lasso-strip'),
     routeRow: $('route-row'),
     toast: $('toast'), sync: $('sync'),
   };
@@ -302,6 +303,10 @@
     bridgeId: null,        // this tab's bridge (from 'hello'); named in every POST
     resuming: false,       // the attached bridge is still executing its spawn-time /resume
     atts: [],              // composer attachments: {id, path, url, thumb, status}
+    // what has been LASSOED into this chat (controller-side; the strip
+    // above the composer). Not the composer's own attachments: these are
+    // files the bots read on every turn until the ✕ takes one off.
+    lassoOn: [],
     lanes: {},             // subagent progress lane: tool_use_id -> lane record
     laneCard: null,        // the in-progress turn's lane card element (null between turns)
     laneTimer: null,       // interval ticking the running lanes' elapsed clocks
@@ -1875,6 +1880,67 @@
     liveCard = div;
     if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
   }
+  // ── the lasso card ──
+  // What a `/lasso <words>` (or a bot's `lasso:` line) turned up: past
+  // discussions, pages read in the browser, papers in the reader's own
+  // folders. OFFERS, nothing more — every button sends `/lasso attach <n>`,
+  // which is the same command a person can type, so the browser gets no
+  // private door into the controller and there is one code path to be right.
+  //
+  // Deliberately NOT settleCard's kind of card: an interrupt card is one
+  // question with one answer and dies on the next event. This one can be
+  // acted on several times (attach two of five matches) and stays readable
+  // afterwards, like the filing card does.
+  function lassoCard(ev) {
+    const rows = Array.isArray(ev.results) ? ev.results : [];
+    const wasPinned = pinned();
+    const div = document.createElement('div');
+    div.className = 'msg card lasso';
+    const scope = ev.source === 'companion' ? ''
+      : '<div class="card-note">the browser companion is not running, so this searched '
+        + 'this council&rsquo;s own chats only</div>';
+    div.innerHTML = `<div class="card-title">${rows.length
+      ? `${rows.length} match${rows.length === 1 ? '' : 'es'} for “${esc(ev.query)}”`
+      : `nothing of yours matches “${esc(ev.query)}”`}</div>
+      ${scope}
+      ${rows.map((r, i) => `<div class="lassorow">
+        <span class="lassow"><b>${esc(r.title || r.id || '')}</b>
+          <span class="lassokind">${esc(r.kind || '')}</span>
+          <span class="lassohit">${esc(r.hit || '')}</span></span>
+        <button data-n="${i + 1}">attach</button></div>`).join('')}
+      ${rows.length ? `<div class="opts"><button data-n="all">Attach all</button>
+        <button data-act="lasso-no">Dismiss</button></div>` : ''}`;
+    div.addEventListener('click', async e => {
+      if (e.target.closest('[data-act="lasso-no"]')) {
+        div.classList.add('answered');
+        for (const b of div.querySelectorAll('button')) b.disabled = true;
+        return;
+      }
+      const b = e.target.closest('button[data-n]');
+      if (!b || b.disabled) return;
+      b.disabled = true;
+      b.textContent = b.dataset.n === 'all' ? 'attaching…' : 'attached';
+      await sendInput('/lasso attach ' + b.dataset.n);
+    });
+    container().appendChild(div);
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+  }
+
+  // …and what the chat is CARRYING, above the composer, until the ✕ takes it
+  // off. State rather than a menu, which is why it is a strip and not a card:
+  // these files ride every turn from now on.
+  function renderLassoStrip() {
+    const el = els.lassoStrip;
+    if (!el) return;
+    const rows = state.lassoOn || [];
+    el.hidden = !rows.length;
+    el.innerHTML = rows.map((a, i) =>
+      `<span class="lassochip" title="${esc(a.summary || a.path || '')}">
+        <span class="lassokind">${esc(a.kind || '')}</span>${esc(a.title || '')}
+        <button class="att-x" data-lasso-x="${i + 1}" aria-label="detach ${esc(a.title || '')}">✕</button>
+      </span>`).join('');
+  }
+
   function permissionCard(ev) {
     settleCard();
     const wasPinned = pinned();
@@ -2601,6 +2667,14 @@
   if (els.attach && els.file) {
     els.attach.addEventListener('click', () => els.file.click());
     els.file.addEventListener('change', () => { addFiles(els.file.files); els.file.value = ''; });
+    if (els.lassoStrip) {
+      els.lassoStrip.addEventListener('click', e => {
+        const b = e.target.closest('button[data-lasso-x]');
+        if (!b || b.disabled) return;
+        b.disabled = true;
+        sendInput('/lasso detach ' + b.dataset.lassoX);
+      });
+    }
     els.attStrip.addEventListener('click', e => {
       const b = e.target.closest('[data-x]');
       if (!b) return;
@@ -3002,6 +3076,12 @@
       case 'permission_request': permissionCard(ev); break;
       case 'permission_cleared': settleCard(); break;
       case 'choice_request': choiceCard(ev); break;
+      case 'lasso':
+        // one event, two things: a SEARCH (a card of offers) and the
+        // standing list of what is attached (the strip)
+        if (Array.isArray(ev.attachments)) { state.lassoOn = ev.attachments; renderLassoStrip(); }
+        else lassoCard(ev);
+        break;
       case 'choice_cleared': settleCard(); break;
       case 'permission_timeout': settleCard('timed out — denied by default'); break;
       case 'choice_timeout': settleCard('timed out — dismissed'); break;

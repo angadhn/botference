@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import lasso
+
 # -- Skills -----------------------------------------------------------------
 
 _SKILL_DIRS_BY_MODEL = {
@@ -260,6 +262,21 @@ def video_watch_note() -> str:
         "you. The user can also ask for a video with /watch <url>, and any "
         "YouTube link they send is watched automatically."
     )
+
+
+# -- lasso: what the user has already read and said ---------------------------
+
+
+def lasso_note() -> str:
+    """Tell the bots they may ask for something of the user's to be found.
+
+    The precedent is video_watch_note above: a capability the bots do not have,
+    reachable through ONE line at the end of a reply, with the discipline said
+    out loud. The difference — and it is the important one — is that a video
+    watch ACTS and this does not. `lasso:` runs a search and shows the user the
+    matches; nothing is read and nothing is attached until they choose.
+    """
+    return lasso.lasso_note()
 
 
 # -- Subagents (user-gated) ---------------------------------------------------

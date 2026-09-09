@@ -2442,6 +2442,21 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/attach') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
+      // …and the OTHER caller, which is not a page at all. The council's own
+      // `/lasso` runs in the controller (Python), and the whole point of it
+      // reaching this door is that there is ONE index and one digest writer on
+      // this machine. So a `{sid}` ask BUILDS the digest and hands back its
+      // path, and records nothing: a council chat's attachments live on the
+      // controller's session record, which is the only place that knows about
+      // them (SPEC, "one index, two records").
+      const sid = String(data.sid || '');
+      if (sid && !data.url) {
+        if (!workspace.SID_RE.test(sid)) return fail(res, 400, 'not a chat id');
+        const built = lasso.buildAttachment(lasso.councilDir(sid),
+          { kind: String(data.kind || ''), id: data.id });
+        if (built.error) return fail(res, 400, built.error);
+        return ok(res, { sid, attachment: { ...built, at: new Date().toISOString() } });
+      }
       const target = String(data.url || '');
       if (!store.readPage(target)) return fail(res, 404, 'no such page');
       const r = lasso.attach(target, { kind: String(data.kind || ''), id: data.id });

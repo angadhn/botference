@@ -857,3 +857,34 @@ body.agents-open #agents-panel { transform: translateX(0) }
   .chat-col { padding: 0 .9rem }
   #complete { left: .9rem; right: .9rem }
 }
+
+/* ---- lasso: what has been brought into this chat ------------------------
+   The CARD is a set of offers (a search found these; attach one, or none) and
+   the STRIP is state (these files ride every turn from now on). They look
+   different because they are different: the card is a message in the
+   transcript, the strip is a row of small chips above the composer. */
+.msg.card.lasso .lassorow {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 0; border-top: 1px solid var(--line, #2a2a2a);
+}
+.msg.card.lasso .lassow { flex: 1 1 auto; min-width: 0 }
+.msg.card.lasso .lassow b { font-weight: 600 }
+.msg.card.lasso .lassokind {
+  font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  opacity: .6; margin-left: 6px;
+}
+.msg.card.lasso .lassohit {
+  display: block; opacity: .7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.msg.card.lasso button[disabled] { opacity: .5 }
+#lasso-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px }
+#lasso-strip .lassochip {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%; padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line, #2a2a2a); border-radius: 999px;
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#lasso-strip .lassokind {
+  font-size: 10px; letter-spacing: .04em; text-transform: uppercase; opacity: .6;
+}
