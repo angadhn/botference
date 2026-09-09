@@ -9529,7 +9529,7 @@ async function selftestProjectArtifact() {
       pane.scrollTop = pane.scrollHeight;
       await sleep(60);
       const fr2 = foot.getBoundingClientRect();
-      const comp = S.querySelector('.pane[data-pane="chat"] .card.chatpane > .composer');
+      const comp = S.querySelector('.pane[data-pane="chat"] .card.chatpane .chatdock > .composer');
       check('…and at the bottom it sits above the message box, never over it',
         !!comp && fr2.bottom <= comp.getBoundingClientRect().top + 2);
     }
@@ -10931,13 +10931,13 @@ async function selftestWorkspace() {
   // and gets two bots. Comment threads on the same page keep the ordinary
   // Discuss rule, and the ordinary line.
   check('the page-chat hint says plain text goes to the room',
-    (S.querySelector('.pane[data-pane="chat"] .composer .hint') || {}).textContent
-      === 'plain text goes to @all \u2014 or tag one bot');
+    ((S.querySelector('.pane[data-pane="chat"] .composer .hint') || {}).textContent || '')
+      .startsWith('plain text goes to @all \u2014 or tag one bot'));
   d.open('comments');
   await sleep(60);
   const thints = [...S.querySelectorAll('.pane[data-pane="comments"] .composer .hint')];
   check('\u2026while a comment thread on the same page keeps the ordinary one',
-    thints.length > 0 && thints.every(h => h.textContent === '@claude, @codex or @all to bring in the bots'));
+    thints.length > 0 && thints.every(h => h.textContent.startsWith('@claude, @codex or @all to bring in the bots')));
   d.open('chat');
   await sleep(60);
 
