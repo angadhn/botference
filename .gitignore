@@ -21,3 +21,8 @@ specs/open-design-gaps.md
 specs/parallel-evolution-design.md
 specs/editor-output-format.md
 .botference/
+
+# Bots' own outputs on this machine — never part of the harness
+work/artifacts/
+# one-off maintenance scripts
+scrub-*.sh
