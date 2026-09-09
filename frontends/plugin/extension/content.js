@@ -822,10 +822,15 @@
     // span by span — so the PDF adapter hands back the words under the same
     // page markers the viewer shows, which is what makes an anchor made here
     // findable on the phone.
+    // An adapter's snapshot may be a Promise (Google Docs fetches the export):
+    // callers await this — sendSnapshot does — and the harness's direct call
+    // gets a string on the synchronous paths it exercises.
     if (SITE && typeof SITE.snapshotHtml === 'function') {
-      let html = '';
-      try { html = String(SITE.snapshotHtml() || ''); } catch (_) { html = ''; }
-      return html.length > SNAP_MAX ? '' : html;
+      const fit = h => { h = String(h || ''); return h.length > SNAP_MAX ? '' : h; };
+      let out;
+      try { out = SITE.snapshotHtml(); } catch (_) { return ''; }
+      if (out && typeof out.then === 'function') return out.then(fit, () => '');
+      return fit(out);
     }
     let root;
     try { root = articleRoot(); } catch (_) { return ''; }
@@ -883,10 +888,10 @@
       });
   let lastSnapHash = null;
   function snapshotNow() { return pageSettled.then(sendSnapshot); }
-  function sendSnapshot() {
+  async function sendSnapshot() {
     let html = '';
-    try { html = snapshotHtml(); } catch (_) { return Promise.resolve(); }
-    if (!html) return Promise.resolve();
+    try { html = await snapshotHtml(); } catch (_) { return; }
+    if (!html) return;
     const h = hashText(html);
     if (h === lastSnapHash) return Promise.resolve();
     lastSnapHash = h;
@@ -2592,6 +2597,41 @@
         await loadPage();
         return { filed: (r.data && r.data.filed) || [] };
       },
+      // ---- lasso: bringing what the reader has read and said into a chat --
+      //
+      // The search is a READ and attaches nothing (the companion's owner-only
+      // GET /lasso). The two writes are one click each, and the companion owns
+      // the digest file — this extension never touches the disk.
+      //
+      // `library` says WHICH chat: the library is a page chat on a page nobody
+      // is standing on, exactly as `onLibraryReply` is, so the url is simply
+      // not this one.
+      onLasso: async (query) => {
+        const r = await api('GET', '/lasso?q=' + encodeURIComponent(query || '')
+          + '&url=' + encodeURIComponent(URL_NOW));
+        if (!r.ok) return failure(r);
+        const d = r.data || {};
+        return { ok: true, results: d.results || [], attached: d.attached || [],
+                 path: d.path || '', error: d.error || '' };
+      },
+      onLassoAttach: async (kind, id, library) => {
+        // the record has to exist before anything can hang off it — a page the
+        // reader has never commented on is a shell nobody has asked for yet
+        if (!library) await ensureRegistered();
+        const r = await api('POST', '/attach',
+          { url: library ? LIBRARY_URL : URL_NOW, kind, id });
+        if (!r.ok) return failure(r);
+        if (!library) await loadPage();
+        return { ok: true, attachment: r.data && r.data.attachment };
+      },
+      onLassoDetach: async (path, library) => {
+        const r = await api('POST', '/detach',
+          { url: library ? LIBRARY_URL : URL_NOW, path });
+        if (!r.ok) return failure(r);
+        if (!library) await loadPage();
+        return { ok: true };
+      },
+
       // ---- and starting a project that does not exist yet -----------------
       // The one act in this drawer that writes inside the reader's council: a
       // new `projects/<id>/` with a PROJECT.md, a row on the portfolio, and

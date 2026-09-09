@@ -1499,6 +1499,15 @@
       projects: { list: null, filed: [], loading: false, err: '', busy: '',
                   declined: [], roots: [], newOpen: false, started: [] },
       projOpen: false,
+      // ---- lasso (SPEC "lasso — bringing what you have read and said…") ---
+      // What a `/lasso …` just found, and where to draw it. Offers only:
+      // `results` is thrown away by "dismiss", by the next search and by
+      // leaving the page, because a search is not a fact about anything. What
+      // is ATTACHED is not here at all — it lives on the page record, which is
+      // why it survives a reload. `declined` holds the ts of a bot's `lasso:`
+      // offer the reader waved away, per tab, exactly like `projects.declined`.
+      lasso: { target: '', query: '', results: [], err: '', busy: '',
+               searching: '', declined: [] },
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the composer's pill row.
@@ -2284,6 +2293,7 @@ ${markPickHtml()}
           D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}${
           strikeChipHtml(r, target)}${
           questionChipHtml(r, target)}${
+          lassoChipHtml(r)}${
           suggestStackHtml(r, target)}</div>`;
     }
 
@@ -2554,10 +2564,86 @@ ${markPickHtml()}
     // one exception is a brand-new thread, where a second send before the
     // server has minted an id would create a second thread for the same
     // passage — that button waits.
+    // ---- lasso: what the reader brought into this chat --------------------
+    //
+    // TWO ROWS, both above the composer, and they are different things.
+    //
+    //   the STRIP — what is attached to this chat, from now on. Small chips
+    //     with a ✕, like the council's attachment strip. It is state: it
+    //     survives a reload because it is on the page record.
+    //   the FIND — what a `/lasso …` (or a bot's `lasso:` line) just turned
+    //     up. Offers, nothing more: a title, what kind of thing it is, the
+    //     line that matched, and a button. Nothing attaches without a click,
+    //     and "dismiss" throws the whole row away without attaching anything.
+    //
+    // Only page chat and the library carry the strip: an attachment belongs to
+    // the CHAT, and a comment thread is not one. A `/lasso` typed in a thread
+    // composer still searches, and still attaches to the page's chat — which
+    // is where the bots read it from.
+    const lassoAttachments = () => {
+      const rec = D.view === 'pages' ? (D.library && D.library.page) : D.page;
+      return (rec && Array.isArray(rec.attachments)) ? rec.attachments : [];
+    };
+    const KIND_WORD = { page: 'page', chat: 'chat', file: 'file' };
+    const lassoRowHtml = r => `<div class="lassorow">
+        <span class="lassow"><b>${esc(r.title || r.id || '')}</b>
+          <span class="lassokind">${esc(KIND_WORD[r.kind] || r.kind || '')}</span>
+          <span class="lassohit">${esc(r.hit || '')}</span></span>
+        <button class="rebtn" type="button" data-act="lasso-attach"
+          data-kind="${esc(r.kind || '')}" data-id="${esc(r.id || '')}"
+          ${D.lasso.busy === String(r.id) ? 'disabled' : ''}>attach</button>
+      </div>`;
+    /** The find row, wherever it was asked for — a composer, or a bot's reply. */
+    function lassoFindHtml(find) {
+      if (!find) return '';
+      const rows = Array.isArray(find.results) ? find.results : [];
+      const head = find.err
+        ? esc(find.err)
+        : rows.length
+          ? `${rows.length} match${rows.length === 1 ? '' : 'es'} for “${esc(find.query)}”`
+          : `nothing of yours matches “${esc(find.query)}”`;
+      return `<div class="lassofind">
+        <div class="lassohead"><span>${head}</span>
+          ${rows.length > 1 ? `<button class="rebtn" type="button" data-act="lasso-all">attach all</button>` : ''}
+          <button class="rebtn no" type="button" data-act="lasso-dismiss">dismiss</button></div>
+        ${rows.map(lassoRowHtml).join('')}</div>`;
+    }
+    function lassoHtml(target) {
+      const strip = (target === PAGE_TARGET || target === LIBRARY_TARGET)
+        ? lassoAttachments() : [];
+      const stripHtml = strip.length
+        ? `<div class="lassostrip">${strip.map(a => `<span class="lassochip" title="${esc(a.summary || '')}">
+            <span class="lassokind">${esc(KIND_WORD[a.kind] || a.kind || '')}</span>${esc(a.title)}
+            <button class="lassox" type="button" data-act="lasso-x" data-path="${esc(a.path)}"
+              aria-label="detach ${esc(a.title)}">✕</button></span>`).join('')}</div>`
+        : '';
+      // its own class: "looking…" and a finished, empty result are different
+      // states and a test (or a reader) that cannot tell them apart will read
+      // a slow search as a search that found nothing
+      const busy = (D.lasso.searching === target)
+        ? `<div class="lassofind lassobusy"><div class="lassohead"><span>looking…</span></div></div>` : '';
+      // NEVER both: a search in flight must not leave the LAST search's
+      // matches on screen under a "looking…" line, or the reader clicks attach
+      // on a row that is about to be replaced.
+      const find = (!busy && D.lasso.target === target) ? lassoFindHtml(D.lasso) : '';
+      return stripHtml + busy + find;
+    }
+    // …and the same offers under a BOT's reply, when it ended with
+    // `lasso: <words>` and the companion ran the search for it (server.mjs
+    // lifts the line into `msg.lasso`). Same rows, same buttons, same rule:
+    // the bot asked, the reader decides.
+    function lassoChipHtml(msg) {
+      const l = msg && msg.lasso;
+      if (!l || !l.query) return '';
+      if (D.lasso.declined.indexOf(String(msg.ts)) >= 0) return '';
+      return lassoFindHtml({ query: l.query, results: l.results || [], err: '' })
+        .replace('class="lassofind"', 'class="lassofind frombot"');
+    }
+
     function composerHtml(target, label, extra, hint, pills) {
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
-      return `<div class="composer${draft.trim() ? ' has-draft' : ''}" data-target="${esc(target)}">
+      return `${lassoHtml(target)}<div class="composer${draft.trim() ? ' has-draft' : ''}" data-target="${esc(target)}">
         ${pills ? routesHtml(target) : ''}
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
@@ -5495,6 +5581,25 @@ ${markPickHtml()}
         if (row && row.dataset.ts) D.projects.declined.push(row.dataset.ts);
         render();
       },
+      // ---- lasso ---------------------------------------------------------
+      // Attaching is the only thing here that changes anything, and it is
+      // always one click by the reader — never a bot, never automatic.
+      'lasso-attach': (btn) => doAttach(btn.dataset.kind, btn.dataset.id),
+      'lasso-all': (btn) => {
+        const box = btn.closest && btn.closest('.lassofind');
+        const rows = box ? [...box.querySelectorAll('[data-act="lasso-attach"]')] : [];
+        doAttachAll(rows.map(b => ({ kind: b.dataset.kind, id: b.dataset.id })));
+      },
+      'lasso-dismiss': (btn) => {
+        // a bot's offer is dismissed for THIS reply only (and only in this
+        // tab); the composer's own find row is simply thrown away
+        const bot = btn.closest && btn.closest('.frombot');
+        const row = bot && bot.closest && bot.closest('[data-ts]');
+        if (row && row.dataset.ts) D.lasso.declined.push(String(row.dataset.ts));
+        else D.lasso = { ...D.lasso, target: '', query: '', results: [], err: '' };
+        lassoPaint();
+      },
+      'lasso-x': (btn) => doDetach(btn.dataset.path),
       // the mark, changed after the fact — both ways, one click each
       'set-mark': (btn, target) => doSetMark(target, btn.dataset.mark),
       // the bot's strike suggestion, answered. Yes mints a strikeout of the
@@ -6180,6 +6285,17 @@ ${markPickHtml()}
         // other empty Send is a slip of the hand and does nothing, as before.
         const bare = !text && target === '__new__' && D.pending && D.pending.mark === 'strike';
         if (!text && !bare) return;
+        // `/lasso …` is a COMMAND, not a message: it searches what the reader
+        // has and offers the matches above this composer. Nothing is sent to
+        // anybody, nothing is stored, and the box empties the way it does for
+        // a send — because the words have been acted on.
+        if (LASSO_CMD.test(text)) {
+          delete D.drafts[target];
+          const box = composerBox(target);
+          if (box) box.value = '';
+          doLasso(target, text.replace(LASSO_CMD, '').trim());
+          return;
+        }
         const btn = D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .send');
         if (btn) btn.disabled = true;          // released by the render below
         // Where this one goes, decided while the words are still here: a tag in
@@ -6204,6 +6320,79 @@ ${markPickHtml()}
       } finally {
         delete D.sendLock[target];
       }
+    }
+
+    // ---- lasso: the three acts --------------------------------------------
+    //
+    // `/lasso <words>` searches; `/lasso ~/path/to/a.pdf` attaches that file
+    // straight away, because a reader who has typed a path has already chosen
+    // (the companion still checks it is a real, readable file of theirs).
+    // Attaching and detaching go through the companion, which owns the digest
+    // files — this drawer never writes anything to disk.
+    const LASSO_CMD = /^\/lasso\b\s*/i;
+    // The library is a pane of its own with a renderer of its own, and the
+    // chips live above ITS composer as well — so a repaint here is whichever
+    // of the two the reader is looking at.
+    const lassoPaint = () => { if (D.view === 'pages') renderLibrary(); else render(); };
+    async function doLasso(target, query) {
+      D.lasso = { ...D.lasso, target, query, results: [], err: '', searching: target };
+      lassoPaint();
+      let r = null;
+      try { r = await cb('onLasso')(query); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (D.lasso.searching !== target || D.lasso.query !== query) return;  // overtaken
+      D.lasso.searching = '';
+      if (!r || r.ok === false) {
+        D.lasso.err = (r && r.error) || 'that search could not be run';
+        lassoPaint();
+        return;
+      }
+      // a PATH the reader typed is not an offer to consider — it is the file
+      // they meant, so it attaches on the spot
+      if (r.path && (r.results || []).length === 1) {
+        D.lasso = { ...D.lasso, target: '', query: '', results: [], err: '' };
+        await doAttach('file', r.path);
+        return;
+      }
+      D.lasso.results = r.results || [];
+      D.lasso.err = r.error || '';
+      lassoPaint();
+    }
+    async function doAttach(kind, id) {
+      if (!kind || !id) return;
+      D.lasso.busy = String(id);
+      lassoPaint();
+      let r = null;
+      try { r = await cb('onLassoAttach')(kind, id, D.view === 'pages'); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.lasso.busy = '';
+      // the row that was just taken comes off the offer list: it is on the
+      // strip now, and two places saying the same thing is how a reader ends
+      // up attaching one thing twice
+      if (r && r.ok) D.lasso.results = (D.lasso.results || []).filter(x => String(x.id) !== String(id));
+      else D.lasso.err = (r && r.error) || 'that could not be attached';
+      if (D.view === 'pages') await loadLibrary();
+      lassoPaint();
+    }
+    async function doAttachAll(rows) {
+      for (const row of rows || []) {
+        // one at a time and in order: each writes a digest file, and a failure
+        // half way through must leave the ones before it attached
+        await doAttach(row.kind, row.id);
+        if (D.lasso.err) break;
+      }
+    }
+    async function doDetach(p) {
+      if (!p) return;
+      D.lasso.busy = String(p);
+      lassoPaint();
+      let r = null;
+      try { r = await cb('onLassoDetach')(p, D.view === 'pages'); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.lasso.busy = '';
+      if (!r || r.ok === false) D.lasso.err = (r && r.error) || 'that could not be detached';
+      if (D.view === 'pages') await loadLibrary();
+      lassoPaint();
     }
 
     // The synchronous half: the message becomes a pending message, the composer
@@ -8610,6 +8799,7 @@ ${markPickHtml()}
     }
 
     function setPage(page) {
+      const was = (D.page && D.page.url) ? String(D.page.url) : '';
       D.page = page || null;
       // a handle that was in this page's margin is usually nowhere near the
       // next one: the filter belongs to the page it was chosen on
@@ -8620,6 +8810,18 @@ ${markPickHtml()}
       // is a view state and goes with the page, like the commenter filter.
       D.projects.filed = (page && Array.isArray(page.projects)) ? page.projects : [];
       D.projects.declined = [];
+      // What a search on the LAST page found is nothing to do with this one,
+      // and neither is which of its offers were waved away. What is ATTACHED
+      // is not touched: it lives on the record that was just handed in.
+      //
+      // ONLY ON A CHANGE OF PAGE. setPage is also how a refresh lands — and
+      // attaching one of five offers refetches the record — so clearing on
+      // every call would throw the other four away the moment the reader took
+      // the first.
+      if (was !== (page && page.url ? String(page.url) : '')) {
+        D.lasso = { ...D.lasso, target: '', query: '', results: [], err: '',
+                    busy: '', searching: '', declined: [] };
+      }
       clearAnsweredWaits();
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';

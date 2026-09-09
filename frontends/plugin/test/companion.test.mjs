@@ -4490,6 +4490,174 @@ async function main() {
     real.proc.kill();
   });
 
+  // --- lasso: search, attach, detach, and what the turn then says --------
+  //
+  // The MODULE is lasso.test.mjs's. What is here is the three doors and the
+  // one thing only a real server and a real bridge can show: that an attached
+  // digest reaches the bots as a PATH on every turn, and that they are told to
+  // read it rather than being handed its contents.
+  {
+    const lRoot = tmpRoot('lasso');
+    const lLog = path.join(lRoot, 'bridge-log.jsonl');
+    const lVault = tmpRoot('lasso-vault');
+    const lDir = path.join(lRoot, '.botference', 'plugin');
+    fs.mkdirSync(lDir, { recursive: true });
+
+    // a council of the reader's own, vouched for, with one chat in it
+    const cRoot = tmpRoot('lasso-council');
+    fs.writeFileSync(path.join(cRoot, 'project.json'), JSON.stringify({ version: 1 }));
+    fs.mkdirSync(path.join(cRoot, 'work', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(cRoot, 'projects'), { recursive: true });
+    fs.writeFileSync(path.join(cRoot, 'projects', 'portfolio.json'), JSON.stringify({
+      version: 1, projects: [{ id: 'sleepers', title: 'Sleeper economics', status: 'active' }] }));
+    fs.writeFileSync(path.join(cRoot, 'work', 'sessions', 'sess-load.json'), JSON.stringify({
+      version: '2', session_id: 'sess-load', project_id: 'sleepers',
+      title: 'Load factors on the Vienna run', updated_at: '2026-08-20T10:00:00Z',
+      transcript: [
+        { speaker: 'user', text: 'what load factor do the sleepers actually run at?' },
+        { speaker: 'claude', text: 'Sixty-one per cent across the Vienna run, and the math only works above seventy.' },
+      ] }));
+
+    // …and a folder of their own, with a paper in it
+    const lFolder = tmpRoot('lasso-folder');
+    fs.writeFileSync(path.join(lFolder, 'sleeper-economics.md'),
+      '# Sleeper economics\n\nWhat a night train costs to run per berth.\n');
+    fs.writeFileSync(path.join(lFolder, 'unrelated.txt'), 'a shopping list');
+
+    fs.writeFileSync(path.join(lDir, 'config.json'), JSON.stringify({
+      vault_path: lVault, export_folder: 'Web Clippings', author: 'angadh',
+      // the REAL path: the companion keys its roots map by the resolved
+      // one (workspace.realish), and on macOS a temp dir is a symlink
+      council_roots: { [fs.realpathSync(cRoot)]: true }, lasso_folders: [lFolder],
+    }, null, 2));
+
+    const l = await startServer({
+      root: lRoot,
+      env: {
+        PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+        MOCK_BRIDGE_LOG: lLog, MOCK_TURN_DELAY_MS: '150',
+        PLUGIN_SID_WAIT_MS: '600',
+      },
+    });
+    const lb = l.base;
+    await POST(lb, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+
+    await test('GET /lasso searches the reader\'s pages, chats and folders', async () => {
+      const r = await GET(lb, '/lasso?q=' + encodeURIComponent('sleeper') + '&url=' + encodeURIComponent(PAGE1));
+      assert.equal(r.status, 200);
+      const kinds = r.json.results.map(x => x.kind);
+      assert.ok(kinds.includes('file'), 'the paper in the watched folder');
+      const file = r.json.results.find(x => x.kind === 'file');
+      assert.equal(file.title, 'sleeper-economics.md');
+      assert.ok(file.hit.length <= 160);
+      const chat = (await GET(lb, '/lasso?q=' + encodeURIComponent('load factor'))).json.results
+        .find(x => x.kind === 'chat');
+      assert.ok(chat, 'the council chat');
+      assert.equal(chat.id, 'sess-load');
+      assert.deepEqual(r.json.attached, [], 'and nothing is attached by searching');
+    });
+
+    await test('a search that matches nothing is an empty list, not an error', async () => {
+      const r = await GET(lb, '/lasso?q=zzzqqq');
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.json.results, []);
+    });
+
+    await test('a PATH is not a search: it comes back as the one file it names', async () => {
+      const f = path.join(lFolder, 'sleeper-economics.md');
+      const r = await GET(lb, '/lasso?q=' + encodeURIComponent(f));
+      assert.equal(r.json.path, f);
+      assert.equal(r.json.results.length, 1);
+      assert.equal(r.json.results[0].kind, 'file');
+      // …and a path that is a trick, or is not a file, says so on the card
+      // rather than 500ing: the reader mistyped, and that is not an error
+      const bad = await GET(lb, '/lasso?q=' + encodeURIComponent('/tmp/../etc/passwd'));
+      assert.match(bad.json.error, /not allowed/);
+      assert.deepEqual(bad.json.results, []);
+      const gone = await GET(lb, '/lasso?q=' + encodeURIComponent('/no/such/paper.pdf'));
+      assert.match(gone.json.error, /no such file/);
+    });
+
+    await test('POST /attach writes a digest and puts it on the record', async () => {
+      const r = await POST(lb, '/attach', { url: PAGE1, kind: 'chat', id: 'sess-load' });
+      assert.equal(r.status, 200);
+      const a = r.json.attachment;
+      assert.equal(a.kind, 'chat');
+      assert.equal(a.title, 'Load factors on the Vienna run');
+      assert.ok(a.path.includes(path.join('.botference', 'plugin', 'attachments')));
+      const md = fs.readFileSync(a.path, 'utf8');
+      assert.match(md, /# Load factors on the Vienna run/);
+      assert.match(md, /- project: Sleeper economics/);
+      assert.match(md, /the math only works above seventy/);
+      assert.match(a.summary, /A council chat/);
+      const page = (await GET(lb, '/page?url=' + encodeURIComponent(PAGE1))).json;
+      assert.equal(page.attachments.length, 1);
+    });
+
+    await test('the turn names the attachment by PATH, and says to read it', async () => {
+      const t = await POST(lb, '/reply',
+        { url: PAGE1, thread_id: '__page__', text: '@claude is that right?' });
+      assert.equal(t.status, 200);
+      await waitFor(() => fs.existsSync(lLog) && inputs(lLog).some(x => /Attached for this chat/.test(x)),
+        'the envelope to carry the attachment block');
+      const sent = inputs(lLog).find(x => /Attached for this chat/.test(x));
+      const att = (await GET(lb, '/page?url=' + encodeURIComponent(PAGE1))).json.attachments[0];
+      assert.ok(sent.includes(att.path), 'the PATH is what rides the turn');
+      assert.match(sent, /read with your file tool when relevant, never inline them back/);
+      assert.match(sent, /Load factors on the Vienna run \(chat\)/);
+      assert.ok(!sent.includes('the math only works above seventy'),
+        'and the digest’s CONTENTS never ride the turn');
+    });
+
+    await test('POST /detach takes it off, and the next turn stops naming it', async () => {
+      const att = (await GET(lb, '/page?url=' + encodeURIComponent(PAGE1))).json.attachments[0];
+      const r = await POST(lb, '/detach', { url: PAGE1, path: att.path });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.json.attachments, []);
+      assert.ok(!fs.existsSync(att.path), 'our digest goes with it');
+      assert.ok(fs.existsSync(path.join(cRoot, 'work', 'sessions', 'sess-load.json')),
+        'the reader’s own chat file does not');
+      const page = (await GET(lb, '/page?url=' + encodeURIComponent(PAGE1))).json;
+      assert.ok(!('attachments' in page), 'absent, not empty');
+      const before = inputs(lLog).length;
+      await POST(lb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude and now?' });
+      await waitFor(() => inputs(lLog).length > before, 'the next turn');
+      assert.ok(!inputs(lLog).slice(before).some(x => /Attached for this chat/.test(x)));
+    });
+
+    await test('the three doors refuse a bad ask rather than half-doing it', async () => {
+      assert.equal((await POST(lb, '/attach', { url: 'https://nope.test/x', kind: 'chat', id: 'sess-load' })).status, 404);
+      assert.equal((await POST(lb, '/attach', { url: PAGE1, kind: 'chat', id: 'nope' })).status, 400);
+      assert.equal((await POST(lb, '/attach', { url: PAGE1, kind: 'file', id: '../../etc/passwd' })).status, 400);
+      assert.equal((await POST(lb, '/detach', { url: PAGE1, path: '/tmp/nothing.md' })).status, 400);
+    });
+
+    l.proc.kill();
+  }
+
+  // --- lasso is the OWNER's: a guest may not search their machine --------
+  {
+    const gRoot = tmpRoot('lasso-guest');
+    fs.mkdirSync(path.join(gRoot, '.botference', 'plugin'), { recursive: true });
+    const gs = await startServer({
+      root: gRoot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw' },
+    });
+    const gbase = gs.base;
+    const REMOTE = { host: 'discuss.botference.com' };
+    await POST(gbase, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+    await test('a guest may not search, attach or detach', async () => {
+      const jar = cookieJar(await FORM(gbase, '/auth',
+        { handle: 'visitor', password: 'guest-pw', next: '/pages' }, REMOTE));
+      const h = { ...REMOTE, cookie: jar };
+      assert.equal((await GET(gbase, '/lasso?q=night', h)).status, 403);
+      assert.equal((await POST(gbase, '/attach', { url: PAGE1, kind: 'chat', id: 'x' }, h)).status, 403);
+      assert.equal((await POST(gbase, '/detach', { url: PAGE1, path: '/x' }, h)).status, 403);
+      // …and localhost, which is the owner, still can
+      assert.equal((await GET(gbase, '/lasso?q=night')).status, 200);
+    });
+    gs.proc.kill();
+  }
+
   stream.close();
   cleanup();
   console.log(`\n${passed()} passed, ${failures().length} failed`);

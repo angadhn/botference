@@ -286,6 +286,14 @@
                      same road: the page filed, something already made of it,
                      and the artifacts strip under the review row with the way
                      back into the file. `&selftest=1` runs both.
+    ?lasso=1         lasso — bringing what you have already read and said into
+                     this chat. Opens on a bot that ended its reply with
+                     `lasso: tether release`, the companion's matches already
+                     under it as offers. `&selftest=1` also drives `/lasso …`
+                     in the composer (a command, not a message), an attach, the
+                     chip strip above the composer, the ✕, and `/lasso <path>`,
+                     which attaches a file with no chip to click. `?lasso=strip`
+                     is the far end: two things already attached on load.
     ?question=1      the question vault's two doors on an ordinary article: the
                      card head's `?`, the selection pill's third tool, and a
                      bot's own offer as a File it / No chip. `&selftest=1` runs
@@ -601,6 +609,41 @@ const FILE_ROSTER = [
   { root: WS_ROOT, id: 'journal-submissions', title: 'Journal submissions',
     status: 'archived', next_action: 'pick a venue', chats: [], files: ['venues.md'] },
 ];
+// ── lasso: bringing what you have read and said into a chat ─────────────
+// `/lasso <words>` in the composer is a COMMAND, not a message: the companion
+// searches everything the reader has (pages, council chats, watched folders)
+// and the drawer offers the matches as chips. Nothing is attached without a
+// click; what IS attached lives on the page record, so it survives a reload
+// and rides every later turn as a path.
+//
+// `?lasso=1`     the pose: a search, an attach, the strip, a bot's own ask
+// `?lasso=strip` the far end — two things already attached when the page loads
+const LASSO = Q.get('lasso') || '';
+const LASSO_INDEX = [
+  { kind: 'chat', id: 'sess-tether', title: 'Tether release timing',
+    url_or_path: WS_ROOT + '/work/sessions/sess-tether.json', when: '2026-08-20T10:00:00Z',
+    project: "Adriana's paper",
+    hit: 'claude: the libration angle has to be through zero — release early and it grows' },
+  { kind: 'page', id: 'a'.repeat(40), title: 'A spinning tether for orbital transfer',
+    url_or_path: 'https://example.org/tether', when: '2026-08-11T10:00:00Z',
+    hit: '…the libration angle grows without bound when the tether is released early' },
+  { kind: 'file', id: '/Users/reader/Downloads/tether-dynamics.pdf',
+    title: 'tether-dynamics.pdf', url_or_path: '/Users/reader/Downloads/tether-dynamics.pdf',
+    when: '2026-09-01T10:00:00Z', hit: 'A survey of libration in spinning tethers' },
+];
+const lassoSearches = [];   // every GET /lasso the drawer made
+const lassoAttaches = [];   // …every POST /attach
+const lassoDetaches = [];   // …and every POST /detach
+const LASSO_DIR = '/Users/reader/work/.botference/plugin/attachments/deadbeef';
+function lassoAttachment(kind, id) {
+  const hit = LASSO_INDEX.find(r => r.kind === kind && String(r.id) === String(id))
+    || { kind, id, title: String(id).split('/').pop() || String(id) };
+  const slug = String(hit.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return { kind, id: String(id), title: hit.title,
+    path: LASSO_DIR + '/' + kind + '-' + slug + '.md', at: now(),
+    summary: 'What this is, in one paragraph the companion wrote: ' + hit.title + '.' };
+}
+
 // ── the question vault ──────────────────────────────────────────────────
 // One click makes a question; a bot writes it; the quiz asks it back weeks
 // later. Nothing here is a setting, because the reader's only decision is
@@ -1218,6 +1261,27 @@ if (FILEIN === 'made') {
   RECORD.projects = fileFiled;
   RECORD.artifacts = [{ root: WS_ROOT, id: 'adriana-paper',
     rel: 'projects/adriana-paper/doc-fest-planner.html', at: iso(0.5) }];
+}
+
+// ?lasso=1 — a bot has ended a reply asking for something of the reader's to
+// be FOUND. The companion lifts the `lasso:` line off the words, runs the
+// search itself and hands the matches over on the message — an OFFER, exactly
+// like `file_in`: nothing is attached and the record's `attachments` field is
+// absent until the reader clicks a chip.
+if (LASSO === '1') {
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(2), text: '@claude why does the release timing matter?' },
+    { author: 'claude', ts: iso(1),
+      text: 'Because releasing off the libration zero throws the payload into the '
+        + 'wrong plane — and you worked the numbers on this before.',
+      lasso: { query: 'tether release', results: LASSO_INDEX.slice(0, 2) } },
+  ]);
+}
+// ?lasso=strip — the far end: two things already attached, so the strip above
+// the composer is what a reader sees on every later visit to this page.
+if (LASSO === 'strip') {
+  RECORD.attachments = [lassoAttachment('chat', 'sess-tether'),
+    lassoAttachment('file', '/Users/reader/Downloads/tether-dynamics.pdf')];
 }
 
 // ?question=… — a bot has ended a reply saying the reader has not got
@@ -2505,6 +2569,8 @@ function libraryRecord() {
   }
   return LIBRARY;
 }
+/** What this page currently carries, the way the record carries it. */
+const lassoOn = () => (Array.isArray(RECORD.attachments) ? RECORD.attachments : []);
 const askedUrl = path => {
   const q = String(path).split('?')[1] || '';
   const m = /(?:^|&)url=([^&]*)/.exec(q);
@@ -2522,6 +2588,38 @@ function companion(method, path, body) {
   // out loud wherever it was triggered.
   if (ownerOnly && OWNER_ROUTES.test(route)) {
     return { ok: false, status: 403, error: 'owner only' };
+  }
+  // ---- lasso (lasso.mjs) -------------------------------------------------
+  // The search is a read and attaches nothing. The two writes each answer
+  // with the whole list, and the record grows the `attachments` field the
+  // envelope reads on every later turn — modelled here exactly as the
+  // companion models it, including the "absent, not empty" rule.
+  if (route === '/lasso') {
+    const q = decodeURIComponent((/(?:^|[?&])q=([^&]*)/.exec(String(path)) || [, ''])[1] || '')
+      .replace(/\+/g, ' ');
+    lassoSearches.push(q);
+    if (/^[~/]/.test(q)) {
+      return { ok: true, status: 200, data: { ok: true, query: q, path: q, attached: lassoOn(),
+        results: [{ kind: 'file', id: q, title: q.split('/').pop(), url_or_path: q, hit: q, when: '' }] } };
+    }
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const results = LASSO_INDEX.filter(r => words.every(w =>
+      (r.title + ' ' + r.hit).toLowerCase().includes(w)));
+    return { ok: true, status: 200, data: { ok: true, query: q, results, attached: lassoOn() } };
+  }
+  if (route === '/attach') {
+    const b = body || {};
+    lassoAttaches.push({ kind: b.kind, id: b.id });
+    const att = lassoAttachment(b.kind, b.id);
+    RECORD.attachments = lassoOn().concat([att]);
+    return { ok: true, status: 200,
+      data: { ok: true, url: RECORD.url, attachment: att, attachments: RECORD.attachments } };
+  }
+  if (route === '/detach') {
+    lassoDetaches.push((body || {}).path);
+    const rest = lassoOn().filter(a => a.path !== (body || {}).path);
+    if (rest.length) RECORD.attachments = rest; else delete RECORD.attachments;
+    return { ok: true, status: 200, data: { ok: true, url: RECORD.url, attachments: rest } };
   }
   // ---- filing an ordinary page under a council project ------------------
   if (route === '/projects') {
@@ -9216,6 +9314,119 @@ async function selftestMemorize() {
 // that has already had something made of it (?filein=made). The rule under
 // both is the one this drawer keeps everywhere: a bot may OFFER, and only the
 // reader's click creates a folder, files a page or spends a turn.
+// ?lasso=1&selftest=1 — bringing what the reader has read and said into a
+// chat. Four things under test, and they are the four the feature IS:
+//
+//   · `/lasso <words>` in the composer is a COMMAND — searched, not sent
+//   · the matches are OFFERS: nothing is attached until a chip is clicked
+//   · what IS attached shows above the composer from then on, with a ✕
+//   · a bot may ask for the same search (`lasso:`), and still attaches nothing
+//
+// The rule under all four is the drawer's rule everywhere: a bot may offer,
+// and only the reader's click changes anything.
+async function selftestLasso() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const pane = () => S.querySelector('.pane[data-pane="chat"]');
+  const box = () => S.querySelector('.pane[data-pane="chat"] .composer[data-target="__page__"] textarea');
+  try {
+    d.open('chat');
+    await sleep(150);
+
+    // ---- a bot's own ask, which is where this page opens ----
+    const botFind = await until(() => pane().querySelector('.lassofind.frombot'), 4000);
+    check('a bot may ask for something of the reader\'s to be found', !!botFind);
+    check('…and the companion has already run the search for it',
+      !!botFind && /2 matches for “tether release”/.test(botFind.textContent));
+    check('…naming what each match is and the line that matched',
+      !!botFind && /Tether release timing/.test(botFind.textContent)
+      && /libration angle has to be through zero/.test(botFind.textContent));
+    check('…and the machinery is not in the words the reader reads',
+      !/lasso:/.test(pane().textContent || ''));
+    check('NOTHING was attached by the asking',
+      lassoAttaches.length === 0 && !S.querySelector('.lassostrip'));
+    const dismiss = botFind && botFind.querySelector('[data-act="lasso-dismiss"]');
+    check('…and it can be waved away', !!dismiss);
+    hit(dismiss, 'dismiss');
+    await sleep(80);
+    check('dismissing puts that offer away and attaches nothing',
+      !pane().querySelector('.lassofind.frombot') && lassoAttaches.length === 0);
+
+    // ---- /lasso in the composer is a command, not a message ----
+    const before = (RECORD.page_chat || []).length;
+    box().value = '/lasso tether release';
+    box().dispatchEvent(new Event('input', { bubbles: true }));
+    hit(S.querySelector('.composer[data-target="__page__"] .send'), 'Send');
+    await until(() => lassoSearches.length, 3000);
+    check('`/lasso …` searches instead of sending', lassoSearches.length === 1
+      && lassoSearches[0] === 'tether release');
+    check('…and nothing was said to anybody',
+      (RECORD.page_chat || []).length === before && !pane().querySelector('.pending'));
+    check('…and the box is empty, because the words were acted on', box().value === '');
+    const find = await until(() =>
+      pane().querySelector('.lassofind:not(.frombot):not(.lassobusy)'), 3000);
+    check('the matches appear above the composer', !!find);
+    check('…each with what it is, the line that matched, and one button',
+      !!find && find.querySelectorAll('.lassorow').length === 2
+      && !!find.querySelector('[data-act="lasso-attach"]')
+      && /chat/.test(find.querySelector('.lassorow .lassokind').textContent));
+    check('…and an attach-all and a dismiss, because there is more than one',
+      !!find.querySelector('[data-act="lasso-all"]')
+      && !!find.querySelector('[data-act="lasso-dismiss"]'));
+    check('and STILL nothing is attached', lassoAttaches.length === 0);
+
+    // ---- one click attaches one thing ----
+    hit(find.querySelector('[data-act="lasso-attach"]'), 'attach');
+    await until(() => lassoAttaches.length, 3000);
+    check('clicking attach attaches exactly that one', lassoAttaches.length === 1
+      && lassoAttaches[0].kind === 'chat' && lassoAttaches[0].id === 'sess-tether');
+    const strip = await until(() => pane().querySelector('.lassostrip'), 3000);
+    check('…and it shows above the composer from then on', !!strip);
+    check('…as one small chip, named, with a ✕',
+      strip.querySelectorAll('.lassochip').length === 1
+      && /Tether release timing/.test(strip.textContent)
+      && !!strip.querySelector('[data-act="lasso-x"]'));
+    check('…and the path is what rides the turn, so the chip carries it',
+      !!(RECORD.attachments || [])[0] && /attachments\//.test(RECORD.attachments[0].path));
+    check('the row that was taken leaves the offer list',
+      pane().querySelectorAll('.lassofind:not(.frombot) .lassorow').length === 1);
+
+    // ---- and the ✕ takes it off again ----
+    hit(strip.querySelector('[data-act="lasso-x"]'), '✕');
+    await until(() => lassoDetaches.length, 3000);
+    check('the ✕ detaches it', lassoDetaches.length === 1);
+    await sleep(120);
+    check('…and the strip goes with the last chip on it',
+      !pane().querySelector('.lassostrip') && !('attachments' in RECORD));
+
+    // ---- a path is not a search ----
+    box().value = '/lasso ~/Downloads/tether-dynamics.pdf';
+    box().dispatchEvent(new Event('input', { bubbles: true }));
+    hit(S.querySelector('.composer[data-target="__page__"] .send'), 'Send');
+    await until(() => lassoAttaches.length === 2, 3000);
+    check('a path the reader typed attaches that file, without a chip to click',
+      lassoAttaches[1].kind === 'file'
+      && lassoAttaches[1].id === '~/Downloads/tether-dynamics.pdf');
+    await until(() => pane().querySelector('.lassostrip'), 3000);
+    check('…and it is on the strip like anything else',
+      /tether-dynamics\.pdf/.test(pane().querySelector('.lassostrip').textContent));
+
+    check('nothing threw', window.__bfpErrors.length === 0);
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (lasso) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 async function selftestProjectArtifact() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
@@ -11308,7 +11519,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // there does not need to be: what is under test is the offer, not the parse
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
-      setTimeout(FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
+      setTimeout(LASSO === '1' ? selftestLasso
+        : FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
         : WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
         : Q.get('files') === '1' ? selftestFiles

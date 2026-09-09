@@ -2169,3 +2169,54 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .wasnow[data-deleted] .wnhead { color: var(--bad) }
 .wasnow[data-deleted] .wnlab { width: 42px }
 .wasnow[data-deleted] .wnrow + .wnrow .wnval { color: var(--fg); text-decoration: none }
+
+/* ---- lasso: what the reader brought into this chat ----------------------
+   Two rows above the composer, and they mean different things, so they do not
+   look alike. The STRIP is state — what is attached, from now on, surviving a
+   reload because it is on the record — and is drawn as solid little chips with
+   a ✕. The FIND is a set of OFFERS, drawn dashed like every other offer in this
+   drawer (`.filechip`), thrown away by "dismiss" and by the next search. */
+.lassostrip { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px }
+.lassochip {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 100%; padding: 2px 4px 2px 6px;
+  border: 1px solid var(--line); border-radius: 999px;
+  font: 11px/1.6 var(--sans); color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lassokind {
+  font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); flex: none;
+}
+.lassox {
+  border: 0; background: none; cursor: pointer; flex: none;
+  padding: 0 2px; font: inherit; color: var(--muted);
+}
+.lassox:hover { color: var(--accent) }
+.lassofind {
+  margin: 0 0 6px; padding: 6px 8px;
+  border: 1px dashed var(--line); border-radius: 8px;
+  font: 12px/1.5 var(--sans); color: var(--muted);
+  max-height: 40vh; overflow: auto;
+}
+.lassofind .lassohead {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px;
+}
+.lassofind .lassohead span { flex: 1 1 auto; min-width: 0; color: var(--fg) }
+.lassofind .lassohead .rebtn { opacity: 1; flex: none }
+.lassofind .lassohead .rebtn.no { color: var(--muted) }
+.lassorow {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 0; border-top: 1px solid var(--line);
+}
+.lassorow .lassow { flex: 1 1 auto; min-width: 0 }
+.lassorow b { color: var(--fg); font-weight: 600 }
+/* the matching line is the whole of what tells a match from a coincidence, so
+   it gets its own line rather than being squeezed beside the title */
+.lassorow .lassohit {
+  display: block; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lassorow .rebtn { opacity: 1; flex: none }
+/* the same offers under a bot's reply, where the chip conventions rule */
+.lassofind.frombot { margin: 8px 0 2px }
