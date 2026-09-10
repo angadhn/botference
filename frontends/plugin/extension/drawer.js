@@ -338,6 +338,12 @@
   // or 'instant' (the chunks exactly as the bridge sends them, which is what
   // this always did). Same one-key idiom as the tab, the width and the export.
   const TYPING_KEY = 'bfp:typing';
+  // WHERE A COMMENT IS READ: 'panel' (the drawer, which is what this has
+  // always been) or 'bubbles' (a speech bubble beside the highlight, with the
+  // drawer left shut). Per browser, same one-key idiom as the typing mode it
+  // sits under in the gear panel — and 'panel' is the default, so a reader who
+  // never touches the switch sees byte-for-byte what they saw before.
+  const BUBBLE_KEY = 'bfp:bubbles';
   // which slice of the archive the pages list is showing — the same
   // one-key-in-extension-storage idiom as the tab, the width and the export
   // mode. A reader who filters to their PDFs is usually still after their PDFs
@@ -1462,6 +1468,9 @@
       // NOT named `typing`: the public surface is Object.assign'd onto this
       // very object and carries a `typing()` reader, which would eat the field.
       typeMode: 'type',
+      // 'panel' | 'bubbles' — where a click on a highlight takes the reader.
+      // Default 'panel', which is the drawer this has always opened.
+      bubbles: 'panel',
       running: {},         // target -> true while a turn is in flight
       // target -> the YouTube url Gemini is watching for this turn, if any.
       // Neither bot can watch video; while one is being watched for them the
@@ -1935,6 +1944,8 @@
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
         light: shadow.querySelector('.lightbox'),
         grip: shadow.querySelector('.grip'),
+        bubble: shadow.querySelector('.bubble'),
+        bconn: shadow.querySelector('.bconn'),
       };
       // the Comments tab is left on screen — the drawer must read the same on
       // every site — but there is nothing behind it here, so it is inert and
@@ -1955,6 +1966,7 @@
       restoreWidth();
       restoreExportMode();
       restoreTyping();
+      restoreBubbles();
       restoreFilter();
       return D;
     }
@@ -2073,7 +2085,21 @@ ${markPickHtml()}
   <div class="roundbar" role="status" aria-live="polite" hidden></div>
   <div class="footbar"></div>
 </aside>
-<div class="lightbox" role="dialog" aria-label="figure" aria-modal="true" hidden></div>`;
+<div class="lightbox" role="dialog" aria-label="figure" aria-modal="true" hidden></div>
+${bubbleShellHtml()}`;
+    }
+
+    // ---- the bubble, and the line that joins it to its highlight ----------
+    // Two nodes, both siblings of the panel and both outside it, because
+    // neither belongs to the drawer's column: they are the drawer's page-side
+    // half, like the selection pill and the overlap chooser above.
+    //
+    // The connector is drawn FIRST so it sits under the bubble in paint order,
+    // and it never takes a click — it is a line, not a control.
+    function bubbleShellHtml() {
+      return `
+<svg class="bconn" aria-hidden="true" hidden><path class="bline" fill="none"></path><path class="barrow"></path></svg>
+<div class="bubble" role="dialog" aria-label="comment" hidden></div>`;
     }
 
     // ---- one key in extension storage, read and written ------------------
@@ -2179,6 +2205,25 @@ ${markPickHtml()}
       if (!quiet) { rememberTyping(); syncTyping(); }
     }
     function rememberTyping() { writeKey(TYPING_KEY, D.typeMode); }
+
+    // ---- where a comment is read, remembered ----------------------------
+    // The same one key again, and the same shape as the typing switch it sits
+    // beside: two positions, one of them on, per browser rather than per site.
+    // 'panel' is the default and is exactly today's behaviour — a click on a
+    // highlight opens the drawer — so a reader who never finds this switch
+    // never notices the feature exists.
+    function restoreBubbles() { readKey(BUBBLE_KEY, v => setBubbles(v, true)); }
+    function setBubbles(mode, quiet) {
+      const want = mode === 'bubbles' ? 'bubbles' : 'panel';
+      if (want === D.bubbles) return;
+      D.bubbles = want;
+      // turning the switch back to 'panel' must take any bubble down with it,
+      // or the reader is left holding a thing the setting says cannot exist
+      if (want === 'panel') hideBubble();
+      if (!quiet) { rememberBubbles(); syncBubbles(); }
+    }
+    function rememberBubbles() { writeKey(BUBBLE_KEY, D.bubbles); }
+    const bubblesOn = () => D.bubbles === 'bubbles';
 
     // ---- which slice of the archive, remembered -------------------------
     // Same idiom again, one key: {kind, tag}. Restored before the list is ever
@@ -2429,16 +2474,32 @@ ${markPickHtml()}
     function paintStream(key) {
       const s = D.streams[key];
       if (!s) return true;
-      const pre = D.mounted && D.shadow
-        && D.shadow.querySelector('.reply[data-stream="' + cssq(key) + '"] .stream-text');
-      if (!pre) return false;
-      pre.textContent = streamBody(s);
+      // ALL of them, not the first: one live answer can be on screen twice —
+      // once in the panel's card and once in a bubble beside the highlight —
+      // and patching only the first would leave the other frozen mid-sentence.
+      const pres = D.mounted && D.shadow
+        ? [...D.shadow.querySelectorAll('.reply[data-stream="' + cssq(key) + '"] .stream-text')]
+        : [];
+      if (!pres.length) return false;
+      const body = streamBody(s);
+      for (const el of pres) el.textContent = body;
+      // A BUBBLE IS ITS OWN SCROLLER, and the hold below is about the PANE, so
+      // the bubble is followed first and unconditionally: its stack keeps its
+      // foot in view while the answer grows, and the line to the highlight
+      // keeps up with a bubble that is getting taller under it.
+      for (const el of pres) {
+        const bb = el.closest('.bbody');
+        if (bb && bb.scrollHeight - bb.scrollTop - bb.clientHeight < 80) bb.scrollTop = bb.scrollHeight;
+      }
+      if (bubbleOpen()) placeBubble();
       // a held thread keeps its landing while the answer grows into it — the
       // drain patches the <pre> without a render, so the hold has to be
       // re-applied here or the text types its way off the bottom of the pane
       if (D.hold && s.target === D.hold) { holdInView(); return true; }
-      const box = pre.closest('.pane');
-      if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 80) box.scrollTop = box.scrollHeight;
+      for (const el of pres) {
+        const box = el.closest('.pane');
+        if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 80) box.scrollTop = box.scrollHeight;
+      }
       return true;
     }
     function typeStep(s) {
@@ -2473,8 +2534,13 @@ ${markPickHtml()}
       if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
     }
 
-    function streamsHtml(target) {
-      return Object.keys(D.streams).filter(k => D.streams[k].target === target).map(k => {
+    const streamKeysFor = target =>
+      Object.keys(D.streams).filter(k => D.streams[k].target === target);
+    // One live block. Split out for the same reason outboxEntryHtml was: the
+    // bubble's stack needs its cards one at a time, and a bot answering into a
+    // bubble must be the same block it would be in the panel.
+    function streamHtml(k) {
+      {
         const s = D.streams[k];
         const who = agentOf(s.who);
         // the room footer is being typed in front of the reader on a live
@@ -2487,7 +2553,10 @@ ${markPickHtml()}
         return `<div class="reply bot streaming${who ? ' ' + who : ''}" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
           <span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">writing…</span></span>
           <pre class="stream-text">${esc(text)}</pre></div>`;
-      }).join('');
+      }
+    }
+    function streamsHtml(target) {
+      return streamKeysFor(target).map(streamHtml).join('');
     }
 
     // ---- who is working ---------------------------------------------------
@@ -2758,9 +2827,11 @@ ${markPickHtml()}
       ? `<span class="mmark" style="color:var(--${h})">${MARKS[h]}</span>`
       : `<span class="mmark">${BRAID_SVG}</span>`);
 
+    // …and the @-menu belongs to whichever copy of the composer the reader is
+    // typing in — see scopeFor, further down, for why there can be two
     function menuFor(target) {
       return D.mounted &&
-        D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .mentions');
+        scopeFor(target).querySelector('.composer[data-target="' + cssq(target) + '"] .mentions');
     }
 
     function closeMention() {
@@ -2875,9 +2946,13 @@ ${markPickHtml()}
       return outboxFor(target).filter(e =>
         e.state === 'failed' || countSame(target, e.text) <= e.seen);
     }
-    function outboxHtml(target) {
+    // One pending message. Split out of outboxHtml so the bubble can lay the
+    // same blocks out one at a time (its stack counts cards, and a single
+    // joined string is not a number) — the two callers must never be able to
+    // draw a sending message differently.
+    function outboxEntryHtml(target, e) {
       const author = D.author || opts.author || 'you';
-      return outboxVisible(target).map(e => {
+      {
         const failed = e.state === 'failed';
         const state = failed
           ? `<div class="sendstate err"><span class="stext">${esc(e.error || SEND_FAIL)}</span>` +
@@ -2889,7 +2964,10 @@ ${markPickHtml()}
         return `<div class="reply mine sending${failed ? ' failed' : ''}" data-out="${esc(e.id)}" style="--author:${MY_COLOR}">
           <span class="who"><span class="author">${esc(author)}</span><span class="when">now</span></span>
           <div class="ctext md" data-md="${esc(mdSlot(e.text))}"></div>${state}</div>`;
-      }).join('');
+      }
+    }
+    function outboxHtml(target) {
+      return outboxVisible(target).map(e => outboxEntryHtml(target, e)).join('');
     }
 
     const isResolved = t => !!(t && t.resolved);
@@ -4715,6 +4793,10 @@ ${markPickHtml()}
       // the library is a conversation like the others and moves with the same
       // events; the list it sits above is not touched
       if (D.view === 'pages') renderLibrary();
+      // …and the bubble, if one is up, BEFORE the markdown is filled: its
+      // cards park their text in the same slot map every other message does,
+      // and fillMarkdown clears the map when it is done
+      renderBubble();
       fillMarkdown(D.shadow);
       // …and then the code blocks get their Run buttons and their results,
       // which need the markdown to exist first and the record to say what the
@@ -4996,6 +5078,10 @@ ${markPickHtml()}
       + 'instant = shown the moment it lands (and always, if your system asks for less motion)';
     const TYPE_MODES = ['type', 'instant'];
     const TYPE_LABEL = { type: 'typed', instant: 'instant' };
+    const BUB_TIP = 'where a comment is read when you click its highlight: '
+      + 'panel = the drawer, as always; bubbles = a small card beside the mark, '
+      + 'with the panel left shut';
+    const BUB_MODES = ['panel', 'bubbles'];
 
     // The popover's switch idiom, in one place: two positions, a middle dot,
     // one of them on. Two states are a switch and not a menu — and the reply
@@ -5068,6 +5154,23 @@ ${markPickHtml()}
         cls: 'pop-verb pop-type', seg: 'tseg', act: 'typing', attr: 'data-typing',
         label: 'how answers arrive', title: TYPE_TIP,
         positions: TYPE_MODES.map(v => ({ value: v, label: TYPE_LABEL[v] })),
+      }));
+      return row;
+    }
+
+    // …and the one under it, which is the same kind of preference about the
+    // same kind of thing: not how an answer ARRIVES but where a comment is
+    // READ. Two positions again, so it is a switch and not a menu, and the
+    // drawer's own — nothing on the wire changes either way.
+    function bubblesRow() {
+      const row = mk('div', 'pop-verbrow pop-bubrow');
+      const label = mk('span', 'pop-verblabel');
+      label.textContent = 'comments';
+      row.appendChild(label);
+      row.appendChild(segSwitch({
+        cls: 'pop-verb pop-bub', seg: 'bubseg', act: 'bubbles', attr: 'data-bubbles',
+        label: 'where a comment is read', title: BUB_TIP,
+        positions: BUB_MODES.map(v => ({ value: v, label: v })),
       }));
       return row;
     }
@@ -5165,6 +5268,7 @@ ${markPickHtml()}
       pop.appendChild(foot);
       pop.appendChild(verbosityRow());
       pop.appendChild(typingRow());
+      pop.appendChild(bubblesRow());
       pop.appendChild(keysRow());
 
       pop.appendChild(mk('div', 'pop-hint'));
@@ -5193,6 +5297,7 @@ ${markPickHtml()}
       }
       syncVerbosity();
       syncTyping();
+      syncBubbles();
 
       const sleep = pop.querySelector('.pop-sleep');
       sleep.textContent = SLEEP_TEXT[mode] || '';
@@ -5258,6 +5363,19 @@ ${markPickHtml()}
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
         b.disabled = forced;
         b.title = forced ? 'your system asks for reduced motion — answers arrive instantly' : TYPE_TIP;
+      });
+    }
+
+    // …and the switch under it. No reduced-motion clause here: where a comment
+    // is read is not a question about animation (what the FAN does about
+    // reduced motion is the bubble's own business, in placeBubble).
+    function syncBubbles() {
+      const row = D.el.pop && D.el.pop.querySelector('.pop-bubrow');
+      if (!row) return;
+      row.querySelectorAll('.bubseg').forEach(b => {
+        const on = b.getAttribute('data-bubbles') === D.bubbles;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
     }
 
@@ -5560,6 +5678,20 @@ ${markPickHtml()}
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
       'verb': (btn) => setVerbosity(btn.dataset.level),
       'typing': (btn) => setTyping(btn.dataset.typing),
+      'bubbles': (btn) => setBubbles(btn.dataset.bubbles),
+      // ---- the bubble's own three controls --------------------------------
+      // The stack, fanned open or squashed back down; the ✕; and the quiet
+      // way into the panel, which is exactly the road a highlight click takes
+      // when the panel is the reader's setting — open, focus, scroll.
+      'bubble-fan': () => fanBubble(),
+      'bubble-close': () => hideBubble(),
+      'bubble-panel': (btn) => {
+        const id = btn.dataset.target || B.thread;
+        hideBubble();
+        open('comments');
+        focus(id);
+        scrollToThread(id);
+      },
       'bill': (btn) => doBill(btn.dataset.agent, btn.dataset.bill),
       'keys': () => cb('onOpenOptions')(null),
       // "use the page's own commenting" / "let Discuss comment here":
@@ -6077,6 +6209,14 @@ ${markPickHtml()}
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
           if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
+          // Esc inside a bubble is about the bubble. It reaches this listener
+          // rather than content.js's because the focus is in the bubble's own
+          // composer, in this shadow root — and closing it must never fall
+          // through to close(), which would take the shut panel's state with it
+          if (bubbleOpen() && e.target && e.target.closest && e.target.closest('.bubble')) {
+            hideBubble();
+            return;
+          }
           if (D.light) closeLight();
           else if (D.projOpen) closeProjPick();
           else if (D.exportOpen) closeExportPick();
@@ -6260,8 +6400,17 @@ ${markPickHtml()}
     }
     const bumpTurn = target => { D.turnSeq[target] = (D.turnSeq[target] || 0) + 1; };
 
-    const composerBox = target =>
-      D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] textarea');
+    // WHICH COPY OF A COMPOSER IS THE LIVE ONE. A thread can have two on the
+    // page at once — the panel's card, and a bubble beside its highlight —
+    // and they are the same composer in every way that matters (one draft, one
+    // address, one Send). What differs is which the reader's hands are in: a
+    // bubble is only ever up while the panel is shut, so while it holds this
+    // thread it IS the thread's composer, and a bare shadow-wide query would
+    // hand back the shut panel's copy and empty the wrong box on send.
+    const scopeFor = target =>
+      (bubbleOpen() && B.thread === target && D.el.bubble) ? D.el.bubble : D.shadow;
+    const composerBox = target => D.mounted
+      && scopeFor(target).querySelector('.composer[data-target="' + cssq(target) + '"] textarea');
 
     // OPTIMISTIC SEND. Everything the user can see happens before the first
     // `await`: the message is appended to its thread, the composer empties, and
@@ -6296,7 +6445,7 @@ ${markPickHtml()}
           doLasso(target, text.replace(LASSO_CMD, '').trim());
           return;
         }
-        const btn = D.mounted && D.shadow.querySelector('.composer[data-target="' + cssq(target) + '"] .send');
+        const btn = D.mounted && scopeFor(target).querySelector('.composer[data-target="' + cssq(target) + '"] .send');
         if (btn) btn.disabled = true;          // released by the render below
         // Where this one goes, decided while the words are still here: a tag in
         // the text, else the pill, else the thread's sticky address. Sending
@@ -8722,6 +8871,11 @@ ${markPickHtml()}
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
+      // THE PANEL AND A BUBBLE ARE NEVER BOTH UP. One rule, in the one place
+      // every opening goes through, so there is no route — a highlight click,
+      // the toolbar, a keyboard shortcut, the bubble's own "open in panel" —
+      // that can leave a card floating over the article beside the drawer.
+      hideBubble();
       // being taken to another pane is the reader doing something else: the
       // held card is not even on screen there, and coming back should be a
       // fresh arrival rather than a spotlight they had forgotten about
@@ -9021,6 +9175,378 @@ ${markPickHtml()}
       // headings produces two markings whose kind, note and state all match.
       return { kind, what, state, struck, paint, where: whereText(t) };
     }
+    // ═══ BUBBLES: the comment beside its highlight ════════════════════════
+    //
+    // WHAT THIS IS. An alternate way to read a comment, off by default. With
+    // it on and the panel SHUT, clicking a highlight opens a small card beside
+    // the mark, joined to it by a drawn line — the thread, a stack of cards,
+    // and one line to reply in. Clicking the same highlight again puts it
+    // away. The panel is still the drawer, still where everything else lives,
+    // and with the switch at 'panel' not one byte of this runs.
+    //
+    // WHY IT IS NOT A SECOND DRAWER. Every part of it is the drawer's: the
+    // same markdown renderer, the same composer markup (so the @-menu and the
+    // Note · Claude · Codex · All pills are the ones the panel has, not copies
+    // of them), the same drafts, the same address memory, the same stream
+    // blocks. The bubble is a second PLACE those things are drawn, which is
+    // why it lives in the drawer's own shadow root rather than in a widget of
+    // its own: every delegated listener in wireEvents already covers it.
+    //
+    // THE STACK. Past three cards the earlier ones stop being drawn and become
+    // a lip of stacked edges with a count on it — a thread of nine messages
+    // has no business being twelve inches tall over somebody's article. The
+    // lip is a button: it fans them open, and closes them again.
+    //
+    // WHERE IT SITS. Under the mark if there is room, over it if there is not,
+    // never off the glass, and re-measured on every scroll and resize — the
+    // mark's own client rect is the only input, which is what makes a PDF work
+    // without a word of PDF code in here: a mark painted into a page canvas's
+    // text layer reports its position in the same viewport coordinates as a
+    // mark in an article does.
+    //
+    // …and wherever the reader PUTS it. The header is a handle: drag the
+    // bubble anywhere on the glass and it stays there, remembered for that
+    // thread for the session as an offset from where it would otherwise be —
+    // so re-opening it scrolls the mark back under a bubble that is still
+    // where it was left, relative to the words it is about.
+    const B = {
+      thread: '',    // which thread is up, '' for none
+      off: {},       // threadId -> {dx, dy}: where the reader dragged it, this session
+      fan: {},       // threadId -> true while its stack is fanned open
+      drag: null,    // {id, px, py, x0, y0} while a drag is in flight
+      conn: null,    // {x1,y1,x2,y2} the connector's ends, as last drawn
+      wired: false,
+    };
+    const BUB_PAD = 8;              // never nearer the edge of the glass than this
+    const BUB_GAP = 10;             // …nor nearer the mark
+    const BUB_SQUASH_AT = 3;        // cards on screen before the stack squashes
+    const BUB_ARROW = 7;            // the head's length, in px
+    const bubbleOpen = () => !!(B.thread && D.mounted && D.el.bubble && !D.el.bubble.hidden);
+    const bclamp = (lo, v, hi) => Math.max(lo, Math.min(v, hi));
+    const r1 = n => Math.round(n * 10) / 10;
+
+    // ---- where the mark IS -----------------------------------------------
+    // Every rectangle the paint occupies, in viewport coordinates. A mark that
+    // wrapped over three lines is three rectangles and stays three: the line
+    // is drawn to whichever of them is nearest the bubble, never to the middle
+    // of a box spanning all three — which on a wrapped quote is a point over
+    // text belonging to nobody.
+    function markRects(id) {
+      if (typeof document === 'undefined' || !id) return [];
+      const q = cssq(id);
+      let els;
+      try {
+        els = document.querySelectorAll(
+          'mark.bfp-hl[data-bfp="' + q + '"], del.bfp-was[data-bfp="' + q + '"]');
+      } catch (_) { return []; }
+      const out = [];
+      for (const el of els) {
+        for (const r of el.getClientRects()) if (r.width > 0 || r.height > 0) out.push(r);
+      }
+      return out;
+    }
+    function unionRect(rs) {
+      if (!rs.length) return null;
+      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+      for (const q of rs) {
+        l = Math.min(l, q.left); t = Math.min(t, q.top);
+        r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+      }
+      return { left: l, top: t, right: r, bottom: b,
+               width: r - l, height: b - t, cx: (l + r) / 2, cy: (t + b) / 2 };
+    }
+    const nearestOn = (rect, px, py) => ({
+      x: bclamp(rect.left, px, rect.right), y: bclamp(rect.top, py, rect.bottom) });
+
+    // ---- the cards --------------------------------------------------------
+    // One message, one card. The panel's own affordances are deliberately not
+    // here: copy, edit, the ▸more fold, the file/strike/question/lasso chips
+    // and the suggestion stack are all work you do at a desk, and this is a
+    // card floating over the paragraph you are reading. Delete stays, and only
+    // on the reader's own messages — a comment posted by mistake should be
+    // removable from wherever you are looking at it.
+    function bubbleCardHtml(target, r) {
+      const bot = isBot(r.author);
+      const mine = !bot && sameAuthor(r.author);
+      const own = !!r.restored;                 // a restored PDF annotation: no author to delete as
+      const who = agentOf(r.author);
+      const text = String(r.text == null ? '' : r.text);
+      const body = text.trim()
+        ? `<div class="ctext md" data-md="${esc(mdSlot(stripMore(text)))}"></div>`
+        : `<div class="ctext wordless">the passage was struck through, with no note</div>`;
+      const del = (mine && !own)
+        ? `<button class="brebtn bdel" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}"
+             type="button" title="delete this message" aria-label="delete">✕</button>` : '';
+      return `<div class="reply bcard${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}"
+        data-ts="${esc(r.ts)}" data-author="${esc(r.author)}" style="--author:${speakerColor(r.author)}">
+        <span class="who"><span class="author">${esc(r.author)}</span>${
+          bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${
+          r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span>${del}</span>
+        ${body}</div>`;
+    }
+
+    // The lip: what a squashed stack shows instead of the messages behind the
+    // newest one. Three slivers at most — the picture is "there are more of
+    // these", and a fourth sliver does not say it any better — and the count,
+    // which is the exact number.
+    function bubbleFanHtml(open, hidden) {
+      // deepest first, so the widest and most solid edge is the one nearest
+      // the card that is sitting on top of them
+      const edges = open ? '' : `<span class="bedges" aria-hidden="true">`
+        + [0, 1, 2].slice(0, Math.max(1, Math.min(3, hidden)))
+          .map(i => `<span class="bedge e${i}"></span>`).join('')
+        + `</span>`;
+      return `<button class="bfan${open ? ' open' : ''}" type="button" data-act="bubble-fan"
+        aria-expanded="${open ? 'true' : 'false'}"
+        title="${open ? 'stack the earlier messages back up' : 'fan the earlier messages open'}"
+        >${edges}<span class="bfanc">${open ? '− stack up' : '+' + hidden}</span></button>`;
+    }
+
+    function bubbleStackHtml(t) {
+      const target = t.id;
+      // The thread as the bubble counts it: the settled messages (tool
+      // narration is process detail and stays in the panel), then whatever is
+      // in flight, then whatever is being written live. In that order, because
+      // that is the order they happened in.
+      const cards = (t.msgs || []).filter(m => m && m.kind !== 'tools')
+        .map(m => bubbleCardHtml(target, m))
+        .concat(outboxVisible(target).map(e => outboxEntryHtml(target, e)))
+        .concat(streamKeysFor(target).map(streamHtml));
+      if (!cards.length) return '';
+      const fanned = !!B.fan[target];
+      const many = cards.length > BUB_SQUASH_AT;
+      if (!many) return cards.join('');
+      if (fanned) return bubbleFanHtml(true, cards.length - 1) + cards.join('');
+      return bubbleFanHtml(false, cards.length - 1) + cards[cards.length - 1];
+    }
+
+    // The sidebar glyph on the header's "open in panel" button: a page with a
+    // column down its right-hand side, which is exactly what pressing it does.
+    const PANEL_SVG = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
+      <path d="M10.2 3.4v9.2" fill="none" stroke="currentColor" stroke-width="1.4"></path>
+    </svg>`;
+
+    function renderBubble() {
+      if (!D.mounted || !D.el.bubble || !B.thread) return;
+      const t = threadById(B.thread);
+      // the thread went away under us (deleted in another tab, a refetch that
+      // no longer carries it): there is nothing to be beside
+      if (!t) { hideBubble(); return; }
+      const box = D.el.bubble;
+      const was = box.querySelector('.bbody');
+      const top = was ? was.scrollTop : 0;
+      box.setAttribute('data-thread', t.id);
+      // the thread's own colour, on the bubble AND on the connector: the line
+      // is drawn in the same ink as the card's left edge, and the svg is a
+      // sibling rather than a child, so it has to be told
+      const ink = speakerColor(threadAuthor(t));
+      box.style.setProperty('--author', ink);
+      if (D.el.bconn) D.el.bconn.style.setProperty('--author', ink);
+      box.innerHTML = `
+        <div class="bhrow">
+          <span class="bgrip" aria-hidden="true"></span>
+          <span class="bq" title="${esc(t.quote || '')}">${esc(t.quote || '')}</span>
+          <button class="brebtn bpanel" type="button" data-act="bubble-panel" data-target="${esc(t.id)}"
+            title="open this thread in the panel" aria-label="open in panel">${PANEL_SVG}</button>
+          <button class="brebtn bx" type="button" data-act="bubble-close"
+            title="close this bubble (Esc)" aria-label="close">✕</button>
+        </div>
+        <div class="bbody"><div class="bstack">${bubbleStackHtml(t)}</div></div>
+        ${statusHtml(t.id)}
+        ${composerHtml(t.id, 'Reply…', '', '', true)}`;
+      const now = box.querySelector('.bbody');
+      if (now) now.scrollTop = top;
+      box.hidden = false;
+      placeBubble();
+    }
+
+    // ---- where it goes ----------------------------------------------------
+    // Under the mark by preference, over it when there is no room under, and
+    // parked against the foot of the glass when there is room for neither.
+    // This is the position BEFORE the reader's own offset is added, and it is
+    // recomputed on every placement rather than remembered — the mark moves
+    // with every scroll, and the offset is meant to be relative to it.
+    function bubbleBase(id, bw, bh) {
+      const W = window.innerWidth, H = window.innerHeight;
+      const u = unionRect(markRects(id));
+      if (!u) return { x: Math.max(BUB_PAD, (W - bw) / 2), y: Math.max(BUB_PAD, (H - bh) / 2) };
+      const below = u.bottom + BUB_GAP;
+      if (below + bh <= H - BUB_PAD) return { x: u.left - 6, y: below };
+      const above = u.top - BUB_GAP - bh;
+      if (above >= BUB_PAD) return { x: u.left - 6, y: above };
+      // Neither gap will take it — a fanned thread on a mark half way down the
+      // glass. BESIDE it, then, on whichever side has the room: parking a tall
+      // bubble at the foot of the window would lay it over the very words it
+      // is about, and hide its own connector behind itself.
+      const room = { left: u.left - BUB_PAD, right: W - u.right - BUB_PAD };
+      const x = room.right >= room.left ? u.right + BUB_GAP : u.left - BUB_GAP - bw;
+      return { x, y: bclamp(BUB_PAD, u.cy - bh / 2, Math.max(BUB_PAD, H - bh - BUB_PAD)) };
+    }
+    function placeBubble() {
+      const box = D.el.bubble;
+      if (!box || box.hidden || !B.thread) return;
+      const bw = box.offsetWidth || 320, bh = box.offsetHeight || 160;
+      const W = window.innerWidth, H = window.innerHeight;
+      const base = bubbleBase(B.thread, bw, bh);
+      const o = B.off[B.thread] || { dx: 0, dy: 0 };
+      const x = bclamp(BUB_PAD, base.x + o.dx, Math.max(BUB_PAD, W - bw - BUB_PAD));
+      const y = bclamp(BUB_PAD, base.y + o.dy, Math.max(BUB_PAD, H - bh - BUB_PAD));
+      box.style.left = x + 'px';
+      box.style.top = y + 'px';
+      drawConnector({ left: x, top: y, right: x + bw, bottom: y + bh,
+                      cx: x + bw / 2, cy: y + bh / 2 });
+    }
+
+    // ---- the line that joins the two -------------------------------------
+    // A cubic from the bubble's nearest edge to the mark's nearest edge, with
+    // a head at the mark end. The control points are pulled along whichever
+    // axis the two are furthest apart on, by a fraction of the distance —
+    // which is what makes it a short hook when the bubble is beside its mark
+    // and a long, gentle S when the reader has dragged it across the window.
+    // It is never a target: pointer-events are off in drawer.css, so this can
+    // lie over the article without taking a single click from it.
+    function drawConnector(box) {
+      const svg = D.el.bconn;
+      if (!svg) return;
+      const rs = markRects(B.thread);
+      // ATTRIBUTES, NEVER `.hidden`. `hidden` is an IDL property of
+      // HTMLElement and an <svg> is not one: assigning to it sets a JavaScript
+      // property nobody reads and leaves the attribute — and the [hidden] rule
+      // in drawer.css — exactly where it was. The connector was invisible for
+      // precisely this reason the first time it was drawn.
+      if (!rs.length) { svg.setAttribute('hidden', ''); B.conn = null; return; }
+      let best = rs[0], bd = Infinity;
+      for (const r of rs) {
+        const p = nearestOn(r, box.cx, box.cy);
+        const d = (p.x - box.cx) * (p.x - box.cx) + (p.y - box.cy) * (p.y - box.cy);
+        if (d < bd) { bd = d; best = r; }
+      }
+      const to = nearestOn(best, box.cx, box.cy);
+      const from = nearestOn(box, (best.left + best.right) / 2, (best.top + best.bottom) / 2);
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const k = Math.min(0.42 * dist, 150);
+      const horiz = Math.abs(dx) >= Math.abs(dy);
+      const sx = dx >= 0 ? 1 : -1, sy = dy >= 0 ? 1 : -1;
+      const c1 = horiz ? { x: from.x + sx * k, y: from.y } : { x: from.x, y: from.y + sy * k };
+      const c2 = horiz ? { x: to.x - sx * k, y: to.y } : { x: to.x, y: to.y - sy * k };
+      svg.setAttribute('viewBox', '0 0 ' + window.innerWidth + ' ' + window.innerHeight);
+      const line = svg.querySelector('.bline');
+      if (line) {
+        line.setAttribute('d', 'M' + r1(from.x) + ' ' + r1(from.y)
+          + ' C' + r1(c1.x) + ' ' + r1(c1.y) + ', ' + r1(c2.x) + ' ' + r1(c2.y)
+          + ', ' + r1(to.x) + ' ' + r1(to.y));
+      }
+      // the head points the way the curve ARRIVES: the tangent at the end of a
+      // cubic is the line from its second control point to its endpoint
+      const head = svg.querySelector('.barrow');
+      if (head) {
+        const a = Math.atan2(to.y - c2.y, to.x - c2.x), w = 0.42;
+        head.setAttribute('d',
+          'M' + r1(to.x) + ' ' + r1(to.y)
+          + ' L' + r1(to.x - BUB_ARROW * Math.cos(a - w)) + ' ' + r1(to.y - BUB_ARROW * Math.sin(a - w))
+          + ' L' + r1(to.x - BUB_ARROW * Math.cos(a + w)) + ' ' + r1(to.y - BUB_ARROW * Math.sin(a + w))
+          + ' Z');
+      }
+      svg.removeAttribute('hidden');
+      B.conn = { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
+    }
+
+    // ---- the drag ---------------------------------------------------------
+    // Pointer events, so a mouse and a finger are the same gesture. The header
+    // only: a drag started on the text would fight text selection, and one
+    // started in the composer would be a slip of the hand. The offset is
+    // written per thread as the reader moves, so letting go stores nothing and
+    // nothing is lost if the pointer is lost.
+    function onBubbleDown(e) {
+      if (!bubbleOpen()) return;
+      const t = e.target;
+      const row = t && t.closest && t.closest('.bhrow');
+      if (!row) return;
+      if (t.closest('button')) return;              // ✕ and open-in-panel are buttons
+      if (e.button != null && e.button !== 0) return;
+      const r = D.el.bubble.getBoundingClientRect();
+      B.drag = { id: B.thread, px: e.clientX, py: e.clientY, x0: r.left, y0: r.top };
+      D.el.bubble.classList.add('dragging');
+      e.preventDefault();
+    }
+    function onBubbleMove(e) {
+      if (!B.drag || !bubbleOpen()) return;
+      const box = D.el.bubble;
+      const bw = box.offsetWidth, bh = box.offsetHeight;
+      const W = window.innerWidth, H = window.innerHeight;
+      const x = bclamp(BUB_PAD, B.drag.x0 + (e.clientX - B.drag.px), Math.max(BUB_PAD, W - bw - BUB_PAD));
+      const y = bclamp(BUB_PAD, B.drag.y0 + (e.clientY - B.drag.py), Math.max(BUB_PAD, H - bh - BUB_PAD));
+      const base = bubbleBase(B.drag.id, bw, bh);
+      B.off[B.drag.id] = { dx: x - base.x, dy: y - base.y };
+      placeBubble();
+    }
+    function onBubbleUp() {
+      if (!B.drag) return;
+      B.drag = null;
+      if (D.el.bubble) D.el.bubble.classList.remove('dragging');
+    }
+    function wireBubble() {
+      if (B.wired || typeof window === 'undefined' || !D.el.bubble) return;
+      B.wired = true;
+      // capture, because a scroll does not bubble: a PDF page scrolling inside
+      // its own container has to move the bubble exactly as the window does
+      const follow = () => { if (bubbleOpen()) placeBubble(); };
+      window.addEventListener('scroll', follow, true);
+      window.addEventListener('resize', follow);
+      D.el.bubble.addEventListener('pointerdown', onBubbleDown);
+      // on the window and not on the header: the header is rebuilt by every
+      // render, and a drag must survive a bot's answer landing mid-gesture
+      window.addEventListener('pointermove', onBubbleMove, true);
+      window.addEventListener('pointerup', onBubbleUp, true);
+      window.addEventListener('pointercancel', onBubbleUp, true);
+    }
+
+    // ---- open, shut, fan --------------------------------------------------
+    function showBubble(id) {
+      mount();
+      if (!D.mounted || !id) return D;
+      if (D.opened) return D;             // the panel wins: never both at once
+      B.thread = id;
+      D.el.bubble.hidden = false;
+      wireBubble();
+      render();                           // renderBubble, then the markdown, then the place
+      const ta = D.el.bubble.querySelector('.composer textarea');
+      if (ta) { try { ta.focus({ preventScroll: true }); } catch (_) { ta.focus(); } }
+      return D;
+    }
+    function hideBubble() {
+      if (!D.mounted || !D.el.bubble) return D;
+      if (B.thread) harvestDrafts();      // a half-typed reply is not thrown away
+      B.thread = '';
+      B.drag = null;
+      B.conn = null;
+      D.el.bubble.hidden = true;
+      D.el.bubble.innerHTML = '';
+      D.el.bubble.classList.remove('dragging');
+      if (D.el.bconn) D.el.bconn.setAttribute('hidden', '');
+      return D;
+    }
+    function fanBubble() {
+      if (!B.thread) return D;
+      B.fan[B.thread] = !B.fan[B.thread];
+      render();
+      return D;
+    }
+    // WHAT A CLICK ON A HIGHLIGHT MEANS, when bubbles are on. Answers true
+    // when it has handled it, so content.js keeps exactly one road to the
+    // panel and this is a fork in front of it rather than a copy of it.
+    function bubbleClick(id) {
+      if (!bubblesOn() || !id) return false;
+      mount();
+      if (!D.mounted) return false;
+      if (D.opened) return false;         // panel open ⇒ no bubble, ever
+      if (B.thread === id) { hideBubble(); return true; }   // the same mark again: away
+      showBubble(id);
+      return true;
+    }
+
     function showPicks(x, y, ids) {
       mount();
       if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
@@ -9062,6 +9588,11 @@ ${markPickHtml()}
     function choosePick(id) {
       hidePicks();
       if (!id) return D;
+      // …and where bubbles are the reader's setting, choosing a row is the
+      // click they meant to make: the same bubble a single mark would have
+      // opened. Always an OPEN and never the toggle — the reader has just
+      // pointed at this row, which cannot mean "put it away".
+      if (bubblesOn() && !D.opened) { showBubble(id); return D; }
       open('comments');
       focus(id);
       scrollToThread(id);
@@ -9330,6 +9861,31 @@ ${markPickHtml()}
       // the overlap chooser: content.js decides there IS an overlap, the drawer
       // names the threads and does the choosing
       showPicks, hidePicks, picksOpen, choosePick,
+      // ---- bubbles ---------------------------------------------------------
+      // `bubbleClick` is the fork in front of content.js's one road to the
+      // panel: it answers true when it has handled the click on a highlight,
+      // and false when the reader's setting (or an open panel) means the panel
+      // is still the answer. Everything else here is for content.js's own
+      // dismissals and for the harness.
+      bubbleClick, showBubble, hideBubble, fanBubble,
+      bubbleOpen: () => bubbleOpen(),
+      bubblesOn: () => bubblesOn(),
+      setBubbles: mode => { setBubbles(mode); return D; },
+      // what the bubble is doing, for a test that cannot read a shadow root's
+      // geometry any other way: whether it is up, on which thread, where it
+      // is, whether the reader has moved it, and where the connector's two
+      // ends are (`to` is the mark end, which is the end with the head on it)
+      bubbleState: () => {
+        const box = D.mounted && D.el.bubble;
+        const r = (box && !box.hidden) ? box.getBoundingClientRect() : null;
+        return {
+          on: bubblesOn(), open: bubbleOpen(), thread: B.thread,
+          fanned: !!B.fan[B.thread], moved: !!B.off[B.thread],
+          offset: B.off[B.thread] ? { ...B.off[B.thread] } : null,
+          rect: r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null,
+          conn: B.conn ? { from: { x: B.conn.x1, y: B.conn.y1 }, to: { x: B.conn.x2, y: B.conn.y2 } } : null,
+        };
+      },
       // what the chooser would say about a thread — the harness reads the rows
       // it drew, and this is how a node test could read one without a DOM
       pickRow: id => { const t = threadById(id); return t ? pickRow(t) : null; },
@@ -9390,6 +9946,9 @@ ${markPickHtml()}
         // even a lightbox in the reader's attention, and closing it must not
         // take the drawer with it
         if (picksOpen()) { hidePicks(); return true; }
+        // …then a bubble, which is over the page in the same way and is only
+        // ever up while the panel is shut
+        if (bubbleOpen()) { hideBubble(); return true; }
         if (!D.light) return false; closeLight(); return true;
       },
       // the library's record, handed in the way setPage hands the page's

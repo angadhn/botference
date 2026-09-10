@@ -9704,3 +9704,179 @@ Firefox packaging, hosted/multi-user mode, settings UI, annotation sharing.
 (SPA navigation was on this list and is now handled — see the 2026-08-24
 amendment; what stays out of scope is a mutation observer over the ARTICLE, not
 knowing which article one is.)
+
+## Amendment (2026-09-10, shipped): bubbles — the comment beside its highlight
+
+The drawer is a 420px column pinned to the right of the glass, and opening it
+to read one comment is a big gesture for a small question. The reader's words:
+*"an alternate view… when the plugin is not open on the side panel, clicking a
+highlight gives a nice little arrow like you see in Padlet with a little pop-up
+that shows the comment… fun stacked cards that expand or compress based on the
+number of comments… clicking the thing again dismisses it… legacy view stays
+the normal thing, with a way to activate the new view."*
+
+So: a **bubble**. Off by default. With it on and the panel shut, a click on a
+highlight opens a small card beside the mark, joined to it by a drawn curve.
+Click the same mark again and it goes away.
+
+### 1. The switch
+
+One row in the gear panel — `comments: panel · bubbles` — beside the typing
+switch it is modelled on, and stored the same way: one key in extension
+storage (`bfp:bubbles`), per browser rather than per site, defaulting to
+`panel`. **`panel` is byte-for-byte today**: a click on a highlight opens the
+drawer, focuses the thread and scrolls to it. There is no `/bubbles` command
+and there is not meant to be; a preference this small has no business being a
+second surface.
+
+Turning the switch back to `panel` takes any open bubble down with it.
+
+### 2. What a bubble is made of
+
+Everything in it is the drawer's, which is why it lives inside the drawer's own
+shadow root rather than in a widget of its own — **every delegated listener in
+`wireEvents` already covers it**:
+
+- the same markdown renderer and the same `mdSlot` map (`renderBubble` runs
+  inside `render()`, before `fillMarkdown`, which is what fills its cards);
+- the same `composerHtml`, so the @-menu and the Note · Claude · Codex · All
+  pills are *the drawer's own*, not copies — same drafts (`D.drafts`), same
+  address memory (`D.routes` / `stickyRoute`), same Enter/Shift+Enter rules,
+  same `doSend`;
+- the same `streamsHtml` block for a live answer, and the same `outboxHtml`
+  block for one in flight — both split into per-entry renderers
+  (`streamHtml`, `outboxEntryHtml`) so the stack can count its cards;
+- the same `statusHtml` line.
+
+`paintStream` now patches **every** copy of a stream on screen rather than the
+first: one live answer can be in the panel's card and in a bubble at once.
+
+`scopeFor(target)` decides which copy of a composer is the live one — a bubble
+is only ever up while the panel is shut, so while it holds a thread it *is*
+that thread's composer, and a bare shadow-wide query would empty the shut
+panel's box on send.
+
+What is deliberately **not** in a bubble: copy, edit, the `▸ more` fold, the
+file/strike/question/lasso chips, the suggestion stack, and tool-activity rows.
+Those are work you do at a desk. Delete stays, on the reader's own messages
+only.
+
+### 3. The stack
+
+Past three cards the earlier ones stop being drawn and become a **lip**: three
+card edges peeking out from under the newest card, with the exact count on them
+(`+4`). The lip is a button — it fans them open, and stacks them back up. A
+thread of nine messages has no business being twelve inches tall over somebody's
+article, and the newest card is the one the reader came for.
+
+### 4. Where it sits, and where the reader puts it
+
+Under the mark if there is room; over it if there is not; and **beside** it if
+neither gap will take it — never parked at the foot of the window, which would
+lay a tall bubble over the very words it is about and hide its own connector
+behind itself.
+
+Position is re-measured from `markRects(id)` on every scroll (capture, so a PDF
+page scrolling inside its own container counts) and every resize. That single
+fact is why **there is no PDF code in this feature**: a mark painted into a page
+canvas's text layer reports its position in the same viewport coordinates a mark
+in an article does.
+
+**Dragging.** The header is a handle (pointer events, so mouse and touch are one
+gesture; buttons excluded; the pointermove/up listeners are on `window` so a
+render landing mid-gesture cannot drop the drag). What is stored is an
+**offset** from where the bubble would otherwise be, per thread, for the
+session — so re-opening a thread puts the bubble back where the reader left it,
+*relative to the words it is about*. Always clamped to the glass.
+
+### 5. The connector
+
+A cubic Bézier from the bubble's nearest edge to the mark's nearest edge, with a
+small filled head at the mark end, in the thread author's own colour
+(`--author`, the same ink as the card's left rail), 1.5px and slightly
+translucent. The control points are pulled along whichever axis the two are
+furthest apart on, by a fraction of the distance — a short hook when the bubble
+is beside its mark, a long gentle S when it has been carried across the window.
+It is drawn into an SVG overlay with `pointer-events: none`: a line is not a
+control and must never take a click from the article.
+
+A wrapped mark is several rectangles and stays several — the curve goes to
+whichever of them is nearest the bubble, never to the middle of a box spanning
+all three, which on a wrapped quote is a point over text belonging to nobody.
+
+### 6. The header's two controls
+
+- **✕** closes the bubble, leaving the panel shut.
+- **open in panel** (a sidebar glyph) closes the bubble and takes exactly the
+  road a highlight click takes when `panel` is the setting: `open('comments')`
+  → `focus(id)` → `scrollToThread(id)`, so a resolved thread's archive unfolds
+  and the card arrives lit and in view. There is no second path to keep in step.
+
+### 7. Dismissal, and the one-at-a-time rule
+
+Clicking the same highlight again; Esc (asked *after* the overlap chooser and
+*before* the drawer's own state, in both `content.js`'s document handler and the
+drawer's shadow handler, so an Esc typed in the bubble's composer closes the
+bubble and not the panel); a mousedown outside the bubble **and outside any
+highlight** (a mousedown on a highlight belongs to the toggle, or the second
+click would never close anything); and `open()`, which calls `hideBubble()` —
+one rule in the one place every opening goes through, so **the panel and a
+bubble are never both up**.
+
+Clicking a different highlight moves the bubble. There is only ever one.
+
+### 8. Where markings overlap
+
+Unchanged: the overlap chooser opens first and asks. What changed is the road
+out of it — `choosePick` opens the chosen thread's *bubble* when the setting
+says bubbles and the panel is shut, always an open and never the toggle.
+
+### One thing this needed from content.js
+
+`activate()` opens the panel as part of waking a dormant page, which settled the
+question before either branch could ask it. The mark-click handler now calls
+`activate(false)` on **both** roads and opens the panel itself on the panel
+road, one line down, as it always did.
+
+### Deliberately NOT built (this pass)
+
+- **A new comment from a selection still opens the drawer.** The selection pill
+  → `beginNew` → the panel's pending composer is untouched. Making one in a
+  bubble means anchoring a passage that has no thread and no id yet, which is a
+  different mechanism from showing one that has both; it can follow.
+- **No tool-activity rows in a bubble** (see §2).
+- **No per-site memory.** The switch is per browser, like the typing switch.
+- **The bubble's place is remembered for the session only** — not written to
+  storage. Where a bubble sits over a document is not a preference.
+
+### Files
+
+| file | what changed |
+| --- | --- |
+| `extension/drawer.js` | `bfp:bubbles`; the gear row; the whole bubble module (`showBubble`/`hideBubble`/`fanBubble`/`bubbleClick`, `renderBubble`, `placeBubble`, `drawConnector`, the drag); `scopeFor`; `paintStream` patches every copy; `outboxEntryHtml` / `streamHtml` split out; `open()` hides it; `escape()` peels it; `choosePick` forks |
+| `extension/drawer.css` | `.bubble`, `.bhrow`, `.bcard`, `.bfan`, `.bconn` — the drawer's own tokens throughout, so dark mode needs no rule of its own |
+| `extension/content.js` | `activate(false)` on the mark-click roads; the fork to `bubbleClick`; Esc and click-away layers |
+
+### Testing
+
+- `?bubbles=1&selftest=1` — 70 checks, and the first four are that with the
+  switch off **nothing has changed**. Then: the gear row both ways, the toggle,
+  Esc, a mousedown away, a different highlight moving it, the squash at four
+  cards and the exact `+4`, the fan and the re-stack, what is and is not in a
+  card, the curve (a cubic, a head on the mark, `pointer-events: none`), a
+  scroll carrying both, the drag and the clamp, the remembered place, a reply
+  that reaches the record and shows in the panel afterwards, ✕, open-in-panel
+  (card focused and in view, the bubble's reply in it), the panel-open rule, the
+  chooser's road out, and the switch back to `panel`.
+- `?pdf=1&bubbles=1&selftest=1` — 13 checks: the same click path on a text
+  layer, the bubble beside the paint rather than on it, the squash, a
+  re-measure, a second mark on another page, and open-in-panel.
+- Screenshots: `?bubbles=1` (squashed), `?bubbles=fan`, `?bubbles=dragged`,
+  `?pdf=1&bubbles=1`.
+
+**A harness limit worth writing down:** headless Chrome under
+`--virtual-time-budget` performs a scroll and fires **no** `scroll` event for it
+— not on `window`, not on `document`, capture or otherwise. The scroll checks
+hand the event over by hand; what they pin (that the answer to a scroll is a
+re-measure from the mark, and that the bubble and both ends of the curve move
+with it) is unaffected.

@@ -317,6 +317,18 @@
     ?where=1         the same sentence twice, under two headings, with the same
                      words either side of both — the shape that used to orphan
                      the second thread on it. `&selftest=1` runs those.
+    ?bubbles=1       the BUBBLE: the drawer's "comments: bubbles" setting on,
+                     the panel shut, and a comment open beside its highlight —
+                     a five-message thread squashed to its newest card with the
+                     other four behind a counted lip, joined to the mark by a
+                     drawn curve. `&fan` fans the stack open, `&dragged` drags
+                     the bubble across the glass so the curve becomes a long S.
+                     `&selftest=1` runs the whole feature: the switch, the
+                     toggle, Esc, a click away, the squash and the fan, a reply
+                     that reaches the thread, the drag and the remembered
+                     place, ✕, open-in-panel, the chooser, and — first of all —
+                     that with the switch off nothing whatsoever has changed.
+                     `?pdf=1&bubbles=1&selftest=1` is the same on a PDF.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -920,6 +932,11 @@ const PDF_SCAN = PDF_MODE === 'scan';
 // those words could only ever reach the strike. Three markings share this
 // spot on page 2 — a narrow open comment inside a strikeout inside a wider
 // resolved discussion — which is the chooser's pose and its selftest.
+// ?bubbles=… — THE COMMENT BESIDE ITS HIGHLIGHT. '1' is the pose (a squashed
+// stack), 'fan' the same fanned open, 'dragged' the same carried off across
+// the glass. Anything truthy turns the drawer's own setting on and leaves the
+// panel SHUT, because a bubble only ever exists while the panel is shut.
+const BUBBLES = Q.get('bubbles') || '';
 const STRIKE_BROOD = Q.get('strike') === 'brood';
 const STRIKE_STACK = Q.get('strike') === 'stack';
 // ?pdf=1&strike=elsewhere — A CHANGE ON ANOTHER PAGE. The discussion is on page
@@ -1609,6 +1626,29 @@ if (PDFV) {
     }
   }
 }
+
+// ?bubbles=… — A THREAD LONG ENOUGH TO SQUASH. Three messages fit in a bubble
+// and are all shown; the whole point of the stack is what happens past that,
+// so the paraphrase thread — the one on the article AND the one on the PDF,
+// whichever record is in play — gets the two exchanges that carry it to five.
+// Nothing else about the record moves: the one-message thread beside it is the
+// short case, and both are needed. This runs AFTER the PDF block above, which
+// replaces RECORD.threads wholesale.
+if (BUBBLES) {
+  const t = RECORD.threads.find(x =>
+    x.id === 't-1754500100-c3d4' || x.id === 't-1754600100-p2b3');
+  // topped up TO five rather than by two: the article's copy of this thread
+  // starts with three messages and the PDF's with one, and what the pose is
+  // about is a stack of five either way
+  const more = [
+    { author: 'claude', ts: iso(8), text: 'It reads as a paraphrase rather than a quotation — "called it" is the standard construction for summarising.' },
+    { author: 'angadh', ts: iso(7), text: 'Agreed. Flagging it for the desk.' },
+    { author: 'angadh', ts: iso(6), text: 'Desk came back — it is a paraphrase, not a quotation.' },
+    { author: 'codex', ts: iso(5), text: 'Then the quotation marks have to go, and the sentence should say “the report described” rather than “called it”.' },
+  ];
+  if (t) while (t.msgs.length < 5) t.msgs.push(more[more.length - (5 - t.msgs.length)]);
+}
+
 
 const CANNED_REPLY =
   'Two things stand out. First, the piece never tests its own claim — "the underlying ' +
@@ -8222,6 +8262,442 @@ async function selftestStrikeElsewhere() {
   console.log(out.join('\n'));
 }
 
+// The reader's own drag on a bubble, as pointer events rather than as a call
+// into the drawer: what is under test is the gesture, and setting the offset
+// directly would test nothing. `pointerdown` goes to the header (it bubbles up
+// to the listener on .bubble inside the shadow root); the move and the release
+// go to the window, which is where the drawer listens for them so that a
+// render landing mid-gesture cannot drop the drag.
+function dragBubble(dx, dy) {
+  const S = window.__bfp.drawer.shadow;
+  const row = S.querySelector('.bubble .bhrow');
+  if (!row) { log('bubbles: no header to drag'); return null; }
+  const r = row.getBoundingClientRect();
+  const x0 = Math.round(r.left + 24), y0 = Math.round(r.top + r.height / 2);
+  const fire = (type, x, y, node) => (node || window).dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, composed: true,
+    pointerId: 1, isPrimary: true, pointerType: 'mouse',
+    button: 0, buttons: 1, clientX: x, clientY: y }));
+  fire('pointerdown', x0, y0, row);
+  fire('pointermove', x0 + Math.round(dx / 2), y0 + Math.round(dy / 2));
+  fire('pointermove', x0 + dx, y0 + dy);
+  fire('pointerup', x0 + dx, y0 + dy);
+  return { x0, y0 };
+}
+// Where a thread's paint is, as ONE box — the connector's mark end has to land
+// inside it, whichever of the mark's line-boxes the curve chose. Every
+// <mark> the id wears, not the first: a passage with an <em> in the middle of
+// it is painted as three of them, and the curve is entitled to point at any.
+const markBox = id => {
+  const els = [...document.querySelectorAll('mark.bfp-hl[data-bfp="' + id + '"]')];
+  if (!els.length) return null;
+  const rs = els.map(e => e.getBoundingClientRect());
+  return {
+    left: Math.min(...rs.map(r => r.left)), top: Math.min(...rs.map(r => r.top)),
+    right: Math.max(...rs.map(r => r.right)), bottom: Math.max(...rs.map(r => r.bottom)),
+  };
+};
+const inBox = (p, r, pad) => !!r && !!p && p.x >= r.left - (pad || 3) && p.x <= r.right + (pad || 3)
+  && p.y >= r.top - (pad || 3) && p.y <= r.bottom + (pad || 3);
+
+// ?bubbles=1&selftest=1 — THE COMMENT BESIDE ITS HIGHLIGHT.
+//
+//   THE ASK. "When the plugin is not open on the side panel, clicking a
+//   highlight gives a nice little pop-up that shows the comment… fun stacked
+//   cards that expand or compress based on the number of comments… clicking
+//   the thing again dismisses it… legacy view stays the normal thing, with a
+//   way to activate the new view."
+//
+//   So the first thing this pins, before a word about bubbles, is that the
+//   legacy view is untouched: with the switch where it starts, a click on a
+//   highlight opens the panel at that thread and no bubble exists. Everything
+//   after it is the new road — and every part of the new road that a reader
+//   could get stuck on: the toggle both ways, Esc, a click away, the panel
+//   opening, the squash and the fan, a reply that has to reach the real thread
+//   and be there in the panel afterwards, the drag and the place it is
+//   remembered in, the curve's two ends, and the two buttons in the header.
+async function selftestBubbles() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const bub = () => S.querySelector('.bubble');
+  const up = () => !!bub() && !bub().hidden;
+  const conn = () => S.querySelector('.bconn');
+  const cards = () => [...S.querySelectorAll('.bubble .bstack > .reply')];
+  const fan = () => S.querySelector('.bubble .bfan');
+  const box = () => bub() && bub().querySelector('.composer textarea');
+  const cardFor = id => S.querySelector('.pane[data-pane="comments"] .card[data-thread="' + id + '"]');
+  const LONG = 't-1754500100-c3d4';    // five messages: the stack squashes
+  const SHORT = 't-1754500000-a1b2';   // one message: it does not
+  const REPLY = 'Filed from the bubble, not the panel.';
+
+  await until(() => document.querySelector('mark.bfp-hl[data-bfp="' + LONG + '"]'), 5000);
+
+  // ---- THE LEGACY VIEW, UNTOUCHED ----------------------------------------
+  // The default is 'panel', and 'panel' means today: the click opens the
+  // drawer at the thread, exactly as it always has, and nothing floats over
+  // the article at all.
+  check('the setting starts at panel, which is what the drawer has always done',
+    d.bubbleState().on === false);
+  clickStackedMark(SHORT);
+  await sleep(300);
+  check('…so a click on a highlight opens the panel', d.isOpen());
+  check('…at that thread', !!cardFor(SHORT) && cardFor(SHORT).classList.contains('focused'));
+  check('…and no bubble exists anywhere', !up() && !d.bubbleState().open);
+
+  // ---- THE SWITCH ---------------------------------------------------------
+  await d.openModels();
+  await sleep(250);
+  const panelSeg = S.querySelector('.pop-bubrow [data-bubbles="panel"]');
+  const bubSeg = S.querySelector('.pop-bubrow [data-bubbles="bubbles"]');
+  check('the gear panel carries a "comments: panel · bubbles" row',
+    !!panelSeg && !!bubSeg
+    && /comments/.test((S.querySelector('.pop-bubrow .pop-verblabel') || {}).textContent || ''));
+  check('…with panel lit, because that is where it starts',
+    !!panelSeg && panelSeg.classList.contains('on') && !bubSeg.classList.contains('on'));
+  hit(bubSeg, 'the bubbles half of the comments switch');
+  await sleep(160);
+  check('pressing bubbles lights bubbles',
+    d.bubbleState().on && bubSeg.classList.contains('on') && !panelSeg.classList.contains('on'));
+  d.closeModels();
+  d.close();
+  await sleep(200);
+  check('…and the panel closes behind it, which is where a bubble can exist', !d.isOpen());
+
+  // ---- THE BUBBLE, AND THE TOGGLE ----------------------------------------
+  clickStackedMark(SHORT);
+  await sleep(320);
+  check('with bubbles on and the panel shut, a click on a highlight opens a bubble', up());
+  check('…and leaves the panel shut', !d.isOpen());
+  check('…on the thread that was clicked', d.bubbleState().thread === SHORT);
+  check('…naming the passage it belongs to',
+    /mood in the stands/.test((bub().querySelector('.bq') || {}).textContent || ''));
+  check('…and carrying that thread\'s message',
+    /the line the whole piece hangs on/i.test(bub().textContent));
+  clickStackedMark(SHORT);
+  await sleep(260);
+  check('clicking the same highlight again dismisses it', !up());
+  check('…and still without opening the panel', !d.isOpen());
+
+  // ---- ESC, AND A CLICK AWAY ----------------------------------------------
+  clickStackedMark(SHORT);
+  await sleep(280);
+  check('it comes back on the next click', up());
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(200);
+  check('Esc puts it away', !up());
+  check('…and takes the panel nowhere', !d.isOpen());
+  clickStackedMark(SHORT);
+  await sleep(280);
+  document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  await sleep(200);
+  check('a mousedown anywhere else on the page puts it away too', !up());
+
+  // ---- A DIFFERENT HIGHLIGHT MOVES IT -------------------------------------
+  clickStackedMark(SHORT);
+  await sleep(260);
+  clickStackedMark(LONG);
+  await sleep(320);
+  check('clicking a different highlight moves the bubble to that thread',
+    up() && d.bubbleState().thread === LONG);
+  check('…and there is only ever one of them', S.querySelectorAll('.bubble').length === 1);
+
+  // ---- THE STACK ----------------------------------------------------------
+  check('a five-message thread squashes to one open card', cards().length === 1);
+  check('…and the card left open is the newest one',
+    /quotation marks have to go/.test(cards()[0].textContent));
+  check('…with the earlier four behind a lip that counts them exactly',
+    !!fan() && /\+4/.test(fan().textContent));
+  check('…drawn as stacked card edges, not as a word', !!fan() && !!fan().querySelector('.bedge'));
+  hit(fan(), 'the squashed stack');
+  await sleep(240);
+  check('clicking the stack fans every message open', cards().length === 5);
+  check('…in the order they were written',
+    /whole piece|structural failure of oversight|actual report/i.test(cards()[0].textContent)
+    && /quotation marks have to go/.test(cards()[4].textContent));
+  check('…each with its author and its time on it',
+    cards().every(c => !!c.querySelector('.who .author') && !!c.querySelector('.who .when')));
+  check('…and a bot\'s card says it is a bot\'s',
+    cards().some(c => c.classList.contains('bot') && !!c.querySelector('.badge.bot-badge')));
+  check('the panel\'s copy and edit controls are NOT in here',
+    !bub().querySelector('[data-act="copy"]') && !bub().querySelector('[data-act="edit"]'));
+  check('…but the reader can still delete their own message',
+    !!bub().querySelector('.reply.mine [data-act="del-msg"]')
+    && !bub().querySelector('.reply.bot [data-act="del-msg"]'));
+  hit(fan(), 'the fanned stack');
+  await sleep(240);
+  check('clicking it again stacks them back up', cards().length === 1);
+
+  // ---- THE CONNECTOR ------------------------------------------------------
+  const st1 = d.bubbleState();
+  check('a line joins the bubble to its highlight', !!st1.conn && !conn().hidden);
+  check('…drawn as a curve, not as a straight rule',
+    /^M[-\d. ]+C/.test((S.querySelector('.bconn .bline') || {}).getAttribute
+      ? S.querySelector('.bconn .bline').getAttribute('d') || '' : ''));
+  check('…with a head at the highlight end, on the mark itself',
+    !!S.querySelector('.bconn .barrow') && !!S.querySelector('.bconn .barrow').getAttribute('d')
+    && inBox(st1.conn.to, markBox(LONG)));
+  check('…and its other end on the bubble',
+    inBox(st1.conn.from, st1.rect && { left: st1.rect.left, top: st1.rect.top,
+      right: st1.rect.left + st1.rect.width, bottom: st1.rect.top + st1.rect.height }, 2));
+  check('…and it never takes a click from the page underneath it',
+    getComputedStyle(conn()).pointerEvents === 'none');
+
+  // ---- THE SCROLL ---------------------------------------------------------
+  // A bubble is fixed to the glass and its mark is not, so following the mark
+  // is the whole of staying beside it. It is done by RE-MEASURING the mark on
+  // every scroll rather than by moving the bubble a matching number of pixels
+  // — which is why it also survives a page that scrolls a container of its own.
+  const beforeScroll = d.bubbleState();
+  const y0 = window.scrollY;
+  window.scrollBy(0, 160);
+  // THE SYNTHETIC EVENT IS NOT A CHEAT, IT IS THIS ENVIRONMENT'S SCROLL.
+  // Headless Chrome under --virtual-time-budget performs the scroll and fires
+  // no `scroll` event for it — not on window, not on document, capture or
+  // otherwise (checked directly: the page moves, the listeners never run). A
+  // real browser fires one; here it has to be handed over, and everything the
+  // check is actually about — that the answer to a scroll is a re-measure from
+  // the mark, and that the bubble and both ends of the curve move with it — is
+  // pinned exactly as it would be.
+  window.dispatchEvent(new Event('scroll'));
+  await sleep(320);
+  check('(pose) the article really scrolled', window.scrollY !== y0);
+  const scrolled = d.bubbleState();
+  check('a scroll carries the bubble along with its highlight',
+    up() && !!scrolled.rect && Math.abs(scrolled.rect.top - beforeScroll.rect.top) > 40);
+  check('…and both ends of the curve with it',
+    inBox(scrolled.conn && scrolled.conn.to, markBox(LONG))
+    && Math.abs(scrolled.conn.to.y - beforeScroll.conn.to.y) > 40);
+  window.scrollBy(0, -160);
+  window.dispatchEvent(new Event('scroll'));
+  await sleep(300);
+
+  // ---- THE DRAG -----------------------------------------------------------
+  // Grab it by the header and carry it off. What must follow: the bubble
+  // itself, both ends of the curve, and — when the reader comes back to this
+  // thread — the place they put it.
+  const before = d.bubbleState();
+  dragBubble(-170, -120);
+  await sleep(260);
+  const after = d.bubbleState();
+  check('the header is a handle: the bubble moves with it',
+    !!after.rect && (Math.abs(after.rect.left - before.rect.left) > 60
+      || Math.abs(after.rect.top - before.rect.top) > 60));
+  check('…and the move is remembered as an offset, not as a place on the glass',
+    after.moved && !!after.offset);
+  check('…the bubble stays on the glass',
+    after.rect.left >= -1 && after.rect.top >= -1
+    && after.rect.left + after.rect.width <= window.innerWidth + 1
+    && after.rect.top + after.rect.height <= window.innerHeight + 1);
+  check('the curve\'s bubble end came with it',
+    Math.abs(after.conn.from.x - before.conn.from.x)
+    + Math.abs(after.conn.from.y - before.conn.from.y) > 30);
+  check('…and its other end is still on the highlight', inBox(after.conn.to, markBox(LONG)));
+  check('…so the two are still joined', !conn().hidden);
+
+  // ---- …AND IT STAYS WHERE IT WAS PUT ------------------------------------
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(200);
+  check('Esc puts the moved bubble away', !up());
+  clickStackedMark(LONG);
+  await sleep(320);
+  const back = d.bubbleState();
+  check('…and re-opening that thread puts it back where the reader left it',
+    up() && !!back.rect && Math.abs(back.rect.left - after.rect.left) < 8
+    && Math.abs(back.rect.top - after.rect.top) < 8);
+
+  // ---- A REPLY, FROM THE BUBBLE -------------------------------------------
+  check('the bubble has a composer', !!box());
+  check('…the drawer\'s own, with its address pills',
+    !!bub().querySelector('.composer .routes .rpill[data-route="all"]')
+    && !!bub().querySelector('.composer .routes .rpill[data-route="none"]'));
+  check('…and its @-menu', !!bub().querySelector('.composer .mentions'));
+  const ta = box();
+  ta.focus();
+  ta.value = REPLY;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(120);
+  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+  await until(() => (RECORD.threads.find(t => t.id === LONG).msgs || [])
+    .some(m => String(m.text || '').indexOf(REPLY) === 0), 4000);
+  await sleep(300);
+  check('Enter in the bubble sends the reply',
+    (RECORD.threads.find(t => t.id === LONG).msgs || [])
+      .some(m => String(m.text || '').indexOf(REPLY) === 0));
+  check('…and it is a card in the stack a moment later',
+    up() && bub().textContent.indexOf(REPLY) >= 0);
+  check('…with the box emptied', !!box() && !box().value.trim());
+
+  // ---- ✕ ------------------------------------------------------------------
+  hit(bub() && bub().querySelector('[data-act="bubble-close"]'), 'the bubble\'s ✕');
+  await sleep(220);
+  check('the ✕ closes the bubble', !up());
+  check('…with the panel still shut', !d.isOpen());
+
+  // ---- open in panel ------------------------------------------------------
+  clickStackedMark(LONG);
+  await sleep(300);
+  hit(bub() && bub().querySelector('[data-act="bubble-panel"]'), 'the open-in-panel button');
+  await sleep(400);
+  check('open-in-panel leaves no bubble', !up());
+  check('…opens the panel', d.isOpen());
+  check('…on the Comments tab', !S.querySelector('.pane[data-pane="comments"]').hidden);
+  check('…with that thread\'s card the focused one',
+    !!cardFor(LONG) && cardFor(LONG).classList.contains('focused'));
+  check('…scrolled into view rather than merely lit', (() => {
+    const c = cardFor(LONG), pane = S.querySelector('.pane[data-pane="comments"]');
+    if (!c || !pane) return false;
+    const cr = c.getBoundingClientRect(), pr = pane.getBoundingClientRect();
+    return cr.bottom > pr.top && cr.top < pr.bottom;
+  })());
+  check('…and the reply written in the bubble is in the panel too',
+    !!cardFor(LONG) && cardFor(LONG).textContent.indexOf(REPLY) >= 0);
+
+  // ---- the panel open means no bubble, ever -------------------------------
+  clickStackedMark(SHORT);
+  await sleep(300);
+  check('with the panel open a click on a highlight is the panel\'s, not a bubble\'s',
+    !up() && d.isOpen());
+  check('…and takes the panel to that thread',
+    !!cardFor(SHORT) && cardFor(SHORT).classList.contains('focused'));
+  d.close();
+  await sleep(200);
+
+  // ---- where markings overlap, the chooser still asks first ---------------
+  // The chooser is content.js's answer to a click that could mean two things,
+  // and it is unchanged: what changes is where CHOOSING lands. (Driven through
+  // showPicks rather than through overlapping paint, which is the stack-pick
+  // pose's own subject — this is about the road out of the chooser.)
+  d.showPicks(40, 40, [SHORT, LONG]);
+  await sleep(200);
+  const rows = [...S.querySelectorAll('.markpick .pickrow')];
+  check('a click where two markings overlap still opens the chooser', rows.length === 2);
+  check('…and no bubble yet: the chooser is a question', !up());
+  hit(rows.find(r => r.getAttribute('data-thread') === SHORT), 'a chooser row');
+  await sleep(320);
+  check('choosing a row opens THAT thread\'s bubble',
+    up() && d.bubbleState().thread === SHORT);
+  check('…and not the panel', !d.isOpen());
+
+  // ---- and back to the legacy view ---------------------------------------
+  // The switch is a switch: turning it back must put the bubble down and give
+  // the click its old meaning again, with nothing left over.
+  d.setBubbles('panel');
+  await sleep(200);
+  check('switching back to panel puts the open bubble away', !up());
+  clickStackedMark(SHORT);
+  await sleep(320);
+  check('…and the click opens the panel again, exactly as it did at the start',
+    d.isOpen() && !up() && !!cardFor(SHORT) && cardFor(SHORT).classList.contains('focused'));
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (bubbles) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?pdf=1&bubbles=1&selftest=1 — THE SAME THING ON A PDF.
+//
+//   There is no PDF code in the bubble and there must not be. A mark in a
+//   page canvas's text layer reports its position in the same viewport
+//   coordinates a mark in an article does, and that rect is the bubble's only
+//   input — so the whole of what this has to prove is that the claim holds:
+//   the click path is the one path, the bubble lands beside the paint on the
+//   page it is on, the curve ends on that paint, the stack squashes the same
+//   way, and scrolling the document carries both along.
+async function selftestBubblesPdf() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const bub = () => S.querySelector('.bubble');
+  const up = () => !!bub() && !bub().hidden;
+  const cards = () => [...S.querySelectorAll('.bubble .bstack > .reply')];
+  const P2 = 't-1754600100-p2b3';    // page 2, five messages
+  const P1 = 't-1754600000-p1a2';    // page 1, one message, across two typeset lines
+
+  await until(() => document.querySelector('mark.bfp-hl[data-bfp="' + P2 + '"]'), 20000);
+  check('the PDF painted its marks into the text layer', (() => {
+    const m = document.querySelector('mark.bfp-hl[data-bfp="' + P2 + '"]');
+    return !!m && !!m.closest('.textLayer');
+  })());
+
+  d.setBubbles('bubbles');
+  d.close();
+  await sleep(200);
+  check('the setting is the drawer\'s, not the document kind\'s', d.bubbleState().on);
+
+  clickStackedMark(P2);
+  await sleep(400);
+  check('a click on a PDF highlight opens the bubble', up() && d.bubbleState().thread === P2);
+  check('…with the panel shut', !d.isOpen());
+  const st = d.bubbleState();
+  check('…placed against the paint on the page that mark is on',
+    inBox(st.conn && st.conn.to, markBox(P2)));
+  check('…and beside it rather than on top of it', (() => {
+    const m = markBox(P2), r = st.rect;
+    if (!m || !r) return false;
+    return r.top >= m.bottom - 1 || r.top + r.height <= m.top + 1
+      || r.left >= m.right - 1 || r.left + r.width <= m.left + 1;
+  })());
+  check('the stack squashes here too', cards().length === 1 && /\+4/.test(
+    (S.querySelector('.bubble .bfan') || {}).textContent || ''));
+
+  // ---- the document scrolls under it -------------------------------------
+  // The one thing a paged document does that an article does not is move a
+  // whole canvas under the reader. Both the bubble and the line have to come.
+  // A scroll — whoever's it is, and a PDF viewer's is its own container's, not
+  // the window's — is answered by RE-MEASURING from the mark rather than by
+  // moving the bubble a matching number of pixels. So what a scroll event has
+  // to leave behind is a bubble still joined to the paint, which is the claim
+  // whether or not this pose's pages are tall enough to scroll at all. (The
+  // article pose, on a document that certainly does scroll, pins the movement
+  // itself.)
+  window.dispatchEvent(new Event('scroll'));
+  await sleep(320);
+  const moved = d.bubbleState();
+  check('a scroll re-measures rather than dead-reckons: still joined to the paint',
+    up() && inBox(moved.conn && moved.conn.to, markBox(P2)));
+  check('…and the bubble is still beside its mark, not adrift', (() => {
+    const m = markBox(P2), r = moved.rect;
+    if (!m || !r) return false;
+    return Math.abs(r.top - m.bottom) < 40 || Math.abs(r.top + r.height - m.top) < 40
+      || Math.abs(r.left - m.right) < 40 || Math.abs(r.left + r.width - m.left) < 40;
+  })());
+
+  // ---- and the second mark, on another page ------------------------------
+  clickStackedMark(P1);
+  await sleep(400);
+  check('a mark on another page opens its own bubble',
+    up() && d.bubbleState().thread === P1);
+  check('…joined to the paint on THAT page',
+    inBox(d.bubbleState().conn && d.bubbleState().conn.to, markBox(P1)));
+  check('…and its one message needs no stack at all',
+    cards().length === 1 && !S.querySelector('.bubble .bfan'));
+
+  hit(bub() && bub().querySelector('[data-act="bubble-panel"]'), 'the open-in-panel button');
+  await sleep(420);
+  check('open-in-panel works the same on a PDF',
+    !up() && d.isOpen()
+    && !!S.querySelector('.card[data-thread="' + P1 + '"].focused'));
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (bubbles-pdf) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?pdf=1&strike=stack&selftest=1 — CLICKING THROUGH STACKED MARKS.
 //
 //   THE REPORT. The reader discusses a passage, resolves the thread, then
@@ -11513,13 +11989,16 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (!OFFLINE) d.setConn(true);
     if (window.__BFP_THEME) d.setTheme(window.__BFP_THEME);
     if (Q.get('wide')) d.setWidth(Number(Q.get('wide')));
-    if (Q.get('closed') !== '1') d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
+    // …and never for a bubble pose: a bubble only exists while the panel is
+    // shut, so opening the panel here would be a pose that cannot happen
+    if (Q.get('closed') !== '1' && !BUBBLES) d.open(Q.get('chat') === '1' ? 'chat' : 'comments');
     // the file's own comments, handed to content.js exactly as pdf/viewer.js
     // hands them over (window.__bfp.pdfAnnots) — there is no PDF here, and
     // there does not need to be: what is under test is the offer, not the parse
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
-      setTimeout(LASSO === '1' ? selftestLasso
+      setTimeout(BUBBLES ? (PDFV ? selftestBubblesPdf : selftestBubbles)
+        : LASSO === '1' ? selftestLasso
         : FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
         : WORKSPACE ? selftestWorkspace
         : GDOCS ? selftestGdocs : PDF_LOCAL ? selftestPdfLocal
@@ -11550,6 +12029,26 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : SEEDED_TASKS ? selftestSeededTasks
         : READY ? selftestReady : selftest, 250);
       return;
+    }
+    // ?bubbles=… — the screenshot poses. A bubble only ever exists in answer
+    // to a click on a highlight, so the pose has to make one — on a real point
+    // inside the paint, because content.js reads clientX/clientY. `fan` then
+    // presses the stack open, and `dragged` carries the whole thing off across
+    // the glass, which is the state the curve was drawn for.
+    if (BUBBLES && Q.get('selftest') !== '1') {
+      setTimeout(() => {
+        d.setBubbles('bubbles');
+        // whichever record is in play — the five-message paraphrase thread is
+        // the article's on an article and the PDF's on a PDF
+        clickStackedMark(PDFV ? 't-1754600100-p2b3' : 't-1754500100-c3d4');
+        setTimeout(() => {
+          if (BUBBLES === 'fan') {
+            const f = d.shadow.querySelector('.bubble .bfan');
+            if (f) f.click(); else log('bubbles: no stack to fan');
+          }
+          if (BUBBLES === 'dragged') dragBubble(-210, 150);
+        }, 420);
+      }, 700);
     }
     // ?more=open — the same seeded answers with the first "▸ more" already
     // open: the fold is drawer session state, so the only way to it from out

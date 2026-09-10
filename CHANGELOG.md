@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 2026-09-10
+
+- **Bubbles: read a comment beside its highlight, without opening the panel.**
+  The drawer is a 420px column pinned to the side of the screen, and opening it
+  to read one comment is a big gesture for a small question. So there is now an
+  alternate view, off by default: turn on **comments: bubbles** in the drawer's
+  gear panel, shut the panel, and clicking a highlight opens a small card
+  beside the mark instead — joined to it by a drawn curve with an arrowhead on
+  the words it is about. Clicking the same highlight again puts it away, and so
+  do Esc and a click anywhere else; clicking a different one moves it. Past
+  three messages the thread squashes to its newest card with the earlier ones
+  showing as a stack of edges with the count on them ("+4"), which you click to
+  fan open and click again to stack back up. You can reply from it: the same
+  box, the same `@claude`/`@codex`/`@all` pills, the same draft and the same
+  thread — a bot's answer streams into a new card in the stack. Drag it by its
+  header and it stays where you put it (the curve stretching to follow), the ✕
+  closes it, and the sidebar button hands the thread to the panel with its card
+  lit and scrolled to. It works the same on a PDF, because a highlight in a
+  PDF's text layer reports its position exactly as one in an article does. The
+  panel stays the default and is unchanged in every particular; starting a
+  *new* comment from a selection still opens it.
+
 ## 2026-09-09
 
 - **Lasso: bring what you have already read and said into the chat.** The thing

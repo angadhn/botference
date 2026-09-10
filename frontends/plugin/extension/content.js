@@ -2856,7 +2856,18 @@
   }, true);
 
   document.addEventListener('mousedown', e => {
-    if (drawer && !inOurUI(e.target)) { drawer.hideSel(); drawer.hidePicks(); }
+    if (drawer && !inOurUI(e.target)) {
+      drawer.hideSel();
+      drawer.hidePicks();
+      // …and a bubble goes with a click away from it — but NOT with a click on
+      // a highlight, which is the toggle and belongs to the click handler
+      // above. Dismissing here would put the bubble away a moment before that
+      // handler opened it again, and the second click on a mark would never
+      // close anything.
+      const onMark = e.target && e.target.closest
+        && e.target.closest('mark.bfp-hl, del.bfp-was[data-bfp]');
+      if (!onMark && drawer.bubbleOpen && drawer.bubbleOpen()) drawer.hideBubble();
+    }
   }, true);
 
   // The pill clicked: freeze the anchor, paint it provisionally, open the
@@ -2945,11 +2956,25 @@
     // the paint at (x, y), nearest-fitting first; anything shorter than two
     // ids is not a choice and falls through to the click this has always been.
     const at = Anchor.marksAtPoint(e.target, e.clientX, e.clientY);
+    // `activate(false)` and not `activate()`, on BOTH roads out of here. The
+    // bare form opens the panel as part of waking the page up, which settled
+    // the question before either branch below could ask it — a chooser would
+    // be up over an open drawer it had not chosen anything in yet, and a
+    // bubble could never exist at all, because a bubble is a thing that
+    // happens while the panel is SHUT. Nothing is lost by dropping it: the
+    // panel road opens the panel itself, one line down, and always has.
     if (at.length > 1) {
-      activate().then(d => { if (d) d.showPicks(e.clientX, e.clientY, at); });
+      activate(false).then(d => { if (d) d.showPicks(e.clientX, e.clientY, at); });
       return;
     }
-    activate().then(d => {
+    activate(false).then(d => {
+      if (!d) return;
+      // …and where the reader has asked for BUBBLES rather than the panel (the
+      // gear's "comments: panel · bubbles"), this same click opens a card
+      // beside the mark instead — and clicking the same mark again puts it
+      // away. The drawer answers true when it has taken the click, so there is
+      // exactly one road to the panel and this is a fork in front of it.
+      if (d.bubbleClick && d.bubbleClick(id)) return;
       d.open('comments');
       d.focus(id);
       d.scrollToThread(id);
@@ -2964,6 +2989,10 @@
     // not the panel is — a chooser can be opened on a dormant page — so they
     // are asked before the drawer's own state is.
     if (drawer.picksOpen && drawer.picksOpen()) { drawer.hidePicks(); return; }
+    // …then a bubble, which lives over the page in the same way and is only
+    // ever up while the panel is shut — so it is asked before the drawer's own
+    // state is, exactly as the chooser is
+    if (drawer.bubbleOpen && drawer.bubbleOpen()) { drawer.hideBubble(); return; }
     if (drawer.isOpen() && !drawer.escape()) { drawer.close(); }
   }, true);
 

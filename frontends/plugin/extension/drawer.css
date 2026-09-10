@@ -236,6 +236,165 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font-size: 12px; color: var(--muted); overflow-wrap: anywhere;
 }
 
+/* ── the bubble: a comment beside its highlight ────────────────────────────
+ * Off by default (the gear's "comments: panel · bubbles"); with it on and the
+ * panel shut, a click on a highlight opens this instead.
+ *
+ * It borrows the chooser's chrome for the same reason the chooser borrows the
+ * pill's — same card, same hairline, same shadow — so all three read as the
+ * page-side half of one drawer rather than as three different widgets over
+ * somebody's article. What is its own is the STACK: rounded cards with a
+ * slight offset and the author's colour down the left edge, which is the
+ * card's own convention (--author) borrowed inward rather than reinvented.
+ *
+ * Small on purpose. 340px is about a phone's column, 60vh is about half a
+ * laptop's glass, and everything past that scrolls INSIDE rather than growing
+ * a card taller than the paragraph it is about. */
+.bubble {
+  position: fixed; left: 0; top: 0; z-index: 4; pointer-events: auto;
+  display: flex; flex-direction: column;
+  width: max-content; max-width: min(340px, calc(100vw - 16px));
+  max-height: min(60vh, calc(100vh - 16px));
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 12px;
+  box-shadow: var(--shadow);
+  font: 14px/1.5 var(--sans);
+  overflow: hidden;
+}
+.bubble[hidden] { display: none }
+
+/* the header IS the handle — grab anywhere on it that is not a button */
+.bhrow {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 7px 8px 7px 10px;
+  background: color-mix(in srgb, var(--author, var(--accent)) 9%, var(--card));
+  border-bottom: 1px solid var(--card-line);
+  cursor: grab; touch-action: none; user-select: none;
+}
+.bubble.dragging .bhrow { cursor: grabbing }
+/* three dots' worth of grip: the sign every draggable card in every app wears,
+   drawn as a dotted swatch rather than an emoji so it takes the theme */
+.bhrow .bgrip {
+  flex: none; width: 9px; height: 14px; opacity: .5;
+  background-image: radial-gradient(currentColor 1px, transparent 1.2px);
+  background-size: 4px 4px; background-position: 0 2px;
+  color: var(--muted);
+}
+/* the passage, in one line: this is a label saying WHICH mark the bubble
+   belongs to, not the quote block the panel's card gives it the room for */
+.bhrow .bq {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: italic 12.5px/1.4 var(--serif, var(--sans)); color: var(--muted);
+}
+.brebtn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0;
+  background: transparent; color: var(--muted);
+  border: 0; border-radius: 6px; box-shadow: none;
+  font: 12px/1 var(--sans); cursor: pointer; opacity: .7;
+}
+.brebtn:hover { opacity: 1; color: var(--accent); background: var(--rail) }
+.brebtn svg { display: block }
+
+.bbody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 10px }
+.bstack { display: flex; flex-direction: column }
+
+/* ── the cards ───────────────────────────────────────────────────────────
+ * The drawer's own .reply, with the offset stack laid over it: each card
+ * steps 4px right of the one before, so a thread reads as a deck rather than
+ * a list, and the newest card — the one you came here to read — is the one
+ * furthest out and fully open. */
+.bcard {
+  margin: 0 0 6px; border-radius: 10px;
+  border-left: 3px solid var(--author, var(--muted));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .10);
+}
+.bcard + .bcard { margin-left: 4px }
+.bcard + .bcard + .bcard { margin-left: 8px }
+.bcard:last-child { margin-bottom: 0 }
+/* no action column in here, so the who-line gets its width back — the one
+   affordance the bubble keeps is a delete on the reader's own message, and it
+   rides the end of that line rather than floating over the text */
+.bcard .who { padding-right: 0 }
+.bcard .who .when { margin-left: auto }
+.bcard .who .bdel { margin-left: 4px; width: 18px; height: 18px; opacity: .3 }
+.bcard:hover .who .bdel { opacity: .8 }
+.bcard .who .bdel:hover { color: var(--bad); background: transparent }
+.bcard .ctext.md { overflow-wrap: anywhere }
+/* the panel indents your own messages 26px to set them off in a 420px column;
+   in a 340px bubble that is a tenth of the width, so the same distinction is
+   made with the ground and the right-hand rule alone */
+.bcard.mine { margin-left: 10px }
+.bcard.mine + .bcard { margin-left: 0 }
+/* a bot answering live is a card in this stack like any other */
+.bubble .reply.streaming { margin: 0 0 6px; border-radius: 10px }
+.bubble .reply.sending { margin: 0 0 6px; border-radius: 10px }
+
+/* ── the lip: what a squashed stack shows ────────────────────────────────
+ * Past three cards the earlier ones stop being drawn at all and become this —
+ * a few card edges peeking out from behind the newest one, with the exact
+ * number on them. It is a button: pressing it fans them open, pressing it
+ * again stacks them back up. */
+.bfan {
+  display: flex; align-items: flex-end; gap: 8px; width: 100%;
+  margin: 0 0 -2px; padding: 6px 6px 0;
+  background: transparent; border: 0; border-radius: 8px 8px 0 0;
+  font: 11.5px/1 var(--sans); color: var(--muted); cursor: pointer;
+  box-shadow: none;
+}
+.bfan:hover { color: var(--fg) }
+.bfan:hover .bedge { border-color: var(--line) }
+/* the edges are the TOPS OF CARDS, seen from below: each one a little wider
+   and a little more solid than the one behind it, stepped in from the left the
+   same 4px the real cards step out — so the lip reads as the deck the newest
+   card is sitting on rather than as three grey bars */
+.bfan .bedges { flex: none; display: flex; flex-direction: column; gap: 3px; align-items: flex-start }
+.bfan .bedge {
+  height: 5px; border-radius: 6px 6px 0 0;
+  background: color-mix(in srgb, var(--author, var(--muted)) 20%, var(--card));
+  border: 1px solid var(--card-line); border-bottom: 0;
+  transition: border-color .15s ease;
+}
+.bfan .bedge.e0 { width: 96px; margin-left: 12px; opacity: .5 }
+.bfan .bedge.e1 { width: 108px; margin-left: 6px; opacity: .72 }
+.bfan .bedge.e2 { width: 120px; margin-left: 0 }
+.bfan .bfanc { padding-bottom: 1px; font-variant-numeric: tabular-nums; font-weight: 600 }
+.bfan.open { align-items: center; padding: 4px 8px; margin-bottom: 6px }
+.bfan.open:hover { background: var(--rail) }
+/* fanning is a change of size, and a reader who has asked for less motion has
+   already answered whether they want it animated */
+.bstack { transition: none }
+@media (prefers-reduced-motion: no-preference) {
+  .bcard { animation: bfan-in .16s cubic-bezier(.32, .72, 0, 1) both }
+  .bfan.open + .bcard { animation: none }
+}
+@keyframes bfan-in { from { opacity: .4; transform: translateY(-3px) } to { opacity: 1; transform: none } }
+
+/* the status line and the composer sit under the scroller, always visible:
+   "agents are working…" and the box you reply in are not scrollback */
+.bubble > .status-chip { flex: none; margin: 0 10px }
+.bubble > .composer { flex: none; margin: 0; padding: 8px 10px 9px; border-top: 1px solid var(--card-line) }
+.bubble > .composer textarea { min-height: 34px; max-height: 22vh; padding: 7px 9px; font-size: 13.5px }
+.bubble > .composer .crow { margin-top: 5px }
+.bubble > .composer .hint { font-size: 11px }
+.bubble > .composer .send { padding: 4px 12px; min-height: 26px; font-size: 12.5px }
+
+/* ── the connector ───────────────────────────────────────────────────────
+ * A curve from the bubble's nearest edge to the highlight, with a head at the
+ * highlight end, in the thread author's own colour. It lies over the article
+ * and must never take a click from it — a line is not a control. */
+.bconn {
+  position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+  z-index: 1; pointer-events: none; overflow: visible;
+}
+.bconn[hidden] { display: none }
+.bconn .bline {
+  fill: none; stroke: var(--author, var(--accent)); stroke-width: 1.5;
+  stroke-linecap: round; opacity: .62;
+}
+.bconn .barrow { fill: var(--author, var(--accent)); stroke: none; opacity: .78 }
+
 /* ── panel ─────────────────────────────────────────────────────────────── */
 .panel {
   position: fixed; top: 0; right: 0; width: 420px; max-width: 100vw; height: 100%;
