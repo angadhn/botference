@@ -828,12 +828,12 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   background: var(--bg); border: 1px solid var(--card-line); border-radius: 999px;
 }
 .pop-verb .vsep, .pop-bill .vsep { font: 12px/1 var(--sans); color: var(--muted); opacity: .55 }
-.pop-verb .tseg, .pop-verb .vseg, .pop-bill .bseg {
+.pop-verb .tseg, .pop-verb .vseg, .pop-verb .bubseg, .pop-bill .bseg {
   border: 0; background: transparent; color: var(--muted);
   font: 12px/1.2 var(--sans); padding: 4px 10px; min-height: 24px; border-radius: 999px;
 }
-.pop-verb .tseg:hover, .pop-verb .vseg:hover, .pop-bill .bseg:hover { color: var(--accent); border-color: transparent }
-.pop-verb .tseg.on, .pop-verb .vseg.on, .pop-bill .bseg.on {
+.pop-verb .tseg:hover, .pop-verb .vseg:hover, .pop-verb .bubseg:hover, .pop-bill .bseg:hover { color: var(--accent); border-color: transparent }
+.pop-verb .tseg.on, .pop-verb .vseg.on, .pop-verb .bubseg.on, .pop-bill .bseg.on {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent); font-weight: 700;
 }
