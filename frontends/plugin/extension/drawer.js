@@ -1944,7 +1944,6 @@
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
         light: shadow.querySelector('.lightbox'),
         grip: shadow.querySelector('.grip'),
-        bubble: shadow.querySelector('.bubble'),
         bconn: shadow.querySelector('.bconn'),
       };
       // the Comments tab is left on screen — the drawer must read the same on
@@ -2094,12 +2093,17 @@ ${bubbleShellHtml()}`;
     // neither belongs to the drawer's column: they are the drawer's page-side
     // half, like the selection pill and the overlap chooser above.
     //
-    // The connector is drawn FIRST so it sits under the bubble in paint order,
-    // and it never takes a click — it is a line, not a control.
+    // The connector overlay is drawn FIRST so it sits under every bubble in
+    // paint order, and it never takes a click — a line is not a control.
+    //
+    // ONE overlay, not one per bubble: it is a full-viewport sheet and twelve
+    // of them stacked would be twelve sheets over somebody's article. Each
+    // open bubble gets a <g data-thread> inside it, carrying that thread's own
+    // ink. The bubbles themselves are made on demand (makeBubbleEl) and are
+    // not in the shell at all — there is no such thing as "the" bubble.
     function bubbleShellHtml() {
       return `
-<svg class="bconn" aria-hidden="true" hidden><path class="bline" fill="none"></path><path class="barrow"></path></svg>
-<div class="bubble" role="dialog" aria-label="comment" hidden></div>`;
+<svg class="bconn" aria-hidden="true" hidden></svg>`;
     }
 
     // ---- one key in extension storage, read and written ------------------
@@ -2219,7 +2223,7 @@ ${bubbleShellHtml()}`;
       D.bubbles = want;
       // turning the switch back to 'panel' must take any bubble down with it,
       // or the reader is left holding a thing the setting says cannot exist
-      if (want === 'panel') hideBubble();
+      if (want === 'panel') hideAllBubbles();
       if (!quiet) { rememberBubbles(); syncBubbles(); }
     }
     function rememberBubbles() { writeKey(BUBBLE_KEY, D.bubbles); }
@@ -2491,7 +2495,7 @@ ${bubbleShellHtml()}`;
         const bb = el.closest('.bbody');
         if (bb && bb.scrollHeight - bb.scrollTop - bb.clientHeight < 80) bb.scrollTop = bb.scrollHeight;
       }
-      if (bubbleOpen()) placeBubble();
+      if (bubbleOpen()) placeAllBubbles();
       // a held thread keeps its landing while the answer grows into it — the
       // drain patches the <pre> without a render, so the hold has to be
       // re-applied here or the text types its way off the bottom of the pane
@@ -4796,7 +4800,7 @@ ${bubbleShellHtml()}`;
       // …and the bubble, if one is up, BEFORE the markdown is filled: its
       // cards park their text in the same slot map every other message does,
       // and fillMarkdown clears the map when it is done
-      renderBubble();
+      renderBubbles();
       fillMarkdown(D.shadow);
       // …and then the code blocks get their Run buttons and their results,
       // which need the markdown to exist first and the record to say what the
@@ -5679,15 +5683,19 @@ ${bubbleShellHtml()}`;
       'verb': (btn) => setVerbosity(btn.dataset.level),
       'typing': (btn) => setTyping(btn.dataset.typing),
       'bubbles': (btn) => setBubbles(btn.dataset.bubbles),
-      // ---- the bubble's own three controls --------------------------------
-      // The stack, fanned open or squashed back down; the ✕; and the quiet
-      // way into the panel, which is exactly the road a highlight click takes
-      // when the panel is the reader's setting — open, focus, scroll.
-      'bubble-fan': () => fanBubble(),
-      'bubble-close': () => hideBubble(),
-      'bubble-panel': (btn) => {
-        const id = btn.dataset.target || B.thread;
-        hideBubble();
+      // ---- the bubble's own controls --------------------------------------
+      // Every one of them names its THREAD, because there can be a dozen
+      // bubbles up and "the bubble" is not a thing: the stack fanned or
+      // squashed, the ✕ (which closes that one and leaves the rest), the pip
+      // that takes the reader to the foot of a thread they had scrolled up in,
+      // and the quiet way into the panel — which is exactly the road a
+      // highlight click takes when the panel is the reader's setting.
+      'bubble-fan': (btn, target) => fanBubble(target),
+      'bubble-close': (btn, target) => hideBubble(target),
+      'bubble-pip': (btn, target) => bubbleToFoot(target),
+      'bubble-panel': (btn, target) => {
+        const id = target || frontBubble();
+        hideAllBubbles();
         open('comments');
         focus(id);
         scrollToThread(id);
@@ -6015,6 +6023,13 @@ ${bubbleShellHtml()}`;
       });
 
       D.shadow.addEventListener('click', e => {
+        // TOUCHING A BUBBLE BRINGS IT FORWARD, whatever was touched and
+        // whatever it does — a dozen cards over an article have to be
+        // reachable, and the one you just pointed at is the one you mean.
+        // (pointerdown raises too, for a drag; this covers a keyboard-driven
+        // click and anything that never became a drag.)
+        const inBub = e.target && e.target.closest && e.target.closest('.bubble');
+        if (inBub) raiseBubble(inBub.getAttribute('data-thread'));
         // a figure from a code-block run: the thumbnail is a link to the size
         // the plot was actually drawn at
         const fig = e.target.closest && e.target.closest('img.runfig, img.filefig-img');
@@ -6214,7 +6229,10 @@ ${bubbleShellHtml()}`;
           // composer, in this shadow root — and closing it must never fall
           // through to close(), which would take the shut panel's state with it
           if (bubbleOpen() && e.target && e.target.closest && e.target.closest('.bubble')) {
-            hideBubble();
+            // Shift+Esc means "all of them" wherever Esc means "this one" —
+            // the same pair content.js's own handler offers
+            if (e.shiftKey) hideAllBubbles();
+            else hideBubble(e.target.closest('.bubble').getAttribute('data-thread'));
             return;
           }
           if (D.light) closeLight();
@@ -6407,8 +6425,7 @@ ${bubbleShellHtml()}`;
     // bubble is only ever up while the panel is shut, so while it holds this
     // thread it IS the thread's composer, and a bare shadow-wide query would
     // hand back the shut panel's copy and empty the wrong box on send.
-    const scopeFor = target =>
-      (bubbleOpen() && B.thread === target && D.el.bubble) ? D.el.bubble : D.shadow;
+    const scopeFor = target => bubbleEl(target) || D.shadow;
     const composerBox = target => D.mounted
       && scopeFor(target).querySelector('.composer[data-target="' + cssq(target) + '"] textarea');
 
@@ -8875,7 +8892,7 @@ ${bubbleShellHtml()}`;
       // every opening goes through, so there is no route — a highlight click,
       // the toolbar, a keyboard shortcut, the bubble's own "open in panel" —
       // that can leave a card floating over the article beside the drawer.
-      hideBubble();
+      hideAllBubbles();
       // being taken to another pane is the reader doing something else: the
       // held card is not even on screen there, and coming back should be a
       // fresh arrival rather than a spotlight they had forgotten about
@@ -9204,26 +9221,59 @@ ${bubbleShellHtml()}`;
     // text layer reports its position in the same viewport coordinates as a
     // mark in an article does.
     //
-    // …and wherever the reader PUTS it. The header is a handle: drag the
-    // bubble anywhere on the glass and it stays there, remembered for that
-    // thread for the session as an offset from where it would otherwise be —
-    // so re-opening it scrolls the mark back under a bubble that is still
-    // where it was left, relative to the words it is about.
+    // …and wherever the reader PUTS it, and AS MANY AS THEY LIKE. The header
+    // is a handle and the bottom-right corner is a size grip; both are
+    // remembered per thread for the session. Opening a second bubble leaves
+    // the first where it is, because the reader asked for exactly that: "it
+    // would be nice if I could have them all open as popups instead of just
+    // one at a time — this helps me focus on a region of the chat while seeing
+    // the aggregate in the side panel."
+    //
+    // ANCHORED TO THE PAGE, NOT TO THE GLASS. A bubble's place is an offset
+    // from its MARK, so it travels with the words: scroll the highlight out of
+    // view and its bubble goes with it, scroll back and it is exactly where it
+    // was left relative to the text. Nothing is clamped into view afterwards —
+    // a bubble held on screen while its passage was three screens away would
+    // be a card about nothing. The two exceptions are the two moments the
+    // reader is looking at it: the FIRST placement, which picks a visible spot,
+    // and an active DRAG, where the pointer decides and a pointer is on the
+    // glass. (Implementation: position:fixed re-placed from the mark's live
+    // client rect on every scroll, which is document-space arithmetic done in
+    // viewport coordinates — and is why a PDF needs no code of its own here.)
     const B = {
-      thread: '',    // which thread is up, '' for none
-      off: {},       // threadId -> {dx, dy}: where the reader dragged it, this session
+      open: [],      // thread ids, OLDEST FIRST: the z-order, and the cap
+      el: {},        // threadId -> its .bubble element, while it is open
+      off: {},       // threadId -> {dx, dy} from the mark — survives a close
+      moved: {},     // threadId -> true once the READER has dragged it. The
+                     // difference matters: a place we chose may be re-chosen
+                     // when the bubble changes size, a place they chose may not
+      size: {},      // threadId -> {w, h} the reader dragged it to — survives a close
       fan: {},       // threadId -> true while its stack is fanned open
-      drag: null,    // {id, px, py, x0, y0} while a drag is in flight
-      conn: null,    // {x1,y1,x2,y2} the connector's ends, as last drawn
+      conn: {},      // threadId -> {x1,y1,x2,y2} the connector's ends, as last drawn
+      note: {},      // threadId -> a brief line in its header ("oldest closed")
+      ro: {},        // threadId -> a ResizeObserver on its box (see makeBubbleEl)
+      retry: {},     // threadId -> how many times we have waited for its paint
+      drag: null,    // {id, mode:'move'|'size', …} while a gesture is in flight
       wired: false,
     };
     const BUB_PAD = 8;              // never nearer the edge of the glass than this
     const BUB_GAP = 10;             // …nor nearer the mark
     const BUB_SQUASH_AT = 3;        // cards on screen before the stack squashes
     const BUB_ARROW = 7;            // the head's length, in px
-    const bubbleOpen = () => !!(B.thread && D.mounted && D.el.bubble && !D.el.bubble.hidden);
+    const BUB_MAX = 12;             // open bubbles before the oldest gives way
+    const BUB_NUDGE = 24;           // the diagonal step when every side is taken
+    const BUB_MIN_W = 240, BUB_MIN_H = 160;
+    const BUB_NOTE_MS = 3200;
+    const SVGNS = 'http://www.w3.org/2000/svg';
     const bclamp = (lo, v, hi) => Math.max(lo, Math.min(v, hi));
     const r1 = n => Math.round(n * 10) / 10;
+
+    const bubbleEl = id => (id && B.el[id]) || null;
+    const isBubbleOpen = id => !!bubbleEl(id);
+    // "is ANY bubble up" — content.js's Esc and click paths ask this, and the
+    // panel's own rules ask it. There is no "the" bubble any more.
+    const bubbleOpen = () => B.open.length > 0;
+    const frontBubble = () => B.open[B.open.length - 1] || '';
 
     // ---- where the mark IS -----------------------------------------------
     // Every rectangle the paint occupies, in viewport coordinates. A mark that
@@ -9257,6 +9307,8 @@ ${bubbleShellHtml()}`;
     }
     const nearestOn = (rect, px, py) => ({
       x: bclamp(rect.left, px, rect.right), y: bclamp(rect.top, py, rect.bottom) });
+    const overlaps = (a, b) => a.left < b.right && b.left < a.right
+      && a.top < b.bottom && b.top < a.bottom;
 
     // ---- the cards --------------------------------------------------------
     // One message, one card. The panel's own affordances are deliberately not
@@ -9289,7 +9341,7 @@ ${bubbleShellHtml()}`;
     // newest one. Three slivers at most — the picture is "there are more of
     // these", and a fourth sliver does not say it any better — and the count,
     // which is the exact number.
-    function bubbleFanHtml(open, hidden) {
+    function bubbleFanHtml(target, open, hidden) {
       // deepest first, so the widest and most solid edge is the one nearest
       // the card that is sitting on top of them
       const edges = open ? '' : `<span class="bedges" aria-hidden="true">`
@@ -9297,27 +9349,9 @@ ${bubbleShellHtml()}`;
           .map(i => `<span class="bedge e${i}"></span>`).join('')
         + `</span>`;
       return `<button class="bfan${open ? ' open' : ''}" type="button" data-act="bubble-fan"
-        aria-expanded="${open ? 'true' : 'false'}"
+        data-target="${esc(target)}" aria-expanded="${open ? 'true' : 'false'}"
         title="${open ? 'stack the earlier messages back up' : 'fan the earlier messages open'}"
         >${edges}<span class="bfanc">${open ? '− stack up' : '+' + hidden}</span></button>`;
-    }
-
-    function bubbleStackHtml(t) {
-      const target = t.id;
-      // The thread as the bubble counts it: the settled messages (tool
-      // narration is process detail and stays in the panel), then whatever is
-      // in flight, then whatever is being written live. In that order, because
-      // that is the order they happened in.
-      const cards = (t.msgs || []).filter(m => m && m.kind !== 'tools')
-        .map(m => bubbleCardHtml(target, m))
-        .concat(outboxVisible(target).map(e => outboxEntryHtml(target, e)))
-        .concat(streamKeysFor(target).map(streamHtml));
-      if (!cards.length) return '';
-      const fanned = !!B.fan[target];
-      const many = cards.length > BUB_SQUASH_AT;
-      if (!many) return cards.join('');
-      if (fanned) return bubbleFanHtml(true, cards.length - 1) + cards.join('');
-      return bubbleFanHtml(false, cards.length - 1) + cards[cards.length - 1];
     }
 
     // The sidebar glyph on the header's "open in panel" button: a page with a
@@ -9326,96 +9360,418 @@ ${bubbleShellHtml()}`;
       <rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
       <path d="M10.2 3.4v9.2" fill="none" stroke="currentColor" stroke-width="1.4"></path>
     </svg>`;
+    // …and the corner grip, which is the diagonal every resizable window in
+    // every operating system wears
+    const SIZE_SVG = `<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+      <path d="M11 4.5 4.5 11M11 8.2 8.2 11" fill="none" stroke="currentColor"
+        stroke-width="1.3" stroke-linecap="round"></path>
+    </svg>`;
 
-    function renderBubble() {
-      if (!D.mounted || !D.el.bubble || !B.thread) return;
-      const t = threadById(B.thread);
-      // the thread went away under us (deleted in another tab, a refetch that
-      // no longer carries it): there is nothing to be beside
-      if (!t) { hideBubble(); return; }
-      const box = D.el.bubble;
-      const was = box.querySelector('.bbody');
-      const top = was ? was.scrollTop : 0;
-      box.setAttribute('data-thread', t.id);
-      // the thread's own colour, on the bubble AND on the connector: the line
-      // is drawn in the same ink as the card's left edge, and the svg is a
-      // sibling rather than a child, so it has to be told
-      const ink = speakerColor(threadAuthor(t));
-      box.style.setProperty('--author', ink);
-      if (D.el.bconn) D.el.bconn.style.setProperty('--author', ink);
+    // ---- one bubble's element --------------------------------------------
+    // Made on demand and appended to the shadow root. Nothing about a bubble
+    // is in the shell: "the bubble" is not a thing that exists.
+    function makeBubbleEl(id) {
+      const el = document.createElement('div');
+      el.className = 'bubble';
+      el.setAttribute('role', 'dialog');
+      el.setAttribute('aria-label', 'comment');
+      el.setAttribute('data-thread', id);
+      D.shadow.appendChild(el);
+      // A BUBBLE CHANGES SIZE FOR REASONS NOBODY ASKED FOR: its markdown lands
+      // a frame after its cards do, its composer's Send row folds away the
+      // moment focus goes to another bubble, a bot's answer grows under it.
+      // Every one of those moves the edge the connector starts from, and none
+      // of them is an event this file would otherwise hear about — so the box
+      // is watched, and a change of size re-places it and redraws its line.
+      try {
+        const ro = new ResizeObserver(() => { if (isBubbleOpen(id)) placeBubble(id); });
+        ro.observe(el);
+        B.ro[id] = ro;
+      } catch (_) { /* no ResizeObserver: the line lags a repaint, nothing worse */ }
+      return el;
+    }
+
+    // ---- ONE BUBBLE, UPDATED IN PLACE -------------------------------------
+    //
+    // THE BUG THIS EXISTS FOR. The panel is rebuilt wholesale by render(),
+    // which is fine for a pane the reader is scrolled to the bottom of and
+    // fatal for a card floating over the words. Sending a message re-rendered
+    // the bubble from scratch: the card list jumped back to the top, a fanned
+    // stack snapped shut, and the reader lost their place mid-read every time
+    // a bot answered.
+    //
+    // So a bubble is never rebuilt. Its shell is made once; after that every
+    // update PATCHES it — the card list by key, the header's two texts, the
+    // status line, the address pills. The composer is never touched at all,
+    // which is what keeps the draft and the caret; the stack's scroll position
+    // is carried across every update; and a live answer is patched by
+    // paintStream into a <pre> this reconciler deliberately never replaces.
+    //
+    // A KEY is what a card IS (a message's timestamp, an outbox entry's id, a
+    // stream's key) and a SIG is what it SAYS. Same key and same sig: the node
+    // stays, untouched, with whatever the reader has selected inside it.
+    function bubbleEntries(t) {
+      const target = t.id;
+      const out = [], seen = Object.create(null);
+      const push = (key, sig, make) => {
+        // two messages may share a timestamp; a key must still be unique
+        let k = key;
+        for (let n = 2; seen[k]; n++) k = key + '#' + n;
+        seen[k] = 1;
+        out.push({ key: k, sig, make });
+      };
+      for (const m of (t.msgs || [])) {
+        if (!m || m.kind === 'tools') continue;
+        push('m|' + m.ts + '|' + (m.author || ''),
+          String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : ''),
+          () => bubbleCardHtml(target, m));
+      }
+      for (const e of outboxVisible(target)) {
+        push('o|' + e.id, e.state + ' :: ' + e.text + ' :: ' + (e.error || ''),
+          () => outboxEntryHtml(target, e));
+      }
+      for (const k of streamKeysFor(target)) {
+        // A live block's sig never changes, on purpose: paintStream patches its
+        // <pre> sixty times a second, and a reconciler that replaced the node
+        // would restart the typewriter and drop the text mid-sentence.
+        push('s|' + k, 'live', () => streamHtml(k));
+      }
+      return out;
+    }
+
+    // What the stack should hold, squash and all. The lip is an entry like any
+    // other so that fanning is a patch rather than a rebuild.
+    function bubbleWant(t) {
+      const all = bubbleEntries(t);
+      if (all.length <= BUB_SQUASH_AT) return all;
+      const fanned = !!B.fan[t.id];
+      const hidden = all.length - 1;
+      const lip = { key: 'fan', sig: (fanned ? 'open' : 'shut') + '|' + hidden,
+                    make: () => bubbleFanHtml(t.id, fanned, hidden) };
+      return fanned ? [lip].concat(all) : [lip, all[all.length - 1]];
+    }
+
+    // The reconciler. Returns how many entries are NEW — which is the only
+    // thing the scroll rules need to know.
+    function patchStack(stack, want) {
+      const have = new Map();
+      for (const el of [...stack.children]) {
+        const k = el.getAttribute('data-bkey');
+        if (k) have.set(k, el); else el.remove();
+      }
+      const wanted = new Set(want.map(w => w.key));
+      for (const [k, el] of have) {
+        if (!wanted.has(k)) { el.remove(); have.delete(k); }
+      }
+      const tmp = document.createElement('div');
+      let fresh = 0, prev = null;
+      for (const w of want) {
+        let el = have.get(w.key);
+        // same key, different words: the one node that has to be replaced is
+        // an edited message, and it is replaced rather than counted as new
+        const changed = !!el && el.getAttribute('data-bsig') !== w.sig;
+        if (changed) { el.remove(); have.delete(w.key); el = null; }
+        if (!el) {
+          tmp.innerHTML = w.make();
+          el = tmp.firstElementChild;
+          if (!el) continue;
+          el.setAttribute('data-bkey', w.key);
+          el.setAttribute('data-bsig', w.sig);
+          if (!changed) fresh++;
+        }
+        const at = prev ? prev.nextSibling : stack.firstChild;
+        if (el !== at) stack.insertBefore(el, at);
+        prev = el;
+      }
+      return fresh;
+    }
+
+    // The skeleton, made once per bubble and never again. Everything with
+    // state in it — the card list, the composer — is created empty or created
+    // whole HERE, and from then on it is only ever patched around.
+    function buildBubble(box, t) {
       box.innerHTML = `
         <div class="bhrow">
           <span class="bgrip" aria-hidden="true"></span>
-          <span class="bq" title="${esc(t.quote || '')}">${esc(t.quote || '')}</span>
+          <span class="bq"></span>
+          <span class="bnote" hidden></span>
           <button class="brebtn bpanel" type="button" data-act="bubble-panel" data-target="${esc(t.id)}"
             title="open this thread in the panel" aria-label="open in panel">${PANEL_SVG}</button>
-          <button class="brebtn bx" type="button" data-act="bubble-close"
+          <button class="brebtn bx" type="button" data-act="bubble-close" data-target="${esc(t.id)}"
             title="close this bubble (Esc)" aria-label="close">✕</button>
         </div>
-        <div class="bbody"><div class="bstack">${bubbleStackHtml(t)}</div></div>
-        ${statusHtml(t.id)}
-        ${composerHtml(t.id, 'Reply…', '', '', true)}`;
-      const now = box.querySelector('.bbody');
-      if (now) now.scrollTop = top;
-      box.hidden = false;
-      placeBubble();
+        <div class="bbody"><div class="bstack"></div></div>
+        <button class="bpip" type="button" data-act="bubble-pip" data-target="${esc(t.id)}" hidden
+          title="jump to the newest message">new reply ↓</button>
+        <div class="bstatus"></div>
+        ${composerHtml(t.id, 'Reply…', '', '', true)}
+        <span class="bsize" title="drag to resize · double-click to reset"
+          aria-hidden="true">${SIZE_SVG}</span>`;
+      // the reader reaching the foot themselves answers the pip as surely as
+      // pressing it does
+      const body = box.querySelector('.bbody');
+      body.addEventListener('scroll', () => {
+        if (body.scrollHeight - body.scrollTop - body.clientHeight < 24) hidePip(t.id);
+      }, { passive: true });
+    }
+    function hidePip(id) {
+      const box = bubbleEl(id);
+      const pip = box && box.querySelector('.bpip');
+      if (pip) pip.hidden = true;
+    }
+    // the pip pressed: take the reader to the foot, which is what it promised
+    function bubbleToFoot(id) {
+      const box = bubbleEl(id);
+      const body = box && box.querySelector('.bbody');
+      if (body) body.scrollTop = body.scrollHeight;
+      hidePip(id);
+      return D;
     }
 
-    // ---- where it goes ----------------------------------------------------
-    // Under the mark by preference, over it when there is no room under, and
-    // parked against the foot of the glass when there is room for neither.
-    // This is the position BEFORE the reader's own offset is added, and it is
-    // recomputed on every placement rather than remembered — the mark moves
-    // with every scroll, and the offset is meant to be relative to it.
-    function bubbleBase(id, bw, bh) {
+    function renderOneBubble(id) {
+      const box = bubbleEl(id);
+      if (!box) return;
+      const t = threadById(id);
+      // the thread went away under us (deleted in another tab, a refetch that
+      // no longer carries it): there is nothing to be beside
+      if (!t) { hideBubble(id); return; }
+      if (!box.querySelector('.bstack')) buildBubble(box, t);
+
+      // the thread's own colour, on the bubble AND on its connector: the line
+      // is drawn in the same ink as the card's left edge, and the overlay is a
+      // sibling rather than a child, so its group has to be told
+      const ink = speakerColor(threadAuthor(t));
+      box.style.setProperty('--author', ink);
+      const g = connGroup(id, true);
+      if (g) g.style.setProperty('--author', ink);
+
+      // ---- the header's two texts ----
+      const q = box.querySelector('.bq');
+      const quote = String(t.quote || '');
+      if (q && q.textContent !== quote) { q.textContent = quote; q.title = quote; }
+      const note = box.querySelector('.bnote');
+      if (note) {
+        const n = B.note[id] || '';
+        if (note.textContent !== n) note.textContent = n;
+        note.hidden = !n;
+      }
+
+      // ---- the card list, patched ----
+      const body = box.querySelector('.bbody');
+      const stack = box.querySelector('.bstack');
+      // WHERE THE READER IS, asked BEFORE anything moves. "At the foot" is the
+      // only state that means "carry me along"; anywhere else means "leave me
+      // exactly where I am", and a new card that lands out of sight is
+      // announced rather than scrolled to.
+      const wasAtFoot = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+      const top = body.scrollTop;
+      const fresh = patchStack(stack, bubbleWant(t));
+      if (wasAtFoot) body.scrollTop = body.scrollHeight;
+      else {
+        body.scrollTop = top;
+        if (fresh) {
+          const pip = box.querySelector('.bpip');
+          if (pip) pip.hidden = false;
+        }
+      }
+
+      // ---- the status line, which holds nothing the reader is in the middle of ----
+      const st = box.querySelector('.bstatus');
+      if (st) {
+        const html = statusHtml(t.id);
+        if (st.innerHTML !== html) st.innerHTML = html;
+      }
+      // ---- and the address pills, patched exactly as syncRoutes patches the
+      // panel's: the composer itself is NEVER rebuilt, because rebuilding it
+      // is how you lose a draft and a caret ----
+      const row = box.querySelector('.composer .routes');
+      if (row) {
+        const now = routeNow(t.id);
+        row.querySelectorAll('.rpill').forEach(b => {
+          const on = b.dataset.route === now;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+      }
+      const ta = box.querySelector('.composer textarea');
+      const comp = box.querySelector('.composer');
+      if (ta && comp) comp.classList.toggle('has-draft', !!ta.value.trim());
+    }
+
+    // Every open bubble, repainted. Called from render(), BEFORE fillMarkdown
+    // — the cards park their text in the same slot map every other message
+    // does, and fillMarkdown clears the map when it is done.
+    function renderBubbles() {
+      if (!D.mounted || !B.open.length) return;
+      for (const id of B.open.slice()) renderOneBubble(id);
+      placeAllBubbles();
+    }
+
+    // ---- where one goes ---------------------------------------------------
+    // THE CANDIDATES, in preference order: under the mark, over it, and beside
+    // it on whichever side has the room. NOTHING IS CLAMPED HERE — this is the
+    // bubble's place relative to its passage, and the passage is free to be
+    // anywhere, including off the glass. chooseOffset() does the clamping, once,
+    // at the moment the reader is actually looking.
+    function bubbleCandidates(id, bw, bh) {
       const W = window.innerWidth, H = window.innerHeight;
       const u = unionRect(markRects(id));
-      if (!u) return { x: Math.max(BUB_PAD, (W - bw) / 2), y: Math.max(BUB_PAD, (H - bh) / 2) };
-      const below = u.bottom + BUB_GAP;
-      if (below + bh <= H - BUB_PAD) return { x: u.left - 6, y: below };
-      const above = u.top - BUB_GAP - bh;
-      if (above >= BUB_PAD) return { x: u.left - 6, y: above };
-      // Neither gap will take it — a fanned thread on a mark half way down the
-      // glass. BESIDE it, then, on whichever side has the room: parking a tall
-      // bubble at the foot of the window would lay it over the very words it
-      // is about, and hide its own connector behind itself.
+      if (!u) return [{ x: Math.max(BUB_PAD, (W - bw) / 2), y: Math.max(BUB_PAD, (H - bh) / 2) }];
       const room = { left: u.left - BUB_PAD, right: W - u.right - BUB_PAD };
-      const x = room.right >= room.left ? u.right + BUB_GAP : u.left - BUB_GAP - bw;
-      return { x, y: bclamp(BUB_PAD, u.cy - bh / 2, Math.max(BUB_PAD, H - bh - BUB_PAD)) };
+      const sideX = room.right >= room.left ? u.right + BUB_GAP : u.left - BUB_GAP - bw;
+      return [
+        { x: u.left - 6, y: u.bottom + BUB_GAP },          // under it
+        { x: u.left - 6, y: u.top - BUB_GAP - bh },        // over it
+        { x: sideX, y: u.cy - bh / 2 },                    // beside it
+        { x: room.right >= room.left ? u.left - BUB_GAP - bw : u.right + BUB_GAP,
+          y: u.cy - bh / 2 },                              // …and the other side
+      ];
     }
-    function placeBubble() {
-      const box = D.el.bubble;
-      if (!box || box.hidden || !B.thread) return;
+    // HOW BAD A CANDIDATE IS, in two currencies. `offGlass` is how many pixels
+    // of the bubble would hang off the window; `clearOfOthers` is whether it
+    // would lie over a bubble that is already up.
+    const offGlass = (p, bw, bh) => Math.max(0, BUB_PAD - p.x) + Math.max(0, BUB_PAD - p.y)
+      + Math.max(0, p.x + bw - (window.innerWidth - BUB_PAD))
+      + Math.max(0, p.y + bh - (window.innerHeight - BUB_PAD));
+    function clearOfOthers(id, p, bw, bh) {
+      const box = { left: p.x, top: p.y, right: p.x + bw, bottom: p.y + bh };
+      for (const other of B.open) {
+        if (other === id) continue;
+        const el = bubbleEl(other);
+        if (!el) continue;
+        if (overlaps(box, el.getBoundingClientRect())) return false;
+      }
+      return true;
+    }
+    // THE FIRST PLACEMENT, and the only one that reasons about the glass or
+    // about the other bubbles. It writes an OFFSET from the first candidate,
+    // not a position — everything afterwards is that offset added to wherever
+    // the mark has got to, which is what makes a bubble travel with its text.
+    //
+    // NOT STACKING OUTRANKS EVERYTHING ELSE. A card laid over the one the
+    // reader is already reading is the failure this exists to prevent, and it
+    // is a far worse failure than a card hanging a few pixels off the bottom
+    // of the window. The first version of this got the ranking the wrong way
+    // round — it took the first side that fitted the window and cheerfully
+    // covered its neighbour — so the two costs are now weighed against each
+    // other rather than tried in sequence: every side, and every side stepped
+    // diagonally out and back 24px at a time (the way a window manager offsets
+    // a duplicate), scored as overlap ≫ pixels off the glass ≫ how far this is
+    // from the side we would have picked first.
+    function chooseOffset(id, bw, bh) {
+      const cand = bubbleCandidates(id, bw, bh);
+      const home = cand[0];
+      const pool = [];
+      cand.forEach((p, i) => {
+        pool.push({ p, cost: i });                       // the sides, in preference order
+        for (let k = 1; k <= 12; k++) {
+          for (const sign of [1, -1]) {
+            pool.push({ p: { x: p.x + BUB_NUDGE * k * sign, y: p.y + BUB_NUDGE * k * sign },
+                        cost: 10 + k });
+          }
+        }
+      });
+      let best = home, score = Infinity;
+      for (const { p, cost } of pool) {
+        const s = (clearOfOthers(id, p, bw, bh) ? 0 : 100000)
+          + 4 * offGlass(p, bw, bh) + cost;
+        if (s < score) { score = s; best = p; }
+      }
+      return { dx: best.x - home.x, dy: best.y - home.y };
+    }
+    function placeBubble(id) {
+      const box = bubbleEl(id);
+      if (!box) return;
+      // the remembered size first, so the measurement below is of the box the
+      // reader actually made rather than of the one it would have been
+      const sz = B.size[id];
+      if (sz) {
+        box.style.width = sz.w + 'px';
+        box.style.height = sz.h + 'px';
+        box.style.maxWidth = 'none';
+        box.style.maxHeight = 'none';
+      }
       const bw = box.offsetWidth || 320, bh = box.offsetHeight || 160;
-      const W = window.innerWidth, H = window.innerHeight;
-      const base = bubbleBase(B.thread, bw, bh);
-      const o = B.off[B.thread] || { dx: 0, dy: 0 };
-      const x = bclamp(BUB_PAD, base.x + o.dx, Math.max(BUB_PAD, W - bw - BUB_PAD));
-      const y = bclamp(BUB_PAD, base.y + o.dy, Math.max(BUB_PAD, H - bh - BUB_PAD));
-      box.style.left = x + 'px';
-      box.style.top = y + 'px';
-      drawConnector({ left: x, top: y, right: x + bw, bottom: y + bh,
-                      cx: x + bw / 2, cy: y + bh / 2 });
+      const home = bubbleCandidates(id, bw, bh)[0];
+      const o = B.off[id] || { dx: 0, dy: 0 };
+      // NO CLAMP. The mark is where it is; so is its bubble.
+      box.style.left = (home.x + o.dx) + 'px';
+      box.style.top = (home.y + o.dy) + 'px';
+      drawConnector(id, {
+        left: home.x + o.dx, top: home.y + o.dy,
+        right: home.x + o.dx + bw, bottom: home.y + o.dy + bh,
+        cx: home.x + o.dx + bw / 2, cy: home.y + o.dy + bh / 2 });
+    }
+    function placeAllBubbles() {
+      const svg = D.el.bconn;
+      if (svg) svg.setAttribute('viewBox', '0 0 ' + window.innerWidth + ' ' + window.innerHeight);
+      for (const id of B.open) placeBubble(id);
+      if (svg) {
+        if (B.open.length) svg.removeAttribute('hidden');
+        else svg.setAttribute('hidden', '');
+      }
     }
 
-    // ---- the line that joins the two -------------------------------------
+    // ---- the line that joins one bubble to its mark -----------------------
     // A cubic from the bubble's nearest edge to the mark's nearest edge, with
     // a head at the mark end. The control points are pulled along whichever
     // axis the two are furthest apart on, by a fraction of the distance —
     // which is what makes it a short hook when the bubble is beside its mark
-    // and a long, gentle S when the reader has dragged it across the window.
+    // and a long, gentle S when the reader has carried it across the window.
     // It is never a target: pointer-events are off in drawer.css, so this can
     // lie over the article without taking a single click from it.
-    function drawConnector(box) {
+    //
+    // One <g> per bubble inside the one overlay, each carrying its own thread's
+    // --author. Drawn in the same viewport coordinates the bubble is placed in,
+    // so a bubble that has scrolled off the glass takes its line with it and
+    // the two never come apart.
+    function connGroup(id, make) {
       const svg = D.el.bconn;
-      if (!svg) return;
-      const rs = markRects(B.thread);
+      if (!svg) return null;
+      let g = svg.querySelector('g[data-thread="' + cssq(id) + '"]');
+      if (!g && make) {
+        g = document.createElementNS(SVGNS, 'g');
+        g.setAttribute('data-thread', id);
+        const line = document.createElementNS(SVGNS, 'path');
+        line.setAttribute('class', 'bline');
+        const head = document.createElementNS(SVGNS, 'path');
+        head.setAttribute('class', 'barrow');
+        g.appendChild(line);
+        g.appendChild(head);
+        svg.appendChild(g);
+      }
+      return g;
+    }
+    function dropConnector(id) {
+      const g = connGroup(id, false);
+      if (g && g.parentNode) g.parentNode.removeChild(g);
+      delete B.conn[id];
+    }
+    function drawConnector(id, box) {
+      const g = connGroup(id, true);
+      if (!g) return;
+      const rs = markRects(id);
       // ATTRIBUTES, NEVER `.hidden`. `hidden` is an IDL property of
       // HTMLElement and an <svg> is not one: assigning to it sets a JavaScript
       // property nobody reads and leaves the attribute — and the [hidden] rule
       // in drawer.css — exactly where it was. The connector was invisible for
       // precisely this reason the first time it was drawn.
-      if (!rs.length) { svg.setAttribute('hidden', ''); B.conn = null; return; }
+      if (!rs.length) {
+        g.setAttribute('hidden', '');
+        delete B.conn[id];
+        // The page's marks are REPAINTED wholesale when the record changes
+        // (content.js re-anchors on every setPage), so "no paint" is routinely
+        // a gap of one frame rather than a missing passage. Look again on the
+        // next frame, a few times, rather than leaving a bubble sitting there
+        // visibly unattached until something else happens to move it.
+        const n = (B.retry[id] || 0) + 1;
+        if (n <= 8) {
+          B.retry[id] = n;
+          requestAnimationFrame(() => { if (isBubbleOpen(id)) placeBubble(id); });
+        }
+        return;
+      }
+      B.retry[id] = 0;
       let best = rs[0], bd = Infinity;
       for (const r of rs) {
         const p = nearestOn(r, box.cx, box.cy);
@@ -9431,8 +9787,7 @@ ${bubbleShellHtml()}`;
       const sx = dx >= 0 ? 1 : -1, sy = dy >= 0 ? 1 : -1;
       const c1 = horiz ? { x: from.x + sx * k, y: from.y } : { x: from.x, y: from.y + sy * k };
       const c2 = horiz ? { x: to.x - sx * k, y: to.y } : { x: to.x, y: to.y - sy * k };
-      svg.setAttribute('viewBox', '0 0 ' + window.innerWidth + ' ' + window.innerHeight);
-      const line = svg.querySelector('.bline');
+      const line = g.querySelector('.bline');
       if (line) {
         line.setAttribute('d', 'M' + r1(from.x) + ' ' + r1(from.y)
           + ' C' + r1(c1.x) + ' ' + r1(c1.y) + ', ' + r1(c2.x) + ' ' + r1(c2.y)
@@ -9440,7 +9795,7 @@ ${bubbleShellHtml()}`;
       }
       // the head points the way the curve ARRIVES: the tangent at the end of a
       // cubic is the line from its second control point to its endpoint
-      const head = svg.querySelector('.barrow');
+      const head = g.querySelector('.barrow');
       if (head) {
         const a = Math.atan2(to.y - c2.y, to.x - c2.x), w = 0.42;
         head.setAttribute('d',
@@ -9449,55 +9804,124 @@ ${bubbleShellHtml()}`;
           + ' L' + r1(to.x - BUB_ARROW * Math.cos(a + w)) + ' ' + r1(to.y - BUB_ARROW * Math.sin(a + w))
           + ' Z');
       }
-      svg.removeAttribute('hidden');
-      B.conn = { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
+      g.removeAttribute('hidden');
+      B.conn[id] = { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
     }
 
-    // ---- the drag ---------------------------------------------------------
+    // ---- z-order ----------------------------------------------------------
+    // The one the reader touched last is the one in front. Done with z-index
+    // rather than with DOM order: re-parenting an element blurs whatever is
+    // focused inside it, and "click into a background bubble's reply box"
+    // would then lose the caret every single time.
+    function applyZ() {
+      B.open.forEach((id, i) => {
+        const el = bubbleEl(id);
+        if (el) el.style.zIndex = String(10 + i);
+      });
+    }
+    function raiseBubble(id) {
+      const at = B.open.indexOf(id);
+      if (at < 0 || at === B.open.length - 1) return;
+      B.open.splice(at, 1);
+      B.open.push(id);
+      applyZ();
+    }
+
+    // ---- the two gestures -------------------------------------------------
     // Pointer events, so a mouse and a finger are the same gesture. The header
-    // only: a drag started on the text would fight text selection, and one
-    // started in the composer would be a slip of the hand. The offset is
-    // written per thread as the reader moves, so letting go stores nothing and
-    // nothing is lost if the pointer is lost.
+    // MOVES it and the corner grip RESIZES it; a drag started on the text
+    // would fight text selection, and one started in the composer would be a
+    // slip of the hand. Both write their answer per thread as the reader
+    // moves, so letting go stores nothing and nothing is lost if the pointer is.
     function onBubbleDown(e) {
-      if (!bubbleOpen()) return;
       const t = e.target;
-      const row = t && t.closest && t.closest('.bhrow');
-      if (!row) return;
-      if (t.closest('button')) return;              // ✕ and open-in-panel are buttons
+      if (!t || !t.closest) return;
+      const box = t.closest('.bubble');
+      if (!box) return;
+      const id = box.getAttribute('data-thread');
+      if (!id || !isBubbleOpen(id)) return;
+      raiseBubble(id);                              // touching one brings it forward
       if (e.button != null && e.button !== 0) return;
-      const r = D.el.bubble.getBoundingClientRect();
-      B.drag = { id: B.thread, px: e.clientX, py: e.clientY, x0: r.left, y0: r.top };
-      D.el.bubble.classList.add('dragging');
+      const r = box.getBoundingClientRect();
+      if (t.closest('.bsize')) {
+        B.drag = { id, mode: 'size', px: e.clientX, py: e.clientY, w0: r.width, h0: r.height };
+        box.classList.add('sizing');
+        e.preventDefault();
+        return;
+      }
+      if (!t.closest('.bhrow') || t.closest('button')) return;   // ✕ and open-in-panel are buttons
+      B.drag = { id, mode: 'move', px: e.clientX, py: e.clientY, x0: r.left, y0: r.top };
+      box.classList.add('dragging');
       e.preventDefault();
     }
     function onBubbleMove(e) {
-      if (!B.drag || !bubbleOpen()) return;
-      const box = D.el.bubble;
-      const bw = box.offsetWidth, bh = box.offsetHeight;
+      const g = B.drag;
+      if (!g || !isBubbleOpen(g.id)) return;
+      const box = bubbleEl(g.id);
       const W = window.innerWidth, H = window.innerHeight;
-      const x = bclamp(BUB_PAD, B.drag.x0 + (e.clientX - B.drag.px), Math.max(BUB_PAD, W - bw - BUB_PAD));
-      const y = bclamp(BUB_PAD, B.drag.y0 + (e.clientY - B.drag.py), Math.max(BUB_PAD, H - bh - BUB_PAD));
-      const base = bubbleBase(B.drag.id, bw, bh);
-      B.off[B.drag.id] = { dx: x - base.x, dy: y - base.y };
-      placeBubble();
+      if (g.mode === 'size') {
+        // The cap is the glass MEASURED FROM WHERE THIS BUBBLE STARTS, not the
+        // window's width and height: a bubble half way down the page that grew
+        // to the full height of the window would put its own composer and its
+        // own size grip below the fold, and the reader would have no way to
+        // give either of them back. The corner follows the pointer, and the
+        // pointer is on the glass.
+        const r = bubbleEl(g.id).getBoundingClientRect();
+        const maxW = Math.max(BUB_MIN_W, W - BUB_PAD - r.left);
+        const maxH = Math.max(BUB_MIN_H, H - BUB_PAD - r.top);
+        B.size[g.id] = {
+          w: Math.round(bclamp(BUB_MIN_W, g.w0 + (e.clientX - g.px), maxW)),
+          h: Math.round(bclamp(BUB_MIN_H, g.h0 + (e.clientY - g.py), maxH)),
+        };
+        placeBubble(g.id);
+        return;
+      }
+      const bw = box.offsetWidth, bh = box.offsetHeight;
+      // THE ONE PLACE A BUBBLE IS HELD ON THE GLASS, and it is held there by
+      // the pointer: you cannot drag something to where your finger is not.
+      const x = bclamp(BUB_PAD, g.x0 + (e.clientX - g.px), Math.max(BUB_PAD, W - bw - BUB_PAD));
+      const y = bclamp(BUB_PAD, g.y0 + (e.clientY - g.py), Math.max(BUB_PAD, H - bh - BUB_PAD));
+      const home = bubbleCandidates(g.id, bw, bh)[0];
+      B.off[g.id] = { dx: x - home.x, dy: y - home.y };
+      B.moved[g.id] = true;          // theirs now: nothing re-picks it
+      placeBubble(g.id);
     }
     function onBubbleUp() {
-      if (!B.drag) return;
+      const g = B.drag;
+      if (!g) return;
       B.drag = null;
-      if (D.el.bubble) D.el.bubble.classList.remove('dragging');
+      const box = bubbleEl(g.id);
+      if (box) box.classList.remove('dragging', 'sizing');
+    }
+    // Double-clicking the grip puts the box back to its natural size — the
+    // same gesture, and the same meaning, as double-clicking the panel's own
+    // resize grip.
+    function resetBubbleSize(id) {
+      if (!id) return;
+      delete B.size[id];
+      const box = bubbleEl(id);
+      if (box) { box.style.width = ''; box.style.height = ''; box.style.maxWidth = ''; box.style.maxHeight = ''; }
+      placeBubble(id);
     }
     function wireBubble() {
-      if (B.wired || typeof window === 'undefined' || !D.el.bubble) return;
+      if (B.wired || typeof window === 'undefined' || !D.mounted) return;
       B.wired = true;
       // capture, because a scroll does not bubble: a PDF page scrolling inside
-      // its own container has to move the bubble exactly as the window does
-      const follow = () => { if (bubbleOpen()) placeBubble(); };
+      // its own container has to move every bubble exactly as the window does
+      const follow = () => { if (bubbleOpen()) placeAllBubbles(); };
       window.addEventListener('scroll', follow, true);
       window.addEventListener('resize', follow);
-      D.el.bubble.addEventListener('pointerdown', onBubbleDown);
+      // Delegated on the shadow root, so a bubble made a minute from now needs
+      // no wiring of its own.
+      D.shadow.addEventListener('pointerdown', onBubbleDown);
+      D.shadow.addEventListener('dblclick', e => {
+        const grip = e.target && e.target.closest && e.target.closest('.bubble .bsize');
+        if (!grip) return;
+        e.preventDefault();
+        resetBubbleSize(grip.closest('.bubble').getAttribute('data-thread'));
+      });
       // on the window and not on the header: the header is rebuilt by every
-      // render, and a drag must survive a bot's answer landing mid-gesture
+      // render, and a gesture must survive a bot's answer landing mid-drag
       window.addEventListener('pointermove', onBubbleMove, true);
       window.addEventListener('pointerup', onBubbleUp, true);
       window.addEventListener('pointercancel', onBubbleUp, true);
@@ -9508,41 +9932,93 @@ ${bubbleShellHtml()}`;
       mount();
       if (!D.mounted || !id) return D;
       if (D.opened) return D;             // the panel wins: never both at once
-      B.thread = id;
-      D.el.bubble.hidden = false;
+      if (isBubbleOpen(id)) { raiseBubble(id); return D; }
       wireBubble();
-      render();                           // renderBubble, then the markdown, then the place
-      const ta = D.el.bubble.querySelector('.composer textarea');
+      // THE CAP. Twelve cards over an article is already a lot and a
+      // thirteenth is a reader who has lost track; the oldest gives way, and
+      // the new one says so for a few seconds rather than letting one vanish
+      // silently.
+      let evicted = false;
+      while (B.open.length >= BUB_MAX) { hideBubble(B.open[0]); evicted = true; }
+      B.el[id] = makeBubbleEl(id);
+      B.open.push(id);
+      if (evicted) {
+        B.note[id] = 'oldest closed';
+        setTimeout(() => { if (B.note[id]) { delete B.note[id]; if (isBubbleOpen(id)) renderOneBubble(id); } },
+          BUB_NOTE_MS);
+      }
+      applyZ();
+      render();                           // renderBubbles, then the markdown, then the place
+      // the first placement is the only one that reasons about the glass, and
+      // it happens AFTER the render, because it needs the box's real size
+      const el = bubbleEl(id);
+      if (el && !B.off[id]) {
+        B.off[id] = chooseOffset(id, el.offsetWidth || 320, el.offsetHeight || 160);
+        placeBubble(id);
+      }
+      const ta = el && el.querySelector('.composer textarea');
       if (ta) { try { ta.focus({ preventScroll: true }); } catch (_) { ta.focus(); } }
       return D;
     }
-    function hideBubble() {
-      if (!D.mounted || !D.el.bubble) return D;
-      if (B.thread) harvestDrafts();      // a half-typed reply is not thrown away
-      B.thread = '';
-      B.drag = null;
-      B.conn = null;
-      D.el.bubble.hidden = true;
-      D.el.bubble.innerHTML = '';
-      D.el.bubble.classList.remove('dragging');
-      if (D.el.bconn) D.el.bconn.setAttribute('hidden', '');
+    // `id` omitted means the front-most one, which is what Esc means.
+    function hideBubble(id) {
+      if (!D.mounted) return D;
+      const who = id || frontBubble();
+      if (!who || !isBubbleOpen(who)) return D;
+      harvestDrafts();                    // a half-typed reply is not thrown away
+      const el = B.el[who];
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      try { if (B.ro[who]) B.ro[who].disconnect(); } catch (_) { /* gone already */ }
+      delete B.ro[who];
+      delete B.retry[who];
+      delete B.el[who];
+      B.open = B.open.filter(x => x !== who);
+      if (B.drag && B.drag.id === who) B.drag = null;
+      dropConnector(who);
+      delete B.note[who];
+      applyZ();
+      if (!B.open.length && D.el.bconn) D.el.bconn.setAttribute('hidden', '');
       return D;
     }
-    function fanBubble() {
-      if (!B.thread) return D;
-      B.fan[B.thread] = !B.fan[B.thread];
+    function hideAllBubbles() {
+      for (const id of B.open.slice()) hideBubble(id);
+      return D;
+    }
+    // Fanning a stack open is the one thing that changes a bubble's size
+    // without the reader's hand on its edge — five cards where there was one.
+    // A bubble placed under its mark can easily not fit any more, and being
+    // page-anchored it will not be clamped back: it would simply hang off the
+    // bottom with its composer out of reach. So a fan RE-PICKS the placement,
+    // exactly as opening does — unless the reader has dragged this one, in
+    // which case where it sits is their decision and not ours.
+    function fanBubble(id) {
+      const who = id || frontBubble();
+      if (!who) return D;
+      const opening = !B.fan[who];
+      B.fan[who] = opening;
       render();
+      const el = bubbleEl(who);
+      if (el && !B.moved[who]) {
+        B.off[who] = chooseOffset(who, el.offsetWidth || 320, el.offsetHeight || 160);
+        placeBubble(who);
+      }
+      // …and the reader asked to see what was BEHIND the newest card, so that
+      // is where they are put: the top of the stack, not the foot of it
+      const body = el && el.querySelector('.bbody');
+      if (body && opening) body.scrollTop = 0;
       return D;
     }
     // WHAT A CLICK ON A HIGHLIGHT MEANS, when bubbles are on. Answers true
     // when it has handled it, so content.js keeps exactly one road to the
     // panel and this is a fork in front of it rather than a copy of it.
+    // The toggle is PER THREAD: the same mark again closes that one bubble and
+    // leaves every other where it is.
     function bubbleClick(id) {
       if (!bubblesOn() || !id) return false;
       mount();
       if (!D.mounted) return false;
       if (D.opened) return false;         // panel open ⇒ no bubble, ever
-      if (B.thread === id) { hideBubble(); return true; }   // the same mark again: away
+      if (isBubbleOpen(id)) { hideBubble(id); return true; }
       showBubble(id);
       return true;
     }
@@ -9867,28 +10343,43 @@ ${bubbleShellHtml()}`;
       // and false when the reader's setting (or an open panel) means the panel
       // is still the answer. Everything else here is for content.js's own
       // dismissals and for the harness.
-      bubbleClick, showBubble, hideBubble, fanBubble,
+      bubbleClick, showBubble, hideAllBubbles,
+      // `hideBubble()` with no id is the front-most one, which is what Esc
+      // means; with an id it is that one and only that one
+      hideBubble: id => hideBubble(id),
+      fanBubble: id => fanBubble(id),
+      raiseBubble: id => { raiseBubble(id); return D; },
       bubbleOpen: () => bubbleOpen(),
       bubblesOn: () => bubblesOn(),
       setBubbles: mode => { setBubbles(mode); return D; },
-      // what the bubble is doing, for a test that cannot read a shadow root's
-      // geometry any other way: whether it is up, on which thread, where it
-      // is, whether the reader has moved it, and where the connector's two
-      // ends are (`to` is the mark end, which is the end with the head on it)
-      bubbleState: () => {
-        const box = D.mounted && D.el.bubble;
-        const r = (box && !box.hidden) ? box.getBoundingClientRect() : null;
+      // every open bubble, OLDEST FIRST — which is also back-to-front, so the
+      // last of them is the one on top
+      bubbleList: () => B.open.slice(),
+      // What one bubble is doing, for a test that cannot read a shadow root's
+      // geometry any other way: whether it is up, where it is, how big, whether
+      // the reader has moved or sized it, and where its connector's two ends
+      // are (`to` is the mark end, which is the end with the head on it).
+      // With no id: the front-most one, so a caller that has only ever opened
+      // one need not name it.
+      bubbleState: id => {
+        const who = id || frontBubble();
+        const box = bubbleEl(who);
+        const r = box ? box.getBoundingClientRect() : null;
+        const c = B.conn[who];
         return {
-          on: bubblesOn(), open: bubbleOpen(), thread: B.thread,
-          fanned: !!B.fan[B.thread], moved: !!B.off[B.thread],
-          offset: B.off[B.thread] ? { ...B.off[B.thread] } : null,
+          on: bubblesOn(), open: !!box, thread: box ? who : '',
+          count: B.open.length, front: frontBubble(),
+          z: box ? Number(box.style.zIndex || 0) : 0,
+          fanned: !!B.fan[who], moved: !!B.moved[who], placed: !!B.off[who],
+          sized: !!B.size[who],
+          offset: B.off[who] ? { ...B.off[who] } : null,
+          size: B.size[who] ? { ...B.size[who] } : null,
+          pip: !!(box && box.querySelector('.bpip') && !box.querySelector('.bpip').hidden),
+          scrollTop: box && box.querySelector('.bbody') ? box.querySelector('.bbody').scrollTop : 0,
           rect: r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null,
-          conn: B.conn ? { from: { x: B.conn.x1, y: B.conn.y1 }, to: { x: B.conn.x2, y: B.conn.y2 } } : null,
+          conn: c ? { from: { x: c.x1, y: c.y1 }, to: { x: c.x2, y: c.y2 } } : null,
         };
       },
-      // what the chooser would say about a thread — the harness reads the rows
-      // it drew, and this is how a node test could read one without a DOM
-      pickRow: id => { const t = threadById(id); return t ? pickRow(t) : null; },
       openModels, closeModels, setWidth: w => applyWidth(w),
       showPages, showThreads, refreshPages, quietTurns, endTurn,
       // Whether a ```python block may be run from here: the companion's answer
@@ -9948,7 +10439,7 @@ ${bubbleShellHtml()}`;
         if (picksOpen()) { hidePicks(); return true; }
         // …then a bubble, which is over the page in the same way and is only
         // ever up while the panel is shut
-        if (bubbleOpen()) { hideBubble(); return true; }
+        if (bubbleOpen()) { hideBubble(); return true; }   // the front-most one
         if (!D.light) return false; closeLight(); return true;
       },
       // the library's record, handed in the way setPage hands the page's

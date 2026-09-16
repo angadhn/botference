@@ -2856,18 +2856,14 @@
   }, true);
 
   document.addEventListener('mousedown', e => {
-    if (drawer && !inOurUI(e.target)) {
-      drawer.hideSel();
-      drawer.hidePicks();
-      // …and a bubble goes with a click away from it — but NOT with a click on
-      // a highlight, which is the toggle and belongs to the click handler
-      // above. Dismissing here would put the bubble away a moment before that
-      // handler opened it again, and the second click on a mark would never
-      // close anything.
-      const onMark = e.target && e.target.closest
-        && e.target.closest('mark.bfp-hl, del.bfp-was[data-bfp]');
-      if (!onMark && drawer.bubbleOpen && drawer.bubbleOpen()) drawer.hideBubble();
-    }
+    // A CLICK AWAY NO LONGER DISMISSES A BUBBLE. It did while there was only
+    // ever one; now that the reader can have a dozen up at once — "I can
+    // dismiss as needed" — a stray click on the article would sweep away a
+    // wall of cards they had deliberately arranged. The ✕, Esc, Shift+Esc and
+    // clicking the highlight again are the four ways out, and all four are the
+    // reader saying so. The selection pill and the overlap chooser are
+    // unchanged: those really are transient.
+    if (drawer && !inOurUI(e.target)) { drawer.hideSel(); drawer.hidePicks(); }
   }, true);
 
   // The pill clicked: freeze the anchor, paint it provisionally, open the
@@ -2989,10 +2985,15 @@
     // not the panel is — a chooser can be opened on a dormant page — so they
     // are asked before the drawer's own state is.
     if (drawer.picksOpen && drawer.picksOpen()) { drawer.hidePicks(); return; }
-    // …then a bubble, which lives over the page in the same way and is only
-    // ever up while the panel is shut — so it is asked before the drawer's own
-    // state is, exactly as the chooser is
-    if (drawer.bubbleOpen && drawer.bubbleOpen()) { drawer.hideBubble(); return; }
+    // …then the bubbles, which live over the page in the same way and are only
+    // ever up while the panel is shut — so they are asked before the drawer's
+    // own state is, exactly as the chooser is. Esc takes the FRONT one, which
+    // is the one the reader last touched; Shift+Esc takes the lot, for a
+    // reader who has a wall of them and wants the article back.
+    if (drawer.bubbleOpen && drawer.bubbleOpen()) {
+      if (e.shiftKey) drawer.hideAllBubbles(); else drawer.hideBubble();
+      return;
+    }
     if (drawer.isOpen() && !drawer.escape()) { drawer.close(); }
   }, true);
 

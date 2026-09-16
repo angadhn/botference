@@ -521,15 +521,22 @@ alternate view. In the drawer's gear panel, set **comments: bubbles**
 (per browser, off by default — `panel` is exactly what the drawer has
 always done). With it on and the panel shut, clicking a highlight opens
 a small card beside the mark, joined to it by a drawn curve with an
-arrowhead on the highlight; clicking the same mark again puts it away,
-as do Esc and a click anywhere else. Past three messages the thread
+arrowhead on the highlight. Open one beside every passage you care
+about — they all stay up, and the one you last touched comes to the
+front. Clicking a highlight again closes that bubble, the ✕ closes one,
+Esc closes the front one and Shift+Esc closes them all; a click
+elsewhere on the page leaves them alone. Past three messages a thread
 squashes to its newest card with the earlier ones as a counted lip you
-click to fan open. You can reply from it — the same box, the same
+click to fan open. You can reply from one — the same box, the same
 `@claude`/`@codex` pills, the same thread, and a bot's answer streams
-into a new card. Drag it by its header and it stays where you put it,
-with the curve stretching to follow; the ✕ closes it and the sidebar
-button hands the thread to the panel. Works the same on a PDF. Starting
-a *new* comment from a selection still opens the panel.
+into a new card without moving you off what you were reading. Each
+bubble belongs to its passage rather than to your screen: scroll the
+highlight out of view and the bubble goes with it, scroll back and it
+is where you left it. Drag it by its header to move it and by its
+bottom-right corner to resize it; both are remembered per thread for
+the session, and double-clicking the corner resets the size. The
+sidebar button hands a thread to the panel. Works the same on a PDF.
+Starting a *new* comment from a selection still opens the panel.
 
 **PDFs are pages too.** A PDF on the web normally opens in the
 browser's own viewer, which no extension can reach into, so Discuss

@@ -9880,3 +9880,154 @@ road, one line down, as it always did.
 hand the event over by hand; what they pin (that the answer to a scroll is a
 re-measure from the mark, and that the bubble and both ends of the curve move
 with it) is unaffected.
+
+## Amendment (2026-09-16, shipped): bubbles, addendum — many at once, anchored to the page, resizable, and never rebuilt
+
+The reader lived with the 2026-09-10 bubble for a week and came back with four
+things. All four are in this one change, and two of them rewrote the model
+rather than adding to it.
+
+### 1. Many at once, not one
+
+*"It would be nice if I could have them all open as popups instead of just one
+at a time. I can dismiss as needed. This helps me focus on a region of the chat
+while seeing the aggregate in the side panel."*
+
+There is no "the bubble" any more. `B.open` is a list of thread ids, oldest
+first; `B.el` maps each to its element, made on demand (`makeBubbleEl`) and
+appended to the shadow root — nothing about a bubble is in the shell except the
+one connector overlay. Every `querySelector('.bubble')` singleton is gone
+(audited); `scopeFor(target)` is `bubbleEl(target) || D.shadow`, and the ✕, the
+fan lip, the pip and open-in-panel all carry `data-target`.
+
+- **The toggle stays per thread.** Clicking a highlight whose bubble is open
+  closes *that one*; clicking another opens a second beside its own mark.
+- **Z-order** is `B.open` order, applied as `z-index` rather than DOM order —
+  re-parenting an element blurs whatever is focused inside it, and "click into a
+  background bubble's reply box" would lose the caret every time. Any
+  `pointerdown` or `click` inside a bubble raises it.
+- **Connectors**: one overlay, one `<g data-thread>` per bubble, each carrying
+  its own thread's `--author`.
+- **The cap is 12.** A thirteenth closes the oldest and the new bubble says
+  `oldest closed` in its header for a few seconds.
+- **Dismissal**: ✕ closes one; Esc the front-most; **Shift+Esc all**; the panel
+  opening closes all, and so does switching the gear back to `panel`.
+  **A click away no longer dismisses anything** — with a wall of cards
+  deliberately arranged, a stray click on the article is a catastrophe rather
+  than a convenience. The selection pill and the overlap chooser are unchanged:
+  those really are transient.
+
+**Placement of the second and third.** `chooseOffset` runs once, at open, and
+walks every side of the mark plus every side stepped diagonally ±24px (the way a
+window manager offsets a duplicate), scoring each as
+`overlap ≫ pixels off the glass ≫ distance from the preferred side`.
+**Not stacking outranks being on the glass** — the first version of this had the
+ranking the wrong way round, took the first side that fitted the window and
+cheerfully covered the card the reader was already reading. A card hanging seven
+pixels off the bottom is not a failure; a card laid over its neighbour is the
+one this exists to prevent.
+
+### 2. Anchored to the page, not to the glass
+
+*"If the text I highlighted scrolls out of view, the bubble should not stay in
+the main view. It should appear where I left it when I scroll back to it."*
+
+A bubble's place is an **offset from its mark**, and the mark's live client rect
+is the only input — so the arithmetic is document-space done in viewport
+coordinates, and `position: fixed` re-placed on every scroll gives it for free.
+What changed is that **nothing is clamped into view any more**. Two exceptions,
+and both are moments the reader is looking at it:
+
+- the **first** placement (`chooseOffset`), which picks a visible, unstacked spot;
+- an active **drag**, where the pointer decides and a pointer is on the glass.
+
+So a highlight scrolled off the top takes its bubble and its connector with it,
+and scrolling back brings both to exactly where they were left relative to the
+words. A PDF needs no code of its own for this, for the same reason it never
+did: a mark painted into a page canvas's text layer reports its position in the
+same coordinates a mark in an article does.
+
+### 3. Resizable
+
+A grip at the bottom-right corner (`pointerdown`, so mouse and touch are one
+gesture). Min 240×160; the max is the glass **measured from where the bubble
+starts**, not the window's width and height — a bubble half way down the page
+that grew to the full height of the window would put its own composer and its
+own grip below the fold with no way to give either back. Size is remembered per
+thread for the session beside the drag offset, so re-opening restores both.
+Double-clicking the grip resets it, the same gesture and the same meaning as
+double-clicking the panel's own resize grip.
+
+**Fanning re-picks the placement.** It is the one thing that changes a bubble's
+size without the reader's hand on its edge — five cards where there was one —
+and a page-anchored bubble that no longer fits will not be clamped back; it
+would simply hang off the bottom with its composer out of reach. So a fan runs
+`chooseOffset` again *unless the reader has dragged this one* (`B.moved`), in
+which case where it sits is their decision. Fanning open also scrolls the stack
+to the **top**: the reader asked to see what was behind the newest card.
+
+### 4. Never rebuilt under a reader mid-read
+
+> "When a message is sent (or a reply arrives), the open bubble re-renders from
+> scratch — its inner scroll position jumps back and the fan/compress state
+> resets, which disorients the reader mid-read."
+
+The panel is rebuilt wholesale by `render()`, which is fine for a pane you are
+scrolled to the bottom of and fatal for a card floating over the words. A bubble
+is now **built once and patched for ever after**:
+
+- **The card list is reconciled by key.** A KEY is what a card *is* (a message's
+  timestamp, an outbox entry's id, a stream's key); a SIG is what it *says*.
+  Same key and same sig: the node stays, untouched, with whatever the reader has
+  selected inside it. A live stream's sig is the constant `'live'`, on purpose —
+  `paintStream` patches its `<pre>` sixty times a second and a reconciler that
+  replaced the node would restart the typewriter mid-sentence.
+- **The composer is never touched at all**, which is what keeps the draft and
+  the caret. Its address pills are patched in place exactly as `syncRoutes`
+  patches the panel's.
+- **Scroll position is carried across every update.** "At the foot" is the only
+  state that means *carry me along*; anywhere else means *leave me exactly where
+  I am*, and a card that lands out of sight raises a **`new reply ↓` pip**
+  instead of a jump. Reaching the foot — by the pip or by hand — puts it away.
+- The header's two texts and the status line are patched; the fan state, the
+  drag offset and the size are state, not markup, so they survive by construction.
+
+A `ResizeObserver` per bubble re-places it when its own box changes size. Three
+things do that without any event this file would otherwise hear: markdown
+landing a frame after its cards, the composer's Send row folding away when focus
+goes to another bubble, and a bot's answer growing under it. Each moves the edge
+the connector starts from. (This was found as a flaky harness check, not as a
+guess.) And `drawConnector` retries on the next frame, up to 8 times, when the
+mark is momentarily unpainted — content.js re-anchors the whole page on every
+`setPage`, so "no paint" is routinely a gap of one frame rather than a missing
+passage.
+
+### Files
+
+| file | what changed |
+| --- | --- |
+| `extension/drawer.js` | the module is now many-bubble: `B.open`/`B.el`/`B.off`/`B.moved`/`B.size`/`B.fan`/`B.conn`/`B.note`/`B.ro`; `makeBubbleEl`, `buildBubble`, `patchStack`, `bubbleEntries`/`bubbleWant`, `renderOneBubble` (patch, not rebuild), `placeAllBubbles`, `chooseOffset` (scored), `connGroup`/`dropConnector`, `applyZ`/`raiseBubble`, the resize branch of the drag, `hideAllBubbles`, `bubbleToFoot` |
+| `extension/drawer.css` | `.bsize`, `.bpip`, `.bnote`, `.bstatus`, sized-bubble caps |
+| `extension/content.js` | Shift+Esc; the click-away dismissal removed |
+
+### Testing
+
+- `?bubbles=1&selftest=1` — **110 checks** (was 70). New: two open at once and
+  where the second is put, per-thread connectors in one overlay, z-order and
+  raise-on-click, ✕ closing only one, Esc the front one, Shift+Esc all,
+  toggle-off all, the click that no longer dismisses, the in-place rules (the
+  same card *nodes* survive a refresh, scroll position and fan state and draft
+  and caret all survive, a reply landing out of sight raises the pip and one
+  landing at the foot does not), the resize and its floor, size and place both
+  remembered across a close, double-click reset, and the page-anchor: a mark
+  scrolled off the top takes its bubble with it **unclamped**, having moved
+  exactly as far as the words did, and scrolling back restores it to the pixel.
+- `?pdf=1&bubbles=1&selftest=1` — **17 checks** (was 13): two bubbles on two
+  pages of one document, each joined to its own paint, the second put clear of
+  the first, ✕ closing one of them.
+- Screenshots: `?bubbles=many` (three at once), `?bubbles=sized`,
+  `?bubbles=scrolled`, and the existing `1` / `fan` / `dragged` / `?pdf=1`.
+
+The harness article gets a spacer under it in the bubbles pose (`#h-bubroom`):
+the anchoring rule is about a mark leaving the glass, and there was not enough
+document below the article to carry anything off the top.

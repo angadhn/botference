@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 2026-09-16
+
+- **Bubbles: as many as you like, pinned to the words rather than to the
+  screen, resizable — and they no longer jump under you.** Four things after a
+  week of using them. (1) Open a bubble beside every highlight you care about
+  and they all stay up; clicking a highlight closes just that one, the ✕ closes
+  one, Esc closes the front one, Shift+Esc closes them all, and a stray click on
+  the page no longer sweeps away a wall of cards you arranged on purpose. A new
+  one is placed clear of the ones already open rather than on top of them, and
+  whichever you last touched comes to the front. (2) A bubble now belongs to its
+  passage, not to your screen: scroll the highlight out of view and its bubble
+  goes with it, scroll back and it is exactly where you left it, with its line
+  still attached. (3) Drag the bottom-right corner to resize one — the text
+  reflows, the reply box stays at the bottom, the line re-attaches — and both
+  the size and the place are remembered per thread for the session; double-click
+  the corner to reset. (4) Sending a message or receiving a reply used to
+  rebuild the whole bubble, throwing you back to the top of the thread and
+  snapping an expanded stack shut. Nothing is rebuilt any more: cards are
+  patched one at a time, your scroll position and your half-typed reply and your
+  caret all stay put, and a reply that lands below what you are reading raises a
+  quiet "new reply ↓" you can press instead of yanking you down to it.
+
 ## 2026-09-10
 
 - **Bubbles: read a comment beside its highlight, without opening the panel.**
