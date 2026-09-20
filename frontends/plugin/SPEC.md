@@ -10031,3 +10031,108 @@ passage.
 The harness article gets a spacer under it in the bubbles pose (`#h-bubroom`):
 the anchoring rule is about a mark leaving the glass, and there was not enough
 document below the article to carry anything off the top.
+
+## Amendment (2026-09-16): a fresh chat on any page
+
+A page has one chat, and until today the only way to be rid of one that had gone
+wrong was **delete the page** — which deletes the comments with it. That is a
+false choice, and a reader made it today: a page chat where the bot had settled
+on a misreading and kept restating it, and the only reset on offer would have
+cost a page of margin notes. (It was undone by hand, with an editor, writing
+`chat_archive` into the page record directly. This is that, as a button.)
+
+Project artifact pages already had the real answer — the archive bar's "+ new",
+which moves `session_id` on the page record, because that field *is* the whole
+of the resume machinery: `chat.mjs planSteps` plans `/new` when it is null and
+`/resume` when it is not. Nothing new is invented here either. The chat is set
+ASIDE rather than destroyed, the page stands in none for a moment, and the next
+turn starts a genuinely new conversation.
+
+**Threads are never touched.** That is the entire point.
+
+### The record
+
+`page.chat_archive[]`, oldest first, capped at `CHAT_ARCHIVE_MAX` = 10 (oldest
+dropped), stored only when non-empty — the `artifacts`/`tags` conventions.
+
+```json
+{ "session_id": "…|null", "title": "", "archived_at": "ISO", "msgs": [ … ] }
+```
+
+`title` is OPTIONAL and `session_id` may be null: a chat that never reached the
+bridge never had one, and the hand-written record above has no title. `store.mjs`
+owns the shape — `chatArchiveOf`, `chatArchiveSummary`, `archiveCurrentChat`,
+`restoreArchivedChat` — and every one of them mutates-and-returns unsaved, like
+`recordArtifact`; the caller saves once.
+
+### The routes (owner-only, all three)
+
+- `POST /page-chat-new {url}` → `{ok, archived}`. On a **project artifact page**
+  it delegates to the `/project-chat {new:true}` path exactly — same gate, same
+  clearing, `archived: 0`, `project: true` — because that page's past chats live
+  in the council and a page-level archive kept here would be a second,
+  disagreeing copy. Everywhere else: `archiveCurrentChat`, save, broadcast
+  `{type:'page', url}`. A page whose chat is already empty and unbound archives
+  nothing (blanks would bury the chat the reader wants back).
+- `GET /page-chat-archive?url=` → `{archive:[{index, session_id, title, first,
+  archived_at, count}]}` — names and dates, never transcripts. `GET /page` now
+  answers the same summary in place of `chat_archive` for the same reason: it is
+  the response every tab fetches most often and it must not carry ten past
+  conversations.
+- `POST /page-chat-open {url, index}` → the archived chat becomes current and
+  the one it replaces is filed **in the same motion**. A swap, so there is no
+  click here that can lose a conversation. 404 on an artifact page's url is a
+  409 pointing at the archive bar.
+
+### Forgetting the live chat
+
+The session half needs nothing (`session_id` is read when a turn reaches the
+front of the queue). The QUEUE does: turns already waiting were written into the
+chat that is no longer here, and letting them land in the fresh one is precisely
+what the button exists to prevent. `chat.dropQueued(url)` / `pool.dropQueued(url)`
+drop every WAITING turn for a page and tell each one so (error + `turn-end`, as
+`died` does), and `server.forgetLiveChat(url)` calls it through `chatFor(url)`.
+The turn **in flight** is deliberately left alone: a step has gone out and the
+answer is coming back, and un-sending it would desynchronise the child.
+`interrupt` is the tool for that and it is the reader's to press.
+
+### The drawer
+
+On the chat dock's action row (`reviewHtml`, in the sticky `.chatfoot`) — the
+quietest pair there, since starting over is reached for rarely and pressed by
+mistake never:
+
+- **`+ new chat`** → a one-step inline confirm, never `window.confirm`: *"start a
+  fresh chat here? your comments stay; the old chat is kept in the archive"* →
+  yes/no. After yes, `leaveChat()` (extracted from `openSession`, now shared)
+  clears the outbox, notes, running and streams for `PAGE_TARGET` and folds the
+  pane, and the record reload puts the empty state up.
+- **`archive ▾`** → only when `chat_archive` is non-empty; the project archive's
+  own `.archlist`/`.archrow` rows, newest first, each named by its title or its
+  first message, with age and message count.
+
+Both are hidden on a confirmed project artifact page: the archive bar above *is*
+this control there, and two of them would be two answers to one question. They
+are shown on a page with no highlights at all, where `reviewHtml` used to return
+nothing — such a page has no review to send but still has a chat.
+
+The bots need nothing: `session_id: null` is what a first turn has always looked
+like, so a fresh chat gets the page snapshot, the comments and the rest of the
+envelope exactly as the old one's first turn did.
+
+### Testing
+
+- `companion.test.mjs` — 9 new: an ordinary page (threads survive, the summary
+  has no `msgs`), the archive list, the restore swap, a bad index, the cap of ten
+  with the oldest dropped, a PDF key, 404s on a page the companion never heard of
+  and 400 on no url, the already-empty page, and the owner gate on all three
+  routes.
+- `workspace.test.mjs` — the artifact page delegates: `project: true`,
+  `archived: 0`, and no `chat_archive` invented.
+- `?selftest=1` — **706 checks** (was 692): the button on the dock, no project
+  archive bar on an ordinary page, no chooser before anything is set aside, the
+  inline confirm, "no" changing nothing, the empty pane after "yes", the comments
+  still there, the chooser listing it and opening it back (restored folded, so
+  the assertion is on the tail).
+- `?workspace=1&selftest=1` — one more check: the artifact page shows the archive
+  bar and NOT a second new-chat button.

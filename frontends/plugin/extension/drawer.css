@@ -588,6 +588,15 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .archrow .ax { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums }
 .archrow.on { background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 600 }
 .archrow.busy { opacity: .55 }
+/* "+ new chat" and its "archive ▾": the same act as the project archive bar's
+   "+ new", for every OTHER page — and DELIBERATELY the quietest pair on the
+   dock. Starting over is a thing readers reach for rarely and press by mistake
+   never; it must be findable and must not compete with "send review". */
+.archsend.newchat, .archsend.newchatarch { margin-left: auto; color: var(--muted) }
+.archsend.newchatarch { margin-left: 0 }
+/* the chooser sits ABOVE the composer rather than below a bar, so its margin
+   is on the other side from the project archive's */
+.archlist.pagearch { margin: 8px 0 0 }
 .archnote { padding: 10px; font: italic 12px/1.5 var(--sans); color: var(--muted); text-align: center }
 .archnote.err { color: var(--bad); font-style: normal }
 /* the one-line truth over a restored chat: how much of it this is, and the

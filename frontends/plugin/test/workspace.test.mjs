@@ -834,6 +834,25 @@ console.log('\ncompanion — the project-page endpoints');
       `the other project was opened — got ${JSON.stringify(inputs(logFile))}`);
   });
 
+  // "+ new chat" exists on every page now (POST /page-chat-new). On an
+  // ARTIFACT page it must be the same act as the archive bar's "+ new" and
+  // nothing else: the council holds this page's past chats, and a page-level
+  // archive kept here would be a second, disagreeing copy of them.
+  await test('POST /page-chat-new on an artifact page delegates to the project path', async () => {
+    await POST(base, '/project-chat', { url: a.url, sid: 'sess-old-1' });
+    const before = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.ok(before.session_id, 'the page is standing in a council chat');
+    const r = await POST(base, '/page-chat-new', { url: a.url });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.project, true);
+    assert.equal(r.json.archived, 0, 'nothing is filed in a page-level archive here');
+    assert.equal(r.json.session_id, null);
+    const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+    assert.equal(page.session_id, null);
+    assert.deepEqual(page.page_chat, []);
+    assert.ok(!page.chat_archive, 'and no page-level archive was invented');
+  });
+
   await test('POST /project-chat refuses a sid from another project', async () => {
     const r = await POST(base, '/project-chat', { url: a.url, sid: 'sess-nope' });
     assert.equal(r.status, 404);

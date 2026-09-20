@@ -202,6 +202,13 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
       m.chat.control(text);
       return true;
     },
+    // Every turn this page has waiting, anywhere in the pool, forgotten. Asked
+    // when the page's chat is set aside (POST /page-chat-new, /page-chat-open):
+    // the lane is normally one child's, but a child that died and was replaced
+    // can leave a page's turns spread over two, so every member is asked rather
+    // than the lane's current holder alone.
+    dropQueued: url => members.reduce((n, m) =>
+      n + (m.chat.dropQueued ? m.chat.dropQueued(url) : 0), 0),
     // the pickers' authority: one child's answer, not a vote
     models: () => primary.chat.models(),
     interrupt: url => members.some(m => m.chat.interrupt(url)),

@@ -4635,6 +4635,134 @@ async function main() {
     l.proc.kill();
   }
 
+  // --- a fresh chat on ANY page, keeping the comments --------------------
+  //
+  // Until this existed the only reset for a page chat that had gone wrong was
+  // deleting the page, which deleted the reader's comments with it. So the
+  // thing every one of these asserts, in one form or another, is that the
+  // threads come through untouched.
+  {
+    const NEWCHAT = 'https://ledger.test/2026/a-fresh-start';
+    const NCPDF = 'bfp-pdf://text/' + 'a'.repeat(64);
+    const rec = async u => (await GET(base, `/page?url=${encodeURIComponent(u)}`)).json;
+    const say = (u, text) => POST(base, '/reply', { url: u, thread_id: '__page__', text });
+
+    await POST(base, '/page', { url: NEWCHAT, title: 'A Fresh Start', site: 'ledger.test' });
+    await POST(base, '/thread', { url: NEWCHAT, quote: 'the walk back to the tram stop',
+      msg: { text: 'a comment that must survive every reset below' } });
+    await say(NEWCHAT, 'the first chat, which went wrong');
+
+    await test('POST /page-chat-new sets an ordinary page\u2019s chat aside and keeps the comments', async () => {
+      const before = await rec(NEWCHAT);
+      assert.equal(before.page_chat.length, 1);
+      assert.equal(before.threads.length, 1);
+      const r = await POST(base, '/page-chat-new', { url: NEWCHAT });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.archived, 1);
+      const after = await rec(NEWCHAT);
+      assert.equal(after.session_id, null, 'standing in no chat, which is what plans /new');
+      assert.deepEqual(after.page_chat, [], 'the pane is empty');
+      assert.equal(after.threads.length, 1, 'the comment is untouched');
+      assert.equal(after.threads[0].msgs.length, 1);
+      // GET /page carries the names and dates, never the transcripts
+      assert.equal(after.chat_archive.length, 1);
+      assert.equal(after.chat_archive[0].count, 1);
+      assert.equal(after.chat_archive[0].index, 0);
+      assert.ok(!after.chat_archive[0].msgs, 'and not ten past conversations on every load');
+      assert.match(after.chat_archive[0].first, /the first chat, which went wrong/);
+    });
+
+    await test('GET /page-chat-archive lists them without their messages', async () => {
+      const r = await GET(base, `/page-chat-archive?url=${encodeURIComponent(NEWCHAT)}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.json.archive.length, 1);
+      assert.ok(!('msgs' in r.json.archive[0]));
+      assert.equal(typeof r.json.archive[0].archived_at, 'string');
+    });
+
+    await test('POST /page-chat-open brings one back, and files the one it replaces', async () => {
+      await say(NEWCHAT, 'the second chat, which is fine');
+      assert.equal((await rec(NEWCHAT)).page_chat.length, 1);
+      const r = await POST(base, '/page-chat-open', { url: NEWCHAT, index: 0 });
+      assert.equal(r.status, 200);
+      const back = await rec(NEWCHAT);
+      assert.equal(back.page_chat.length, 1);
+      assert.match(back.page_chat[0].text, /the first chat, which went wrong/);
+      // the SWAP: opening one is never a way of losing the other
+      assert.equal(back.chat_archive.length, 1);
+      assert.match(back.chat_archive[0].first, /the second chat, which is fine/);
+      assert.equal(back.threads.length, 1, 'and still nothing happened to the comments');
+    });
+
+    await test('an index that is not there is a 404, not a wiped chat', async () => {
+      assert.equal((await POST(base, '/page-chat-open', { url: NEWCHAT, index: 9 })).status, 404);
+      assert.equal((await POST(base, '/page-chat-open', { url: NEWCHAT, index: -1 })).status, 404);
+      assert.equal((await rec(NEWCHAT)).page_chat.length, 1, 'the chat is where it was');
+    });
+
+    await test('the archive keeps the last ten, oldest dropped', async () => {
+      for (let i = 0; i < 12; i++) {
+        await say(NEWCHAT, `chat number ${i}`);
+        await POST(base, '/page-chat-new', { url: NEWCHAT });
+      }
+      const a = (await rec(NEWCHAT)).chat_archive;
+      assert.equal(a.length, 10);
+      assert.match(a[9].first, /chat number 11/, 'newest last');
+      assert.match(a[0].first, /chat number 2/, 'and the oldest have fallen off the front');
+      assert.deepEqual(a.map(x => x.index), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'the indices are the ones POST /page-chat-open takes');
+      assert.equal((await rec(NEWCHAT)).threads.length, 1);
+    });
+
+    await test('a PDF is a page like any other here', async () => {
+      await POST(base, '/page', { url: NCPDF, title: 'a manuscript', site: 'local pdf', kind: 'pdf' });
+      await say(NCPDF, 'what is this paper claiming?');
+      assert.equal((await POST(base, '/page-chat-new', { url: NCPDF })).json.archived, 1);
+      const after = await rec(NCPDF);
+      assert.equal(after.session_id, null);
+      assert.deepEqual(after.page_chat, []);
+    });
+
+    await test('a page the companion has never heard of is a 404', async () => {
+      const gone = 'https://ledger.test/2026/never-visited';
+      assert.equal((await POST(base, '/page-chat-new', { url: gone })).status, 404);
+      assert.equal((await POST(base, '/page-chat-open', { url: gone, index: 0 })).status, 404);
+      assert.equal((await GET(base, `/page-chat-archive?url=${encodeURIComponent(gone)}`)).status, 404);
+      assert.equal((await POST(base, '/page-chat-new', {})).status, 400);
+    });
+
+    await test('a page whose chat is already empty is not filled with blanks', async () => {
+      const EMPTY = 'https://ledger.test/2026/nothing-said-here';
+      await POST(base, '/page', { url: EMPTY, title: 'Nothing Said', site: 'ledger.test' });
+      assert.equal((await POST(base, '/page-chat-new', { url: EMPTY })).json.archived, 0);
+      assert.ok(!(await rec(EMPTY)).chat_archive);
+    });
+  }
+
+  // …and every one of the three is the OWNER's. A page's past conversations
+  // are the reader's, and a guest who could set one aside could take a chat
+  // away from the person whose machine it is.
+  {
+    const nRoot = tmpRoot('newchat-guest');
+    fs.mkdirSync(path.join(nRoot, '.botference', 'plugin'), { recursive: true });
+    const ns = await startServer({
+      root: nRoot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw' },
+    });
+    const REMOTE2 = { host: 'discuss.botference.com' };
+    await POST(ns.base, '/page', { url: PAGE1, title: TITLE1, site: 'ledger.test' });
+    await test('a guest may not start, list or open a page\u2019s chats', async () => {
+      const jar = cookieJar(await FORM(ns.base, '/auth',
+        { handle: 'visitor', password: 'guest-pw', next: '/pages' }, REMOTE2));
+      const h = { ...REMOTE2, cookie: jar };
+      assert.equal((await POST(ns.base, '/page-chat-new', { url: PAGE1 }, h)).status, 403);
+      assert.equal((await POST(ns.base, '/page-chat-open', { url: PAGE1, index: 0 }, h)).status, 403);
+      assert.equal((await GET(ns.base, `/page-chat-archive?url=${encodeURIComponent(PAGE1)}`, h)).status, 403);
+      // …and the owner, on localhost, still can
+      assert.equal((await POST(ns.base, '/page-chat-new', { url: PAGE1 })).status, 200);
+    });
+    ns.proc.kill();
+  }
+
   // --- lasso is the OWNER's: a guest may not search their machine --------
   {
     const gRoot = tmpRoot('lasso-guest');

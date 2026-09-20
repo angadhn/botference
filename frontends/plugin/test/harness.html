@@ -724,6 +724,22 @@ const WS_TAIL = {
   ],
 };
 let wsCurrent = Q.get('chatopen') === '1' ? 'aaaa1111-0000-4000-8000-000000000001' : null;
+// ---- the page's OWN chat archive -----------------------------------------
+// Every ordinary page can set its chat aside and start a fresh one, keeping the
+// comments (POST /page-chat-new). This is where the ones it has set aside live,
+// oldest first, exactly as the page record holds them.
+// It starts EMPTY on every pose, as a page's does: the only thing that puts a
+// chat in here is the reader pressing "+ new chat", which is what the selftest
+// presses.
+const PAGE_ARCHIVE = [];
+// what GET /page and GET /page-chat-archive answer: names and dates, never the
+// transcripts — the real companion strips them for the same reason
+const archiveSummary = () => PAGE_ARCHIVE.map((a, index) => ({
+  index, session_id: a.session_id, title: a.title,
+  first: ((a.msgs.find(m => m && m.text) || {}).text || '').slice(0, 120),
+  archived_at: a.archived_at, count: a.msgs.length,
+}));
+let pageChatNews = 0;         // how many fresh chats the pose asked for
 const wsRootAnswers = [];     // what POST /council-root was told, for the selftest
 const sentReviews = [];       // every PREAMBLE POST /send-review composed
 const reviewRounds = [];      // {preamble, turns:[{thread_id, text}]} per round
@@ -2787,6 +2803,42 @@ function companion(method, path, body) {
     if (!WS_PROJECT.confirmed) return { ok: false, status: 409, error: 'not confirmed' };
     return { ok: true, status: 200, data: { ok: true, project_id: WS_PROJECT.project_id,
       project_title: WS_PROJECT.project_title, current: wsCurrent, sessions: WS_SESSIONS } };
+  }
+  // ---- a fresh chat on ANY page, keeping the comments -------------------
+  // The real companion moves the current chat into the page record's own
+  // `chat_archive` and leaves the page standing in none; the drawer's whole
+  // job is to ask, to clear what the old chat left on the tab, and to reload
+  // the record. So the fake does exactly that, minus the cap (a node-suite
+  // question, not a browser one).
+  if (route === '/page-chat-new') {
+    pageChatNews++;
+    const msgs = RECORD.page_chat || [];
+    if (RECORD.session_id || msgs.length) {
+      PAGE_ARCHIVE.push({ session_id: RECORD.session_id || null,
+        title: RECORD.session_title || '', archived_at: new Date().toISOString(), msgs });
+    }
+    RECORD.session_id = null; RECORD.session_title = ''; RECORD.page_chat = [];
+    RECORD.chat_archive = archiveSummary();
+    return { ok: true, status: 200, data: { ok: true, archived: PAGE_ARCHIVE.length, session_id: null } };
+  }
+  if (route === '/page-chat-archive') {
+    return { ok: true, status: 200, data: { ok: true, archive: archiveSummary() } };
+  }
+  if (route === '/page-chat-open') {
+    const i = Math.floor(Number(body && body.index));
+    if (!(i >= 0 && i < PAGE_ARCHIVE.length)) {
+      return { ok: false, status: 404, error: 'no such archived chat' };
+    }
+    const want = PAGE_ARCHIVE[i];
+    const cur = { session_id: RECORD.session_id || null, title: RECORD.session_title || '',
+      archived_at: new Date().toISOString(), msgs: RECORD.page_chat || [] };
+    PAGE_ARCHIVE.splice(i, 1);
+    if (cur.session_id || cur.msgs.length) PAGE_ARCHIVE.push(cur);
+    RECORD.session_id = want.session_id; RECORD.session_title = want.title;
+    RECORD.page_chat = want.msgs;
+    RECORD.chat_archive = archiveSummary();
+    return { ok: true, status: 200, data: { ok: true, session_id: want.session_id,
+      archive: archiveSummary() } };
   }
   if (route === '/project-chat') {
     const sid = body && body.sid;
@@ -6927,6 +6979,53 @@ async function selftest() {
     await until(() => /Round wrap-up/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''), 4000);
     check('the wrap-up is a visible message in page chat, like the preamble',
       /Round wrap-up/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''));
+
+    // ---- "+ new chat" on an ordinary page (2026-09-16) ------------------
+    // The reader's only reset used to be deleting the page, which deleted the
+    // comments too. This is the real one: the chat is set aside, the margins
+    // are untouched, and the old conversation stays reachable.
+    const threadsBefore = S.querySelectorAll('.pane[data-pane="comments"] .card').length;
+    const newBtn = () => S.querySelector('.chatfoot [data-act="page-chat-new"]');
+    check('an ordinary page chat offers a fresh chat, on the dock',
+      !!newBtn() && newBtn().textContent.trim() === '+ new chat');
+    check('…and nothing on this page shows a project archive bar',
+      S.querySelectorAll('.archbar').length === 0);
+    check('…with nothing set aside yet, there is no archive chooser',
+      !S.querySelector('.chatfoot [data-act="page-chat-arch"]'));
+    tap(newBtn(), 'the + new chat button');
+    await sleep(40);
+    const ncq = S.querySelector('.reviewrow.confirm.ncrow');
+    check('it asks first, inline, never through the browser',
+      !!ncq && /your comments stay/.test(ncq.textContent || ''));
+    tap(S.querySelector('[data-act="page-chat-new-no"]'), 'no, on second thoughts');
+    await sleep(40);
+    check('…and no leaves everything exactly where it was',
+      !S.querySelector('.reviewrow.confirm.ncrow') && pageChatNews === 0
+      && !!S.querySelector('.pane[data-pane="chat"] .thread'));
+    tap(newBtn(), 'the + new chat button again');
+    await sleep(40);
+    tap(S.querySelector('[data-act="page-chat-new-yes"]'), 'yes, start a fresh one');
+    await until(() => pageChatNews === 1, 4000);
+    await until(() => S.querySelector('.pane[data-pane="chat"] .empty'), 4000);
+    check('saying yes empties the chat pane', !!S.querySelector('.pane[data-pane="chat"] .empty'));
+    check('…and the comments are all still there',
+      S.querySelectorAll('.pane[data-pane="comments"] .card').length === threadsBefore
+      && threadsBefore > 0);
+    check('…and the chat that was here is now in the page\u2019s own archive',
+      !!S.querySelector('.chatfoot [data-act="page-chat-arch"]'));
+    tap(S.querySelector('.chatfoot [data-act="page-chat-arch"]'), 'the archive chooser');
+    await until(() => S.querySelector('.archlist.pagearch .archrow'), 4000);
+    const arows = S.querySelectorAll('.archlist.pagearch .archrow');
+    check('the chooser lists the chat that was set aside', arows.length === 1);
+    tap(arows[0], 'the archived chat');
+    await until(() => S.querySelector('.pane[data-pane="chat"] .thread'), 4000);
+    // …on its tail, folded, exactly as a restored chat always opens (leaveChat
+    // clears `expanded`), so what proves it came back is the END of it
+    check('…and opening it brings the conversation back',
+      !S.querySelector('.pane[data-pane="chat"] .empty')
+      && /Round wrap-up/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''));
+    check('…leaving the comments alone through all of it',
+      S.querySelectorAll('.pane[data-pane="comments"] .card').length === threadsBefore);
   }
 
   const bad = out.filter(l => l[0] === '✗');
@@ -11559,6 +11658,13 @@ async function selftestWorkspace() {
     : '\u2026which says the page is in no chat yet',
   (S.querySelector('.archnow') || {}).textContent === (OPENED_CHAT || 'new chat'));
   check('\u2026and offers a new one', !!S.querySelector('[data-act="arch-new"]'));
+  // ONE control, not two. Every other page grew a "+ new chat" on the dock
+  // (2026-09-16) with a page-level archive behind it; here the bar above IS
+  // that control, with the council's own chats behind it, and a second one
+  // would be two different answers to one question.
+  check('\u2026and it is the ONLY one: no second new-chat button on the dock',
+    !S.querySelector('[data-act="page-chat-new"]')
+    && !S.querySelector('[data-act="page-chat-arch"]'));
   check('the composer is still there under it', chat('.composer textarea').length === 1);
 
   hit(S.querySelector('[data-act="arch-list"]'), 'open the archive list');

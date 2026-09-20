@@ -883,6 +883,147 @@ export function pageWithSession(sid, exceptUrl) {
   return null;
 }
 
+// ---- a page's own chat archive ------------------------------------------
+//
+// A page has ONE chat, and until now the only way to be rid of a chat that had
+// gone wrong — a bot stuck on a wrong reading of the page, a conversation that
+// had wandered — was to delete the page, which deletes the comments with it.
+// That is a false choice: the margins are the reader's work and the chat is a
+// conversation about it, and throwing the first away to restart the second is
+// the sort of thing that makes people stop using a tool.
+//
+// So the chat can be set aside instead. The current one moves into
+// `chat_archive` whole — the session id it was bound to, what it was called,
+// when it was put away, and the messages the drawer was mirroring — and the
+// page is left with no session, which is ALREADY the whole of "start a fresh
+// chat": chat.mjs plans `/new` when `session_id` is null and `/resume` when it
+// is not. Nothing new is invented here either; the page simply points nowhere
+// for a moment.
+//
+// Threads are untouched by all of this. They are the comments, and comments
+// outlive chats.
+//
+// Oldest first, capped, and stored only when there is something in it — the
+// same three conventions `artifacts` and `tags` keep, for the same reason: most
+// records have none and every list draw reads them.
+//
+// The shape tolerates a record written BY HAND (the reader did exactly this to
+// one page with an editor before the button existed): `title` is optional and
+// `session_id` may be null, because a chat that never reached the bridge never
+// had one.
+export const CHAT_ARCHIVE_MAX = 10;
+
+/** Every set-aside chat on this page, oldest first. */
+export function chatArchiveOf(page) {
+  const raw = page && page.chat_archive;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    out.push({
+      session_id: entry.session_id || null,
+      title: String(entry.title || '').trim(),
+      archived_at: String(entry.archived_at || ''),
+      msgs: Array.isArray(entry.msgs) ? entry.msgs : [],
+    });
+  }
+  return out.slice(-CHAT_ARCHIVE_MAX);
+}
+
+// What the drawer's chooser draws: never the messages, only enough to tell one
+// chat from another. `first` is the opening line, which is what a chat nobody
+// named is actually called in the reader's head.
+const ARCHIVE_FIRST_MAX = 120;
+export function chatArchiveSummary(page) {
+  return chatArchiveOf(page).map((a, index) => {
+    const first = (a.msgs.find(m => m && m.text) || {}).text || '';
+    return {
+      index,
+      session_id: a.session_id,
+      title: a.title,
+      first: String(first).replace(/\s+/g, ' ').trim().slice(0, ARCHIVE_FIRST_MAX),
+      archived_at: a.archived_at,
+      count: a.msgs.length,
+    };
+  });
+}
+
+// the three fields that say which chat a page is standing in, cleared together
+// because a page standing in no chat must not keep one's name or its tail
+function clearChatFields(page) {
+  page.session_id = null;
+  page.session_title = '';
+  page.page_chat = [];
+  page.session_total = 0;
+  page.session_sync = 0;
+}
+
+function storeArchive(page, list) {
+  const kept = list.slice(-CHAT_ARCHIVE_MAX);
+  if (kept.length) page.chat_archive = kept;
+  else delete page.chat_archive;
+}
+
+/**
+ * Set this page's chat aside and leave it with none. Mutates and hands the page
+ * back UNSAVED, like recordArtifact — the caller saves once.
+ *
+ * Answers how many chats are in the archive afterwards. A page whose chat is
+ * empty AND unbound has nothing to put away: it is already a fresh chat, and
+ * filling the archive with blanks would bury the one the reader wants back.
+ */
+export function archiveCurrentChat(page) {
+  if (!page) return 0;
+  const msgs = Array.isArray(page.page_chat) ? page.page_chat : [];
+  const list = chatArchiveOf(page);
+  if (!page.session_id && !msgs.length) {
+    clearChatFields(page);
+    storeArchive(page, list);
+    return list.length;
+  }
+  list.push({
+    session_id: page.session_id || null,
+    title: String(page.session_title || '').trim(),
+    archived_at: nowIso(),
+    msgs,
+  });
+  clearChatFields(page);
+  storeArchive(page, list);
+  return chatArchiveOf(page).length;
+}
+
+/**
+ * Bring an archived chat back as the current one, and put the one it replaces
+ * into the archive in its place — a SWAP, so that going back is never a way of
+ * losing what you were in the middle of. Mutates, unsaved, like the above.
+ *
+ * Answers the restored entry, or null when there is no such row.
+ */
+export function restoreArchivedChat(page, index) {
+  if (!page) return null;
+  const list = chatArchiveOf(page);
+  const i = Math.floor(Number(index));
+  if (!Number.isInteger(i) || i < 0 || i >= list.length) return null;
+  const want = list[i];
+  const current = {
+    session_id: page.session_id || null,
+    title: String(page.session_title || '').trim(),
+    archived_at: nowIso(),
+    msgs: Array.isArray(page.page_chat) ? page.page_chat : [],
+  };
+  list.splice(i, 1);
+  // the chat being left behind takes the archive's newest slot, which is where
+  // the reader will look for it first
+  if (current.session_id || current.msgs.length) list.push(current);
+  page.session_id = want.session_id || null;
+  page.session_title = want.title;
+  page.page_chat = want.msgs;
+  page.session_total = want.msgs.length;
+  page.session_sync = 0;
+  storeArchive(page, list);
+  return want;
+}
+
 // ---- the library --------------------------------------------------------
 // One conversation about EVERYTHING the reader has annotated, as opposed to
 // one page. It is not a special kind of record: it is an ordinary page record

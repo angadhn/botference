@@ -695,6 +695,16 @@ folder, its `PROJECT.md` and its portfolio row when you press it, and files
 the page in it. (**+ new project** at the bottom of the same folder-button
 list does it by hand.)
 
+**Start over without losing your comments.** Also beside *send review*, on
+every page: **+ new chat**. It sets the conversation aside and starts a fresh
+one — useful when a bot has settled on a misreading of the page and keeps
+restating it — while your highlights and comments stay exactly where they are.
+It asks once first. Nothing is thrown away: the chat you left is filed under
+**archive ▾** next to the button, the last ten of them by name and date, and
+opening one brings it back. (On a project artifact page the archive bar at the
+top of Page chat is already this control, with your council's own chats behind
+it, so there is no second button.)
+
 **Make a page out of the one you marked up.** Beside *send review*, on any
 page filed in a project, there is **make artifact**: say in one line what
 you want — *a planner of what to watch and when, with costs* — and one bot

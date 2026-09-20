@@ -810,6 +810,18 @@ function refillMirror(page, art) {
   return true;
 }
 
+// The page's chat has just been moved out from under its lane. The SESSION
+// half of that needs nothing — `session_id` on the record is the whole of the
+// resume decision and it is read when a turn reaches the front of the queue
+// (chat.mjs planSteps), so the next turn on a page with none plans `/new` by
+// itself. What does need saying is the QUEUE: turns already waiting were
+// written into the chat that is no longer here, and letting them land in the
+// fresh one is precisely the thing the reader pressed the button to stop.
+function forgetLiveChat(url) {
+  const owner = chatFor(url);
+  return (owner && owner.dropQueued) ? owner.dropQueued(url) : 0;
+}
+
 // The read path. Every drawer asks GET /page on load and after every `page`
 // broadcast, so this is where a tab returning to a stale mirror catches up —
 // no watcher required and nothing running while nobody is looking.
@@ -2918,6 +2930,87 @@ export function handler(req, res) {
     });
   }
 
+  // --- a fresh chat on ANY page, keeping the comments ---------------------
+  //
+  // The same act as the archive bar's "+ new", for every other page in the
+  // building. Until this existed, a reader whose page chat had gone wrong —
+  // a bot stuck on a misreading it kept restating — had exactly one remedy,
+  // which was to delete the page, which deleted their comments too. The
+  // margins are the expensive half of that pair.
+  //
+  // A project artifact page is DELEGATED to the route above, unchanged: its
+  // chats live in the reader's council, its archive is the council's own, and a
+  // second archive kept here would be a copy of something that already exists
+  // and disagrees with it. Everywhere else the chat is set aside into the page
+  // record (store.archiveCurrentChat) and the page is left standing in none,
+  // which is all "/new next time" has ever meant (chat.mjs planSteps).
+  //
+  // What is NOT touched: threads. That is the whole point of the button.
+  if (req.method === 'POST' && url === '/page-chat-new') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const u = store.normUrl(String(data.url || ''));
+      if (!u) return fail(res, 400, 'url required');
+      const art = artifactOf(u);
+      if (art) {
+        // …the project path, exactly: the same gate, the same clearing, the
+        // same broadcast. `archived: 0` because nothing was put in a page-level
+        // archive — the council holds this page's past chats and /project-sessions
+        // is where they are listed.
+        if (!art.confirmed) return fail(res, 409, UNCONFIRMED_REASON);
+        const page = store.readPage(u)
+          || store.upsertPage({ url: u, title: String(data.title || art.rel), site: art.project_id });
+        page.session_id = null;
+        page.session_title = '';
+        page.page_chat = [];
+        page.session_total = 0;
+        page.session_sync = 0;
+        standing.delete(page.url);
+        store.savePage(page);
+        forgetLiveChat(page.url);
+        broadcast({ type: 'page', url: page.url });
+        return ok(res, { archived: 0, session_id: null, project: true, page });
+      }
+      const page = store.readPage(u);
+      if (!page) return fail(res, 404, 'the companion has no record of this page');
+      const archived = store.archiveCurrentChat(page);
+      store.savePage(page);
+      forgetLiveChat(page.url);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { archived, session_id: null, page });
+    });
+  }
+  // What has been set aside here, newest last, without the messages: the
+  // chooser draws names and dates, and a page with ten archived chats should
+  // not ship ten transcripts to paint a dropdown. GET /page is the same story
+  // and answers the same summary.
+  if (req.method === 'GET' && url === '/page-chat-archive') {
+    if (notOwner(req, res)) return;
+    const u = queryUrl(req.url);
+    const page = u ? store.readPage(store.normUrl(u)) : null;
+    if (!page) return fail(res, 404, 'the companion has no record of this page');
+    return ok(res, { archive: store.chatArchiveSummary(page) });
+  }
+  // …and back again. A SWAP, never a restore: the chat being left behind goes
+  // into the archive in the same motion, so there is no click here that can
+  // lose a conversation.
+  if (req.method === 'POST' && url === '/page-chat-open') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const u = store.normUrl(String(data.url || ''));
+      const page = u ? store.readPage(u) : null;
+      if (!page) return fail(res, 404, 'the companion has no record of this page');
+      if (artifactOf(u)) return fail(res, 409, 'this page keeps its chats in your council — open one from the archive bar');
+      const want = store.restoreArchivedChat(page, data.index);
+      if (!want) return fail(res, 404, 'no such archived chat');
+      store.savePage(page);
+      forgetLiveChat(page.url);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { session_id: page.session_id, session_title: page.session_title,
+        archive: store.chatArchiveSummary(page), page });
+    });
+  }
+
   // --- handing the whole margin review over ------------------------------
   // The reader has been down the page leaving comments in the margins. This
   // is the one button that gives all of it to the bots at once — and it FANS
@@ -3104,8 +3197,16 @@ export function handler(req, res) {
     // a project artifact's mirror of a council chat is brought level with the
     // session file first, if the council has written since it was last read
     const page = freshenMirror(store.readPage(u));
+    // …minus the transcripts of the chats that have been SET ASIDE here. The
+    // drawer needs to know how many there are and what they were called (that
+    // is what puts the "archive ▾" chooser on the dock and fills it); it has no
+    // use for ten past conversations on every page load, and a record that
+    // shipped them would grow without bound in the one response every tab
+    // fetches most often. The messages are one POST /page-chat-open away.
     return page
-      ? res.writeHead(200, JSON_HEAD).end(JSON.stringify(page))
+      ? res.writeHead(200, JSON_HEAD).end(JSON.stringify(
+        store.chatArchiveOf(page).length
+          ? { ...page, chat_archive: store.chatArchiveSummary(page) } : page))
       : ok(res, { page: null });
   }
   if (req.method === 'GET' && url === '/events') {

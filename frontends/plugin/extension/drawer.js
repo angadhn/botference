@@ -162,6 +162,23 @@
 //   onOpenSession(sid|null)             → {ok, session_id}  (POST /project-chat)
 //                                        stand this page in that chat; null
 //                                        starts a fresh one
+//   onPageChatNew()                     → {ok, archived}  (POST /page-chat-new)
+//                                        set THIS page's chat aside and leave
+//                                        it standing in none, so the next turn
+//                                        starts a fresh one. The comments are
+//                                        not touched. On a project artifact
+//                                        page the companion delegates to the
+//                                        /project-chat new path, so the archive
+//                                        bar's behaviour there is unchanged
+//   onPageChatArchive()                 → {ok, archive:[{index, session_id,
+//                                          title, first, archived_at, count}]}
+//                                        (GET /page-chat-archive) — the chats
+//                                        set aside on this page, oldest first,
+//                                        without their messages
+//   onPageChatOpen(index)               → {ok, session_id} (POST /page-chat-open)
+//                                        stand this page back in an archived
+//                                        chat; the one it replaces is filed in
+//                                        the same motion
 //   onSendReview()                      → {ok, sent, omitted, total, queued,
 //                                          threads:[id], reason}
 //                                          | {ok:false, error}
@@ -1677,6 +1694,14 @@
       // drawer that puts something on the public internet. The sentence says
       // where and says that plainly; the button is the whole of the act.
       publish: { confirm: false, busy: false, err: '', note: '', link: '' },
+      // "+ new chat", which every page with a page chat has and which a project
+      // artifact page does NOT (its archive bar already is this control, and two
+      // of them would be two answers to one question).
+      //   confirm  the one-step inline ask, like every other confirm here
+      //   open     true while the "archive ▾" chooser is showing
+      //   list     the set-aside chats, once asked for (GET /page-chat-archive)
+      //   busy     '' when idle, 'new' while starting one, 'i<n>' while opening one
+      newchat: { confirm: false, busy: '', err: '', open: false, list: null, loading: false },
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       focused: null,
@@ -4055,8 +4080,15 @@ ${bubbleShellHtml()}`;
     // artifact under a council root nobody has vouched for yet: the
     // confirmation card is the only thing that should be asking anything there.
     function reviewHtml() {
-      if (!CAPS.highlights) return '';        // nothing can be commented on here
       if (D.project && !D.project.confirmed) return '';
+      // A page that cannot carry comments has no review to send — but it still
+      // has a chat, and still every reason to be able to start a fresh one.
+      if (!CAPS.highlights) {
+        const solo = newChatBtnHtml();
+        return solo
+          ? `<div class="reviewrow">${solo}</div>` + newChatConfirmHtml() + newChatListHtml()
+          : '';
+      }
       const r = D.review;
       const n = openThreadCount();
       // what the button may honestly promise: edits only where there is a
@@ -4076,11 +4108,86 @@ ${bubbleShellHtml()}`;
                  : 'nothing to send yet — this page has no open comments. Highlight a passage and comment on it first.')}"${n ? '' : ' disabled'}>send review${n ? ` (${n})` : ''}</button>`
             + makeArtifactBtnHtml()
             + publishBtnHtml()
+            + newChatBtnHtml()
             + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
               : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
       return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`
-        + makeArtifactConfirmHtml() + publishConfirmHtml() + artifactsHtml()
+        + makeArtifactConfirmHtml() + publishConfirmHtml() + newChatConfirmHtml()
+        + newChatListHtml() + artifactsHtml()
         + publishedHtml();
+    }
+
+    // ---- a fresh chat, here, keeping the comments -------------------------
+    //
+    // The reader's only way out of a page chat that had gone wrong used to be
+    // deleting the page — which deletes the margins with it. That is a bad
+    // trade and people made it anyway, because the alternative was arguing with
+    // a bot that had decided what the page said three turns ago.
+    //
+    // So: one quiet button on the dock, next to the others. The chat is set
+    // ASIDE, never destroyed (the companion moves it into the page's own chat
+    // archive), the comments are not touched at all, and the next thing typed
+    // here starts a genuinely new conversation.
+    //
+    // NOT on a project artifact page. There the archive bar at the top of the
+    // pane is already this control, with the council's own chats behind it, and
+    // a second one would offer a different archive for the same question.
+    const pageArchive = () =>
+      ((D.page && Array.isArray(D.page.chat_archive)) ? D.page.chat_archive : []);
+    const canNewChat = () => !!D.owner && !(D.project && D.project.confirmed);
+
+    function newChatBtnHtml() {
+      if (!canNewChat()) return '';
+      const N = D.newchat;
+      if (N.confirm) return '';
+      const n = pageArchive().length;
+      return `<button class="archsend newchat" data-act="page-chat-new" type="button"
+          title="set this chat aside and start a fresh one — your comments stay, and the old chat is kept"${
+        N.busy ? ' disabled' : ''}>+ new chat</button>`
+        + (n ? `<button class="archsend newchatarch" data-act="page-chat-arch" type="button"
+            aria-expanded="${N.open ? 'true' : 'false'}"
+            title="${esc(`${n} chat${n === 1 ? '' : 's'} set aside on this page`)}"${
+          N.busy ? ' disabled' : ''}>archive ${N.open ? '▴' : '▾'}</button>` : '')
+        + (N.busy === 'new' ? '<span class="rvnote busy">starting a fresh chat…</span>'
+          : N.busy ? '<span class="rvnote busy">opening that chat…</span>' : '')
+        + (N.err ? `<span class="rvnote err">${esc(N.err)}</span>` : '');
+    }
+
+    // One step, inline, and it says what survives — because the fear this
+    // button has to answer is "am I about to lose my comments?", and the answer
+    // is no.
+    function newChatConfirmHtml() {
+      const N = D.newchat;
+      if (!N.confirm || !canNewChat()) return '';
+      return `<div class="reviewrow confirm ncrow">
+        <span class="rvq">start a fresh chat here? your comments stay; the old chat is kept in the archive</span>
+        <button class="rebtn yes" data-act="page-chat-new-yes" type="button">yes</button>
+        <button class="rebtn no" data-act="page-chat-new-no" type="button">no</button>
+      </div>`;
+    }
+
+    // The way back. Same list, same rows, same look as a project's archive —
+    // newest first, because the chat you want back is almost always the last
+    // one you put down.
+    function newChatListHtml() {
+      const N = D.newchat;
+      if (!N.open || !canNewChat()) return '';
+      let body;
+      if (N.loading) body = `<div class="archnote">reading this page&rsquo;s chats…</div>`;
+      else if (N.err) body = `<div class="archnote err">${esc(N.err)}</div>`;
+      else if (!N.list || !N.list.length) body = `<div class="archnote">no chats set aside here yet</div>`;
+      else {
+        body = N.list.slice().reverse().map(row => {
+          const name = row.title || row.first || 'an empty chat';
+          return `<button class="archrow${N.busy === 'i' + row.index ? ' busy' : ''}"
+            data-act="page-chat-open" data-index="${row.index}" type="button"${
+            N.busy ? ' disabled' : ''}>
+            <span class="at">${esc(name)}</span>
+            <span class="ax">${esc(shortAge(row.archived_at))}${
+            row.count ? ` · ${row.count}` : ''}</span></button>`;
+        }).join('');
+      }
+      return `<div class="archlist pagearch">${body}</div>`;
     }
 
     // ---- publish -----------------------------------------------------------
@@ -4330,21 +4437,80 @@ ${bubbleShellHtml()}`;
         D.picking = false;
         D.archive.list = null;
         D.archive.current = r.session_id || null;
-        // Everything the PREVIOUS chat left on this tab goes with it. A
-        // pending send, a half-streamed answer, a "queued…" line and a
-        // spinner all belong to the conversation that is no longer here, and
-        // leaving any of them hanging over the new one would be a lie about
-        // which chat they came from.
-        delete D.outbox[PAGE_TARGET];
-        delete D.notes[PAGE_TARGET];
-        delete D.running[PAGE_TARGET];
-        for (const k of Object.keys(D.streams)) {
-          if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
-        }
-        D.expanded[PAGE_TARGET] = null;   // a chat just opened starts folded
-        D.tab = 'chat';
+        leaveChat();
       } else {
         D.archive.err = (r && r.error) || 'could not open that chat';
+      }
+      render();
+    }
+
+    // Everything the PREVIOUS chat left on this tab goes with it. A pending
+    // send, a half-streamed answer, a "queued…" line and a spinner all belong
+    // to the conversation that is no longer here, and leaving any of them
+    // hanging over the new one would be a lie about which chat they came from.
+    // Shared by the project archive bar and by "+ new chat" on every other
+    // page: one gesture, two doors into it, and the clearing must not be able
+    // to drift between them.
+    function leaveChat() {
+      delete D.outbox[PAGE_TARGET];
+      delete D.notes[PAGE_TARGET];
+      delete D.running[PAGE_TARGET];
+      for (const k of Object.keys(D.streams)) {
+        if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
+      }
+      D.expanded[PAGE_TARGET] = null;   // a chat just opened starts folded
+      D.tab = 'chat';
+    }
+
+    // ---- "+ new chat" on an ordinary page ---------------------------------
+    // The same three moves as openSession, against the page's own archive
+    // rather than a council project's: set the chat aside, clear what the old
+    // one left behind, and let the record reload put the empty state up.
+    async function startPageChat() {
+      const N = D.newchat;
+      if (N.busy) return;
+      N.busy = 'new'; N.err = ''; N.confirm = false;
+      render();
+      const r = await cb('onPageChatNew')();
+      N.busy = '';
+      if (r && r.ok) {
+        N.open = false;
+        N.list = null;                  // the archive has one more in it now
+        leaveChat();
+      } else {
+        N.err = (r && r.error) || 'could not start a fresh chat here';
+      }
+      render();
+    }
+
+    async function loadPageArchive() {
+      const N = D.newchat;
+      if (N.loading) return;
+      N.loading = true; N.err = '';
+      render();
+      const r = await cb('onPageChatArchive')();
+      N.loading = false;
+      if (r && r.ok) N.list = r.archive || [];
+      else N.err = (r && r.error) || 'the companion did not answer';
+      render();
+    }
+
+    // Opening one back up. A SWAP at the companion's end — the chat being left
+    // is filed in the same motion — so this is never a way of losing the one
+    // you are in.
+    async function openPageChat(index) {
+      const N = D.newchat;
+      if (N.busy) return;
+      N.busy = 'i' + index; N.err = '';
+      render();
+      const r = await cb('onPageChatOpen')(index);
+      N.busy = '';
+      if (r && r.ok) {
+        N.open = false;
+        N.list = null;
+        leaveChat();
+      } else {
+        N.err = (r && r.error) || 'could not open that chat';
       }
       render();
     }
@@ -5942,6 +6108,18 @@ ${bubbleShellHtml()}`;
         createProject((box && box.value) || '', (sel && sel.value) || '', '');
       },
       'arch-new': () => openSession(null),
+      // "+ new chat" on every OTHER page: one inline step, because the reader's
+      // real question is whether their comments are about to go with it
+      'page-chat-new': () => { D.newchat.confirm = true; D.newchat.err = ''; render(); },
+      'page-chat-new-no': () => { D.newchat.confirm = false; render(); },
+      'page-chat-new-yes': () => startPageChat(),
+      'page-chat-arch': () => {
+        const N = D.newchat;
+        N.open = !N.open; N.err = '';
+        if (N.open && !N.list && !N.loading) { loadPageArchive(); return; }
+        render();
+      },
+      'page-chat-open': (btn) => openPageChat(Number(btn.dataset.index)),
       'del-thread': (btn, target) => { D.confirm = target; render(); },
       'del-thread-no': () => { D.confirm = null; render(); },
       'del-thread-yes': (btn, target) => { D.confirm = null; doDelete(target, null); },

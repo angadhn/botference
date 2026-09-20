@@ -2,6 +2,19 @@
 
 ## 2026-09-16
 
+- **Start a fresh chat on any page, and keep your comments.** Until now the only
+  way out of a page chat that had gone wrong — a bot that had settled on a
+  misreading of the page and kept restating it — was to delete the page, which
+  deleted your margin notes too. Every page chat now has a quiet **+ new chat**
+  on the dock beside "send review". It asks once ("your comments stay; the old
+  chat is kept in the archive"), then the pane is empty and the next thing you
+  type starts a genuinely new conversation. Nothing is thrown away: the chat you
+  left is filed under **archive ▾** next to the button — the last ten of them,
+  by name and date — and opening one brings it back, filing the one you were in
+  as it goes. Your highlights and comments are untouched throughout. Project
+  artifact pages are unchanged: the archive bar they already have is this same
+  control, with your council's own chats behind it.
+
 - **Bubbles: as many as you like, pinned to the words rather than to the
   screen, resizable — and they no longer jump under you.** Four things after a
   week of using them. (1) Open a bubble beside every highlight you care about

@@ -2558,6 +2558,31 @@
         await loadPage();
         return { ok: true, session_id: (r.data && r.data.session_id) || null };
       },
+      // ---- a fresh chat on THIS page, keeping the comments ---------------
+      // The same move as onOpenSession(null) and for the same reason — a
+      // page's `session_id` IS the resume machinery — except that here the
+      // chat that is being left is filed in the page's own record first, so
+      // the reader can come back to it. Deleting the page was the only reset
+      // before this, and it took the margins with it.
+      onPageChatNew: async () => {
+        await ensureRegistered();
+        const r = await api('POST', '/page-chat-new', { url: URL_NOW, title: headline() });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, archived: (r.data && r.data.archived) || 0 };
+      },
+      onPageChatArchive: async () => {
+        const r = await api('GET', '/page-chat-archive?url=' + encodeURIComponent(URL_NOW));
+        if (!r.ok) return failure(r);
+        return { ok: true, archive: (r.data && r.data.archive) || [] };
+      },
+      onPageChatOpen: async index => {
+        await ensureRegistered();
+        const r = await api('POST', '/page-chat-open', { url: URL_NOW, index });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        return { ok: true, session_id: (r.data && r.data.session_id) || null };
+      },
       // The whole margin review, handed to the bots as one page-chat turn.
       // The companion composes the digest (it holds the threads); the drawer
       // only asks. Reloading the record afterwards is what puts the digest —

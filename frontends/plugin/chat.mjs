@@ -1532,6 +1532,27 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         control: !!current.job.control, running: true }] : []),
       ...queue.map(j => ({ url: j.url, target: j.target, control: !!j.control, running: false })),
     ],
+    // Forget every turn this page has WAITING. The one in flight is left alone
+    // deliberately: it is inside the bridge's protocol (a step has gone out and
+    // the answer is coming back), and there is no way to un-send it that does
+    // not desynchronise the child — `interrupt` is the tool for that and it is
+    // the reader's to press. What this is for is the moment a page's chat is
+    // put away: turns queued against the chat that is no longer here would
+    // otherwise land in the fresh one, which is the one thing starting over is
+    // supposed to prevent. Each dropped turn is told so in its own target, the
+    // same way a stranded turn is (died), or the drawer would spin forever on a
+    // "queued…" that is never coming.
+    dropQueued(u) {
+      if (!u) return 0;
+      const dropped = queue.filter(j => j && j.url === u);
+      if (!dropped.length) return 0;
+      for (const j of dropped) queue.splice(queue.indexOf(j), 1);
+      for (const job of dropped) {
+        chat(job, { kind: 'error', error: 'this page started a fresh chat — the turn waiting behind it was dropped' });
+        chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint) });
+      }
+      return dropped.length;
+    },
     // whether THIS page has a turn in flight or waiting. server.mjs asks
     // before it refills a project artifact's mirror from the session file on
     // disk: a turn in flight owns the page chat, and rewriting it underneath
