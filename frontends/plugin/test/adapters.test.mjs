@@ -281,6 +281,44 @@ const res = (body, extra) => Object.assign({
   eq('adapter: …and records which url answered', ad.usedUrl, A.gdocsExportUrl(ID));
 }
 
+// ---- 6a. the snapshot is the export, never the DOM ---------------------------
+// The bots are told to READ the snapshot file for anything past the inline
+// slice. On a Docs tab the DOM is menus over a canvas, so the snapshot must
+// come from the export — the whole of it, not the slice again.
+{
+  eq('snapshot: no text, no snapshot', A.gdocsSnapshotHtml(''), '');
+  eq('snapshot: one <p> per line, blank runs dropped, markup escaped',
+    A.gdocsSnapshotHtml('Title\n\nA <b>line</b>.\n  \nLast & final.'),
+    '<section><p>Title</p><p>A &lt;b&gt;line&lt;/b&gt;.</p><p>Last &amp; final.</p></section>');
+
+  // a doc longer than the inline slice: the slice stops, the snapshot does not
+  const para = 'Paragraph ' + 'x'.repeat(990) + '\n';
+  const body = 'The call text.\n' + para.repeat(20) + 'THE PROPOSAL TITLE\nThe proposal body.\n';
+  ok('snapshot fixture: the doc is longer than TEXT_LIMIT', body.length > A.TEXT_LIMIT);
+  const url = `https://docs.google.com/document/d/${ID}/edit?tab=t.0`;
+  const f = stubFetch(res(body));
+  const ad = A.pick(url, { fetch: f, documentTitle: () => 'Long - Google Docs' });
+  ok('snapshot: an adapter has a snapshotHtml of its own', typeof ad.snapshotHtml === 'function');
+
+  const snap = await ad.snapshotHtml();
+  eq('snapshot: asked for before any read, it fetches the export itself', f.calls.length, 1);
+  ok('snapshot: …and carries the END of the document', /THE PROPOSAL TITLE/.test(snap) && /The proposal body\./.test(snap));
+  ok('snapshot: …with no Docs chrome in it', !/File|Edit|View/.test(snap));
+
+  const text = await ad.articleText();
+  eq('slice: articleText still stops at TEXT_LIMIT', text.length <= A.TEXT_LIMIT, true);
+  ok('slice: …so the proposal is NOT in the inline text', !/THE PROPOSAL TITLE/.test(text));
+  eq('slice: a read within the reuse window did not refetch for the snapshot', f.calls.length, 2);
+  const again = await ad.snapshotHtml();
+  eq('snapshot: a snapshot right after a read reuses it', f.calls.length, 2);
+  eq('snapshot: …and is the same document', again, snap);
+
+  // a failed read: no snapshot, rather than a snapshot of nothing
+  const bad = A.pick(url, { fetch: stubFetch(res('nope', { ok: false, status: 404 })), documentTitle: () => 'x - Google Docs' });
+  eq('snapshot: a failed export means no snapshot at all', await bad.snapshotHtml(), '');
+  ok('snapshot: …and the failure is on lastError', /404/.test(bad.lastError), bad.lastError);
+}
+
 // ---- 6b. the account-scoped tab fetches the account-scoped export ------------
 {
   const cases = {

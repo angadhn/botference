@@ -27,7 +27,11 @@
 //                                   //   — recorded for the reader, never a path
 //     title(),                      // '' ⇒ fall back to the generic headline
 //     articleText(),                // Promise<string>; '' ⇒ generic extraction
-//     snapshotHtml(),               // '' ⇒ content.js clones the article itself
+//     snapshotHtml(),               // string or Promise<string>; '' ⇒ content.js
+//                                   //   clones the article itself — UNLESS the
+//                                   //   adapter defines this at all, in which
+//                                   //   case '' means "no snapshot" (gdocs: the
+//                                   //   DOM is menus, never the document)
 //     pageOf(node),                 // 0 ⇒ this anchor has no page number
 //     docx() }                      // Promise<base64>; optional attachment
 //                                   // ('' = nothing to attach, never an error)
@@ -196,6 +200,31 @@
     // the cut itself can land on a paragraph break — never send the dangle
     return s.slice(0, limit || TEXT_LIMIT).trimEnd();
   }
+
+  // How much of the export the SNAPSHOT keeps. TEXT_LIMIT is the inline slice a
+  // turn carries; the snapshot is the file the bots are told to read for the
+  // rest, so it must be the whole document, not the same slice again. Bounded
+  // only by what the wire and the companion's sanitizer accept (background.js
+  // caps the export at 300k chars; sanitize.mjs at 2MB of HTML).
+  const FULL_LIMIT = 300000;
+
+  // What a phone reads at /a/<pageKey>, and what the bots READ for the parts of
+  // a long doc the inline slice stopped short of. The DOM of a Docs tab is
+  // menus over a canvas, so content.js's clone-the-article snapshot would be —
+  // and until this existed, was — a copy of "File Edit View Insert…" handed to
+  // the bots as "the full text of this page". The export is the document; one
+  // <p> per line, because the txt export puts each paragraph on its own line.
+  const escDoc = s => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  function gdocsSnapshotHtml(text) {
+    const lines = String(text == null ? '' : text).split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    return '<section>' + lines.map(l => '<p>' + escDoc(l) + '</p>').join('') + '</section>';
+  }
+  // A snapshot asked for within this window of a successful export reuses it
+  // rather than fetching the same document twice in one breath (the first
+  // mention snapshots, then reads the text, then snapshots again).
+  const SNAPSHOT_REUSE_MS = 5000;
 
   // A signed-out, permission-denied or WRONG-ACCOUNT export comes back 200
   // with a page in it: a login form, an account chooser, an error shell. The
@@ -446,9 +475,22 @@
         // why the last articleText() came back empty — read by content.js for
         // the console line and the user-facing warning
         lastError: '',
+        fullText: '',     // the whole export from the last successful read
+        fullTextAt: 0,    // …and when
         // Nothing on the page is a text node, so nothing can be wrapped.
         capabilities: { highlights: false },
         title: () => stripDocsSuffix(docTitle()),
+        // The snapshot is the export, never the DOM (see gdocsSnapshotHtml).
+        // Async because the first snapshot of a page is asked for BEFORE its
+        // first mention reads the text; a read that fails leaves '' and no
+        // snapshot at all, which is honest — the turn then carries only the
+        // inline slice and says nothing about a file.
+        async snapshotHtml() {
+          if (!ad.fullText || Date.now() - ad.fullTextAt > SNAPSHOT_REUSE_MS) {
+            try { await ad.articleText(); } catch (_) { /* lastError says why */ }
+          }
+          return gdocsSnapshotHtml(ad.fullText);
+        },
         // The ladder, in full:
         //
         //   page fetch, the url the page url implies
@@ -541,8 +583,12 @@
                 why = 'HTTP ' + status + ' but the body is HTML — signed out, or this ' +
                   'doc belongs to another signed-in account: ' + peek(r.text);
               } else {
-                const text = cleanExport(r.text, TEXT_LIMIT);
-                if (text) { ad.usedUrl = url; ad.usedVia = lane.name; return text; }
+                const full = cleanExport(r.text, FULL_LIMIT);
+                if (full) {
+                  ad.usedUrl = url; ad.usedVia = lane.name;
+                  ad.fullText = full; ad.fullTextAt = Date.now();
+                  return full.slice(0, TEXT_LIMIT).trimEnd();
+                }
                 why = 'HTTP ' + status + ' with an empty body';
               }
               ad.attempts.push({ url, status, why, via: lane.name });
@@ -999,7 +1045,8 @@
     canonicalPageUrl,
     gdocsId, gdocsScope, gdocsExportUrl, gdocsExportUrls, accountFromUrls,
     stripDocsSuffix, cleanExport, looksHtml, looksZip, bytesToBase64, b64Size,
-    TEXT_LIMIT, AUTHUSER_MAX, EXPORT_URL_MAX, PAGE_CREDENTIALS, DOCX_MAX,
+    gdocsSnapshotHtml,
+    TEXT_LIMIT, FULL_LIMIT, AUTHUSER_MAX, EXPORT_URL_MAX, PAGE_CREDENTIALS, DOCX_MAX,
     // web PDFs (pure; the DOM readers take a document, so jsdom-free tests
     // hand them a stub)
     looksPdfUrl, pdfViewerUrl, pdfViewerSrc, pdfNameFromUrl, pdfLayerLines,

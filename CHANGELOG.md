@@ -95,6 +95,18 @@
   out of positioned steps rather than paragraphs also stops handing the bots an
   empty `<main>`.
 
+## 2026-09-08
+
+- **Google Docs: the bots read the whole document again.** Since August the
+  bots have been told to read a page's snapshot file for anything past the
+  first 2,500 characters — and on a Google Doc that file was a copy of the
+  Docs menus, because Docs paints the document on a canvas and the snapshot
+  cloned the page. Short docs slipped through inside the inline slice; a long
+  one stopped mid-way ("I can see the call text but not your proposal"). The
+  Docs adapter now builds the snapshot from the document's own export, the
+  whole of it, so the file the bots read is the document. A doc opened before
+  today gets its real snapshot the next time it is visited on the Mac.
+
 ## 2026-09-07
 
 - **A plot the bots make is a plot you can see.** Claude made two SVG plots on

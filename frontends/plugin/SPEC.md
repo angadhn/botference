@@ -404,6 +404,17 @@ Contract deltas agreed during live testing — authoritative over the sections a
   differs from the pre-/new active one (new chats are invisible until their first
   turn; /rename emits no snapshot); failure leaves session_id null and errors the
   turn; /resume is confirmed against the snapshot before the user turn is sent.
+  **Snapshot = the export (2026-09-08).** Since the envelope names the snapshot
+  FILE as "the full text of this page" and shrinks the inline slice to
+  `SNAPSHOT_INLINE` when one exists, a Docs page whose snapshot was the DOM clone
+  handed the bots menus over a canvas and 2,500 chars of the document — the
+  "extraction stops after the call text" report. The gdocs adapter now owns
+  `snapshotHtml()` (async: fetches the export itself when asked before the first
+  read, reuses a read ≤5s old), built from the WHOLE export (`FULL_LIMIT`
+  300k, one `<p>` per line); `articleText()` still returns the `TEXT_LIMIT`
+  slice. A failed read means no snapshot, never an empty or DOM one. content.js
+  awaits adapter snapshots (`sendSnapshot` is async). Old Docs records keep
+  their menu snapshot until the tab is revisited on a Mac.
 - Round 4 — living context: /thread and /reply accept article_text on ANY
   mention-bearing message; later turns honor it only with article_changed:true
   (envelope prefix "[the page content has been updated since earlier in this chat]").
