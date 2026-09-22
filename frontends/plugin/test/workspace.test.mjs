@@ -100,6 +100,7 @@ function artifact(root, project, name = 'index.html', html = '<h1>Artifact</h1>'
 const OWN_ROOT = tmp('own-store');
 process.env.BOTFERENCE_PROJECT_ROOT = OWN_ROOT;
 const ws = await import(path.join(PLUGIN, 'workspace.mjs'));
+const st = await import(path.join(PLUGIN, 'store.mjs'));
 
 console.log('\nworkspace — detection');
 
@@ -2706,6 +2707,99 @@ await test('publish to a repo root as index.html, then run the deploy command', 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+
+// --- the reviewer is the bot that did NOT draft ---------------------------
+// SPEC.md "adversarial review — checks, not second opinions" §4. A draft read
+// back by its own author is not a check: it is the same reasoning with all its
+// reasons still in front of it. So a round on an artifact goes to the other
+// bot — unless the READER has already said who a thread belongs to.
+console.log('\nartifact review — who answers');
+
+await test('recordArtifact keeps who wrote the file', async () => {
+  const page = { url: 'https://src.test/a' };
+  st.recordArtifact(page, { root: '/c', id: 'p', rel: 'projects/p/a.html', drafted_by: 'claude' });
+  assert.deepEqual(page.artifacts, [{ root: '/c', id: 'p', rel: 'projects/p/a.html',
+    at: page.artifacts[0].at, drafted_by: 'claude' }]);
+  // a re-run rewrites the same file: one row, first date, CURRENT writer
+  const at = page.artifacts[0].at;
+  st.recordArtifact(page, { root: '/c', id: 'p', rel: 'projects/p/a.html', drafted_by: 'codex' });
+  assert.equal(page.artifacts.length, 1);
+  assert.equal(page.artifacts[0].at, at);
+  assert.equal(page.artifacts[0].drafted_by, 'codex');
+  // a name that is not one of the two is no name at all
+  st.recordArtifact(page, { root: '/c', id: 'p', rel: 'projects/p/b.html', drafted_by: 'somebody' });
+  assert.equal('drafted_by' in page.artifacts[1], false);
+});
+
+await test('reviewerFor is the other one, and nobody when the drafter is unknown', async () => {
+  assert.equal(ws.reviewerFor('claude'), 'codex');
+  assert.equal(ws.reviewerFor('codex'), 'claude');
+  assert.equal(ws.reviewerFor(''), '');
+  assert.equal(ws.reviewerFor('gemini'), '');
+});
+
+await test('draftedBy joins the artifact file to the SOURCE page that recorded it', async () => {
+  const dir = tmp('drafted');
+  fs.mkdirSync(path.join(dir, 'projects', 'p'), { recursive: true });
+  const rel = 'projects/p/a.html';
+  fs.writeFileSync(path.join(dir, rel), '<h1>x</h1>');
+  const src = { url: 'https://src.test/a', artifacts: [
+    { root: dir, id: 'p', rel, at: 'now', drafted_by: 'claude' },
+  ] };
+  assert.equal(ws.draftedBy({ path: path.join(dir, rel) }, src), 'claude');
+  assert.equal(ws.draftedBy({ path: path.join(dir, 'projects/p/other.html') }, src), '',
+    'a different file in the same project is a different file');
+  assert.equal(ws.draftedBy({ path: path.join(dir, rel) }, null), '', 'no source page, no answer');
+  assert.equal(ws.draftedBy(null, src), '');
+  assert.equal(ws.draftedBy({ path: path.join(dir, rel) },
+    { artifacts: [{ root: dir, id: 'p', rel, at: 'now' }] }), '',
+  'a row written before drafted_by existed names nobody');
+});
+
+await test('a round on a drafted artifact goes to the OTHER bot, and says why', async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('the truss', [{ author: 'angadh', text: 'this looks wrong' }]),
+    revThread('the radiator', [{ author: 'angadh', text: 'cite a source' }]),
+  ]), { reviewer: 'codex' });
+  assert.equal(f.reviewer, 'codex');
+  assert.deepEqual(f.turns.map(t => t.route), ['@codex', '@codex']);
+  assert.ok(f.turns.every(t => t.text.startsWith('@codex ')));
+  assert.ok(/Codex takes these comments/.test(f.preamble));
+  assert.ok(/Claude drafted this page/.test(f.preamble));
+  assert.ok(/not against the conversation it came out of/.test(f.preamble),
+    'the reason is the whole point, so it is said');
+});
+
+await test("the reader's own address still wins over the reviewer rule", async () => {
+  const f = ws.reviewFanout(revPage([
+    revThread('the truss', [{ author: 'angadh', text: '@claude is this right?' }]),
+    revThread('the radiator', [{ author: 'angadh', text: 'cite a source' }]),
+  ]), { reviewer: 'codex' });
+  assert.deepEqual(f.turns.map(t => t.route), ['@claude', '@codex']);
+});
+
+await test('no reviewer, no change: the round is @all exactly as it was', async () => {
+  const f = ws.reviewFanout(revPage([revThread('the truss', [{ author: 'angadh', text: 'hm' }])]));
+  assert.equal(f.reviewer, '');
+  assert.equal(f.turns[0].route, '@all');
+  assert.ok(!/takes these comments/.test(f.preamble));
+});
+
+await test("a review turn carries the thread and NOT the make-artifact chat", async () => {
+  // the drafting conversation lives in the project's own chat, in another
+  // root — and the envelope for a check must never be the conversation that
+  // produced the thing being checked
+  const page = revPage([revThread('the truss', [{ author: 'angadh', text: 'this looks wrong' }])]);
+  page.page_chat = [{ author: 'angadh', text: 'Make an artifact of this page in Spaceship' },
+    { author: 'claude', text: 'made it — SECRET-DRAFTING-CHATTER' }];
+  const f = ws.reviewFanout(page, { reviewer: 'codex' });
+  for (const t of f.turns) {
+    assert.ok(!/SECRET-DRAFTING-CHATTER/.test(t.text));
+    assert.ok(!/Make an artifact/.test(t.text));
+    assert.deepEqual(t.history.map(m => m.author), ['angadh']);
+  }
+  assert.ok(!/SECRET-DRAFTING-CHATTER/.test(f.preamble));
+});
 
 cleanup();
 await sleep(150);

@@ -1337,9 +1337,61 @@ export const openThreads = page => ((page && page.threads) || [])
 // by, so a round and a reply can never disagree about it. (Which also means the
 // composer's pills count: a thread addressed by clicking Codex is a codex
 // thread whether or not the word "@codex" was ever typed in it.)
-export function reviewRoute(t) {
+export function reviewRoute(t, reviewer = '') {
   const p = stickyRoute((t && t.msgs) || []);
-  return p === '@claude ' || p === '@codex ' ? p.trim() : '@all';
+  if (p === '@claude ' || p === '@codex ') return p.trim();
+  // …and the OTHER way a round's address is already decided: on an artifact
+  // page, by who WROTE the file. See `reviewerFor` — nobody audits their own
+  // draft, and @all would put the drafter back in the room it was drafted in.
+  const r = String(reviewer || '').toLowerCase();
+  if (r === 'claude' || r === 'codex') return `@${r}`;
+  return '@all';
+}
+
+// ---- who reviews an artifact ---------------------------------------------
+//
+// THE PRINCIPLE, and it is not a preference: two agents reasoning from the same
+// context agree on wrong facts, and the longer the discussion the stickier the
+// shared premise. So a review is only worth the turn if the reviewer is held
+// against the SOURCE rather than against the conversation — and the one thing
+// guaranteed not to be held against the source is the bot that wrote it. It
+// would be re-reading its own sentence with its own reasons still in front of
+// it, which is agreement wearing the costume of a check.
+//
+// So: the reviewer of an artifact is the bot that did NOT draft it. The reader
+// still overrules this — a thread they addressed to one bot with a pill or an
+// @-tag stays that bot's thread (reviewRoute checks the sticky address first),
+// because the reviewer rule exists to give a round a default, not to take the
+// room away from the person in it.
+//
+// Where the drafter is unknown — an artifact made before `drafted_by` was
+// recorded, a file written by hand, a page that is not an artifact at all —
+// the answer is '' and the round is @all, exactly as it always was.
+export const reviewerFor = draftedBy =>
+  (String(draftedBy || '').toLowerCase() === 'claude' ? 'codex'
+    : String(draftedBy || '').toLowerCase() === 'codex' ? 'claude' : '');
+
+/**
+ * Who drafted the artifact at `art` (an `artifactFor` answer), according to the
+ * SOURCE page it was made from.
+ *
+ * The receipt lives on the source page (`store.recordArtifact`), not on the
+ * artifact — the artifact is a file, and a file has no record of its own. The
+ * two are joined by the file itself: the source page's row names <root>/<rel>,
+ * and this is the artifact at that exact path. Pure, so the whole joining rule
+ * is testable with two plain objects.
+ */
+export function draftedBy(art, sourcePage) {
+  if (!art || !art.path || !sourcePage) return '';
+  const rows = Array.isArray(sourcePage.artifacts) ? sourcePage.artifacts : [];
+  const mine = realish(art.path);
+  for (const row of rows) {
+    if (!row || !row.root || !row.rel || !row.drafted_by) continue;
+    if (realish(path.join(String(row.root), String(row.rel))) !== mine) continue;
+    const by = String(row.drafted_by).toLowerCase();
+    if (by === 'claude' || by === 'codex') return by;
+  }
+  return '';
 }
 
 // The round's opening turn, into page chat. Short on purpose: the comments
@@ -1356,7 +1408,7 @@ export function reviewRoute(t) {
 // asking for a change would be asking for something nothing can do. There the
 // round asks for answers, and it says so. (`editable` picks the register; the
 // artifact wording is unchanged, byte for byte, from the day it shipped.)
-export function reviewPreamble(sent, omitted = 0, editable = true) {
+export function reviewPreamble(sent, omitted = 0, editable = true, reviewer = '') {
   const more = omitted
     ? ` (…and ${omitted} more open comment thread${omitted === 1 ? '' : 's'} did not fit in this `
       + `round — send review again after these.)`
@@ -1372,7 +1424,8 @@ export function reviewPreamble(sent, omitted = 0, editable = true) {
       + `short. Nothing here is a draft of mine and no change to anything is being asked for — the `
       + `reply is the whole of the work.\n\n`
       + `Nothing is resolved by any of this — I file the threads myself once I am satisfied. After `
-      + `the last comment I will ask for a short wrap-up here in page chat.`;
+      + `the last comment I will ask for a short wrap-up here in page chat.`
+      + reviewerLine(reviewer);
   }
   return `Review round: I have been down this draft leaving comments in the margins. `
     + `${sent} comment${sent === 1 ? '' : 's'} follow${sent === 1 ? 's' : ''} this message, `
@@ -1385,15 +1438,31 @@ export function reviewPreamble(sent, omitted = 0, editable = true) {
     + `SOMEWHERE ELSE (a cross-reference, a paragraph that now contradicts itself: follow the change `
     + `out, that is wanted), add one line per place: "also changed — this passage now reads: “…”". `
     + `A comment thread is opened at each of those passages so I can review it like any other.\n\n`
-    + `Nothing is resolved by any of this — I file the threads myself once I am satisfied.`;
+    + `Nothing is resolved by any of this — I file the threads myself once I am satisfied.`
+    + reviewerLine(reviewer);
 }
+
+// Said out loud in the preamble, because a bot that finds itself answering a
+// round on a page it did not write should know WHY it and not the other one —
+// and because the reader watching the round go out to one bot is owed the
+// reason too. A round with no assigned reviewer says nothing extra.
+function reviewerLine(reviewer) {
+  const r = String(reviewer || '').toLowerCase();
+  if (r !== 'claude' && r !== 'codex') return '';
+  const other = r === 'claude' ? 'Codex' : 'Claude';
+  return `\n\n${cap(r)} takes these comments: ${other} drafted this page, and a draft is not `
+    + `reviewed by the hand that wrote it. Check what it says against the file and the sources, `
+    + `not against the conversation it came out of. (A thread I have addressed to one of you `
+    + `stays that one's.)`;
+}
+const cap = s => String(s || '').charAt(0).toUpperCase() + String(s || '').slice(1);
 
 // One turn per thread. The thread's own envelope (chat.envelope, target = the
 // thread) already carries the quote, the page number and the conversation, and
 // already ends with "Your reply text is posted directly into the comment
 // thread" — so all this text adds is the one line of round context, and the
 // route tag that decides who answers.
-function reviewTurn(t, n, total, editable = true) {
+function reviewTurn(t, n, total, editable = true, reviewer = '') {
   const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');
   const shown = msgs.slice(-REVIEW_MSGS_PER_THREAD);
   const dropped = msgs.length - shown.length;
@@ -1404,21 +1473,21 @@ function reviewTurn(t, n, total, editable = true) {
   return {
     thread_id: t.id,
     page: Number(t.page) || 0,
-    route: reviewRoute(t),
+    route: reviewRoute(t, reviewer),
     // clipped here rather than in the envelope: a per-thread turn is small and
     // must stay small, and a reader who pasted four thousand characters into
     // one comment is not asking for four thousand to ride every turn of a round
     quote: clip(t.quote, REVIEW_QUOTE_MAX),
     history: shown.map(m => ({ author: m.author, text: clip(m.text, REVIEW_MSG_MAX) })),
     text: !editable
-      ? `${reviewRoute(t)} [review round · comment ${n} of ${total}] `
+      ? `${reviewRoute(t, reviewer)} [review round · comment ${n} of ${total}] `
         + `This is part of the review round I just opened in the chat, and this turn is this one `
         + `comment. Answer this point on its own terms, here in its thread: where it asks a `
         + `question, answer it; where it is a note I was making to myself rather than a question, `
         + `say what it implies, or flag anything I ought to know about the passage above. Keep it `
         + `short. There is nothing here to change — the reply is the whole of the work.`
         + `${orph}${cut}`
-      : `${reviewRoute(t)} [review round · comment ${n} of ${total}] `
+      : `${reviewRoute(t, reviewer)} [review round · comment ${n} of ${total}] `
       + `This is part of the review round I just opened in the chat, and this turn is this one `
       + `comment. Work this point through: where it calls for a change, MAKE the change (the `
       + `draft's files are yours to edit — the write rules on this turn say where) and say what `
@@ -1457,7 +1526,7 @@ export function reviewWrapUp(sent) {
 // `editable` is the register (see reviewPreamble): true on a confirmed project
 // artifact, where the draft's files are the bots' to edit; false everywhere
 // else, where the round asks for answers and ends with the wrap-up turn.
-export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX, editable = true } = {}) {
+export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX, editable = true, reviewer = '' } = {}) {
   const threads = openThreads(page);
   if (!threads.length) return null;
   const total = threads.length;
@@ -1467,13 +1536,16 @@ export function reviewFanout(page, { threadsMax = REVIEW_THREADS_MAX, editable =
     // …and never a silent truncation: the preamble says how many did not fit,
     // because the reader is looking at the same threads in the Comments tab and
     // would otherwise have no way to know which the bots were never shown.
-    preamble: reviewPreamble(taken.length, omitted, editable),
-    turns: taken.map((t, i) => reviewTurn(t, i + 1, taken.length, editable)),
+    preamble: reviewPreamble(taken.length, omitted, editable, reviewer),
+    turns: taken.map((t, i) => reviewTurn(t, i + 1, taken.length, editable, reviewer)),
     // no wrap-up on a draft: there the round ends with the last edit, and the
     // reader's next move is the diff, not a summary
     wrapUp: editable ? null : reviewWrapUp(taken.length),
     sent: taken.length,
     omitted,
     total,
+    // who the round was assigned to, '' when nobody — the endpoint reports it
+    // so the drawer's receipt can say which bot the comments went to
+    reviewer: String(reviewer || ''),
   };
 }
