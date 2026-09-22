@@ -10147,3 +10147,133 @@ envelope exactly as the old one's first turn did.
   the assertion is on the tail).
 - `?workspace=1&selftest=1` — one more check: the artifact page shows the archive
   bar and NOT a second new-chat button.
+
+## Amendment (2026-09-22): a link is not a search
+
+Three failures from one screenshot. The reader typed
+`/lasso https://angadh.com/rockets-1` into a comment thread. What came back was:
+a chip row offering the FT page they happened to be standing on, a row that said
+**"that is this page"**, and — when they asked the bots to read the link
+instead — a reply telling them to run `/allow-host angadh.com`, which is a
+council slash command that does not exist in this drawer at all. Three dead ends
+for one entirely reasonable request.
+
+### 1. `/lasso <url>` fetches, it does not search
+
+The words of a URL are not the words of anything the reader owns, so searching
+for them was always going to match the wrong thing. `GET /lasso?q=…` now forks
+before the index: `lasso.isHttpUrl(q)` → `lasso.lassoUrl(q)`.
+
+- **Already theirs?** A `normUrl` match against a page record the reader has
+  actually *annotated* (a thread with messages, some page chat, or a saved
+  snapshot) comes back as a **`page` chip**, not a fetch — that digest carries
+  their own comments too, which the live web page does not. The header says so.
+  The page they are *standing on* is not offered back to them at all; the header
+  says that instead.
+- **Otherwise fetch it**, on this machine, owner-only, 15s, redirects followed.
+  `text/html` goes through the snapshot sanitizer (`sanitizeArticle`, images
+  off) and then `snapshotPdfText`, so scripts, styles and navigation chrome are
+  gone before the tags are. A PDF goes through the same `pdftotext` the
+  watched-folder index uses. The digest is written under
+  `.botference/plugin/attachments/<pageKey>/` *before* the chip is offered, and
+  one `{kind:'web', title, url, hit}` chip comes back, attachable.
+- **A failure is a sentence, never an empty result:** `could not fetch: HTTP 403
+  — open it in the browser with the plugin once and lasso it by title`. That row
+  shows, with no attach button on it, because there is nothing on disk to
+  attach.
+
+Attaching a `web` chip is a **copy, not a second request**: the digest already
+exists and `buildAttachment` copies it into the chat's own folder. A `web` id
+that was never lassoed in this run of the companion is refused outright — a url
+posted at `/attach` must not be able to make the companion fetch it.
+
+`http` is injectable throughout (`fetchWeb`, `buildWeb`, `lassoUrl`,
+`webForTurn`), for the same reason every other edge in this tree is: a suite
+that needs a 403 must not need a site that gives one.
+
+### 2. One header line, saying what happened
+
+`lasso.headline()` composes it and the companion sends it as `head`; the drawer
+renders it and only falls back to its own wording for the states it reaches
+alone (a refused attach) or against an older companion.
+
+```
+lasso · 3 matches for “fat tails”
+lasso · fetched “Rockets, part 1” (angadh.com)
+lasso · you have annotated “…” (example.org) already — here is that page, with your comments on it
+lasso · that link is the page you are on — the bots already have it
+lasso · could not fetch: HTTP 403 — ft.com
+lasso · nothing matched “…” — try other words, or paste a link or a file path
+```
+
+The drawer's own refusal (`err`) and the companion's `head` never coexist:
+setting one clears the other, so "3 matches" can never stand over a row that
+would not attach. Each chip shows title · kind (page / chat / file / **web**) ·
+the matching line, as before.
+
+### 3. No `/allow-host` advice, and the link read anyway
+
+Two halves.
+
+**The prompt.** `bridge-system-prompt.md` rule 8 gains the network half: if a
+site is refused, name the host and stop; never tell the reader to run
+`/allow-host` or any slash command, because there are none here — the owner
+grants hosts in the companion. And: a link the reader pastes is usually fetched
+*for* you, so read the file the envelope names rather than saying you cannot.
+
+**The turn.** `server.mjs summon` (now `async`, awaited at all seven call sites)
+calls `lasso.webForTurn(text)` on the same funnel that composes `filedContext`,
+`strikeContext` and the rest. It finds up to **3** http(s) links in the reader's
+message, drops any host already on the bots' allow-list — they fetch those
+themselves — fetches the rest, and hands the turn one system line plus the
+digest paths:
+
+```
+The link angadh.com is not on the bots' allow-list; the companion will fetch it for them.
+[Fetched for THIS message only — the link(s) the reader just pasted, read with your
+file tool, never inlined back:]
+- Rockets, part 1 (web) — /…/attachments/web/web-rockets-part-1.md — A web page the companion fetched…
+```
+
+It rides `chat.envelope`'s standing block as `webContext`, last, because it is
+the most local thing in it: everything above is true of the page and this is
+true of one message. **Nothing is recorded on the page** — a link pasted once is
+not a standing fact about it — and the header is deliberately *not* the
+attachments header, or a model would go on citing it three turns later. A fetch
+that fails costs the turn its links and nothing else.
+
+The allow-list itself (`lasso.allowedHosts`) mirrors `core/cli_adapters.py`:
+the same defaults, the same `BOTFERENCE_PLAN_ALLOWED_HOSTS` override, and
+`.botference/allowed-hosts.json` read from **both roots** — this companion's own
+and every vouched-for council root, because a plugin turn can run on either
+child and a grant made in either is a grant. `*.x.com` covers `x.com` and its
+subdomains, as it does in the sandbox.
+
+### 4. Typing "/" offers the command
+
+`/lasso` was a command you had to already know. The @-menu is where a reader
+looks for what they can type, so a `/` at the **start of a composer** — any
+composer — opens that same menu with the commands in it (`slashToken`,
+`slashCandidates`, `SLASH_COMMANDS`, and the `slash` flag on `D.mention`), each
+with one line saying what it does. Arrows, Tab, Enter and Esc behave exactly as
+they do for `@`; Enter completes to `/lasso ` rather than sending. A `/` in
+prose ("either/or") is left alone, as `@` in an email address is.
+
+### Testing
+
+- `lasso.test.mjs` — **15 new** (48 total): a url fetched not searched (one
+  request, digest on disk, scripts stripped), attach as a copy with no second
+  request, a `web` id nobody lassoed refused, a 403 and a timeout as chips that
+  say why, a PDF through `pdftotext`, an already-annotated url as a `page` chip
+  with nothing fetched, the page-you-are-on line, every branch of `headline`,
+  the allow-list from both roots with `*.` matching, `urlsIn` and its cap, and
+  `webForTurn` (fetched + the envelope line, skipped on a granted host, free on
+  a message with no links).
+- `companion.test.mjs` — **4 new**: `GET /lasso` with a url (chip, header,
+  attach with no re-fetch), a refused link's chip and header, a link pasted into
+  a real turn reaching the mock bridge as a path with the allow-list line (and
+  nothing written to the record), and a turn with no link carrying no line.
+- `?lasso=1&selftest=1` — **36 checks** (was 23): the three header lines, the
+  `web` chip, no attach button on a failed row, the words "that is this page"
+  absent from the pane, and the slash menu in a *thread* composer (opens on
+  "/la", carries the hint, Enter completes to `/lasso `, menu closes).

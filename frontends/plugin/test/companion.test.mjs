@@ -4625,6 +4625,83 @@ async function main() {
       assert.ok(!inputs(lLog).slice(before).some(x => /Attached for this chat/.test(x)));
     });
 
+    // --- a LINK the reader pasted ---------------------------------------
+    //
+    // Two things only a real server can show: that `/lasso <url>` fetches
+    // instead of searching, and that a link pasted into an ordinary message
+    // reaches the bots as a FILE without anybody granting a host. The far end
+    // is a one-route http server on loopback, which is not on the bots'
+    // allow-list — exactly the case this exists for.
+    const origin = http.createServer((req, res) => {
+      if (req.url === '/refused') { res.writeHead(403).end('no'); return; }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end('<html><head><title>Rockets, part 1</title><script>var x=1</script></head>'
+        + '<body><article><p>The first stage is the whole argument.</p></article></body></html>');
+    });
+    await new Promise(r => origin.listen(0, '127.0.0.1', r));
+    const ORIGIN = `http://127.0.0.1:${origin.address().port}`;
+
+    await test('GET /lasso with a URL fetches the page instead of searching for it', async () => {
+      const r = await GET(lb, '/lasso?q=' + encodeURIComponent(`${ORIGIN}/rockets-1`)
+        + '&url=' + encodeURIComponent(PAGE1));
+      assert.equal(r.status, 200);
+      assert.equal(r.json.results.length, 1);
+      const chip = r.json.results[0];
+      assert.equal(chip.kind, 'web');
+      assert.equal(chip.title, 'Rockets, part 1');
+      assert.match(chip.hit, /first stage is the whole argument/);
+      assert.equal(r.json.head, 'lasso · fetched “Rockets, part 1” (127.0.0.1)');
+      // and it is attachable on the spot, with no second trip over the wire
+      const a = await POST(lb, '/attach', { url: PAGE1, kind: 'web', id: chip.id });
+      assert.equal(a.status, 200);
+      assert.equal(a.json.attachment.kind, 'web');
+      assert.match(fs.readFileSync(a.json.attachment.path, 'utf8'),
+        /first stage is the whole argument/);
+      await POST(lb, '/detach', { url: PAGE1, path: a.json.attachment.path });
+    });
+
+    await test('…and a link that refuses us is a chip that says so, with the header', async () => {
+      const r = await GET(lb, '/lasso?q=' + encodeURIComponent(`${ORIGIN}/refused`));
+      assert.equal(r.status, 200);
+      assert.equal(r.json.results.length, 1, 'never an empty result');
+      assert.equal(r.json.results[0].failed, true);
+      assert.match(r.json.head, /^lasso · could not fetch: HTTP 403 — 127\.0\.0\.1$/);
+      assert.match(r.json.results[0].hit, /open it in the browser with the plugin once/);
+    });
+
+    await test('a link pasted into a turn is fetched FOR the bots, who were never granted it',
+      async () => {
+        const before = inputs(lLog).length;
+        const r = await POST(lb, '/reply', { url: PAGE1, thread_id: '__page__',
+          text: `@claude what do you make of ${ORIGIN}/rockets-1 ?` });
+        assert.equal(r.status, 200);
+        await waitFor(() => inputs(lLog).slice(before)
+          .some(x => /is not on the bots' allow-list/.test(x)), 'the turn to carry the line');
+        const sent = inputs(lLog).slice(before)
+          .find(x => /is not on the bots' allow-list/.test(x));
+        assert.match(sent,
+          /The link 127\.0\.0\.1 is not on the bots' allow-list; the companion will fetch it for them\./);
+        assert.match(sent, /Fetched for THIS message only/);
+        assert.match(sent, /Rockets, part 1 \(web\) — /);
+        // the PATH rides the turn and the page's words do not
+        const m = /— (\S+\.md) —/.exec(sent);
+        assert.ok(m, 'a digest path on the line');
+        assert.match(fs.readFileSync(m[1], 'utf8'), /first stage is the whole argument/);
+        assert.ok(!sent.includes('The first stage is the whole argument'),
+          'the digest’s contents never ride the turn');
+        // …and nothing was recorded on the page: a link pasted once is not a
+        // standing fact about it
+        const page = (await GET(lb, '/page?url=' + encodeURIComponent(PAGE1))).json;
+        assert.ok(!(page.attachments || []).some(x => x.kind === 'web'));
+      });
+
+    await test('a turn with no link in it carries no fetch line at all', async () => {
+      const before = inputs(lLog).length;
+      await POST(lb, '/reply', { url: PAGE1, thread_id: '__page__', text: '@claude and what about the rest of it?' });
+      await waitFor(() => inputs(lLog).length > before, 'the next turn');
+      assert.ok(!inputs(lLog).slice(before).some(x => /allow-list/.test(x)));
+    });
+
     await test('the three doors refuse a bad ask rather than half-doing it', async () => {
       assert.equal((await POST(lb, '/attach', { url: 'https://nope.test/x', kind: 'chat', id: 'sess-load' })).status, 404);
       assert.equal((await POST(lb, '/attach', { url: PAGE1, kind: 'chat', id: 'nope' })).status, 400);
@@ -4632,6 +4709,7 @@ async function main() {
       assert.equal((await POST(lb, '/detach', { url: PAGE1, path: '/tmp/nothing.md' })).status, 400);
     });
 
+    origin.close();
     l.proc.kill();
   }
 

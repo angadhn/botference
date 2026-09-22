@@ -2637,7 +2637,7 @@
         if (!r.ok) return failure(r);
         const d = r.data || {};
         return { ok: true, results: d.results || [], attached: d.attached || [],
-                 path: d.path || '', error: d.error || '' };
+                 path: d.path || '', head: d.head || '', error: d.error || '' };
       },
       onLassoAttach: async (kind, id, library) => {
         // the record has to exist before anything can hang off it — a page the

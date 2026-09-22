@@ -1610,7 +1610,23 @@ matters. A forty-page transcript pasted into every turn would bury the turn.
 
 In the browser, the same thing lives in the companion's drawer: type `/lasso`
 in any composer and the matches appear above it as chips, with what is attached
-shown as small chips with a ✕ from then on.
+shown as small chips with a ✕ from then on. Typing a bare `/` opens the same
+menu the `@` does, with `/lasso` in it, so it is not a command you have to
+already know. One line above the chips says what happened — `lasso · 3 matches
+for "fat tails"`, `lasso · fetched "Rockets, part 1" (angadh.com)`, or
+`lasso · nothing matched "…" — try other words, or paste a link or a file path`.
+
+- **`/lasso https://…` in the drawer fetches the page** rather than searching
+  for the words of the address. The companion reads it on your machine, saves
+  what it says, and offers you one chip to attach; a site that refuses says so
+  ("could not fetch: HTTP 403 — open it in the browser with the plugin once and
+  lasso it by title") instead of coming back empty. A link you have already
+  annotated comes back as **your** copy of it, with your comments on it.
+- **A link you paste into an ordinary message is fetched for the bots**
+  automatically — up to three per message, skipping any host they can already
+  reach — so they read it from a file. There is no `/allow-host` in the drawer
+  and the bots are told not to ask for one: they name the host that was refused
+  and stop.
 
 ### Crash evidence
 

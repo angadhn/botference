@@ -51,6 +51,8 @@
                      next message is for, with Claude picked (screenshot state)
     ?mention=1       the @-menu held open over the page-chat composer, with
                      half a handle typed (screenshot state)
+    ?mention=slash   the same menu opened by a "/" instead: the commands, each
+                     with a line saying what it does (screenshot state)
     ?gdocs=1         pretend to be a Google Doc: the url, the " - Google Docs"
                      tab title, a canvas-painted body with no article text, and
                      a stubbed /export?format=txt. Exercises the site-adapter
@@ -292,8 +294,14 @@
                      under it as offers. `&selftest=1` also drives `/lasso …`
                      in the composer (a command, not a message), an attach, the
                      chip strip above the composer, the ✕, and `/lasso <path>`,
-                     which attaches a file with no chip to click. `?lasso=strip`
-                     is the far end: two things already attached on load.
+                     which attaches a file with no chip to click — plus the
+                     three HEADER lines (a link fetched, a link refused, nothing
+                     matched) and the slash menu: typing "/la" in a thread
+                     composer offers /lasso and Enter completes it.
+                     `?lasso=strip` is the far end: two things already attached
+                     on load. `?lasso=web` / `?lasso=refused` are the two
+                     screenshot states of a pasted link: the chip the companion
+                     fetched, and the row saying why it could not.
     ?question=1      the question vault's two doors on an ordinary article: the
                      card head's `?`, the selection pill's third tool, and a
                      bot's own offer as a File it / No chip. `&selftest=1` runs
@@ -1315,7 +1323,8 @@ if (LASSO === '1') {
     { author: 'claude', ts: iso(1),
       text: 'Because releasing off the libration zero throws the payload into the '
         + 'wrong plane — and you worked the numbers on this before.',
-      lasso: { query: 'tether release', results: LASSO_INDEX.slice(0, 2) } },
+      lasso: { query: 'tether release', results: LASSO_INDEX.slice(0, 2),
+        head: 'lasso · 2 matches for “tether release”' } },
   ]);
 }
 // ?lasso=strip — the far end: two things already attached, so the strip above
@@ -2679,12 +2688,37 @@ function companion(method, path, body) {
     lassoSearches.push(q);
     if (/^[~/]/.test(q)) {
       return { ok: true, status: 200, data: { ok: true, query: q, path: q, attached: lassoOn(),
+        head: 'lasso · ' + q.split('/').pop(),
         results: [{ kind: 'file', id: q, title: q.split('/').pop(), url_or_path: q, hit: q, when: '' }] } };
+    }
+    // A LINK is not a search: the companion fetches it itself (lasso.lassoUrl)
+    // and the answer is one chip that is already readable — or, when the site
+    // refuses, one chip that says so. Never an empty result and never the
+    // page the reader happens to be standing on.
+    if (/^https?:\/\//i.test(q)) {
+      const host = (q.split('/')[2] || '').replace(/^www\./, '');
+      if (/paywall/.test(q)) {
+        return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(),
+          error: 'could not fetch: HTTP 403',
+          head: 'lasso · could not fetch: HTTP 403 — ' + host,
+          results: [{ kind: 'web', id: q, title: host, url_or_path: q, failed: true, when: '',
+            hit: 'could not fetch: HTTP 403 — open it in the browser with the plugin '
+              + 'once and lasso it by title' }] } };
+      }
+      return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(),
+        head: 'lasso · fetched “Rockets, part 1” (' + host + ')',
+        results: [{ kind: 'web', id: q, title: 'Rockets, part 1', url_or_path: q, when: now(),
+          hit: 'The first stage is the whole argument, and the rest is bookkeeping.' }] } };
     }
     const words = q.toLowerCase().split(/\s+/).filter(Boolean);
     const results = LASSO_INDEX.filter(r => words.every(w =>
       (r.title + ' ' + r.hit).toLowerCase().includes(w)));
-    return { ok: true, status: 200, data: { ok: true, query: q, results, attached: lassoOn() } };
+    return { ok: true, status: 200, data: { ok: true, query: q, results, attached: lassoOn(),
+      head: results.length
+        ? 'lasso · ' + results.length + ' match' + (results.length === 1 ? '' : 'es')
+          + ' for “' + q + '”'
+        : 'lasso · nothing matched “' + q + '” — try other words, or paste a link '
+          + 'or a file path' } };
   }
   if (route === '/attach') {
     const b = body || {};
@@ -10124,12 +10158,16 @@ async function selftestMemorize() {
 // both is the one this drawer keeps everywhere: a bot may OFFER, and only the
 // reader's click creates a folder, files a page or spends a turn.
 // ?lasso=1&selftest=1 — bringing what the reader has read and said into a
-// chat. Four things under test, and they are the four the feature IS:
+// chat. Six things under test, and they are the six the feature IS:
 //
 //   · `/lasso <words>` in the composer is a COMMAND — searched, not sent
 //   · the matches are OFFERS: nothing is attached until a chip is clicked
 //   · what IS attached shows above the composer from then on, with a ✕
 //   · a bot may ask for the same search (`lasso:`), and still attaches nothing
+//   · ONE HEADER LINE says what happened, in words: a link fetched by name, a
+//     link refused with the host and what to do, or nothing matched with what
+//     to try next. Never the bare words of an internal refusal.
+//   · typing "/" opens the same menu the "@" does, carrying the commands
 //
 // The rule under all four is the drawer's rule everywhere: a bot may offer,
 // and only the reader's click changes anything.
@@ -10221,6 +10259,85 @@ async function selftestLasso() {
     await until(() => pane().querySelector('.lassostrip'), 3000);
     check('…and it is on the strip like anything else',
       /tether-dynamics\.pdf/.test(pane().querySelector('.lassostrip').textContent));
+
+    // ---- the header: one line saying what happened ----
+    //
+    // The reported failure. A reader pasted a link, the search matched the
+    // words of a URL against nothing, and the row said "that is this page".
+    // Three states, three sentences, and none of them that one.
+    const headOf = () => {
+      const f = pane().querySelector('.lassofind:not(.frombot):not(.lassobusy)');
+      return f ? (f.querySelector('.lassohead span') || {}).textContent || '' : '';
+    };
+    const lassoCmd = async (text) => {
+      const n = lassoSearches.length;
+      box().value = text;
+      box().dispatchEvent(new Event('input', { bubbles: true }));
+      hit(S.querySelector('.composer[data-target="__page__"] .send'), 'Send');
+      await until(() => lassoSearches.length > n, 3000);
+      await until(() => pane().querySelector('.lassofind:not(.frombot):not(.lassobusy)'), 3000);
+    };
+
+    await lassoCmd('/lasso https://angadh.com/rockets-1');
+    check('a LINK is fetched, and the header says so by name',
+      headOf() === 'lasso · fetched “Rockets, part 1” (angadh.com)');
+    check('…as one chip, marked web, carrying the first of what it says', (() => {
+      const rows = pane().querySelectorAll('.lassofind:not(.frombot) .lassorow');
+      return rows.length === 1 && /web/.test(rows[0].querySelector('.lassokind').textContent)
+        && /first stage is the whole argument/.test(rows[0].textContent)
+        && !!rows[0].querySelector('[data-act="lasso-attach"]');
+    })());
+    check('…and never the words “that is this page”',
+      !/that is this page/.test(pane().textContent || ''));
+
+    await lassoCmd('/lasso https://paywall.test/behind-it');
+    check('a link that refuses us says which host and what to do instead',
+      headOf() === 'lasso · could not fetch: HTTP 403 — paywall.test');
+    check('…still a row, because an empty result tells the reader nothing', (() => {
+      const rows = pane().querySelectorAll('.lassofind:not(.frombot) .lassorow');
+      return rows.length === 1
+        && /open it in the browser with the plugin once and lasso it by title/
+          .test(rows[0].textContent)
+        && !rows[0].querySelector('[data-act="lasso-attach"]');
+    })());
+
+    await lassoCmd('/lasso zzzqqq nothing of mine');
+    check('and nothing matched says what to try next',
+      headOf() === 'lasso · nothing matched “zzzqqq nothing of mine” — try other words, '
+        + 'or paste a link or a file path');
+    check('…with no rows under it at all',
+      pane().querySelectorAll('.lassofind:not(.frombot) .lassorow').length === 0);
+    hit(pane().querySelector('.lassofind:not(.frombot) [data-act="lasso-dismiss"]'), 'dismiss');
+    await sleep(80);
+
+    // ---- typing "/" offers the command, in any composer ----
+    //
+    // `/lasso` was a command you had to already know. The @-menu is the place
+    // a reader looks for what they can type, so "/" opens the same menu.
+    d.open('comments');
+    await sleep(160);
+    const tbox = S.querySelector('.pane[data-pane="comments"] .card .composer textarea');
+    check('a thread composer to type in', !!tbox);
+    tbox.focus();
+    tbox.value = '/la';
+    tbox.setSelectionRange(3, 3);
+    tbox.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(100);
+    const menu = S.querySelector('.pane[data-pane="comments"] .card .composer .mentions');
+    check('typing “/la” opens the menu with the commands in it',
+      !!menu && !menu.hidden && /\/lasso/.test(menu.textContent || ''));
+    check('…with one line saying what it does',
+      !!menu && /your pages, chats and files — or paste a link/.test(menu.textContent || ''));
+    tbox.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+    await sleep(80);
+    check('…and Enter completes it rather than sending', tbox.value === '/lasso ');
+    check('…and the menu closes behind it', (() => {
+      const m = S.querySelector('.pane[data-pane="comments"] .card .composer .mentions');
+      return !m || m.hidden;
+    })());
+    tbox.value = '';
+    tbox.dispatchEvent(new Event('input', { bubbles: true }));
 
     check('nothing threw', window.__bfpErrors.length === 0);
   } catch (e) { check('threw: ' + (e && e.message), false); }
@@ -12639,16 +12756,35 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         log('routes: the pill row over a thread composer (screenshot state)');
       }, 300);
     }
-    if (Q.get('mention') === '1') {
+    // ?lasso=web / ?lasso=refused — the two states a pasted LINK settles in,
+    // as screenshots: the chip the companion fetched, and the row that says why
+    // it could not. Neither can be posed from the record — both are the answer
+    // to a command — so the pose types the command.
+    if (LASSO === 'web' || LASSO === 'refused') {
+      setTimeout(() => {
+        d.open('chat');
+        const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
+        if (!ta) return log('lasso: no composer');
+        ta.value = LASSO === 'web'
+          ? '/lasso https://angadh.com/rockets-1'
+          : '/lasso https://paywall.test/behind-it';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
+        log('lasso: a pasted link, ' + (LASSO === 'web' ? 'fetched' : 'refused')
+          + ' (screenshot state)');
+      }, 300);
+    }
+    if (Q.get('mention') === '1' || Q.get('mention') === 'slash') {
+      const slash = Q.get('mention') === 'slash';
       setTimeout(() => {
         d.open('chat');
         const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
         if (!ta) return log('mention: no composer');
         ta.focus();
-        ta.value = 'and one more thing, @c';
+        ta.value = slash ? '/la' : 'and one more thing, @c';
         ta.setSelectionRange(ta.value.length, ta.value.length);
         ta.dispatchEvent(new Event('input', { bubbles: true }));
-        log('mention: the @-menu, open (screenshot state)');
+        log('mention: the ' + (slash ? 'slash' : '@') + '-menu, open (screenshot state)');
       }, 250);
     }
     // ?long=1&open=1 — the same grown thread, opened, so the manual fold

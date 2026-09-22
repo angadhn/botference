@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 2026-09-22
+
+- **Web annotator: paste a link and the bots read it.** `/lasso <a web address>`
+  no longer searches for the *words* of the address (which found nothing, and
+  offered you back the page you were standing on). The companion fetches the
+  page itself, on your machine, and hands you one chip you can attach — or, if
+  the site refuses, a chip that says so and what to do instead, which is better
+  than an empty row. A link you have already annotated comes back as **your**
+  copy of it, comments and all. The chip row now carries one line saying what
+  happened — `lasso · fetched "Rockets, part 1" (angadh.com)`, `lasso · 3
+  matches for "fat tails"`, `lasso · nothing matched "…" — try other words, or
+  paste a link or a file path` — instead of the internal refusal "that is this
+  page". And a link you paste into an ordinary message is fetched for the bots
+  automatically (up to three per message, skipping hosts they can already
+  reach), so they read it from a file rather than telling you to run
+  `/allow-host`, which was never a command this drawer had. The prompt says so
+  too: name the host that was refused and stop.
+
+- **Web annotator: typing "/" offers the commands.** `/lasso` was something you
+  had to already know about. A `/` at the start of any composer now opens the
+  same menu `@` does, with `/lasso` in it and a line saying what it does; Enter
+  or Tab completes it.
+
 ## 2026-09-16
 
 - **Start a fresh chat on any page, and keep your comments.** Until now the only

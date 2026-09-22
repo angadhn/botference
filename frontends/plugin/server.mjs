@@ -1112,7 +1112,8 @@ function onChatEvent(ev) {
           ev.msg = {
             ...ev.msg,
             text: store.liftLines(ev.msg.text, asked.line),
-            lasso: { query: asked.query, results },
+            lasso: { query: asked.query, results,
+              head: lasso.headline({ query: asked.query, count: results.length }) },
           };
         }
       }
@@ -1684,7 +1685,7 @@ function refusedRevision(page, thread) {
   return '';
 }
 
-function summon(page, target, text, extras = {}, me = { owner: true }) {
+async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // `lane` is the child this turn runs on when it is NOT the page's own — the
   // one caller is POST /make-artifact, which borrows the project's lane
   // because that is where the write scope lives (chatFor's taxonomy is
@@ -1812,6 +1813,25 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     ? store.nearbyMarksBlock(page, thread,
       store.snapshotPageText(store.readSnapshot(store.pageKey(page.url)), thread.page))
     : '';
+  // ── a link the reader pasted that the BOTS cannot reach ───────────────
+  // The bots run in a sandbox with a per-host allow-list (core/cli_adapters.py).
+  // A reader who pastes a link into a comment has no idea of that, and until
+  // now what came back was an instruction to run `/allow-host` — a council
+  // slash command that does not exist in this drawer, so the advice was a dead
+  // end and the link went unread.
+  //
+  // So the companion fetches it instead. It runs on the reader's own machine
+  // at the reader's own request, writes the digest the same way `/lasso` does,
+  // and the turn carries the PATH plus one line saying what happened. Nothing
+  // is granted, nothing is recorded on the page, and a host the reader HAS
+  // granted is left alone — the bots reach those themselves.
+  //
+  // Never fatal: a fetch that fails costs this turn its links and nothing else.
+  let webContext = '';
+  try {
+    const w = await lasso.webForTurn(text);
+    if (w.note) webContext = `${w.note}\n${w.block}`;
+  } catch { webContext = ''; }
   const { position, wait } = c.submit({
     url: page.url, target, text, title: page.title,
     // no tag on an artifact's page chat: the envelope gets the @all prefix the
@@ -1836,6 +1856,7 @@ function summon(page, target, text, extras = {}, me = { owner: true }) {
     ...(strikeContext ? { strikeContext } : {}),
     ...(questionContext ? { questionContext } : {}),
     ...(nearbyContext ? { nearbyContext } : {}),
+    ...(webContext ? { webContext } : {}),
     ...extras,
   });
   // `wait` is what the drawer says while it waits: bridge_starting (the agents
@@ -2434,14 +2455,35 @@ export function handler(req, res) {
     // searching for the word "kalman.pdf" and finding nothing.
     if (lasso.looksLikePath(query)) {
       const r = lasso.resolveOwnerPath(query);
-      if (r.error) return ok(res, { query, results: [], attached, error: r.error });
-      return ok(res, { query, attached, path: r.path, results: [{
-        kind: 'file', id: r.path, title: path.basename(r.path),
-        url_or_path: r.path, hit: r.path, when: '',
-      }] });
+      if (r.error) {
+        return ok(res, { query, results: [], attached, error: r.error,
+          head: lasso.headline({ kind: 'error', error: r.error }) });
+      }
+      return ok(res, { query, attached, path: r.path,
+        head: lasso.headline({ kind: 'file', title: path.basename(r.path) }),
+        results: [{
+          kind: 'file', id: r.path, title: path.basename(r.path),
+          url_or_path: r.path, hit: r.path, when: '',
+        }] });
+    }
+    // …and a LINK the owner pasted is not a search either. Searching the words
+    // of a URL finds the page they are standing on and nothing else (which is
+    // exactly what a reader reported); so the companion FETCHES it, here, on
+    // this machine, and the chip carries a digest the bots can read without
+    // anybody granting anything (lasso.lassoUrl).
+    if (lasso.isHttpUrl(query)) {
+      const dir = page ? path.join(lasso.ATTACH_DIR, store.pageKey(page.url)) : lasso.WEB_DIR;
+      return void lasso.lassoUrl(query, { dir, notPage: page ? store.pageKey(page.url) : '' })
+        .then(r => ok(res, { query, attached, head: r.head, results: r.results,
+          ...(r.error ? { error: r.error } : {}) }))
+        .catch(e => ok(res, { query, attached, results: [],
+          error: String((e && e.message) || e),
+          head: lasso.headline({ kind: 'failed', error: `could not fetch: ${(e && e.message) || 'error'}`,
+            host: lasso.hostOf(query) }) }));
     }
     const results = lasso.search(query, { limit: Number(q.get('limit')) || undefined });
-    return ok(res, { query, results, attached });
+    return ok(res, { query, results, attached,
+      head: lasso.headline({ query, count: results.length }) });
   }
   // POST /attach {url, kind, id} — build the digest and put it on the chat.
   //
@@ -2543,7 +2585,7 @@ export function handler(req, res) {
   // reader is standing on the page and that is where they are looking.
   if (req.method === 'POST' && url === '/make-artifact') {
     if (notOwner(req, res)) return;
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
       const me = authorOf(req, res);
       if (!me) return;
       const u = store.normUrl(String(data.url || ''));
@@ -2587,7 +2629,7 @@ export function handler(req, res) {
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       const lane = NO_AGENTS || !chat ? null : workspaceChatFor(hit.root, hit.id, dir);
-      const s = summon(page, store.PAGE_CHAT, text,
+      const s = await summon(page, store.PAGE_CHAT, text,
         { lane, borrowed: true, routeHint: `${route} ` }, me);
       return ok(res, { root: hit.root, id: hit.id, route, msg, ...s });
     });
@@ -3045,7 +3087,7 @@ export function handler(req, res) {
   // open, so send review again sends precisely those.
   if (req.method === 'POST' && url === '/send-review') {
     if (notOwner(req, res)) return;
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
       const me = authorOf(req, res);
       if (!me) return;
       const u = store.normUrl(String(data.url || ''));
@@ -3084,7 +3126,7 @@ export function handler(req, res) {
       // forceAll) and carries this page's text; the per-thread turns do not
       // need to carry it again — the artifact banner, the snapshot path and the
       // write rules ride EVERY turn on these pages already (chat.envelope).
-      const head = summon(page, store.PAGE_CHAT, fan.preamble,
+      const head = await summon(page, store.PAGE_CHAT, fan.preamble,
         { forceAll: true, articleText: data.article_text, articleChanged: !!data.article_changed }, me);
       // Refused (agents off, a guest's budget, an unconfirmed root): the review
       // is kept and NOTHING is queued. Queueing twenty per-thread turns behind a
@@ -3095,7 +3137,7 @@ export function handler(req, res) {
         // exactly the queueing a tagged reply in that thread gets — the target
         // IS the thread — with the thread's own quote and conversation clipped
         // to round size (workspace.reviewFanout) rather than rebuilt here
-        const s = summon(page, t.thread_id, t.text, { quote: t.quote, history: t.history }, me);
+        const s = await summon(page, t.thread_id, t.text, { quote: t.quote, history: t.history }, me);
         if (s.queued) threads.push(t.thread_id);
       }
       // …and, on a page nobody can edit, one last turn into page chat that adds
@@ -3109,7 +3151,7 @@ export function handler(req, res) {
         store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: fan.wrapUp });
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
-        wrapped = !!summon(page, store.PAGE_CHAT, fan.wrapUp, { forceAll: true }, me).queued;
+        wrapped = !!(await summon(page, store.PAGE_CHAT, fan.wrapUp, { forceAll: true }, me)).queued;
       }
       // …and the round itself, as a thing with a length and a position in it.
       // Started here rather than on the first turn boundary because THIS is
@@ -3375,7 +3417,7 @@ export function handler(req, res) {
     });
   }
   if (req.method === 'POST' && url === '/thread') {
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
       const text = String((data.msg && data.msg.text) || '');
       if (!data.url) return fail(res, 400, 'url required');
       if (!data.quote) return fail(res, 400, 'quote required');
@@ -3417,7 +3459,7 @@ export function handler(req, res) {
       // a new mark on the document is a new line in the log — and the SECOND
       // one on a page is what brings the log into being at all
       noteDecisions(page);
-      ok(res, { thread, ...summon(page, thread.id, text, { ...contextExtras(data, docxDigest), routeHint: route }, me) });
+      ok(res, { thread, ...await summon(page, thread.id, text, { ...contextExtras(data, docxDigest), routeHint: route }, me) });
     });
   }
   // --- the unified comment store ----------------------------------------
@@ -3441,7 +3483,7 @@ export function handler(req, res) {
       req.resume();
       return fail(res, 403, 'the review mirror speaks to the companion on the loopback only');
     }
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
       if (!data.url) return fail(res, 400, 'url required');
       const list = Array.isArray(data.comments) ? data.comments : [];
       if (!list.length) return fail(res, 400, 'comments required');
@@ -3531,7 +3573,7 @@ export function handler(req, res) {
           const me = { handle: author, owner: false };
           const routeHint = target === store.PAGE_CHAT
             ? '' : addressOf(target, text, '', []);
-          const r = summon(page, target, text, { routeHint }, me);
+          const r = await summon(page, target, text, { routeHint }, me);
           if (r && r.reason) refusals.push({ id: origin.id, reason: r.reason });
         }
       }
@@ -3646,7 +3688,7 @@ export function handler(req, res) {
     });
   }
   if (req.method === 'POST' && url === '/reply') {
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
       const text = String(data.text || '');
       if (!text.trim()) return fail(res, 400, 'empty reply');
       const me = authorOf(req, res);
@@ -3671,7 +3713,7 @@ export function handler(req, res) {
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      const summoned = summon(page, target, text,
+      const summoned = await summon(page, target, text,
         { ...contextExtras(data, docxDigest), routeHint: route, addressed: true }, me);
       // the reading room posted a form: back to the page, carrying any refusal
       if (data._form) return seeOther(res, backTo(data, page, anchor, summoned.reason));

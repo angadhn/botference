@@ -1194,6 +1194,7 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   font: 13px/1.3 var(--sans);
 }
 .mrow.on, .mrow:hover { background: color-mix(in srgb, var(--accent) 13%, transparent) }
+.mrow .mhint { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .mrow .mmark { flex: none; display: inline-flex; width: 15px; height: 15px }
 .mrow .mmark svg { width: 15px; height: 15px; display: block }
 .mrow .mname { font: 600 13px/1.3 var(--sans) }
@@ -2430,5 +2431,10 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lassorow .rebtn { opacity: 1; flex: none }
+/* a link the companion could not fetch: still a row, because "nothing came
+   back" said out loud is the point, and the whole of it wraps — the sentence
+   is the advice, and an advice line clipped at one line is no advice */
+.lassorow.failed b { color: var(--muted); font-weight: 600 }
+.lassorow.failed .lassohit { white-space: normal; overflow: visible }
 /* the same offers under a bot's reply, where the chip conventions rule */
 .lassofind.frombot { margin: 8px 0 2px }

@@ -1301,6 +1301,24 @@
     return { start, end: at, query: s.slice(i, at) };
   }
 
+  // The slash command being typed at the START of a composer, or null. Only
+  // the first word of the box, only when it begins with "/", so a "/" in prose
+  // ("either/or") is left alone — same discipline as MENTION_OPENER.
+  const SLASH_COMMANDS = [
+    { cmd: 'lasso', hint: 'your pages, chats and files — or paste a link' },
+  ];
+  function slashToken(text, caret) {
+    const s = String(text == null ? '' : text);
+    const at = Math.max(0, Math.min(Number(caret) || 0, s.length));
+    const m = /^\/([a-z]*)$/i.exec(s.slice(0, at));
+    if (!m || /\S/.test(s.slice(at))) return null;   // caret must be at the end of the command word
+    return { start: 0, end: at, query: m[1] };
+  }
+  function slashCandidates(query) {
+    const q = String(query || '').toLowerCase();
+    return SLASH_COMMANDS.filter(c => c.cmd.indexOf(q) === 0);
+  }
+
   // Who can be summoned: whatever agents the drawer knows about, plus @all,
   // filtered by what has been typed so far (case-insensitive prefix). The
   // agents are never hardcoded here — the caller passes what the companion
@@ -1532,7 +1550,7 @@
       // is ATTACHED is not here at all — it lives on the page record, which is
       // why it survives a reload. `declined` holds the ts of a bot's `lasso:`
       // offer the reader waved away, per tab, exactly like `projects.declined`.
-      lasso: { target: '', query: '', results: [], err: '', busy: '',
+      lasso: { target: '', query: '', results: [], head: '', err: '', busy: '',
                searching: '', declined: [] },
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
@@ -2682,24 +2700,40 @@ ${bubbleShellHtml()}`;
       const rec = D.view === 'pages' ? (D.library && D.library.page) : D.page;
       return (rec && Array.isArray(rec.attachments)) ? rec.attachments : [];
     };
-    const KIND_WORD = { page: 'page', chat: 'chat', file: 'file' };
-    const lassoRowHtml = r => `<div class="lassorow">
+    const KIND_WORD = { page: 'page', chat: 'chat', file: 'file', web: 'web' };
+    // A row that FAILED (a link the companion could not fetch) still shows —
+    // an empty result row is the thing this whole path exists to stop — but it
+    // carries no button: there is nothing on disk to attach.
+    const lassoRowHtml = r => `<div class="lassorow${r.failed ? ' failed' : ''}">
         <span class="lassow"><b>${esc(r.title || r.id || '')}</b>
           <span class="lassokind">${esc(KIND_WORD[r.kind] || r.kind || '')}</span>
           <span class="lassohit">${esc(r.hit || '')}</span></span>
-        <button class="rebtn" type="button" data-act="lasso-attach"
+        ${r.failed ? '' : `<button class="rebtn" type="button" data-act="lasso-attach"
           data-kind="${esc(r.kind || '')}" data-id="${esc(r.id || '')}"
-          ${D.lasso.busy === String(r.id) ? 'disabled' : ''}>attach</button>
+          ${D.lasso.busy === String(r.id) ? 'disabled' : ''}>attach</button>`}
       </div>`;
     /** The find row, wherever it was asked for — a composer, or a bot's reply. */
     function lassoFindHtml(find) {
       if (!find) return '';
       const rows = Array.isArray(find.results) ? find.results : [];
-      const head = find.err
-        ? esc(find.err)
-        : rows.length
-          ? `${rows.length} match${rows.length === 1 ? '' : 'es'} for “${esc(find.query)}”`
-          : `nothing of yours matches “${esc(find.query)}”`;
+      // THE HEADER SAYS WHAT HAPPENED, in one line and in plain words. The
+      // companion writes it (lasso.headline) because the companion is what
+      // knows which of the four things happened — a search, a fetched link, a
+      // page the reader had already annotated, or a fetch that failed. The
+      // fallback here is for the states the drawer reaches on its own: an
+      // attach that was refused, and an old companion with no `head` at all.
+      // It is never the bare words of an error with nothing around them.
+      // The companion's line wins where there is one: it is composed from
+      // what happened (lasso.headline) and already carries the failure in
+      // words. `err` is the drawer's OWN failure — an attach that was refused
+      // — and the two never coexist, because setting one clears the other.
+      const head = find.head
+        ? esc(find.head)
+        : find.err
+          ? `lasso · ${esc(find.err)}`
+          : rows.length
+            ? `lasso · ${rows.length} match${rows.length === 1 ? '' : 'es'} for “${esc(find.query)}”`
+            : `lasso · nothing matched “${esc(find.query)}” — try other words, or paste a link or a file path`;
       return `<div class="lassofind">
         <div class="lassohead"><span>${head}</span>
           ${rows.length > 1 ? `<button class="rebtn" type="button" data-act="lasso-all">attach all</button>` : ''}
@@ -2734,7 +2768,7 @@ ${bubbleShellHtml()}`;
       const l = msg && msg.lasso;
       if (!l || !l.query) return '';
       if (D.lasso.declined.indexOf(String(msg.ts)) >= 0) return '';
-      return lassoFindHtml({ query: l.query, results: l.results || [], err: '' })
+      return lassoFindHtml({ query: l.query, results: l.results || [], head: l.head || '', err: '' })
         .replace('class="lassofind"', 'class="lassofind frombot"');
     }
 
@@ -2874,8 +2908,11 @@ ${bubbleShellHtml()}`;
       const m = D.mention;
       const menu = m && menuFor(m.target);
       if (!menu) return;
-      menu.innerHTML = m.items.map((h, i) =>
-        `<button class="mrow${i === m.index ? ' on' : ''}" type="button" role="option"
+      menu.innerHTML = m.items.map((h, i) => m.slash
+        ? `<button class="mrow${i === m.index ? ' on' : ''}" type="button" role="option"
+           aria-selected="${i === m.index}" data-act="mention" data-handle="${esc(h)}"
+           data-target="${esc(m.target)}"><span class="mname">/${esc(h)}</span><span class="mhint">${esc((SLASH_COMMANDS.find(c => c.cmd === h) || {}).hint || '')}</span></button>`
+        : `<button class="mrow${i === m.index ? ' on' : ''}" type="button" role="option"
            aria-selected="${i === m.index}" data-act="mention" data-handle="${esc(h)}"
            data-target="${esc(m.target)}">${mentionMark(h)}<span class="mname">@${esc(h)}</span></button>`).join('');
       menu.hidden = false;
@@ -2887,15 +2924,22 @@ ${bubbleShellHtml()}`;
       const box = ta && ta.closest && ta.closest('.composer');
       if (!box) return closeMention();
       const target = box.getAttribute('data-target');
-      const tok = mentionToken(ta.value, ta.selectionStart);
-      const items = tok ? mentionCandidates(agentRoster(), tok.query) : [];
+      let tok = mentionToken(ta.value, ta.selectionStart);
+      let items = tok ? mentionCandidates(agentRoster(), tok.query) : [];
+      let slash = false;
+      if (!tok) {
+        // "/la…" at the start of the box: the same menu offers the commands
+        tok = slashToken(ta.value, ta.selectionStart);
+        items = tok ? slashCandidates(tok.query).map(c => c.cmd) : [];
+        slash = !!tok;
+      }
       // nothing matches what is being typed: the menu goes away and the typing
       // carries on untouched — never a swallowed keystroke
       if (!tok || !items.length) return closeMention();
       const same = D.mention && D.mention.target === target &&
         D.mention.items.join(',') === items.join(',');
       const index = same ? Math.min(D.mention.index, items.length - 1) : 0;
-      D.mention = { target, start: tok.start, end: tok.end, caret: tok.end, items, index };
+      D.mention = { target, start: tok.start, end: tok.end, caret: tok.end, items, index, slash };
       paintMention();
     }
 
@@ -2907,7 +2951,7 @@ ${bubbleShellHtml()}`;
       const ta = composerBox(m.target);
       if (!ta) return closeMention();
       const v = ta.value;
-      const ins = '@' + handle + ' ';
+      const ins = (m.slash ? '/' : '@') + handle + ' ';
       const before = v.slice(0, m.start);
       ta.value = before + ins + v.slice(m.end);
       const caret = before.length + ins.length;
@@ -5902,7 +5946,7 @@ ${bubbleShellHtml()}`;
         const bot = btn.closest && btn.closest('.frombot');
         const row = bot && bot.closest && bot.closest('[data-ts]');
         if (row && row.dataset.ts) D.lasso.declined.push(String(row.dataset.ts));
-        else D.lasso = { ...D.lasso, target: '', query: '', results: [], err: '' };
+        else D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '' };
         lassoPaint();
       },
       'lasso-x': (btn) => doDetach(btn.dataset.path),
@@ -6679,7 +6723,7 @@ ${bubbleShellHtml()}`;
     // of the two the reader is looking at.
     const lassoPaint = () => { if (D.view === 'pages') renderLibrary(); else render(); };
     async function doLasso(target, query) {
-      D.lasso = { ...D.lasso, target, query, results: [], err: '', searching: target };
+      D.lasso = { ...D.lasso, target, query, results: [], head: '', err: '', searching: target };
       lassoPaint();
       let r = null;
       try { r = await cb('onLasso')(query); }
@@ -6694,11 +6738,12 @@ ${bubbleShellHtml()}`;
       // a PATH the reader typed is not an offer to consider — it is the file
       // they meant, so it attaches on the spot
       if (r.path && (r.results || []).length === 1) {
-        D.lasso = { ...D.lasso, target: '', query: '', results: [], err: '' };
+        D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '' };
         await doAttach('file', r.path);
         return;
       }
       D.lasso.results = r.results || [];
+      D.lasso.head = r.head || '';
       D.lasso.err = r.error || '';
       lassoPaint();
     }
@@ -6714,7 +6759,9 @@ ${bubbleShellHtml()}`;
       // strip now, and two places saying the same thing is how a reader ends
       // up attaching one thing twice
       if (r && r.ok) D.lasso.results = (D.lasso.results || []).filter(x => String(x.id) !== String(id));
-      else D.lasso.err = (r && r.error) || 'that could not be attached';
+      // a refusal of OURS replaces the search's own line: "3 matches" over a
+      // row that would not attach is the reader reading the wrong sentence
+      else { D.lasso.err = (r && r.error) || 'that could not be attached'; D.lasso.head = ''; }
       if (D.view === 'pages') await loadLibrary();
       lassoPaint();
     }
@@ -6734,7 +6781,7 @@ ${bubbleShellHtml()}`;
       try { r = await cb('onLassoDetach')(p, D.view === 'pages'); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.lasso.busy = '';
-      if (!r || r.ok === false) D.lasso.err = (r && r.error) || 'that could not be detached';
+      if (!r || r.ok === false) { D.lasso.err = (r && r.error) || 'that could not be detached'; D.lasso.head = ''; }
       if (D.view === 'pages') await loadLibrary();
       lassoPaint();
     }
@@ -9168,7 +9215,7 @@ ${bubbleShellHtml()}`;
       // every call would throw the other four away the moment the reader took
       // the first.
       if (was !== (page && page.url ? String(page.url) : '')) {
-        D.lasso = { ...D.lasso, target: '', query: '', results: [], err: '',
+        D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '',
                     busy: '', searching: '', declined: [] };
       }
       clearAnsweredWaits();
@@ -10659,6 +10706,7 @@ ${bubbleShellHtml()}`;
     msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
     COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
+    slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     tagHue,                                                 // test/tags.test.mjs
     splitEnvelopes, agentOf,                                // test/envelope.test.mjs
     splitMore, stripMore, MORE_MARK,                        // test/more.test.mjs

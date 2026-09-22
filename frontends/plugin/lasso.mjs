@@ -32,8 +32,9 @@ import { execFileSync } from 'node:child_process';
 import {
   DIR, ROOT, readIndex, readPage, readPageByKey, savePage,
   readConfig, readSnapshot, snapshotPdfText, hasSnapshot,
-  pageKey, displayTitle, isLibrary,
+  pageKey, normUrl, displayTitle, isLibrary,
 } from './store.mjs';
+import { sanitizeArticle } from './sanitize.mjs';
 import {
   knownCouncilRoots, rootState, projectTitle, stripEnvelope,
 } from './workspace.mjs';
@@ -588,7 +589,9 @@ export function buildAttachment(dir, { kind, id, notPage = '' }) {
   if (kind === 'page') {
     const src = readPageByKey(String(id || ''));
     if (!src) return { error: 'no such page' };
-    if (notPage && pageKey(src.url) === notPage) return { error: 'that is this page' };
+    if (notPage && pageKey(src.url) === notPage) {
+      return { error: 'that page is the one you are reading — the bots already have it' };
+    }
     const d = pageDigest(src);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${slugify(`page-${displayTitle(src)}`)}.md`);
@@ -609,6 +612,21 @@ export function buildAttachment(dir, { kind, id, notPage = '' }) {
     const file = path.join(dir, `${slugify(`chat-${d.title}`)}.md`);
     fs.writeFileSync(file, d.text);
     return { kind: 'chat', id: sid, title: d.title, path: file, summary: d.summary };
+  }
+  // A link the companion FETCHED for the reader (`/lasso https://…`). The
+  // digest was written the moment the chip appeared — the fetch is the search
+  // — so attaching it is a copy into this chat's own folder and no second
+  // request over the network. A chip from a previous run of the companion (or
+  // one whose digest has been tidied away) has to be lassoed again, and says
+  // so rather than silently re-fetching a page the reader may not have meant.
+  if (kind === 'web') {
+    const held = heldWeb(id);
+    if (!held) return { error: 'that link is no longer in hand — lasso it again' };
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, path.basename(held.path));
+    if (path.resolve(file) !== path.resolve(held.path)) fs.copyFileSync(held.path, file);
+    return { kind: 'web', id: held.id, title: held.title, path: file,
+      summary: held.summary, url: held.url };
   }
   if (kind === 'file') {
     const r = resolveOwnerPath(id);
@@ -706,6 +724,376 @@ export function attachmentsBlock(attachments, { budget = ATTACH_BLOCK_MAX } = {}
     `- ${a.title} (${a.kind}) — ${a.path}`).join('\n')}\n`;
   return bare;
 }
+
+// ---- the web: a link the reader pasted ------------------------------------
+//
+// THE FAILURE THIS FIXES. A reader typed `/lasso https://angadh.com/rockets-1`
+// into a comment thread. The words of a URL are not the words of anything the
+// reader owns, so the search matched almost nothing, offered the page they
+// were standing on, and the bots — which cannot reach an arbitrary host from
+// inside their sandbox — told them to run `/allow-host`, which is a council
+// command that does not exist in a browser drawer. Three dead ends for one
+// reasonable request.
+//
+// So a URL IS NOT A SEARCH. The companion fetches it itself, on this machine,
+// at the owner's request, and hands back one chip carrying a digest file —
+// the same shape everything else here produces, read the same way. Nothing
+// about the bots' sandbox changes and nothing needs granting: the words are
+// on disk before the turn goes out.
+//
+// The HTTP call is injectable (`http`) for the same reason every other edge in
+// this tree is: a suite that needs a 403 must not need a server that gives one.
+
+export const WEB_TIMEOUT_MS = 15000;
+/** How much of a fetched body is kept. Past this it is not a page, it is a download. */
+export const WEB_BYTES_MAX = 8 * 1024 * 1024;
+/** How many links one message may drag in by itself (chat.mjs's auto-lasso). */
+export const WEB_URLS_PER_MESSAGE = 3;
+export const WEB_UA = 'Mozilla/5.0 (compatible; botference-plugin/1.0; +https://botference.com)';
+/** Where a fetched link's digest goes when no chat asked for it by name. */
+export const WEB_DIR = path.join(ATTACH_DIR, 'web');
+
+/** An http(s) address, whole, with nothing else on the line. */
+export function isHttpUrl(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!/^https?:\/\/\S+$/i.test(s)) return false;
+  try { return !!new URL(s).hostname; } catch { return false; }
+}
+
+export const hostOf = raw => {
+  try { return new URL(String(raw)).hostname.replace(/^www\./, ''); } catch { return ''; }
+};
+
+// Trailing punctuation is the reader's sentence, not the address: "see
+// https://x.com/a." names the page and not a path ending in a full stop.
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+export function urlsIn(text, { max = WEB_URLS_PER_MESSAGE } = {}) {
+  const out = [];
+  const body = String(text == null ? '' : text);
+  for (const m of body.match(URL_IN_TEXT) || []) {
+    const u = m.replace(/[.,;:!?'"”’)\]}]+$/, '');
+    if (!isHttpUrl(u)) continue;
+    const n = normUrl(u);
+    if (!out.includes(n)) out.push(n);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// ---- what the BOTS can reach on their own ---------------------------------
+//
+// Mirrors core/cli_adapters.py `_DEFAULT_PLAN_ALLOWED_HOSTS` and
+// `_plan_allowed_hosts()`: the same defaults, the same
+// BOTFERENCE_PLAN_ALLOWED_HOSTS override, and the same per-root grant file
+// that `/allow-host` writes. Two copies of one list is a cost; the alternative
+// is asking Python at turn-planning time, which is a worse one. If that list
+// moves, this one moves with it.
+export const DEFAULT_ALLOWED_HOSTS = [
+  'github.com', '*.github.com', '*.githubusercontent.com',
+  'codeload.github.com', 'objects.githubusercontent.com', 'api.github.com',
+  'wikipedia.org', '*.wikipedia.org', 'wikimedia.org', '*.wikimedia.org',
+  'ai-2040.com', '*.ai-2040.com',
+];
+
+/** The hosts `/allow-host` has granted under one council root. */
+export function grantedHostsIn(root) {
+  if (!root) return [];
+  let data = null;
+  try {
+    data = JSON.parse(fs.readFileSync(
+      path.join(root, '.botference', 'allowed-hosts.json'), 'utf8'));
+  } catch { return []; }
+  if (!Array.isArray(data)) return [];
+  return data.map(h => String(h || '').trim()).filter(Boolean);
+}
+
+/**
+ * Every host the bots may reach from inside their sandbox.
+ *
+ * BOTH ROOTS, because a plugin turn can run on either child: this companion's
+ * own root (where the plugin's pages project lives) and whichever council root
+ * a filed page's lane belongs to. A grant made in either is a grant.
+ */
+export function allowedHosts({ roots = null } = {}) {
+  const raw = String(process.env.BOTFERENCE_PLAN_ALLOWED_HOSTS || '').trim();
+  const base = raw
+    ? raw.split(',').map(s => s.trim()).filter(Boolean)
+    : [...DEFAULT_ALLOWED_HOSTS];
+  for (const root of roots || [ROOT, ...searchableRoots()]) {
+    for (const h of grantedHostsIn(root)) if (!base.includes(h)) base.push(h);
+  }
+  return base;
+}
+
+/** Does one host match the allow-list? `*.x.com` covers x.com and its subdomains. */
+export function hostAllowed(host, hosts) {
+  const h = String(host == null ? '' : host).toLowerCase().replace(/\.$/, '');
+  if (!h) return false;
+  for (const raw of hosts || []) {
+    const p = String(raw == null ? '' : raw).toLowerCase().trim();
+    if (!p) continue;
+    if (p.startsWith('*.')) {
+      const bare = p.slice(2);
+      if (h === bare || h.endsWith(`.${bare}`)) return true;
+    } else if (h === p) return true;
+  }
+  return false;
+}
+
+// ---- fetching -------------------------------------------------------------
+
+/**
+ * The default transport. Answers `{ok, status, url, contentType, body}` —
+ * exactly what an injected `http` must answer, so a suite can be a function.
+ */
+async function defaultHttp(url, { timeout = WEB_TIMEOUT_MS } = {}) {
+  const res = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(timeout),
+    headers: {
+      'user-agent': WEB_UA,
+      accept: 'text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+    },
+  });
+  const body = Buffer.from(await res.arrayBuffer());
+  return {
+    ok: res.ok, status: res.status, url: res.url || url,
+    contentType: res.headers.get('content-type') || '',
+    body: body.length > WEB_BYTES_MAX ? body.subarray(0, WEB_BYTES_MAX) : body,
+  };
+}
+
+const TITLE_RE = /<title[^>]*>([\s\S]{0,400}?)<\/title>/i;
+const H1_RE = /<h1[^>]*>([\s\S]{0,400}?)<\/h1>/i;
+const unent = s => String(s || '')
+  .replace(/&nbsp;/gi, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/** The page's own name, or the tail of its address — never an empty chip. */
+export function webTitle(html, url) {
+  const m = TITLE_RE.exec(String(html || '')) || H1_RE.exec(String(html || ''));
+  const t = m ? clip(unent(m[1].replace(/<[^>]*>/g, ' ')), 160) : '';
+  if (t) return t;
+  try {
+    const u = new URL(String(url));
+    const last = u.pathname.split('/').filter(Boolean).pop() || u.hostname;
+    return clip(decodeURIComponent(last).replace(/[-_]+/g, ' '), 160) || u.hostname;
+  } catch { return String(url || 'a web page'); }
+}
+
+/**
+ * Fetch one link and read its words.
+ *
+ * `{title, text, url, type}` or `{error, status}`. A failure is a SENTENCE,
+ * not an empty result: "could not fetch: HTTP 403" is something a reader can
+ * act on and `results: []` is not (this is the same rule the search obeys —
+ * nothing found is a line that says so).
+ *
+ * HTML goes through the snapshot sanitizer first, so scripts, styles and
+ * navigation chrome are gone before the tags are; a PDF goes through the same
+ * `pdftotext` the watched-folder index uses, which means a machine without
+ * poppler says so rather than attaching an empty file.
+ */
+export async function fetchWeb(url, { http = null, timeout = WEB_TIMEOUT_MS } = {}) {
+  if (!isHttpUrl(url)) return { error: 'that is not a web address' };
+  const get = typeof http === 'function' ? http : defaultHttp;
+  let r = null;
+  try { r = await get(String(url), { timeout }); }
+  catch (e) {
+    const why = String((e && (e.message || e.name)) || 'network error');
+    return { error: `could not fetch: ${/abort|timeout/i.test(why) ? `no answer in ${Math.round(timeout / 1000)}s` : why}`, status: 0 };
+  }
+  if (!r) return { error: 'could not fetch: nothing came back', status: 0 };
+  const status = Number(r.status) || 0;
+  if (r.ok === false || (status && (status < 200 || status >= 300))) {
+    return { error: `could not fetch: HTTP ${status || '?'}`, status };
+  }
+  const final = String(r.url || url);
+  const type = String(r.contentType || '').toLowerCase();
+  const raw = Buffer.isBuffer(r.body) ? r.body : Buffer.from(String(r.body == null ? '' : r.body), 'utf8');
+  const body = raw.length > WEB_BYTES_MAX ? raw.subarray(0, WEB_BYTES_MAX) : raw;
+  if (type.includes('pdf') || /\.pdf(?:$|[?#])/i.test(final)) {
+    if (!pdftotextAvailable()) {
+      return { error: 'could not fetch: that is a PDF and this machine has no pdftotext', status };
+    }
+    const tmp = path.join(os.tmpdir(), `bfp-web-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`);
+    let text = '';
+    try {
+      fs.writeFileSync(tmp, body);
+      text = pdfText(tmp, { chars: DIGEST_TEXT_MAX });
+    } catch { text = ''; }
+    finally { try { fs.unlinkSync(tmp); } catch { /* a temp file is a temp file */ } }
+    if (!text) return { error: 'could not fetch: no text could be read out of that PDF', status };
+    return { title: webTitle('', final), text, url: final, type: 'pdf', status };
+  }
+  const html = body.toString('utf8');
+  if (type && !type.includes('html') && !type.includes('text') && !type.includes('xml')) {
+    return { error: `could not fetch: that link is not a page or a PDF (${clip(type, 60)})`, status };
+  }
+  const looksHtml = type.includes('html') || type.includes('xml') || /<\/?(?:html|body|p|div)\b/i.test(html);
+  const text = looksHtml
+    ? snapshotPdfText(sanitizeArticle(html, { allowImages: false }).html)
+    : html.replace(/\s+/g, ' ').trim();
+  if (!text) return { error: 'could not fetch: nothing readable came back', status };
+  return { title: webTitle(looksHtml ? html : '', final), text: text.slice(0, DIGEST_TEXT_MAX),
+    url: final, type: looksHtml ? 'html' : 'text', status };
+}
+
+/** The digest a fetched link becomes — written for a model, like the others. */
+export function webDigest({ url, title, text, at = new Date().toISOString() }) {
+  const lines = [`# ${title}`, '', `- url: ${url}`, `- fetched: ${at}`,
+    '- fetched by the companion on the reader\'s machine, not by you', '',
+    '## The page itself', '', String(text || '').slice(0, DIGEST_TEXT_MAX), ''];
+  return {
+    text: lines.join('\n').trimEnd() + '\n',
+    summary: clip(`A web page the companion fetched for the reader: “${title}” (${url}). `
+      + 'The whole of its readable text is in the file.', SUMMARY_MAX),
+  };
+}
+
+// What has been fetched in this run of the companion, by normalised url. The
+// chip is an OFFER and the digest is already written when it appears, so the
+// click that accepts it must not spend a second request — and must not be able
+// to fetch something the reader never asked for by posting a url at /attach.
+const webHeld = new Map();
+export const heldWeb = url => webHeld.get(normUrl(String(url || ''))) || null;
+export const forgetWeb = () => webHeld.clear();
+
+/**
+ * Fetch a link and write its digest. `{kind:'web', id, title, url, path,
+ * summary, hit}` or `{error}`.
+ */
+export async function buildWeb(url, { dir = WEB_DIR, http = null, timeout = WEB_TIMEOUT_MS } = {}) {
+  const got = await fetchWeb(url, { http, timeout });
+  if (got.error) return { error: got.error, status: got.status || 0 };
+  const id = normUrl(got.url);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${slugify(`web-${got.title}`)}.md`);
+  const d = webDigest({ url: got.url, title: got.title, text: got.text });
+  fs.writeFileSync(file, d.text);
+  const row = { kind: 'web', id, title: got.title, url: got.url, path: file,
+    summary: d.summary, hit: clip(got.text, HIT_MAX) };
+  webHeld.set(id, row);
+  return row;
+}
+
+// ---- the one line above the chips -----------------------------------------
+//
+// "that is this page" is what the reader actually saw, and it is not a
+// sentence about their search: it was an ATTACH failure leaking into the place
+// a result header goes. So the header is composed in one place, from what
+// happened, and every branch of it names the thing that happened.
+export function headline(state = {}) {
+  const { kind = 'search', query = '', count = 0, title = '', host = '', error = '' } = state;
+  const q = String(query);
+  const where = host ? ` (${host})` : '';
+  if (kind === 'fetched') return `lasso · fetched “${title}”${where}`;
+  if (kind === 'known') {
+    return `lasso · you have annotated “${title}”${where} already — here is that page, `
+      + 'with your comments on it';
+  }
+  if (kind === 'here') return 'lasso · that link is the page you are on — the bots already have it';
+  if (kind === 'failed') return `lasso · ${error}${host ? ` — ${host}` : ''}`;
+  if (kind === 'file') return `lasso · ${title}`;
+  if (kind === 'error') return `lasso · ${error}`;
+  if (count) return `lasso · ${count} match${count === 1 ? '' : 'es'} for “${q}”`;
+  return `lasso · nothing matched “${q}” — try other words, or paste a link or a file path`;
+}
+
+/**
+ * `/lasso <a url>` — the whole of it, header and chip.
+ *
+ * Three outcomes and never an empty one: the reader has this page already (a
+ * `page` chip, whose digest carries their own comments too), the fetch worked
+ * (a `web` chip), or it did not (a chip that says why, and what to do).
+ */
+export async function lassoUrl(query, { dir = WEB_DIR, http = null, notPage = '', timeout = WEB_TIMEOUT_MS } = {}) {
+  const url = normUrl(String(query).trim());
+  const host = hostOf(url);
+  // theirs already? then the thing to hand over is the record, not the page —
+  // it has the margin on it, which the live web page does not
+  const known = readPage(url);
+  const annotated = known && ((known.threads || []).some(t => (t.msgs || []).length)
+    || (known.page_chat || []).length || hasSnapshot(pageKey(known.url)));
+  if (known && annotated) {
+    const key = pageKey(known.url);
+    if (notPage && key === notPage) return { query, head: headline({ kind: 'here' }), results: [] };
+    return {
+      query,
+      head: headline({ kind: 'known', title: displayTitle(known), host }),
+      results: [{ kind: 'page', id: key, title: displayTitle(known),
+        url_or_path: known.url, hit: clip(`your own copy — ${(known.threads || []).length} thread(s), `
+          + `${(known.page_chat || []).length} message(s) of page chat`, HIT_MAX),
+        when: String(known.updated_at || '') }],
+    };
+  }
+  const row = await buildWeb(url, { dir, http, timeout });
+  if (row.error) {
+    return {
+      query, error: row.error,
+      head: headline({ kind: 'failed', error: row.error, host }),
+      results: [{ kind: 'web', id: url, title: host || url, url_or_path: url,
+        hit: `${row.error} — open it in the browser with the plugin once and lasso it by title`,
+        when: '', failed: true }],
+    };
+  }
+  return {
+    query,
+    head: headline({ kind: 'fetched', title: row.title, host }),
+    results: [{ kind: 'web', id: row.id, title: row.title, url_or_path: row.url,
+      hit: row.hit, when: new Date().toISOString() }],
+  };
+}
+
+/**
+ * The links in one message that the BOTS cannot reach, fetched for them.
+ *
+ * `{note, block, urls}` — one system line naming the hosts, plus the same
+ * attachment lines every lassoed thing rides on. Nothing is recorded on the
+ * page: this is for THIS turn, because the reader pasted a link into it, and a
+ * link pasted once is not a standing fact about the page.
+ *
+ * A host the reader has already granted is skipped: the bots fetch those
+ * themselves, and doing it for them would spend a request and tell them a
+ * page they can read is a page they cannot.
+ */
+export async function webForTurn(text, { dir = WEB_DIR, http = null, hosts = null,
+  max = WEB_URLS_PER_MESSAGE, timeout = WEB_TIMEOUT_MS } = {}) {
+  const found = urlsIn(text, { max: max * 2 });
+  if (!found.length) return { note: '', block: '', urls: [] };
+  const allow = hosts || allowedHosts();
+  const want = found.filter(u => !hostAllowed(hostOf(u), allow)).slice(0, max);
+  if (!want.length) return { note: '', block: '', urls: [] };
+  const rows = [];
+  const notes = [];
+  for (const u of want) {
+    const host = hostOf(u);
+    let row = null;
+    try { row = await buildWeb(u, { dir, http, timeout }); }
+    catch (e) { row = { error: `could not fetch: ${(e && e.message) || 'error'}` }; }
+    if (row.error) {
+      notes.push(`The link ${host} is not on your allow-list and the companion could not fetch `
+        + `it either (${row.error}). Say so plainly if it matters; do not ask for a slash command.`);
+      continue;
+    }
+    rows.push(row);
+    notes.push(`The link ${host} is not on the bots' allow-list; the companion will fetch it for them.`);
+  }
+  return {
+    note: notes.join('\n'),
+    block: rows.length
+      ? `${WEB_TURN_HEADER}\n${rows.map(r =>
+        `- ${r.title} (web) — ${r.path} — ${r.summary}`).join('\n')}\n`
+      : '',
+    urls: rows.map(r => r.id),
+  };
+}
+// Deliberately NOT the attachments header: nothing here is attached to the
+// chat, and a model told "attached for this chat" will go on citing a page the
+// reader mentioned once, three turns later.
+export const WEB_TURN_HEADER =
+  '[Fetched for THIS message only — the link(s) the reader just pasted, read with your '
+  + 'file tool, never inlined back:]';
 
 // ---- a bot asking for a search --------------------------------------------
 //

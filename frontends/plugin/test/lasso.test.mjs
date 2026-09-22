@@ -320,7 +320,7 @@ await test('twenty attachments is the cap, and the twenty-first says so', () => 
 
 await test('a page cannot be attached to itself, and a stranger cannot be attached at all', () => {
   assert.match(lasso.attach(HOST.url, { kind: 'page', id: store.pageKey(HOST.url) }).error,
-    /this page/);
+    /the one you are reading/);
   assert.match(lasso.attach(HOST.url, { kind: 'page', id: 'f'.repeat(40) }).error, /no such page/);
   assert.match(lasso.attach(HOST.url, { kind: 'chat', id: 'sess-nope' }).error, /no such chat/);
   assert.match(lasso.attach(HOST.url, { kind: 'wat', id: 'x' }).error, /unknown kind/);
@@ -436,6 +436,213 @@ await test('a PDF is indexed by its words where this machine can read one, else 
   assert.equal(head.how, 'filename');
   assert.equal(head.text, '');
 });
+
+
+// ---- a LINK the reader pasted ---------------------------------------------
+//
+// The whole of this section runs against an injected `http`: no network, no
+// server, and a 403 is one line of fixture rather than a site that happens to
+// refuse us today.
+
+const WEBDIR = path.join(lasso.ATTACH_DIR, 'web-test');
+const html = (title, body) =>
+  `<html><head><title>${title}</title><script>var x=1</script></head>`
+  + `<body><nav>home about</nav><article><p>${body}</p></article></body></html>`;
+
+/** A transport that answers from a table, and records what it was asked. */
+function httpOf(table) {
+  const asked = [];
+  const fn = async (url) => {
+    asked.push(url);
+    const row = table[url];
+    if (!row) return { ok: false, status: 404, url, contentType: '', body: Buffer.alloc(0) };
+    if (row.throws) throw new Error(row.throws);
+    return { ok: row.status === undefined || (row.status >= 200 && row.status < 300),
+      status: row.status === undefined ? 200 : row.status,
+      url: row.finalUrl || url, contentType: row.type || 'text/html; charset=utf-8',
+      body: Buffer.isBuffer(row.body) ? row.body : Buffer.from(String(row.body || ''), 'utf8') };
+  };
+  fn.asked = asked;
+  return fn;
+}
+
+const ROCKETS = 'https://angadh.com/rockets-1';
+const FT = 'https://ft.com/paywalled';
+const PAPER_PDF = 'https://arxiv.org/pdf/2101.00001.pdf';
+
+await test('a url is fetched, not searched — one chip, already readable', async () => {
+  const http = httpOf({
+    [ROCKETS]: { body: html('Rockets, part 1', 'The first stage is the whole argument.') },
+  });
+  const r = await lasso.lassoUrl(ROCKETS, { dir: WEBDIR, http });
+  assert.equal(http.asked.length, 1, 'exactly one request');
+  assert.equal(r.results.length, 1);
+  const chip = r.results[0];
+  assert.equal(chip.kind, 'web');
+  assert.equal(chip.title, 'Rockets, part 1');
+  assert.match(chip.hit, /first stage is the whole argument/);
+  assert.equal(r.head, 'lasso · fetched “Rockets, part 1” (angadh.com)');
+  // the digest is on disk BEFORE the chip is offered, and carries the words
+  // and not the page's scripts or its navigation
+  const held = lasso.heldWeb(chip.id);
+  assert.ok(held && fs.existsSync(held.path), 'a digest file');
+  const digest = fs.readFileSync(held.path, 'utf8');
+  assert.match(digest, /^# Rockets, part 1/);
+  assert.match(digest, new RegExp(`- url: ${ROCKETS}`));
+  assert.match(digest, /first stage is the whole argument/);
+  assert.ok(!/var x=1/.test(digest), 'no scripts in the digest');
+});
+
+await test('…and attaching it is a copy, not a second request', async () => {
+  const http = httpOf({ [ROCKETS]: { body: html('Rockets, part 1', 'The first stage.') } });
+  const r = await lasso.lassoUrl(ROCKETS, { dir: WEBDIR, http });
+  const id = r.results[0].id;
+  const before = http.asked.length;
+  const a = lasso.attach(HOST.url, { kind: 'web', id });
+  assert.ok(a.ok, a.error);
+  assert.equal(http.asked.length, before, 'nothing went over the wire');
+  assert.equal(a.attachment.kind, 'web');
+  assert.equal(a.attachment.title, 'Rockets, part 1');
+  assert.ok(fs.existsSync(a.attachment.path));
+  assert.ok(a.attachment.path.includes(store.pageKey(HOST.url)), 'copied into this chat’s folder');
+  // and the envelope names it by path, like everything else lassoed
+  assert.match(lasso.attachmentsBlock(lasso.attachmentsOf(store.readPage(HOST.url))),
+    /Rockets, part 1 \(web\) — /);
+  lasso.detach(HOST.url, a.attachment.path);
+});
+
+await test('a link nobody ever lassoed cannot be attached by posting its url', () => {
+  const r = lasso.attach(HOST.url, { kind: 'web', id: 'https://example.net/never-asked-for' });
+  assert.match(r.error, /no longer in hand — lasso it again/);
+});
+
+await test('a refused link is a chip that says why, never an empty result', async () => {
+  const http = httpOf({ [FT]: { status: 403, body: 'no' } });
+  const r = await lasso.lassoUrl(FT, { dir: WEBDIR, http });
+  assert.equal(r.results.length, 1, 'never nothing');
+  assert.equal(r.results[0].failed, true);
+  assert.match(r.results[0].hit,
+    /could not fetch: HTTP 403 — open it in the browser with the plugin once and lasso it by title/);
+  assert.equal(r.head, 'lasso · could not fetch: HTTP 403 — ft.com');
+  assert.equal(r.error, 'could not fetch: HTTP 403');
+});
+
+await test('a network that never answers says so in the same shape', async () => {
+  const http = httpOf({ [FT]: { throws: 'TimeoutError' } });
+  const r = await lasso.lassoUrl(FT, { dir: WEBDIR, http });
+  assert.equal(r.results.length, 1);
+  assert.match(r.head, /^lasso · could not fetch: no answer in 15s — ft\.com$/);
+});
+
+await test('a PDF goes through the same pdftotext the folder index uses', async () => {
+  const http = httpOf({ [PAPER_PDF]: { type: 'application/pdf', body: '%PDF-1.4\nnot really\n' } });
+  const r = await lasso.lassoUrl(PAPER_PDF, { dir: WEBDIR, http });
+  // On a machine with poppler this fixture is not a readable PDF, so the
+  // honest answer is a refusal; on a machine without one it is the other
+  // refusal. Either way it is a sentence and never a silent empty chip.
+  assert.equal(r.results.length, 1);
+  assert.equal(r.results[0].failed, true);
+  assert.match(r.head, /^lasso · could not fetch: (no text could be read out of that PDF|that is a PDF and this machine has no pdftotext) — arxiv\.org$/);
+});
+
+await test('a url the reader has ALREADY annotated comes back as their page', async () => {
+  const http = httpOf({ [THE_PAPER.url]: { body: html('nope', 'the live web copy') } });
+  const r = await lasso.lassoUrl(THE_PAPER.url, { dir: WEBDIR, http });
+  assert.equal(http.asked.length, 0, 'their own copy is better — nothing was fetched');
+  assert.equal(r.results.length, 1);
+  assert.equal(r.results[0].kind, 'page');
+  assert.equal(r.results[0].id, store.pageKey(THE_PAPER.url));
+  assert.equal(r.head,
+    'lasso · you have annotated “A spinning tether for orbital transfer” (example.org) already '
+    + '— here is that page, with your comments on it');
+});
+
+await test('…and the page you are STANDING on says so instead of offering itself', async () => {
+  const http = httpOf({});
+  const r = await lasso.lassoUrl(THE_PAPER.url,
+    { dir: WEBDIR, http, notPage: store.pageKey(THE_PAPER.url) });
+  assert.deepEqual(r.results, []);
+  assert.equal(r.head, 'lasso · that link is the page you are on — the bots already have it');
+});
+
+await test('the header says what happened, in every case there is', () => {
+  assert.equal(lasso.headline({ query: 'fat tails', count: 3 }),
+    'lasso · 3 matches for “fat tails”');
+  assert.equal(lasso.headline({ query: 'fat tails', count: 1 }),
+    'lasso · 1 match for “fat tails”');
+  assert.equal(lasso.headline({ query: 'zzz', count: 0 }),
+    'lasso · nothing matched “zzz” — try other words, or paste a link or a file path');
+  assert.equal(lasso.headline({ kind: 'fetched', title: 'Rockets, part 1', host: 'angadh.com' }),
+    'lasso · fetched “Rockets, part 1” (angadh.com)');
+  assert.equal(lasso.headline({ kind: 'file', title: 'kalman.pdf' }), 'lasso · kalman.pdf');
+  assert.equal(lasso.headline({ kind: 'error', error: 'no such file' }), 'lasso · no such file');
+  // the words the reader actually saw, and must never see again
+  for (const h of [
+    lasso.headline({ query: 'x', count: 0 }),
+    lasso.headline({ kind: 'here' }),
+    lasso.headline({ kind: 'fetched', title: 'x', host: 'y.com' }),
+  ]) assert.ok(!/^that is this page$/.test(h), h);
+});
+
+// ---- what the BOTS may reach on their own ----------------------------------
+
+await test('the allow-list is the defaults plus what /allow-host granted, in either root', () => {
+  const grants = path.join(COUNCIL, '.botference');
+  fs.mkdirSync(grants, { recursive: true });
+  fs.writeFileSync(path.join(grants, 'allowed-hosts.json'), JSON.stringify(['angadh.com']));
+  const hosts = lasso.allowedHosts();
+  assert.ok(hosts.includes('github.com'), 'the defaults');
+  assert.ok(hosts.includes('angadh.com'), 'the grant, from the council root');
+  assert.ok(lasso.hostAllowed('gist.github.com', hosts), '*.github.com covers a subdomain');
+  assert.ok(lasso.hostAllowed('github.com', hosts));
+  assert.ok(lasso.hostAllowed('angadh.com', hosts));
+  assert.ok(!lasso.hostAllowed('ft.com', hosts));
+  assert.ok(!lasso.hostAllowed('notgithub.com', hosts));
+  fs.rmSync(path.join(grants, 'allowed-hosts.json'));
+});
+
+await test('the links in a message are found, and the reader’s punctuation is not one', () => {
+  assert.deepEqual(lasso.urlsIn('see https://angadh.com/rockets-1, and nothing else.'),
+    ['https://angadh.com/rockets-1']);
+  assert.deepEqual(lasso.urlsIn('no links here'), []);
+  assert.equal(lasso.urlsIn('a https://a.com b https://b.com c https://c.com d https://d.com').length,
+    lasso.WEB_URLS_PER_MESSAGE);
+});
+
+await test('a link the bots cannot reach is fetched FOR the turn, and the turn says so', async () => {
+  const http = httpOf({
+    [ROCKETS]: { body: html('Rockets, part 1', 'The first stage is the whole argument.') },
+  });
+  const w = await lasso.webForTurn(`what do you make of ${ROCKETS} ?`,
+    { dir: WEBDIR, http, hosts: ['github.com'] });
+  assert.equal(w.urls.length, 1);
+  assert.equal(w.note,
+    'The link angadh.com is not on the bots\' allow-list; the companion will fetch it for them.');
+  assert.match(w.block, /Fetched for THIS message only/);
+  assert.match(w.block, /Rockets, part 1 \(web\) — /);
+  // …and it rides the envelope, on an ordinary page turn
+  const turn = chat.envelope({ url: HOST.url, title: 'Host', target: '__page__',
+    text: 'what do you make of it?', webContext: `${w.note}\n${w.block}` });
+  assert.ok(turn.includes('is not on the bots\' allow-list'), 'the line');
+  assert.ok(turn.includes(w.urls.length ? 'Fetched for THIS message only' : ''), 'the digest path');
+});
+
+await test('…and a host the reader HAS granted is left to the bots', async () => {
+  const http = httpOf({ [ROCKETS]: { body: html('Rockets', 'x') } });
+  const w = await lasso.webForTurn(`read ${ROCKETS}`,
+    { dir: WEBDIR, http, hosts: ['angadh.com'] });
+  assert.equal(http.asked.length, 0);
+  assert.equal(w.note, '');
+  assert.equal(w.block, '');
+});
+
+await test('a message with no links costs nothing at all', async () => {
+  const http = httpOf({});
+  const w = await lasso.webForTurn('no links in this one', { dir: WEBDIR, http });
+  assert.equal(http.asked.length, 0);
+  assert.equal(w.block, '');
+});
+
 
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
 console.log(`\n✓ lasso.test.mjs — ${passed} passed, ${failures.length} failed`);

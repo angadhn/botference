@@ -412,7 +412,7 @@ export function envelope({ url, title, target, text, quote, history,
   snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
-  blogContext, attachContext }) {
+  blogContext, attachContext, webContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -427,6 +427,11 @@ export function envelope({ url, title, target, text, quote, history,
   // files a resolved thread, the other writes a flashcard, and neither is a
   // conversation an attachment could inform).
   const lassoed = String(attachContext || '');
+  // …and the link the reader pasted INTO THIS MESSAGE, which the bots cannot
+  // reach on their own (lasso.webForTurn, composed in server.mjs summon). One
+  // line saying the companion fetched it, and the digest's path. Computed here
+  // beside `lassoed` and for the same reason: the library turn needs it too.
+  const pasted = String(webContext || '');
   // filing a resolved thread: no page context, no verbosity line, no "your
   // reply is posted into the thread" — none of that is true of this turn
   if (summary) {
@@ -444,7 +449,7 @@ export function envelope({ url, title, target, text, quote, history,
       ? `Earlier in this conversation:\n${historyLines(history)}\n\n` : '';
     const who = asker ? String(asker) : 'The user';
     return route
-      + `${libraryPrompt(library)}\n${lassoed}---\n`
+      + `${libraryPrompt(library)}\n${lassoed}${pasted}---\n`
       + `${who} asked:\n${prior}${text}\n\nReply in this turn.\n${verbosityLine(verbosity)}`;
   }
   const article = String(articleText || '').slice(0, snapshotPath ? SNAPSHOT_INLINE : ARTICLE_MAX);
@@ -561,7 +566,10 @@ export function envelope({ url, title, target, text, quote, history,
   // needs it too) stands with the snapshot path and the decision log: same
   // kind of promise — what you need is on disk, here is where — and it rides
   // EVERY turn for the same reason the others do.
-  const standing =`${snap}${decisions}${figure}${writes}${draft}${filed}${lassoed}`;
+  // `pasted` (computed at the top, because the library turn needs it too)
+  // stands LAST in the block: everything above is true of the page, and this
+  // is true of one message.
+  const standing =`${snap}${decisions}${figure}${writes}${draft}${filed}${lassoed}${pasted}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`
@@ -1335,6 +1343,9 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // the thread's sticky address, when the reader's words named nobody
         routeHint: job.routeHint || '',
         snapshotPath, decisionPath, attachContext, pageImage, pageImages, paged,
+        // a link pasted into THIS message that the bots' sandbox refuses, and
+        // the digest the companion fetched for them (server.mjs summon)
+        webContext: job.webContext || '',
         pageNumber: job.pageNumber || 0, mark: job.mark || '',
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely
