@@ -121,6 +121,19 @@ const QUOTE_RES = [
  * within one clause of it: a page named after a quotation is talking about
  * something else, and one named three sentences back is not talking about this.
  */
+// A quotation the bot attributes to a PERSON — the reader ("you asked:", "you
+// wrote"), the other bot ("Codex said"), or an attachment ("the paper says") —
+// is not a claim about the page and must not be checked against it. The
+// attribution sits within a short run of words before the opening quote.
+const NOT_PAGE_LEAD = new RegExp(
+  '(?:\\byou\\s+(?:asked|wrote|said|put it|mentioned|suggested)|\\b(?:codex|claude|gemini|the other bot|the reader|angadh)'
+  + '\\s+(?:said|wrote|asked|put it|suggested|proposed)|\\b(?:the|your|that)\\s+(?:paper|pdf|attachment|attached\\s+\\w+|other page|previous page)'
+  + '\\s+(?:says|said|reads|states|puts it))\\s*[:,\u2014-]?\\s*$', 'i');
+export function attributedElsewhere(text, at) {
+  const lead = String(text).slice(Math.max(0, at - 60), at);
+  return NOT_PAGE_LEAD.test(lead);
+}
+
 export function quotesIn(text) {
   const clean = stripCode(text);
   const seen = new Set();
@@ -132,6 +145,7 @@ export function quotesIn(text) {
       const quote = String(m[1] || '').trim();
       if (!quote || quote.length > QUOTE_MAX) continue;
       if (wordCount(quote) < QUOTE_MIN_WORDS) continue;
+      if (attributedElsewhere(clean, m.index)) continue;
       const key = normalize(quote);
       if (!key || seen.has(key)) continue;
       seen.add(key);

@@ -249,3 +249,12 @@ test('a record cannot smuggle a field or a truthy "false" past sanitizeCheck', (
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
 console.log(`\n✓ checks.test.mjs — ${passed} passed, ${failures.length} failed`);
 if (failures.length) { console.log(failures.map(f => `  · ${f}`).join('\n')); process.exit(1); }
+
+
+test('a quotation attributed to a person or another document is not checked against the page', () => {
+  const q = C.quotesIn('You asked: "can we drop the second paragraph entirely from this section" — the page itself says "the mood in the stands was flat and the walk back".');
+  assert.deepEqual(q.map(x => x.quote), ['the mood in the stands was flat and the walk back']);
+  assert.equal(C.quotesIn('Codex said "this is a purely software upgrade of existing machines here" earlier.').length, 0);
+  assert.equal(C.quotesIn('The attached paper says "returns to scale vanish once the fixed costs are sunk" on p. 3.').length, 0);
+  assert.equal(C.quotesIn('The report "called it a structural failure of oversight which is the kind" of sentence…').length, 1, 'an unattributed quote is still a page claim');
+});

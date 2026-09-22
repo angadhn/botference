@@ -25,6 +25,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_RANGE = 'HEAD~1..HEAD';
 export const DEFAULT_MODEL = 'claude-opus-5';
@@ -171,5 +172,5 @@ export function run(argv, { cwd = process.cwd() } = {}) {
 }
 
 const invoked = process.argv[1] && fs.realpathSync(process.argv[1])
-  === fs.realpathSync(new URL(import.meta.url).pathname);
+  === fs.realpathSync(fileURLToPath(import.meta.url));
 if (invoked) process.exit(run(process.argv.slice(2)));
