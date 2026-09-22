@@ -72,7 +72,10 @@ from room_prompts import (
     recommendations_note,
     room_preamble,
     project_skill_context,
+    quote_check_note,
     subagents_note,
+    verification_preamble,
+    VERIFICATION_BADGE,
     video_watch_note,
     lasso_note,
     web_access_note,
@@ -196,6 +199,7 @@ class InputKind(Enum):
     ALLOW_HOST = "allow_host"
     WATCH = "watch"
     LASSO = "lasso"
+    VERIFY = "verify"
 
 
 @dataclass(frozen=True)
@@ -234,6 +238,7 @@ _SLASH_COMMANDS = {
     "/allow-host": InputKind.ALLOW_HOST,
     "/watch": InputKind.WATCH,
     "/lasso": InputKind.LASSO,
+    "/verify": InputKind.VERIFY,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -1326,6 +1331,13 @@ class Botference:
         # for chats nobody has decided about; re-asking someone who just
         # answered is how a helpful nudge turns into nagging.
         self._inbox_by_choice: bool = False
+        # THE VERIFICATION TURN (adversarial review, 2026-09-22). When the bots
+        # mark the thread converged, one extra turn runs before the floor comes
+        # back: the OTHER bot checks the final claims against the sources the
+        # room has, with the discussion left out of the envelope. On by default,
+        # per chat, because agreement between two bots reasoning from one
+        # context is the failure it exists to catch — and it costs one turn.
+        self.verify_enabled: bool = True
         self.session_id = str(uuid.uuid4())
         self.created_at = iso_now()
         self.updated_at = self.created_at
@@ -2039,6 +2051,10 @@ class Botference:
                 for entry in self._room_history
             ],
             "writer_votes": dict(self._ff_writer_votes),
+            # Written only when it is OFF, the convention every other
+            # non-default in this payload keeps: a chat that never touched
+            # /verify costs nothing on disk and needs no migration.
+            **({"verify": False} if not self.verify_enabled else {}),
             # What has been lassoed into this chat. Written only when there is
             # something, so a chat that never used it costs nothing on disk and
             # no session written before this needs migrating.
@@ -2276,6 +2292,9 @@ class Botference:
                 str(model): str(vote)
                 for model, vote in (payload.get("writer_votes", {}) or {}).items()
             }
+            # absent means on, which is what every session written before the
+            # verification turn existed should mean
+            self.verify_enabled = payload.get("verify", True) is not False
             # A resumed chat keeps what was lassoed into it — that is the whole
             # point of it being on the record rather than in memory. The last
             # search's OFFERS are not restored: they were a menu, not a fact.
@@ -2672,6 +2691,10 @@ class Botference:
 
         if parsed.kind is InputKind.AGENTS:
             self._run_agents(parsed.body, ui)
+            return
+
+        if parsed.kind is InputKind.VERIFY:
+            self._run_verify(parsed.body, ui)
             return
 
         if parsed.kind is InputKind.AUTH:
@@ -3280,6 +3303,8 @@ class Botference:
             "  /status             — Show context %, lead, mode, sessions",
             "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
             "  /agents [on|off]    — Grant/revoke Claude's subagent (Task) tool (off by default, per-chat; Claude may suggest it)",
+            "  /verify [on|off]    — When the bots converge, the OTHER one checks the final claims",
+            "                       against the sources (not the discussion). On by default, per-chat",
             "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
             "  /watch <url> [question] — Have Gemini watch a YouTube video, post what it saw,"
             " and let the bots discuss it",
@@ -4098,6 +4123,35 @@ class Botference:
         else:
             self._add_room_entry(ui, "system", "Usage: /agents [on|off]")
 
+    # ── /verify ───────────────────────────────────────────
+
+    def _run_verify(self, arg: str, ui: UIPort) -> None:
+        """/verify [on|off] — the convergence verification turn, per chat."""
+        raw = arg.strip().lower()
+        if raw == "on":
+            self.verify_enabled = True
+            self._persist_session()
+            self._add_room_entry(
+                ui, "system",
+                "Verification on — when the bots converge, the other one "
+                "checks the final claims against the sources before the floor "
+                "comes back to you.",
+            )
+        elif raw == "off":
+            self.verify_enabled = False
+            self._persist_session()
+            self._add_room_entry(
+                ui, "system", "Verification off — convergence hands straight back to you.",
+            )
+        elif not raw:
+            self._add_room_entry(
+                ui, "system",
+                f"Verification: {'on' if self.verify_enabled else 'off'}. "
+                "Use /verify on|off to change (this chat only).",
+            )
+        else:
+            self._add_room_entry(ui, "system", "Usage: /verify [on|off]")
+
     # ── /status ───────────────────────────────────────────
 
     def _show_status(self, ui: UIPort) -> None:
@@ -4120,6 +4174,7 @@ class Botference:
             f"Auto-relay: {'on' if self.auto_relay else 'off'} "
             f"(at {AUTO_RELAY_THRESHOLD_PCT}% context)",
             f"Subagents: {'granted' if self._claude_subagents_enabled() else 'off'} (Claude Task tool)",
+            f"Verification: {'on' if self.verify_enabled else 'off'} (a check at convergence)",
             f"Turns: {len(self.transcript.entries)}",
         ]
         self._add_room_entry(ui, "system", "\n".join(lines))
@@ -5218,10 +5273,12 @@ class Botference:
         token_budget = _FREE_FORM_OUTPUT_TOKEN_BUDGET
         extended = False
         current_speaker, current_resp = speaker, resp
+        handed_back = False
 
         while True:
             target = free_form_next_target(current_speaker, current_resp.text)
             if target is None or target == "user":
+                handed_back = True
                 break
 
             if self.pending_input_check is not None and self.pending_input_check():
@@ -5284,6 +5341,121 @@ class Botference:
 
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp
+
+        # The floor is going back to the user. If the room said it had
+        # CONVERGED, one turn runs first (see _run_verification_turn) — the
+        # thread paused by a budget, a queued message or an error is not
+        # agreement and gets no check.
+        if handed_back:
+            await self._run_verification_turn(current_speaker, current_resp, ui)
+
+    # ── the verification turn ─────────────────────────────
+
+    #: Under this many words the "final claim" is a sign-off, not a claim.
+    _VERIFY_MIN_WORDS = 40
+    #: What rides the envelope, at most. A converged room's last message is a
+    #: paragraph; anything longer is clipped rather than allowed to become a
+    #: second copy of the discussion.
+    _VERIFY_CLAIMS_MAX = 6000
+
+    def _verification_sources(self) -> str:
+        """What the room actually has that a claim can be checked against.
+
+        Paths, never contents — the same discipline lasso.attachments_block
+        keeps: the bot opens what it needs. Empty means there is nothing to
+        check against, and the turn does not run at all. A verification with no
+        source would be exactly the second opinion this is built to replace.
+        """
+        parts: list[str] = []
+        block = lasso.attachments_block(self._attachments)
+        if block:
+            parts.append(block.rstrip())
+        plan = self._plan_path
+        try:
+            if plan.is_file():
+                parts.append(f"The plan this room has been writing: {plan}")
+        except OSError:
+            pass
+        project = self._active_project()
+        if project is not None:
+            files = []
+            try:
+                files = sorted(
+                    p.name for p in project.root.iterdir()
+                    if p.is_file() and not p.name.startswith(".")
+                )[:20]
+            except OSError:
+                files = []
+            if files:
+                parts.append(
+                    f"Project {project.title} ({project.id}) at {project.root} — "
+                    + ", ".join(files)
+                )
+        return "\n\n".join(parts)
+
+    async def _run_verification_turn(
+        self, speaker: str, resp: "AdapterResponse", ui: UIPort,
+    ) -> None:
+        """One check against the sources, when the bots say they agree.
+
+        WHY THIS IS NOT A SECOND OPINION. Two bots reasoning from the same
+        context converge on wrong facts, and a longer discussion only makes the
+        shared premise stickier — so asking the other one "do you agree?" adds
+        nothing. What adds something is holding the CLAIM against the SOURCE.
+        So the turn goes to the bot that did NOT write the last claim, and its
+        envelope carries the claim, the sources, and the instruction — and not
+        the thread: `mark_seen` first, so `context_since` has nothing of the
+        conversation left to backfill.
+
+        Three ways it does not run, each because the check would be empty:
+        /verify off, a final message too short to be a claim, and a room with
+        no source to check anything against.
+        """
+        if not self.verify_enabled:
+            return
+        footer = RoomFooter.parse(resp.text)
+        if footer is None or footer.status != "converged":
+            return
+        claims = RoomFooter.strip_footer(resp.text).strip()
+        if len(claims.split()) < self._VERIFY_MIN_WORDS:
+            return
+        sources = self._verification_sources()
+        if not sources:
+            return
+        target = "codex" if speaker == "claude" else "claude"
+        # …and a fourth: the counterpart has to be IN the room. Starting a
+        # second CLI session for the check would cost a whole initial prompt
+        # whose transcript backfill is the very discussion this turn is meant
+        # not to have seen — the opposite of the point.
+        if target not in self._models_initialized:
+            return
+        envelope = verification_preamble(claims[: self._VERIFY_CLAIMS_MAX], sources)
+        self._add_room_entry(
+            ui, "system",
+            f"Converged — asking {target} to check the claims against the "
+            "sources. It is given the claims and the sources, not the "
+            "discussion. (/verify off to stop this.)",
+        )
+        # the whole of "a fresh envelope": everything already said is marked
+        # seen, so the only thing this turn carries is the envelope below
+        self.transcript.mark_seen(target)
+        self.transcript.add("system", envelope)
+        self._persist_session()
+        v_resp = await self._send_to_model(target, "", ui)
+        if v_resp is None:
+            return
+        text = RoomFooter.strip_footer(v_resp.text).strip()
+        if not text:
+            return
+        # the badge is the model's to write (the envelope asks for it as the
+        # first line) — put it back only when it did not, so the transcript
+        # never carries it twice
+        badged = text if text.startswith(VERIFICATION_BADGE) else f"{VERIFICATION_BADGE}\n{text}"
+        self.transcript.add(target, badged, v_resp.tool_summaries)
+        self.transcript.mark_seen(target)
+        self._update_pct(target, v_resp, ui)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
 
     def steer_active(self, raw: str, ui: UIPort) -> str:
         """Try to inject user input into the currently-running bot turn.
@@ -5483,6 +5655,7 @@ class Botference:
         parts.append(recommendations_note())
         parts.append(video_watch_note())
         parts.append(lasso_note())
+        parts.append(quote_check_note())
         tasks_note = self._project_tasks_note()
         if tasks_note:
             parts.append(tasks_note)

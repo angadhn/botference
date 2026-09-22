@@ -991,6 +991,62 @@ test('replay lands pinned at the bottom — heuristics suppressed mid-replay, la
   assert.equal(doc.getElementById('jump').hasAttribute('hidden'), false, 'jump pill offers the way down');
 });
 
+// ------------------------------------------------- UI: the verification badge
+
+// When the room converges the controller runs ONE more turn: the bot that did
+// NOT write the last claim is handed the claims and the sources and not the
+// discussion, and its reply opens with `[verification — …]`. That line is the
+// badge — the only thing that tells a reader this turn is a CHECK rather than
+// another opinion, which is the entire reason for spending the turn.
+test('a converged room\'s check is badged, and the marker never shows as words',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, transcript } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  C.handle({ type: 'room', speaker: 'claude', text: 'the deployment bound is 12 kN.' });
+  C.handle({
+    type: 'room', speaker: 'codex',
+    text: '[verification — checked against the sources, not the discussion]\n'
+      + 'Confirmed: the table gives 12 kN.',
+  });
+  const msgs = [...transcript.querySelectorAll('.msg.claude, .msg.codex')];
+  assert.equal(msgs.length, 2);
+  const [claim, check] = msgs;
+  assert.equal(claim.querySelector('.vbadge'), null, 'an ordinary bot turn is not badged');
+  assert.equal(claim.classList.contains('verified'), false);
+  const badge = check.querySelector('.who .vbadge');
+  assert.ok(badge, 'the check gets a badge in its header');
+  assert.equal(badge.textContent, 'verification');
+  assert.match(badge.getAttribute('title'), /not the discussion/,
+    'the tooltip says what makes it a check');
+  assert.ok(check.classList.contains('verified'));
+  // the marker is machinery: it comes off the words, like every other lifted
+  // line in this product
+  assert.equal(/\[verification/.test(check.querySelector('.body').textContent), false);
+  assert.match(check.querySelector('.body').textContent, /Confirmed: the table gives 12 kN\./);
+});
+
+test('the badge survives a streamed answer, and only the FIRST line is the marker',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { C, transcript } = await mkHarness(t);
+  C.handle({ type: 'hello' });
+  // streamed in pieces: the first paint has no text in it at all, which is why
+  // the badge is decided in paint() and not when the bubble is created
+  C.handle({ type: 'stream', kind: 'text_delta', model: 'codex', stream_id: '1', text: '[verification — ' });
+  C.handle({ type: 'stream', kind: 'text_delta', model: 'codex', stream_id: '1',
+    text: 'checked]\nContradicted: p.4 says 9 kN.' });
+  C.handle({ type: 'room', speaker: 'codex', stream_id: '1',
+    text: '[verification — checked]\nContradicted: p.4 says 9 kN.' });
+  const el = transcript.querySelector('.msg.codex');
+  assert.ok(el.querySelector('.vbadge'), 'the finalized message is badged');
+  assert.equal(el.querySelectorAll('.vbadge').length, 1, 'and badged exactly once');
+  assert.match(el.querySelector('.body').textContent, /Contradicted: p\.4 says 9 kN\./);
+  // a bot TALKING about the marker mid-reply is not being one
+  C.handle({ type: 'room', speaker: 'claude',
+    text: 'I would expect a line reading\n[verification — checked]\nhere.' });
+  const talker = [...transcript.querySelectorAll('.msg.claude')].pop();
+  assert.equal(talker.querySelector('.vbadge'), null);
+});
+
 // ------------------------------------------------- UI: the pill row
 
 // The council routes by tag, and until now the box said nothing about which

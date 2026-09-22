@@ -888,3 +888,15 @@ body.agents-open #agents-panel { transform: translateX(0) }
 #lasso-strip .lassokind {
   font-size: 10px; letter-spacing: .04em; text-transform: uppercase; opacity: .6;
 }
+
+/* ---- the verification badge -------------------------------------------
+   A converged room's last turn is a CHECK, not another opinion: the other bot
+   was given the claims and the sources and not the discussion. The badge is
+   the only thing in the header that says so, so it is quiet but unmistakable —
+   an outlined pill in the "settled" green, never a wash, because the message
+   under it is ordinary bot prose and must not read as a system notice. */
+.msg .who .vbadge {
+  flex: none; font-size: .68rem; letter-spacing: .04em; text-transform: uppercase;
+  padding: .05rem .38rem; border-radius: 999px;
+  border: 1px solid var(--ok); color: var(--ok); cursor: help;
+}

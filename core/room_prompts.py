@@ -384,6 +384,68 @@ def project_tasks_note(project_title: str, tasks_path: str) -> str:
     )
 
 
+def quote_check_note() -> str:
+    """Tell the bots their quotations are checked mechanically.
+
+    The rule this states out loud is the whole of the claim checker's contract
+    with the models: a quotation is a checkable claim, and the check is made
+    against the source by a machine, with no model in the loop. Saying so is
+    not a threat — it is what makes the honest alternative (paraphrase without
+    quotation marks) obviously available.
+    """
+    return (
+        "--- Quotes are checked ---\n"
+        "Any passage you put in quotation marks that runs to six words or more "
+        "is looked up mechanically in the source it claims to come from — the "
+        "page, the attached file, the artifact — and a quote that is not there "
+        "is flagged to the reader beside your message. No model is in that "
+        "loop and nothing blocks your reply. Quote EXACTLY, or paraphrase "
+        "without quotation marks."
+    )
+
+
+# -- Verification turn (adversarial review) ----------------------------------
+
+
+VERIFICATION_BADGE = "[verification — checked against the sources, not the discussion]"
+
+
+def verification_preamble(claims: str, sources: str) -> str:
+    """The one turn that runs when the room says it has converged.
+
+    THE DESIGN PRINCIPLE, stated so it cannot be optimised away: two bots
+    reasoning from the same context agree on wrong facts, and the longer they
+    talk the stickier the shared premise gets. So a "second opinion" is not a
+    check. A check is the CLAIM held against the SOURCE — and the bot asked to
+    make it is given only those two things and told, in as many words, that the
+    discussion is not what it is checking. It is also the bot that did NOT
+    write the claim, because nobody audits their own sentence.
+
+    The envelope carries the final claims, the sources the room actually has,
+    and the instruction. It carries no transcript: the models' own CLI sessions
+    still hold the conversation, which nothing here can take away, but this
+    turn's text does not put it back in front of them or ask anything about it.
+    """
+    return (
+        f"Begin your reply with this line, exactly, on its own:\n"
+        f"{VERIFICATION_BADGE}\n"
+        "It is what tells the reader this turn is a check rather than another "
+        "opinion; the chat draws a badge from it.\n\n"
+        "Verify these claims against the sources named below. Treat the claims "
+        "as unseen work by someone else: you are not being asked what you think "
+        "of them, whether you agree, or what should happen next.\n\n"
+        f"--- The claims ---\n{claims}\n\n"
+        f"--- The sources ---\n{sources}\n\n"
+        "For EACH claim, exactly one of:\n"
+        "- confirmed — and quote the exact supporting line from a source;\n"
+        "- contradicted — and quote the exact line that contradicts it;\n"
+        "- not checkable from these sources — and say what would settle it.\n"
+        "Under 150 words. No new proposals, no plan, no next steps, no room "
+        "footer. If a source named here is a file path, read it before "
+        "answering."
+    )
+
+
 def claude_style_contract() -> str:
     """Standing brevity contract for Claude's REAL system prompt.
 

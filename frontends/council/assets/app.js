@@ -1588,6 +1588,27 @@
   }
   // fill a message element's .body (+ .env-row) from raw agent/user markdown
   function paint(div, text) {
+    // THE VERIFICATION BADGE. When the room converges the controller runs one
+    // more turn, addressed to the bot that did NOT write the last claim, with
+    // an envelope carrying the claims and the sources and NOT the discussion
+    // (core/botference.py `_run_verification_turn`). That reply opens with a
+    // line of its own — `[verification — …]` — and the line is the badge: it
+    // comes off the words and goes into the header, so a reader can tell a
+    // CHECK from another opinion at a glance, which is the whole point of
+    // spending the turn.
+    //
+    // Done HERE rather than in addMsg because a streamed answer is painted
+    // dozens of times and the first paint has no text in it at all.
+    const v = verifyBadge(text);
+    if (v) {
+      text = v.rest;
+      div.classList.add('verified');
+      const who = div.querySelector('.who');
+      if (who && !who.querySelector('.vbadge')) {
+        who.insertAdjacentHTML('beforeend',
+          `<span class="vbadge" title="${esc(v.title)}">verification</span>`);
+      }
+    }
     const { text: prose, envs } = splitEnvelopes(text);
     const body = div.querySelector('.body');
     body.textContent = '';
@@ -1620,6 +1641,17 @@
     '<rect x="9" y="9" width="11" height="11" rx="2"/>' +
     '<path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>' +
     '<span>copy</span></button></div>';
+
+  // `[verification — …]` on the FIRST line of a bot's message, and nowhere
+  // else: a bot quoting the marker mid-reply is talking about it, not being it.
+  // Returns {title, rest} with the line taken off the words, or null.
+  const VERIFY_RE = /^\s*\[verification\b[^\]\n]*\]\s*(?:\n|$)/i;
+  function verifyBadge(text) {
+    const s = String(text == null ? '' : text);
+    const m = VERIFY_RE.exec(s);
+    if (!m) return null;
+    return { title: m[0].trim().replace(/^\[|\]$/g, ''), rest: s.slice(m[0].length) };
+  }
 
   function addMsg(speaker, text, { streaming = false, attachments = [] } = {}) {
     const wasPinned = pinned();

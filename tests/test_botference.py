@@ -33,6 +33,7 @@ from botference import (
     ParsedInput,
     RoomFooter,
     Transcript,
+    VERIFICATION_BADGE,
     _FREE_FORM_EXTENSION_TURNS,
     _FREE_FORM_MAX_BOT_TURNS,
     _visual_artifacts_from_tool_summaries,
@@ -6275,6 +6276,143 @@ class TestFreeFormThread:
         await c.handle_input("@claude kick off", ui)
         assert codex.send_calls == []
         assert codex.resume_calls == []
+
+
+LONG_CLAIM = (
+    "The deployment bound in the plan is 12 kN and the analytic model in "
+    "section three is the one that produced it, so the margin quoted in the "
+    "summary is conservative by a factor of about two; nothing further is "
+    "needed before the build starts, and the remaining schedule risk sits "
+    "entirely in the procurement of the hinge assemblies rather than in any "
+    "of the analysis we have been arguing about here today."
+)
+
+
+def _with_source(c, tmp_path):
+    """Give the room something a claim can actually be checked against."""
+    f = tmp_path / "bound.md"
+    f.write_text("The measured deployment bound is 12 kN.\n")
+    c._attachments = [{"kind": "file", "title": "bound.md", "path": str(f)}]
+    return f
+
+
+@pytest.mark.asyncio
+class TestConvergenceVerification:
+    """One check at convergence — the claim against the SOURCE, not a second
+    opinion. See room_prompts.verification_preamble on why."""
+
+    async def test_converged_runs_one_turn_addressed_to_the_counterpart(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"), _ok("Confirmed: the file says 12 kN.")],
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        # codex wrote the last claim, so CLAUDE checks it — nobody audits
+        # their own sentence
+        assert len(claude.resume_calls) == 1
+        envelope = claude.resume_calls[0]
+        assert "Verify these claims against the sources named below" in envelope
+        assert "bound.md" in envelope
+        assert any("asking claude to check the claims" in t
+                   for s, t in ui.room_entries if s == "system")
+
+    async def test_the_envelope_carries_the_claims_and_not_the_thread(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("SECRET-THREAD-CHATTER from claude.", nxt="@codex"), _ok("Confirmed.")],
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        envelope = claude.resume_calls[0]
+        assert "SECRET-THREAD-CHATTER" not in envelope
+        assert "kick off" not in envelope
+        assert LONG_CLAIM[:40] in envelope, "the claim itself IS the envelope"
+        assert '"status"' not in envelope, "the room footer is flow control, not a claim"
+
+    async def test_the_reply_is_badged_in_the_transcript(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"), _ok("Confirmed: the file says 12 kN.")],
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        last = c.transcript.entries[-1]
+        assert last.speaker == "claude"
+        assert last.text.startswith(VERIFICATION_BADGE)
+        assert "Confirmed: the file says 12 kN." in last.text
+
+    async def test_a_badge_the_model_wrote_itself_is_not_doubled(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"),
+             _ok(f"{VERIFICATION_BADGE}\nConfirmed.")],
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        assert c.transcript.entries[-1].text.count(VERIFICATION_BADGE) == 1
+
+    async def test_a_short_sign_off_is_not_a_claim(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"), _ok("never spoken")],
+            [_ff("Agreed, ship it.", nxt="@user", status="converged")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        assert claude.resume_calls == []
+
+    async def test_no_source_means_no_check(self):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"), _ok("never spoken")],
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+        )
+        c._attachments = []
+        await c.handle_input("@claude kick off", ui)
+        assert claude.resume_calls == []
+
+    async def test_not_converged_means_no_check(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"), _ok("never spoken")],
+            [_ff(LONG_CLAIM, nxt="@user", status="blocked")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        assert claude.resume_calls == []
+
+    async def test_verify_off_means_no_check(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff("Claude opening.", nxt="@codex"), _ok("never spoken")],
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+        )
+        _with_source(c, tmp_path)
+        c._run_verify("off", ui)
+        assert c.verify_enabled is False
+        await c.handle_input("@claude kick off", ui)
+        assert claude.resume_calls == []
+
+    async def test_a_counterpart_not_in_the_room_is_not_started_for_this(self, tmp_path):
+        # claude alone: starting codex would cost a whole initial prompt whose
+        # backfill is the very discussion the check must not have seen
+        c, claude, codex, ui = _make_free_form_botference(
+            [_ff(LONG_CLAIM, nxt="@user", status="converged")],
+            [_ok("codex should never speak")],
+        )
+        _with_source(c, tmp_path)
+        await c.handle_input("@claude kick off", ui)
+        assert codex.send_calls == []
+        assert codex.resume_calls == []
+
+    async def test_verify_toggles_and_persists(self, tmp_path):
+        c, claude, codex, ui = _make_free_form_botference([_ok("x")], [_ok("y")])
+        assert c.verify_enabled is True
+        c._run_verify("off", ui)
+        assert c.verify_enabled is False
+        c._run_verify("on", ui)
+        assert c.verify_enabled is True
+        c._run_verify("", ui)
+        assert any("Verification: on" in t for s, t in ui.room_entries if s == "system")
+        c._run_verify("sideways", ui)
+        assert any("Usage: /verify" in t for s, t in ui.room_entries if s == "system")
 
 
 @pytest.mark.asyncio
