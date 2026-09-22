@@ -5175,6 +5175,7 @@ drives a selftest, and every one of them is expected green:
 ?filein=made&selftest=1
 ?workspace=1&nopublish=1&selftest=1
 ?lasso=1&selftest=1
+?checks=1&selftest=1
 ```
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were
@@ -10277,3 +10278,173 @@ prose ("either/or") is left alone, as `@` in an email address is.
   `web` chip, no attach button on a failed row, the words "that is this page"
   absent from the pane, and the slash menu in a *thread* composer (opens on
   "/la", carries the hint, Enter completes to `/lasso `, menu closes).
+
+## Amendment (2026-09-22, shipped): adversarial review — checks, not second opinions
+
+The design principle this whole amendment is built on, stated first because
+every part of it is downstream of the sentence:
+
+> Two agents reasoning from the same context agree on wrong facts, and a longer
+> discussion makes a shared premise stickier rather than weaker.
+
+So "ask the other bot whether this is right" is not a check. It is the same
+reasoning read twice, by something holding all of the same reasons. A CHECK is
+the **claim held against the source** — and where the claim is mechanically
+checkable, no model is in the loop at all.
+
+Four places that is now enforced. None of them blocks anything; every one of
+them is visible to the reader.
+
+### 1. The claim checker (`checks.mjs`) — no model, ever
+
+At the one choke point every bot reply already passes through (`server.mjs`,
+the `chat`/`reply` event, immediately before `store.appendMsg`), the companion
+checks what it CAN check and stamps the message. `checksFor` is the only
+function that knows where a page's words live; `checks.mjs` itself is pure.
+
+Three kinds, and deliberately no fourth:
+
+| kind | the claim | the source | the answer |
+|---|---|---|---|
+| `quote` | text in “…” or "…" of **≥ 6 words**, presented as from the page | the page's snapshot text (`store.snapshotPdfText`) | `quote found` / `not found in the page` |
+| `page` | the same, with `page 12` / `p. 12` / `pp. 12` before it, within one clause | **that page's** text (`store.snapshotPageText`) | `quote found on page 12` / `not found on page 12` |
+| `now-reads` | a rule 5 / 5b `now reads: "…"` line | the artifact's or blog post's file on disk, **as it stands now**, read fresh per reply | `the new wording is in the file` / `…is not in the file` |
+
+The rules that make it honest rather than merely loud:
+
+- **Six words.** Shorter quotations are ordinary English — a bot writing "the
+  model" in quotes is not claiming the page says it — and a rule that flagged
+  them would cry wolf on every reply.
+- **A missing source is NOT a failure.** No snapshot, no file, a page number the
+  viewer never stored → no stamp for that claim. An unchecked claim and a failed
+  one must never look alike.
+- **Nothing checkable → no field at all.** `msg.checks` is absent rather than
+  `[]`, the convention every other optional field in the record keeps, so a
+  client that has never heard of it renders exactly the reply it always
+  rendered — and a reader is never shown a green stamp that means "we looked at
+  nothing".
+- **Code is not a claim.** Fenced blocks and inline spans are stripped before
+  the quotes are read, the same rule `watch:`, `lasso:` and `strike:` hold.
+- **The fold is anchor.js's.** Invisible characters dropped, typographic
+  variants folded to ASCII, whitespace collapsed, then lowercased — so a quote
+  that WOULD anchor on the page is a quote this finds, and a straight apostrophe
+  retyped from a curly one is not a misquote.
+- **A `now reads` wording is never re-checked as a page quote.** It is what the
+  bot just WROTE; "not found in the page" there would be a guaranteed false
+  alarm.
+- `CHECKS_MAX = 8` per reply; `store.sanitizeCheck` keeps exactly the four
+  fields a check has and coerces `ok` to a real boolean (a truthy `"false"`
+  would paint a failed check green).
+
+**In the drawer and on the bubbles**: one stamp under the reply's words —
+`✓ quote checked` in `--done-line`, `⚠ quote not found in the page` in
+`--ready-line` with the quote in the tooltip. Amber and not `--bad`, because a
+quote that is not in the page is something for the READER to look at, not an
+error the companion suffered. No button, nothing dismissible, the reply's own
+words untouched. `drawer.js` carries its own copy of `stampOf` (it cannot
+import from the companion — the anchor.js arrangement, for the same reason).
+
+**In the prompts**: bridge-system-prompt rule 3 and `room_prompts.quote_check_note`
+say it out loud — quotes are checked mechanically, a quote that is not there is
+flagged to the reader, so quote exactly or paraphrase without quotation marks.
+Saying so is not a threat; it is what makes the honest alternative obvious.
+
+### 2. The verification turn at convergence (controller)
+
+`core/botference.py`, at the end of `_run_free_form_thread`: when the floor is
+going back to the user AND the last footer said `converged`, one more turn runs.
+
+- **Addressed to the bot that did NOT write the last claim.** Nobody audits
+  their own sentence.
+- **A fresh envelope.** `transcript.mark_seen(target)` first, so `context_since`
+  has no conversation left to backfill; then the envelope
+  (`room_prompts.verification_preamble`) carrying exactly three things: the
+  final claim (footer stripped), the sources the room has as PATHS (lasso
+  attachments, the plan file, the active project's folder — never contents), and
+  the instruction: for each claim, confirmed with the exact supporting line,
+  contradicted with the exact line, or not checkable. Under 150 words, no new
+  proposals, no footer.
+- **Badged.** The reply opens with `[verification — checked against the sources,
+  not the discussion]`; the council web lifts that line off the words into a
+  `verification` pill in the message header (`paint()`, not `addMsg`, because a
+  streamed answer is painted dozens of times and the first paint is empty). The
+  badge is put back into the transcript if the model omitted it, and never
+  doubled if it did not.
+- **Four ways it does not run**, each because the check would be empty:
+  `/verify off`; the final message under 40 words (a sign-off is not a claim);
+  no source in the room; and the counterpart not already in the room — starting
+  a second CLI session for this would cost a whole initial prompt whose
+  backfill is the very discussion the turn must not have seen.
+- `/verify [on|off]`, default on, persisted per chat (written only when OFF, so
+  nothing migrates). `/status` shows it; README, the man page and `/help` carry
+  it.
+
+### 3. `botference review-build` — an independent reader for a commit
+
+`tools/review-build.mjs`. The agent that wrote the code wrote the commit message
+and the tests too, so it is the worst available witness. This spawns a headless
+`claude -p` that has seen none of the conversation and gives it the artefacts
+only — diff, commit message, test files touched — with a brief whose whole
+content is scepticism: (a) list every claim the message makes and mark each
+verified/unverified BY READING THE CODE, quoting the line; (b) find tests that
+assert the implementation rather than the behaviour; (c) run the relevant suites
+itself and report what it SAW; (d) `VERDICT: accept | accept with notes |
+reject` with file:line behind every note. Under 300 words.
+
+`HEAD~1..HEAD` by default; report to stdout and `.botference/reviews/<sha>.md`;
+exit 2 on a reject; `--dry-run` prints the brief and spawns nothing (which is
+also how the brief is tested). Deliberately **not** a git hook — a check nobody
+chose to run is a check nobody reads.
+
+### 4. The artifact reviewer is never the drafter
+
+`store.recordArtifact` now keeps `drafted_by` on the row (the AUTHOR of the
+reply that claimed the file — a receipt, not the route the button asked for; a
+re-run keeps the first date and takes the current writer). `workspace.draftedBy`
+joins an artifact page to the source page that recorded it, by the file path
+itself; `workspace.reviewerFor` is "the other one".
+
+`POST /send-review` passes that reviewer into `reviewFanout`, and
+`reviewRoute(t, reviewer)` addresses each per-thread turn to it — **after** the
+sticky address, so a thread the reader addressed to one bot with a pill or an
+@-tag stays that bot's. The preamble says why in as many words ("Codex takes
+these comments: Claude drafted this page, and a draft is not reviewed by the
+hand that wrote it… check what it says against the file and the sources, not
+against the conversation it came out of"), because a bot answering a round on a
+page it did not write should know, and so should the reader watching it go out
+to one bot. Unknown drafter → `''` → `@all`, exactly as before.
+
+The reviewer's envelope is the thread and the artifact, never the drafting
+conversation — which lives in the project's own chat in another root anyway. A
+test asserts no page-chat tail reaches those turns.
+
+### Testing
+
+- `checks.test.mjs` — **31 checks**: the fold, the six-word floor, fences and
+  inline code, dedupe, the cap, found/not-found, no-source-is-not-a-failure,
+  `now reads` against a file with markup through the middle of the wording, rule
+  5b, page numbers before vs after a quote, a page-4 passage not satisfying a
+  page-12 claim, an unstored page skipped, `stampOf` in both voices, and the
+  record (`appendMsg` stores it, `[]` stores nothing, `sanitizeCheck` refuses a
+  fifth field and a truthy `"false"`).
+- `workspace.test.mjs` 184 → **191**: `recordArtifact`'s `drafted_by` (kept,
+  updated on a re-run, refused for a name that is not one of the two),
+  `reviewerFor`, `draftedBy`'s path join, a round routed to the other bot with
+  its reason in the preamble, the reader's own address still winning, no
+  reviewer meaning `@all`, and no make-artifact chatter in a review turn.
+- `?checks=1&selftest=1` — **12 checks**: all three stamp states, the reply with
+  no stamp because there was nothing to check, no button anywhere in it, the
+  reply's own words untouched, and the two states in different colours.
+- `tests/review-build.test.mjs` — **7**: the options, `collect` against a real
+  throwaway repo, the brief's four instructions and its cap, a commit with no
+  tests saying so, the diff clip, `--dry-run` printing and spawning nothing (and
+  leaving no review file), and the report path.
+- `tests/test_botference.py::TestConvergenceVerification` — **11**: the turn
+  addressed to the counterpart, the envelope carrying the claims and NOT the
+  thread or the footer, the badge in the transcript and not doubled, and the
+  five skips (short claim, no source, not converged, `/verify off`, counterpart
+  not in the room) plus the toggle.
+- `tests/council-web.test.mjs` 85 → **87**: the badge in the header with its
+  tooltip, the marker off the words, an ordinary turn unbadged, the badge
+  surviving a streamed answer exactly once, and a bot merely quoting the marker
+  mid-reply not being badged.

@@ -2,6 +2,41 @@
 
 ## 2026-09-22
 
+- **Adversarial review: checks, not second opinions.** Two agents reasoning from
+  the same context agree on wrong facts, and the longer they discuss something
+  the stickier the shared premise gets — so "ask the other bot if it agrees" is
+  not a check. Four things changed on that principle:
+
+  - **Quotes are checked by a machine, with no model in the loop.** Any passage
+    a bot puts in quotation marks that runs to six words or more is looked up in
+    the page's own text — on the page *number* it named, if it named one — and
+    the answer is a stamp on the message: `✓ quote checked`, or `⚠ quote not
+    found in the page` with the quote in its tooltip. A `done — this passage now
+    reads: "…"` line is checked the same way against the file as it stands now.
+    Nothing is blocked and nothing is reworded; a reply with nothing checkable
+    carries no stamp at all, because a stamp on everything says nothing about
+    anything. The bots are told, so the honest alternative — paraphrase without
+    quotation marks — is obvious.
+  - **A verification turn when the bots converge.** Before the floor comes back
+    to you, the bot that did *not* write the last claim gets one turn carrying
+    the claims, the sources the room has, and nothing of the discussion, and
+    reports each claim confirmed with the supporting line, contradicted with the
+    contradicting line, or not checkable. Its reply is badged `verification` in
+    the chat so it cannot read as another opinion. `/verify on|off`, on by
+    default, per chat.
+  - **`botference review-build` — an independent reader for a commit.** The
+    agent that wrote the code wrote the commit message and the tests too. This
+    spawns a headless Claude Code that has seen none of the conversation, hands
+    it the diff, the message and the test files, and asks it to mark every claim
+    verified or unverified by reading the code, find tests that assert the
+    implementation rather than the behaviour, run the suites itself, and give a
+    verdict. Output to stdout and `.botference/reviews/<sha>.md`. Not a git
+    hook, deliberately: a check nobody chose to run is a check nobody reads.
+  - **An artifact is never reviewed by the bot that wrote it.** `make artifact`
+    records the writer, and a **send review** round on that page goes to the
+    other one, saying so in the preamble. A thread you addressed to one bot
+    yourself still stays that bot's.
+
 - **Web annotator: paste a link and the bots read it.** `/lasso <a web address>`
   no longer searches for the *words* of the address (which found nothing, and
   offered you back the page you were standing on). The companion fetches the

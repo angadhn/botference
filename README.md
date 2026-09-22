@@ -1466,6 +1466,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/notify [on\|off]` | Toggle the desktop notification posted when the bots finish (see [Desktop notifications](#desktop-notifications)). No argument flips the current state; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. |
 | `/agents [on\|off]` | Grant or revoke the Claude participant's **subagent** (Task) tool. Off by default in every chat: Claude is instructed to *suggest* subagents when a task would benefit and wait for your approval — and the gate is enforced at the tool level (the CLI is simply not given the Task tool until you grant it), not by prompt alone. The grant persists with the chat across `/resume` and resets on `/new`. Codex has no subagent facility; not available under `--claude-interactive`. |
+| `/verify [on\|off]` | When the bots mark the thread **converged**, run one more turn before the floor comes back to you: the bot that did *not* write the last claim is handed the claims and the sources the room has — and **not** the discussion — and reports each claim confirmed (with the supporting line), contradicted (with the contradicting line), or not checkable. On by default, per chat; skipped when the final message is too short to be a claim, when the room has no source, or when the other bot is not in the room. See [Adversarial review](#adversarial-review). |
 | `/allow-host [<domain>]` | Grant the bots' sandbox **network access** to a site (persists per workspace in `.botference/allowed-hosts.json`, applies from their next turn — no restart). The sandbox blocks all other hosts by design; the bots are instructed to ask you for this instead of working around a blocked fetch. Bare `/allow-host` lists current grants. |
 | `/watch <url> [question]` | Have **Gemini watch a YouTube video** and post what it saw into the chat, so Claude and Codex (who cannot take video) can read it on their next turn. See [YouTube videos](#youtube-videos). |
 | `/lasso <words>` | **Search everything you have already read and said** — the pages you have annotated in the browser, your past council chats, and any folders you have named — and offer the matches. Nothing is attached until you say so. `/lasso <path>` attaches a file of your own directly; `/lasso attach <n>` (or `all`) takes one of the offers; `/lasso detach <n>` takes one off; bare `/lasso` lists what this chat is carrying. See [Lasso](#lasso). |
@@ -1627,6 +1628,58 @@ for "fat tails"`, `lasso · fetched "Rockets, part 1" (angadh.com)`, or
   reach — so they read it from a file. There is no `/allow-host` in the drawer
   and the bots are told not to ask for one: they name the host that was refused
   and stop.
+
+### Adversarial review
+
+Two agents reasoning from the same context agree on **wrong** facts, and the
+longer they discuss something the stickier the shared premise gets. So asking
+the other one "do you agree?" is not a check — it is the same reasoning read
+twice. A check is the **claim held against the source**, and where the claim is
+mechanically checkable there is no model in the loop at all.
+
+Four places that rule is enforced:
+
+**1. Quotes are checked, by a machine.** Any passage a bot puts in quotation
+marks that runs to six words or more is looked up in the page's own text —
+against the page **number** it named, on a PDF — and the answer is a stamp on
+the message: `✓ quote checked`, or `⚠ quote not found in the page` with the
+quote in its tooltip. A `done — this passage now reads: "…"` line is checked
+the same way against the file **as it stands now**. Nothing is blocked and
+nothing is altered; a reply with nothing checkable in it carries no stamp at
+all, because a stamp on everything would say nothing about anything. The bots
+are told this, so the honest alternative — paraphrase without quotation marks —
+is obviously available. (Discuss drawer and bubbles; `frontends/plugin/checks.mjs`.)
+
+**2. A verification turn at convergence.** See `/verify` in the command table:
+when the bots mark the thread converged, the one that did *not* write the last
+claim gets a turn carrying the claims, the sources the room has, and nothing of
+the discussion — and reports each claim confirmed with the supporting line,
+contradicted with the contradicting line, or not checkable. Its reply is badged
+`verification` in the chat so it cannot be mistaken for another opinion.
+
+**3. `botference review-build` — an independent reader for a commit.** The agent
+that wrote the code wrote the commit message and the tests too. This spawns a
+headless Claude Code that has seen none of the conversation and gives it the
+diff, the message and the test files, with a sceptical brief: list every claim
+the message makes and mark each verified or unverified *by reading the code*;
+find tests that assert the implementation rather than the behaviour; run the
+suites itself; report under 300 words with `VERDICT: accept | accept with notes
+| reject`. Output goes to stdout and to `.botference/reviews/<sha>.md`.
+
+```bash
+botference review-build                    # HEAD~1..HEAD
+botference review-build main..HEAD
+botference review-build --dry-run          # print the brief, spawn nothing
+```
+
+It is deliberately **not** a git hook: a check nobody chose to run is a check
+nobody reads.
+
+**4. The artifact reviewer is never the drafter.** `/make-artifact` records which
+bot wrote the file, and a **send review** round on that artifact page routes its
+per-comment turns to the *other* bot, saying so in the round's preamble. A
+thread you have addressed to one bot yourself still stays that bot's — the rule
+gives a round a default, it does not take the room away from you.
 
 ### Crash evidence
 

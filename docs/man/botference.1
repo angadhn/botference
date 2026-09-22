@@ -25,6 +25,9 @@ botference \- a multi-LLM planning council for the terminal
 .br
 .B botference see
 \fIurl\fR|\fB:\fR\fIport\fR|\fIservice-name\fR [\fIlabel\fR] [\fB\-\-viewport\fR \fIWxH\fR]… [\fB\-\-basic-auth\fR \fIU:P\fR] [\fB\-\-out\fR \fIdir\fR]
+.br
+.B botference review-build
+[\fIrange\fR] [\fB\-\-dry-run\fR] [\fB\-\-model\fR \fIid\fR] [\fB\-\-out\fR \fIdir\fR]
 .SH DESCRIPTION
 .B botference
 puts you, Claude Code, and Codex in one terminal room. The bots debate
@@ -331,6 +334,28 @@ request to the \fBsee-broker\fR automatically \- a ledgered service
 that watches every registered workspace's \fI.botference/see/\fR spool
 from outside the sandbox and answers through the filesystem with
 identical output. No sandbox is loosened.
+.SH REVIEW-BUILD (AN INDEPENDENT READER FOR A COMMIT)
+.B botference review-build
+spawns a headless Claude Code that has seen none of the conversation that
+produced a commit and gives it only the artefacts \- the diff, the commit
+message and the test files touched \- with a sceptical brief: list every
+claim the commit message makes and mark each verified or unverified by
+reading the code, find tests that assert the implementation rather than
+the behaviour, run the relevant suites itself, and report under 300
+words ending in
+.BR "VERDICT: accept" ,
+.B "VERDICT: accept with notes"
+or
+.BR "VERDICT: reject" .
+.PP
+The agent that wrote the code wrote the commit message and the tests too,
+so asking it whether the work is sound is not a check. \fIrange\fR
+defaults to \fBHEAD~1..HEAD\fR. The report goes to standard output and to
+\fI.botference/reviews/<sha>.md\fR; the exit status is 2 on a reject.
+\fB\-\-dry-run\fR prints the brief and spawns nothing.
+.PP
+It is deliberately not wired into a git hook: a check nobody chose to run
+is a check nobody reads.
 .SH IN-SESSION COMMANDS
 Inside a planning session, commands start with a slash. Run
 .B /help
@@ -415,6 +440,15 @@ Persists per-user.
 .B /agents [on|off]
 Grant/revoke the Claude participant's subagent (Task) tool. Off by
 default per chat; Claude suggests it and waits for approval.
+.TP
+.B /verify [on|off]
+When the bots mark the thread
+.BR converged ,
+run one more turn before the floor returns to you: the bot that did NOT
+write the last claim is given the claims and the sources the room has \-
+and not the discussion \- and reports each claim confirmed, contradicted
+or not checkable. On by default, per chat; skipped when the final message
+is too short to be a claim or the room has no source to check against.
 .TP
 .B /allow-host [<domain>]
 Grant the bots' sandbox network access to a site (e.g.
