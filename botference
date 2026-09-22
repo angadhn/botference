@@ -33,6 +33,17 @@ if [ "${1:-}" = "review" ]; then
   exit $?
 fi
 
+# --- review-build: an independent sceptical reader for a commit ---
+# The agent that wrote the code wrote the commit message and the tests too, so
+# asking it whether the work is sound is not a check. This spawns a reader that
+# has seen none of the conversation — just the diff, the message and the tests —
+# and reports a verdict. Deliberately NOT a git hook: a check nobody chose to
+# run is a check nobody reads.
+if [ "${1:-}" = "review-build" ]; then
+  shift
+  exec node "${BOTFERENCE_HOME}/tools/review-build.mjs" "$@"
+fi
+
 # --- see mode: headless screenshots so agents can LOOK at the UIs they
 # build (layout bugs produce no errors or logs). Ledger-aware: a running
 # service name resolves to its live listening port. ---
