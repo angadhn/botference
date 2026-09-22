@@ -2438,3 +2438,17 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .lassorow.failed .lassohit { white-space: normal; overflow: visible }
 /* the same offers under a bot's reply, where the chip conventions rule */
 .lassofind.frombot { margin: 8px 0 2px }
+
+/* ---- the claim checker's stamp -----------------------------------------
+   A mechanical result, so it is drawn as a mark rather than a card: no border
+   box competing with the reply, no button, nothing to dismiss. Green is the
+   filed/done colour the drawer already uses for "this is settled"; the warn
+   state borrows the amber of "ready for review" rather than --bad, because a
+   quote that is not in the page is something for the READER to look at, not an
+   error the companion suffered. The tooltip carries the quote itself. */
+.reply .chkstamp {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin: 4px 0 0; font: 11px/1.5 var(--sans);
+  color: var(--done-line); cursor: help;
+}
+.reply .chkstamp.warn { color: var(--ready-line) }

@@ -47,6 +47,7 @@ import * as publish from './publish.mjs';
 import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
 import * as lasso from './lasso.mjs';
+import * as checks from './checks.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // The article view's scripts. anchor.js is the extension's own file, served
@@ -325,6 +326,48 @@ function blogOf(url) {
   return page;
 }
 const forgetBlogPages = () => blogCache.clear();
+
+// ---- the claim checker's sources -----------------------------------------
+//
+// checks.mjs is pure; this is the one place that knows where a page's words
+// live. Two sources and no third:
+//
+//   the SNAPSHOT — what the reader is looking at, as the extension scraped it.
+//     A PDF's is one <section> per page, so a "page 12" claim is checked
+//     against page 12 and nothing else.
+//   the FILE — for a `now reads` rewrite only, and only where this page IS a
+//     file the bots may edit (a confirmed project artifact, or the markdown
+//     behind a post on the reader's own site). Everywhere else there is no
+//     file, the claim is not checkable, and no stamp is drawn. Read fresh on
+//     every reply, deliberately: the whole question is what the file says NOW.
+//
+// Never throws: a check that cannot be made is a check that is not made.
+const CHECK_FILE_MAX = 2 * 1024 * 1024;
+function checkFileText(page) {
+  let file = '';
+  try {
+    const art = artifactOf(page.url);
+    if (art && art.confirmed && art.path) file = art.path;
+    if (!file) {
+      const bg = blogOf(page.url);
+      if (bg && bg.confirmed && bg.source_path) file = bg.source_path;
+    }
+    if (!file) return '';
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > CHECK_FILE_MAX) return '';
+    return checks.plainText(fs.readFileSync(file, 'utf8'));
+  } catch { return ''; }
+}
+function checksFor(page, text) {
+  try {
+    const html = store.readSnapshot(store.pageKey(page.url));
+    return checks.checkReply(text, {
+      pageText: html ? store.snapshotPdfText(html) : '',
+      pageTextOf: html ? (n => store.snapshotPageText(html, n)) : null,
+      fileText: checkFileText(page),
+    });
+  } catch { return []; }
+}
 
 // The bridge that owns a page's chat. Everything that submits a turn, asks
 // what is queued or interrupts one goes through here — a project-artifact
@@ -1128,7 +1171,12 @@ function onChatEvent(ev) {
         const made = workspace.parseArtifact(ev.msg.text, store.projectsOf(page));
         if (made) {
           ev.msg = { ...ev.msg, text: store.liftLines(ev.msg.text, made.line) };
-          store.recordArtifact(page, made);
+          // …and WHO wrote it, which is the whole of the reviewer assignment:
+          // a review round on this artifact goes to the other bot, because
+          // nobody audits their own draft. The author of the reply that
+          // claimed the file is the writer — not the route the button asked
+          // for, which is a request and not a receipt.
+          store.recordArtifact(page, { ...made, drafted_by: ev.msg.author });
         }
       }
       // …and did the bot conclude the passage should come out? Same idiom,
@@ -1258,6 +1306,22 @@ function onChatEvent(ev) {
             ev.msg = { ...ev.msg, text: lifted.text, suggestions: lifted.cards };
           }
         }
+      }
+      // …and the last thing done to a reply before it is stored, because it is
+      // the only one that adds NO button and takes nothing off the words: what
+      // the companion could CHECK in it (checks.mjs). A quote of six words or
+      // more that a bot presents as coming from the page is either in the
+      // page's text or it is not, and no model is asked about that — which is
+      // the whole point. Two bots reasoning from one context agree on wrong
+      // facts; the text does not.
+      //
+      // Sources, and a missing one means "not checkable" rather than "failed":
+      // the page's snapshot for quotations (per page on a PDF, so a passage
+      // that really is on page 4 cannot make a claim about page 12 true), and
+      // the artifact's or blog post's file on disk for a `now reads` rewrite.
+      // Nothing here blocks or alters the reply.
+      if (ev.msg && ev.msg.kind !== 'tools' && store.isAgentAuthor(ev.msg.author)) {
+        ev.msg = { ...ev.msg, checks: checksFor(page, ev.msg.text) };
       }
       // appendMsg also REOPENS a resolved thread: a bot answering into it is
       // new activity, and new activity is the end of resolved
@@ -3108,11 +3172,25 @@ export function handler(req, res) {
       // deny-all file writes, so the round asks for answers and then for one
       // turn that pulls them together.
       const editable = !!art && art.confirmed;
-      const fan = workspace.reviewFanout(page, { editable });
+      // WHO ANSWERS. On an artifact the bots made, the round goes to the one
+      // that did NOT write the file: a draft reviewed by its own author is not
+      // a check, it is the same reasoning read twice. The receipt lives on the
+      // SOURCE page (store.recordArtifact `drafted_by`) and is joined to this
+      // file by its path (workspace.draftedBy). Unknown drafter, a hand-written
+      // file, an ordinary web page → '' and the round is @all exactly as before,
+      // and a thread the reader addressed to one bot stays that bot's either way.
+      let reviewer = '';
+      if (art) {
+        const srcUrl = page.source && page.source.url ? store.normUrl(String(page.source.url)) : '';
+        const src = srcUrl ? store.readPage(srcUrl) : null;
+        reviewer = workspace.reviewerFor(workspace.draftedBy(art, src));
+      }
+      const fan = workspace.reviewFanout(page, { editable, reviewer });
       if (!fan) {
         return fail(res, 400, 'no open comments to send — highlight something and comment first, or reopen a filed thread');
       }
-      const counts = { sent: fan.sent, omitted: fan.omitted, total: fan.total };
+      const counts = { sent: fan.sent, omitted: fan.omitted, total: fan.total,
+        reviewer: fan.reviewer };
       // the same guard a typed message gets: over a tunnel the button has no
       // receipt for a second, and the expensive half of a double-click is a
       // whole round of agent time, not the message

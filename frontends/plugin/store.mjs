@@ -841,7 +841,14 @@ export function artifactsOf(page) {
     const key = `${root}\0${id}\0${rel}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ root, id, rel, at: String(entry.at || '') });
+    // WHO WROTE IT. One turn, one writer (server.mjs POST /make-artifact
+    // routes @claude unless the brief opens with @codex), and the name is kept
+    // because the REVIEWER of this file is defined as the other one — nobody
+    // audits their own sentence. Absent on every row written before this, and
+    // an absent writer simply means the round falls back to @all.
+    const by = /^(claude|codex)$/i.test(String(entry.drafted_by || '').trim())
+      ? String(entry.drafted_by).trim().toLowerCase() : '';
+    out.push({ root, id, rel, at: String(entry.at || ''), ...(by ? { drafted_by: by } : {}) });
     if (out.length >= ARTIFACTS_MAX) break;
   }
   return out;
@@ -855,17 +862,25 @@ export function artifactsOf(page) {
  * asks for), so a repeat keeps the first row and its date rather than growing
  * a second link to one file.
  */
-export function recordArtifact(page, { root, id, rel }) {
+export function recordArtifact(page, { root, id, rel, drafted_by = '' }) {
   const wantRoot = cleanRoot(root);
   const wantId = cleanProjectId(id);
   const wantRel = String(rel || '').trim();
   if (!page || !wantRoot || !wantId || !wantRel) return page;
+  const by = /^(claude|codex)\b/i.test(String(drafted_by || '').trim())
+    ? String(drafted_by).trim().toLowerCase().replace(/\s.*$/, '') : '';
   const current = artifactsOf(page);
-  if (current.some(a => a.root === wantRoot && a.id === wantId && a.rel === wantRel)) {
+  const hit = current.find(a => a.root === wantRoot && a.id === wantId && a.rel === wantRel);
+  if (hit) {
+    // a re-run rewrites the same file, so the row keeps its first date — but
+    // the WRITER is whoever wrote it this time, because that is the fact the
+    // reviewer assignment is read off
+    if (by) hit.drafted_by = by; else delete hit.drafted_by;
     page.artifacts = current;
     return page;
   }
-  page.artifacts = current.concat([{ root: wantRoot, id: wantId, rel: wantRel, at: nowIso() }])
+  page.artifacts = current
+    .concat([{ root: wantRoot, id: wantId, rel: wantRel, at: nowIso(), ...(by ? { drafted_by: by } : {}) }])
     .slice(-ARTIFACTS_MAX);
   return page;
 }
@@ -2101,8 +2116,24 @@ export function setCardState(card, state, extra = {}) {
   return card;
 }
 
+// Exactly the fields a mechanical check has, and nothing a hand-edited record
+// could smuggle in beside them (the shape sanitizeCard holds for a card, for
+// the same reason). `ok` is a boolean and never a string: the stamp is drawn
+// from it, and a truthy "false" would paint a failed check green.
+export const CHECK_KINDS = ['quote', 'now-reads', 'page'];
+export const CHECKS_STORE_MAX = 8;
+export function sanitizeCheck(c) {
+  if (!c || typeof c !== 'object') return null;
+  if (!CHECK_KINDS.includes(String(c.kind))) return null;
+  const out = { kind: String(c.kind), ok: !!c.ok, detail: String(c.detail || '').slice(0, 200) };
+  if (!out.detail) return null;
+  if (c.quote) out.quote = String(c.quote).slice(0, 600);
+  if (Number(c.page) > 0) out.page = Number(c.page);
+  return out;
+}
+
 export function appendMsg(page, threadId, {
-  author, text, ts, kind, route, origin, file_in, strike, strikes, question, suggestions,
+  author, text, ts, kind, route, origin, file_in, strike, strikes, question, suggestions, checks,
 }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
@@ -2197,6 +2228,17 @@ export function appendMsg(page, threadId, {
   if (Array.isArray(suggestions) && suggestions.length) {
     const kept = suggestions.map(sanitizeCard).filter(Boolean);
     if (kept.length) msg.suggestions = kept;
+  }
+  // …and the fifth, which is the only one with no button on it at all: what the
+  // companion CHECKED in this reply (checks.mjs). A quote of six words or more
+  // that the bot presents as coming from the page either is in the page's text
+  // or is not, and no model is asked about it. Stored as a field so a client
+  // that has never heard of it renders exactly the reply it always rendered,
+  // and ABSENT when there was nothing checkable or nothing to check against —
+  // an empty list and a passed check must never look the same to a reader.
+  if (Array.isArray(checks) && checks.length) {
+    const kept = checks.map(sanitizeCheck).filter(Boolean).slice(0, CHECKS_STORE_MAX);
+    if (kept.length) msg.checks = kept;
   }
   msgs.push(msg);
   // NEW ACTIVITY IS THE END OF RESOLVED. A thread somebody has just written

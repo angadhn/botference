@@ -2381,7 +2381,7 @@ ${bubbleShellHtml()}`;
       const who = agentOf(r.author);
       return `<div class="reply${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}${own ? ' restored' : ''}" data-ts="${esc(r.ts)}" data-author="${esc(r.author)}"${own ? ' data-restored="1"' : ''} style="--author:${speakerColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span></span>
-        ${body}${acts}${
+        ${body}${checkStampHtml(r)}${acts}${
           D.projects.declined.indexOf(String(r.ts)) < 0 ? fileChipHtml(r) : ''}${
           strikeChipHtml(r, target)}${
           questionChipHtml(r, target)}${
@@ -2770,6 +2770,43 @@ ${bubbleShellHtml()}`;
       if (D.lasso.declined.indexOf(String(msg.ts)) >= 0) return '';
       return lassoFindHtml({ query: l.query, results: l.results || [], head: l.head || '', err: '' })
         .replace('class="lassofind"', 'class="lassofind frombot"');
+    }
+
+    // WHAT THE COMPANION CHECKED. `msg.checks` (checks.mjs, stamped at the
+    // choke point in server.mjs) is the one thing on a bot reply with no button
+    // on it: a quote of six words or more that the bot presented as coming from
+    // the page either is in the page's text or is not, and nothing was asked to
+    // think about that. A stamp, never an edit — the reply stands exactly as
+    // written, and the reader decides what a failed quote means.
+    //
+    // Absent when there was nothing checkable or nothing to check against, so a
+    // reply with no stamp says nothing either way. (checks.stampOf is the twin
+    // of this; the drawer cannot import from the companion, which is why it is
+    // written twice and tested against the same fixtures — the anchor.js
+    // arrangement, for the same reason.)
+    function checkStamp(list) {
+      const rows = (Array.isArray(list) ? list : []).filter(c => c && c.detail);
+      if (!rows.length) return null;
+      const bad = rows.filter(c => !c.ok);
+      const title = (bad.length ? bad : rows)
+        .map(c => `${c.detail}: “${c.quote || ''}”`).join('\n');
+      if (!bad.length) {
+        return { ok: true, title,
+          label: rows.length === 1 ? 'quote checked' : `${rows.length} quotes checked` };
+      }
+      const first = bad[0];
+      const label = first.kind === 'now-reads' ? 'the new wording is not in the file'
+        : first.kind === 'page' ? `quote not found on page ${first.page}`
+          : 'quote not found in the page';
+      return { ok: false, title,
+        label: bad.length > 1 ? `${label} (+${bad.length - 1} more)` : label };
+    }
+
+    function checkStampHtml(msg) {
+      const s = checkStamp(msg && msg.checks);
+      if (!s) return '';
+      return `<span class="chkstamp${s.ok ? ' ok' : ' warn'}" title="${esc(s.title)}">`
+        + `${s.ok ? '✓' : '⚠'} ${esc(s.label)}</span>`;
     }
 
     function composerHtml(target, label, extra, hint, pills) {
@@ -9559,7 +9596,7 @@ ${bubbleShellHtml()}`;
         <span class="who"><span class="author">${esc(r.author)}</span>${
           bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${
           r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span>${del}</span>
-        ${body}</div>`;
+        ${body}${checkStampHtml(r)}</div>`;
     }
 
     // The lip: what a squashed stack shows instead of the messages behind the

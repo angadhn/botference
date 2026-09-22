@@ -302,6 +302,16 @@
                      on load. `?lasso=web` / `?lasso=refused` are the two
                      screenshot states of a pasted link: the chip the companion
                      fetched, and the row saying why it could not.
+    ?checks=1        the claim checker's stamp on a bot reply (checks.mjs). A
+                     quote of six words or more that a bot presents as coming
+                     from the page is looked up in the page's own text by the
+                     companion, with no model in the loop, and the answer is a
+                     stamp on the message — ✓ in the done colour, ⚠ in the warn
+                     colour with the quote in its tooltip. `&selftest=1` drives
+                     all three states (checked, not found, a `now reads` line
+                     the file does not bear out) plus the message that carries
+                     no stamp because there was nothing to check, and the same
+                     stamp on a bubble.
     ?question=1      the question vault's two doors on an ordinary article: the
                      card head's `?`, the selection pill's third tool, and a
                      bot's own offer as a File it / No chip. `&selftest=1` runs
@@ -637,6 +647,14 @@ const FILE_ROSTER = [
   { root: WS_ROOT, id: 'journal-submissions', title: 'Journal submissions',
     status: 'archived', next_action: 'pick a venue', chats: [], files: ['venues.md'] },
 ];
+// ── the claim checker's stamp ───────────────────────────────────────────
+// `msg.checks` (checks.mjs, stamped in server.mjs at the one choke point every
+// bot reply goes through). No model is in that loop: a quote of six words or
+// more either is in the page's text or is not. What the drawer draws from it is
+// a STAMP and never a button — the reply stands exactly as written, and a
+// message with nothing checkable carries no stamp rather than a green one.
+const CHECKS = Q.get('checks') || '';
+
 // ── lasso: bringing what you have read and said into a chat ─────────────
 // `/lasso <words>` in the composer is a COMMAND, not a message: the companion
 // searches everything the reader has (pages, council chats, watched folders)
@@ -1310,6 +1328,34 @@ if (FILEIN === 'made') {
   RECORD.projects = fileFiled;
   RECORD.artifacts = [{ root: WS_ROOT, id: 'adriana-paper',
     rel: 'projects/adriana-paper/doc-fest-planner.html', at: iso(0.5) }];
+}
+
+// ?checks=1 — three bot replies with the companion's checks on them and one
+// with none at all, so the pose shows every state the stamp has beside the
+// state it deliberately does not have.
+if (CHECKS === '1') {
+  // the pose's own chat, not the base fixture's plus it: a folded middle would
+  // hide exactly the messages under test
+  // ONE @all turn and the four replies to it, consecutive, so the thread is two
+  // drawn units and nothing folds away the messages under test
+  RECORD.page_chat = ([
+    { author: 'angadh', ts: iso(6), text: '@all what does it actually claim about the loads?' },
+    { author: 'claude', ts: iso(5),
+      text: 'It says “the deployment loads it reports are consistently lower” than the '
+        + 'analytic bound — which is the whole of the argument.',
+      checks: [{ kind: 'quote', ok: true, detail: 'quote found',
+        quote: 'the deployment loads it reports are consistently lower' }] },
+    { author: 'codex', ts: iso(4),
+      text: 'Page 12 gives “a factor of four between the bound and the measurement”.',
+      checks: [{ kind: 'page', ok: false, page: 12, detail: 'not found on page 12',
+        quote: 'a factor of four between the bound and the measurement' }] },
+    { author: 'claude', ts: iso(3),
+      text: 'done — I tightened the caption.',
+      checks: [{ kind: 'now-reads', ok: false, detail: 'the new wording is not in the file',
+        quote: 'The caption now names the dry mass explicitly.' }] },
+    { author: 'codex', ts: iso(2),
+      text: 'Nothing quoted here, so there is nothing to check — and no stamp.' },
+  ]);
 }
 
 // ?lasso=1 — a bot has ended a reply asking for something of the reader's to
@@ -10151,6 +10197,74 @@ async function selftestMemorize() {
   console.log(out.join('\n'));
 }
 
+// ?checks=1&selftest=1 — the claim checker's stamp.
+//
+// The whole feature in one pose, and what it is NOT is half of it: there is no
+// button, nothing is dismissible, the reply's own words are untouched, and a
+// message with nothing checkable in it gets no stamp at all — because a stamp
+// that appeared on everything would say nothing about anything.
+async function selftestChecks() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const pane = () => S.querySelector('.pane[data-pane="chat"]');
+  const replies = () => [...pane().querySelectorAll('.reply.bot')];
+  try {
+    d.open('chat');
+    await until(() => replies().length >= 4, 4000);
+    const r = replies();
+    check('four bot replies in the pose', r.length === 4);
+
+    const stamps = r.map(x => x.querySelector('.chkstamp'));
+    check('a checked quote is stamped', !!stamps[0] && stamps[0].classList.contains('ok'));
+    check('…in the done voice, not a warning',
+      !!stamps[0] && /quote checked/.test(stamps[0].textContent)
+      && !stamps[0].classList.contains('warn'));
+    check('…and the quote itself is in the tooltip',
+      !!stamps[0] && /the deployment loads it reports are consistently lower/
+        .test(stamps[0].getAttribute('title') || ''));
+
+    check('a quote that is not on the page it named is stamped warn',
+      !!stamps[1] && stamps[1].classList.contains('warn'));
+    check('…and the stamp says which page it was not on',
+      !!stamps[1] && /quote not found on page 12/.test(stamps[1].textContent));
+
+    check('a `now reads` line the file does not bear out is stamped warn',
+      !!stamps[2] && stamps[2].classList.contains('warn')
+      && /the new wording is not in the file/.test(stamps[2].textContent));
+
+    check('a reply with nothing checkable in it carries NO stamp', stamps[3] === null);
+
+    check('the stamp is not a button and takes nothing away',
+      r.every(x => {
+        const st = x.querySelector('.chkstamp');
+        return !st || (st.tagName === 'SPAN' && !st.querySelector('button')
+          && !st.hasAttribute('data-act'));
+      }));
+    check('and the reply\'s own words are untouched',
+      /which is the whole of the argument/.test(r[0].querySelector('.ctext').textContent)
+      && !/quote checked/.test(r[0].querySelector('.ctext').textContent));
+
+    // the warn colour is the drawer's amber, not its error red: a quote that is
+    // not in the page is for the READER to look at, not a fault of the tool
+    const warnColor = getComputedStyle(stamps[1]).color;
+    const okColor = getComputedStyle(stamps[0]).color;
+    check('the two states are drawn in different colours', warnColor !== okColor);
+
+    check('nothing threw', window.__bfpErrors.length === 0);
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (checks) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ── from a page to a project artifact ────────────────────────────────────
 // Two poses, one function, because they are two steps of one road: a bot
 // offering a project this reader does not have yet (?filein=new), and a page
@@ -12455,6 +12569,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
       setTimeout(BUBBLES ? (PDFV ? selftestBubblesPdf : selftestBubbles)
+        : CHECKS === '1' ? selftestChecks
         : LASSO === '1' ? selftestLasso
         : FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
         : WORKSPACE ? selftestWorkspace
