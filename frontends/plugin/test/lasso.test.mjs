@@ -647,3 +647,9 @@ await test('a message with no links costs nothing at all', async () => {
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
 console.log(`\n✓ lasso.test.mjs — ${passed} passed, ${failures.length} failed`);
 if (failures.length) { console.log(failures.map(f => `  · ${f}`).join('\n')); process.exit(1); }
+
+
+test('a fetched title decodes its entities — dashes, quotes, numeric — never "Foo &mdash; Bar"', () => {
+  const t = lasso.webTitle('<html><head><title>A Vacuum &mdash; Angadh &#8217;s &quot;post&quot; &#x2026; &amp;lt;</title></head></html>', 'https://x.test/p');
+  assert.equal(t, 'A Vacuum \u2014 Angadh \u2019s "post" \u2026 &lt;');
+});

@@ -865,9 +865,19 @@ async function defaultHttp(url, { timeout = WEB_TIMEOUT_MS } = {}) {
 
 const TITLE_RE = /<title[^>]*>([\s\S]{0,400}?)<\/title>/i;
 const H1_RE = /<h1[^>]*>([\s\S]{0,400}?)<\/h1>/i;
+// Named and numeric entities a <title> tends to carry — dashes, quotes,
+// ellipses, the odd accented letter as &#233; — decoded so a chip never reads
+// "Foo &mdash; Bar". `&amp;` last, so `&amp;lt;` comes back as `&lt;`.
+const NAMED_ENT = { nbsp: ' ', mdash: '\u2014', ndash: '\u2013', hellip: '\u2026', lsquo: '\u2018',
+  rsquo: '\u2019', ldquo: '\u201c', rdquo: '\u201d', apos: "'", quot: '"', lt: '<', gt: '>',
+  copy: '\u00a9', reg: '\u00ae', trade: '\u2122', middot: '\u00b7', bull: '\u2022', laquo: '\u00ab',
+  raquo: '\u00bb', times: '\u00d7', deg: '\u00b0', eacute: '\u00e9', egrave: '\u00e8', uuml: '\u00fc',
+  ouml: '\u00f6', auml: '\u00e4', ccedil: '\u00e7', ntilde: '\u00f1' };
 const unent = s => String(s || '')
-  .replace(/&nbsp;/gi, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  .replace(/&#x([0-9a-f]{1,6});/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/&#(\d{1,7});/g, (_, d) => String.fromCodePoint(Number(d)))
+  .replace(/&([a-z]{2,8});/gi, (m, n) => (n.toLowerCase() in NAMED_ENT && n.toLowerCase() !== 'amp') ? NAMED_ENT[n.toLowerCase()] : m)
+  .replace(/&amp;/g, '&');
 
 /** The page's own name, or the tail of its address — never an empty chip. */
 export function webTitle(html, url) {
