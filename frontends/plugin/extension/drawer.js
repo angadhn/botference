@@ -239,6 +239,18 @@
   // anchor.isBotAuthor both have it, so "claudette" was a person to the
   // companion and to the page, and a bot to the drawer.
   const isBot = a => /^(claude|codex|gemini)\b/i.test(String(a || '').trim());
+  // Does this device have a real keyboard? A mouse or trackpad (a fine pointer
+  // that can hover) means a laptop or desktop, where Enter should SEND and
+  // Shift+Enter make a new line — the convention of every chat tool. A phone or
+  // tablet has neither, and there Enter is the only way to get a new line, so
+  // it stays one and the Send button (or Shift+Enter) sends. Decided once: a
+  // device does not change hands mid-session.
+  const fineKeyboard = () => {
+    try { return !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches); }
+    catch { return false; }
+  };
+  const KB = fineKeyboard();
+  const KEY_HINT = KB ? 'Enter sends, Shift+Enter for a new line' : 'Enter for a new line, Shift+Enter sends';
   // A SUMMONED BUILD AGENT's card (core/botference.py _run_summon): one of the
   // bots decided what to make and handed the making to a fresh agent; its
   // card carries who summoned it, which model, how it went, and hangs under
@@ -305,8 +317,8 @@
   // has to say so, or the reader types a sentence expecting a note and gets
   // two bots. Threads on the same page keep the ordinary rule and the ordinary
   // hint — the difference is real, so it is stated where it applies.
-  const COUNCIL_HINT = 'plain text goes to @all — or tag one bot · Enter for a new line, Shift+Enter sends';
-  const CHAT_HINT = '@claude, @codex or @all to bring in the bots · Enter for a new line, Shift+Enter sends';
+  const COUNCIL_HINT = 'plain text goes to @all — or tag one bot · ' + KEY_HINT;
+  const CHAT_HINT = '@claude, @codex or @all to bring in the bots · ' + KEY_HINT;
   // THE PILL ROW, and the rule it draws.
   //
   // A thread is a conversation with somebody: once the reader has tagged a bot
@@ -6744,7 +6756,9 @@ ${bubbleShellHtml()}`;
         // plain Enter is a new line and sending is deliberate: Shift+Enter or
         // ⌘/Ctrl+Enter — the same rule as the council web. ⌘/Ctrl+Enter sends
         // everywhere. (The reader asked for exactly this swap on 2026-09-09.)
-        const chatty = target === PAGE_TARGET || target === LIBRARY_TARGET || target === '__edit__';
+        // …and only on a device WITHOUT a real keyboard (fineKeyboard, above):
+        // with a mouse or trackpad present, Enter sends everywhere.
+        const chatty = !KB && (target === PAGE_TARGET || target === LIBRARY_TARGET || target === '__edit__');
         const sends = (e.metaKey || e.ctrlKey) || (chatty ? e.shiftKey : !e.shiftKey);
         if (!sends) return;
         e.preventDefault();

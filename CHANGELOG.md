@@ -2,6 +2,13 @@
 
 ## 2026-09-23
 
+- **Enter sends on a real keyboard.** In the council page and in the plugin's
+  page chat and library, Enter used to make a new line everywhere and
+  Shift+Enter sent — a phone rule, where Enter is the only way to get a new
+  line. Now the device decides: with a mouse or trackpad present (a laptop or
+  desktop) Enter sends and Shift+Enter is the new line, as in every chat tool;
+  a phone or tablet keeps the old rule and the Send button. ⌘/Ctrl+Enter sends
+  everywhere. The hint under the box says which rule you have.
 - **When Fable's safeguards decline an ordinary message, Claude falls back to
   Opus 5.5 and retries — automatically.** Claude Code reports these as "Fable
   5.1's safeguards flagged this message … can't respond to this message with

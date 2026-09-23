@@ -3033,6 +3033,12 @@
     refreshCompletions();
   });
   els.input.addEventListener('click', () => refreshCompletions());
+  // A real keyboard is present when a fine pointer that can hover is (a mouse
+  // or trackpad): laptop or desktop. Phones and tablets have neither.
+  const FINE_KB = (() => {
+    try { return !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches); }
+    catch { return false; }
+  })();
   els.input.addEventListener('keydown', e => {
     if (!els.complete.hidden) {
       if (e.key === 'ArrowDown') { e.preventDefault(); compSel = (compSel + 1) % compItems.length; renderCompletions(); return; }
@@ -3041,14 +3047,23 @@
       if (e.key === 'Escape') { compItems = []; renderCompletions(); return; }
     }
     // A council message is often long, and on a phone Enter is the only way to
-    // a new line — so Enter is a newline here, and sending is deliberate:
-    // Shift+Enter or ⌘/Ctrl+Enter (and the button). The plugin's comment boxes
-    // are the other way round, because a comment is usually one line.
-    if (e.key === 'Enter' && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+    // a new line — so on a device without a real keyboard Enter is a newline
+    // and sending is deliberate: Shift+Enter or ⌘/Ctrl+Enter (and the button).
+    // With a mouse or trackpad present (a laptop or desktop) it is the
+    // convention of every chat tool instead: Enter sends, Shift+Enter is the
+    // new line. Decided once per page load (FINE_KB).
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || (FINE_KB ? !e.shiftKey : e.shiftKey))) {
       e.preventDefault();
       submit();
     }
   });
+  // the hint under the box says which rule this device got
+  {
+    const hintEl = document.querySelector('.composer-hint');
+    if (hintEl) hintEl.textContent = FINE_KB
+      ? 'Enter to send · Shift+Enter for a new line'
+      : 'Enter for a new line · Shift+Enter or ⌘Enter to send';
+  }
   // ── "where should this go?", asked before the first message ──
   // The controller asks the same question, but only AFTER the first message
   // has landed, which reads as an interruption of work already underway.
