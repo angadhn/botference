@@ -83,7 +83,7 @@
     "cli": "claude",
     "model": "claude-opus-5-5",
     "effort": "high",
-    "timeout_s": 900,
+    "timeout_s": 0,
     "for": {
       "claude": {},
       "codex": {}
@@ -93,4 +93,4 @@
     "claude-opus-5-5",
     "claude-opus-5"
   ]
-}\n
+}

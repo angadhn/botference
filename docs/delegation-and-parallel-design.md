@@ -119,8 +119,8 @@ I recommend 1 + 2 now, and adding 3 only if the stamp shows up often.
 
 One summon per bot per user turn by default, same as the Gemini budget,
 so a bot cannot loop. A `summon:` line beyond the budget is shown to you
-with a note and not run. The agent's own run has a wall-clock cap
-(default 15 minutes); a timed-out agent reports what it had.
+with a note and not run. The agent's run has no time cap by default (`timeout_s` under `builder`
+sets one); it runs until it is done, and you can always press stop.
 
 ## 2. `/parallel`
 

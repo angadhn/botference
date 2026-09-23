@@ -33,12 +33,13 @@ _SUMMON_LINE_RE = re.compile(r"^summon\s*:\s*(.*)$", re.IGNORECASE)
 
 # The default builder. Opus 5.5 is the model the reader asked for; `high`
 # because its own default (`medium`) is tuned for conversation, not for a
-# build that gets one shot.
+# build that gets one shot. `timeout_s` 0 means NO cap: a build runs until it
+# is done, the way a sub-agent does — the reader can always press stop.
 DEFAULT_BUILDER = {
     "cli": "claude",
     "model": "claude-opus-5-5",
     "effort": "high",
-    "timeout_s": 900,
+    "timeout_s": 0,
 }
 
 #: One summon per bot per user turn. A bot that wants more should say so and
@@ -126,9 +127,9 @@ def builder_spec(summoner: str, botference_home: Path | None = None) -> dict:
             spec[key] = val
     spec["cli"] = "codex" if str(spec.get("cli", "")).lower() == "codex" else "claude"
     try:
-        spec["timeout_s"] = int(spec.get("timeout_s") or DEFAULT_BUILDER["timeout_s"])
+        spec["timeout_s"] = max(0, int(spec.get("timeout_s") or 0))
     except (TypeError, ValueError):
-        spec["timeout_s"] = DEFAULT_BUILDER["timeout_s"]
+        spec["timeout_s"] = 0
     return spec
 
 

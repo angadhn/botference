@@ -65,7 +65,7 @@ class TestBuilderSpec:
         assert spec["cli"] == "claude"
         assert spec["model"] == "claude-opus-5-5"
         assert spec["effort"] == "high"
-        assert spec["timeout_s"] == 900
+        assert spec["timeout_s"] == 0, "no cap by default: a build runs until it is done"
 
     def test_the_repo_budgets_file_names_the_builder(self, monkeypatch):
         for env in ("BOTFERENCE_BUILDER_CLI", "BOTFERENCE_BUILDER_MODEL",
@@ -91,6 +91,15 @@ class TestBuilderSpec:
     def test_env_wins_over_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOTFERENCE_BUILDER_MODEL", "claude-fable-5-1")
         assert summon.builder_spec("claude", tmp_path)["model"] == "claude-fable-5-1"
+
+    def test_an_unlimited_builder_has_no_adapter_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_BUILDER_MODEL", raising=False)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        a = c._make_builder(summon.builder_spec("claude", tmp_path))
+        assert a.timeout is None
+        (tmp_path / "context-budgets.json").write_text(json.dumps({"builder": {"timeout_s": 600}}))
+        a2 = c._make_builder(summon.builder_spec("claude", tmp_path))
+        assert a2.timeout == 600
 
     def test_labels(self):
         assert summon.builder_label({"model": "claude-opus-5-5", "effort": "high"}) == "Claude Opus 5.5 (high)"

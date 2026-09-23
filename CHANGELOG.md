@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-09-24
+
+- **Build agents run until they are done.** The summoned agent had a 15-minute
+  cap; a real build often needs longer, and a sub-agent cut off mid-task
+  reports nothing useful. No cap by default now (the reader can press stop);
+  `timeout_s` under `builder` in `context-budgets.json` sets one if wanted.
+  Also fixed: `context-budgets.json` had a stray `\n` appended by an earlier
+  patch, which made it unreadable — builder and fallback settings had been
+  silently running on their defaults.
+
 ## 2026-09-23
 
 - **`/new-project <title>`, and every `/project` verb as a command of its

@@ -3581,29 +3581,36 @@ class Botference:
             pass
         roots = list(self._plan_write_roots()) + [artifacts]
         config = planner_write_config(self.paths.project_root, roots)
+        # 0 = no cap: the adapter's constructor would swap None for its env
+        # default, so the unlimited case is set after construction
+        cap = spec["timeout_s"] or None
         if spec["cli"] == "codex":
-            return CodexAdapter(
+            adapter = CodexAdapter(
                 model=spec["model"],
                 sandbox=config.codex_sandbox,
                 cwd=config.codex_cwd,
                 add_dirs=list(config.codex_add_dirs),
                 reasoning_effort=spec.get("effort", ""),
-                timeout=spec["timeout_s"],
+                timeout=cap,
                 debug_log_path=getattr(self.codex, "debug_log_path", ""),
                 fallback_api_key=getattr(self.codex, "fallback_api_key", ""),
                 network_access=config.codex_network_access,
             )
-        return ClaudeAdapter(
-            model=spec["model"],
-            tools=["Read", "Glob", "Grep", "Bash", "Write", "Edit",
-                   "WebFetch", "WebSearch"],
-            effort=spec.get("effort", ""),
-            timeout=spec["timeout_s"],
-            debug_log_path=getattr(self.claude, "debug_log_path", ""),
-            cwd=config.claude_cwd,
-            add_dirs=list(config.claude_add_dirs),
-            settings=dict(config.claude_settings),
-        )
+        else:
+            adapter = ClaudeAdapter(
+                model=spec["model"],
+                tools=["Read", "Glob", "Grep", "Bash", "Write", "Edit",
+                       "WebFetch", "WebSearch"],
+                effort=spec.get("effort", ""),
+                timeout=cap,
+                debug_log_path=getattr(self.claude, "debug_log_path", ""),
+                cwd=config.claude_cwd,
+                add_dirs=list(config.claude_add_dirs),
+                settings=dict(config.claude_settings),
+            )
+        if cap is None:
+            adapter.timeout = None
+        return adapter
 
     async def _maybe_summon_for_bot(
         self, resp: AdapterResponse, ui: UIPort, model: str, *, depth: int = 0,
@@ -3681,7 +3688,7 @@ class Botference:
                     adapter, "agent", "room", ui, lambda: adapter.send(prompt),
                     extra={"agent": meta},
                 ),
-                timeout=spec["timeout_s"] + 5,
+                timeout=(spec["timeout_s"] + 5) if spec["timeout_s"] else None,
             )
         except asyncio.TimeoutError:
             status = "timeout"

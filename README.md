@@ -1668,8 +1668,9 @@ away. The report enters the shared history in the agent's own name, and the
 summoner is woken once to tell you what to open. The other bot sees the
 report like any other message, attributed to the agent, not the summoner.
 
-Rules: one summon per bot per user turn; a build has a wall-clock cap (15
-minutes by default) and reports as timed out or failed; a summon inside the
+Rules: one summon per bot per user turn; a build runs until it is done (no
+time cap by default — set `timeout_s` under `builder` in `context-budgets.json`
+if you want one) and reports as failed if it dies; a summon inside the
 wake-up is not acted on, so no bot can chain builds without you. A bot that
 writes an HTML page, plot or PDF in the chat anyway gets a visible
 `⚠ built in-chat, not delegated` stamp; the file is not touched. An artifact
