@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## 2026-09-23
+
+- **New models.** `claude-opus-5-5` (Anthropic Opus 5.5, released 2026-09-22:
+  Fable-5.1-class results at roughly 40% lower cost; its own default effort is
+  medium) and `gpt-6-sol` / `gpt-6-luna` (OpenAI, same day; Sol is the large
+  one, Luna the small cheap one). Pick them with `/model @claude claude-opus-5-5`
+  or `/model @codex gpt-6-sol`. Defaults are unchanged (`claude-fable-5-1`,
+  `gpt-6-astra`).
+- **Effort ladders match the CLIs.** Claude gains `max`; Codex drops `minimal`
+  (no current model accepts it) and gains `xhigh` and `ultra` (`ultra` is Sol
+  and Astra only — Luna and GPT-5.x stop at `max`). Autocomplete, `/help`, the
+  launcher help, the man page and the README agree.
+- **The bots summon a build agent; they no longer build in the chat.** When a
+  bot has enough to go on it ends its reply with `summon: <brief>` (a short
+  paragraph is fine). Botference starts a fresh Claude Code run — Opus 5.5 at
+  `high` by default, set under `builder` in `context-budgets.json`, with a
+  per-summoner override so Codex's summons can go to a Codex builder — in the
+  project folder with the brief and the room's last turns. The agent's card
+  appears **nested under the message that summoned it**, in the council page,
+  the browser plugin and the terminal: `↳ agent · Claude Opus 5.5 (high) ·
+  summoned by Codex · working… / done in 3:10`, then its report, with the
+  tool log folded away. The report enters the shared history in the agent's
+  own name, and the summoner is woken once to tell you what to open. One
+  summon per bot per turn; a build that times out or fails reports as such.
+  Codex gets the same power as Claude because botference does the summoning,
+  not the bot. A bot that writes an HTML page, plot or PDF itself anyway gets
+  a visible `⚠ built in-chat, not delegated` stamp; nothing is undone. The
+  plugin's make-artifact turn uses the same line, and an artifact an agent
+  builds is reviewed by the other bot from the *summoner*, as before.
+- **`/parallel`.** Put the word anywhere in a prompt and both bots answer at
+  once, neither seeing the other's reply — for two independent readings
+  instead of the second bot reacting to the first. Replies stream side by
+  side; both land in the shared history and each bot sees the other's on its
+  next turn. No bot-to-bot thread follows a parallel turn. A YouTube link is
+  still watched by Gemini first, as on every turn.
+
 ## 2026-09-22
 
 - **Adversarial review: checks, not second opinions.** Two agents reasoning from

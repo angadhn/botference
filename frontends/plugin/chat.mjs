@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession,
+import { HOME, ROOT, DIR, PAGE_CHAT, readPage, savePage, findThread, pageWithSession, parentTsFor,
   readConfig, saveAgents, AGENTS, isLibrary, LIBRARY_TITLE, displayTitle,
   pageKey, snapshotFile, hasSnapshot, kindOf, findPageImage, pageImagesOf,
   writeDecisionLog } from './store.mjs';
@@ -1064,10 +1064,14 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     }
     if (ev.type === 'stream') {
       if (!current || !current.capturing) return;
+      // a summoned build agent's live text (core/botference.py _run_summon
+      // streams it with model:'agent' and the card's meta): the drawer types
+      // it inside the working card rather than as a speaker of its own
+      const meta = ev.model === 'agent' && ev.agent ? { agent: ev.agent } : {};
       if (ev.kind === 'text_delta') {
-        chat(current.job, { kind: 'stream', model: ev.model, stream_id: ev.stream_id, text: String(ev.text || '') });
+        chat(current.job, { kind: 'stream', model: ev.model, stream_id: ev.stream_id, text: String(ev.text || ''), ...meta });
       } else if (ev.kind === 'done') {
-        chat(current.job, { kind: 'stream-done', model: ev.model, stream_id: ev.stream_id });
+        chat(current.job, { kind: 'stream-done', model: ev.model, stream_id: ev.stream_id, ...meta });
       }
       return;
     }
@@ -1080,14 +1084,29 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // `gemini` is the video watcher's own voice (core/botference.py
       // _post_video_report): a message in the thread like any other, so the
       // reader sees what was watched instead of concluding a bot watched it.
+      // `agent` is a BUILD AGENT one of the bots summoned (_run_summon): its
+      // card nests under the message that summoned it, never beside it.
       const author = speaker.startsWith('claude') ? 'claude'
         : speaker.startsWith('codex') ? 'codex'
-          : speaker.startsWith('gemini') ? 'gemini' : null;
+          : speaker.startsWith('gemini') ? 'gemini'
+            : speaker === 'agent' && ev.agent && ev.agent.id ? 'agent' : null;
       if (!author || !String(ev.text || '').trim()) return;
       // tool activity is kept, not dropped — the drawer collapses it, the
       // Obsidian note leaves it out
       const msg = { author, ts: new Date().toISOString(), text: String(ev.text) };
-      if (isToolActivity(ev)) msg.kind = 'tools';
+      if (isToolActivity(ev) || (author === 'agent' && ev.agent.card === 'tools')) msg.kind = 'tools';
+      // the bridge's id for this reply: what an agent's parent_stream_id names
+      if (ev.stream_id && author !== 'agent') msg.stream_id = String(ev.stream_id);
+      // what this turn has sent so far, so an agent card can find its parent
+      // without the store: the summoner's reply is always earlier in the same
+      // turn, because the summon runs inside it
+      const sent = current.sent || (current.sent = []);
+      if (author === 'agent') {
+        msg.agent = ev.agent;
+        const parent = parentTsFor(sent, ev.agent);
+        if (parent) msg.parent_ts = parent;
+      }
+      sent.push(msg);
       chat(current.job, { kind: 'reply', msg });
       return;
     }

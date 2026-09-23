@@ -1186,36 +1186,46 @@ export function artifactTurn({
     + (ask ? `\nWhat I want: ${ask}\n` : '')
     + (threadDigest(page) ? `\n${threadDigest(page)}` : '')
     + (chat.length ? `\n[what we said about it in the page chat]\n${chat.join('\n')}\n` : '')
-    + `\nWrite ONE self-contained HTML file at \`projects/${id}/<slug>.html\` — the slug from the `
-    + `source page's title, lowercase and hyphenated, at most 60 characters. If that file is `
-    + `already there, UPDATE it in place; do not make a second one.\n`
-    + `No external scripts and no external stylesheets — everything inline, so the file opens on `
-    + `its own with no network. It has to read well in BOTH light and dark: set the colours you `
-    + `use rather than inheriting them, and give the page an explicit background.\n`
+    // THE BOT DOES NOT BUILD THE PAGE. It decides what the page is and hands
+    // the build to a summoned agent (core/summon.py): a `summon:` line ending
+    // its reply, carrying the whole brief. Botference runs the agent, nests
+    // its report under this reply, and wakes the bot to finish. A bot that
+    // typed the page out itself would spend its one turn on HTML instead of
+    // on the reading, and (the older failure) a subagent it ran through its
+    // own tools reported to nobody the reader could see.
+    + `\nThe page is ONE self-contained HTML file at \`projects/${id}/<slug>.html\` — the slug from `
+    + `the source page's title, lowercase and hyphenated, at most 60 characters. If that file is `
+    + `already there, UPDATE it in place; there is never a second one.\n`
+    + `Do NOT write the page yourself. You decide what it should be; a build agent makes it. `
+    + `END your reply with a line of its own that starts \`summon:\` followed by the brief for `
+    + `that agent — a short paragraph on the lines right after it is fine — and botference will `
+    + `start a build agent with it. The brief must say ALL of this, because the agent sees only `
+    + `the brief and the last few messages of this chat:\n`
+    + `  - what to build, in your words, from the source and from what I have said;\n`
+    + (snapshotPath
+      ? `  - the source snapshot to read: ${snapshotPath};\n`
+      : `  - the source page: ${url};\n`)
+    + `  - the exact output path: projects/${id}/<slug>.html (say the slug);\n`
+    + `  - that the file's <head> carries exactly these two lines:\n`
+    + `      <meta name="bfp-source" content="${url}">\n`
+    + `      <meta name="bfp-source-title" content="${String(title || '').replace(/"/g, "'")}">\n`
     // UPDATE MEANS ADD. The failure this line exists to prevent: a planner
     // asked for a second year, rebuilt from the new brief alone, and last
     // year's twenty rows gone — with nothing anywhere saying they were
     // deleted, because the file is the only record they were in.
-    + `If that file already exists, UPDATING it means ADDING to it: keep every row, section and `
-    + `year already in it, and put the new material beside them. Remove or rewrite something only `
-    + `where I have actually asked you to.\n`
-    // …and the other thing a one-turn build cannot do alone. A page the reader
-    // asked to be BEAUTIFUL is a small project, not a paragraph of HTML, and
-    // one turn's worth of attention shows in the result.
-    + `If I have asked for something polished (pretty, beautiful, designed) or this is a `
-    + `substantial build, hand the BUILD to a subagent — your Agent tool, model opus, with the `
-    + `whole brief and the paths — and integrate what it writes rather than typing the page out `
-    + `in this turn. Check the file it leaves behind, then finish this reply yourself, still `
-    + `ending with the line below.\n`
-    + `Put the source in the file's <head>, exactly these two lines, so the page knows where it `
-    + `came from:\n`
-    + `  <meta name="bfp-source" content="${url}">\n`
-    + `  <meta name="bfp-source-title" content="${String(title || '').replace(/"/g, "'")}">\n`
-    + `Then END your reply with a line of its own reading \`${ARTIFACT_MARK} projects/${id}/<slug>.html\` `
-    + `— the path you actually wrote. That line is machinery: the reader's drawer turns it into a `
-    + `link and takes it out of your words, and a path that names no file on disk is ignored.\n`
-    + `Everything else you write is posted into the page chat, so keep it to a sentence or two `
-    + `about what you made.\n`;
+    + `  - that if the file already exists, UPDATING it means ADDING to it: keep every row, section `
+    + `and year already in it, put the new material beside them, and remove or rewrite something `
+    + `only where I have actually asked;\n`
+    + `  - No external scripts and no external stylesheets — everything inline, so the file opens `
+    + `on its own with no network; and it must read well in BOTH light and dark: set the colours `
+    + `it uses rather than inheriting them, and give the page an explicit background.\n`
+    + `The agent's report appears under your message. You are then woken with it: look at the `
+    + `file it left behind if you can, tell me in a sentence or two what to open and what is still `
+    + `missing, and END that reply with a line of its own reading `
+    + `\`${ARTIFACT_MARK} projects/${id}/<slug>.html\` — the path that was actually written. That `
+    + `line is machinery: the reader's drawer turns it into a link and takes it out of your words, `
+    + `and a path that names no file on disk is ignored.\n`
+    + `Everything else you write is posted into the page chat, so keep it short.\n`;
 }
 
 /**

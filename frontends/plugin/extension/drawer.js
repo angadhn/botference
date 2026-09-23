@@ -239,6 +239,11 @@
   // anchor.isBotAuthor both have it, so "claudette" was a person to the
   // companion and to the page, and a bot to the drawer.
   const isBot = a => /^(claude|codex|gemini)\b/i.test(String(a || '').trim());
+  // A SUMMONED BUILD AGENT's card (core/botference.py _run_summon): one of the
+  // bots decided what to make and handed the making to a fresh agent; its
+  // card carries who summoned it, which model, how it went, and hangs under
+  // the summoner's message (`parent_ts`) rather than sitting beside it.
+  const isAgentCard = m => !!(m && m.author === 'agent' && m.agent && typeof m.agent === 'object');
   // ⟦route⟧ begin — the tag a message's own words carry, as a pill name.
   //
   // THREE RUNTIMES, THREE COPIES, ONE RULE. The companion has it as
@@ -278,6 +283,7 @@
     const a = String(name || '').toLowerCase().trim();
     const bot = agentOf(a);
     if (bot) return 'var(--' + bot + ')';
+    if (a === 'agent') return 'var(--agent)';
     let h = 5381;
     for (let i = 0; i < a.length; i++) h = ((h << 5) + h + a.charCodeAt(i)) >>> 0;
     return 'oklch(var(--author-l, 0.52) 0.09 ' + (h % 360) + ')';
@@ -1235,13 +1241,50 @@
   const foldable = units => ((units || []).length) >= COLLAPSE_AT;
 
   // The raw msgs list grouped exactly the way msgsHtml draws it.
-  function msgUnits(list) {
+  // Reddit-style nesting, decided ONCE for a list. A message with `parent_ts`
+  // (a summoned agent's card) leaves the top-level flow and is filed under its
+  // parent: the message with that ts — the summoner's own, when two share a
+  // millisecond. `top` is what the units are built from; `kids` is what each
+  // parent draws under itself. Grouped by parent, not by arrival, so a card
+  // stays under its message however many replies land after it. A card whose
+  // parent is not in the list (deleted, or a record from another companion)
+  // stays in the flow rather than vanishing.
+  function nestMsgs(list) {
     const msgs = (list || []).filter(Boolean);
+    const kids = new Map();
+    const top = [];
+    for (const m of msgs) {
+      if (!m.parent_ts || !isAgentCard(m)) { top.push(m); continue; }
+      const by = String((m.agent && m.agent.summoned_by) || '').toLowerCase();
+      const cands = msgs.filter(p => p !== m && p.ts === m.parent_ts && !isAgentCard(p) && p.kind !== 'tools');
+      const parent = cands.find(p => by && String(p.author || '').toLowerCase().startsWith(by)) || cands[0];
+      if (!parent) { top.push(m); continue; }
+      if (!kids.has(parent)) kids.set(parent, []);
+      kids.get(parent).push(m);
+    }
+    return { top, kids };
+  }
+  // What an agent card's status line says: the agent's state and how long it
+  // took, from the controller's own `elapsed_s` — never from clocks here.
+  function agentStatus(a) {
+    const s = String((a && a.status) || 'working');
+    const secs = Math.max(0, Math.floor(Number((a && a.elapsed_s)) || 0));
+    const mmss = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+    return s === 'working' ? 'working…'
+      : s === 'done' ? 'done in ' + mmss
+        : s === 'failed' ? 'failed after ' + mmss
+          : s === 'timeout' ? 'timed out after ' + mmss : s;
+  }
+  // a bot's turn, for grouping: the bot's words, its tool rows, and any agent
+  // card that could not be nested
+  const botish = m => m.kind === 'tools' || isBot(m.author) || isAgentCard(m);
+  function msgUnits(list) {
+    const msgs = nestMsgs(list).top;
     const units = [];
     for (let i = 0; i < msgs.length; i++) {
-      if (msgs[i].kind !== 'tools' && !isBot(msgs[i].author)) { units.push([msgs[i]]); continue; }
+      if (!botish(msgs[i])) { units.push([msgs[i]]); continue; }
       const span = [];
-      while (i < msgs.length && (msgs[i].kind === 'tools' || isBot(msgs[i].author))) span.push(msgs[i++]);
+      while (i < msgs.length && botish(msgs[i])) span.push(msgs[i++]);
       i--;
       units.push(span);
     }
@@ -2325,7 +2368,63 @@ ${bubbleShellHtml()}`;
       return (m && m.author) || 'you';
     }
 
+    // ---- a summoned build agent's card -----------------------------------
+    const cap = w => (w ? w.charAt(0).toUpperCase() + w.slice(1) : '');
+    // the agent's live text, if it is streaming right now: keyed by the card's
+    // id, because the stream's own id is the adapter run's and not the card's
+    function agentStreamKey(target, id) {
+      for (const k of Object.keys(D.streams)) {
+        const s = D.streams[k];
+        if (s.target === target && s.agent && s.agent.id === id) return k;
+      }
+      return '';
+    }
+    function agentCardHtml(target, r) {
+      const a = r.agent || {};
+      const status = String(a.status || 'working');
+      const live = status === 'working' ? agentStreamKey(target, a.id) : '';
+      // two rows, so the line never wraps mid-phrase at panel width: who and
+      // which model with the time, then who summoned it and how it went
+      const head = `<span class="who agent-head">` +
+        `<span class="arrow" aria-hidden="true">↳</span>` +
+        `<span class="author">agent</span>` +
+        (a.label ? `<span class="sep">·</span><span class="alabel">${esc(a.label)}</span>` : '') +
+        `<span class="when">${esc(when(r.ts))}</span></span>` +
+        `<span class="agent-sub">` +
+        (a.summoned_by ? `<span class="aby">summoned by ${esc(cap(a.summoned_by))}</span><span class="sep">·</span>` : '') +
+        `<span class="astatus ${esc(status)}">${status === 'working' ? '<span class="spin">◐</span> ' : ''}${esc(agentStatus(a))}</span></span>`;
+      const brief = a.brief
+        ? `<div class="abrief" title="${esc(String(a.brief))}"><span class="abrief-k">brief:</span> ${esc(String(a.brief))}</div>` : '';
+      // the report, or — while it works — its live text typed into the card
+      // (paintStream finds the <pre> by the card's data-stream, exactly as it
+      // does a bot's own block), or the controller's one-line "is building…"
+      const body = live
+        ? `<pre class="stream-text">${esc(streamBody(D.streams[live]))}</pre>`
+        : String(r.text || '').trim()
+          ? `<div class="ctext md" data-md="${esc(mdSlot(stripMore(String(r.text))))}"></div>` : '';
+      const ckey = target + '|' + r.ts;
+      const cp = D.copied && D.copied.key === ckey ? D.copied : null;
+      const acts = `<div class="acts">` +
+        `<button class="rebtn${cp && cp.ok ? ' done' : ''}" data-act="copy" data-copykey="${esc(ckey)}"` +
+        ` title="${esc(cp ? (cp.ok ? 'copied' : COPY_FAIL) : COPY_TIP)}" aria-label="copy this report">${cp ? (cp.ok ? '✓' : '✕') : COPY_GLYPH}</button>` +
+        `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this card" aria-label="delete">✕</button>` +
+        `</div>`;
+      return `<div class="reply bot agent ${esc(status)}${live ? ' streaming' : ''}" data-ts="${esc(r.ts)}" data-author="agent"${
+        live ? ` data-stream="${esc(live)}"` : ''} style="--author:var(--agent)">${head}${brief}${body}${acts}</div>`;
+    }
+    // Everything filed under one message: its agent's tool rows first (folded,
+    // like a bot's own), then the cards, in the order they were filed.
+    function kidsHtml(target, list) {
+      if (!list || !list.length) return '';
+      const out = [];
+      const tools = list.filter(x => x.kind === 'tools');
+      if (tools.length) out.push(toolsHtml(target, tools));
+      for (const m of list) if (m.kind !== 'tools') out.push(agentCardHtml(target, m));
+      return `<div class="kids">${out.join('')}</div>`;
+    }
+
     function replyHtml(target, r, mine) {
+      if (isAgentCard(r)) return agentCardHtml(target, r);
       const bot = isBot(r.author);
       // edit is restricted to the user's own messages (the server refuses the
       // rest); delete is allowed on anything, so a bad bot answer can be pruned.
@@ -2425,13 +2524,16 @@ ${bubbleShellHtml()}`;
     // A "span" is everything a bot produced between two user messages. Inside a
     // span the tools messages are pulled out, merged and emitted first, whatever
     // order they arrived in; the answers follow in their own order.
-    function unitHtml(target, span) {
+    // `kids` (nestMsgs) is what each message in the span draws under itself:
+    // a summoned agent's cards, directly beneath the reply that summoned them.
+    function unitHtml(target, span, kids) {
       const out = [];
       const tools = span.filter(x => x.kind === 'tools');
       if (tools.length) out.push(toolsHtml(target, tools));
       for (const r of span) {
         if (r.kind === 'tools') continue;
         out.push(replyHtml(target, r, !isBot(r.author) && sameAuthor(r.author)));
+        if (kids && kids.has(r)) out.push(kidsHtml(target, kids.get(r)));
       }
       return out.join('');
     }
@@ -2459,6 +2561,7 @@ ${bubbleShellHtml()}`;
     // with a thread wants and had no way to say.
     function msgsHtml(target, list) {
       const units = msgUnits(list);
+      const { kids } = nestMsgs(list);
       const plan = collapsePlan(units, D.expanded[target]);
       // what folding this thread by hand WOULD hide — the label needs the
       // number, and a thread with nothing to hide is offered no control
@@ -2468,7 +2571,7 @@ ${bubbleShellHtml()}`;
         if (plan.collapsed && i === plan.from) out.push(moreHtml(target, plan.hidden));
         else if (byHand && byHand.collapsed && i === byHand.from) out.push(foldHtml(target, byHand.hidden));
         if (plan.collapsed && i >= plan.from && i < plan.to) continue;
-        out.push(unitHtml(target, units[i]));
+        out.push(unitHtml(target, units[i], kids));
       }
       return out.join('');
     }
@@ -2597,13 +2700,21 @@ ${bubbleShellHtml()}`;
         // fold yet (the fold needs a settled message to key its state on), so
         // the preview shows the whole answer and simply does not show the seam
         const text = streamBody(s);
-        return `<div class="reply bot streaming${who ? ' ' + who : ''}" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
-          <span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">writing…</span></span>
+        return `<div class="reply bot streaming${who ? ' ' + who : ''}${s.agent ? ' agent' : ''}" data-stream="${esc(k)}" style="--author:${authorColor(s.who)}">
+          <span class="who"><span class="author">${esc(s.who)}</span><span class="badge bot-badge">${s.agent ? 'building…' : 'writing…'}</span></span>
           <pre class="stream-text">${esc(text)}</pre></div>`;
       }
     }
+    // an agent's live stream is typed inside its working card (agentCardHtml)
+    // when that card is on screen; only a stream with no card falls through
+    // to a block of its own
+    function agentCardOnScreen(target, id) {
+      return realMsgs(target).some(m => isAgentCard(m) && m.agent.id === id && m.kind !== 'tools');
+    }
     function streamsHtml(target) {
-      return streamKeysFor(target).map(streamHtml).join('');
+      return streamKeysFor(target)
+        .filter(k => !(D.streams[k].agent && agentCardOnScreen(target, D.streams[k].agent.id)))
+        .map(streamHtml).join('');
     }
 
     // ---- who is working ---------------------------------------------------
@@ -9682,11 +9793,21 @@ ${bubbleShellHtml()}`;
         seen[k] = 1;
         out.push({ key: k, sig, make });
       };
-      for (const m of (t.msgs || [])) {
+      const { top, kids } = nestMsgs(t.msgs || []);
+      // an agent card's sig carries its status: the working card and the
+      // report share a ts and an id, and the reconciler must repaint the one
+      const sigOf = m => String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : '')
+        + (isAgentCard(m) ? ' :: ' + m.agent.status + '|' + m.agent.elapsed_s
+          + (m.agent.status === 'working' ? '|' + agentStreamKey(target, m.agent.id) : '') : '');
+      for (const m of top) {
         if (!m || m.kind === 'tools') continue;
-        push('m|' + m.ts + '|' + (m.author || ''),
-          String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : ''),
-          () => bubbleCardHtml(target, m));
+        push('m|' + m.ts + '|' + (m.author || ''), sigOf(m),
+          () => isAgentCard(m) ? agentCardHtml(target, m) : bubbleCardHtml(target, m));
+        for (const k of (kids.get(m) || [])) {
+          if (k.kind === 'tools') continue;
+          push('k|' + k.ts + '|' + k.agent.id, sigOf(k),
+            () => `<div class="kids">${agentCardHtml(target, k)}</div>`);
+        }
       }
       for (const e of outboxVisible(target)) {
         push('o|' + e.id, e.state + ' :: ' + e.text + ' :: ' + (e.error || ''),
@@ -9696,6 +9817,8 @@ ${bubbleShellHtml()}`;
         // A live block's sig never changes, on purpose: paintStream patches its
         // <pre> sixty times a second, and a reconciler that replaced the node
         // would restart the typewriter and drop the text mid-sentence.
+        // …and an agent's stream is typed inside its card above, not here.
+        if (D.streams[k].agent && agentCardOnScreen(target, D.streams[k].agent.id)) continue;
         push('s|' + k, 'live', () => streamHtml(k));
       }
       return out;
@@ -10427,14 +10550,17 @@ ${bubbleShellHtml()}`;
           if (clearWaiting(target)) render();
           const key = ev.stream_id || (ev.model + ':' + target);
           const s = D.streams[key]
-            || (D.streams[key] = { who: ev.model || 'claude', target, text: '', shown: 0, done: false });
+            || (D.streams[key] = { who: ev.model || 'claude', target, text: '', shown: 0, done: false,
+              agent: ev.agent || null });
+          if (ev.agent) s.agent = ev.agent;
           s.text += (ev.text || '');
           s.done = false;
           // in instant mode `shown` is simply kept at the end, so a reader who
           // flips the switch mid-answer does not watch the text rewind
           if (!typewriterOn()) s.shown = s.text.length;
-          // the floor has moved: redraw so the spinning ring follows it
-          if (ev.model) {
+          // the floor has moved: redraw so the spinning ring follows it — a
+          // build agent is not on the roster; its card spins for itself
+          if (ev.model && ev.model !== 'agent') {
             const live = D.liveAgents[target] || (D.liveAgents[target] = []);
             if (live.indexOf(ev.model) === -1) live.push(ev.model);
             if (D.speaker[target] !== ev.model) { D.speaker[target] = ev.model; render(); }
@@ -10523,6 +10649,17 @@ ${bubbleShellHtml()}`;
       if (!msg) return;
       const list = msgListFor(target, true);
       if (!list) return;
+      // a summoned agent reporting again is the SAME card (store.appendMsg
+      // holds the same rule): the working card becomes the report, in place
+      if (isAgentCard(msg)) {
+        const i = list.findIndex(m => isAgentCard(m) && m.agent.id === msg.agent.id
+          && (m.agent.card || 'report') === (msg.agent.card || 'report'));
+        if (i >= 0) {
+          list[i] = { ...list[i], text: msg.text, agent: msg.agent,
+            ...(msg.kind ? { kind: msg.kind } : {}), parent_ts: list[i].parent_ts || msg.parent_ts };
+          return;
+        }
+      }
       if (list.some(m => m.ts === msg.ts && m.author === msg.author)) return;
       list.push(msg);
     }
@@ -10741,6 +10878,7 @@ ${bubbleShellHtml()}`;
     // pure, for the node tests — no DOM, no KaTeX
     scanMath, protectMath,                                  // test/math.test.mjs
     msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
+    nestMsgs, agentStatus, isAgentCard,                     // test/collapse.test.mjs (summoned agents)
     COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs

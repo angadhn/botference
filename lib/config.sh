@@ -558,17 +558,20 @@ Options:
 Supported models:
   claude-fable-5-1      Anthropic Fable 5.1 (1M context; default Claude participant)
   claude-fable-5        Anthropic Fable 5   (1M context)
+  claude-opus-5-5       Anthropic Opus 5.5  (1M context; Fable-5.1-class at ~40% lower cost; default effort medium)
   claude-opus-5         Anthropic Opus 5    (1M context)
   claude-opus-4-8       Anthropic Opus 4.8  (1M context)
   claude-opus-4-7       Anthropic Opus 4.7  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
   claude-haiku-4-5      Anthropic Haiku 4.5  (200k context)
   gpt-6-astra           OpenAI GPT-6 Astra   (1.05M context; default Codex participant)
+  gpt-6-sol             OpenAI GPT-6 Sol     (1.05M context; large; effort low..max, ultra)
+  gpt-6-luna            OpenAI GPT-6 Luna    (1.05M context; small, cheapest; effort low..max)
   gpt-5.6-sol           OpenAI GPT-5.6 Sol   (1.05M context)
   gpt-5.6-terra         OpenAI GPT-5.6 Terra (1.05M context, cheaper)
   gpt-5.6-luna          OpenAI GPT-5.6 Luna  (1.05M context, fastest)
   gpt-5.5               OpenAI GPT-5.5       (258k context on high effort)
-  gpt-5-latest          OpenAI GPT-5 latest  (probes gpt-5.5, falls back to gpt-5.4)
+  gpt-5-latest          OpenAI GPT-5 latest  (probes gpt-5.6-sol, falls back to gpt-5.5)
   gpt-5.4               OpenAI GPT-5.4       (272k context)
   gpt-4o                OpenAI GPT-4o        (128k context)
   o3                    OpenAI o3            (200k context)
@@ -583,7 +586,7 @@ Model resolution order:
 Environment variables:
   ANTHROPIC_MODEL          Global Anthropic model override (same as --anthropic-model)
   OPENAI_MODEL           OpenAI participant model (default: gpt-6-astra)
-  OPENAI_REASONING_EFFORT Codex participant reasoning effort in planner sessions (default: medium)
+  OPENAI_REASONING_EFFORT Codex participant reasoning effort in planner sessions (default: medium; low|medium|high|xhigh|max|ultra)
   BOTFERENCE_HOME          Path to botference framework install
   BOTFERENCE_PROJECT_DIR_NAME Project-local state directory slug/name (default: botference)
   ANTHROPIC_API_KEY     API key for Anthropic models

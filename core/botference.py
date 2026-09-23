@@ -85,6 +85,7 @@ from handoff import build_frontmatter, validate_handoff
 from render_blocks import parse_render_blocks
 import video_watch
 import lasso
+import summon
 from session_store import (
     SessionStore,
     SessionSummary,
@@ -208,6 +209,7 @@ class ParsedInput:
     body: str = ""      # message body or command argument
     target: str = ""    # "@claude", "@codex", "@all" for messages;
                         # "claude", "codex" for relay target
+    parallel: bool = False  # /parallel: both bots take the prompt at once
 
 
 _SLASH_COMMANDS = {
@@ -239,6 +241,7 @@ _SLASH_COMMANDS = {
     "/watch": InputKind.WATCH,
     "/lasso": InputKind.LASSO,
     "/verify": InputKind.VERIFY,
+    "/parallel": InputKind.MESSAGE,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
@@ -247,6 +250,10 @@ _SLASH_COMMANDS = {
 _MENTION_RE = re.compile(
     r"^(@(?:claude|codex|all))\s*(.*)", re.IGNORECASE | re.DOTALL
 )
+# `/parallel` anywhere in a message — start, end or middle — lifts out and
+# sends the rest to both bots at the same time, each seeing the history up
+# to the prompt and not the other's reply to it.
+_PARALLEL_RE = re.compile(r"(?:(?<=\s)|^)/parallel(?=\s|$)", re.IGNORECASE)
 
 # Relay command patterns
 _RELAY_HYPHEN_RE = re.compile(r"^/relay-(claude|codex|both)$", re.IGNORECASE)
@@ -271,8 +278,10 @@ _PROJECT_SUBCOMMANDS = (
 )
 
 # Known effort levels (passed through to the underlying CLI)
-_CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
-_CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max")
+# Claude Code: low/medium/high/xhigh/max (Opus 5.5 defaults to medium, the rest high).
+# Codex (GPT-6 Sol/Astra): low/medium/high/xhigh/max/ultra; Luna and GPT-5.x have no ultra.
+_CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+_CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 
 def _known_claude_models() -> list[str]:
@@ -333,6 +342,15 @@ def parse_input(raw: str) -> ParsedInput:
     text = raw.strip()
     if not text:
         return ParsedInput(kind=InputKind.MESSAGE)
+
+    if _PARALLEL_RE.search(text):
+        rest = re.sub(r"\s{2,}", " ", _PARALLEL_RE.sub(" ", text)).strip()
+        inner = parse_input(rest) if rest else ParsedInput(kind=InputKind.MESSAGE)
+        if inner.kind is not InputKind.MESSAGE:
+            # a slash command with /parallel in it is still that command
+            return inner
+        return ParsedInput(kind=InputKind.MESSAGE, body=inner.body,
+                           target="@all", parallel=True)
 
     # Slash commands
     if text.startswith("/"):
@@ -450,6 +468,10 @@ class TranscriptRecord:
 class DisplayRecord:
     speaker: str
     text: str
+    #: Extra the frontends render from — today only the summoned agent's
+    #: card: {"id", "card", "parent_stream_id", "summoned_by", "model",
+    #: "effort", "label", "status", "elapsed_s", "brief"}. None otherwise.
+    meta: Optional[dict] = None
 
 
 # Bound relay/late-join backfill so a freshly (re)started model session cannot be
@@ -548,6 +570,18 @@ class Transcript:
     def mark_seen(self, model: str) -> None:
         if self.entries:
             self._last_seen[model] = self.entries[-1].turn_index
+
+    def mark_seen_through(self, model: str, turn_index: int) -> None:
+        """Seen up to *turn_index* only — what a /parallel round needs.
+
+        Both bots answered the same prompt without seeing each other, so
+        each is marked as having seen the prompt and nothing after it; the
+        other's reply reaches it on its next turn as an ordinary update.
+        """
+        self._last_seen[model] = turn_index
+
+    def last_turn_index(self) -> int:
+        return self.entries[-1].turn_index if self.entries else -1
 
     def _entry_block(self, e) -> str:
         """Format one transcript entry as a backfill block (text + tool previews)."""
@@ -1365,6 +1399,10 @@ class Botference:
         self._last_watched_url: str = ""
         # model -> questions put to Gemini during the current user turn.
         self._gemini_asks: dict[str, int] = {}
+        # model -> build agents summoned during the current user turn
+        # (core/summon.py); reset with _gemini_asks.
+        self._summons: dict[str, int] = {}
+        self._summon_seq: int = 0
         # ---- lasso (core/lasso.py) ------------------------------------
         # What this chat has had brought INTO it: past discussions, pages the
         # user annotated in the browser, papers out of their own folders. Each
@@ -2047,7 +2085,8 @@ class Botference:
                 self._granted_plan_write_roots
             ),
             "room_history": [
-                {"speaker": entry.speaker, "text": entry.text}
+                {"speaker": entry.speaker, "text": entry.text,
+                 **({"agent": entry.meta} if entry.meta else {})}
                 for entry in self._room_history
             ],
             "writer_votes": dict(self._ff_writer_votes),
@@ -2284,6 +2323,7 @@ class Botference:
                 DisplayRecord(
                     speaker=str(entry.get("speaker", "system")),
                     text=str(entry.get("text", "")),
+                    meta=entry.get("agent") if isinstance(entry.get("agent"), dict) else None,
                 )
                 for entry in payload.get("room_history", []) or []
                 if isinstance(entry, dict)
@@ -2419,7 +2459,8 @@ class Botference:
         if elided:
             display = display[-_REPLAY_MAX_ENTRIES:]
         room = [
-            (e.speaker, e.text, self._structured_blocks(e.text))
+            (e.speaker, e.text, self._structured_blocks(e.text), e.meta)
+            if e.meta else (e.speaker, e.text, self._structured_blocks(e.text))
             for e in display
         ]
         if elided:
@@ -2435,7 +2476,7 @@ class Botference:
         if callable(bulk):
             bulk(room)
             return
-        for speaker, text, blocks in room:
+        for speaker, text, blocks, *_meta in room:
             self._emit_room_entry(ui, speaker, text, blocks, restored=True)
         # …and what this chat is CARRYING, so a browser landing on a resumed
         # conversation sees its attachment strip rather than an empty box that
@@ -2654,6 +2695,15 @@ class Botference:
         self, raw: str, ui: UIPort, *, attachments: list | None = None,
     ) -> None:
         parsed = parse_input(raw)
+
+        if parsed.kind is InputKind.MESSAGE and parsed.parallel and not parsed.body:
+            self._add_room_entry(
+                ui, "system",
+                "/parallel needs a prompt: `/parallel <what you want both bots "
+                "to answer>` — the word may sit anywhere in it. Both answer at "
+                "once, neither seeing the other's reply.",
+            )
+            return
 
         if parsed.kind is InputKind.QUIT:
             self._quit_requested = True
@@ -3228,6 +3278,261 @@ class Botference:
         if question and asking:
             await self._wake_after_gemini(asking, ui)
 
+    # ── summoned build agents (core/summon.py) ────────────────
+
+    #: Stamp on a bot's reply that wrote a deliverable itself. Nothing is
+    #: undone — the reader sees that the rule was not followed.
+    IN_CHAT_BUILD_STAMP = "⚠ built in-chat, not delegated"
+
+    def _stamp_in_chat_build(
+        self, model: str, resp: AdapterResponse, ui: UIPort,
+    ) -> None:
+        if model not in ("claude", "codex"):
+            return
+        files = _visual_artifacts_from_tool_summaries(resp.tool_summaries)
+        if not files:
+            return
+        shown = ", ".join(Path(f).name for f in files[:4])
+        more = f" (+{len(files) - 4} more)" if len(files) > 4 else ""
+        note = (f"{self.IN_CHAT_BUILD_STAMP}: {model.capitalize()} wrote "
+                f"{shown}{more} in this chat. Deliverables go to a summoned "
+                "build agent (`summon: <brief>`).")
+        self._add_room_entry(ui, "system", note)
+        self.transcript.add("system", note)
+
+    def _recent_room_history_text(self, max_entries: int = 12,
+                                  max_chars: int = 24_000) -> str:
+        """The last few turns, as the build agent's only view of the room."""
+        recent = [
+            e for e in self.transcript.entries[-max_entries * 2:]
+            if e.speaker in ("user", "claude", "codex", "gemini", "agent")
+        ][-max_entries:]
+        blocks = [self.transcript._entry_block(e) for e in recent]
+        kept, _ = _take_tail_within_budget(blocks, max_chars)
+        return "\n".join(kept)
+
+    def _artifacts_dir_display(self) -> str:
+        pid = self.session_project_id or self.active_project_id
+        if pid:
+            return f"projects/{pid}/artifacts"
+        return "work/artifacts"
+
+    def _make_builder(self, spec: dict):
+        """A fresh adapter for one build. Nothing is shared with the bots.
+
+        It may write where the bots may write, plus the artifacts folder the
+        brief names — that folder is the whole point of the build, so it is
+        not gated behind a write-access request the agent cannot make.
+        """
+        artifacts = (self.paths.project_root / self._artifacts_dir_display()).resolve()
+        try:
+            artifacts.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        roots = list(self._plan_write_roots()) + [artifacts]
+        config = planner_write_config(self.paths.project_root, roots)
+        if spec["cli"] == "codex":
+            return CodexAdapter(
+                model=spec["model"],
+                sandbox=config.codex_sandbox,
+                cwd=config.codex_cwd,
+                add_dirs=list(config.codex_add_dirs),
+                reasoning_effort=spec.get("effort", ""),
+                timeout=spec["timeout_s"],
+                debug_log_path=getattr(self.codex, "debug_log_path", ""),
+                fallback_api_key=getattr(self.codex, "fallback_api_key", ""),
+                network_access=config.codex_network_access,
+            )
+        return ClaudeAdapter(
+            model=spec["model"],
+            tools=["Read", "Glob", "Grep", "Bash", "Write", "Edit",
+                   "WebFetch", "WebSearch"],
+            effort=spec.get("effort", ""),
+            timeout=spec["timeout_s"],
+            debug_log_path=getattr(self.claude, "debug_log_path", ""),
+            cwd=config.claude_cwd,
+            add_dirs=list(config.claude_add_dirs),
+            settings=dict(config.claude_settings),
+        )
+
+    async def _maybe_summon_for_bot(
+        self, resp: AdapterResponse, ui: UIPort, model: str, *, depth: int = 0,
+    ) -> None:
+        """Honour a `summon:` brief a bot ended its reply with.
+
+        One per bot per user turn. The agent's card nests under the reply
+        that summoned it (parent_stream_id), the report goes into the shared
+        transcript as the agent's own words, and the summoner is woken once
+        with it. A summon inside that wake-up is not acted on (depth), so a
+        bot cannot chain builds without the reader.
+        """
+        if depth or model not in ("claude", "codex"):
+            return
+        brief = summon.parse_summon_request(resp.text)
+        if not brief:
+            return
+        used = self._summons.get(model, 0)
+        if used >= summon.SUMMON_BUDGET:
+            note = (f"[{model.capitalize()} asked for another build agent this "
+                    f"turn; the budget is {summon.SUMMON_BUDGET} per turn. Ask "
+                    "for it yourself if you want it run.]")
+            self._add_room_entry(ui, "system", note)
+            self.transcript.add("system", note)
+            return
+        self._summons[model] = used + 1
+        await self._run_summon(brief, model, resp.stream_id, ui)
+
+    async def _run_summon(
+        self, brief: str, summoner: str, parent_stream_id: str, ui: UIPort,
+    ) -> None:
+        spec = summon.builder_spec(summoner, self.paths.botference_home)
+        self._summon_seq += 1
+        agent_id = f"{self.session_id}:agent:{self._summon_seq}"
+        label = summon.builder_label(spec)
+        meta = {
+            "id": agent_id,
+            "card": "report",
+            "parent_stream_id": parent_stream_id or "",
+            "summoned_by": summoner,
+            "cli": spec["cli"],
+            "model": spec["model"],
+            "effort": spec.get("effort", ""),
+            "label": label,
+            "brief": brief,
+            "status": "working",
+            "elapsed_s": 0,
+        }
+        self._add_room_entry(
+            ui, "agent",
+            f"{label} is building… (summoned by {summoner.capitalize()})",
+            stream_id=f"{agent_id}:card", agent=meta,
+        )
+        self.transcript.add(
+            "system",
+            f"[{summoner.capitalize()} summoned a build agent — {label} — with "
+            f"the brief: {brief}]",
+        )
+        self._persist_session()
+
+        prompt = summon.builder_prompt(
+            brief=brief,
+            summoner=summoner,
+            history=self._recent_room_history_text(),
+            artifacts_dir=self._artifacts_dir_display(),
+            project_root=str(self.paths.project_root),
+        )
+        adapter = self._make_builder(spec)
+        started = time.monotonic()
+        status = "done"
+        resp: Optional[AdapterResponse] = None
+        try:
+            resp = await asyncio.wait_for(
+                self._run_adapter_streamed(
+                    adapter, "agent", "room", ui, lambda: adapter.send(prompt),
+                    extra={"agent": meta},
+                ),
+                timeout=spec["timeout_s"] + 5,
+            )
+        except asyncio.TimeoutError:
+            status = "timeout"
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # the agent failing is a report, not a crash
+            status = "failed"
+            resp = AdapterResponse(text=f"Error: {e}", exit_code=1)
+        elapsed = int(time.monotonic() - started)
+        if resp is not None and resp.exit_code == -1:
+            status = "timeout"
+        elif resp is not None and resp.exit_code not in (0, -1) and status == "done":
+            status = "failed"
+
+        tools_text = _tool_summary_display_text(resp.tool_summaries) if resp else ""
+        if tools_text:
+            self._emit_room_entry(
+                ui, "agent", tools_text,
+                _tool_summary_display_blocks(resp.tool_summaries),
+                stream_id=f"{agent_id}:tools",
+                agent={**meta, "card": "tools", "status": status,
+                       "elapsed_s": elapsed},
+            )
+        report = (resp.text.strip() if resp and resp.text.strip()
+                  else {"timeout": "The build agent ran out of time.",
+                        "failed": "The build agent failed before reporting."}
+                  .get(status, "The build agent reported nothing."))
+        done_meta = {**meta, "status": status, "elapsed_s": elapsed}
+        self._add_room_entry(
+            ui, "agent", report, stream_id=f"{agent_id}:card", agent=done_meta,
+        )
+        self.transcript.add(
+            "agent",
+            f"[Build agent {label}, summoned by {summoner.capitalize()}, "
+            f"{status} after {elapsed}s:]\n{report}",
+        )
+        self._persist_session()
+        await self._wake_after_summon(summoner, label, status, ui)
+
+    async def _wake_after_summon(
+        self, model: str, label: str, status: str, ui: UIPort,
+    ) -> None:
+        """Give the floor back to the bot whose agent just reported."""
+        nudge = (f"[The build agent {model.capitalize()} summoned ({label}) "
+                 f"has {status} — its report is above. {model.capitalize()}, "
+                 "look at what it made if you can, then tell the user what to "
+                 "open and what is still missing. Do not summon again this turn.]")
+        self.transcript.add("system", nudge)
+        resp = await self._send_to_model(model, "", ui)
+        if resp is None:
+            return
+        self.transcript.add(model, resp.text, resp.tool_summaries)
+        self.transcript.mark_seen(model)
+        self._update_pct(model, resp, ui)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+        await self._maybe_watch_for_bot(resp.text, ui, model, depth=1)
+        await self._maybe_summon_for_bot(resp, ui, model, depth=1)
+
+    # ── /parallel ─────────────────────────────────────────
+
+    async def _send_parallel(self, body: str, ui: UIPort) -> None:
+        """Both bots take the prompt at once, neither seeing the other's reply.
+
+        Replies stream side by side and land in the shared history when they
+        finish; each bot is marked as having seen the prompt and nothing
+        after, so the other's take reaches it on its next ordinary turn. No
+        bot-to-bot thread follows: the point is two independent readings.
+        """
+        prompt_index = self.transcript.last_turn_index()
+        results = await asyncio.gather(
+            self._send_to_model("claude", body, ui),
+            self._send_to_model("codex", body, ui),
+            return_exceptions=True,
+        )
+        for model, resp in zip(("claude", "codex"), results):
+            if isinstance(resp, BaseException):
+                if isinstance(resp, asyncio.CancelledError):
+                    raise resp
+                self._add_room_entry(ui, "system", f"Error from {model}: {resp}")
+                continue
+            if resp is None:
+                continue
+            self.transcript.add(model, resp.text, resp.tool_summaries)
+            self._stamp_in_chat_build(model, resp, ui)
+            visual_warning = _visual_verification_warning(model, resp)
+            if visual_warning:
+                self._add_room_entry(ui, "system", visual_warning)
+                self.transcript.add("system", visual_warning)
+            self._update_pct(model, resp, ui)
+        for model in ("claude", "codex"):
+            if model in self._models_initialized:
+                self.transcript.mark_seen_through(model, prompt_index)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+        for model, resp in zip(("claude", "codex"), results):
+            if isinstance(resp, AdapterResponse):
+                await self._maybe_watch_for_bot(resp.text, ui, model)
+                self._maybe_lasso_for_bot(resp.text, ui)
+                await self._maybe_summon_for_bot(resp, ui, model)
+
     async def _wake_after_gemini(self, model: str, ui: UIPort) -> None:
         """Give the floor back to the bot whose question Gemini just answered.
 
@@ -3306,6 +3611,8 @@ class Botference:
             "  /verify [on|off]    — When the bots converge, the OTHER one checks the final claims",
             "                       against the sources (not the discussion). On by default, per-chat",
             "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
+            "  /parallel <prompt>  — Both bots answer at once, neither seeing the other's reply;",
+            "                      the word may sit anywhere in the prompt. No bot-to-bot thread follows",
             "  /watch <url> [question] — Have Gemini watch a YouTube video, post what it saw,"
             " and let the bots discuss it",
             "  /lasso <words>      — Search everything you have read and said (annotated pages,"
@@ -3318,6 +3625,7 @@ class Botference:
             "  /auth [claude|codex|all] — Check local CLI auth status",
             "  /model [@claude|@codex <id>] — Show or set the model for a participant",
             "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
+            "                      (claude: low|medium|high|xhigh|max; codex: low|medium|high|xhigh|max|ultra)",
             "  /current-model (or /current) — Show both loaded models and effort levels",
             "  /help               — Show this help",
             "  /quit | /exit       — Exit without writing files",
@@ -5009,14 +5317,18 @@ class Botference:
         pane: str,
         ui: UIPort,
         call: Callable[[], Awaitable[AdapterResponse]],
+        *,
+        extra: Optional[dict] = None,
     ) -> AdapterResponse:
         stream_id = self._next_stream_id(model, pane)
         old_callback = getattr(adapter, "stream_callback", None)
+        extra = dict(extra or {})
         self._emit_stream_event(ui, {
             "kind": "start",
             "stream_id": stream_id,
             "pane": pane,
             "model": model,
+            **extra,
         })
 
         def _callback(event: dict[str, Any]) -> None:
@@ -5025,6 +5337,7 @@ class Botference:
                 "stream_id": stream_id,
                 "pane": pane,
                 "model": model,
+                **extra,
             })
 
         adapter.stream_callback = _callback
@@ -5039,6 +5352,7 @@ class Botference:
             "stream_id": stream_id,
             "pane": pane,
             "model": model,
+            **extra,
         })
         return resp
 
@@ -5051,31 +5365,54 @@ class Botference:
         *,
         stream_id: str = "",
         restored: bool = False,
+        agent: Optional[dict] = None,
     ) -> None:
-        if stream_id or restored:
+        if stream_id or restored or agent:
+            kwargs: dict[str, Any] = {"stream_id": stream_id, "restored": restored}
+            if agent:
+                kwargs["agent"] = agent
             try:
-                ui.add_room_entry(
-                    speaker,
-                    text,
-                    blocks,
-                    stream_id=stream_id,
-                    restored=restored,
-                )  # type: ignore[call-arg]
+                ui.add_room_entry(speaker, text, blocks, **kwargs)  # type: ignore[call-arg]
                 return
             except TypeError:
                 pass
+            if agent:
+                try:
+                    ui.add_room_entry(
+                        speaker, text, blocks,
+                        stream_id=stream_id, restored=restored,
+                    )  # type: ignore[call-arg]
+                    return
+                except TypeError:
+                    pass
         ui.add_room_entry(speaker, text, blocks)
 
     def _add_room_entry(
         self, ui: UIPort, speaker: str, text: str, *, stream_id: str = "",
+        agent: Optional[dict] = None,
     ) -> None:
-        self._room_history.append(DisplayRecord(speaker=speaker, text=text))
+        if agent:
+            # a card that is replaced (working → done) keeps ONE history
+            # entry, so a reload shows the outcome and not the wait
+            for i in range(len(self._room_history) - 1, -1, -1):
+                prev = self._room_history[i]
+                if prev.meta and prev.meta.get("id") == agent.get("id") \
+                        and prev.meta.get("card") == agent.get("card"):
+                    self._room_history[i] = DisplayRecord(
+                        speaker=speaker, text=text, meta=dict(agent))
+                    break
+            else:
+                self._room_history.append(
+                    DisplayRecord(speaker=speaker, text=text, meta=dict(agent)))
+        else:
+            self._room_history.append(DisplayRecord(speaker=speaker, text=text))
         self._emit_room_entry(
             ui,
             speaker,
             text,
             self._structured_blocks(text),
             stream_id=stream_id,
+            agent=agent,
         )
         self._persist_session()
 
@@ -5128,10 +5465,13 @@ class Botference:
     ) -> None:
         route = self.router.resolve(parsed)
         # each user turn buys each bot a fresh (small) allowance of questions
-        # to Gemini — the budget is per turn, not per chat
+        # to Gemini, and of build agents — the budget is per turn, not per chat
         self._gemini_asks = {}
+        self._summons = {}
 
         prefix = f"{route} " if parsed.target else f"(→{route}) "
+        if parsed.parallel:
+            prefix = "/parallel " + prefix
         self._add_room_entry(ui, "user", prefix + parsed.body)
 
         # Stage attachments (images, PDFs) to repo-local tmp dir so agents
@@ -5185,6 +5525,10 @@ class Botference:
 
         last_speaker: Optional[str] = None
         last_resp: Optional[AdapterResponse] = None
+        if parsed.parallel:
+            await self._send_parallel(body, ui)
+            await self._drain_pending_auto_relays(ui)
+            return
         for model in targets:
             resp = await self._send_to_model(model, body, ui)
             if resp is None and route == "@all" and model == "claude" and getattr(
@@ -5199,6 +5543,7 @@ class Botference:
                 break
             if resp:
                 self.transcript.add(model, resp.text, resp.tool_summaries)
+                self._stamp_in_chat_build(model, resp, ui)
                 visual_warning = _visual_verification_warning(model, resp)
                 if visual_warning:
                     self._add_room_entry(ui, "system", visual_warning)
@@ -5209,6 +5554,7 @@ class Botference:
                 self._persist_session()
                 await self._maybe_watch_for_bot(resp.text, ui, model)
                 self._maybe_lasso_for_bot(resp.text, ui)
+                await self._maybe_summon_for_bot(resp, ui, model)
                 last_speaker, last_resp = model, resp
 
         if (
@@ -5328,6 +5674,7 @@ class Botference:
             if next_resp is None:
                 break
             self.transcript.add(target, next_resp.text, next_resp.tool_summaries)
+            self._stamp_in_chat_build(target, next_resp, ui)
             visual_warning = _visual_verification_warning(target, next_resp)
             if visual_warning:
                 self._add_room_entry(ui, "system", visual_warning)
@@ -5338,6 +5685,7 @@ class Botference:
             self._persist_session()
             await self._maybe_watch_for_bot(next_resp.text, ui, target)
             self._maybe_lasso_for_bot(next_resp.text, ui)
+            await self._maybe_summon_for_bot(next_resp, ui, target)
 
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp

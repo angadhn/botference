@@ -421,6 +421,8 @@ checkpoint.
 .TP
 .B /relay /compact /goal /permissions /status /auth /model /effort
 Session management, including per-participant model and effort switches.
+Effort levels: Claude low/medium/high/xhigh/max; Codex low/medium/high/xhigh/max/ultra.
+Models added 2026-09-23: claude-opus-5-5, gpt-6-sol, gpt-6-luna.
 .B /relay @both
 (alias @all, /relay-both) resets both agents at once from one shared
 handoff \(em authored once by the agent with the most context headroom
@@ -481,6 +483,12 @@ or
 .B "ask gemini: <question>"
 about the video last watched here; a question gets that bot (only that
 bot) one turn back with the answer, twice per turn at most.
+.TP
+.B /parallel <prompt>
+Both bots answer at once, neither seeing the other's reply. The word may sit
+anywhere in the prompt. Each bot has the chat up to the prompt; both replies
+land in the shared history and each sees the other's on its next turn. No
+bot-to-bot thread follows.
 .TP
 .B /lasso <words>
 Search everything you have already read and said \- the pages you have

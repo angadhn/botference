@@ -169,6 +169,37 @@ describe("truncateTitle", () => {
 });
 
 describe("preRenderLines", () => {
+  it("renders an agent card as a header line with the body indented under it", () => {
+    const entries = [{
+      speaker: "agent",
+      text: "Wrote foo.py\nAll tests pass",
+      agent: {
+        id: "s1:agent:1", card: "report", parent_stream_id: "claude-room-3",
+        summoned_by: "codex", label: "Claude Opus 5.5 (high)", status: "done", elapsed_s: 61,
+      },
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines[0]!.label, "");
+    assert.equal(lines[0]!.text, "↳ agent · Claude Opus 5.5 (high) · summoned by Codex · done in 1:01");
+    assert.equal(lines[0]!.speakerColor, "whiteBright");
+    assert.equal(lines[1]!.label, "    ");
+    assert.equal(lines[1]!.text, "Wrote foo.py");
+    assert.equal(lines[2]!.label, "    ");
+    assert.equal(lines[2]!.text, "All tests pass");
+  });
+
+  it("folds an agent tools card to one indented line", () => {
+    const entries = [{
+      speaker: "agent",
+      text: "Explored\n├ Read a.py\n└ Edit b.py",
+      agent: { id: "s1:agent:1", card: "tools", status: "done" },
+    }];
+    const lines = preRenderLines(entries, 60);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0]!.label, "    ");
+    assert.equal(lines[0]!.text, "↳ tools: 2 calls");
+  });
+
   it("parses snippet headers and fenced code into explicit render blocks", () => {
     const blocks = parseRenderBlocks("'core/botference.py' lines 400-402:\n\n```python\ndef parse_input(raw: str):\n    return raw\n```");
     assert.equal(blocks.length, 1);

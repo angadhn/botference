@@ -257,6 +257,49 @@ function visible(msgs, fold) {
     D.collapsePlan(many, false).hidden, 40 - D.KEEP_HEAD - D.KEEP_TAIL);
 }
 
+// ---- 9. a summoned build agent's cards nest under the summoner ---------------
+// core/botference.py _run_summon: a bot's reply ends with `summon:`, the
+// controller runs an agent, and the agent's cards carry `parent_ts` (the
+// summoner's message). The drawer groups them under that message however
+// many replies land after them, and never counts them as messages of their own.
+{
+  const agent = (t, parent, extra = {}) => ({
+    author: 'agent', ts: t, parent_ts: parent, text: 'report',
+    agent: { id: 'sess:agent:1', card: 'report', summoned_by: 'claude', status: 'done',
+      elapsed_s: 75, label: 'Claude Opus 5.5 (high)', ...extra },
+  });
+  const list = [you('a'), bot('b1'), agent('g1', 'b1'), bot('b2'), you('c'), bot('b3')];
+  const { top, kids } = D.nestMsgs(list);
+  eq('the card leaves the top-level flow', top.map(m => m.ts), ['a', 'b1', 'b2', 'c', 'b3']);
+  eq('…and is filed under the message it summoned from',
+    kids.get(list[1]).map(m => m.ts), ['g1']);
+  eq('the units are built from the flow, not the cards',
+    ids(D.msgUnits(list)), [['a'], ['b1', 'b2'], ['c'], ['b3']]);
+  // two messages in one millisecond: the summoner's own is the parent
+  const same = [you('a'), { ...bot('x'), author: 'codex' }, bot('x'), agent('g', 'x')];
+  const n2 = D.nestMsgs(same);
+  eq('the summoner\'s message wins a shared ts', n2.kids.get(same[2]).map(m => m.ts), ['g']);
+  ok('…and the other bot gets nothing', !n2.kids.has(same[1]));
+  // a card whose parent is gone stays visible, in the bots' span
+  const orphan = [you('a'), agent('g', 'gone'), bot('b')];
+  eq('an orphan card stays in the flow', ids(D.msgUnits(orphan)), [['a'], ['g', 'b']]);
+  ok('isAgentCard needs both the author and the meta',
+    D.isAgentCard(agent('g', 'x')) && !D.isAgentCard(bot('b')) && !D.isAgentCard({ author: 'agent', ts: 'z' }));
+  // the status line, from the controller's own elapsed_s
+  eq('working', D.agentStatus({ status: 'working' }), 'working…');
+  eq('done', D.agentStatus({ status: 'done', elapsed_s: 75 }), 'done in 1:15');
+  eq('failed', D.agentStatus({ status: 'failed', elapsed_s: 9 }), 'failed after 0:09');
+  eq('timed out', D.agentStatus({ status: 'timeout', elapsed_s: 900 }), 'timed out after 15:00');
+  // hidden counts never include a nested card
+  const long = [];
+  for (let i = 0; i < 20; i++) { long.push(you('u' + i)); long.push(bot('b' + i)); long.push(agent('g' + i, 'b' + i)); }
+  const p = D.collapsePlan(D.msgUnits(long), undefined);
+  const flat = D.collapsePlan(D.msgUnits(long.filter(m => !D.isAgentCard(m))), undefined);
+  ok('a nested card is not an "earlier reply"',
+    p.collapsed && p.hidden === flat.hidden && p.hidden === p.to - p.from,
+    JSON.stringify(p) + ' vs ' + JSON.stringify(flat));
+}
+
 // ---- report -----------------------------------------------------------------
 console.log(`\ncollapse: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }

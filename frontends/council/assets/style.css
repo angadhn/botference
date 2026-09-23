@@ -20,6 +20,7 @@
   --font-codex: "Avenir Next", "Segoe UI", Inter, "Helvetica Neue",
     ui-sans-serif, system-ui, sans-serif;
   --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61; --gemini: #5b58d6;
+  --agent: #7a6a3f;
   --bad: #b3403a; --ok: rgba(46, 160, 67, 0.75);
   --shadow: 0 4px 14px rgba(0, 0, 0, .1);
   color-scheme: light;
@@ -30,6 +31,7 @@
     --line: rgba(217, 119, 87, 0.2); --accent: #e0805e; --accent-hover: #ee9678;
     --card: #221d16; --card-line: rgba(226, 190, 160, 0.16); --rail: #1d1913;
     --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0; --gemini: #9a92f2;
+    --agent: #c8b273;
     --ok: rgba(63, 185, 80, 0.8); --shadow: 0 6px 20px rgba(0, 0, 0, .45);
     color-scheme: dark;
   }
@@ -41,6 +43,7 @@
   --line: rgba(217, 119, 87, 0.22); --accent: #cf6640; --accent-hover: #b04f2e;
   --card: #fffdf8; --card-line: #e6ddcd; --rail: #f3ecdf;
   --claude: #c05c34; --codex: #2f6ea8; --you: #0f7f61; --gemini: #5b58d6;
+  --agent: #7a6a3f;
   --ok: rgba(46, 160, 67, 0.75); --shadow: 0 4px 14px rgba(0, 0, 0, .1);
   color-scheme: light;
 }
@@ -49,6 +52,7 @@
   --line: rgba(217, 119, 87, 0.2); --accent: #e0805e; --accent-hover: #ee9678;
   --card: #221d16; --card-line: rgba(226, 190, 160, 0.16); --rail: #1d1913;
   --claude: #e0805e; --codex: #6ba8e2; --you: #3ecfa0; --gemini: #9a92f2;
+    --agent: #c8b273;
   --ok: rgba(63, 185, 80, 0.8); --shadow: 0 6px 20px rgba(0, 0, 0, .45);
   color-scheme: dark;
 }
@@ -370,6 +374,45 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .msg.codex .body { font-family: var(--font-codex); font-size: .97rem; line-height: 1.72 }
 .msg.tools-msg.claude, .msg.tools-msg.codex { background: none; border-left-width: 2px;
   border-radius: 0; padding: 0 0 0 .95rem }
+/* ── summoned build agents: nested cards ─────────────────────
+   A bot can summon a build agent; its card hangs UNDER the message that
+   summoned it (a `.replies` box inside that message), indented with its own
+   olive rail — a reply thread, not a new voice in the room. The header is
+   small and sans: who built, who asked, how long. The report body reads
+   like any bot message (same renderer, same links, same `artifact:` line). */
+.replies { display: flex; flex-direction: column; gap: .5rem;
+  margin: .55rem 0 .2rem .15rem; padding-left: .7rem;
+  border-left: 2px dotted color-mix(in srgb, var(--agent) 45%, transparent) }
+.msg.agent { --author: var(--agent); position: relative;
+  border-left: 3px solid color-mix(in srgb, var(--agent) 70%, transparent);
+  border-radius: 0 10px 10px 0; padding: .35rem .5rem .3rem .8rem;
+  background: color-mix(in srgb, var(--agent) 7%, var(--card)) }
+.msg.agent .agent-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .35rem;
+  font: 600 .7rem/1.5 var(--sans); letter-spacing: .01em; color: var(--agent); min-width: 0 }
+.msg.agent .agent-arrow { font-weight: 400; opacity: .8 }
+.msg.agent .agent-kind { text-transform: uppercase; letter-spacing: .08em; font-size: .64rem }
+.msg.agent .agent-sep { color: var(--muted); font-weight: 400 }
+.msg.agent .agent-by { color: var(--muted); font-weight: 500 }
+.msg.agent .agent-status { font-weight: 500; color: var(--muted) }
+.msg.agent .agent-status.working { color: var(--muted); font-variant-numeric: tabular-nums }
+.msg.agent .agent-status.done { color: color-mix(in srgb, var(--ok) 100%, var(--fg) 15%) }
+.msg.agent .agent-status.failed, .msg.agent .agent-status.timeout { color: var(--bad) }
+.msg.agent .agent-act { flex-basis: 100%; font: .68rem/1.5 var(--mono); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0 }
+.msg.agent .agent-act:empty { display: none }
+.msg.agent .agent-brief { margin: .1rem 0 .2rem; font: .74rem/1.5 var(--sans); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0 }
+.msg.agent .agent-brief[hidden] { display: none }
+/* the report reads in the room's serif at a notch under a bot's size — and
+   NOT in the summoner's typeface, which the nesting would otherwise inherit */
+.msg.claude .msg.agent .body, .msg.codex .msg.agent .body, .msg.agent .body {
+  font: .95rem/1.7 var(--serif); margin-top: .25rem }
+.msg.agent .body:empty { margin-top: 0 }
+.msg.agent.working .body:empty::before { content: 'building…'; color: var(--muted);
+  font: .8rem var(--sans) }
+.msg.agent .agent-tools .tools { margin: .1rem 0 .15rem 0 }
+.msg.agent .agent-tools:empty { display: none }
+.msg.agent .msg-acts { margin-top: .1rem }
 /* your own turn: the one bubble in the column with a filled ground, its own
    accent, and the right edge — findable in a fast scroll in either theme */
 .msg.user { --author: var(--you); align-self: flex-end; max-width: 85%;

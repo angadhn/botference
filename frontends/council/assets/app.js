@@ -194,8 +194,8 @@
   }
   // fallback model lists if completion_context never arrived (offline-ish boot)
   const FALLBACK_MODELS = {
-    claude: ['claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+    claude: ['claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    codex: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
   };
   // fallback completion context: the bridge emits completion_context exactly
   // once at startup, so a client that connects after the server's history was
@@ -214,7 +214,7 @@
       '/delete', '/archive', '/unarchive',
       '/draft', '/finalize', '/resume', '/rename', '/permissions',
       '/status', '/notify', '/autorelay', '/agents', '/auth', '/current-model', '/current',
-      '/allow-host', '/watch',
+      '/allow-host', '/watch', '/parallel',
       '/help', '/quit', '/exit', '@claude ', '@codex ', '@all ',
     ],
     scoped: {
@@ -222,13 +222,13 @@
         'assign', 'archive', 'unarchive', 'activate-build'],
       '/model @claude ': FALLBACK_MODELS.claude,
       '/model @codex ': FALLBACK_MODELS.codex,
-      '/effort @claude ': ['low', 'medium', 'high', 'xhigh'],
-      '/effort @codex ': ['minimal', 'low', 'medium', 'high', 'max'],
+      '/effort @claude ': ['low', 'medium', 'high', 'xhigh', 'max'],
+      '/effort @codex ': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     },
   };
   const FALLBACK_EFFORT = {
-    claude: ['low', 'medium', 'high', 'xhigh'],
-    codex: ['minimal', 'low', 'medium', 'high', 'max'],
+    claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+    codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   };
   const modelsFor = agent => {
     const scoped = state.ctx.scoped || {};
@@ -258,6 +258,7 @@
   const state = {
     busy: false, queued: 0, agents: { claude: false, codex: false },
     streams: {},           // key "model:stream_id" -> {el, text}
+    summonTimer: null,     // the live clock on summoned agents' working cards
     ctx: FALLBACK_CTX,
     models: { claude: null, codex: null },     // current model per agent (from status)
     effort: { claude: null, codex: null },     // current reasoning effort (from status)
@@ -1726,6 +1727,8 @@
     let s = state.streams[key];
     if (!s) {
       s = state.streams[key] = { text: '', shown: 0, el: addMsg(model, '', { streaming: true }) };
+      // a summoned agent's card points back at this id (its parent_stream_id)
+      if (ev.stream_id) s.el.dataset.streamId = String(ev.stream_id);
     }
     const wasPinned = pinned();
     s.text += String(ev.text || '');
@@ -1752,6 +1755,181 @@
       return true;
     }
     return false;
+  }
+
+  // ── summoned build agents: nested cards ──
+  // A bot can "summon" a build agent (core/botference.py `_run_summon`). The
+  // controller emits the agent's life as room entries with speaker "agent"
+  // and an `agent` metadata object: first a WORKING card (status "working"),
+  // then live text deltas as `stream` events tagged with the same `agent`
+  // meta, optionally a folded tool-log card (card "tools"), and finally the
+  // report card (card "report", status done/failed/timeout) which REPLACES
+  // the working one. Everything is keyed by `agent.id`, never by stream id:
+  // the card's stream id (`<id>:card`) and the live stream's id differ.
+  //
+  // The card nests under the bot message that summoned it — Reddit-style —
+  // inside a `.replies` box appended to that message, so it stays with its
+  // parent when later messages arrive. The parent is found by
+  // `parent_stream_id` (bot messages carry data-stream-id); when that is
+  // missing (restored history has none) the nearest PRECEDING message by
+  // the summoner is used. Same rule live and on restore.
+  const fmtClock = secs => {
+    const s = Math.max(0, Math.round(Number(secs) || 0));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+  const attrQuote = v => String(v).replace(/["\\]/g, '\\$&');
+  const capital = s => { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+  function findSummonParent(meta) {
+    const root = container();
+    const pid = meta && meta.parent_stream_id;
+    if (pid) {
+      const el = root.querySelector(`.msg[data-stream-id="${attrQuote(pid)}"]`);
+      if (el && !el.classList.contains('agent')) return el;
+    }
+    const who = String((meta && meta.summoned_by) || '').toLowerCase();
+    if (!AGENTS.includes(who)) return null;
+    // top-level children only: a card nested in `.replies` is never a parent
+    for (let i = root.children.length - 1; i >= 0; i--) {
+      const el = root.children[i];
+      if (el.classList.contains('msg') && el.classList.contains(who) &&
+          !el.classList.contains('tools-msg') && !el.classList.contains('agent')) return el;
+    }
+    return null;
+  }
+  function summonCard(id) {
+    return container().querySelector(`.msg.agent[data-agent-id="${attrQuote(id)}"]`);
+  }
+  function agentStatusText(meta, startMs) {
+    const st = String(meta.status || 'working');
+    if (st === 'working') {
+      const secs = startMs ? (Date.now() - startMs) / 1000 : 0;
+      return `working… ⏱ ${fmtClock(secs)}`;
+    }
+    const t = fmtClock(meta.elapsed_s);
+    if (st === 'done') return `done in ${t}`;
+    if (st === 'timeout') return `timed out after ${t}`;
+    return `failed after ${t}`;
+  }
+  function paintAgentHead(card, meta) {
+    const st = String(meta.status || 'working');
+    card.classList.toggle('working', st === 'working');
+    card.dataset.status = st;
+    const head = card.querySelector('.agent-head');
+    if (!head) return;
+    const start = Number(card.dataset.start) || 0;
+    head.innerHTML =
+      '<span class="agent-arrow" aria-hidden="true">↳</span>' +
+      '<span class="agent-kind">agent</span>' +
+      `<span class="agent-sep">·</span><span class="agent-label">${esc(meta.label || meta.model || 'build agent')}</span>` +
+      `<span class="agent-sep">·</span><span class="agent-by">summoned by ${esc(capital(meta.summoned_by))}</span>` +
+      `<span class="agent-sep">·</span><span class="agent-status ${esc(st)}">${esc(agentStatusText(meta, start))}</span>` +
+      (st === 'working' ? '<span class="agent-act"></span>' : '');
+    const brief = card.querySelector('.agent-brief');
+    if (brief) {
+      const b = String(meta.brief || '').replace(/\s+/g, ' ').trim();
+      brief.hidden = !b;
+      brief.textContent = b ? `brief: ${b}` : '';
+      brief.title = b;
+    }
+  }
+  // the live clock on every working card; stops itself when none is working
+  function tickAgentClocks() {
+    let any = false;
+    for (const card of container().querySelectorAll('.msg.agent.working')) {
+      any = true;
+      const el = card.querySelector('.agent-status');
+      if (el) el.textContent = agentStatusText({ status: 'working' }, Number(card.dataset.start) || 0);
+    }
+    if (!any && state.summonTimer) { clearInterval(state.summonTimer); state.summonTimer = null; }
+  }
+  function startAgentClocks() {
+    if (state.summonTimer) return;
+    state.summonTimer = setInterval(tickAgentClocks, 1000);
+  }
+  // find-or-create the card for this summon, nested under its parent
+  function ensureAgentCard(meta) {
+    let card = summonCard(meta.id);
+    if (card) return card;
+    const wasPinned = pinned();
+    card = document.createElement('div');
+    card.className = 'msg agent';
+    card.dataset.agentId = String(meta.id);
+    card.dataset.start = String(Date.now());
+    card.innerHTML = '<div class="agent-head"></div><div class="agent-brief" hidden></div>' +
+      '<div class="agent-tools"></div><div class="body"></div>' + copyBtnHtml;
+    const parent = findSummonParent(meta);
+    if (parent) {
+      let box = [...parent.children].find(c => c.classList.contains('replies')) || null;
+      if (!box) { box = document.createElement('div'); box.className = 'replies'; parent.appendChild(box); }
+      box.appendChild(card);
+    } else {
+      container().appendChild(card);   // no summoner on screen: stand alone
+    }
+    paintAgentHead(card, meta);
+    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    return card;
+  }
+  // drop every live stream that was painting into this card
+  function endAgentStreams(card) {
+    for (const k of Object.keys(state.streams)) {
+      if (state.streams[k].el === card) delete state.streams[k];
+    }
+  }
+  // a `room` (or restored) entry with speaker "agent"
+  function handleAgentRoom(ev) {
+    const meta = ev.agent;
+    if (!meta || !meta.id) { addMsg('system', ev.text); return; }
+    const card = ensureAgentCard(meta);
+    if (meta.card === 'tools') {
+      const lines = String(ev.text || '').split('\n');
+      const steps = lines[0] === 'Explored' ? lines.slice(1) : lines;
+      const slot = card.querySelector('.agent-tools');
+      if (slot) {
+        slot.innerHTML = `<details class="tools"><summary>full output · ${steps.length} line${steps.length === 1 ? '' : 's'}</summary>` +
+          `<div class="tool-steps">${steps.map(esc).join('\n')}</div></details>`;
+      }
+      return;
+    }
+    const wasPinned = pinned();
+    if (String(meta.status || 'working') === 'working') {
+      // the working card: the header says it all, the body waits for the stream
+      card.classList.add('streaming');
+      paintAgentHead(card, meta);
+      startAgentClocks();
+    } else {
+      // the report replaces whatever streamed in
+      endAgentStreams(card);
+      card.classList.remove('streaming');
+      paint(card, ev.text);
+      paintAgentHead(card, meta);
+      tickAgentClocks();
+    }
+    if (!replayBuffer) follow(wasPinned);
+  }
+  // `stream` events tagged with agent meta: deltas paint the card's body
+  function handleAgentStream(ev) {
+    const meta = ev.agent;
+    const card = ensureAgentCard(meta);
+    const key = streamKey(ev);
+    if (ev.kind === 'text_delta') {
+      let s = state.streams[key];
+      if (!s) s = state.streams[key] = { text: '', shown: 0, el: card };
+      const wasPinned = pinned();
+      card.classList.add('streaming');
+      s.text += String(ev.text || '');
+      if (!typewriterOn()) s.shown = s.text.length;
+      paint(card, shownText(s));
+      follow(wasPinned);
+      startTyping();
+    } else if (ev.kind === 'tool_start') {
+      const act = card.querySelector('.agent-act');
+      if (act) act.textContent = laneActivity(ev);
+    } else if (ev.kind === 'done') {
+      const s = state.streams[key];
+      if (s) { paint(card, s.text); delete state.streams[key]; }
+      const act = card.querySelector('.agent-act');
+      if (act) act.textContent = '';
+    }
   }
 
   // ── subagent progress lane ──
@@ -2942,6 +3120,8 @@
       case 'room': {
         const sp = String(ev.speaker).toLowerCase();
         if (sp === 'user' && !ev.restored) break; // we echo user input ourselves
+        // a summoned build agent's card: nested under the bot that summoned it
+        if (sp === 'agent' && ev.agent) { handleAgentRoom(ev); break; }
         // tool-run entries get the collapsible card, placed before the reply
         if (AGENTS.includes(sp) &&
             (/:tools$/.test(ev.stream_id || '') || /^Explored\n/.test(ev.text || ''))) {
@@ -2951,11 +3131,19 @@
         // a finalized agent turn is the exhaustion signal (or proof it recovered)
         if (AGENTS.includes(sp)) noteAgentTurn(sp, ev.text);
         if (ev.stream_id && finalizeStream(ev)) break;
-        addMsg(ev.speaker, ev.text);
+        {
+          const el = addMsg(ev.speaker, ev.text);
+          // a bot's turn keeps its stream id so a summoned agent's card can
+          // find its parent (parent_stream_id) after the stream is over
+          if (ev.stream_id && AGENTS.includes(sp)) el.dataset.streamId = String(ev.stream_id);
+        }
         break;
       }
       case 'restore':
-        for (const e of ev.entries || []) addMsg(e.speaker, e.text);
+        for (const e of ev.entries || []) {
+          if (String(e.speaker).toLowerCase() === 'agent' && e.agent) handleAgentRoom(e);
+          else addMsg(e.speaker, e.text);
+        }
         break;
       case 'video_watch':
         // start / done / error for one Gemini video watch (core/botference.py
@@ -2968,6 +3156,11 @@
         break;
       case 'stream':
         setBusy(true);
+        // a summoned build agent's live output goes into its nested card, not
+        // the transcript proper (and never into the subagents lane)
+        if (ev.agent && ev.agent.id && String(ev.model || '').toLowerCase() === 'agent') {
+          handleAgentStream(ev); break;
+        }
         if (ev.kind === 'text_delta') { streamDelta(ev); break; }
         if (ev.model && AGENTS.includes(String(ev.model).toLowerCase())) {
           const m = String(ev.model).toLowerCase();

@@ -1557,6 +1557,26 @@ await test('the turn names the file to write, the metas, and the line to end wit
   assert.match(t, /artifact: projects\/doc-fest\/<slug>\.html/);
 });
 
+await test('the bot does not build the page: it summons a build agent for it', async () => {
+  const t = ws.artifactTurn({
+    id: 'doc-fest', title: 'Doc Fest brochure', url: 'https://example.com/brochure',
+    snapshotPath: '/tmp/snap/abc.html', page: artPage(),
+  });
+  assert.match(t, /Do NOT write the page yourself/);
+  assert.match(t, /END your reply with a line of its own that starts `summon:`/);
+  assert.equal(/Agent tool/.test(t), false, 'no longer a subagent of the bot\'s own');
+  assert.equal(/model opus/.test(t), false);
+  // the brief has to carry everything the agent needs, and the turn lists it
+  assert.match(t, /the source snapshot to read: \/tmp\/snap\/abc\.html/);
+  assert.match(t, /the exact output path: projects\/doc-fest\/<slug>\.html/);
+  assert.match(t, /UPDATING it means ADDING to it/);
+  assert.match(t, /BOTH light and dark/);
+  assert.match(t, /report appears under your message/);
+  assert.match(t, /You are then woken with it/);
+  const bare = ws.artifactTurn({ id: 'd', title: 'B', url: 'https://x/y', page: artPage() });
+  assert.match(bare, /the source page: https:\/\/x\/y/, 'no snapshot: the brief names the url instead');
+});
+
 await test('the reader\'s own words ride it verbatim, and the snapshot is named', async () => {
   const t = ws.artifactTurn({
     id: 'doc-fest', title: 'Brochure', url: 'https://x/y',
@@ -2478,6 +2498,35 @@ console.log('\ncompanion — POST /project-create and POST /make-artifact');
     assert.match(r.json.error, /file this page in a project first/);
   });
 
+  await test('an `artifact:` line in a summoned agent\'s report is the SUMMONER\'s artifact', async () => {
+    const out = path.join(projectDir(), 'built.html');
+    const r = await POST(base, '/make-artifact', {
+      url: PAGE, root, id: projectId,
+      // the mock plays codex deciding, and the agent it summons writing the
+      // file and reporting the line
+      brief: `@codex a second page [mock:summon][mock:summon-write:${out}]`
+        + `[mock:summon-says:Built it.\\nartifact: projects/${projectId}/built.html]`,
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.route, '@codex');
+    const page = await waitFor(async () => {
+      const p = await readPage();
+      const row = (p.artifacts || []).find(a => a.rel === `projects/${projectId}/built.html`);
+      return row ? p : null;
+    }, 'the built artifact to be recorded');
+    const row = page.artifacts.find(a => a.rel === `projects/${projectId}/built.html`);
+    assert.equal(row.drafted_by, 'codex', 'the summoner, not "agent"');
+    assert.equal(row.built_by, 'claude-opus-5-5', 'and which model typed it, beside that');
+    assert.equal(ws.reviewerFor(row.drafted_by), 'claude', 'so claude reviews it');
+    const card = page.page_chat.filter(m => m.author === 'agent' && m.kind !== 'tools').pop();
+    assert.match(card.text, /Built it\./);
+    assert.equal(/artifact:/.test(card.text), false, 'the line came off the report\'s words');
+    assert.equal(card.agent.status, 'done');
+    const parent = page.page_chat.find(m => m.ts === card.parent_ts && m.author === 'codex');
+    assert.ok(parent, 'and the card hangs under codex\'s message');
+    assert.equal(ws.draftedBy({ path: out }, page), 'codex', 'the review hand-off reads the same answer');
+  });
+
   await test('the page keeps its own lane: its ordinary turns never touch the council', async () => {
     const before = inputs(logFile).length;
     await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: '@claude and what is on Sunday?' });
@@ -2729,6 +2778,52 @@ await test('recordArtifact keeps who wrote the file', async () => {
   // a name that is not one of the two is no name at all
   st.recordArtifact(page, { root: '/c', id: 'p', rel: 'projects/p/b.html', drafted_by: 'somebody' });
   assert.equal('drafted_by' in page.artifacts[1], false);
+});
+
+await test('a summoned agent\'s build is the SUMMONER\'s artifact; the model is a note beside it', async () => {
+  const page = { url: 'https://src.test/b' };
+  st.recordArtifact(page, { root: '/c', id: 'p', rel: 'projects/p/a.html',
+    drafted_by: 'codex', built_by: 'claude-opus-5-5' });
+  assert.equal(page.artifacts[0].drafted_by, 'codex');
+  assert.equal(page.artifacts[0].built_by, 'claude-opus-5-5');
+  assert.equal(ws.reviewerFor(page.artifacts[0].drafted_by), 'claude',
+    'so the other bot reviews — the summoner briefed it and answers for it');
+  // rewritten by a bot's own hand: the note goes
+  st.recordArtifact(page, { root: '/c', id: 'p', rel: 'projects/p/a.html', drafted_by: 'codex' });
+  assert.equal('built_by' in page.artifacts[0], false);
+});
+
+await test('an agent card in a message list finds its parent by stream id, then by summoner', async () => {
+  const msgs = [
+    { author: 'angadh', ts: 't0', text: 'make it' },
+    { author: 'codex', ts: 't1', text: 'no', stream_id: 's:room:codex:1' },
+    { author: 'claude', ts: 't2', text: 'yes\nsummon: build it', stream_id: 's:room:claude:2' },
+    { author: 'claude', ts: 't3', kind: 'tools', text: 'Explored\n└ Read' },
+  ];
+  assert.equal(st.parentTsFor(msgs, { parent_stream_id: 's:room:claude:2', summoned_by: 'claude' }), 't2');
+  assert.equal(st.parentTsFor(msgs, { parent_stream_id: '', summoned_by: 'claude' }), 't2',
+    'no stream id: the summoner\'s latest words, never its tool row');
+  assert.equal(st.parentTsFor(msgs, { parent_stream_id: 'nope', summoned_by: 'codex' }), 't1');
+  assert.equal(st.parentTsFor(msgs, { parent_stream_id: '', summoned_by: '' }), '');
+  // appendMsg: a report with the card's id replaces the working card in place
+  const page = { url: 'https://src.test/c', threads: [], page_chat: msgs.slice() };
+  const meta = { id: 's:agent:1', card: 'report', parent_stream_id: 's:room:claude:2',
+    summoned_by: 'claude', model: 'claude-opus-5-5', label: 'Opus', brief: 'build it',
+    status: 'working', elapsed_s: 0 };
+  const working = st.appendMsg(page, st.PAGE_CHAT, { author: 'agent', text: 'building…', agent: meta,
+    parent_ts: 't2' });
+  assert.equal(page.page_chat.length, 5);
+  const report = st.appendMsg(page, st.PAGE_CHAT, { author: 'agent', text: 'Done.',
+    agent: { ...meta, status: 'done', elapsed_s: 42 } });
+  assert.equal(page.page_chat.length, 5, 'replaced, not appended');
+  assert.equal(report, working, 'the same message object');
+  assert.equal(report.text, 'Done.');
+  assert.equal(report.agent.status, 'done');
+  assert.equal(report.agent.elapsed_s, 42);
+  assert.equal(report.parent_ts, 't2');
+  assert.equal(st.sanitizeAgent({ id: 'x', status: 'bogus', summoned_by: 'Gemini' }).status, 'working');
+  assert.equal(st.sanitizeAgent({ id: 'x', summoned_by: 'Gemini' }).summoned_by, '');
+  assert.equal(st.sanitizeAgent({ status: 'done' }), null, 'no id, no card');
 });
 
 await test('reviewerFor is the other one, and nobody when the drafter is unknown', async () => {

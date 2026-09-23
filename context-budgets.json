@@ -78,5 +78,15 @@
     "model": "claude-opus-4-8",
     "effort": "xhigh",
     "max_tokens": 32768
+  },
+  "builder": {
+    "cli": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "timeout_s": 900,
+    "for": {
+      "claude": {},
+      "codex": {}
+    }
   }
 }

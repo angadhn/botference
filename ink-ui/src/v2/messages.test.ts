@@ -18,6 +18,12 @@ import {
   toolSegmentStreamId,
   stripFooterFromStreamEntries,
   stripTrailingJsonFooter,
+  agentHeaderLine,
+  agentToolsHeaderLine,
+  formatAgentStatus,
+  parseAgentMeta,
+  placeAgentEntry,
+  type AgentMeta,
 } from "./messages.js";
 
 describe("Ink message pacing", () => {
@@ -170,5 +176,119 @@ describe("capDisplayEntries", () => {
     const nearCap = Array.from({ length: 10 }, (_, i) => ({ n: i }));
     assert.equal(capDisplayEntries(nearCap, 10, 8), nearCap);
     assert.ok(MAX_DISPLAY_ENTRIES > DISPLAY_TRIM_KEEP);
+  });
+});
+
+describe("summoned agent cards", () => {
+  type E = { speaker: string; text: string; streamId?: string; agent?: AgentMeta };
+  const meta = (over: Partial<AgentMeta> = {}): AgentMeta => ({
+    id: "s1:agent:1",
+    card: "report",
+    parent_stream_id: "claude-room-3",
+    summoned_by: "claude",
+    cli: "claude",
+    model: "claude-opus-5-5",
+    effort: "high",
+    label: "Claude Opus 5.5 (high)",
+    status: "working",
+    elapsed_s: 0,
+    ...over,
+  });
+
+  it("places an agent card directly under the summoning bot's message", () => {
+    const entries: E[] = [
+      { speaker: "user", text: "build it" },
+      { speaker: "claude", text: "summoning…", streamId: "claude-room-3" },
+      { speaker: "codex", text: "I'll wait", streamId: "codex-room-4" },
+    ];
+    const card = { speaker: "agent", text: "building…", streamId: "s1:agent:1:card", agent: meta() };
+    const next = placeAgentEntry(entries, card);
+    assert.equal(next.length, 4);
+    assert.equal(next[2]!.streamId, "s1:agent:1:card");
+    assert.equal(next[3]!.speaker, "codex");
+  });
+
+  it("nests under the parent's streamed segments when the final entry was dropped", () => {
+    const entries: E[] = [
+      { speaker: "claude", text: "part one", streamId: "claude-room-3:text:0" },
+      { speaker: "claude", text: "Explored", streamId: "claude-room-3:tools:0" },
+      { speaker: "codex", text: "later", streamId: "codex-room-4" },
+    ];
+    const next = placeAgentEntry(entries, {
+      speaker: "agent", text: "building…", streamId: "s1:agent:1:card", agent: meta(),
+    });
+    assert.equal(next[2]!.streamId, "s1:agent:1:card");
+  });
+
+  it("replaces the working card with the report card in place", () => {
+    const working = { speaker: "agent", text: "building…", streamId: "s1:agent:1:card", agent: meta() };
+    const entries: E[] = [
+      { speaker: "claude", text: "summoning…", streamId: "claude-room-3" },
+      working,
+      { speaker: "codex", text: "later", streamId: "codex-room-4" },
+    ];
+    const report = {
+      speaker: "agent", text: "Done: wrote foo.py", streamId: "s1:agent:1:card",
+      agent: meta({ status: "done", elapsed_s: 95 }),
+    };
+    const next = placeAgentEntry(entries, report);
+    assert.equal(next.length, 3);
+    assert.equal(next[1]!.text, "Done: wrote foo.py");
+    assert.equal(next[1]!.agent?.status, "done");
+    assert.equal(next[2]!.speaker, "codex");
+  });
+
+  it("puts the tools card after the same agent's report card, before later messages", () => {
+    const entries: E[] = [
+      { speaker: "claude", text: "summoning…", streamId: "claude-room-3" },
+      { speaker: "agent", text: "building…", streamId: "s1:agent:1:card", agent: meta() },
+      { speaker: "codex", text: "later", streamId: "codex-room-4" },
+    ];
+    const next = placeAgentEntry(entries, {
+      speaker: "agent", text: "Explored\n└ Read foo.py", streamId: "s1:agent:1:tools",
+      agent: meta({ card: "tools" }),
+    });
+    assert.equal(next[2]!.streamId, "s1:agent:1:tools");
+    assert.equal(next[3]!.speaker, "codex");
+  });
+
+  it("falls back to the summoner's latest message, then to appending", () => {
+    const entries: E[] = [
+      { speaker: "codex", text: "hi" },
+      { speaker: "claude", text: "summoning (restored, no stream id)" },
+      { speaker: "user", text: "ok" },
+    ];
+    const byBot = placeAgentEntry(entries, {
+      speaker: "agent", text: "x", streamId: "s1:agent:1:card", agent: meta({ parent_stream_id: "" }),
+    });
+    assert.equal(byBot[2]!.speaker, "agent");
+    assert.equal(byBot[3]!.speaker, "user");
+
+    const appended = placeAgentEntry([{ speaker: "user", text: "ok" }] as E[], {
+      speaker: "agent", text: "x", streamId: "s1:agent:1:card",
+      agent: meta({ parent_stream_id: "", summoned_by: "codex" }),
+    });
+    assert.equal(appended[1]!.speaker, "agent");
+  });
+
+  it("formats the header and status", () => {
+    assert.equal(
+      agentHeaderLine(meta()),
+      "↳ agent · Claude Opus 5.5 (high) · summoned by Claude · working…",
+    );
+    assert.equal(formatAgentStatus("done", 95), "done in 1:35");
+    assert.equal(formatAgentStatus("failed", 7), "failed after 0:07");
+    assert.equal(formatAgentStatus("timeout", 600), "timed out after 10:00");
+    assert.equal(agentToolsHeaderLine("Explored\n├ Read a\n└ Edit b"), "↳ tools: 2 calls");
+    assert.equal(agentToolsHeaderLine("Explored\n└ Read a"), "↳ tools: 1 call");
+  });
+
+  it("parses wire metadata and rejects entries without an id", () => {
+    assert.equal(parseAgentMeta({ card: "report" }), undefined);
+    assert.equal(parseAgentMeta("nope"), undefined);
+    const parsed = parseAgentMeta({ id: "a", status: "done", elapsed_s: 12, label: "L" });
+    assert.equal(parsed?.id, "a");
+    assert.equal(parsed?.elapsed_s, 12);
+    assert.equal(parsed?.label, "L");
   });
 });

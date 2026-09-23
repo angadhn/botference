@@ -891,8 +891,8 @@ async function main() {
     assert.equal(r.json.status.auto_relay, true);
     // effort options come from the same completion_context the models do
     assert.deepEqual(r.json.effort.current, { claude: 'medium', codex: 'medium' });
-    assert.deepEqual(r.json.effort.options.claude, ['low', 'medium', 'high', 'xhigh']);
-    assert.ok(r.json.effort.options.codex.includes('minimal'));
+    assert.deepEqual(r.json.effort.options.claude, ['low', 'medium', 'high', 'xhigh', 'max']);
+    assert.ok(r.json.effort.options.codex.includes('ultra'));
     assert.equal(r.json.verbosity, 'short');
   });
 
@@ -1080,6 +1080,48 @@ async function main() {
     assert.ok(note.includes('**claude:** MOCK claude reply.'), 'but keeps the answer');
     assert.ok(note.includes('**angadh:** @claude verify this [mock:tools]'));
     assert.equal(t.msgs.length, 1);
+  });
+
+  await test('a summoned build agent\'s cards nest under the reply that summoned them', async () => {
+    const url = 'https://ledger.test/2026/summoned-agent';
+    await POST(base, '/page', { url, title: 'Summoned', site: 'ledger.test' });
+    const before = stream.events.length;
+    await POST(base, '/thread', {
+      url, quote: 'a plan worth building', prefix: '', suffix: '',
+      msg: { text: '@claude make it [mock:summon]' },
+    });
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'turn-end');
+    const replies = stream.events.slice(before).filter(e => e.kind === 'reply').map(e => e.msg);
+    const summoner = replies.find(m => m.author === 'claude');
+    assert.ok(summoner.stream_id, 'the bot\'s reply keeps the bridge\'s stream id');
+    const cards = replies.filter(m => m.author === 'agent');
+    assert.equal(cards.length, 3, 'working card, tools card, report');
+    assert.deepEqual(cards.map(c => c.agent.status), ['working', 'done', 'done']);
+    assert.deepEqual(cards.map(c => c.kind), [undefined, 'tools', undefined]);
+    for (const c of cards) {
+      assert.equal(c.parent_ts, summoner.ts, 'every card hangs under the summoner\'s message');
+      assert.equal(c.agent.summoned_by, 'claude');
+      assert.equal(c.agent.parent_stream_id, summoner.stream_id);
+    }
+    // the agent's live text rode the wire with its meta, so the drawer can
+    // type it inside the card rather than as a speaker of its own
+    const live = stream.events.slice(before).filter(e => e.kind === 'stream' && e.model === 'agent');
+    assert.ok(live.length && live[0].agent && live[0].agent.id === cards[0].agent.id);
+    // what was STORED: the report replaced the working card in place
+    const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
+    const msgs = page.threads[0].msgs;
+    assert.deepEqual(msgs.map(m => m.author), ['angadh', 'claude', 'agent', 'agent', 'claude'].map((a, i) => i === 0 ? msgs[0].author : a));
+    const stored = msgs.filter(m => m.author === 'agent');
+    assert.equal(stored.length, 2, 'one report card and one tools card — the working card is gone');
+    const report = stored.find(m => m.kind !== 'tools');
+    assert.equal(report.text, 'MOCK agent report.');
+    assert.equal(report.agent.status, 'done');
+    assert.equal(report.agent.elapsed_s, 7);
+    assert.equal(report.ts, cards[0].ts, 'and it kept the working card\'s ts and place');
+    assert.equal(report.parent_ts, msgs[1].ts);
+    assert.equal(msgs[1].stream_id, summoner.stream_id, 'the parent is findable by its stream id');
+    assert.equal(msgs[4].text, 'MOCK claude after the build.', 'and the summoner was woken');
+    assert.equal(page.threads[0].addressed, true, 'the wake-up reply marks the thread, not the card');
   });
 
   // --- export -----------------------------------------------------------
@@ -1670,10 +1712,10 @@ async function main() {
       'a control turn is not a page turn');
     assert.equal((await GET(base, '/models')).json.effort.current.claude, 'xhigh');
     const n = inputs(logFile).length;
-    assert.equal((await POST(base, '/effort', { agent: 'codex', level: 'minimal' })).json.ok, true);
+    assert.equal((await POST(base, '/effort', { agent: 'codex', level: 'ultra' })).json.ok, true);
     await waitFor(() => inputs(logFile).length > n, 'codex effort');
-    assert.deepEqual(inputs(logFile).slice(n), ['/effort @codex minimal']);
-    await waitFor(async () => (await GET(base, '/models')).json.effort.current.codex === 'minimal',
+    assert.deepEqual(inputs(logFile).slice(n), ['/effort @codex ultra']);
+    await waitFor(async () => (await GET(base, '/models')).json.effort.current.codex === 'ultra',
       'codex effort recorded');
   });
 
@@ -1739,7 +1781,7 @@ async function main() {
     // …and waking taught the companion the lists, so the pickers work next time
     const after = JSON.parse(fs.readFileSync(
       path.join(coldRoot, '.botference', 'plugin', 'config.json'), 'utf8'));
-    assert.deepEqual(after.agents.effort_options.codex, ['minimal', 'low', 'medium', 'high', 'max']);
+    assert.deepEqual(after.agents.effort_options.codex, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     cold.proc.kill();
   });
 
@@ -1784,8 +1826,8 @@ async function main() {
     const bad = [
       { agent: 'gemini', level: 'high' },
       { agent: 'claude', level: 'high; rm -rf /' },
-      { agent: 'claude', level: 'minimal' }, // a codex level, not a claude one
-      { agent: 'codex', level: 'xhigh' },
+      { agent: 'claude', level: 'ultra' }, // a codex level, not a claude one
+      { agent: 'codex', level: 'minimal' }, // gone from every current model
     ];
     for (const body of bad) {
       const r = await POST(base, '/effort', body);

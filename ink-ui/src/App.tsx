@@ -31,8 +31,13 @@ import { sendDesktopNotification } from "./v2/notify.js";
 import { IMAGE_EXTS, saveClipboardImage, tokenizePaste } from "./v2/attachments.js";
 import { flightRecorder, recordCrashEvidence } from "./index.js";
 import {
+  agentCardStreamId,
+  agentToolsStreamId,
   buildToolStackText,
   capDisplayEntries,
+  parseAgentMeta,
+  placeAgentEntry,
+  type AgentMeta,
   createStreamSegmentState,
   isFinalEntryForSegmentedStream,
   stripFooterFromStreamEntries,
@@ -71,6 +76,10 @@ interface Entry {
   streamId?: string;
   streaming?: boolean;
   restored?: boolean;
+  // set on a summoned build agent's card (speaker "agent")
+  agent?: AgentMeta;
+  // the card's body has been replaced by live streamed text
+  agentLive?: boolean;
 }
 
 interface StatusData {
@@ -678,6 +687,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const setScroll = setRoomScroll;
     const scrollRef = roomScrollRef;
 
+    if (entry.agent) {
+      setEntries((prev) => capDisplayEntries(placeAgentEntry(prev, entry)));
+      setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
+      return;
+    }
+
     if (entry.streamId) {
       for (const baseStreamId of completedSegmentedStreamsRef.current) {
         if (
@@ -783,6 +798,28 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     });
     if (shouldAutoScroll(scrollRef.current)) {
       setScroll(0);
+    }
+  }, []);
+
+  // Live updates to a summoned agent's card: create it under its parent if
+  // the controller's working card has not landed yet, else update in place.
+  const updateAgentEntry = useCallback((
+    streamId: string,
+    meta: AgentMeta,
+    update: (entry: Entry | undefined) => Entry,
+  ) => {
+    setRoomEntries((prev) => {
+      const index = prev.findIndex((entry) => entry.streamId === streamId);
+      const updated = update(index === -1 ? undefined : prev[index]);
+      return capDisplayEntries(placeAgentEntry(prev, {
+        ...updated,
+        speaker: "agent",
+        streamId,
+        agent: updated.agent ?? meta,
+      }));
+    });
+    if (shouldAutoScroll(roomScrollRef.current)) {
+      setRoomScroll(0);
     }
   }, []);
 
@@ -1029,6 +1066,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             blocks: Array.isArray(msg.blocks) ? msg.blocks as RenderBlock[] : undefined,
             streamId: typeof msg.stream_id === "string" ? msg.stream_id : undefined,
             restored: msg.restored === true,
+            agent: parseAgentMeta(msg.agent),
           });
           break;
         case "restore": {
@@ -1042,6 +1080,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
               text: asString(e.text),
               blocks: Array.isArray(e.blocks) ? e.blocks as RenderBlock[] : undefined,
               restored: true,
+              agent: parseAgentMeta(e.agent),
             }));
           appendEntries(restored);
           break;
@@ -1050,6 +1089,41 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           const streamId = typeof msg.stream_id === "string" ? msg.stream_id : "";
           const speaker = typeof msg.model === "string" ? msg.model : "system";
           if (!streamId) break;
+
+          // A summoned build agent streams into its own card (`<id>:card`),
+          // not into fresh transcript segments: the working card shows the
+          // live text, its tool calls fold into `<id>:tools`, and the
+          // controller's final report/tools cards then replace both in place.
+          const agentMeta = speaker === "agent" ? parseAgentMeta(msg.agent) : undefined;
+          if (agentMeta) {
+            const cardStreamId = agentCardStreamId(agentMeta.id);
+            if (msg.kind === "text_delta") {
+              const delta = typeof msg.text === "string" ? msg.text : "";
+              if (!delta) break;
+              updateAgentEntry(cardStreamId, agentMeta, (entry) => ({
+                speaker: "agent",
+                text: entry?.agentLive ? `${entry.text}${delta}` : delta,
+                streamId: cardStreamId,
+                agent: entry?.agent ?? agentMeta,
+                agentLive: true,
+                streaming: true,
+              }));
+            } else if (msg.kind === "tool_start" || msg.kind === "tool_done") {
+              const toolsStreamId = agentToolsStreamId(agentMeta.id);
+              const stack = toolStacksRef.current.get(toolsStreamId) ?? new Map<string, string>();
+              stack.set(toolEventId(msg), toolPreviewLine(msg));
+              toolStacksRef.current.set(toolsStreamId, stack);
+              updateAgentEntry(toolsStreamId, agentMeta, () => ({
+                speaker: "agent",
+                text: buildToolStackText(Array.from(stack.values())),
+                streamId: toolsStreamId,
+                agent: { ...agentMeta, card: "tools" },
+                streaming: msg.kind === "tool_start",
+              }));
+            }
+            break;
+          }
+
           setV2Activity((prev) => updateV2ActivityForStream(prev, msg));
 
           if (msg.kind === "start") {

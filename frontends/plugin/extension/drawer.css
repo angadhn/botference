@@ -55,6 +55,8 @@
      reused across both — which is why they are set again in every theme block
      below and the mark's are not. */
   --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8; --gemini: #5b58d6; --bad: #b3403a;
+  /* a summoned build agent: plum, so it reads as neither bot and not the reader */
+  --agent: #9a4a8a;
   /* Each agent owns a TYPEFACE as well as a colour, the council's pairing:
      Claude speaks in the serif, Codex in the grotesque, everyone human in the
      drawer's own sans. Colour alone dies on a greyscale screen and at the
@@ -85,6 +87,7 @@
     --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
     --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
     --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2; --gemini: #9a92f2;
+    --agent: #d68cc6;
     --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
     color-scheme: dark;
   }
@@ -100,6 +103,7 @@
   --rev: rgba(63, 185, 80, 0.18); --rev-line: rgba(63, 185, 80, 0.5);
   --card: #241f18; --card-line: rgba(217, 119, 87, 0.24); --rail: #211c15;
   --claude: #e0805e; --you: #3ecfa0; --codex: #6ba8e2; --gemini: #9a92f2;
+  --agent: #d68cc6;
   --author-l: 0.72; --tag-fg-l: 80%; --tag-bg-l: 20%; --tag-line-l: 36%;
   color-scheme: dark;
 }
@@ -107,6 +111,7 @@
   --bg: #faf7f0; --fg: #2a2419; --heading: #1f1a12; --muted: #8a7f6d;
   --card: #ffffff; --card-line: #e7dfd1; --rail: #f3ede1;
   --claude: #c05c34; --you: #0f7f61; --codex: #2f6ea8; --gemini: #5b58d6;
+  --agent: #9a4a8a;
   --author-l: 0.52; --tag-fg-l: 30%; --tag-bg-l: 93%; --tag-line-l: 72%;
   color-scheme: light;
 }
@@ -1812,6 +1817,44 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .reply.bot { background: color-mix(in srgb, var(--author, var(--muted)) 11%, var(--card));
   border-left-color: var(--author, var(--muted)) }
 .reply.streaming { border-left-style: dashed }
+
+/* ── a summoned build agent, nested under the bot that summoned it ─────── */
+/* Reddit-style: set in from the left with a rail down the side, so the eye
+   reads "this belongs to the message above" before it reads a word. The
+   rail and the tint are the agent's own plum (--agent), picked per theme. */
+.kids {
+  margin: 2px 0 8px 14px; padding-left: 10px;
+  border-left: 2px solid color-mix(in srgb, var(--agent) 38%, transparent);
+}
+.kids .tools { margin-left: 0 }
+.reply.agent {
+  --font-body: var(--sans);
+  background: color-mix(in srgb, var(--agent) 8%, var(--card));
+  border-left-color: var(--agent);
+}
+.reply.agent.working { border-left-style: dashed }
+.reply.agent.failed, .reply.agent.timeout { border-left-color: var(--bad) }
+.reply.agent .agent-head { gap: 4px; text-transform: none; letter-spacing: 0; margin-bottom: 0 }
+.reply.agent .agent-head .author { text-transform: uppercase; letter-spacing: .04em }
+.reply.agent .agent-head .arrow { color: var(--agent); font-weight: 400 }
+.reply.agent .sep { color: var(--muted); font-weight: 400; margin: 0 4px }
+.reply.agent .agent-head .alabel { color: var(--fg); font-weight: 600; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reply.agent .agent-sub { display: block; margin: 0 0 4px 16px; font: 12px/1.4 var(--sans); color: var(--muted) }
+.reply.agent .agent-sub .astatus { font-weight: 600 }
+.reply.agent .agent-sub .astatus.done { color: var(--done-line) }
+.reply.agent .agent-sub .astatus.failed, .reply.agent .agent-sub .astatus.timeout { color: var(--bad) }
+.reply.agent .agent-sub .astatus .spin { display: inline-block; animation: bfp-spin 1.1s linear infinite }
+.reply.agent .abrief { margin-left: 16px }
+@keyframes bfp-spin { to { transform: rotate(360deg) } }
+/* the brief: one muted line, truncated, the whole of it on hover */
+.reply.agent .abrief {
+  margin: 0 0 5px; font: 12px/1.4 var(--sans); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.reply.agent .abrief-k { font-weight: 600 }
+.reply.agent .stream-text { margin: 0; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--fg); max-height: 260px; overflow-y: auto }
 
 /* ── who is speaking, at a glance ──────────────────────────────────────── */
 /* Each agent already owns a colour (the rail, the name, the tint). It owns a

@@ -1469,6 +1469,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/verify [on\|off]` | When the bots mark the thread **converged**, run one more turn before the floor comes back to you: the bot that did *not* write the last claim is handed the claims and the sources the room has — and **not** the discussion — and reports each claim confirmed (with the supporting line), contradicted (with the contradicting line), or not checkable. On by default, per chat; skipped when the final message is too short to be a claim, when the room has no source, or when the other bot is not in the room. See [Adversarial review](#adversarial-review). |
 | `/allow-host [<domain>]` | Grant the bots' sandbox **network access** to a site (persists per workspace in `.botference/allowed-hosts.json`, applies from their next turn — no restart). The sandbox blocks all other hosts by design; the bots are instructed to ask you for this instead of working around a blocked fetch. Bare `/allow-host` lists current grants. |
 | `/watch <url> [question]` | Have **Gemini watch a YouTube video** and post what it saw into the chat, so Claude and Codex (who cannot take video) can read it on their next turn. See [YouTube videos](#youtube-videos). |
+| `/parallel <prompt>` | **Both bots answer at once**, neither seeing the other's reply. The word may sit anywhere in the prompt (`what do you make of this? /parallel`). Each bot has the whole chat up to your prompt; both replies land in the shared history and each sees the other's on its next turn. No bot-to-bot thread follows — the point is two independent readings. A YouTube link is still watched by Gemini first. See [Summoned build agents and /parallel](#summoned-build-agents-and-parallel). |
 | `/lasso <words>` | **Search everything you have already read and said** — the pages you have annotated in the browser, your past council chats, and any folders you have named — and offer the matches. Nothing is attached until you say so. `/lasso <path>` attaches a file of your own directly; `/lasso attach <n>` (or `all`) takes one of the offers; `/lasso detach <n>` takes one off; bare `/lasso` lists what this chat is carrying. See [Lasso](#lasso). |
 | `/help` | Show the command reference. |
 | `/quit` | Exit without writing files. |
@@ -1628,6 +1629,55 @@ for "fat tails"`, `lasso · fetched "Rockets, part 1" (angadh.com)`, or
   reach — so they read it from a file. There is no `/allow-host` in the drawer
   and the bots are told not to ask for one: they name the host that was refused
   and stop.
+
+### Summoned build agents and /parallel
+
+The bots in a chat talk with you and shape the work. They do not build the
+deliverable. When one of them decides it has enough, it says so and ends its
+reply with a brief on a line of its own:
+
+```
+summon: build the landing page from the outline above — one HTML file,
+  dark theme, save it under projects/acta/artifacts/
+```
+
+Botference starts a fresh build agent with that brief and the room's last
+turns, in the project folder. By default it is Claude Code on **Opus 5.5 at
+`high` effort**; change it under `builder` in `context-budgets.json`, where a
+`for.codex` entry can send Codex's summons to a different builder (say GPT-6
+Sol at `xhigh`) while Claude's go to Opus. Codex can summon because botference
+does the summoning, not the bot.
+
+What you see, in the council page, the browser plugin and the terminal: a card
+**indented under the message that summoned it**, in the style of a reply on a
+thread —
+
+```
+codex   I have enough. summon: build the landing page …
+   ↳ agent · Claude Opus 5.5 (high) · summoned by Codex · working… ⏱ 0:42
+```
+
+— which fills in when the agent finishes: `done in 3:10`, its report (what it
+built, where, what it left out), an `artifact:` link, and the tool log folded
+away. The report enters the shared history in the agent's own name, and the
+summoner is woken once to tell you what to open. The other bot sees the
+report like any other message, attributed to the agent, not the summoner.
+
+Rules: one summon per bot per user turn; a build has a wall-clock cap (15
+minutes by default) and reports as timed out or failed; a summon inside the
+wake-up is not acted on, so no bot can chain builds without you. A bot that
+writes an HTML page, plot or PDF in the chat anyway gets a visible
+`⚠ built in-chat, not delegated` stamp; the file is not touched. An artifact
+an agent builds is reviewed by the other bot from the summoner, as in
+[Adversarial review](#adversarial-review).
+
+**`/parallel`** is for the other half of the problem: with an ordinary `@all`
+turn Claude answers first and Codex sees that answer before writing its own,
+so it reacts rather than answers. Put `/parallel` anywhere in a prompt and both
+bots take it at the same time, each with the whole chat up to your prompt and
+not the other's reply. Both replies land in the shared history; each bot sees
+the other's on its next turn. No bot-to-bot thread follows a parallel turn. A
+YouTube link is still watched by Gemini first, as on every turn.
 
 ### Adversarial review
 
@@ -2139,8 +2189,8 @@ python3 scripts/update_loc_badge.py
 |----------|---------|
 | `BOTFERENCE_HOME` | Path to this framework (auto-detected) |
 | `ANTHROPIC_MODEL` | Global model override (default: `claude-fable-5-1`) |
-| `OPENAI_MODEL` | Codex participant model (default: `gpt-6-astra`; `gpt-5.6-sol` the previous default; `gpt-5.6-terra`/`gpt-5.6-luna` for cheaper/faster, `gpt-5.5` still supported) |
-| `OPENAI_REASONING_EFFORT` | Codex participant reasoning effort for planner sessions (default: `medium`) |
+| `OPENAI_MODEL` | Codex participant model (default: `gpt-6-astra`; `gpt-6-sol`/`gpt-6-luna` added 2026-09-23; `gpt-5.6-sol` the previous default; `gpt-5.6-terra`/`gpt-5.6-luna` for cheaper/faster, `gpt-5.5` still supported) |
+| `OPENAI_REASONING_EFFORT` | Codex participant reasoning effort for planner sessions (default: `medium`; `low`/`medium`/`high`/`xhigh`/`max`, plus `ultra` on Sol and Astra) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
 | `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |
 | `BOTFERENCE_CLAUDE_TRANSPORT` | Claude plan-mode transport: `programmatic` (default) or experimental `tmux` interactive mirror |

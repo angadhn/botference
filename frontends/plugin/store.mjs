@@ -862,13 +862,18 @@ export function artifactsOf(page) {
  * asks for), so a repeat keeps the first row and its date rather than growing
  * a second link to one file.
  */
-export function recordArtifact(page, { root, id, rel, drafted_by = '' }) {
+export function recordArtifact(page, { root, id, rel, drafted_by = '', built_by = '' }) {
   const wantRoot = cleanRoot(root);
   const wantId = cleanProjectId(id);
   const wantRel = String(rel || '').trim();
   if (!page || !wantRoot || !wantId || !wantRel) return page;
   const by = /^(claude|codex)\b/i.test(String(drafted_by || '').trim())
     ? String(drafted_by).trim().toLowerCase().replace(/\s.*$/, '') : '';
+  // WHICH MODEL typed it, when the bot summoned a build agent rather than
+  // writing the page itself. A note beside `drafted_by`, never a substitute:
+  // the summoner owns the artifact (it briefed the build and answers for it),
+  // so the reviewer rule reads `drafted_by` alone.
+  const built = String(built_by || '').trim().slice(0, 80);
   const current = artifactsOf(page);
   const hit = current.find(a => a.root === wantRoot && a.id === wantId && a.rel === wantRel);
   if (hit) {
@@ -876,11 +881,13 @@ export function recordArtifact(page, { root, id, rel, drafted_by = '' }) {
     // the WRITER is whoever wrote it this time, because that is the fact the
     // reviewer assignment is read off
     if (by) hit.drafted_by = by; else delete hit.drafted_by;
+    if (built) hit.built_by = built; else delete hit.built_by;
     page.artifacts = current;
     return page;
   }
   page.artifacts = current
-    .concat([{ root: wantRoot, id: wantId, rel: wantRel, at: nowIso(), ...(by ? { drafted_by: by } : {}) }])
+    .concat([{ root: wantRoot, id: wantId, rel: wantRel, at: nowIso(),
+      ...(by ? { drafted_by: by } : {}), ...(built ? { built_by: built } : {}) }])
     .slice(-ARTIFACTS_MAX);
   return page;
 }
@@ -2132,12 +2139,80 @@ export function sanitizeCheck(c) {
   return out;
 }
 
+// A SUMMONED BUILD AGENT's card, as the controller describes it
+// (core/botference.py _run_summon): exactly these fields and nothing a
+// hand-edited record could smuggle in beside them. `id` is what a later card
+// with the same id REPLACES; `parent_stream_id` is the summoner's message,
+// which chat.mjs turns into `parent_ts` before the message gets here.
+export const AGENT_STATUSES = ['working', 'done', 'failed', 'timeout'];
+export function sanitizeAgent(a) {
+  if (!a || typeof a !== 'object' || !a.id) return null;
+  const out = { id: String(a.id).slice(0, 120) };
+  out.card = String(a.card || 'report') === 'tools' ? 'tools' : 'report';
+  const by = String(a.summoned_by || '').toLowerCase().trim();
+  out.summoned_by = by === 'codex' ? 'codex' : by === 'claude' ? 'claude' : '';
+  for (const k of ['parent_stream_id', 'cli', 'model', 'effort', 'label']) {
+    if (a[k] != null && a[k] !== '') out[k] = String(a[k]).slice(0, 200);
+  }
+  if (a.brief != null) out.brief = String(a.brief).slice(0, 2000);
+  out.status = AGENT_STATUSES.includes(String(a.status)) ? String(a.status) : 'working';
+  out.elapsed_s = Math.max(0, Math.floor(Number(a.elapsed_s) || 0));
+  return out;
+}
+
+// The message a summoned agent's card hangs under: the most recent message in
+// `msgs` whose `stream_id` is the summoner's, else the summoner's most recent
+// message by name. Pure, so chat.mjs (over the messages it has sent this turn)
+// and server.mjs (over the stored list, as a fallback) apply one rule.
+export function parentTsFor(msgs, agent) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  const sid = String((agent && agent.parent_stream_id) || '');
+  if (sid) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m && m.stream_id === sid && m.kind !== 'tools') return m.ts || '';
+    }
+  }
+  const by = String((agent && agent.summoned_by) || '').toLowerCase();
+  if (by) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m && m.kind !== 'tools' && !m.agent
+        && String(m.author || '').toLowerCase().startsWith(by)) return m.ts || '';
+    }
+  }
+  return '';
+}
+
 export function appendMsg(page, threadId, {
   author, text, ts, kind, route, origin, file_in, strike, strikes, question, suggestions, checks,
+  parent_ts, agent, stream_id,
 }) {
   const msgs = msgsOf(page, threadId);
   if (!msgs) return null;
+  // A build agent's card with an id the list already holds is the SAME card
+  // reporting again: the "working…" card becomes the report, in place, with
+  // its ts and its position — the reader watched it appear under the bot's
+  // message and that is where the answer belongs.
+  const meta = sanitizeAgent(agent);
+  if (meta) {
+    const prior = msgs.find(m => m && m.agent && m.agent.id === meta.id
+      && (m.agent.card || 'report') === meta.card);
+    if (prior) {
+      prior.text = String(text || '');
+      prior.agent = meta;
+      if (kind) prior.kind = String(kind);
+      if (parent_ts && !prior.parent_ts) prior.parent_ts = String(parent_ts);
+      return prior;
+    }
+  }
   const msg = { author, ts: ts || nowIso(), text: String(text || '') };
+  // the bridge's stream id for a bot's own words: what a summoned agent's
+  // `parent_stream_id` is matched against (parentTsFor)
+  if (stream_id) msg.stream_id = String(stream_id).slice(0, 200);
+  // nested under that message, Reddit-style; the drawer groups by it
+  if (parent_ts) msg.parent_ts = String(parent_ts);
+  if (meta) msg.agent = meta;
   // written over there and mirrored here (see cleanOrigin): the marker is what
   // stops the read-back sending it straight home again
   const o = cleanOrigin(origin);
@@ -2268,10 +2343,14 @@ export function appendMsg(page, threadId, {
     const thread = findThread(page, threadId);
     // reopening ENDS a claim (setResolved says so, and is right about it), so a
     // narration passing through here has to put back the one it did not make
-    const keep = kind === 'tools' && thread && thread.addressed
+    // …and a summoned agent's card is the bot's work in progress, not the bot
+    // answering: the summoner is woken with the report and ITS reply marks
+    // the thread, so the card marks nothing and unmarks nothing, like tools.
+    const quiet = kind === 'tools' || !!meta;
+    const keep = quiet && thread && thread.addressed
       ? { at: thread.addressed_at, by: thread.addressed_by } : null;
     setResolved(thread, false);
-    if (kind !== 'tools') setAddressed(thread, isAgentAuthor(author), author);
+    if (!quiet) setAddressed(thread, isAgentAuthor(author), author);
     else if (keep) { setAddressed(thread, true, keep.by); thread.addressed_at = keep.at; }
   }
   return msg;

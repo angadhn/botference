@@ -1,4 +1,9 @@
 import stringWidth from "string-width";
+import {
+  agentHeaderLine,
+  agentToolsHeaderLine,
+  type AgentMeta,
+} from "./v2/messages.js";
 import wrapAnsi from "wrap-ansi";
 import hljs from "highlight.js";
 
@@ -405,6 +410,8 @@ export const SPEAKER_COLORS: Record<string, string> = {
   summary: "magenta",
   // the video watcher: not a participant, but it speaks in the room
   gemini: "magentaBright",
+  // a build agent a bot summoned: its card nests under the summoner's message
+  agent: "whiteBright",
 };
 
 /** Muted body-text colors — softer than the bold label colors. */
@@ -415,6 +422,7 @@ export const SPEAKER_BODY_COLORS: Record<string, string> = {
   system: "yellow",
   summary: "magenta",
   gemini: "magenta",
+  agent: "grayBright",
 };
 
 export const SPEAKER_LABELS: Record<string, string> = {
@@ -424,7 +432,11 @@ export const SPEAKER_LABELS: Record<string, string> = {
   summary: "[Summary] ",
   system: "System: ",
   gemini: "[Gemini] ",
+  agent: "↳ ",
 };
+
+// Agent cards: a header line, then the body indented under it.
+export const AGENT_BODY_INDENT = "    ";
 
 // ── Flat-line pre-rendering (Howler pattern) ───────────────
 
@@ -456,6 +468,7 @@ export interface Entry {
   speaker: string;
   text: string;
   blocks?: RenderBlock[];
+  agent?: AgentMeta;
 }
 
 interface DiffContext {
@@ -1908,12 +1921,40 @@ function buildEntryLines(entry: Entry, entryId: number, textWidth: number): Flat
   const out: FlatLine[] = [];
   const speakerRaw = typeof entry.speaker === "string" ? entry.speaker : String(entry.speaker ?? "system");
   const s = speakerRaw.toLowerCase();
-  const label = SPEAKER_LABELS[s] ?? `[${speakerRaw}] `;
-  const color = SPEAKER_COLORS[s] ?? "white";
-  const body = SPEAKER_BODY_COLORS[s] ?? "white";
+  const agent = entry.agent;
+  const color = SPEAKER_COLORS[agent ? "agent" : s] ?? "white";
+  const body = SPEAKER_BODY_COLORS[agent ? "agent" : s] ?? "white";
+  const text = typeof entry.text === "string" ? entry.text : String(entry.text ?? "");
+
+  // A summoned agent's tools card folds to one line under the report card.
+  if (agent && agent.card === "tools") {
+    return [{
+      key: `e${entryId}-0`,
+      label: AGENT_BODY_INDENT,
+      speakerColor: color,
+      text: agentToolsHeaderLine(text),
+      bodyColor: body,
+    }];
+  }
+
+  // An agent card: a header naming the model, summoner and status, then the
+  // body indented under it — visibly a child of the message above.
+  let visualLineIndex = 0;
+  if (agent) {
+    out.push({
+      key: `e${entryId}-0`,
+      label: "",
+      speakerColor: color,
+      text: agentHeaderLine(agent),
+      bodyColor: color,
+      bodyBold: true,
+    });
+    visualLineIndex = 1;
+  }
+
+  const label = agent ? AGENT_BODY_INDENT : (SPEAKER_LABELS[s] ?? `[${speakerRaw}] `);
   const labelWidth = stringWidth(label);
   const indent = " ".repeat(labelWidth);
-  let visualLineIndex = 0;
 
   const pushLine: PushFlatLine = (line) => {
     out.push({
@@ -1925,7 +1966,6 @@ function buildEntryLines(entry: Entry, entryId: number, textWidth: number): Flat
     visualLineIndex += 1;
   };
 
-  const text = typeof entry.text === "string" ? entry.text : String(entry.text ?? "");
   try {
     const blocks = entry.blocks && entry.blocks.length > 0
       ? entry.blocks
@@ -1946,6 +1986,17 @@ function buildEntryLines(entry: Entry, entryId: number, textWidth: number): Flat
     // text, never take down the whole UI render.
     out.length = 0;
     visualLineIndex = 0;
+    if (agent) {
+      out.push({
+        key: `e${entryId}-0`,
+        label: "",
+        speakerColor: color,
+        text: agentHeaderLine(agent),
+        bodyColor: color,
+        bodyBold: true,
+      });
+      visualLineIndex = 1;
+    }
     const contentWidth = Math.max(4, textWidth - labelWidth);
     for (const rawLine of text.split("\n")) {
       for (const wrapped of wrapText(rawLine, contentWidth)) {
@@ -1960,6 +2011,7 @@ function buildEntryLines(entry: Entry, entryId: number, textWidth: number): Flat
 interface EntryFlatLineCacheValue {
   text: string;
   blocks: unknown; // entry.blocks reference, for identity comparison
+  agent: unknown; // entry.agent reference — its status drives the header
   textWidth: number;
   lines: FlatLine[];
 }
@@ -2000,6 +2052,7 @@ export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] 
       cached
       && cached.text === entry.text
       && cached.blocks === entry.blocks
+      && cached.agent === entry.agent
       && cached.textWidth === textWidth
     ) {
       entryLines = cached.lines;
@@ -2008,6 +2061,7 @@ export function preRenderLines(entries: Entry[], textWidth: number): FlatLine[] 
       entryFlatLineCache.set(entry as object, {
         text: entry.text,
         blocks: entry.blocks,
+        agent: entry.agent,
         textWidth,
         lines: entryLines,
       });

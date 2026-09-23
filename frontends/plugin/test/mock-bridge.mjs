@@ -72,8 +72,8 @@ const MODELS = {
 };
 // the controller's own effort ladders (botference.py _CLAUDE/_CODEX_EFFORT_LEVELS)
 const EFFORT = {
-  claude: ['low', 'medium', 'high', 'xhigh'],
-  codex: ['minimal', 'low', 'medium', 'high', 'max'],
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
 };
 const live = { claude: 'claude-fable-5', codex: 'gpt-5.6-sol' };
 // occupancy: tokens creep on every status (the heartbeat), pct only when a
@@ -284,7 +284,52 @@ function input(text) {
       emit({ type: 'stream', kind: 'text_delta', ...head, text: body.slice(0, 5) });
       emit({ type: 'stream', kind: 'text_delta', ...head, text: body.slice(5) });
       emit({ type: 'stream', kind: 'done', ...head });
-      room(model, body);
+      // the real bridge stamps a bot's room entry with its stream id
+      // (botference.py: _add_room_entry(ui, model, text, stream_id=resp.stream_id))
+      emit({ type: 'room', speaker: model, text: body, blocks: [], stream_id });
+      // [mock:summon] — the bot ended its reply with a `summon:` line and the
+      // controller ran a build agent for it (core/botference.py _run_summon):
+      // a working card nested under THIS reply, the agent's live text, a
+      // tools card, then the report REPLACING the working card, then the
+      // summoner woken once. `[mock:summon-says:…]` is the report's text
+      // (`\\n` for newlines); `[mock:summon-write:<path>]` has the agent
+      // write a file, once, like [mock:write]. Only the first bot summons.
+      if (/\[mock:summon\]/.test(text) && model === models[0]) {
+        const agentId = `${sid || 's0'}:agent:${++streamSeq}`;
+        const meta = {
+          id: agentId, card: 'report', parent_stream_id: stream_id, summoned_by: model,
+          cli: 'claude', model: 'claude-opus-5-5', effort: 'high',
+          label: 'Claude Opus 5.5 (high)', brief: 'build the planner from the outline above',
+          status: 'working', elapsed_s: 0,
+        };
+        emit({ type: 'room', speaker: 'agent', blocks: [], stream_id: `${agentId}:card`,
+          text: `${meta.label} is building… (summoned by ${model})`, agent: meta });
+        const ahead = { stream_id: `${sid || 's0'}:room:agent:${++streamSeq}`, pane: 'room',
+          model: 'agent', agent: meta };
+        emit({ type: 'stream', kind: 'start', ...ahead });
+        emit({ type: 'stream', kind: 'text_delta', ...ahead, text: 'Reading the source…' });
+        const aw = [...String(text).matchAll(/\[mock:summon-write:([^\]]+)\]/g)]
+          .filter(m => !written.has(m[0])).pop();
+        if (aw) {
+          written.add(aw[0]);
+          try {
+            fs.mkdirSync(path.dirname(aw[1]), { recursive: true });
+            fs.writeFileSync(aw[1], `<!doctype html><title>built by the mock agent</title>\n`);
+          } catch { }
+        }
+        emit({ type: 'stream', kind: 'done', ...ahead });
+        emit({ type: 'room', speaker: 'agent', blocks: [], stream_id: `${agentId}:tools`,
+          text: 'Explored\n└ Read the snapshot',
+          agent: { ...meta, card: 'tools', status: 'done', elapsed_s: 7 } });
+        const rsays = [...String(text).matchAll(/\[mock:summon-says:([^\]]+)\]/g)].pop();
+        const report = rsays ? String(rsays[1]).split('\\n').join('\n') : 'MOCK agent report.';
+        emit({ type: 'room', speaker: 'agent', blocks: [], stream_id: `${agentId}:card`,
+          text: report, agent: { ...meta, status: 'done', elapsed_s: 7 } });
+        // the summoner, woken with the report
+        const wake = `${sid || 's0'}:room:${model}:${++streamSeq}`;
+        emit({ type: 'room', speaker: model, blocks: [], stream_id: wake,
+          text: `MOCK ${model} after the build.` });
+      }
     }
     // every turn burns context: tokens always move, pct only on demand
     use.claude_tokens += 1200; use.codex_tokens += 900;

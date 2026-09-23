@@ -211,6 +211,7 @@ class InkBridge:
         *,
         stream_id: str = "",
         restored: bool = False,
+        agent: dict | None = None,
     ) -> None:
         event = {
             "type": "room",
@@ -222,6 +223,10 @@ class InkBridge:
             event["stream_id"] = stream_id
         if restored:
             event["restored"] = True
+        if agent:
+            # a summoned build agent's card: who summoned it (parent_stream_id
+            # is the summoner's message), which model, status, timing
+            event["agent"] = agent
         emit(event)
 
     def restore_entries(
@@ -248,8 +253,9 @@ class InkBridge:
                         "text": text,
                         "blocks": blocks if blocks is not None
                         else parse_render_blocks(text),
+                        **({"agent": rest[0]} if rest and rest[0] else {}),
                     }
-                    for speaker, text, blocks in batch
+                    for speaker, text, blocks, *rest in batch
                 ],
             })
 

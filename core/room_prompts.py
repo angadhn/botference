@@ -305,23 +305,34 @@ def subagents_note(model: str) -> str:
 
 
 def deliverables_note() -> str:
-    """Where finished artifacts live and how the user reaches them.
+    """Deliverables are built by a summoned agent, never in the chat.
 
-    Chats produce plots, HTML pages, and reports that the user returns to
-    later; scattering them behind ad-hoc HTTP servers and throwaway tunnels
-    makes them unfindable and ties them to processes that die on reboot.
+    The bots shape the work with the reader; a fresh agent with a clean brief
+    does the building — it costs the discussion nothing in context, it runs at
+    the right effort, and the reader sees exactly who built what. A bot that
+    builds in-chat anyway gets a visible stamp on its reply.
     """
     return (
-        "--- Deliverables ---\n"
-        "When you produce something the user will open again — an HTML page, "
-        "plot, report, dashboard, or image — save the file inside the current "
-        "project's folder (e.g. `projects/<project-id>/artifacts/`), or under "
-        "`work/artifacts/` if this chat has no project yet. If that location "
-        "is outside your writable roots, request it first with the "
-        "write-access tag. Then give the user the link "
-        "`/files/<path relative to the workspace root>` — the chat server "
-        "serves it at that address on every device, permanently. Never spin "
-        "up ad-hoc HTTP servers or throwaway tunnels for a deliverable."
+        "--- Deliverables: summon, don't build ---\n"
+        "You discuss, decide and shape. You do NOT build the deliverable "
+        "yourself — no HTML pages, sites, plots, figures, PDFs, slides or "
+        "documents written in this chat. When you have enough to go on, say "
+        "so in a sentence and end your reply with a brief on a line of its "
+        "own:\n"
+        "  summon: <what to build, for whom, the sources to use, where it "
+        "goes, what done looks like>\n"
+        "A brief may run to a short paragraph on the lines that follow. "
+        "Botference starts a build agent with that brief and the room's "
+        "recent turns; its report appears under your message and you are "
+        "woken with it to tell the user what to look at. One summon per turn; "
+        "if the work needs several, say so and let the user decide. Ordinary "
+        "code edits in a repository under discussion are yours to make; a "
+        "deliverable the reader opens is not.\n"
+        "Deliverables live inside the current project's folder "
+        "(`projects/<project-id>/artifacts/`), or under `work/artifacts/` "
+        "when this chat has no project yet, and reach the user as the link "
+        "`/files/<path relative to the workspace root>`. Never spin up "
+        "ad-hoc HTTP servers or throwaway tunnels for a deliverable."
     )
 
 

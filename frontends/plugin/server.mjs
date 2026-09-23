@@ -1176,7 +1176,18 @@ function onChatEvent(ev) {
           // nobody audits their own draft. The author of the reply that
           // claimed the file is the writer — not the route the button asked
           // for, which is a request and not a receipt.
-          store.recordArtifact(page, { ...made, drafted_by: ev.msg.author });
+          //
+          // When the line arrives in a BUILD AGENT's report, the writer is the
+          // bot that SUMMONED it: it briefed the build, it is woken with the
+          // report and it answers for the page — so the other bot reviews.
+          // Which model actually typed the file is kept beside that as
+          // `built_by`, a fact and not an assignment.
+          const fromAgent = ev.msg.author === 'agent' && ev.msg.agent;
+          store.recordArtifact(page, {
+            ...made,
+            drafted_by: fromAgent ? ev.msg.agent.summoned_by : ev.msg.author,
+            ...(fromAgent ? { built_by: ev.msg.agent.model || ev.msg.agent.label || '' } : {}),
+          });
         }
       }
       // …and did the bot conclude the passage should come out? Same idiom,
@@ -1322,6 +1333,13 @@ function onChatEvent(ev) {
       // Nothing here blocks or alters the reply.
       if (ev.msg && ev.msg.kind !== 'tools' && store.isAgentAuthor(ev.msg.author)) {
         ev.msg = { ...ev.msg, checks: checksFor(page, ev.msg.text) };
+      }
+      // A summoned agent's card that chat.mjs could not place under a message
+      // of this turn (a bridge that stamped no stream_id on the summoner's
+      // reply) is placed here against the stored list, by the same rule.
+      if (ev.msg && ev.msg.author === 'agent' && ev.msg.agent && !ev.msg.parent_ts) {
+        const parent = store.parentTsFor(store.msgsOf(page, ev.target), ev.msg.agent);
+        if (parent) ev.msg = { ...ev.msg, parent_ts: parent };
       }
       // appendMsg also REOPENS a resolved thread: a bot answering into it is
       // new activity, and new activity is the end of resolved

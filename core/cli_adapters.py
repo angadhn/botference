@@ -561,6 +561,7 @@ class AdapterResponse:
 _CONTEXT_WINDOWS = {
     "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
+    "claude-opus-5-5": 1_000_000,  # Opus 5.5 (2026-09-22): Fable-5.1-class, cheaper; default effort medium
     "claude-opus-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-6": 1_000_000,
@@ -569,6 +570,8 @@ _CONTEXT_WINDOWS = {
     "claude-haiku-4-5": 200_000,
     "gpt-5-latest": 272_000,
     "gpt-6-astra": 1_050_000,    # default Codex participant since 2026-09-04
+    "gpt-6-sol": 1_050_000,      # GPT-6 Sol (2026-09-22): large; efforts low..max + ultra
+    "gpt-6-luna": 1_050_000,     # GPT-6 Luna (2026-09-22): small; efforts low..max
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
