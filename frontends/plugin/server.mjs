@@ -4750,6 +4750,19 @@ export function handler(req, res) {
       ok(res, { queued: true });
     });
   }
+  // the no-summary restart: a bot that has gone wrong (stuck refusing an
+  // ordinary topic, say) comes back knowing only what is sent next
+  if (req.method === 'POST' && url === '/fresh') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const agent = String(data.agent || '');
+      if (!['claude', 'codex', 'both'].includes(agent)) return fail(res, 400, 'agent must be claude, codex or both');
+      if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
+      if (!anyRunning()) return fail(res, 409, 'agents are idle — nothing to restart');
+      controlAll(`/fresh @${agent}`);
+      ok(res, { queued: true });
+    });
+  }
   // stopping a turn stops it for everyone in the room
   if (req.method === 'POST' && url === '/interrupt') {
     if (notOwner(req, res)) return;

@@ -5492,10 +5492,10 @@ ${bubbleShellHtml()}`;
       sel.disabled = !(list && list.length);
       return sel;
     }
-    function relayButton(agent, label, title) {
-      const b = mk('button', agent === 'both' ? 'relay both' : 'relay');
+    function relayButton(agent, label, title, act = 'relay') {
+      const b = mk('button', (agent === 'both' ? 'relay both' : 'relay') + (act === 'fresh' ? ' fresh' : ''));
       b.type = 'button';
-      b.setAttribute('data-act', 'relay');
+      b.setAttribute('data-act', act);
       b.setAttribute('data-agent', agent);
       b.title = title;
       b.textContent = label;
@@ -5503,6 +5503,7 @@ ${bubbleShellHtml()}`;
     }
 
     const RELAY_TIP = 'hand off to a fresh session (context reset)';
+    const FRESH_TIP = 'restart with NO memory of this chat — for a bot that has gone wrong; say the context again';
     const VERB_TIP = 'how the bots talk: short = 2-3 crisp sentences; long = at most 4-5';
     const VERB_LEVELS = ['short', 'long'];
     const TYPE_TIP = 'how a live answer arrives: typed = revealed as it is written; '
@@ -5651,6 +5652,7 @@ ${bubbleShellHtml()}`;
         // outside the <label>: a click on a label is forwarded to its control,
         // which would drop the select open every time you asked for a relay
         line.appendChild(relayButton(agent, 'relay', agent + ' — ' + RELAY_TIP));
+        line.appendChild(relayButton(agent, 'fresh', agent + ' — ' + FRESH_TIP, 'fresh'));
 
         // how hard that model thinks, on the row under the model it belongs to
         const eff = mk('label', 'pop-row pop-effort');
@@ -6104,14 +6106,15 @@ ${bubbleShellHtml()}`;
     // The companion refuses it when there is nothing to relay ("agents are
     // idle"); that refusal is normal traffic, so it lands inline in the
     // popover, not in a thrown error.
-    async function doRelay(agent) {
+    async function doRelay(agent, kind = 'relay') {
       if (D.relaying) return;
       D.relaying = true;
-      D.models.note = agent === 'both' ? 'relaying both…' : 'relaying ' + agent + '…';
+      const verb = kind === 'fresh' ? 'restarting' : 'relaying';
+      D.models.note = agent === 'both' ? verb + ' both…' : verb + ' ' + agent + '…';
       D.models.err = false;
       syncModels();                       // disables every relay button first
       let r;
-      try { r = await cb('onRelay')(agent); }
+      try { r = await cb(kind === 'fresh' ? 'onFresh' : 'onRelay')(agent); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.relaying = false;
       if (!r || r.ok === false) {
@@ -6147,6 +6150,7 @@ ${bubbleShellHtml()}`;
       'models': () => { if (D.modelsOpen) closeModels(); else openModels(); },
       'help-close': () => closeHelp(),
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
+      'fresh': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent, 'fresh'); },
       'verb': (btn) => setVerbosity(btn.dataset.level),
       'typing': (btn) => setTyping(btn.dataset.typing),
       'bubbles': (btn) => setBubbles(btn.dataset.bubbles),

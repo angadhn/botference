@@ -2,6 +2,14 @@
 
 ## 2026-09-23
 
+- **`/fresh @claude|@codex|@both` — restart a bot with no memory of this
+  chat.** `/relay` restarts a bot *with* a summary of the chat so far, which
+  is the right thing when memory is full and the wrong thing when the chat
+  has gone wrong: a bot that has talked itself into refusing an ordinary
+  topic carries the refusal into the summary. `/fresh` carries nothing — the
+  bot sees only what you send next, so say the context again. The other bot
+  keeps its memory and is told. In the plugin it is the `fresh` button beside
+  `relay` in the agents panel.
 - **Editing your message resends it.** Saving an edit to one of your own
   messages in the browser plugin restarts the conversation from there, the way
   other chat tools do: the replies that came after the old version fold into

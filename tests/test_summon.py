@@ -351,3 +351,57 @@ class TestParallelTurn:
         await c.handle_input("/parallel", ui)
         assert not claude.send_calls and not codex.send_calls
         assert any("/parallel" in t for sp, t in ui.room_entries if sp == "system")
+
+
+# ── /fresh: the no-summary restart ────────────────────────
+
+
+class TestParseFresh:
+    def test_targets(self):
+        for raw, target in (("/fresh @claude", "claude"), ("/fresh codex", "codex"),
+                            ("/fresh @both", "both"), ("/fresh @all", "both")):
+            p = parse_input(raw)
+            assert p.kind is InputKind.FRESH and p.target == target
+
+    def test_no_target_is_usage(self):
+        p = parse_input("/fresh")
+        assert p.kind is InputKind.FRESH and p.target == ""
+
+
+@pytest.mark.asyncio
+class TestFreshRestart:
+    async def test_the_bot_forgets_the_chat_and_the_other_is_told(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok("I refuse to discuss that."), _ok("Happy to: entry vehicles…")],
+            codex_responses=[_ok("Codex says hi"), _ok("Codex again")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@all hypersonic glide vehicle entry dynamics", ui)
+        assert "claude" in c._models_initialized
+        await c.handle_input("/fresh @claude", ui)
+        assert "claude" not in c._models_initialized
+        assert claude.session_id == ""
+        notes = [t for sp, t in ui.room_entries if sp == "system" and "clean memory" in t]
+        assert len(notes) == 1
+        # the next message starts a new session whose prompt carries no history
+        await c.handle_input("@claude entry-vehicle guidance: what matters most?", ui)
+        assert len(claude.send_calls) == 2
+        fresh_prompt = claude.send_calls[1]
+        assert "hypersonic glide vehicle" not in fresh_prompt
+        assert "I refuse" not in fresh_prompt
+        assert "was restarted with a clean memory" not in fresh_prompt
+        assert "entry-vehicle guidance" in fresh_prompt
+        # …while Codex keeps its memory and is told
+        await c.handle_input("@codex and you?", ui)
+        assert "was restarted with a clean memory" in codex.resume_calls[-1]
+
+    async def test_both(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@all hello", ui)
+        await c.handle_input("/fresh @both", ui)
+        assert not c._models_initialized
+
+    async def test_no_target_prints_usage(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/fresh", ui)
+        assert any("Usage: /fresh" in t for sp, t in ui.room_entries if sp == "system")

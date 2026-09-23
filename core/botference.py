@@ -201,6 +201,7 @@ class InputKind(Enum):
     WATCH = "watch"
     LASSO = "lasso"
     VERIFY = "verify"
+    FRESH = "fresh"
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,7 @@ _SLASH_COMMANDS = {
     "/watch": InputKind.WATCH,
     "/lasso": InputKind.LASSO,
     "/verify": InputKind.VERIFY,
+    "/fresh": InputKind.FRESH,
     "/parallel": InputKind.MESSAGE,
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
@@ -267,7 +269,7 @@ _CODEX_DIFF_PREVIEW_LIMIT = 120_000
 
 # Commands that require a @target argument, expanded into @claude/@codex variants
 _TARGETED_COMMANDS = (
-    "/lead", "/relay", "/tag", "/model", "/effort", "/compact", "/goal",
+    "/lead", "/relay", "/tag", "/fresh", "/model", "/effort", "/compact", "/goal",
 )
 
 # ── The command table: one place every /help and every autocomplete reads ──
@@ -342,6 +344,12 @@ COMMAND_HELP: list[dict] = [
      "hint": "Restart a bot fresh, with a summary of the chat so far",
      "scope": _ALL,
      "detail": ["@both: one shared summary, both restart from it at once"]},
+    {"cmd": "/fresh", "args": "@claude|@codex|@both", "group": "Models",
+     "hint": "Restart a bot with no memory of this chat",
+     "scope": _ALL,
+     "detail": ["For a session that has gone wrong (a bot stuck refusing an"
+                " ordinary topic): no summary is carried over — it sees only"
+                " what you send next. The other bot keeps its memory"]},
     {"cmd": "/autorelay", "args": "[on|off]", "group": "Models",
      "hint": "Restart a bot by itself at 50% memory (on by default)",
      "scope": _ALL},
@@ -539,16 +547,17 @@ def parse_input(raw: str) -> ParsedInput:
         if m:
             return ParsedInput(kind=InputKind.RELAY, target=m.group(1).lower())
 
-        # /relay and /tag with target argument
-        if cmd in ("/relay", "/tag"):
+        # /relay and /tag (and /fresh, the no-summary restart) with a target
+        if cmd in ("/relay", "/tag", "/fresh"):
+            kind = InputKind.FRESH if cmd == "/fresh" else InputKind.RELAY
             arg = parts[1].strip() if len(parts) > 1 else ""
             m = _RELAY_TARGET_RE.match(arg)
             if m:
                 target = m.group(1).lower()
                 if target == "all":
                     target = "both"
-                return ParsedInput(kind=InputKind.RELAY, target=target)
-            return ParsedInput(kind=InputKind.RELAY, target="", body=arg)
+                return ParsedInput(kind=kind, target=target)
+            return ParsedInput(kind=kind, target="", body=arg)
 
         # Native harness slash-command passthrough. Botference owns the target
         # selector; the live harness receives only its native command.
@@ -1476,6 +1485,10 @@ _FREE_FORM_TURN_NUDGE_TOKENS = 400    # per-turn size above which we nudge
 _RELAY_USAGE = (
     "Usage: /relay @claude|@codex|@both  "
     "(aliases: /relay-claude, /relay-both, /tag @claude)"
+)
+_FRESH_USAGE = (
+    "Usage: /fresh @claude|@codex|@both — restart a bot with NO memory of this "
+    "chat; it sees only what you send next"
 )
 _HARNESS_COMMAND_USAGE = (
     "Usage: /compact @claude [instructions] or /goal @claude <objective>. "
@@ -2960,6 +2973,14 @@ class Botference:
                 await self._relay_both(ui)
             else:
                 await self._relay_model(parsed.target, ui)
+            return
+
+        if parsed.kind is InputKind.FRESH:
+            if not parsed.target:
+                self._add_room_entry(ui, "system", _FRESH_USAGE)
+                return
+            for model in (("claude", "codex") if parsed.target == "both" else (parsed.target,)):
+                self._fresh_model(model, ui)
             return
 
         if parsed.kind is InputKind.HARNESS_COMMAND:
@@ -4954,6 +4975,44 @@ class Botference:
                 f"Relayed {model} (tier: {used_tier}){suffix}, but fresh-session startup failed. "
                 f"Retry by messaging {model}.",
             )
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+
+    def _fresh_model(self, model: str, ui: UIPort) -> None:
+        """Restart a bot with no memory of this chat: no handoff, no backfill.
+
+        For the session that has gone wrong — a bot stuck refusing a
+        perfectly ordinary topic, or answering a question three turns old.
+        Its session is torn down, its "seen" mark moves to now, so the next
+        message you send is the whole of what it knows. The other bot keeps
+        its memory and is told, so it does not assume shared context.
+        """
+        if model not in ("claude", "codex"):
+            self._add_room_entry(ui, "system", _FRESH_USAGE)
+            return
+        had_session = model in self._models_initialized
+        if had_session:
+            self._teardown_model_session(model, ui)
+        self._clear_live_handoff(model)
+        self._pending_relay_handoffs.pop(model, None)
+        self._pending_auto_relay.discard(model)
+        # the note goes in first and the "seen" mark moves past it: the other
+        # bot (whose mark is older) reads it, the fresh one never does —
+        # everything up to the mark is history the fresh session never sees
+        who = model.capitalize()
+        self.transcript.add(
+            "system",
+            f"[{who} was restarted with a clean memory. It has not seen this "
+            "conversation; only what the user sends from here on.]",
+        )
+        self.transcript.mark_seen(model)
+        self._record_relay(model, "fresh", _dt.now(_tz.utc))
+        self._add_room_entry(
+            ui, "system",
+            f"{who} restarted with a clean memory"
+            + ("" if had_session else " (it had no session yet)")
+            + ". Your next message is all it will know — say the context again.",
+        )
         ui.set_status(self.status_snapshot())
         self._persist_session()
 

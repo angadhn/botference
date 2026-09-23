@@ -215,6 +215,7 @@
     {"cmd": "/current-model", "args": "", "hint": "Show both models and effort levels", "group": "Models", "aliases": ["/current"], "scope": ["tui", "council"]},
     {"cmd": "/status", "args": "", "hint": "How full each bot's memory is, who leads, sessions", "group": "Models", "scope": ["tui", "council"]},
     {"cmd": "/relay", "args": "@claude|@codex|@both", "hint": "Restart a bot fresh, with a summary of the chat so far", "group": "Models", "aliases": ["/tag", "/relay-claude", "/relay-codex", "/relay-both"], "scope": ["tui", "council"]},
+    {"cmd": "/fresh", "args": "@claude|@codex|@both", "hint": "Restart a bot with no memory of this chat", "group": "Models", "scope": ["tui", "council"]},
     {"cmd": "/autorelay", "args": "[on|off]", "hint": "Restart a bot by itself at 50% memory (on by default)", "group": "Models", "scope": ["tui", "council"]},
     {"cmd": "/compact", "args": "@claude [instructions]", "hint": "Claude Code's own /compact (needs --claude-interactive)", "group": "Models", "scope": ["tui", "council"]},
     {"cmd": "/goal", "args": "@claude <objective>", "hint": "Claude Code's own /goal (needs --claude-interactive)", "group": "Models", "scope": ["tui", "council"]},
@@ -246,6 +247,7 @@
     global: [
       '/lead @claude', '/lead @codex', '/relay @claude', '/relay @codex',
       '/relay @both', '/tag @claude', '/tag @codex', '/tag @both',
+      '/fresh @claude', '/fresh @codex', '/fresh @both',
       '/model @claude', '/model @codex',
       '/effort @claude', '/effort @codex', '/compact @claude', '/compact @codex',
       '/goal @claude', '/goal @codex',

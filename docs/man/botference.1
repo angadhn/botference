@@ -426,6 +426,10 @@ checkpoint.
 Session management, including per-participant model and effort switches.
 Effort levels: Claude low/medium/high/xhigh/max; Codex low/medium/high/xhigh/max/ultra.
 Models added 2026-09-23: claude-opus-5-5, gpt-6-sol, gpt-6-luna.
+.B /fresh @claude|@codex|@both
+restarts a bot with no memory of the chat: no summary, no history; only what
+the user sends next. For a session that has gone wrong.
+.TP
 .B /relay @both
 (alias @all, /relay-both) resets both agents at once from one shared
 handoff \(em authored once by the agent with the most context headroom

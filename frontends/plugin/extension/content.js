@@ -2798,6 +2798,12 @@
         if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
       },
+      // the no-summary restart (POST /fresh): the bot forgets this chat
+      onFresh: async agent => {
+        const r = await api('POST', '/fresh', { agent });
+        if (!r.ok) return failure(r);
+        return { ok: true, queued: r.data && r.data.queued };
+      },
 
       // owner-only on a shared companion: a refusal has to reach the chip the
       // user clicked, not disappear into a fire-and-forget
