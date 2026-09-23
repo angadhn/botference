@@ -217,6 +217,18 @@ class ParsedInput:
 _SLASH_COMMANDS = {
     "/projects": InputKind.PROJECTS,
     "/project": InputKind.PROJECT,
+    "/new-project": InputKind.PROJECT,
+    "/open-project": InputKind.PROJECT,
+    "/assign-project": InputKind.PROJECT,
+    "/unfile-project": InputKind.PROJECT,
+    "/clear-project": InputKind.PROJECT,
+    "/current-project": InputKind.PROJECT,
+    "/project-contents": InputKind.PROJECT,
+    "/project-github": InputKind.PROJECT,
+    "/archive-project": InputKind.PROJECT,
+    "/unarchive-project": InputKind.PROJECT,
+    "/project-from-chat": InputKind.PROJECT,
+    "/activate-build": InputKind.PROJECT,
     "/adopt": InputKind.ADOPT,
     "/new": InputKind.NEW,
     "/file": InputKind.FILE,
@@ -248,6 +260,23 @@ _SLASH_COMMANDS = {
     "/help": InputKind.HELP,
     "/quit": InputKind.QUIT,
     "/exit": InputKind.QUIT,
+}
+
+# `/new-project <title>` reads as a command; `/project create <title>` reads
+# as a menu. Both work: each hyphenated verb is exactly `/project <verb> …`.
+_PROJECT_VERB_ALIASES = {
+    "/new-project": "create",
+    "/open-project": "open",
+    "/assign-project": "assign",
+    "/unfile-project": "unfile",
+    "/clear-project": "clear",
+    "/current-project": "current",
+    "/project-contents": "contents",
+    "/project-github": "github",
+    "/archive-project": "archive",
+    "/unarchive-project": "unarchive",
+    "/project-from-chat": "create-from-chat",
+    "/activate-build": "activate-build",
 }
 
 _MENTION_RE = re.compile(
@@ -384,9 +413,21 @@ COMMAND_HELP: list[dict] = [
      "hint": "Bring an archived chat back", "scope": _ALL},
     {"cmd": "/projects", "args": "", "group": "Projects",
      "hint": "List your projects", "scope": _ALL},
+    {"cmd": "/new-project", "args": "<title>", "group": "Projects",
+     "hint": "Create a project and file this chat under it", "scope": _ALL},
+    {"cmd": "/open-project", "args": "<id or title>", "group": "Projects",
+     "hint": "Make an existing project current", "scope": _ALL},
     {"cmd": "/project", "args": "[open <id>|clear|create <title>|…]", "group": "Projects",
      "hint": "Open, show, create or tidy projects", "scope": _ALL,
+     "aliases": ["/assign-project", "/unfile-project", "/clear-project",
+                 "/current-project", "/project-contents", "/project-github",
+                 "/archive-project", "/unarchive-project", "/project-from-chat",
+                 "/activate-build"],
      "detail": [
+         "Every verb is also a command of its own: /new-project <title>,"
+         " /open-project <id>, /assign-project, /unfile-project, /clear-project,"
+         " /project-contents, /project-github, /archive-project, /unarchive-project,"
+         " /project-from-chat, /activate-build",
          "/project open <id> | clear | current | create <title> | create-from-chat"
          " | activate-build",
          "/project assign [<chat-id>] <project-id> — file this chat or a saved one",
@@ -579,6 +620,11 @@ def parse_input(raw: str) -> ParsedInput:
                 target="",
                 body=f"{cmd} {arg}".strip(),
             )
+
+        verb = _PROJECT_VERB_ALIASES.get(cmd)
+        if verb is not None:
+            rest = parts[1].strip() if len(parts) > 1 else ""
+            return ParsedInput(kind=InputKind.PROJECT, body=f"{verb} {rest}".strip())
 
         kind = _SLASH_COMMANDS.get(cmd)
         if kind is not None:
@@ -3911,7 +3957,9 @@ class Botference:
             self._add_room_entry(
                 ui,
                 "system",
-                f"No project matched '{query}'.\n\nRun /projects to list available projects.",
+                f"⚠ No project matched '{query}' — nothing was opened or created.\n"
+                f"To create it:  /new-project {query}\n"
+                "To see what exists:  /projects",
             )
             return
         self._activate_project(project, ui)

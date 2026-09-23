@@ -467,3 +467,40 @@ class TestSafeguardFallback:
         await c.handle_input("@all hi", ui)
         assert claude.model == "claude-fable-5-1"
         assert len(claude.send_calls) == 1 and len(codex.send_calls) == 1
+
+
+# ── hyphenated project verbs ──────────────────────────────
+
+
+class TestProjectVerbAliases:
+    def test_each_verb_is_the_project_command(self):
+        cases = {
+            "/new-project hypersonic space vehicles": "create hypersonic space vehicles",
+            "/open-project lff": "open lff",
+            "/assign-project abc lff": "assign abc lff",
+            "/unfile-project": "unfile",
+            "/clear-project": "clear",
+            "/current-project": "current",
+            "/project-contents lff": "contents lff",
+            "/project-github lff": "github lff",
+            "/archive-project lff": "archive lff",
+            "/unarchive-project lff": "unarchive lff",
+            "/project-from-chat": "create-from-chat",
+            "/activate-build": "activate-build",
+        }
+        for raw, body in cases.items():
+            p = parse_input(raw)
+            assert p.kind is InputKind.PROJECT and p.body == body, raw
+
+    def test_new_is_still_a_new_chat(self):
+        assert parse_input("/new").kind is InputKind.NEW
+
+
+@pytest.mark.asyncio
+class TestProjectNoMatch:
+    async def test_a_bare_title_that_matches_nothing_says_how_to_create(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project hypersonic space vehicles", ui)
+        note = [t for sp, t in ui.room_entries if sp == "system"][-1]
+        assert note.startswith("⚠ No project matched")
+        assert "/new-project hypersonic space vehicles" in note

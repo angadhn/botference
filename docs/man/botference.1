@@ -383,6 +383,12 @@ leaving every listing while staying on disk. /unarchive moves it back and
 never overwrites a live chat of the same id. Both open a picker with no
 argument; /archive list shows what is already archived.
 .TP
+.B /new-project <title>
+creates a project and files this chat under it. Every /project verb is also
+a hyphenated command: /open-project, /assign-project, /unfile-project,
+/clear-project, /current-project, /project-contents, /project-github,
+/archive-project, /unarchive-project, /project-from-chat, /activate-build.
+.TP
 .B /project unfile [<session-id-prefix>]
 Take a chat out of its project without deleting anything: the transcript,
 the title and the file all stay exactly as they were, and only the filing

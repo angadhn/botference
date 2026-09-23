@@ -1114,10 +1114,17 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // reader sees what was watched instead of concluding a bot watched it.
       // `agent` is a BUILD AGENT one of the bots summoned (_run_summon): its
       // card nests under the message that summoned it, never beside it.
+      // A system line is machinery and stays out of the thread — except the
+      // one that explains why a bot's reply was an error and then an answer:
+      // the controller switched models after the running one's safeguards
+      // declined the message (botference.py _switch_claude_after_refusal).
+      const notice = speaker === 'system'
+        && /safeguards declined|Switching this chat's Claude|every model on the fallback list/.test(String(ev.text || ''));
       const author = speaker.startsWith('claude') ? 'claude'
         : speaker.startsWith('codex') ? 'codex'
           : speaker.startsWith('gemini') ? 'gemini'
-            : speaker === 'agent' && ev.agent && ev.agent.id ? 'agent' : null;
+            : speaker === 'agent' && ev.agent && ev.agent.id ? 'agent'
+              : notice ? 'botference' : null;
       if (!author || !String(ev.text || '').trim()) return;
       // tool activity is kept, not dropped — the drawer collapses it, the
       // Obsidian note leaves it out

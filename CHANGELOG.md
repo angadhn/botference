@@ -2,6 +2,18 @@
 
 ## 2026-09-23
 
+- **`/new-project <title>`, and every `/project` verb as a command of its
+  own.** `/project hypersonic space vehicles` looked like it should create a
+  project; it was read as `open` and answered with a grey "no project
+  matched" line, and the next message met the filing chooser. Now
+  `/new-project <title>` creates and files; `/open-project`, `/assign-project`,
+  `/unfile-project`, `/clear-project`, `/current-project`, `/project-contents`,
+  `/project-github`, `/archive-project`, `/unarchive-project`,
+  `/project-from-chat` and `/activate-build` are the other verbs. `/project
+  <verb>` still works. A bare `/project <words>` that matches nothing now says
+  so with a ⚠ and shows the `/new-project` line. The plugin also shows the
+  controller's "switching model and retrying" notice in the chat, so a reply
+  that was an error and then an answer explains itself.
 - **Enter sends on a real keyboard.** In the council page and in the plugin's
   page chat and library, Enter used to make a new line everywhere and
   Shift+Enter sent — a phone rule, where Enter is the only way to get a new
